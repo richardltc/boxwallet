@@ -4,7 +4,7 @@ BoxDivi is a CLI application that makes it very easy to set up and view a Divi w
 
 ## What is BoxDivi used for? ###
 
-* Making the initial installation of a Divi wallet trivial with the single command `./godivi-install install`
+* Making the initial installation of a Divi wallet trivial with the single command `./boxdivi install`
 * Web enabling your existing wallet.
 * Displaying the staking status of your wallet. 
 * Displaying blockchain and master node syncing status
