@@ -2,7 +2,6 @@ package bend
 
 import (
 	"bufio"
-	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -324,43 +323,43 @@ func getAddNodes() ([]byte, error) {
 	return body, nil
 }
 
-func GetPrivKey() (privateSeedStruct, walletResponseType, error) {
-	ps := privateSeedStruct{}
-
-	// Start the DiviD server if required...
-	if err := RunCoinDaemon(false); err != nil {
-		return ps, wrtUnknown, fmt.Errorf("Unable to RunDiviD: %v ", err)
-	}
-
-	dbf, err := gwc.GetAppsBinFolder(gwc.APPTServer)
-	if err != nil {
-		return ps, wrtUnknown, fmt.Errorf("Unable to GetAppsBinFolder: %v ", err)
-	}
-
-	for i := 0; i <= 4; i++ {
-		cmd := exec.Command(dbf+gwc.CDiviCliFile, cCommandDumpHDInfo)
-		var stdout bytes.Buffer
-		cmd.Stdout = &stdout
-		cmd.Run()
-		if err != nil {
-			return ps, wrtUnknown, err
-		}
-
-		outStr := string(stdout.Bytes())
-		wr := getWalletResponse(outStr)
-
-		if wr == wrtAllOK {
-			errUM := json.Unmarshal([]byte(outStr), &ps)
-			if errUM == nil {
-				return ps, wrtAllOK, err
-			}
-		}
-
-		time.Sleep(1 * time.Second)
-	}
-
-	return ps, wrtUnknown, errors.New("unable to retrieve private key")
-}
+//func GetPrivKey() (privateSeedStruct, walletResponseType, error) {
+//	ps := privateSeedStruct{}
+//
+//	// Start the DiviD server if required...
+//	if err := RunCoinDaemon(false); err != nil {
+//		return ps, wrtUnknown, fmt.Errorf("Unable to RunDiviD: %v ", err)
+//	}
+//
+//	dbf, err := gwc.GetAppsBinFolder(gwc.APPTServer)
+//	if err != nil {
+//		return ps, wrtUnknown, fmt.Errorf("Unable to GetAppsBinFolder: %v ", err)
+//	}
+//
+//	for i := 0; i <= 4; i++ {
+//		cmd := exec.Command(dbf+gwc.CDiviCliFile, cCommandDumpHDInfo)
+//		var stdout bytes.Buffer
+//		cmd.Stdout = &stdout
+//		cmd.Run()
+//		if err != nil {
+//			return ps, wrtUnknown, err
+//		}
+//
+//		outStr := string(stdout.Bytes())
+//		wr := getWalletResponse(outStr)
+//
+//		if wr == wrtAllOK {
+//			errUM := json.Unmarshal([]byte(outStr), &ps)
+//			if errUM == nil {
+//				return ps, wrtAllOK, err
+//			}
+//		}
+//
+//		time.Sleep(1 * time.Second)
+//	}
+//
+//	return ps, wrtUnknown, errors.New("unable to retrieve private key")
+//}
 
 // // DoPrivKeyFile - Handles the private key
 // func DoPrivKeyFile() error {
@@ -1245,47 +1244,47 @@ func StopDaemon(cliConf *gwc.CLIConfStruct) (GenericRespStruct, error) {
 }
 
 // UnlockWallet - Used by the server to unlock the wallet
-func UnlockWallet(pword string, attempts int, forStaking bool) (bool, error) {
-	var err error
-	var s string = "waiting for wallet."
-	dbf, _ := gwc.GetAppsBinFolder(gwc.APPTServer)
-	app := dbf + gwc.CDiviCliFile
-	arg1 := cCommandUnlockWalletFS
-	arg2 := pword
-	arg3 := "0"
-	arg4 := "true"
-	for i := 0; i < attempts; i++ {
-
-		var cmd *exec.Cmd
-		if forStaking {
-			cmd = exec.Command(app, arg1, arg2, arg3, arg4)
-		} else {
-			cmd = exec.Command(app, arg1, arg2, arg3)
-		}
-		//fmt.Println("cmd = " + dbf + cDiviCliFile + cCommandUnlockWalletFS + `"` + pword + `"` + "0")
-		out, err := cmd.CombinedOutput()
-
-		fmt.Println("string = " + string(out))
-		//fmt.Println("error = " + err.Error())
-
-		if err == nil {
-			return true, err
-		}
-
-		if strings.Contains(string(out), "The wallet passphrase entered was incorrect.") {
-			return false, err
-		}
-
-		if strings.Contains(string(out), "Loading block index....") {
-			//s = s + "."
-			//fmt.Println(s)
-			fmt.Printf("\r"+s+" %d/"+strconv.Itoa(attempts), i+1)
-
-			time.Sleep(3 * time.Second)
-
-		}
-
-	}
-
-	return false, err
-}
+//func UnlockWallet(pword string, attempts int, forStaking bool) (bool, error) {
+//	var err error
+//	var s string = "waiting for wallet."
+//	dbf, _ := gwc.GetAppsBinFolder(gwc.APPTServer)
+//	app := dbf + gwc.CDiviCliFile
+//	arg1 := cCommandUnlockWalletFS
+//	arg2 := pword
+//	arg3 := "0"
+//	arg4 := "true"
+//	for i := 0; i < attempts; i++ {
+//
+//		var cmd *exec.Cmd
+//		if forStaking {
+//			cmd = exec.Command(app, arg1, arg2, arg3, arg4)
+//		} else {
+//			cmd = exec.Command(app, arg1, arg2, arg3)
+//		}
+//		//fmt.Println("cmd = " + dbf + cDiviCliFile + cCommandUnlockWalletFS + `"` + pword + `"` + "0")
+//		out, err := cmd.CombinedOutput()
+//
+//		fmt.Println("string = " + string(out))
+//		//fmt.Println("error = " + err.Error())
+//
+//		if err == nil {
+//			return true, err
+//		}
+//
+//		if strings.Contains(string(out), "The wallet passphrase entered was incorrect.") {
+//			return false, err
+//		}
+//
+//		if strings.Contains(string(out), "Loading block index....") {
+//			//s = s + "."
+//			//fmt.Println(s)
+//			fmt.Printf("\r"+s+" %d/"+strconv.Itoa(attempts), i+1)
+//
+//			time.Sleep(3 * time.Second)
+//
+//		}
+//
+//	}
+//
+//	return false, err
+//}
