@@ -313,8 +313,8 @@ var dashCmd = &cobra.Command{
 		pAbout.SetRect(0, 0, 32, 4)
 		pAbout.TextStyle.Fg = ui.ColorWhite
 		pAbout.BorderStyle.Fg = ui.ColorGreen
-		pAbout.Text = "  [" + sAppName + " v" + gwc.CAppVersion + "](fg:white)\n" +
-			"  [" + sCoinName + "   v" + gwc.CDiviAppVersion + "](fg:white)\n\n"
+		pAbout.Text = "  [" + sAppName + "      v" + gwc.CAppVersion + "](fg:white)\n" +
+			"  [" + sCoinName + "         v" + gwc.CDiviAppVersion + "](fg:white)\n\n"
 
 		pWallet := widgets.NewParagraph()
 		pWallet.Title = "Wallet"
@@ -427,11 +427,11 @@ var dashCmd = &cobra.Command{
 
 			// Update the wallet display, if we're all synced up
 			if bci.Result.Verificationprogress > 0.9999 {
-				pWallet.Text = "" + getBalanceTxt(&wi) + "\n" +
+				pWallet.Text = "" + getBalanceInDiviTxt(&wi) + "\n" +
 					"  " + getBalanceInCurrencyTxt(&cliConf, &wi) + "\n" +
 					"  " + getWalletSecurityStatusTxt(&wi) + "\n" +
 					"  " + getWalletStakingTxt(&wi) + "\n" + //e.g. "15%" or "staking"
-					"  " + getActivelyStakingTxt(&ss) + "\n" + //e.g. "15%" or "staking"
+					"  " + getActivelyStakingTxt(&ss, &wi) + "\n" + //e.g. "15%" or "staking"
 					"  " + getNextLotteryTxt(&cliConf) + "\n" +
 					"  " + "Lottery tickets:  0"
 			}
@@ -669,16 +669,17 @@ func getNextLotteryTxt(conf *gwc.CLIConfStruct) string {
 	}
 }
 
-func getActivelyStakingTxt(ss *be.StakingStatusRespStruct) string {
+func getActivelyStakingTxt(ss *be.StakingStatusRespStruct, wi *be.WalletInfoRespStruct) string {
 	// Work out balance
-	if ss.Result.StakingStatus == true {
+	//todo Make sure that we only return yes, if the StakingStatus is true AND we have enough coins
+	if ss.Result.StakingStatus == true && (wi.Result.Balance > 10000) {
 		return "Actively Staking: [Yes](fg:green)"
 	} else {
 		return "Actively Staking: [No](fg:yellow)"
 	}
 }
 
-func getBalanceTxt(wi *be.WalletInfoRespStruct) string {
+func getBalanceInDiviTxt(wi *be.WalletInfoRespStruct) string {
 	tBalance := wi.Result.ImmatureBalance + wi.Result.UnconfirmedBalance + wi.Result.Balance
 	tBalanceStr := humanize.FormatFloat("#,###.####", tBalance)
 
