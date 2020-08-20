@@ -98,10 +98,10 @@ You can then view the ` + sAppName + ` dashboard by running the command: ` + sAp
 		if err != nil {
 			log.Fatal("Unable to GetAppFileCLIName " + err.Error())
 		}
-		sAppFileUpdaterName, err := gwc.GetAppFileName(gwc.APPTUpdater)
-		if err != nil {
-			log.Fatal("Unable to GetAppFileName " + err.Error())
-		}
+		//sAppFileUpdaterName, err := gwc.GetAppFileName(gwc.APPTUpdater)
+		//if err != nil {
+		//	log.Fatal("Unable to GetAppFileName " + err.Error())
+		//}
 		abf, err := gwc.GetAppsBinFolder(gwc.APPTCLI)
 		if err != nil {
 			log.Fatal("Unable to GetAppsBinFolder " + err.Error())
@@ -122,10 +122,10 @@ You can then view the ` + sAppName + ` dashboard by running the command: ` + sAp
 		// }
 
 		// Check for Godivi Updater
-		// Check for the App Server
-		if !gwc.FileExists("./" + sAppFileUpdaterName) {
-			log.Fatal("Unable to find the file " + sAppFileUpdaterName)
-		}
+		// Check for the App Updater
+		//if !gwc.FileExists("./" + sAppFileUpdaterName) {
+		//	log.Fatal("Unable to find the file " + sAppFileUpdaterName)
+		//}
 
 		lfp := abf + sLogfileName
 		// 	// Check to make sure we have enough memory
@@ -378,7 +378,7 @@ func doRequiredFiles() error {
 	log.Print("Installing files...")
 
 	// Copy files to correct location
-	var srcPath, srcFileCLI, srcFileD, srcFileTX, srcFileGWConfCLI /*srcFileGWConfSrv,*/, srcFileGWCLI, srcFileGWUprade /*srcFileGWServer*/ string
+	var srcPath, srcFileCLI, srcFileD, srcFileTX, srcFileGWConfCLI /*srcFileGWConfSrv,*/, srcFileGWCLI /*srcFileGWUprade*/ /*srcFileGWServer*/ string
 	srcFileGWConfCLI = gwc.CCLIConfFile + gwc.CCLIConfFileExt
 	//srcFileGWConfSrv = gwc.CServerConfFile + gwc.CServerConfFileExt
 	var srcREADMEFile = "README.md"
@@ -392,14 +392,14 @@ func doRequiredFiles() error {
 			srcFileD = gwc.CDiviDFileWin
 			srcFileTX = gwc.CDiviTxFileWin
 			srcFileGWCLI = gwc.CAppCLIFileWinGoDivi
-			// srcFileGWServer = gwc.CAppServerFileWinGoDivi
+			// srcFileGWServer = gwc.CAppServerFileWinBoxDivi
 		case "arm":
 			srcPath = "./" + cDiviExtractedDir + "bin/"
 			srcFileCLI = gwc.CDiviCliFile
 			srcFileD = gwc.CDiviDFile
 			srcFileTX = gwc.CDiviTxFile
 			srcFileGWCLI = gwc.CAppCLIFileGoDivi
-			srcFileGWUprade = gwc.CAppUpdaterFileGoDivi
+			//srcFileGWUprade = gwc.CAppUpdaterFileGoDivi
 			// srcFileGWServer = gwc.CAppServerFileGoDivi
 		case "linux":
 			srcPath = "./" + cDiviExtractedDir + "bin/"
@@ -407,7 +407,7 @@ func doRequiredFiles() error {
 			srcFileD = gwc.CDiviDFile
 			srcFileTX = gwc.CDiviTxFile
 			srcFileGWCLI = gwc.CAppCLIFileGoDivi
-			srcFileGWUprade = gwc.CAppUpdaterFileGoDivi
+			//srcFileGWUprade = gwc.CAppUpdaterFileGoDivi
 			// srcFileGWServer = gwc.CAppServerFileGoDivi
 		default:
 			err = errors.New("unable to determine runtime.GOOS")
@@ -427,7 +427,7 @@ func doRequiredFiles() error {
 			srcFileD = gwc.CPIVXDFile
 			srcFileTX = gwc.CPIVXTxFile
 			srcFileGWCLI = gwc.CAppCLIFileGoPIVX
-			srcFileGWUprade = gwc.CAppUpdaterFileGoPIVX
+			//srcFileGWUprade = gwc.CAppUpdaterFileGoPIVX
 			// srcFileGWServer = gwc.CAppServerFileGoPIVX
 		case "linux":
 			srcPath = "./" + cPIVXExtractedDirLinux + "bin/"
@@ -435,7 +435,7 @@ func doRequiredFiles() error {
 			srcFileD = gwc.CPIVXDFile
 			srcFileTX = gwc.CPIVXTxFile
 			srcFileGWCLI = gwc.CAppCLIFileGoPIVX
-			srcFileGWUprade = gwc.CAppUpdaterFileGoPIVX
+			//srcFileGWUprade = gwc.CAppUpdaterFileGoPIVX
 			// srcFileGWServer = gwc.CAppServerFileGoPIVX
 		default:
 			err = errors.New("unable to determine runtime.GOOS")
@@ -452,7 +452,7 @@ func doRequiredFiles() error {
 			srcFileD = gwc.CTrezarcoinDFile
 			srcFileTX = gwc.CTrezarcoinTxFile
 			srcFileGWCLI = gwc.CAppCLIFileGoTrezarcoin
-			srcFileGWUprade = gwc.CAppUpdaterFileGoTrezarcoin
+			//srcFileGWUprade = gwc.CAppUpdaterFileGoTrezarcoin
 			// srcFileGWServer = gwc.CAppServerFileGoTrezarcoin
 		default:
 			err = errors.New("unable to determine runtime.GOOS")
@@ -527,96 +527,96 @@ func doRequiredFiles() error {
 	// }
 
 	// Copy the updater file
-	switch gwconf.ProjectType {
-	case gwc.PTDivi:
-		switch runtime.GOOS {
-		case "arm":
-			err = gwc.FileCopy("./"+gwc.CAppUpdaterFileGoDivi, abf+srcFileGWUprade, false)
-			if err != nil {
-				return fmt.Errorf("unable to copyFile: %v - %v", abf+srcFileGWUprade, err)
-			}
-			err = os.Chmod(abf+srcFileGWUprade, 0777)
-			if err != nil {
-				return fmt.Errorf("unable to chmod file: %v - %v", abf+srcFileGWUprade, err)
-			}
-		case "linux":
-			err = gwc.FileCopy("./"+gwc.CAppUpdaterFileGoDivi, abf+srcFileGWUprade, false)
-			if err != nil {
-				return fmt.Errorf("unable to copyFile: %v - %v", abf+srcFileGWUprade, err)
-			}
-			err = os.Chmod(abf+srcFileGWUprade, 0777)
-			if err != nil {
-				return fmt.Errorf("unable to chmod file: %v - %v", abf+srcFileGWUprade, err)
-			}
-		case "windows":
-			// TODO Code the Windows part
-			err = gwc.FileCopy(""+gwc.CAppUpdaterFileGoDivi, abf+srcFileGWUprade, false)
-			if err != nil {
-				return fmt.Errorf("unable to copyFile: %v - %v", abf+srcFileGWUprade, err)
-			}
-			err = os.Chmod(abf+srcFileGWUprade, 0777)
-			if err != nil {
-				return fmt.Errorf("unable to chmod file: %v - %v", abf+srcFileGWUprade, err)
-			}
-		default:
-			err = errors.New("unable to determine runtime.GOOS")
-
-		}
-	case gwc.PTPIVX:
-		switch runtime.GOOS {
-		case "arm":
-			err = gwc.FileCopy("./"+gwc.CAppUpdaterFileGoPIVX, abf+srcFileGWUprade, false)
-			if err != nil {
-				return fmt.Errorf("unable to copyFile: %v - %v", abf+srcFileGWUprade, err)
-			}
-			err = os.Chmod(abf+srcFileGWUprade, 0777)
-			if err != nil {
-				return fmt.Errorf("unable to chmod file: %v - %v", abf+srcFileGWUprade, err)
-			}
-		case "linux":
-			err = gwc.FileCopy("./"+gwc.CAppUpdaterFileGoPIVX, abf+srcFileGWUprade, false)
-			if err != nil {
-				return fmt.Errorf("unable to copyFile: %v - %v", abf+srcFileGWUprade, err)
-			}
-			err = os.Chmod(abf+srcFileGWUprade, 0777)
-			if err != nil {
-				return fmt.Errorf("unable to chmod file: %v - %v", abf+srcFileGWUprade, err)
-			}
-		case "windows":
-			// TODO Code the Windows part
-		default:
-			err = errors.New("unable to determine runtime.GOOS")
-
-		}
-	case gwc.PTTrezarcoin:
-		switch runtime.GOOS {
-		case "arm":
-			err = gwc.FileCopy("./"+gwc.CAppUpdaterFileGoTrezarcoin, abf+srcFileGWUprade, false)
-			if err != nil {
-				return fmt.Errorf("unable to copyFile: %v - %v", abf+srcFileGWUprade, err)
-			}
-			err = os.Chmod(abf+srcFileGWUprade, 0777)
-			if err != nil {
-				return fmt.Errorf("unable to chmod file: %v - %v", abf+srcFileGWUprade, err)
-			}
-		case "linux":
-			err = gwc.FileCopy("./"+gwc.CAppUpdaterFileGoTrezarcoin, abf+srcFileGWUprade, false)
-			if err != nil {
-				return fmt.Errorf("unable to copyFile: %v - %v", abf+srcFileGWUprade, err)
-			}
-			err = os.Chmod(abf+srcFileGWUprade, 0777)
-			if err != nil {
-				return fmt.Errorf("unable to chmod file: %v - %v", abf+srcFileGWUprade, err)
-			}
-		case "windows":
-			// TODO Code the Windows part
-		default:
-			err = errors.New("unable to determine runtime.GOOS")
-		}
-
-	default:
-		err = errors.New("unable to determine ProjectType")
-	}
+	//switch gwconf.ProjectType {
+	//case gwc.PTDivi:
+	//	switch runtime.GOOS {
+	//	case "arm":
+	//		err = gwc.FileCopy("./"+gwc.CAppUpdaterFileGoDivi, abf+srcFileGWUprade, false)
+	//		if err != nil {
+	//			return fmt.Errorf("unable to copyFile: %v - %v", abf+srcFileGWUprade, err)
+	//		}
+	//		err = os.Chmod(abf+srcFileGWUprade, 0777)
+	//		if err != nil {
+	//			return fmt.Errorf("unable to chmod file: %v - %v", abf+srcFileGWUprade, err)
+	//		}
+	//	case "linux":
+	//		err = gwc.FileCopy("./"+gwc.CAppUpdaterFileGoDivi, abf+srcFileGWUprade, false)
+	//		if err != nil {
+	//			return fmt.Errorf("unable to copyFile: %v - %v", abf+srcFileGWUprade, err)
+	//		}
+	//		err = os.Chmod(abf+srcFileGWUprade, 0777)
+	//		if err != nil {
+	//			return fmt.Errorf("unable to chmod file: %v - %v", abf+srcFileGWUprade, err)
+	//		}
+	//	case "windows":
+	//		// TODO Code the Windows part
+	//		err = gwc.FileCopy(""+gwc.CAppUpdaterFileGoDivi, abf+srcFileGWUprade, false)
+	//		if err != nil {
+	//			return fmt.Errorf("unable to copyFile: %v - %v", abf+srcFileGWUprade, err)
+	//		}
+	//		err = os.Chmod(abf+srcFileGWUprade, 0777)
+	//		if err != nil {
+	//			return fmt.Errorf("unable to chmod file: %v - %v", abf+srcFileGWUprade, err)
+	//		}
+	//	default:
+	//		err = errors.New("unable to determine runtime.GOOS")
+	//
+	//	}
+	//case gwc.PTPIVX:
+	//	switch runtime.GOOS {
+	//	case "arm":
+	//		err = gwc.FileCopy("./"+gwc.CAppUpdaterFileGoPIVX, abf+srcFileGWUprade, false)
+	//		if err != nil {
+	//			return fmt.Errorf("unable to copyFile: %v - %v", abf+srcFileGWUprade, err)
+	//		}
+	//		err = os.Chmod(abf+srcFileGWUprade, 0777)
+	//		if err != nil {
+	//			return fmt.Errorf("unable to chmod file: %v - %v", abf+srcFileGWUprade, err)
+	//		}
+	//	case "linux":
+	//		err = gwc.FileCopy("./"+gwc.CAppUpdaterFileGoPIVX, abf+srcFileGWUprade, false)
+	//		if err != nil {
+	//			return fmt.Errorf("unable to copyFile: %v - %v", abf+srcFileGWUprade, err)
+	//		}
+	//		err = os.Chmod(abf+srcFileGWUprade, 0777)
+	//		if err != nil {
+	//			return fmt.Errorf("unable to chmod file: %v - %v", abf+srcFileGWUprade, err)
+	//		}
+	//	case "windows":
+	//		// TODO Code the Windows part
+	//	default:
+	//		err = errors.New("unable to determine runtime.GOOS")
+	//
+	//	}
+	//case gwc.PTTrezarcoin:
+	//	switch runtime.GOOS {
+	//	case "arm":
+	//		err = gwc.FileCopy("./"+gwc.CAppUpdaterFileGoTrezarcoin, abf+srcFileGWUprade, false)
+	//		if err != nil {
+	//			return fmt.Errorf("unable to copyFile: %v - %v", abf+srcFileGWUprade, err)
+	//		}
+	//		err = os.Chmod(abf+srcFileGWUprade, 0777)
+	//		if err != nil {
+	//			return fmt.Errorf("unable to chmod file: %v - %v", abf+srcFileGWUprade, err)
+	//		}
+	//	case "linux":
+	//		err = gwc.FileCopy("./"+gwc.CAppUpdaterFileGoTrezarcoin, abf+srcFileGWUprade, false)
+	//		if err != nil {
+	//			return fmt.Errorf("unable to copyFile: %v - %v", abf+srcFileGWUprade, err)
+	//		}
+	//		err = os.Chmod(abf+srcFileGWUprade, 0777)
+	//		if err != nil {
+	//			return fmt.Errorf("unable to chmod file: %v - %v", abf+srcFileGWUprade, err)
+	//		}
+	//	case "windows":
+	//		// TODO Code the Windows part
+	//	default:
+	//		err = errors.New("unable to determine runtime.GOOS")
+	//	}
+	//
+	//default:
+	//	err = errors.New("unable to determine ProjectType")
+	//}
 
 	// // Copy the App Server file
 	// switch gwconf.ProjectType {
