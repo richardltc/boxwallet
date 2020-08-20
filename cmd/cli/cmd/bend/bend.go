@@ -770,14 +770,8 @@ func PopulateDaemonConfFile() (rpcuser, rpcpassword string, err error) {
 
 		// Now get a list of the latest "addnodes" and add them to the file:
 		// gdc.AddToLog(lfp, "Adding latest master nodes to "+gdc.CDiviConfFile)
-		if err := AddAddNodesIfRequired(); err != nil {
-			log.Println("Unable to add addnodes, but will try again on start...")
-		}
-
-		//addnodes, _ := getAddNodes()
-		//sAddnodes := string(addnodes[:])
-		//if err := gwc.WriteTextToFile(chd+gwc.CDiviConfFile, sAddnodes); err != nil {
-		//	log.Fatal(err)
+		//if err := AddAddNodesIfRequired(); err != nil {
+		//	log.Println("Unable to add addnodes, but will try again on start...")
 		//}
 
 		return rpcu, rpcpw, nil
@@ -1010,7 +1004,10 @@ func RunCoinDaemon(displayOutput bool) error {
 			if err != nil {
 				return err
 			}
-			cmdRun.Start()
+			err = cmdRun.Start()
+			if err != nil {
+				return err
+			}
 
 			buf := bufio.NewReader(stdout) // Notice that this is not in a loop
 			num := 1
@@ -1026,7 +1023,7 @@ func RunCoinDaemon(displayOutput bool) error {
 					}
 					return nil
 				} else {
-					return errors.New("unable to start Divi server")
+					return errors.New("unable to start Divi server: " + string(line))
 				}
 			}
 		}
