@@ -25,7 +25,7 @@ archives:
         format: zip
     name_template: "BoxDivi_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
     replacements:
-      darwin: Darwin
+      darwin: macOS
       linux: Linux
       windows: Windows
       386: i386
