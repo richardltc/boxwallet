@@ -197,6 +197,10 @@ github.com/richardltc/gwcommon v0.0.0-20200805124143-fe68451bd1e1 h1:AJv1cLiifyI
 github.com/richardltc/gwcommon v0.0.0-20200805124143-fe68451bd1e1/go.mod h1:uRkRBVWgLaCqG1Xx2T7ThxsIXrzP/6rSBC0k4UAjse8=
 github.com/richardltc/gwcommon v0.0.0-20200818144915-0521c21ad90e h1:yImH3TpcNdsjZwTF5++3BsUdFsE9FJHGSwzpjG5ItTU=
 github.com/richardltc/gwcommon v0.0.0-20200818144915-0521c21ad90e/go.mod h1:uRkRBVWgLaCqG1Xx2T7ThxsIXrzP/6rSBC0k4UAjse8=
+github.com/richardltc/gwcommon v0.0.0-20200820144559-0a948dfb4343 h1:8HSWa09wafprI09r6uVHkdNtHSCNBfUNeR6ehsIoS2s=
+github.com/richardltc/gwcommon v0.0.0-20200820144559-0a948dfb4343/go.mod h1:uRkRBVWgLaCqG1Xx2T7ThxsIXrzP/6rSBC0k4UAjse8=
+github.com/richardltc/gwcommon v0.0.0-20200821134337-a68accf1c67d h1:lOuKBXmPs3mSJN2iDelCIvh8U0aZ7KZu1GvKqEjUzhA=
+github.com/richardltc/gwcommon v0.0.0-20200821134337-a68accf1c67d/go.mod h1:uRkRBVWgLaCqG1Xx2T7ThxsIXrzP/6rSBC0k4UAjse8=
 github.com/rogpeppe/fastuuid v0.0.0-20150106093220-6724a57986af/go.mod h1:XWv6SoW27p1b0cqNHllgS5HIMJraePCO15w5zCzIWYg=
 github.com/rogpeppe/go-internal v1.3.0/go.mod h1:M8bDsm7K2OlrFYOpmOWEs/qY81heoFRclV5y23lUDJ4=
 github.com/russross/blackfriday/v2 v2.0.1/go.mod h1:+Rmxgy9KzJVeS9/2gXHxylqXiyQDYRxCVz55jmeOWTM=
@@ -319,6 +323,10 @@ golang.org/x/sys v0.0.0-20190624142023-c5567b49c5d0/go.mod h1:h1NjWce9XRLGQEsW7w
 golang.org/x/sys v0.0.0-20191005200804-aed5e4c7ecf9/go.mod h1:h1NjWce9XRLGQEsW7wpKNCjG9DtNlClVuFLEZdDNbEs=
 golang.org/x/sys v0.0.0-20200817155316-9781c653f443 h1:X18bCaipMcoJGm27Nv7zr4XYPKGUy92GtqboKC2Hxaw=
 golang.org/x/sys v0.0.0-20200817155316-9781c653f443/go.mod h1:h1NjWce9XRLGQEsW7wpKNCjG9DtNlClVuFLEZdDNbEs=
+golang.org/x/sys v0.0.0-20200819171115-d785dc25833f h1:KJuwZVtZBVzDmEDtB2zro9CXkD9O0dpCv4o2LHbQIAw=
+golang.org/x/sys v0.0.0-20200819171115-d785dc25833f/go.mod h1:h1NjWce9XRLGQEsW7wpKNCjG9DtNlClVuFLEZdDNbEs=
+golang.org/x/sys v0.0.0-20200820212457-1fb795427249 h1:tKP05IMsVLZ4VeeCEFmrIUmxAAx6UD8IBdPtYlYNa8g=
+golang.org/x/sys v0.0.0-20200820212457-1fb795427249/go.mod h1:h1NjWce9XRLGQEsW7wpKNCjG9DtNlClVuFLEZdDNbEs=
 golang.org/x/text v0.3.0/go.mod h1:NqM8EUOU14njkJ3fqMW+pc6Ldnwhi/IjpwHt7yyuwOQ=
 golang.org/x/text v0.3.1-0.20180807135948-17ff2d5776d2/go.mod h1:NqM8EUOU14njkJ3fqMW+pc6Ldnwhi/IjpwHt7yyuwOQ=
 golang.org/x/text v0.3.2 h1:tW2bmiBqwgJj/UpqtC8EpXEZVYOwU0yG4iWbprSVAcs=

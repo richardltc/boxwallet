@@ -17,7 +17,7 @@ BoxDivi is a CLI application that makes it very easy to set up and view a Divi w
 
 * Download the zip file, extract the files and simply run it: `./boxdivi install`
 
-This will download the official binaries from the Divi Project website, and installs the GoDivi CLI and Updater apps.
+This will download the official binaries from the Divi Project website, and installs the BoxDivi CLI app.
 
 Then, change to the `boxdivi` folder in your home folder, and run `./boxdivi start`, to start the `divid` server and then you can run  `./boxdivi dash`, where you should be prompted through an initial wizard to get you going.
 
@@ -27,7 +27,7 @@ Then, change to the `boxdivi` folder in your home folder, and run `./boxdivi sta
 
 * Takes you through an initial wizard to ensure your wallet is secure.
 
-* `boxdivi install` or `boxdivi install` - Installs the official Divi project CLI files, and creates a new wallet.
+* `boxdivi install` - Installs the official Divi project CLI files, and creates a new wallet.
 
 * `boxdivi dash` - Displays blockchain, syncing, staking and DIVI and AUD/USD/GBP balance info.
 

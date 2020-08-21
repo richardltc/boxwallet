@@ -268,6 +268,10 @@ func AddAddNodesIfRequired() error {
 			}
 
 			sAddnodes := string(addnodes[:])
+			if !strings.Contains(sAddnodes, "addnode") {
+				return fmt.Errorf("unable to retrieve addnodes, please try again")
+			}
+
 			if err := gwc.WriteTextToFile(chd+gwc.CDiviConfFile, sAddnodes); err != nil {
 				return fmt.Errorf("unable to write addnodes to file - %v", err)
 			}
