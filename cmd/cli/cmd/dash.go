@@ -386,7 +386,7 @@ var dashCmd = &cobra.Command{
 			if !mnss.Result.IsBlockchainSynced ||
 				mnss.Result.RequestedMasternodeAssets < 999 ||
 				bci.Result.Difficulty < 5000 {
-				// Now check to see if it's worse than that, and the the nw difficulty is less than 3000
+				// Now check to see if it's worse than that, and that the nw difficulty is less than 3000
 				if bci.Result.Difficulty < 3000 {
 					pNetwork.BorderStyle.Fg = ui.ColorRed
 				} else {
