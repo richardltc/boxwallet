@@ -19,6 +19,7 @@ package cmd
 import (
 	"fmt"
 	"log"
+	be "richardmace.co.uk/boxdivi/cmd/cli/cmd/bend"
 
 	gwc "github.com/richardltc/gwcommon"
 	"github.com/spf13/cobra"
@@ -45,7 +46,7 @@ var encryptCmd = &cobra.Command{
 			log.Fatal("Wallet is already encrypted")
 		}
 
-		wep := gwc.GetWalletEncryptionPassword()
+		wep := be.GetPasswordToEncryptWallet() //gwc.GetWalletEncryptionPassword()
 		r, err := encryptWallet(&cliConf, wep)
 		if err != nil {
 			log.Fatalf("failed to encrypt wallet %s\n", err)
