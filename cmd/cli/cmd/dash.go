@@ -288,7 +288,7 @@ var dashCmd = &cobra.Command{
 			gwc.ClearScreen()
 			resp := be.GetWalletEncryptionResp()
 			if resp == true {
-				wep := gwc.GetWalletEncryptionPassword()
+				wep := be.GetPasswordToEncryptWallet() //gwc.GetWalletEncryptionPassword()
 				r, err := encryptWallet(&cliConf, wep)
 				if err != nil {
 					log.Fatalf("failed to encrypt wallet %s\n", err)
