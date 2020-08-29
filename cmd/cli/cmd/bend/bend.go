@@ -696,6 +696,12 @@ func IsCoinDaemonRunning() (bool, int, error) {
 		} else {
 			pid, _, err = findProcess(gwc.CDiviDFile)
 		}
+	case gwc.PTPhore:
+		if runtime.GOOS == "windows" {
+			pid, _, err = findProcess(gwc.CPhoreDFileWin)
+		} else {
+			pid, _, err = findProcess(gwc.CPhoreDFile)
+		}
 	case gwc.PTPIVX:
 		if runtime.GOOS == "windows" {
 			pid, _, err = findProcess(gwc.CPIVXDFileWin)
@@ -769,6 +775,51 @@ func PopulateDaemonConfFile() (rpcuser, rpcpassword string, err error) {
 			log.Fatal(err)
 		}
 		if err := gwc.WriteTextToFile(chd+gwc.CDiviConfFile, "rpcport=51473"); err != nil {
+			log.Fatal(err)
+		}
+
+		// Now get a list of the latest "addnodes" and add them to the file:
+		// gdc.AddToLog(lfp, "Adding latest master nodes to "+gdc.CDiviConfFile)
+		//if err := AddAddNodesIfRequired(); err != nil {
+		//	log.Println("Unable to add addnodes, but will try again on start...")
+		//}
+
+		return rpcu, rpcpw, nil
+	case gwc.PTPhore:
+		// todo complete for Phore
+		fmt.Println("Populating " + gwc.CPhoreConfFile + " for initial setup...")
+
+		chd, _ := gwc.GetCoinHomeFolder(gwc.APPTCLI)
+		if err := os.MkdirAll(chd, os.ModePerm); err != nil {
+			return "", "", fmt.Errorf("unable to make directory - %v", err)
+		}
+
+		// Generate a random password
+		rpcu := "phorerpc"
+		rpcpw := rand.String(20)
+
+		if err := gwc.WriteTextToFile(chd+gwc.CPhoreConfFile, cRPCUserStr+"="+rpcu); err != nil {
+			log.Fatal(err)
+		}
+		if err := gwc.WriteTextToFile(chd+gwc.CPhoreConfFile, cRPCPasswordStr+"="+rpcpw); err != nil {
+			log.Fatal(err)
+		}
+		if err := gwc.WriteTextToFile(chd+gwc.CPhoreConfFile, ""); err != nil {
+			log.Fatal(err)
+		}
+		if err := gwc.WriteTextToFile(chd+gwc.CPhoreConfFile, "daemon=1"); err != nil {
+			log.Fatal(err)
+		}
+		if err := gwc.WriteTextToFile(chd+gwc.CPhoreConfFile, ""); err != nil {
+			log.Fatal(err)
+		}
+		if err := gwc.WriteTextToFile(chd+gwc.CPhoreConfFile, "server=1"); err != nil {
+			log.Fatal(err)
+		}
+		if err := gwc.WriteTextToFile(chd+gwc.CPhoreConfFile, "rpcallowip=192.168.1.0/255.255.255.0"); err != nil {
+			log.Fatal(err)
+		}
+		if err := gwc.WriteTextToFile(chd+gwc.CPhoreConfFile, "rpcport=51473"); err != nil {
 			log.Fatal(err)
 		}
 
@@ -872,6 +923,7 @@ func WalletHardFix() error {
 			//	log.Fatalf("failed to run divid: %v", err)
 			//}
 		}
+	case gwc.PTPhore:
 	case gwc.PTPIVX:
 	case gwc.PTTrezarcoin:
 	default:
@@ -1031,6 +1083,46 @@ func RunCoinDaemon(displayOutput bool) error {
 				}
 			}
 		}
+	case gwc.PTPhore:
+		if runtime.GOOS == "windows" {
+			fp := abf + gwc.CDiviDFileWin
+			cmd := exec.Command("cmd.exe", "/C", "start", "/b", fp)
+			if err := cmd.Run(); err != nil {
+				return err
+			}
+		} else {
+			if displayOutput {
+				fmt.Println("Attempting to run the phored daemon...")
+			}
+
+			cmdRun := exec.Command(abf + gwc.CPhoreDFile)
+			stdout, err := cmdRun.StdoutPipe()
+			if err != nil {
+				return err
+			}
+			err = cmdRun.Start()
+			if err != nil {
+				return err
+			}
+
+			buf := bufio.NewReader(stdout) // Notice that this is not in a loop
+			num := 1
+			for {
+				line, _, _ := buf.ReadLine()
+				if num > 3 {
+					os.Exit(0)
+				}
+				num++
+				if string(line) == "Phore server starting" {
+					if displayOutput {
+						fmt.Println("Phore server starting")
+					}
+					return nil
+				} else {
+					return errors.New("unable to start Phore server: " + string(line))
+				}
+			}
+		}
 	case gwc.PTTrezarcoin:
 		// TODO Need to code this bit for Trezarcoin
 	default:
@@ -1074,6 +1166,26 @@ func StopCoinDaemon(displayOutput bool) error {
 				}
 				if displayOutput {
 					fmt.Printf("\rWaiting for divid server to stop %d/"+strconv.Itoa(50), i+1)
+				}
+				time.Sleep(3 * time.Second)
+			}
+		}
+	case gwc.PTPhore:
+		if runtime.GOOS == "windows" {
+			// TODO Complete for Windows
+		} else {
+			for i := 0; i < 50; i++ {
+				cRun := exec.Command(dbf+gwc.CPhoreCliFile, "stop")
+				_ = cRun.Run()
+
+				sr, _, _ := IsCoinDaemonRunning()
+				if !sr {
+					// Lets wait a little longer before returning
+					time.Sleep(3 * time.Second)
+					return nil
+				}
+				if displayOutput {
+					fmt.Printf("\rWaiting for phored server to stop %d/"+strconv.Itoa(50), i+1)
 				}
 				time.Sleep(3 * time.Second)
 			}
