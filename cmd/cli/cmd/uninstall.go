@@ -48,16 +48,20 @@ var uninstallCmd = &cobra.Command{
 		if err != nil {
 			log.Fatal("Unable to GetCoinDaemonFilename " + err.Error())
 		}
+		sCoinName, err := gwc.GetCoinName(gwc.APPTCLI)
+		if err != nil {
+			log.Fatal("Unable to GetCoinName " + err.Error())
+		}
 
 		fmt.Println("uninstall called....")
 
 		reader := bufio.NewReader(os.Stdin)
-		fmt.Println("\n*** WARNING *** this commmand completely removes your divi wallet, and can only be restored from a seed." +
+		fmt.Println("\n*** WARNING *** this command completely removes your " + sCoinName + " wallet, and can only be restored from a seed." +
 			"\n\nPlease enter the following to wallet deletion: " +
 			gwc.CUninstallConfirmationStr + "\n\n")
 		resp, _ := reader.ReadString('\n')
 		if resp != gwc.CUninstallConfirmationStr+"\n" {
-			fmt.Println("\nuser entered: " + resp + " which does't match, so exiting...")
+			fmt.Println("\nuser entered: " + resp + " which doesn't match, so exiting...")
 			return
 		}
 

@@ -29,20 +29,24 @@ import (
 
 const (
 	//cDownloadURLDivi string = "https://github.com/DiviProject/Divi/releases/download/v1.0.8/"
-	cDownloadURLDivi string = "https://github.com/DiviProject/Divi/releases/download/v1.1.2/"
-	cDownloadURLPIVX string = "https://github.com/PIVX-Project/PIVX/releases/download/v4.1.0/"
-	cDownloadURLTC   string = "https://github.com/TrezarCoin/TrezarCoin/releases/download/2.0.1.0/"
+	cDownloadURLDivi  string = "https://github.com/DiviProject/Divi/releases/download/v1.1.2/"
+	cDownloadURLPhore string = "https://github.com/phoreproject/Phore/releases/download/v1.6.5/"
+	cDownloadURLPIVX  string = "https://github.com/PIVX-Project/PIVX/releases/download/v4.1.0/"
+	cDownloadURLTC    string = "https://github.com/TrezarCoin/TrezarCoin/releases/download/2.0.1.0/"
 
 	// Divi public download files
-	//cDFDiviRPi     string = "divi-1.0.8-RPi2.tar.gz"
-	//cDFDiviLinux   string = "divi-1.0.8-x86_64-linux-gnu.tar.gz"
-	//cDFDiviWindows string = "divi-1.0.8-win64.zip"
 	cDFDiviRPi     string = "divi-1.1.2-RPi2.tar.gz"
 	cDFDiviLinux   string = "divi-1.1.2-x86_64-linux-gnu.tar.gz"
 	cDFDiviWindows string = "divi-1.1.2-win64.zip"
 
 	cDiviExtractedDir string = "divi-1.1.2/"
-	//cDiviExtractedDir string = "divi-1.0.8/"
+
+	// Phore public download files
+	cDFPhoreRPi     string = "phore-1.6.5-arm-linux-gnueabihf.tar.gz"
+	cDFPhoreLinux   string = "phore-1.6.5-x86_64-linux-gnu.tar.gz"
+	cDFPhoreWindows string = "phore-1.6.5-win64.zip"
+
+	cPhoreExtractedDir string = "phore-1.6.5/"
 
 	// PIVX public download files
 	cDFPIVXFileRPi     string = "pivx-4.1.0-aarch64-linux-gnu.tar.gz"
@@ -270,6 +274,17 @@ func doRequiredFiles() error {
 			filePath = abf + cDFDiviLinux
 			fileURL = cDownloadURLDivi + cDFDiviLinux
 		}
+	case gwc.PTPhore:
+		if runtime.GOOS == "windows" {
+			filePath = abf + cDFPhoreWindows
+			fileURL = cDownloadURLPhore + cDFPhoreWindows
+		} else if runtime.GOARCH == "arm" {
+			filePath = abf + cDFPhoreRPi
+			fileURL = cDownloadURLPhore + cDFPhoreRPi
+		} else {
+			filePath = abf + cDFPhoreLinux
+			fileURL = cDownloadURLPhore + cDFPhoreLinux
+		}
 	case gwc.PTPIVX:
 		if runtime.GOOS == "windows" {
 			filePath = abf + cDFPIVXFileWindows
@@ -333,6 +348,26 @@ func doRequiredFiles() error {
 			}
 			defer os.RemoveAll("./" + cDiviExtractedDir)
 		}
+	case gwc.PTPhore:
+		if runtime.GOOS == "windows" {
+			_, err = gwc.UnZip(filePath, "tmp")
+			if err != nil {
+				return fmt.Errorf("unable to unzip file: %v - %v", filePath, err)
+			}
+			defer os.RemoveAll("tmp")
+		} else if runtime.GOARCH == "arm" {
+			err = gwc.ExtractTarGz(r)
+			if err != nil {
+				return fmt.Errorf("unable to extractTarGz file: %v - %v", r, err)
+			}
+			defer os.RemoveAll("./" + cPhoreExtractedDir)
+		} else {
+			err = gwc.ExtractTarGz(r)
+			if err != nil {
+				return fmt.Errorf("unable to extractTarGz file: %v - %v", r, err)
+			}
+			defer os.RemoveAll("./" + cPhoreExtractedDir)
+		}
 	case gwc.PTPIVX:
 		if runtime.GOOS == "windows" {
 			_, err = gwc.UnZip(filePath, "tmp")
@@ -391,14 +426,14 @@ func doRequiredFiles() error {
 			srcFileCLI = gwc.CDiviCliFileWin
 			srcFileD = gwc.CDiviDFileWin
 			srcFileTX = gwc.CDiviTxFileWin
-			srcFileGWCLI = gwc.CAppCLIFileWinGoDivi
+			srcFileGWCLI = gwc.CAppCLIFileWinBoxDivi
 			// srcFileGWServer = gwc.CAppServerFileWinBoxDivi
 		case "arm":
 			srcPath = "./" + cDiviExtractedDir + "bin/"
 			srcFileCLI = gwc.CDiviCliFile
 			srcFileD = gwc.CDiviDFile
 			srcFileTX = gwc.CDiviTxFile
-			srcFileGWCLI = gwc.CAppCLIFileGoDivi
+			srcFileGWCLI = gwc.CAppCLIFileBoxDivi
 			//srcFileGWUprade = gwc.CAppUpdaterFileGoDivi
 			// srcFileGWServer = gwc.CAppServerFileGoDivi
 		case "linux":
@@ -406,9 +441,33 @@ func doRequiredFiles() error {
 			srcFileCLI = gwc.CDiviCliFile
 			srcFileD = gwc.CDiviDFile
 			srcFileTX = gwc.CDiviTxFile
-			srcFileGWCLI = gwc.CAppCLIFileGoDivi
+			srcFileGWCLI = gwc.CAppCLIFileBoxDivi
 			//srcFileGWUprade = gwc.CAppUpdaterFileGoDivi
 			// srcFileGWServer = gwc.CAppServerFileGoDivi
+		default:
+			err = errors.New("unable to determine runtime.GOOS")
+		}
+	case gwc.PTPhore:
+		switch runtime.GOOS {
+		case "windows":
+			srcPath = "./tmp/" + cPhoreExtractedDir + "bin/"
+			srcFileCLI = gwc.CPhoreCliFileWin
+			srcFileD = gwc.CPhoreDFileWin
+			srcFileTX = gwc.CPhoreTxFileWin
+			srcFileGWCLI = gwc.CAppCLIFileWinBoxPhore
+			// srcFileGWServer = gwc.CAppServerFileWinBoxPhore
+		case "arm":
+			srcPath = "./" + cPhoreExtractedDir + "bin/"
+			srcFileCLI = gwc.CPhoreCliFile
+			srcFileD = gwc.CPhoreDFile
+			srcFileTX = gwc.CPhoreTxFile
+			srcFileGWCLI = gwc.CAppCLIFileBoxPhore
+		case "linux":
+			srcPath = "./" + cPhoreExtractedDir + "bin/"
+			srcFileCLI = gwc.CPhoreCliFile
+			srcFileD = gwc.CPhoreDFile
+			srcFileTX = gwc.CPhoreTxFile
+			srcFileGWCLI = gwc.CAppCLIFileBoxPhore
 		default:
 			err = errors.New("unable to determine runtime.GOOS")
 		}
@@ -549,7 +608,7 @@ func doRequiredFiles() error {
 	//			return fmt.Errorf("unable to chmod file: %v - %v", abf+srcFileGWUprade, err)
 	//		}
 	//	case "windows":
-	//		// TODO Code the Windows part
+	//
 	//		err = gwc.FileCopy(""+gwc.CAppUpdaterFileGoDivi, abf+srcFileGWUprade, false)
 	//		if err != nil {
 	//			return fmt.Errorf("unable to copyFile: %v - %v", abf+srcFileGWUprade, err)
@@ -583,7 +642,7 @@ func doRequiredFiles() error {
 	//			return fmt.Errorf("unable to chmod file: %v - %v", abf+srcFileGWUprade, err)
 	//		}
 	//	case "windows":
-	//		// TODO Code the Windows part
+	//
 	//	default:
 	//		err = errors.New("unable to determine runtime.GOOS")
 	//
@@ -609,7 +668,7 @@ func doRequiredFiles() error {
 	//			return fmt.Errorf("unable to chmod file: %v - %v", abf+srcFileGWUprade, err)
 	//		}
 	//	case "windows":
-	//		// TODO Code the Windows part
+	//
 	//	default:
 	//		err = errors.New("unable to determine runtime.GOOS")
 	//	}
@@ -622,7 +681,7 @@ func doRequiredFiles() error {
 	// switch gwconf.ProjectType {
 	// case gwc.PTDivi:
 	// 	if runtime.GOOS == "windows" {
-	// 		// TODO Code the Windows part
+	//
 	// 	} else if runtime.GOARCH == "arm" {
 	// 		err = gwc.FileCopy("./"+gwc.CAppServerFileGoDivi, abf+srcFileGWServer, false)
 	// 		if err != nil {
@@ -664,7 +723,7 @@ func doRequiredFiles() error {
 	// 			return fmt.Errorf("Unable to chmod file: %v - %v", abf+srcFileGWServer, err)
 	// 		}
 	// 	case "windows":
-	// 		// TODO Code the Windows part
+	//
 	// 	default:
 	// 		err = errors.New("Unable to determine runtime.GOOS")
 	// 	}
@@ -692,6 +751,17 @@ func getCoinDownloadLink(ostype gwc.OSType) (url, file string, err error) {
 			return cDownloadURLDivi, cDFDiviLinux, nil
 		case gwc.OSTWindows:
 			return cDownloadURLDivi, cDFDiviWindows, nil
+		default:
+			err = errors.New("unable to determine OSType")
+		}
+	case gwc.PTPhore:
+		switch ostype {
+		case gwc.OSTArm:
+			return cDownloadURLPhore, cDFPhoreRPi, nil
+		case gwc.OSTLinux:
+			return cDownloadURLPhore, cDFPhoreLinux, nil
+		case gwc.OSTWindows:
+			return cDownloadURLPhore, cDFPhoreWindows, nil
 		default:
 			err = errors.New("unable to determine OSType")
 		}
