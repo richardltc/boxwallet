@@ -60,7 +60,7 @@ var startCmd = &cobra.Command{
 			log.Println("addnodes added...")
 		}
 
-		// Start the DiviD server if required...
+		// Start the coin daemon server if required...
 		if err := be.RunCoinDaemon(true); err != nil {
 			log.Fatalf("failed to run "+sCoinDName+": %v", err)
 		}
