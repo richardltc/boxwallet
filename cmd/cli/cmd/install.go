@@ -28,39 +28,58 @@ import (
 )
 
 const (
-	//cDownloadURLDivi string = "https://github.com/DiviProject/Divi/releases/download/v1.0.8/"
-	cDownloadURLDivi  string = "https://github.com/DiviProject/Divi/releases/download/v1.1.2/"
-	cDownloadURLPhore string = "https://github.com/phoreproject/Phore/releases/download/v1.6.5/"
-	cDownloadURLPIVX  string = "https://github.com/PIVX-Project/PIVX/releases/download/v4.1.0/"
-	cDownloadURLTC    string = "https://github.com/TrezarCoin/TrezarCoin/releases/download/2.0.1.0/"
 
-	// Divi public download files
-	cDFDiviRPi     string = "divi-1.1.2-RPi2.tar.gz"
-	cDFDiviLinux   string = "divi-1.1.2-x86_64-linux-gnu.tar.gz"
-	cDFDiviWindows string = "divi-1.1.2-win64.zip"
+	//
+	// Divi
+	//
 
-	cDiviExtractedDir string = "divi-1.1.2/"
+	cDiviCoreVersion string = "1.1.2"
+	cDFDiviRPi              = "divi-" + cDiviCoreVersion + "-RPi2.tar.gz"
+	cDFDiviLinux            = "divi-" + cDiviCoreVersion + "-x86_64-linux-gnu.tar.gz"
+	cDFDiviWindows          = "divi-" + cDiviCoreVersion + "-win64.zip"
 
-	// Phore public download files
-	cDFPhoreRPi     string = "phore-1.6.5-arm-linux-gnueabihf.tar.gz"
-	cDFPhoreLinux   string = "phore-1.6.5-x86_64-linux-gnu.tar.gz"
-	cDFPhoreWindows string = "phore-1.6.5-win64.zip"
+	cDiviExtractedDir = "divi-" + cDiviCoreVersion + "/"
 
-	cPhoreExtractedDir string = "phore-1.6.5/"
+	cDownloadURLDivi = "https://github.com/DiviProject/Divi/releases/download/" + cDiviCoreVersion + "/"
 
-	// PIVX public download files
-	cDFPIVXFileRPi     string = "pivx-4.1.0-aarch64-linux-gnu.tar.gz"
-	cDFPIVXFileLinux   string = "pivx-4.1.0-x86_64-linux-gnu.tar.gz"
-	cDFPIVXFileWindows string = "pivx-4.1.0-win64.zip"
+	//
+	// Phore
+	//
 
-	cPIVXExtractedDirArm     string = "pivx-4.1.0-aarch64-linux-gnu/"
-	cPIVXExtractedDirLinux   string = "pivx-4.1.0-x86_64-linux-gnu/"
-	cPIVXExtractedDirWindows string = "pivx-4.1.0-win64\\"
+	cPhoreCoreVersion string = "1.6.5"
+	cDFPhoreRPi              = "phore-" + cPhoreCoreVersion + "-arm-linux-gnueabihf.tar.gz"
+	cDFPhoreLinux            = "phore-" + cPhoreCoreVersion + "-x86_64-linux-gnu.tar.gz"
+	cDFPhoreWindows          = "phore-" + cPhoreCoreVersion + "-win64.zip"
 
-	// Trezarcoin public download files
-	cDFTrezarcoinRPi     string = "trezarcoin-2.0.1-rPI.zip"
-	cDFTrezarcoinLinux   string = "trezarcoin-2.0.1-linux64.tar.gz"
-	cDFTrezarcoinWindows string = "trezarcoin-2.0.1-win64-setup.exe"
+	cPhoreExtractedDir = "phore-" + cPhoreCoreVersion + "/"
+
+	cDownloadURLPhore = "https://github.com/phoreproject/Phore/releases/download/v" + cPhoreCoreVersion + "/"
+
+	//
+	// PIVX
+	//
+
+	cPIVXCoreVersion   string = "4.2.0"
+	cDFPIVXFileRPi            = "pivx-" + cPIVXCoreVersion + "-arm-linux-gnueabihf.tar.gz"
+	cDFPIVXFileLinux          = "pivx-" + cPIVXCoreVersion + "-x86_64-linux-gnu.tar.gz"
+	cDFPIVXFileWindows        = "pivx-" + cPIVXCoreVersion + "-win64.zip"
+
+	cPIVXExtractedDirArm     string = "pivx-" + cPIVXCoreVersion + "/"
+	cPIVXExtractedDirLinux   string = "pivx-" + cPIVXCoreVersion + "/"
+	cPIVXExtractedDirWindows string = "pivx-" + cPIVXCoreVersion + "\\"
+
+	cDownloadURLPIVX string = "https://github.com/PIVX-Project/PIVX/releases/download/v" + cPIVXCoreVersion + "/"
+
+	//
+	// Trezarcoin
+	//
+
+	cTrezarcoinCoreVersion string = "2.0.1"
+	cDFTrezarcoinRPi       string = "trezarcoin-" + cTrezarcoinCoreVersion + "-rPI.zip"
+	cDFTrezarcoinLinux     string = "trezarcoin-" + cTrezarcoinCoreVersion + "-linux64.tar.gz"
+	cDFTrezarcoinWindows   string = "trezarcoin-" + cTrezarcoinCoreVersion + "-win64-setup.exe"
+
+	cDownloadURLTC string = "https://github.com/TrezarCoin/TrezarCoin/releases/download/" + cTrezarcoinCoreVersion + ".0/"
 )
 
 // installCmd represents the install command
@@ -138,12 +157,12 @@ You can then view the ` + sAppName + ` dashboard by running the command: ` + sAp
 
 		// 	gwc.AddToLog(lfp, "Detected total memory of: "+strconv.Itoa(trmb)+"MB")
 		// 	if trmb < gwc.CMinRequiredMemoryMB {
-		// 		gwc.AddToLog(lfp, "The amoount of memory you have for running a "+sCoinName+" wallet is too low, so checking swap...")
+		// 		gwc.AddToLog(lfp, "The amount of memory you have for running a "+sCoinName+" wallet is too low, so checking swap...")
 		// 		// The total ram is less than the minimum required, so lets make sure adequate swap is in place
 		// 		ts := int(sysinfo.Get().TotalSwap) / 1024
 		// 		if ts < gwc.CMinRequiredSwapMB {
 		// 			gwc.AddToLog(lfp, "Detected swap total of: "+strconv.Itoa(ts)+"MB")
-		// 			gwc.AddToLog(lfp, "The amoount of swap you have for running a "+sCoinName+" wallet is to low, so we need to increase swap useage...\n\n")
+		// 			gwc.AddToLog(lfp, "The amount of swap you have for running a "+sCoinName+" wallet is to low, so we need to increase swap useage...\n\n")
 		// 			gwc.AddToLog(lfp, `Please follow the following notes to add 2GB of swap:
 
 		// Step 1
@@ -166,7 +185,6 @@ You can then view the ` + sAppName + ` dashboard by running the command: ` + sAp
 		// 	}
 
 		// Now let's make sure that we have our divi bin folder
-
 		if _, err := os.Stat(abf); !os.IsNotExist(err) {
 			// /home/user/boxdivi/ bin folder already exists, so lets stop
 			log.Fatal("It looks like you have already installed the " + sCoinName + " binaries in the folder " + abf)
@@ -189,27 +207,30 @@ You can then view the ` + sAppName + ` dashboard by running the command: ` + sAp
 			log.Fatal(err)
 		}
 
+		bCoinFolderExists := false
 		if _, err = os.Stat(chf); !os.IsNotExist(err) {
-			// The coin home folder exists, so lets stop now
-			s := "It looks like you already have a " + sCoinName + " wallet installed in the folder " + chf
-			if err := gwc.AddToLog(lfp, s); err != nil {
+			// The coin home folder exists, so lets record that...
+			bCoinFolderExists = true
+			//s := "It looks like you already have a " + sCoinName + " wallet installed in the folder " + chf
+			//if err := gwc.AddToLog(lfp, s); err != nil {
+			//	log.Fatal(err)
+			//}
+			//log.Fatal(s)
+		}
+
+		// Now populate the coin daemon conf file, if required, and store the rpc username and password into the cli conf file
+		if !bCoinFolderExists {
+			rpcu, rpcpw, err := be.PopulateDaemonConfFile()
+			if err != nil {
 				log.Fatal(err)
 			}
-			log.Fatal(s)
+			cliConf.RPCuser = rpcu
+			cliConf.RPCpassword = rpcpw
+			err = gwc.SetCLIConfStruct(cliConf)
+			if err != nil {
+				log.Fatal(err)
+			}
 		}
-
-		// Now populate the coin daemon conf file, and store the rpc username and password into the cli conf file
-		rpcu, rpcpw, err := be.PopulateDaemonConfFile()
-		if err != nil {
-			log.Fatal(err)
-		}
-		cliConf.RPCuser = rpcu
-		cliConf.RPCpassword = rpcpw
-		err = gwc.SetCLIConfStruct(cliConf)
-		if err != nil {
-			log.Fatal(err)
-		}
-
 		//gwc.AddToLog(lfp, "Getting required files")
 		if err := doRequiredFiles(); err != nil {
 			log.Fatal(err)
@@ -230,8 +251,20 @@ You can then view the ` + sAppName + ` dashboard by running the command: ` + sAp
 		fmt.Println(abf + sAppFileCLIName + " start\n\n")
 		fmt.Println("With " + sCoinDaemonName + " now running, you should now be able to view the dashboard by running:\n\n")
 		fmt.Println(abf + sAppFileCLIName + " dash\n\n" +
-			sAppName + " is free to use, however, any donations would be most welcome via the address below:\n\n")
-		fmt.Println("DSniZmeSr62wiQXzooWk7XN4wospZdqePt\n\n")
+			sAppName + " is free to use, however, any " + sCoinName + " donations would be most welcome via the " + sCoinName + " address below:\n\n")
+
+		switch cliConf.ProjectType {
+		case gwc.PTDivi:
+			fmt.Println("DSniZmeSr62wiQXzooWk7XN4wospZdqePt\n\n")
+		case gwc.PTPhore:
+			fmt.Println("PKFcy7UTEWegnAq7Wci8Aj76bQyHMottF8\n\n")
+		case gwc.PTPIVX:
+			fmt.Println("DFHmj4dExVC24eWoRKmQJDx57r4svGVs3J\n\n")
+		case gwc.PTTrezarcoin:
+		default:
+			err = errors.New("unable to determine ProjectType")
+		}
+
 		fmt.Println("Thank you for using " + sAppName + "\n\n")
 	},
 }
@@ -474,18 +507,18 @@ func doRequiredFiles() error {
 	case gwc.PTPIVX:
 		switch runtime.GOOS {
 		case "windows":
-			srcPath = "./tmp/" + cPIVXExtractedDirWindows + "bin/"
+			srcPath = "./tmp/" + cPIVXExtractedDirWindows + "pivx-" + cPIVXCoreVersion + "bin/"
 			srcFileCLI = gwc.CPIVXCliFileWin
 			srcFileD = gwc.CPIVXDFileWin
 			srcFileTX = gwc.CPIVXTxFileWin
-			srcFileGWCLI = gwc.CAppCLIFileWinGoPIVX
+			srcFileGWCLI = gwc.CAppCLIFileWinBoxPIVX
 			// srcFileGWServer = gwc.CAppServerFileWinGoPIVX
 		case "arm":
 			srcPath = "./" + cPIVXExtractedDirArm + "bin/"
 			srcFileCLI = gwc.CPIVXCliFile
 			srcFileD = gwc.CPIVXDFile
 			srcFileTX = gwc.CPIVXTxFile
-			srcFileGWCLI = gwc.CAppCLIFileGoPIVX
+			srcFileGWCLI = gwc.CAppCLIFileBoxPIVX
 			//srcFileGWUprade = gwc.CAppUpdaterFileGoPIVX
 			// srcFileGWServer = gwc.CAppServerFileGoPIVX
 		case "linux":
@@ -493,7 +526,7 @@ func doRequiredFiles() error {
 			srcFileCLI = gwc.CPIVXCliFile
 			srcFileD = gwc.CPIVXDFile
 			srcFileTX = gwc.CPIVXTxFile
-			srcFileGWCLI = gwc.CAppCLIFileGoPIVX
+			srcFileGWCLI = gwc.CAppCLIFileBoxPIVX
 			//srcFileGWUprade = gwc.CAppUpdaterFileGoPIVX
 			// srcFileGWServer = gwc.CAppServerFileGoPIVX
 		default:
@@ -510,7 +543,7 @@ func doRequiredFiles() error {
 			srcFileCLI = gwc.CTrezarcoinCliFile
 			srcFileD = gwc.CTrezarcoinDFile
 			srcFileTX = gwc.CTrezarcoinTxFile
-			srcFileGWCLI = gwc.CAppCLIFileGoTrezarcoin
+			srcFileGWCLI = gwc.CAppCLIFileBoxTrezarcoin
 			//srcFileGWUprade = gwc.CAppUpdaterFileGoTrezarcoin
 			// srcFileGWServer = gwc.CAppServerFileGoTrezarcoin
 		default:
@@ -552,7 +585,7 @@ func doRequiredFiles() error {
 		return fmt.Errorf("unable to chmod file: %v - %v", abf+srcFileTX, err)
 	}
 
-	// Copy the gowallet binary itself
+	// Copy the BoxWallet binary itself
 	ex, err := os.Executable()
 	if err != nil {
 		return fmt.Errorf("error getting exe - %v", err)
@@ -578,160 +611,6 @@ func doRequiredFiles() error {
 	if err != nil {
 		return fmt.Errorf("unable to copyFile: %v - %v", abf+srcFileGWConfCLI, err)
 	}
-
-	// // Copy the Server config file
-	// err = gwc.FileCopy("./"+srcFileGWConfSrv, abf+srcFileGWConfSrv, false)
-	// if err != nil {
-	// 	return fmt.Errorf("Unable to copyFile: %v - %v", abf+srcFileGWConfSrv, err)
-	// }
-
-	// Copy the updater file
-	//switch gwconf.ProjectType {
-	//case gwc.PTDivi:
-	//	switch runtime.GOOS {
-	//	case "arm":
-	//		err = gwc.FileCopy("./"+gwc.CAppUpdaterFileGoDivi, abf+srcFileGWUprade, false)
-	//		if err != nil {
-	//			return fmt.Errorf("unable to copyFile: %v - %v", abf+srcFileGWUprade, err)
-	//		}
-	//		err = os.Chmod(abf+srcFileGWUprade, 0777)
-	//		if err != nil {
-	//			return fmt.Errorf("unable to chmod file: %v - %v", abf+srcFileGWUprade, err)
-	//		}
-	//	case "linux":
-	//		err = gwc.FileCopy("./"+gwc.CAppUpdaterFileGoDivi, abf+srcFileGWUprade, false)
-	//		if err != nil {
-	//			return fmt.Errorf("unable to copyFile: %v - %v", abf+srcFileGWUprade, err)
-	//		}
-	//		err = os.Chmod(abf+srcFileGWUprade, 0777)
-	//		if err != nil {
-	//			return fmt.Errorf("unable to chmod file: %v - %v", abf+srcFileGWUprade, err)
-	//		}
-	//	case "windows":
-	//
-	//		err = gwc.FileCopy(""+gwc.CAppUpdaterFileGoDivi, abf+srcFileGWUprade, false)
-	//		if err != nil {
-	//			return fmt.Errorf("unable to copyFile: %v - %v", abf+srcFileGWUprade, err)
-	//		}
-	//		err = os.Chmod(abf+srcFileGWUprade, 0777)
-	//		if err != nil {
-	//			return fmt.Errorf("unable to chmod file: %v - %v", abf+srcFileGWUprade, err)
-	//		}
-	//	default:
-	//		err = errors.New("unable to determine runtime.GOOS")
-	//
-	//	}
-	//case gwc.PTPIVX:
-	//	switch runtime.GOOS {
-	//	case "arm":
-	//		err = gwc.FileCopy("./"+gwc.CAppUpdaterFileGoPIVX, abf+srcFileGWUprade, false)
-	//		if err != nil {
-	//			return fmt.Errorf("unable to copyFile: %v - %v", abf+srcFileGWUprade, err)
-	//		}
-	//		err = os.Chmod(abf+srcFileGWUprade, 0777)
-	//		if err != nil {
-	//			return fmt.Errorf("unable to chmod file: %v - %v", abf+srcFileGWUprade, err)
-	//		}
-	//	case "linux":
-	//		err = gwc.FileCopy("./"+gwc.CAppUpdaterFileGoPIVX, abf+srcFileGWUprade, false)
-	//		if err != nil {
-	//			return fmt.Errorf("unable to copyFile: %v - %v", abf+srcFileGWUprade, err)
-	//		}
-	//		err = os.Chmod(abf+srcFileGWUprade, 0777)
-	//		if err != nil {
-	//			return fmt.Errorf("unable to chmod file: %v - %v", abf+srcFileGWUprade, err)
-	//		}
-	//	case "windows":
-	//
-	//	default:
-	//		err = errors.New("unable to determine runtime.GOOS")
-	//
-	//	}
-	//case gwc.PTTrezarcoin:
-	//	switch runtime.GOOS {
-	//	case "arm":
-	//		err = gwc.FileCopy("./"+gwc.CAppUpdaterFileGoTrezarcoin, abf+srcFileGWUprade, false)
-	//		if err != nil {
-	//			return fmt.Errorf("unable to copyFile: %v - %v", abf+srcFileGWUprade, err)
-	//		}
-	//		err = os.Chmod(abf+srcFileGWUprade, 0777)
-	//		if err != nil {
-	//			return fmt.Errorf("unable to chmod file: %v - %v", abf+srcFileGWUprade, err)
-	//		}
-	//	case "linux":
-	//		err = gwc.FileCopy("./"+gwc.CAppUpdaterFileGoTrezarcoin, abf+srcFileGWUprade, false)
-	//		if err != nil {
-	//			return fmt.Errorf("unable to copyFile: %v - %v", abf+srcFileGWUprade, err)
-	//		}
-	//		err = os.Chmod(abf+srcFileGWUprade, 0777)
-	//		if err != nil {
-	//			return fmt.Errorf("unable to chmod file: %v - %v", abf+srcFileGWUprade, err)
-	//		}
-	//	case "windows":
-	//
-	//	default:
-	//		err = errors.New("unable to determine runtime.GOOS")
-	//	}
-	//
-	//default:
-	//	err = errors.New("unable to determine ProjectType")
-	//}
-
-	// // Copy the App Server file
-	// switch gwconf.ProjectType {
-	// case gwc.PTDivi:
-	// 	if runtime.GOOS == "windows" {
-	//
-	// 	} else if runtime.GOARCH == "arm" {
-	// 		err = gwc.FileCopy("./"+gwc.CAppServerFileGoDivi, abf+srcFileGWServer, false)
-	// 		if err != nil {
-	// 			return fmt.Errorf("Unable to copyFile: %v - %v", abf+srcFileGWServer, err)
-	// 		}
-	// 		err = os.Chmod(abf+srcFileGWServer, 0777)
-	// 		if err != nil {
-	// 			return fmt.Errorf("Unable to chmod file: %v - %v", abf+srcFileGWServer, err)
-	// 		}
-
-	// 	} else {
-	// 		err = gwc.FileCopy("./"+gwc.CAppServerFileGoDivi, abf+srcFileGWServer, false)
-	// 		if err != nil {
-	// 			return fmt.Errorf("Unable to copyFile: %v - %v", abf+srcFileGWServer, err)
-	// 		}
-	// 		err = os.Chmod(abf+srcFileGWServer, 0777)
-	// 		if err != nil {
-	// 			return fmt.Errorf("Unable to chmod file: %v - %v", abf+srcFileGWServer, err)
-	// 		}
-	// 	}
-	// case gwc.PTTrezarcoin:
-	// 	switch runtime.GOOS {
-	// 	case "arm":
-	// 		err = gwc.FileCopy("./"+gwc.CAppServerFileGoTrezarcoin, abf+srcFileGWServer, false)
-	// 		if err != nil {
-	// 			return fmt.Errorf("Unable to copyFile: %v - %v", abf+srcFileGWServer, err)
-	// 		}
-	// 		err = os.Chmod(abf+srcFileGWServer, 0777)
-	// 		if err != nil {
-	// 			return fmt.Errorf("Unable to chmod file: %v - %v", abf+srcFileGWServer, err)
-	// 		}
-	// 	case "linux":
-	// 		err = gwc.FileCopy("./"+gwc.CAppServerFileGoTrezarcoin, abf+srcFileGWServer, false)
-	// 		if err != nil {
-	// 			return fmt.Errorf("Unable to copyFile: %v - %v", abf+srcFileGWServer, err)
-	// 		}
-	// 		err = os.Chmod(abf+srcFileGWServer, 0777)
-	// 		if err != nil {
-	// 			return fmt.Errorf("Unable to chmod file: %v - %v", abf+srcFileGWServer, err)
-	// 		}
-	// 	case "windows":
-	//
-	// 	default:
-	// 		err = errors.New("Unable to determine runtime.GOOS")
-	// 	}
-
-	// default:
-	// 	err = errors.New("Unable to determine ProjectType")
-
-	// }
 
 	return nil
 }

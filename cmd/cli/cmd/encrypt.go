@@ -42,7 +42,7 @@ var encryptCmd = &cobra.Command{
 			log.Fatal("Unable to getWalletInfo " + err.Error())
 		}
 
-		if wi.Result.EncryptionStatus != "unencrypted" {
+		if (wi.Result.EncryptionStatus != "unencrypted") && (wi.Result.EncryptionStatus != "") {
 			log.Fatal("Wallet is already encrypted")
 		}
 
@@ -52,7 +52,7 @@ var encryptCmd = &cobra.Command{
 			log.Fatalf("failed to encrypt wallet %s\n", err)
 		}
 		fmt.Println(r.Result)
-		// TODO Does divid need to be restarted again?
+		// TODO Start the coind daemon again?
 
 		// sAppCLIName, err := gwc.GetAppCLIName() // e.g. GoDivi CLI
 		// if err != nil {

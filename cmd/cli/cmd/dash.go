@@ -42,7 +42,7 @@ import (
 	m "richardmace.co.uk/boxdivi/pkg/models"
 )
 
-type getinfoRespStruct struct {
+type diviGetInfoRespStruct struct {
 	Result struct {
 		Version         string  `json:"version"`
 		Protocolversion int     `json:"protocolversion"`
@@ -62,6 +62,42 @@ type getinfoRespStruct struct {
 		Relayfee        float64 `json:"relayfee"`
 		StakingStatus   string  `json:"staking status"`
 		Errors          string  `json:"errors"`
+	} `json:"result"`
+	Error interface{} `json:"error"`
+	ID    string      `json:"id"`
+}
+
+type phoreGetInfoRespStruct struct {
+	Result struct {
+		Version         int     `json:"version"`
+		Protocolversion int     `json:"protocolversion"`
+		Walletversion   int     `json:"walletversion"`
+		Balance         float64 `json:"balance"`
+		Zerocoinbalance float64 `json:"zerocoinbalance"`
+		Blocks          int     `json:"blocks"`
+		Timeoffset      int     `json:"timeoffset"`
+		Connections     int     `json:"connections"`
+		Proxy           string  `json:"proxy"`
+		Difficulty      float64 `json:"difficulty"`
+		Testnet         bool    `json:"testnet"`
+		Moneysupply     float64 `json:"moneysupply"`
+		ZPHRsupply      struct {
+			Num1    float64 `json:"1"`
+			Num5    float64 `json:"5"`
+			Num10   float64 `json:"10"`
+			Num50   float64 `json:"50"`
+			Num100  float64 `json:"100"`
+			Num500  float64 `json:"500"`
+			Num1000 float64 `json:"1000"`
+			Num5000 float64 `json:"5000"`
+			Total   float64 `json:"total"`
+		} `json:"zPHRsupply"`
+		Keypoololdest int     `json:"keypoololdest"`
+		Keypoolsize   int     `json:"keypoolsize"`
+		Paytxfee      float64 `json:"paytxfee"`
+		Relayfee      float64 `json:"relayfee"`
+		StakingStatus string  `json:"staking status"`
+		Errors        string  `json:"errors"`
 	} `json:"result"`
 	Error interface{} `json:"error"`
 	ID    string      `json:"id"`
@@ -182,10 +218,6 @@ var dashCmd = &cobra.Command{
 		if err != nil {
 			log.Fatal("Unable to GetCLIConfStruct " + err.Error())
 		}
-		// abf, err := gwc.GetAppsBinFolder(gwc.APPTCLI)
-		// if err != nil {
-		// 	log.Fatal("Unable to GetAppsBinFolder " + err.Error())
-		// }
 		// sLogfileName, err := gwc.GetAppLogfileName()
 		// if err != nil {
 		// 	log.Fatal("Unable to GetAppLogfileName " + err.Error())
@@ -216,21 +248,39 @@ var dashCmd = &cobra.Command{
 
 		spinner.Start()
 
-		gi, err := getInfo(&cliConf)
+		coind, err := gwc.GetCoinDaemonFilename(gwc.APPTCLI)
 		if err != nil {
-			coind, err := gwc.GetCoinDaemonFilename(gwc.APPTCLI)
-			if err != nil {
-				log.Fatalf("Unable to GetCoinDaemonFilename - %v", err)
-			}
-
-			if err := spinner.Stop(); err != nil {
-			}
-			fmt.Println("")
-			log.Fatal("Unable to communicate with the " + coind + " server. Please make sure the " + coind + " server is running, by running:\n\n" +
-				"./" + sAppFileCLIName + " start\n\n")
+			log.Fatalf("Unable to GetCoinDaemonFilename - %v", err)
 		}
-		if gi.Result.Version == "" {
-			log.Fatalf("Unable to getPrivateKey(): failed with %s\n", err)
+		switch cliConf.ProjectType {
+		case gwc.PTDivi:
+			gi, err := diviGetInfo(&cliConf)
+			if err != nil {
+
+				if err := spinner.Stop(); err != nil {
+				}
+				fmt.Println("")
+				log.Fatal("Unable to communicate with the " + coind + " server. Please make sure the " + coind + " server is running, by running:\n\n" +
+					"./" + sAppFileCLIName + " start\n\n")
+			}
+			if gi.Result.Version == "" {
+				log.Fatalf("Unable to getPrivateKey(): failed with %s\n", err)
+			}
+		case gwc.PTPhore:
+			gi, err := phoreGetInfo(&cliConf)
+			if err != nil {
+
+				if err := spinner.Stop(); err != nil {
+				}
+				fmt.Println("")
+				log.Fatal("Unable to communicate with the " + coind + " server. Please make sure the " + coind + " server is running, by running:\n\n" +
+					"./" + sAppFileCLIName + " start\n\n")
+			}
+			if gi.Result.Version == 0 {
+				log.Fatalf("Unable to getPrivateKey(): failed with %s\n", err)
+			}
+		default:
+			err = errors.New("unable to determine ProjectType")
 		}
 		spinner.Stop()
 
@@ -279,6 +329,7 @@ var dashCmd = &cobra.Command{
 		}
 
 		// Check wallet encryption status
+		// todo this needs to call the getWalletInfoDivi or getWalletInfoPhore... as the response types are different
 		wi, err := getWalletInfo(&cliConf)
 		if err != nil {
 			log.Fatal("Unable to getWalletInfo " + err.Error())
@@ -313,21 +364,40 @@ var dashCmd = &cobra.Command{
 		pAbout.SetRect(0, 0, 32, 4)
 		pAbout.TextStyle.Fg = ui.ColorWhite
 		pAbout.BorderStyle.Fg = ui.ColorGreen
-		pAbout.Text = "  [" + sAppName + "      v" + gwc.CAppVersion + "](fg:white)\n" +
-			"  [" + sCoinName + "         v" + gwc.CDiviAppVersion + "](fg:white)\n\n"
+		switch cliConf.ProjectType {
+		case gwc.PTDivi:
+			pAbout.Text = "  [" + sAppName + "      v" + gwc.CAppVersion + "](fg:white)\n" +
+				"  [" + sCoinName + " Core    v" + gwc.CDiviAppVersion + "](fg:white)\n\n"
+		case gwc.PTPhore:
+			pAbout.Text = "  [" + sAppName + "     v" + gwc.CAppVersion + "](fg:white)\n" +
+				"  [" + sCoinName + " Core   v" + gwc.CPhoreAppVersion + "](fg:white)\n\n"
+		case gwc.PTTrezarcoin:
+		default:
+			err = errors.New("unable to determine ProjectType")
+		}
 
 		pWallet := widgets.NewParagraph()
 		pWallet.Title = "Wallet"
 		pWallet.SetRect(33, 0, 84, 10)
 		pWallet.TextStyle.Fg = ui.ColorWhite
 		pWallet.BorderStyle.Fg = ui.ColorYellow
-		pWallet.Text = "  Balance:          [waiting...](fg:yellow)\n" +
-			"  Currency:         [waiting...](fg:yellow)\n" +
-			"  Security:         [waiting...](fg:yellow)\n" +
-			"  Staking %:	        [waiting...](fg:yellow)\n" +
-			"  Actively Staking: [waiting...](fg:yellow)\n" +
-			"  Next Lottery:     [waiting...](fg:yellow)\n" +
-			"  Lottery tickets:	  [waiting...](fg:yellow)"
+		switch cliConf.ProjectType {
+		case gwc.PTDivi:
+			pWallet.Text = "  Balance:          [waiting...](fg:yellow)\n" +
+				"  Currency:         [waiting...](fg:yellow)\n" +
+				"  Security:         [waiting...](fg:yellow)\n" +
+				"  Staking %:	        [waiting...](fg:yellow)\n" +
+				"  Actively Staking: [waiting...](fg:yellow)\n" +
+				"  Next Lottery:     [waiting...](fg:yellow)\n" +
+				"  Lottery tickets:	  [waiting...](fg:yellow)"
+		case gwc.PTPhore:
+			pWallet.Text = "  Balance:          [waiting...](fg:yellow)\n" +
+				"  Security:         [waiting...](fg:yellow)\n" +
+				"  Actively Staking: [waiting...](fg:yellow)\n"
+		case gwc.PTTrezarcoin:
+		default:
+			err = errors.New("unable to determine ProjectType")
+		}
 
 		pTicker := widgets.NewParagraph()
 		pTicker.Title = "Ticker"
@@ -355,7 +425,7 @@ var dashCmd = &cobra.Command{
 			//var gi be.GetInfoRespStruct
 			var mnss be.MNSyncStatusRespStruct
 			var ss be.StakingStatusRespStruct
-			var wi be.WalletInfoRespStruct
+			var wi be.WalletInfoDiviRespStruct
 			if gGetBCInfoCount == 0 || gGetBCInfoCount > cliConf.RefreshTimer {
 				if gGetBCInfoCount > cliConf.RefreshTimer {
 					gGetBCInfoCount = 1
@@ -365,7 +435,7 @@ var dashCmd = &cobra.Command{
 			} else {
 				gGetBCInfoCount++
 			}
-			//gi, _ := getInfo(&cliConf)
+			//gi, _ := diviGetInfo(&cliConf)
 
 			// Check the blockchain sync health
 			if err := checkHealth(&bci); err != nil {
@@ -427,13 +497,24 @@ var dashCmd = &cobra.Command{
 
 			// Update the wallet display, if we're all synced up
 			if bci.Result.Verificationprogress > 0.9999 {
-				pWallet.Text = "" + getBalanceInDiviTxt(&wi) + "\n" +
-					"  " + getBalanceInCurrencyTxt(&cliConf, &wi) + "\n" +
-					"  " + getWalletSecurityStatusTxt(&wi) + "\n" +
-					"  " + getWalletStakingTxt(&wi) + "\n" + //e.g. "15%" or "staking"
-					"  " + getActivelyStakingTxt(&ss, &wi) + "\n" + //e.g. "15%" or "staking"
-					"  " + getNextLotteryTxt(&cliConf) + "\n" +
-					"  " + "Lottery tickets:  0"
+				switch cliConf.ProjectType {
+				case gwc.PTDivi:
+					pWallet.Text = "" + getBalanceInDiviTxt(&wi) + "\n" +
+						"  " + getBalanceInCurrencyTxt(&cliConf, &wi) + "\n" +
+						"  " + getWalletSecurityStatusTxt(&wi) + "\n" +
+						"  " + getWalletStakingTxt(&wi) + "\n" + //e.g. "15%" or "staking"
+						"  " + getActivelyStakingTxt(&ss, &wi) + "\n" + //e.g. "15%" or "staking"
+						"  " + getNextLotteryTxt(&cliConf) + "\n" +
+						"  " + "Lottery tickets:  0"
+				case gwc.PTPhore:
+					pWallet.Text = "" + getBalanceInDiviTxt(&wi) + "\n" +
+						"  " + getWalletSecurityStatusTxt(&wi) + "\n" +
+						"  " + getActivelyStakingTxt(&ss, &wi) + "\n" //e.g. "15%" or "staking"
+				case gwc.PTTrezarcoin:
+				default:
+					err = errors.New("unable to determine ProjectType")
+				}
+
 			}
 
 			// Update Ticker display
@@ -669,7 +750,7 @@ func getNextLotteryTxt(conf *gwc.CLIConfStruct) string {
 	}
 }
 
-func getActivelyStakingTxt(ss *be.StakingStatusRespStruct, wi *be.WalletInfoRespStruct) string {
+func getActivelyStakingTxt(ss *be.StakingStatusRespStruct, wi *be.WalletInfoDiviRespStruct) string {
 	// Work out balance
 	//todo Make sure that we only return yes, if the StakingStatus is true AND we have enough coins
 	if ss.Result.StakingStatus == true && (wi.Result.Balance > 10000) {
@@ -679,7 +760,7 @@ func getActivelyStakingTxt(ss *be.StakingStatusRespStruct, wi *be.WalletInfoResp
 	}
 }
 
-func getBalanceInDiviTxt(wi *be.WalletInfoRespStruct) string {
+func getBalanceInDiviTxt(wi *be.WalletInfoDiviRespStruct) string {
 	tBalance := wi.Result.ImmatureBalance + wi.Result.UnconfirmedBalance + wi.Result.Balance
 	tBalanceStr := humanize.FormatFloat("#,###.####", tBalance)
 
@@ -693,7 +774,7 @@ func getBalanceInDiviTxt(wi *be.WalletInfoRespStruct) string {
 	}
 }
 
-func getBalanceInCurrencyTxt(conf *gwc.CLIConfStruct, wi *be.WalletInfoRespStruct) string {
+func getBalanceInCurrencyTxt(conf *gwc.CLIConfStruct, wi *be.WalletInfoDiviRespStruct) string {
 	tBalance := wi.Result.ImmatureBalance + wi.Result.UnconfirmedBalance + wi.Result.Balance
 	var pricePerCoin float64
 	var symbol string
@@ -728,7 +809,7 @@ func getBalanceInCurrencyTxt(conf *gwc.CLIConfStruct, wi *be.WalletInfoRespStruc
 	}
 }
 
-func getWalletStakingTxt(wi *be.WalletInfoRespStruct) string {
+func getWalletStakingTxt(wi *be.WalletInfoDiviRespStruct) string {
 	var fPercent float64
 	if wi.Result.Balance > 10000 {
 		fPercent = 100
@@ -747,7 +828,7 @@ func getWalletStakingTxt(wi *be.WalletInfoRespStruct) string {
 
 }
 
-func getWalletSecurityStatusTxt(wi *be.WalletInfoRespStruct) string {
+func getWalletSecurityStatusTxt(wi *be.WalletInfoDiviRespStruct) string {
 	switch wi.Result.EncryptionStatus {
 	case cWalletESLocked:
 		return "Security:         [Locked - Not Staking](fg:yellow)"
@@ -762,10 +843,56 @@ func getWalletSecurityStatusTxt(wi *be.WalletInfoRespStruct) string {
 	}
 }
 
-func getInfo(cliConf *gwc.CLIConfStruct) (getinfoRespStruct, error) {
+func diviGetInfo(cliConf *gwc.CLIConfStruct) (diviGetInfoRespStruct, error) {
 	attempts := 5
 	waitingStr := "Checking server..."
-	var respStruct getinfoRespStruct
+
+	var respStruct diviGetInfoRespStruct
+
+	for i := 1; i < 50; i++ {
+		fmt.Printf("\r"+waitingStr+" %d/"+strconv.Itoa(attempts), i)
+		body := strings.NewReader("{\"jsonrpc\":\"1.0\",\"id\":\"curltext\",\"method\":\"getinfo\",\"params\":[]}")
+		req, err := http.NewRequest("POST", "http://"+cliConf.ServerIP+":"+cliConf.Port, body)
+		if err != nil {
+			return respStruct, err
+		}
+		req.SetBasicAuth(cliConf.RPCuser, cliConf.RPCpassword)
+		req.Header.Set("Content-Type", "text/plain;")
+
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			return respStruct, err
+		}
+		defer resp.Body.Close()
+		bodyResp, err := ioutil.ReadAll(resp.Body)
+		if err != nil {
+			return respStruct, err
+		}
+
+		// Check to make sure we are not loading the wallet
+		if bytes.Contains(bodyResp, []byte("Loading")) {
+			// The wallet is still loading, so print message, and sleep for 3 seconds and try again...
+			var errStruct be.GenericRespStruct
+			err = json.Unmarshal(bodyResp, &errStruct)
+			if err != nil {
+				return respStruct, err
+			}
+			//fmt.Println("Waiting for wallet to load...")
+			time.Sleep(5 * time.Second)
+		} else {
+
+			_ = json.Unmarshal(bodyResp, &respStruct)
+			return respStruct, err
+		}
+	}
+	return respStruct, nil
+}
+
+func phoreGetInfo(cliConf *gwc.CLIConfStruct) (phoreGetInfoRespStruct, error) {
+	attempts := 5
+	waitingStr := "Checking server..."
+
+	var respStruct phoreGetInfoRespStruct
 
 	for i := 1; i < 50; i++ {
 		fmt.Printf("\r"+waitingStr+" %d/"+strconv.Itoa(attempts), i)
@@ -1048,8 +1175,8 @@ func getWalletSeedRecoveryConfirmationResp() bool {
 	return false
 }
 
-func getWalletInfo(cliConf *gwc.CLIConfStruct) (be.WalletInfoRespStruct, error) {
-	var respStruct be.WalletInfoRespStruct
+func getWalletInfo(cliConf *gwc.CLIConfStruct) (be.WalletInfoDiviRespStruct, error) {
+	var respStruct be.WalletInfoDiviRespStruct
 
 	body := strings.NewReader("{\"jsonrpc\":\"1.0\",\"id\":\"curltext\",\"method\":\"getwalletinfo\",\"params\":[]}")
 	req, err := http.NewRequest("POST", "http://"+cliConf.ServerIP+":"+cliConf.Port, body)

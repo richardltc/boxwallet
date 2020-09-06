@@ -1,4 +1,4 @@
-# BoxDivi #
+# BoxWallet #
 
 BoxDivi is a CLI application that makes it very easy to set up and view a Divi wallet by just using the command line on the platform of your choosing, with a single command.
 

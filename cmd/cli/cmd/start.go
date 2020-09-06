@@ -17,6 +17,7 @@ limitations under the License.
 package cmd
 
 import (
+	"errors"
 	"fmt"
 	gwc "github.com/richardltc/gwcommon"
 	"github.com/spf13/cobra"
@@ -44,20 +45,27 @@ var startCmd = &cobra.Command{
 			log.Fatal("The start command can only be run on the same machine that's running the " + sCoinDaemonName + " wallet")
 		}
 
-		// Add the addnodes if required...
-		log.Println("Checking for addnodes...")
-		exist, err := be.AddNodesAlreadyExist()
-		if err != nil {
-			log.Fatalf("unable to detect whether addnodes already exist: %v", err)
-		}
-		if exist {
-			log.Println("addnodes already exist...")
-		} else {
-			log.Println("addnodes are missing, so attempting to add...")
-			if err := be.AddAddNodesIfRequired(); err != nil {
-				log.Fatalf("failed to add addnodes: %v", err)
+		switch cliConf.ProjectType {
+		case gwc.PTDivi:
+			// Add the addnodes if required...
+			log.Println("Checking for addnodes...")
+			exist, err := be.AddNodesAlreadyExist()
+			if err != nil {
+				log.Fatalf("unable to detect whether addnodes already exist: %v", err)
 			}
-			log.Println("addnodes added...")
+			if exist {
+				log.Println("addnodes already exist...")
+			} else {
+				log.Println("addnodes are missing, so attempting to add...")
+				if err := be.AddAddNodesIfRequired(); err != nil {
+					log.Fatalf("failed to add addnodes: %v", err)
+				}
+				log.Println("addnodes added...")
+			}
+		case gwc.PTPhore:
+		case gwc.PTTrezarcoin:
+		default:
+			err = errors.New("unable to determine ProjectType")
 		}
 
 		// Start the coin daemon server if required...

@@ -211,6 +211,8 @@ github.com/richardltc/gwcommon v0.0.0-20200829084743-45c3cca6f4f2 h1:QYb46Ax2p/E
 github.com/richardltc/gwcommon v0.0.0-20200829084743-45c3cca6f4f2/go.mod h1:uRkRBVWgLaCqG1Xx2T7ThxsIXrzP/6rSBC0k4UAjse8=
 github.com/richardltc/gwcommon v0.0.0-20200902064553-29e90e1d11d4 h1:s2WSK7W9WOWqiJ3oNTEEvBIf4yigiw7BoVdVPEXy8v8=
 github.com/richardltc/gwcommon v0.0.0-20200902064553-29e90e1d11d4/go.mod h1:uRkRBVWgLaCqG1Xx2T7ThxsIXrzP/6rSBC0k4UAjse8=
+github.com/richardltc/gwcommon v0.0.0-20200904131737-48003c45f660 h1:is2T1MCbDUUQeaqQqDZt+Y3LHbuV/G3RcBuGM7euoFQ=
+github.com/richardltc/gwcommon v0.0.0-20200904131737-48003c45f660/go.mod h1:uRkRBVWgLaCqG1Xx2T7ThxsIXrzP/6rSBC0k4UAjse8=
 github.com/rogpeppe/fastuuid v0.0.0-20150106093220-6724a57986af/go.mod h1:XWv6SoW27p1b0cqNHllgS5HIMJraePCO15w5zCzIWYg=
 github.com/rogpeppe/go-internal v1.3.0/go.mod h1:M8bDsm7K2OlrFYOpmOWEs/qY81heoFRclV5y23lUDJ4=
 github.com/russross/blackfriday/v2 v2.0.1/go.mod h1:+Rmxgy9KzJVeS9/2gXHxylqXiyQDYRxCVz55jmeOWTM=
@@ -226,6 +228,8 @@ github.com/spf13/afero v1.1.2 h1:m8/z1t7/fwjysjQRYbP0RD+bUIF/8tJwPdEZsI83ACI=
 github.com/spf13/afero v1.1.2/go.mod h1:j4pytiNVoe2o6bmDsKpLACNPDBIoEAkihy7loJ1B0CQ=
 github.com/spf13/afero v1.3.4 h1:8q6vk3hthlpb2SouZcnBVKboxWQWMDNF38bwholZrJc=
 github.com/spf13/afero v1.3.4/go.mod h1:Ai8FlHk4v/PARR026UzYexafAt9roJ7LcLMAmO6Z93I=
+github.com/spf13/afero v1.3.5 h1:AWZ/w4lcfxuh52NVL78p9Eh8j6r1mCTEGSRFBJyIHAE=
+github.com/spf13/afero v1.3.5/go.mod h1:Ai8FlHk4v/PARR026UzYexafAt9roJ7LcLMAmO6Z93I=
 github.com/spf13/cast v1.3.0 h1:oget//CVOEoFewqQxwr0Ej5yjygnqGkvggSE/gB35Q8=
 github.com/spf13/cast v1.3.0/go.mod h1:Qx5cxh0v+4UWYiBimWS+eyWzqEqokIECu5etghLkUJE=
 github.com/spf13/cast v1.3.1 h1:nFm6S0SMdyzrzcmThSipiEubIDy8WEXKNZ0UOgiRpng=
