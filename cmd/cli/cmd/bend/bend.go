@@ -132,7 +132,7 @@ type StakingStatusRespStruct struct {
 	ID    string      `json:"id"`
 }
 
-type WalletInfoRespStruct struct {
+type WalletInfoDiviRespStruct struct {
 	Result struct {
 		Walletversion      int     `json:"walletversion"`
 		Balance            float64 `json:"balance"`
@@ -149,6 +149,19 @@ type WalletInfoRespStruct struct {
 			Hdexternalkeyindex int `json:"hdexternalkeyindex"`
 			Hdinternalkeyindex int `json:"hdinternalkeyindex"`
 		} `json:"hdaccounts"`
+	} `json:"result"`
+	Error interface{} `json:"error"`
+	ID    string      `json:"id"`
+}
+
+type WalletInfoPhoreRespStruct struct {
+	Result struct {
+		Walletversion int     `json:"walletversion"`
+		Balance       float64 `json:"balance"`
+		Txcount       int     `json:"txcount"`
+		Keypoololdest int     `json:"keypoololdest"`
+		Keypoolsize   int     `json:"keypoolsize"`
+		UnlockedUntil int     `json:"unlocked_until"`
 	} `json:"result"`
 	Error interface{} `json:"error"`
 	ID    string      `json:"id"`
@@ -786,7 +799,6 @@ func PopulateDaemonConfFile() (rpcuser, rpcpassword string, err error) {
 
 		return rpcu, rpcpw, nil
 	case gwc.PTPhore:
-		// todo complete for Phore
 		fmt.Println("Populating " + gwc.CPhoreConfFile + " for initial setup...")
 
 		chd, _ := gwc.GetCoinHomeFolder(gwc.APPTCLI)
@@ -819,7 +831,51 @@ func PopulateDaemonConfFile() (rpcuser, rpcpassword string, err error) {
 		if err := gwc.WriteTextToFile(chd+gwc.CPhoreConfFile, "rpcallowip=192.168.1.0/255.255.255.0"); err != nil {
 			log.Fatal(err)
 		}
-		if err := gwc.WriteTextToFile(chd+gwc.CPhoreConfFile, "rpcport=51473"); err != nil {
+		if err := gwc.WriteTextToFile(chd+gwc.CPhoreConfFile, "rpcport=11772"); err != nil {
+			log.Fatal(err)
+		}
+
+		// Now get a list of the latest "addnodes" and add them to the file:
+		// gdc.AddToLog(lfp, "Adding latest master nodes to "+gdc.CDiviConfFile)
+		//if err := AddAddNodesIfRequired(); err != nil {
+		//	log.Println("Unable to add addnodes, but will try again on start...")
+		//}
+
+		return rpcu, rpcpw, nil
+	case gwc.PTPIVX:
+		fmt.Println("Populating " + gwc.CPIVXConfFile + " for initial setup...")
+
+		chd, _ := gwc.GetCoinHomeFolder(gwc.APPTCLI)
+		if err := os.MkdirAll(chd, os.ModePerm); err != nil {
+			return "", "", fmt.Errorf("unable to make directory - %v", err)
+		}
+
+		// Generate a random password
+		rpcu := "pivxrpc"
+		rpcpw := rand.String(20)
+
+		if err := gwc.WriteTextToFile(chd+gwc.CPIVXConfFile, cRPCUserStr+"="+rpcu); err != nil {
+			log.Fatal(err)
+		}
+		if err := gwc.WriteTextToFile(chd+gwc.CPIVXConfFile, cRPCPasswordStr+"="+rpcpw); err != nil {
+			log.Fatal(err)
+		}
+		if err := gwc.WriteTextToFile(chd+gwc.CPIVXConfFile, ""); err != nil {
+			log.Fatal(err)
+		}
+		if err := gwc.WriteTextToFile(chd+gwc.CPIVXConfFile, "daemon=1"); err != nil {
+			log.Fatal(err)
+		}
+		if err := gwc.WriteTextToFile(chd+gwc.CPIVXConfFile, ""); err != nil {
+			log.Fatal(err)
+		}
+		if err := gwc.WriteTextToFile(chd+gwc.CPIVXConfFile, "server=1"); err != nil {
+			log.Fatal(err)
+		}
+		if err := gwc.WriteTextToFile(chd+gwc.CPIVXConfFile, "rpcallowip=192.168.1.0/255.255.255.0"); err != nil {
+			log.Fatal(err)
+		}
+		if err := gwc.WriteTextToFile(chd+gwc.CPIVXConfFile, "rpcport=51473"); err != nil {
 			log.Fatal(err)
 		}
 
