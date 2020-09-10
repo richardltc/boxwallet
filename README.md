@@ -79,7 +79,7 @@ Make sure the `port`,`rpcuser` and `rpcpassword` are all the same as what it is 
 
 ## Is it free? ##
 
-Yes! BoxDivi is FREE to use, however, if you'd like to send a tip, please feel free:
+Yes! BoxWallet is FREE to use, however, if you'd like to send a tip, please feel free:
 
 DIVI: DSniZmeSr62wiQXzooWk7XN4wospZdqePt
 
