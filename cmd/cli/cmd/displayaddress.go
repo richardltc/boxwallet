@@ -20,11 +20,11 @@ import (
 	"fmt"
 	"log"
 
-	be "richardmace.co.uk/boxdivi/cmd/cli/cmd/bend"
+	be "richardmace.co.uk/boxwallet/cmd/cli/cmd/bend"
 
-	gwc "github.com/richardltc/gwcommon"
+	// gwc "github.com/richardltc/gwcommon"
 	"github.com/spf13/cobra"
-	//gdc "richardmace.co.uk/boxdivi/gdcommon"
+	//gdc "richardmace.co.uk/boxwallet/gdcommon"
 )
 
 // displayaddressCmd represents the displayaddress command
@@ -33,7 +33,7 @@ var displayaddressCmd = &cobra.Command{
 	Short: "Displays your wallet address",
 	Long:  ``,
 	Run: func(cmd *cobra.Command, args []string) {
-		cliConf, err := gwc.GetCLIConfStruct()
+		cliConf, err := be.GetConfigStruct("", true)
 		if err != nil {
 			log.Fatal("Unable to GetCLIConfStruct " + err.Error())
 		}

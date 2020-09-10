@@ -19,8 +19,8 @@ package cmd
 import (
 	"fmt"
 	"os"
+	be "richardmace.co.uk/boxwallet/cmd/cli/cmd/bend"
 
-	gwc "github.com/richardltc/gwcommon"
 	"github.com/spf13/cobra"
 
 	homedir "github.com/mitchellh/go-homedir"
@@ -28,18 +28,19 @@ import (
 )
 
 var cfgFile string
-var sAppBinFolder, _ = gwc.GetAppsBinFolder(gwc.APPTCLI)
-var sAppCLIName, _ = gwc.GetAppCLIName(gwc.APPTCLI) // e.g. GoDivi CLI
-var sAppName, _ = gwc.GetAppName(gwc.APPTCLI)       // e.g. GoDivi
-var sAppUpdaterFile, _ = gwc.GetAppFileName(gwc.APPTUpdater)
-var sAppCLIFilename, _ = gwc.GetAppFileName(gwc.APPTCLI)
-var sCoinName, _ = gwc.GetCoinName(gwc.APPTCLI)
-var sCoinDName, _ = gwc.GetCoinDaemonFilename(gwc.APPTCLI)
+var sAppBinFolder, _ = be.GetAppsBinFolder()
+
+//var sAppCLIName, _ = gwc.GetAppCLIName(gwc.APPTCLI) // e.g. GoDivi CLI
+//var sAppName, _ = gwc.GetAppName(gwc.APPTCLI)       // e.g. GoDivi
+//var sAppUpdaterFile, _ = gwc.GetAppFileName(gwc.APPTUpdater)
+//var sAppCLIFilename, _ = gwc.GetAppFileName(gwc.APPTCLI)
+// var sCoinName, _ = be.GetCoinName(be.APPTCLI)
+// var sCoinDName, _ = be.GetCoinDaemonFilename(be.APPTCLI)
 
 // rootCmd represents the base command when called without any subcommands
 var rootCmd = &cobra.Command{
-	Use:   sAppCLIFilename, //"boxdivi",
-	Short: sAppCLIName + " v" + gwc.CAppVersion + " is a CLI app that makes it very easy to setup a Divi wallet with a single command",
+	Use:   be.CAppName, //sAppCLIFilename, //"boxwallet",
+	Short: be.CAppName + " v" + be.CAppVersion + " is a CLI app that makes it very easy to setup a wallet/node with a single command",
 	Long:  ``,
 	// Uncomment the following line if your bare application
 	// has an action associated with it:
@@ -62,7 +63,7 @@ func init() {
 	// Cobra supports persistent flags, which, if defined here,
 	// will be global for your application.
 
-	rootCmd.PersistentFlags().StringVar(&cfgFile, "config", "", "config file (default is $HOME/.boxdivi.yaml)")
+	rootCmd.PersistentFlags().StringVar(&cfgFile, "config", "", "config file (default is $HOME/.boxwallet.yaml)")
 
 	// Cobra also supports local flags, which will only run
 	// when this action is called directly.
@@ -82,9 +83,9 @@ func initConfig() {
 			os.Exit(1)
 		}
 
-		// Search config in home directory with name ".boxdivi" (without extension).
+		// Search config in home directory with name ".boxwallet" (without extension).
 		viper.AddConfigPath(home)
-		viper.SetConfigName(".boxdivi")
+		viper.SetConfigName(".boxwallet")
 	}
 
 	viper.AutomaticEnv() // read in environment variables that match

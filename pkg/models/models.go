@@ -2,8 +2,7 @@ package models
 
 import (
 	"errors"
-
-	gwc "github.com/richardltc/gwcommon"
+	//gwc "github.com/richardltc/gwcommon"
 )
 
 const (
@@ -35,9 +34,9 @@ var (
 
 // PrivateKeyStruct - Get's returned from server to the client, when client requests priv key
 type PrivateKeyStruct struct {
-	Hdseed       string `json:"hdseed"`
-	Mnemonic     string `json:"mnemonic"`
-	ResponseCode gwc.ServerResponse
+	Hdseed   string `json:"hdseed"`
+	Mnemonic string `json:"mnemonic"`
+	//ResponseCode gwc.ServerResponse
 }
 
 // ServerRequestStruct - Get's passed from client to the server, when making a server request
@@ -47,9 +46,9 @@ type ServerRequestStruct struct {
 
 // TokenResponseStruct - Get's passed from the server to the client, when responding to a GenereateToken request from client
 type TokenResponseStruct struct {
-	Desc         string `json: "Desc"` // Desc - e.g. Token successfully generated
-	Token        string `json: "Token"`
-	ResponseCode gwc.ServerResponse
+	Desc  string `json: "Desc"` // Desc - e.g. Token successfully generated
+	Token string `json: "Token"`
+	//ResponseCode gwc.ServerResponse
 }
 
 type WalletStruct struct {
@@ -68,5 +67,5 @@ type WalletStatusStruct struct {
 	IsInstalled         bool `json: "IsInstalled"`
 	IsWalletEncrypted   bool `json: "IsWalletEncrypted"`
 	HasPrivKeyBeenSaved bool `json: "HasPrivKeyBeenSaved"`
-	ResponseCode        gwc.ServerResponse
+	//ResponseCode        gwc.ServerResponse
 }

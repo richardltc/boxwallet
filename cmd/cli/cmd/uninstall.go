@@ -20,12 +20,12 @@ package cmd
 import (
 	"bufio"
 	"fmt"
-	gwc "github.com/richardltc/gwcommon"
+	// gwc "github.com/richardltc/gwcommon"
 	"github.com/spf13/cobra"
 	"log"
 	"os"
 	"os/exec"
-	be "richardmace.co.uk/boxdivi/cmd/cli/cmd/bend"
+	be "richardmace.co.uk/boxwallet/cmd/cli/cmd/bend"
 	"strconv"
 	"time"
 )
@@ -33,22 +33,22 @@ import (
 // uninstallCmd represents the uninstall command
 var uninstallCmd = &cobra.Command{
 	Use:   "uninstall",
-	Short: "*** WARNING *** this command completely removes your " + sCoinName + " wallet.",
+	Short: "*** WARNING *** this command completely removes your chosen coins' wallet.",
 	Long:  ``,
 	Run: func(cmd *cobra.Command, args []string) {
-		abf, err := gwc.GetAppsBinFolder(gwc.APPTCLI)
+		abf, err := be.GetAppsBinFolder()
 		if err != nil {
 			log.Fatal("Unable to GetAppsBinFolder " + err.Error())
 		}
-		chf, err := gwc.GetCoinHomeFolder(gwc.APPTCLI)
+		chf, err := be.GetCoinHomeFolder(be.APPTCLI)
 		if err != nil {
 			log.Fatal("Unable to GetCoinHomeFolder " + err.Error())
 		}
-		sCoinDaemonFile, err := gwc.GetCoinDaemonFilename(gwc.APPTCLI)
+		sCoinDaemonFile, err := be.GetCoinDaemonFilename(be.APPTCLI)
 		if err != nil {
 			log.Fatal("Unable to GetCoinDaemonFilename " + err.Error())
 		}
-		sCoinName, err := gwc.GetCoinName(gwc.APPTCLI)
+		sCoinName, err := be.GetCoinName(be.APPTCLI)
 		if err != nil {
 			log.Fatal("Unable to GetCoinName " + err.Error())
 		}
@@ -58,9 +58,9 @@ var uninstallCmd = &cobra.Command{
 		reader := bufio.NewReader(os.Stdin)
 		fmt.Println("\n*** WARNING *** this command completely removes your " + sCoinName + " wallet, and can only be restored from a seed." +
 			"\n\nPlease enter the following to wallet deletion: " +
-			gwc.CUninstallConfirmationStr + "\n\n")
+			be.CUninstallConfirmationStr + "\n\n")
 		resp, _ := reader.ReadString('\n')
-		if resp != gwc.CUninstallConfirmationStr+"\n" {
+		if resp != be.CUninstallConfirmationStr+"\n" {
 			fmt.Println("\nuser entered: " + resp + " which doesn't match, so exiting...")
 			return
 		}

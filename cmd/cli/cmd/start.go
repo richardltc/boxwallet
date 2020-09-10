@@ -19,24 +19,26 @@ package cmd
 import (
 	"errors"
 	"fmt"
-	gwc "github.com/richardltc/gwcommon"
+	// gwc "github.com/richardltc/gwcommon"
 	"github.com/spf13/cobra"
 	"log"
-	be "richardmace.co.uk/boxdivi/cmd/cli/cmd/bend"
+	be "richardmace.co.uk/boxwallet/cmd/cli/cmd/bend"
 )
 
 // startCmd represents the start command
 var startCmd = &cobra.Command{
 	Use:   "start",
-	Short: "Starts the " + sCoinDName + " daemon server",
+	Short: "Starts you chosen coins daemon server",
 	Long:  ``,
 	Run: func(cmd *cobra.Command, args []string) {
-		// Check to make sure that we are running on the same machine as the coin daemon e.g. divid
-		cliConf, err := gwc.GetCLIConfStruct()
+		// Lets load our config file first, to see if the user has made their coin choice...
+		cliConf, err := be.GetConfigStruct("", true)
 		if err != nil {
-			log.Fatal("Unable to GetCLIConfStruct " + err.Error())
+			log.Fatal("Unable to determine coin type. Please run " + be.CAppFilename + " coin" + err.Error())
+			//log.Fatal("Unable to GetCLIConfStruct " + err.Error())
 		}
-		sCoinDaemonName, err := gwc.GetCoinDaemonFilename(gwc.APPTCLI)
+
+		sCoinDaemonName, err := be.GetCoinDaemonFilename(be.APPTCLI)
 		if err != nil {
 			log.Fatal("Unable to GetCoinDaemonFilename " + err.Error())
 		}
@@ -46,10 +48,10 @@ var startCmd = &cobra.Command{
 		}
 
 		switch cliConf.ProjectType {
-		case gwc.PTDivi:
+		case be.PTDivi:
 			// Add the addnodes if required...
 			log.Println("Checking for addnodes...")
-			exist, err := be.AddNodesAlreadyExist()
+			exist, err := be.AddNodesDiviAlreadyExist()
 			if err != nil {
 				log.Fatalf("unable to detect whether addnodes already exist: %v", err)
 			}
@@ -62,15 +64,15 @@ var startCmd = &cobra.Command{
 				}
 				log.Println("addnodes added...")
 			}
-		case gwc.PTPhore:
-		case gwc.PTTrezarcoin:
+		case be.PTPhore:
+		case be.PTTrezarcoin:
 		default:
 			err = errors.New("unable to determine ProjectType")
 		}
 
 		// Start the coin daemon server if required...
 		if err := be.RunCoinDaemon(true); err != nil {
-			log.Fatalf("failed to run "+sCoinDName+": %v", err)
+			log.Fatalf("failed to run "+sCoinDaemonName+": %v", err)
 		}
 
 		//runDashNow := false
@@ -79,11 +81,11 @@ var startCmd = &cobra.Command{
 		//}
 		//survey.AskOne(prompt, &runDashNow)
 
-		sAppFileCLIName, err := gwc.GetAppFileName(gwc.APPTCLI)
+		sAppFileCLIName, err := be.GetAppFileName()
 		if err != nil {
 			log.Fatal("Unable to GetAppFileCLIName " + err.Error())
 		}
-		abf, err := gwc.GetAppsBinFolder(gwc.APPTCLI)
+		abf, err := be.GetAppsBinFolder()
 		if err != nil {
 			log.Fatal("Unable to GetAppsBinFolder " + err.Error())
 		}

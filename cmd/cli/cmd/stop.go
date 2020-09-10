@@ -20,18 +20,18 @@ import (
 	"fmt"
 	"log"
 
-	gwc "github.com/richardltc/gwcommon"
+	// gwc "github.com/richardltc/gwcommon"
 	"github.com/spf13/cobra"
-	be "richardmace.co.uk/boxdivi/cmd/cli/cmd/bend"
+	be "richardmace.co.uk/boxwallet/cmd/cli/cmd/bend"
 )
 
 // stopCmd represents the stop command
 var stopCmd = &cobra.Command{
 	Use:   "stop",
-	Short: "Stops the " + sCoinDName + " daemon server",
+	Short: "Stops the your chosen coins daemon server",
 	Long:  ``,
 	Run: func(cmd *cobra.Command, args []string) {
-		cliConf, err := gwc.GetCLIConfStruct()
+		cliConf, err := be.GetConfigStruct("", true)
 		if err != nil {
 			log.Fatal("Unable to GetCLIConfStruct " + err.Error())
 		}

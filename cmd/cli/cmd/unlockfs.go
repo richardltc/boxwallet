@@ -20,12 +20,12 @@ package cmd
 import (
 	"encoding/json"
 	"fmt"
-	gwc "github.com/richardltc/gwcommon"
+	// gwc "github.com/richardltc/gwcommon"
 	"github.com/spf13/cobra"
 	"io/ioutil"
 	"log"
 	"net/http"
-	be "richardmace.co.uk/boxdivi/cmd/cli/cmd/bend"
+	be "richardmace.co.uk/boxwallet/cmd/cli/cmd/bend"
 	"strings"
 )
 
@@ -35,7 +35,7 @@ var unlockfsCmd = &cobra.Command{
 	Short: "Unlock wallet for staking",
 	Long:  ``,
 	Run: func(cmd *cobra.Command, args []string) {
-		cliConf, err := gwc.GetCLIConfStruct()
+		cliConf, err := be.GetConfigStruct("", true)
 		if err != nil {
 			log.Fatal("Unable to GetCLIConfStruct " + err.Error())
 		}
@@ -90,7 +90,7 @@ func init() {
 	// unlockfsCmd.Flags().BoolP("toggle", "t", false, "Help message for toggle")
 }
 
-func unlockWalletFS(cliConf *gwc.CLIConfStruct, pw string) (be.GenericRespStruct, error) {
+func unlockWalletFS(cliConf *be.ConfStruct, pw string) (be.GenericRespStruct, error) {
 	var respStruct be.GenericRespStruct
 
 	body := strings.NewReader("{\"jsonrpc\":\"1.0\",\"id\":\"curltext\",\"method\":\"walletpassphrase\",\"params\":[\"" + pw + "\",0,true]}")

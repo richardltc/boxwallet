@@ -19,105 +19,53 @@ package cmd
 import (
 	"errors"
 	"fmt"
-	gwc "github.com/richardltc/gwcommon"
+	// gwc "github.com/richardltc/gwcommon"
 	"github.com/spf13/cobra"
 	"log"
 	"os"
-	be "richardmace.co.uk/boxdivi/cmd/cli/cmd/bend"
+	be "richardmace.co.uk/boxwallet/cmd/cli/cmd/bend"
 	"runtime"
 )
 
-const (
-
-	//
-	// Divi
-	//
-
-	cDiviCoreVersion string = "1.1.2"
-	cDFDiviRPi              = "divi-" + cDiviCoreVersion + "-RPi2.tar.gz"
-	cDFDiviLinux            = "divi-" + cDiviCoreVersion + "-x86_64-linux-gnu.tar.gz"
-	cDFDiviWindows          = "divi-" + cDiviCoreVersion + "-win64.zip"
-
-	cDiviExtractedDir = "divi-" + cDiviCoreVersion + "/"
-
-	cDownloadURLDivi = "https://github.com/DiviProject/Divi/releases/download/" + cDiviCoreVersion + "/"
-
-	//
-	// Phore
-	//
-
-	cPhoreCoreVersion string = "1.6.5"
-	cDFPhoreRPi              = "phore-" + cPhoreCoreVersion + "-arm-linux-gnueabihf.tar.gz"
-	cDFPhoreLinux            = "phore-" + cPhoreCoreVersion + "-x86_64-linux-gnu.tar.gz"
-	cDFPhoreWindows          = "phore-" + cPhoreCoreVersion + "-win64.zip"
-
-	cPhoreExtractedDir = "phore-" + cPhoreCoreVersion + "/"
-
-	cDownloadURLPhore = "https://github.com/phoreproject/Phore/releases/download/v" + cPhoreCoreVersion + "/"
-
-	//
-	// PIVX
-	//
-
-	cPIVXCoreVersion   string = "4.2.0"
-	cDFPIVXFileRPi            = "pivx-" + cPIVXCoreVersion + "-arm-linux-gnueabihf.tar.gz"
-	cDFPIVXFileLinux          = "pivx-" + cPIVXCoreVersion + "-x86_64-linux-gnu.tar.gz"
-	cDFPIVXFileWindows        = "pivx-" + cPIVXCoreVersion + "-win64.zip"
-
-	cPIVXExtractedDirArm     string = "pivx-" + cPIVXCoreVersion + "/"
-	cPIVXExtractedDirLinux   string = "pivx-" + cPIVXCoreVersion + "/"
-	cPIVXExtractedDirWindows string = "pivx-" + cPIVXCoreVersion + "\\"
-
-	cDownloadURLPIVX string = "https://github.com/PIVX-Project/PIVX/releases/download/v" + cPIVXCoreVersion + "/"
-
-	//
-	// Trezarcoin
-	//
-
-	cTrezarcoinCoreVersion string = "2.0.1"
-	cDFTrezarcoinRPi       string = "trezarcoin-" + cTrezarcoinCoreVersion + "-rPI.zip"
-	cDFTrezarcoinLinux     string = "trezarcoin-" + cTrezarcoinCoreVersion + "-linux64.tar.gz"
-	cDFTrezarcoinWindows   string = "trezarcoin-" + cTrezarcoinCoreVersion + "-win64-setup.exe"
-
-	cDownloadURLTC string = "https://github.com/TrezarCoin/TrezarCoin/releases/download/" + cTrezarcoinCoreVersion + ".0/"
-)
+const ()
 
 // installCmd represents the install command
 var installCmd = &cobra.Command{
 	Use:   "install",
-	Short: "Downloads, installs, configures and creates a new " + sCoinName + " wallet",
-	Long: `Downloads the latest official ` + sCoinName + ` binaries and installs them in a directory called ` + sAppBinFolder + `,
-and runs ` + sCoinDName + ` to sync the block chain. 
+	Short: "Downloads, installs, configures and creates a new wallet, for the coin of your choosing",
+	Long: `Downloads the latest official binary files for the coin of your choosing and installs them in a directory called ` + sAppBinFolder + `,
 
-You can then view the ` + sAppName + ` dashboard by running the command: ` + sAppCLIFilename + ` dash`,
+You can then view the ` + be.CAppName + ` dashboard by running the command: ` + be.CAppFilename + ` dash`,
 	Run: func(cmd *cobra.Command, args []string) {
-		cliConf, err := gwc.GetCLIConfStruct()
+		// Lets load our config file first, to see if the user has made their coin choice...
+		cliConf, err := be.GetConfigStruct("", true)
 		if err != nil {
-			log.Fatal("Unable to GetCLIConfStruct " + err.Error())
+			log.Fatal("Unable to determine coin type. Please run './" + be.CAppFilename + " coin'") //err.Error())
+			//log.Fatal("Unable to GetCLIConfStruct " + err.Error())
 		}
 
 		// Before we do anything, make sure we have all of the required Wallet files in our directory
-		sAppName, err := gwc.GetAppName(gwc.APPTCLI)
-		if err != nil {
-			log.Fatal("Unable to GetAppName " + err.Error())
-		}
-		sCoinDaemonName, err := gwc.GetCoinDaemonFilename(gwc.APPTCLI)
+		//sAppName, err := be.GetAppName(gwc.APPTCLI)
+		//if err != nil {
+		//	log.Fatal("Unable to GetAppName " + err.Error())
+		//}
+		sCoinDaemonName, err := be.GetCoinDaemonFilename(be.APPTCLI)
 		if err != nil {
 			log.Fatal("Unable to GetCoinDaemonFilename " + err.Error())
 		}
-		sCoinName, err := gwc.GetCoinName(gwc.APPTCLI)
+		sCoinName, err := be.GetCoinName(be.APPTCLI)
 		if err != nil {
 			log.Fatal("Unable to GetCoinName " + err.Error())
 		}
-		sAppCLIName, err := gwc.GetAppCLIName(gwc.APPTCLI)
-		if err != nil {
-			log.Fatal("Unable to GetAppCLIName " + err.Error())
-		}
-		sLogfileName, err := gwc.GetAppLogfileName()
-		if err != nil {
-			log.Fatal("Unable to GetAppLogfileName " + err.Error())
-		}
-		sAppFileCLIName, err := gwc.GetAppFileName(gwc.APPTCLI)
+		//sAppCLIName, err := be.GetAppCLIName()
+		//if err != nil {
+		//	log.Fatal("Unable to GetAppCLIName " + err.Error())
+		//}
+		//sLogfileName, err := gwc.GetAppLogfileName()
+		//if err != nil {
+		//	log.Fatal("Unable to GetAppLogfileName " + err.Error())
+		//}
+		sAppFileCLIName, err := be.GetAppFileName()
 		if err != nil {
 			log.Fatal("Unable to GetAppFileCLIName " + err.Error())
 		}
@@ -125,18 +73,18 @@ You can then view the ` + sAppName + ` dashboard by running the command: ` + sAp
 		//if err != nil {
 		//	log.Fatal("Unable to GetAppFileName " + err.Error())
 		//}
-		abf, err := gwc.GetAppsBinFolder(gwc.APPTCLI)
+		abf, err := be.GetAppsBinFolder()
 		if err != nil {
 			log.Fatal("Unable to GetAppsBinFolder " + err.Error())
 		}
-		chf, err := gwc.GetCoinHomeFolder(gwc.APPTCLI)
+		chf, err := be.GetCoinHomeFolder(be.APPTCLI)
 		if err != nil {
 			log.Fatal("Unable to GetCoinHomeFolder " + err.Error())
 		}
 
 		// Check for the App Config file
-		if !gwc.FileExists("./" + gwc.CCLIConfFile + gwc.CCLIConfFileExt) {
-			log.Fatal("Unable to find the file " + gwc.CCLIConfFile)
+		if !be.FileExists("./" + be.CCLIConfFile + be.CCLIConfFileExt) {
+			log.Fatal("Unable to find the file " + be.CCLIConfFile)
 		}
 
 		// // Check for the App Server
@@ -150,7 +98,7 @@ You can then view the ` + sAppName + ` dashboard by running the command: ` + sAp
 		//	log.Fatal("Unable to find the file " + sAppFileUpdaterName)
 		//}
 
-		lfp := abf + sLogfileName
+		lfp := abf + be.CAppLogfile
 		// 	// Check to make sure we have enough memory
 		// 	trkb := sysinfo.Get().TotalRam
 		// 	trmb := int(trkb) / 1024
@@ -186,7 +134,7 @@ You can then view the ` + sAppName + ` dashboard by running the command: ` + sAp
 
 		// Now let's make sure that we have our divi bin folder
 		if _, err := os.Stat(abf); !os.IsNotExist(err) {
-			// /home/user/boxdivi/ bin folder already exists, so lets stop
+			// /home/user/boxwallet/ bin folder already exists, so lets stop
 			log.Fatal("It looks like you have already installed the " + sCoinName + " binaries in the folder " + abf)
 		} else {
 			// the /home/user/.divi/ bin folder does not exist, so lets create it
@@ -194,16 +142,16 @@ You can then view the ` + sAppName + ` dashboard by running the command: ` + sAp
 			if err := os.Mkdir(abf, 0700); err != nil {
 				log.Fatal(err)
 			}
-			if err := gwc.AddToLog(lfp, abf+" folder created"); err != nil {
+			if err := be.AddToLog(lfp, abf+" folder created"); err != nil {
 				log.Fatal(err)
 			}
 		}
 
-		if err := gwc.AddToLog(lfp, sAppCLIName+" "+gwc.CAppVersion+" Starting..."); err != nil {
+		if err := be.AddToLog(lfp, be.CAppName+" "+be.CPIVXCoreVersion+" Starting..."); err != nil {
 			log.Fatal(err)
 		}
 
-		if err := gwc.AddToLog(lfp, "Installing "+sCoinName+" and "+sAppName+" bin files..."); err != nil {
+		if err := be.AddToLog(lfp, "Installing "+sCoinName+" and "+be.CAppName+" bin files..."); err != nil {
 			log.Fatal(err)
 		}
 
@@ -226,17 +174,16 @@ You can then view the ` + sAppName + ` dashboard by running the command: ` + sAp
 			}
 			cliConf.RPCuser = rpcu
 			cliConf.RPCpassword = rpcpw
-			err = gwc.SetCLIConfStruct(cliConf)
+			err = be.SetConfigStruct("", cliConf)
 			if err != nil {
 				log.Fatal(err)
 			}
 		}
-		//gwc.AddToLog(lfp, "Getting required files")
 		if err := doRequiredFiles(); err != nil {
 			log.Fatal(err)
 		}
 
-		if err := gwc.AddToLog(lfp, "The "+sCoinName+" CLI bin files have been installed in "+abf); err != nil {
+		if err := be.AddToLog(lfp, "The "+sCoinName+" CLI bin files have been installed in "+abf); err != nil {
 			log.Fatal(err)
 		}
 
@@ -246,26 +193,26 @@ You can then view the ` + sAppName + ` dashboard by running the command: ` + sAp
 		// 	log.Fatal(err)
 		// }
 
-		fmt.Println("\n\n" + sAppCLIName + " has now been successfully installed\n\n")
-		fmt.Println("To run " + sAppCLIName + ", please first make sure that the " + sCoinDaemonName + " daemon is running, by running:\n\n")
+		fmt.Println("\n\n" + be.CAppName + " has now been successfully installed")
+		fmt.Println("\n\nTo run " + be.CAppName + ", please first make sure that the " + sCoinDaemonName + " daemon is running, by running:\n\n")
 		fmt.Println(abf + sAppFileCLIName + " start\n\n")
 		fmt.Println("With " + sCoinDaemonName + " now running, you should now be able to view the dashboard by running:\n\n")
 		fmt.Println(abf + sAppFileCLIName + " dash\n\n" +
-			sAppName + " is free to use, however, any " + sCoinName + " donations would be most welcome via the " + sCoinName + " address below:\n\n")
+			be.CAppName + " is free to use, however, any " + sCoinName + " donations would be most welcome via the " + sCoinName + " address below:\n\n")
 
 		switch cliConf.ProjectType {
-		case gwc.PTDivi:
+		case be.PTDivi:
 			fmt.Println("DSniZmeSr62wiQXzooWk7XN4wospZdqePt\n\n")
-		case gwc.PTPhore:
+		case be.PTPhore:
 			fmt.Println("PKFcy7UTEWegnAq7Wci8Aj76bQyHMottF8\n\n")
-		case gwc.PTPIVX:
+		case be.PTPIVX:
 			fmt.Println("DFHmj4dExVC24eWoRKmQJDx57r4svGVs3J\n\n")
-		case gwc.PTTrezarcoin:
+		case be.PTTrezarcoin:
 		default:
 			err = errors.New("unable to determine ProjectType")
 		}
 
-		fmt.Println("Thank you for using " + sAppName + "\n\n")
+		fmt.Println("Thank you for using " + be.CAppName + "\n\n")
 	},
 }
 
@@ -286,59 +233,59 @@ func init() {
 // doRequiredFiles - Download and install required files
 func doRequiredFiles() error {
 	var filePath, fileURL string
-	abf, err := gwc.GetAppsBinFolder(gwc.APPTCLI)
+	abf, err := be.GetAppsBinFolder()
 	if err != nil {
 		return fmt.Errorf("Unable to perform GetAppsBinFolder: %v ", err)
 	}
 
-	gwconf, err := gwc.GetCLIConfStruct()
+	bwconf, err := be.GetConfigStruct("", true)
 	if err != nil {
 		return fmt.Errorf("Unable to get CLIConfigStruct: %v ", err)
 	}
-	switch gwconf.ProjectType {
-	case gwc.PTDivi:
+	switch bwconf.ProjectType {
+	case be.PTDivi:
 		if runtime.GOOS == "windows" {
-			filePath = abf + cDFDiviWindows
-			fileURL = cDownloadURLDivi + cDFDiviWindows
+			filePath = abf + be.CDFDiviWindows
+			fileURL = be.CDownloadURLDivi + be.CDFDiviWindows
 		} else if runtime.GOARCH == "arm" {
-			filePath = abf + cDFDiviRPi
-			fileURL = cDownloadURLDivi + cDFDiviRPi
+			filePath = abf + be.CDFDiviRPi
+			fileURL = be.CDownloadURLDivi + be.CDFDiviRPi
 		} else {
-			filePath = abf + cDFDiviLinux
-			fileURL = cDownloadURLDivi + cDFDiviLinux
+			filePath = abf + be.CDFDiviLinux
+			fileURL = be.CDownloadURLDivi + be.CDFDiviLinux
 		}
-	case gwc.PTPhore:
+	case be.PTPhore:
 		if runtime.GOOS == "windows" {
-			filePath = abf + cDFPhoreWindows
-			fileURL = cDownloadURLPhore + cDFPhoreWindows
+			filePath = abf + be.CDFPhoreWindows
+			fileURL = be.CDownloadURLPhore + be.CDFPhoreWindows
 		} else if runtime.GOARCH == "arm" {
-			filePath = abf + cDFPhoreRPi
-			fileURL = cDownloadURLPhore + cDFPhoreRPi
+			filePath = abf + be.CDFPhoreRPi
+			fileURL = be.CDownloadURLPhore + be.CDFPhoreRPi
 		} else {
-			filePath = abf + cDFPhoreLinux
-			fileURL = cDownloadURLPhore + cDFPhoreLinux
+			filePath = abf + be.CDFPhoreLinux
+			fileURL = be.CDownloadURLPhore + be.CDFPhoreLinux
 		}
-	case gwc.PTPIVX:
+	case be.PTPIVX:
 		if runtime.GOOS == "windows" {
-			filePath = abf + cDFPIVXFileWindows
-			fileURL = cDownloadURLPIVX + cDFPIVXFileWindows
+			filePath = abf + be.CDFPIVXFileWindows
+			fileURL = be.CDownloadURLPIVX + be.CDFPIVXFileWindows
 		} else if runtime.GOARCH == "arm" {
-			filePath = abf + cDFPIVXFileRPi
-			fileURL = cDownloadURLPIVX + cDFPIVXFileRPi
+			filePath = abf + be.CDFPIVXFileRPi
+			fileURL = be.CDownloadURLPIVX + be.CDFPIVXFileRPi
 		} else {
-			filePath = abf + cDFPIVXFileLinux
-			fileURL = cDownloadURLPIVX + cDFPIVXFileLinux
+			filePath = abf + be.CDFPIVXFileLinux
+			fileURL = be.CDownloadURLPIVX + be.CDFPIVXFileLinux
 		}
-	case gwc.PTTrezarcoin:
+	case be.PTTrezarcoin:
 		if runtime.GOOS == "windows" {
-			filePath = abf + cDFTrezarcoinWindows
-			fileURL = cDownloadURLTC + cDFTrezarcoinWindows
+			filePath = abf + be.CDFTrezarcoinWindows
+			fileURL = be.CDownloadURLTC + be.CDFTrezarcoinWindows
 		} else if runtime.GOARCH == "arm" {
-			filePath = abf + cDFTrezarcoinRPi
-			fileURL = cDownloadURLTC + cDFTrezarcoinRPi
+			filePath = abf + be.CDFTrezarcoinRPi
+			fileURL = be.CDownloadURLTC + be.CDFTrezarcoinRPi
 		} else {
-			filePath = abf + cDFTrezarcoinLinux
-			fileURL = cDownloadURLTC + cDFTrezarcoinLinux
+			filePath = abf + be.CDFTrezarcoinLinux
+			fileURL = be.CDownloadURLTC + be.CDFTrezarcoinLinux
 		}
 	default:
 		err = errors.New("unable to determine ProjectType")
@@ -348,10 +295,10 @@ func doRequiredFiles() error {
 	}
 
 	log.Print("Downloading required files...")
-	if err := gwc.DownloadFile(filePath, fileURL); err != nil {
+	if err := be.DownloadFile(filePath, fileURL); err != nil {
 		return fmt.Errorf("unable to download file: %v - %v", filePath+fileURL, err)
 	}
-	defer gwc.FileDelete(filePath)
+	defer os.Remove(filePath)
 
 	r, err := os.Open(filePath)
 	if err != nil {
@@ -360,81 +307,81 @@ func doRequiredFiles() error {
 
 	// Now, decompress the files...
 	log.Print("decompressing files...")
-	switch gwconf.ProjectType {
-	case gwc.PTDivi:
+	switch bwconf.ProjectType {
+	case be.PTDivi:
 		if runtime.GOOS == "windows" {
-			_, err = gwc.UnZip(filePath, "tmp")
+			_, err = be.UnZip(filePath, "tmp")
 			if err != nil {
 				return fmt.Errorf("unable to unzip file: %v - %v", filePath, err)
 			}
 			defer os.RemoveAll("tmp")
 		} else if runtime.GOARCH == "arm" {
-			err = gwc.ExtractTarGz(r)
+			err = be.ExtractTarGz(r)
 			if err != nil {
 				return fmt.Errorf("unable to extractTarGz file: %v - %v", r, err)
 			}
-			defer os.RemoveAll("./" + cDiviExtractedDir)
+			defer os.RemoveAll("./" + be.CDiviExtractedDir)
 		} else {
-			err = gwc.ExtractTarGz(r)
+			err = be.ExtractTarGz(r)
 			if err != nil {
 				return fmt.Errorf("unable to extractTarGz file: %v - %v", r, err)
 			}
-			defer os.RemoveAll("./" + cDiviExtractedDir)
+			defer os.RemoveAll("./" + be.CDiviExtractedDir)
 		}
-	case gwc.PTPhore:
+	case be.PTPhore:
 		if runtime.GOOS == "windows" {
-			_, err = gwc.UnZip(filePath, "tmp")
+			_, err = be.UnZip(filePath, "tmp")
 			if err != nil {
 				return fmt.Errorf("unable to unzip file: %v - %v", filePath, err)
 			}
 			defer os.RemoveAll("tmp")
 		} else if runtime.GOARCH == "arm" {
-			err = gwc.ExtractTarGz(r)
+			err = be.ExtractTarGz(r)
 			if err != nil {
 				return fmt.Errorf("unable to extractTarGz file: %v - %v", r, err)
 			}
-			defer os.RemoveAll("./" + cPhoreExtractedDir)
+			defer os.RemoveAll("./" + be.CPhoreExtractedDir)
 		} else {
-			err = gwc.ExtractTarGz(r)
+			err = be.ExtractTarGz(r)
 			if err != nil {
 				return fmt.Errorf("unable to extractTarGz file: %v - %v", r, err)
 			}
-			defer os.RemoveAll("./" + cPhoreExtractedDir)
+			defer os.RemoveAll("./" + be.CPhoreExtractedDir)
 		}
-	case gwc.PTPIVX:
+	case be.PTPIVX:
 		if runtime.GOOS == "windows" {
-			_, err = gwc.UnZip(filePath, "tmp")
+			_, err = be.UnZip(filePath, "tmp")
 			if err != nil {
 				return fmt.Errorf("unable to unzip file: %v - %v", filePath, err)
 			}
 			defer os.RemoveAll("tmp")
 		} else if runtime.GOARCH == "arm" {
-			err = gwc.ExtractTarGz(r)
+			err = be.ExtractTarGz(r)
 			if err != nil {
 				return fmt.Errorf("unable to extractTarGz file: %v - %v", r, err)
 			}
-			defer os.RemoveAll("./" + cPIVXExtractedDirArm)
+			defer os.RemoveAll("./" + be.CPIVXExtractedDirArm)
 		} else {
-			err = gwc.ExtractTarGz(r)
+			err = be.ExtractTarGz(r)
 			if err != nil {
 				return fmt.Errorf("unable to extractTarGz file: %v - %v", r, err)
 			}
-			defer os.RemoveAll("./" + cPIVXExtractedDirLinux)
+			defer os.RemoveAll("./" + be.CPIVXExtractedDirLinux)
 		}
-	case gwc.PTTrezarcoin:
+	case be.PTTrezarcoin:
 		if runtime.GOOS == "windows" {
-			_, err = gwc.UnZip(filePath, "tmp")
+			_, err = be.UnZip(filePath, "tmp")
 			if err != nil {
 				return fmt.Errorf("unable to unzip file: %v - %v", filePath, err)
 			}
 			defer os.RemoveAll("tmp")
 		} else if runtime.GOARCH == "arm" {
-			err = gwc.ExtractTarGz(r)
+			err = be.ExtractTarGz(r)
 			if err != nil {
 				return fmt.Errorf("unable to extractTarGz file: %v - %v", r, err)
 			}
 		} else {
-			err = gwc.ExtractTarGz(r)
+			err = be.ExtractTarGz(r)
 			if err != nil {
 				return fmt.Errorf("unable to extractTarGz file: %v - %v", r, err)
 			}
@@ -446,93 +393,82 @@ func doRequiredFiles() error {
 	log.Print("Installing files...")
 
 	// Copy files to correct location
-	var srcPath, srcFileCLI, srcFileD, srcFileTX, srcFileGWConfCLI /*srcFileGWConfSrv,*/, srcFileGWCLI /*srcFileGWUprade*/ /*srcFileGWServer*/ string
-	srcFileGWConfCLI = gwc.CCLIConfFile + gwc.CCLIConfFileExt
+	var srcPath, srcFileCLI, srcFileD, srcFileTX, srcFileBWConfCLI, srcFileBWCLI string
+	srcFileBWConfCLI = be.CCLIConfFile + be.CCLIConfFileExt
 	//srcFileGWConfSrv = gwc.CServerConfFile + gwc.CServerConfFileExt
 	var srcREADMEFile = "README.md"
 
-	switch gwconf.ProjectType {
-	case gwc.PTDivi:
+	switch bwconf.ProjectType {
+	case be.PTDivi:
 		switch runtime.GOOS {
 		case "windows":
-			srcPath = "./tmp/" + cDiviExtractedDir + "bin/"
-			srcFileCLI = gwc.CDiviCliFileWin
-			srcFileD = gwc.CDiviDFileWin
-			srcFileTX = gwc.CDiviTxFileWin
-			srcFileGWCLI = gwc.CAppCLIFileWinBoxDivi
-			// srcFileGWServer = gwc.CAppServerFileWinBoxDivi
+			srcPath = "./tmp/" + be.CDiviExtractedDir + "bin/"
+			srcFileCLI = be.CDiviCliFileWin
+			srcFileD = be.CDiviDFileWin
+			srcFileTX = be.CDiviTxFileWin
+			srcFileBWCLI = be.CAppFilenameWin
 		case "arm":
-			srcPath = "./" + cDiviExtractedDir + "bin/"
-			srcFileCLI = gwc.CDiviCliFile
-			srcFileD = gwc.CDiviDFile
-			srcFileTX = gwc.CDiviTxFile
-			srcFileGWCLI = gwc.CAppCLIFileBoxDivi
-			//srcFileGWUprade = gwc.CAppUpdaterFileGoDivi
-			// srcFileGWServer = gwc.CAppServerFileGoDivi
+			srcPath = "./" + be.CDiviExtractedDir + "bin/"
+			srcFileCLI = be.CDiviCliFile
+			srcFileD = be.CDiviDFile
+			srcFileTX = be.CDiviTxFile
+			srcFileBWCLI = be.CAppFilename
 		case "linux":
-			srcPath = "./" + cDiviExtractedDir + "bin/"
-			srcFileCLI = gwc.CDiviCliFile
-			srcFileD = gwc.CDiviDFile
-			srcFileTX = gwc.CDiviTxFile
-			srcFileGWCLI = gwc.CAppCLIFileBoxDivi
-			//srcFileGWUprade = gwc.CAppUpdaterFileGoDivi
-			// srcFileGWServer = gwc.CAppServerFileGoDivi
+			srcPath = "./" + be.CDiviExtractedDir + "bin/"
+			srcFileCLI = be.CDiviCliFile
+			srcFileD = be.CDiviDFile
+			srcFileTX = be.CDiviTxFile
+			srcFileBWCLI = be.CAppFilename
 		default:
 			err = errors.New("unable to determine runtime.GOOS")
 		}
-	case gwc.PTPhore:
+	case be.PTPhore:
 		switch runtime.GOOS {
 		case "windows":
-			srcPath = "./tmp/" + cPhoreExtractedDir + "bin/"
-			srcFileCLI = gwc.CPhoreCliFileWin
-			srcFileD = gwc.CPhoreDFileWin
-			srcFileTX = gwc.CPhoreTxFileWin
-			srcFileGWCLI = gwc.CAppCLIFileWinBoxPhore
-			// srcFileGWServer = gwc.CAppServerFileWinBoxPhore
+			srcPath = "./tmp/" + be.CPhoreExtractedDir + "bin/"
+			srcFileCLI = be.CPhoreCliFileWin
+			srcFileD = be.CPhoreDFileWin
+			srcFileTX = be.CPhoreTxFileWin
+			srcFileBWCLI = be.CAppFilenameWin
 		case "arm":
-			srcPath = "./" + cPhoreExtractedDir + "bin/"
-			srcFileCLI = gwc.CPhoreCliFile
-			srcFileD = gwc.CPhoreDFile
-			srcFileTX = gwc.CPhoreTxFile
-			srcFileGWCLI = gwc.CAppCLIFileBoxPhore
+			srcPath = "./" + be.CPhoreExtractedDir + "bin/"
+			srcFileCLI = be.CPhoreCliFile
+			srcFileD = be.CPhoreDFile
+			srcFileTX = be.CPhoreTxFile
+			srcFileBWCLI = be.CAppFilename
 		case "linux":
-			srcPath = "./" + cPhoreExtractedDir + "bin/"
-			srcFileCLI = gwc.CPhoreCliFile
-			srcFileD = gwc.CPhoreDFile
-			srcFileTX = gwc.CPhoreTxFile
-			srcFileGWCLI = gwc.CAppCLIFileBoxPhore
+			srcPath = "./" + be.CPhoreExtractedDir + "bin/"
+			srcFileCLI = be.CPhoreCliFile
+			srcFileD = be.CPhoreDFile
+			srcFileTX = be.CPhoreTxFile
+			srcFileBWCLI = be.CAppFilename
 		default:
 			err = errors.New("unable to determine runtime.GOOS")
 		}
-	case gwc.PTPIVX:
+	case be.PTPIVX:
 		switch runtime.GOOS {
 		case "windows":
-			srcPath = "./tmp/" + cPIVXExtractedDirWindows + "pivx-" + cPIVXCoreVersion + "bin/"
-			srcFileCLI = gwc.CPIVXCliFileWin
-			srcFileD = gwc.CPIVXDFileWin
-			srcFileTX = gwc.CPIVXTxFileWin
-			srcFileGWCLI = gwc.CAppCLIFileWinBoxPIVX
-			// srcFileGWServer = gwc.CAppServerFileWinGoPIVX
+			srcPath = "./tmp/" + be.CPIVXExtractedDirWindows + "pivx-" + be.CPIVXCoreVersion + "bin/"
+			srcFileCLI = be.CPIVXCliFileWin
+			srcFileD = be.CPIVXDFileWin
+			srcFileTX = be.CPIVXTxFileWin
+			srcFileBWCLI = be.CAppFilenameWin
 		case "arm":
-			srcPath = "./" + cPIVXExtractedDirArm + "bin/"
-			srcFileCLI = gwc.CPIVXCliFile
-			srcFileD = gwc.CPIVXDFile
-			srcFileTX = gwc.CPIVXTxFile
-			srcFileGWCLI = gwc.CAppCLIFileBoxPIVX
-			//srcFileGWUprade = gwc.CAppUpdaterFileGoPIVX
-			// srcFileGWServer = gwc.CAppServerFileGoPIVX
+			srcPath = "./" + be.CPIVXExtractedDirArm + "bin/"
+			srcFileCLI = be.CPIVXCliFile
+			srcFileD = be.CPIVXDFile
+			srcFileTX = be.CPIVXTxFile
+			srcFileBWCLI = be.CAppFilename
 		case "linux":
-			srcPath = "./" + cPIVXExtractedDirLinux + "bin/"
-			srcFileCLI = gwc.CPIVXCliFile
-			srcFileD = gwc.CPIVXDFile
-			srcFileTX = gwc.CPIVXTxFile
-			srcFileGWCLI = gwc.CAppCLIFileBoxPIVX
-			//srcFileGWUprade = gwc.CAppUpdaterFileGoPIVX
-			// srcFileGWServer = gwc.CAppServerFileGoPIVX
+			srcPath = "./" + be.CPIVXExtractedDirLinux + "bin/"
+			srcFileCLI = be.CPIVXCliFile
+			srcFileD = be.CPIVXDFile
+			srcFileTX = be.CPIVXTxFile
+			srcFileBWCLI = be.CAppFilename
 		default:
 			err = errors.New("unable to determine runtime.GOOS")
 		}
-	case gwc.PTTrezarcoin:
+	case be.PTTrezarcoin:
 		switch runtime.GOOS {
 		case "windows":
 			err = errors.New("windows is not currently supported for Trezarcoin")
@@ -540,12 +476,10 @@ func doRequiredFiles() error {
 			err = errors.New("arm is not currently supported for Trezarcoin")
 		case "linux":
 			srcPath = "./"
-			srcFileCLI = gwc.CTrezarcoinCliFile
-			srcFileD = gwc.CTrezarcoinDFile
-			srcFileTX = gwc.CTrezarcoinTxFile
-			srcFileGWCLI = gwc.CAppCLIFileBoxTrezarcoin
-			//srcFileGWUprade = gwc.CAppUpdaterFileGoTrezarcoin
-			// srcFileGWServer = gwc.CAppServerFileGoTrezarcoin
+			srcFileCLI = be.CTrezarcoinCliFile
+			srcFileD = be.CTrezarcoinDFile
+			srcFileTX = be.CTrezarcoinTxFile
+			srcFileBWCLI = be.CAppFilename
 		default:
 			err = errors.New("unable to determine runtime.GOOS")
 		}
@@ -557,7 +491,7 @@ func doRequiredFiles() error {
 	}
 
 	// coin-cli
-	err = gwc.FileCopy(srcPath+srcFileCLI, abf+srcFileCLI, false)
+	err = be.FileCopy(srcPath+srcFileCLI, abf+srcFileCLI, false)
 	if err != nil {
 		return fmt.Errorf("unable to copyFile from: %v to %v - %v", srcPath+srcFileCLI, abf+srcFileCLI, err)
 	}
@@ -566,7 +500,7 @@ func doRequiredFiles() error {
 		return fmt.Errorf("unable to chmod file: %v - %v", abf+srcFileCLI, err)
 	}
 	// coind
-	err = gwc.FileCopy(srcPath+srcFileD, abf+srcFileD, false)
+	err = be.FileCopy(srcPath+srcFileD, abf+srcFileD, false)
 	if err != nil {
 		return fmt.Errorf("unable to copyFile: %v - %v", srcPath+srcFileD, err)
 	}
@@ -576,7 +510,7 @@ func doRequiredFiles() error {
 	}
 
 	// cointx
-	err = gwc.FileCopy(srcPath+srcFileTX, abf+srcFileTX, false)
+	err = be.FileCopy(srcPath+srcFileTX, abf+srcFileTX, false)
 	if err != nil {
 		return fmt.Errorf("unable to copyFile: %v - %v", srcPath+srcFileTX, err)
 	}
@@ -591,78 +525,78 @@ func doRequiredFiles() error {
 		return fmt.Errorf("error getting exe - %v", err)
 	}
 
-	err = gwc.FileCopy(ex, abf+srcFileGWCLI, false)
+	err = be.FileCopy(ex, abf+srcFileBWCLI, false)
 	if err != nil {
-		return fmt.Errorf("unable to copyFile: %v - %v", abf+srcFileGWCLI, err)
+		return fmt.Errorf("unable to copyFile: %v - %v", abf+srcFileBWCLI, err)
 	}
-	err = os.Chmod(abf+srcFileGWCLI, 0777)
+	err = os.Chmod(abf+srcFileBWCLI, 0777)
 	if err != nil {
-		return fmt.Errorf("unable to chmod file: %v - %v", abf+srcFileGWCLI, err)
+		return fmt.Errorf("unable to chmod file: %v - %v", abf+srcFileBWCLI, err)
 	}
 
 	// Copy the README.md file
-	err = gwc.FileCopy("./"+srcREADMEFile, abf+srcREADMEFile, false)
+	err = be.FileCopy("./"+srcREADMEFile, abf+srcREADMEFile, false)
 	if err != nil {
 		return fmt.Errorf("unable to copyFile from: %v to %v - %v", "./"+srcREADMEFile, abf+srcREADMEFile, err)
 	}
 
 	// Copy the CLI config file
-	err = gwc.FileCopy("./"+srcFileGWConfCLI, abf+srcFileGWConfCLI, false)
+	err = be.FileCopy("./"+srcFileBWConfCLI, abf+srcFileBWConfCLI, false)
 	if err != nil {
-		return fmt.Errorf("unable to copyFile: %v - %v", abf+srcFileGWConfCLI, err)
+		return fmt.Errorf("unable to copyFile: %v - %v", abf+srcFileBWConfCLI, err)
 	}
 
 	return nil
 }
 
 // getCoinDownloadLink - Returns a link to the required file
-func getCoinDownloadLink(ostype gwc.OSType) (url, file string, err error) {
-	gwconf, err := gwc.GetCLIConfStruct()
+func getCoinDownloadLink(ostype be.OSType) (url, file string, err error) {
+	bwconf, err := be.GetConfigStruct("", true)
 	if err != nil {
 		return "", "", err
 	}
-	switch gwconf.ProjectType {
-	case gwc.PTDivi:
+	switch bwconf.ProjectType {
+	case be.PTDivi:
 		switch ostype {
-		case gwc.OSTArm:
-			return cDownloadURLDivi, cDFDiviRPi, nil
-		case gwc.OSTLinux:
-			return cDownloadURLDivi, cDFDiviLinux, nil
-		case gwc.OSTWindows:
-			return cDownloadURLDivi, cDFDiviWindows, nil
+		case be.OSTArm:
+			return be.CDownloadURLDivi, be.CDFDiviRPi, nil
+		case be.OSTLinux:
+			return be.CDownloadURLDivi, be.CDFDiviLinux, nil
+		case be.OSTWindows:
+			return be.CDownloadURLDivi, be.CDFDiviWindows, nil
 		default:
 			err = errors.New("unable to determine OSType")
 		}
-	case gwc.PTPhore:
+	case be.PTPhore:
 		switch ostype {
-		case gwc.OSTArm:
-			return cDownloadURLPhore, cDFPhoreRPi, nil
-		case gwc.OSTLinux:
-			return cDownloadURLPhore, cDFPhoreLinux, nil
-		case gwc.OSTWindows:
-			return cDownloadURLPhore, cDFPhoreWindows, nil
+		case be.OSTArm:
+			return be.CDownloadURLPhore, be.CDFPhoreRPi, nil
+		case be.OSTLinux:
+			return be.CDownloadURLPhore, be.CDFPhoreLinux, nil
+		case be.OSTWindows:
+			return be.CDownloadURLPhore, be.CDFPhoreWindows, nil
 		default:
 			err = errors.New("unable to determine OSType")
 		}
-	case gwc.PTPIVX:
+	case be.PTPIVX:
 		switch ostype {
-		case gwc.OSTArm:
-			return cDownloadURLPIVX, cDFPIVXFileRPi, nil
-		case gwc.OSTLinux:
-			return cDownloadURLPIVX, cDFPIVXFileLinux, nil
-		case gwc.OSTWindows:
-			return cDownloadURLPIVX, cDFPIVXFileWindows, nil
+		case be.OSTArm:
+			return be.CDownloadURLPIVX, be.CDFPIVXFileRPi, nil
+		case be.OSTLinux:
+			return be.CDownloadURLPIVX, be.CDFPIVXFileLinux, nil
+		case be.OSTWindows:
+			return be.CDownloadURLPIVX, be.CDFPIVXFileWindows, nil
 		default:
 			err = errors.New("unable to determine OSType")
 		}
-	case gwc.PTTrezarcoin:
+	case be.PTTrezarcoin:
 		switch ostype {
-		case gwc.OSTArm:
-			return cDownloadURLTC, cDFTrezarcoinRPi, nil
-		case gwc.OSTLinux:
-			return cDownloadURLTC, cDFTrezarcoinLinux, nil
-		case gwc.OSTWindows:
-			return cDownloadURLTC, cDFTrezarcoinWindows, nil
+		case be.OSTArm:
+			return be.CDownloadURLTC, be.CDFTrezarcoinRPi, nil
+		case be.OSTLinux:
+			return be.CDownloadURLTC, be.CDFTrezarcoinLinux, nil
+		case be.OSTWindows:
+			return be.CDownloadURLTC, be.CDFTrezarcoinWindows, nil
 		default:
 			err = errors.New("unable to determine OSType")
 		}

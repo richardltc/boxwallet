@@ -19,7 +19,6 @@ package cmd
 
 import (
 	"fmt"
-
 	"github.com/spf13/cobra"
 )
 
@@ -29,7 +28,7 @@ var walletCmd = &cobra.Command{
 	Short: "Various commands for managing your wallet.",
 	Long:  ``,
 	Run: func(cmd *cobra.Command, args []string) {
-		fmt.Println("Please use ./" + sAppCLIFilename + " wallet encrypt")
+		fmt.Println("Please use " + " wallet encrypt")
 	},
 }
 

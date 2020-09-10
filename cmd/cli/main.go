@@ -15,7 +15,7 @@ limitations under the License.
 */
 package main
 
-import "richardmace.co.uk/boxdivi/cmd/cli/cmd"
+import "richardmace.co.uk/boxwallet/cmd/cli/cmd"
 
 func main() {
 	cmd.Execute()

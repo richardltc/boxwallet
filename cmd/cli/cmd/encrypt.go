@@ -19,21 +19,23 @@ package cmd
 import (
 	"fmt"
 	"log"
-	be "richardmace.co.uk/boxdivi/cmd/cli/cmd/bend"
+	be "richardmace.co.uk/boxwallet/cmd/cli/cmd/bend"
 
-	gwc "github.com/richardltc/gwcommon"
+	// gwc "github.com/richardltc/gwcommon"
 	"github.com/spf13/cobra"
 )
 
 // encryptCmd represents the encrypt command
 var encryptCmd = &cobra.Command{
 	Use:   "encrypt",
-	Short: "Encrypts your " + sCoinName + " wallet",
+	Short: "Encrypts your wallet",
 	Long:  ``,
 	Run: func(cmd *cobra.Command, args []string) {
-		cliConf, err := gwc.GetCLIConfStruct()
+		// Lets load our config file first, to see if the user has made their coin choice...
+		cliConf, err := be.GetConfigStruct("", true)
 		if err != nil {
-			log.Fatal("Unable to GetCLIConfStruct " + err.Error())
+			log.Fatal("Unable to determine coin type. Please run " + be.CAppFilename + " coin" + err.Error())
+			//log.Fatal("Unable to GetCLIConfStruct " + err.Error())
 		}
 
 		// Check wallet encryption status

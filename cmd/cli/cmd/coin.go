@@ -1,6 +1,4 @@
 /*
-Package cmd ...
-
 Copyright © 2020 NAME HERE <EMAIL ADDRESS>
 
 Licensed under the Apache License, Version 2.0 (the "License");
@@ -18,41 +16,53 @@ limitations under the License.
 package cmd
 
 import (
+	"github.com/AlecAivazis/survey/v2"
+	"log"
 	be "richardmace.co.uk/boxwallet/cmd/cli/cmd/bend"
-
-	// gwc "github.com/richardltc/gwcommon"
+	//_ "github.com/AlecAivazis/survey/v2"
 	"github.com/spf13/cobra"
 )
 
-// updateCmd represents the update command
-var updateCmd = &cobra.Command{
-	Use:   "update",
-	Short: "You can update " + be.CAppName + " to the latest version by running ",
+// coinCmd represents the coin command
+var coinCmd = &cobra.Command{
+	Use:   "coin",
+	Short: "The coin command is used to specify which coin you wish to work with",
 	Long:  ``,
 	Run: func(cmd *cobra.Command, args []string) {
-		//sAppName, err := be.GetAppName(gwc.APPTCLI)
-		//if err != nil {
-		//	log.Fatal("Unable to GetAppName " + err.Error())
-		//}
-		//abf, err := gwc.GetAppsBinFolder(gwc.APPTCLI)
-		//if err != nil {
-		//	log.Fatal("Unable to GetAppsBinFolder " + err.Error())
-		//}
-		//
-		//log.Fatal(sAppName + ` can be updated to the latest version by running "./` + sAppUpdaterFile + `" from within the ` + abf + " folder.")
+		//fmt.Println("coin called")
+		coin := ""
+		prompt := &survey.Select{
+			Message: "Please choose your preferred coin:",
+			Options: []string{be.CCoinNameDivi, be.CCoinNamePhore},
+		}
+		survey.AskOne(prompt, &coin)
+		cliConf := be.ConfStruct{}
+
+		switch coin {
+		case be.CCoinNameDivi:
+			cliConf.ProjectType = be.PTDivi
+			cliConf.Port = "51473"
+		case be.CCoinNamePhore:
+			cliConf.ProjectType = be.PTPhore
+		default:
+			log.Fatal("Unable to determine coin choice")
+		}
+		if err := be.SetConfigStruct("", cliConf); err != nil {
+			log.Fatal("Unable to write to config file: ", err)
+		}
 	},
 }
 
 func init() {
-	rootCmd.AddCommand(updateCmd)
+	rootCmd.AddCommand(coinCmd)
 
 	// Here you will define your flags and configuration settings.
 
 	// Cobra supports Persistent Flags which will work for this command
 	// and all subcommands, e.g.:
-	// updateCmd.PersistentFlags().String("foo", "", "A help for foo")
+	// coinCmd.PersistentFlags().String("foo", "", "A help for foo")
 
 	// Cobra supports local flags which will only run when this command
 	// is called directly, e.g.:
-	// updateCmd.Flags().BoolP("toggle", "t", false, "Help message for toggle")
+	// coinCmd.Flags().BoolP("toggle", "t", false, "Help message for toggle")
 }
