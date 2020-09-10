@@ -11,18 +11,25 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"os/user"
 	"runtime"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/mitchellh/go-ps"
-	gwc "github.com/richardltc/gwcommon"
-	rand "richardmace.co.uk/boxdivi/cmd/cli/cmd/bend/rand"
+	rand "richardmace.co.uk/boxwallet/cmd/cli/cmd/bend/rand"
 )
 
 const (
-	cDiviAddNodeURL string = "https://api.diviproject.org/v1/addnode"
+	CAppName        string = "BoxWallet"
+	CAppVersion     string = "0.32.0"
+	CAppFilename    string = "boxwallet"
+	CAppFilenameWin string = "boxwallet.exe"
+	CAppLogfile     string = "boxwallet.log"
+
+	CAppBinDir    string = "boxwallet"
+	CAppBinDirWin string = "BoxWallet"
 
 	// Divi-cli command constants
 	cCommandGetBCInfo     string = "getblockchaininfo"
@@ -40,19 +47,84 @@ const (
 	cCommandUnlockWalletFS string = "walletpassphrase" // ./divi-cli walletpassphrase “password” 0 true
 	cCommandLockWallet     string = "walletlock"       // ./divi-cli walletlock
 
+	// Divid Responses
+	cDiviDNotRunningError     string = "error: couldn't connect to server"
+	cDiviDDIVIServerStarting  string = "DIVI server starting"
+	cDividRespWalletEncrypted string = "wallet encrypted"
+
+	cGoDiviExportPath         string = "export PATH=$PATH:"
+	CUninstallConfirmationStr string = "Confirm"
+	CSeedStoredSafelyStr      string = "Confirm"
+
+	// CMinRequiredMemoryMB - Needed by install command
+	CMinRequiredMemoryMB int = 920
+	CMinRequiredSwapMB   int = 2048
+
+	// Wallet Security Statuses - Should be types?
+	CWalletStatusLocked      string = "locked"
+	CWalletStatusUnlocked    string = "unlocked"
+	CWalletStatusLockedAndSk string = "locked-anonymization"
+	CWalletStatusUnEncrypted string = "unencrypted"
+
 	cRPCUserStr     string = "rpcuser"
 	cRPCPasswordStr string = "rpcpassword"
+
+	cUtfTick     string = "\u2713"
+	CUtfTickBold string = "\u2714"
+
+	cCircProg1 string = "\u25F7"
+	cCircProg2 string = "\u25F6"
+	cCircProg3 string = "\u25F5"
+	cCircProg4 string = "\u25F4"
+
+	cUtfLock string = "\u1F512"
 )
 
-//type blockChainInfo struct {
-//	Chain                string  `json:"chain"`
-//	Blocks               int     `json:"blocks"`
-//	Headers              int     `json:"headers"`
-//	Bestblockhash        string  `json:"bestblockhash"`
-//	Difficulty           float64 `json:"difficulty"`
-//	Verificationprogress float64 `json:"verificationprogress"`
-//	Chainwork            string  `json:"chainwork"`
-//}
+// APPType - either APPTCLI, APPTCLICompiled, APPTInstaller, APPTUpdater, APPTServer
+type APPType int
+
+const (
+	// APPTCLI - e.g. boxdivi
+	APPTCLI APPType = iota
+	// APPTCLICompiled - e.g. cli
+	APPTCLICompiled
+	// APPTInstaller e.g. godivi-installer
+	//APPTInstaller
+	// APPTUpdater e.g. update-godivi
+	APPTUpdater
+	// APPTUpdaterCompiled e.g. updater
+	APPTUpdaterCompiled
+	// APPTServer e.g. boxdivis
+	//APPTServer
+	// APPTServerCompiled e.g. web
+	//APPTServerCompiled
+)
+
+// ProjectType - To allow external to determine what kind of wallet we are working with
+type ProjectType int
+
+const (
+	// PTDivi - Divi
+	PTDivi ProjectType = iota
+	// PTPhore - Phore
+	PTPhore
+	// PTPIVX - PIVX
+	PTPIVX
+	// PTTrezarcoin - TrezarCoin
+	PTTrezarcoin
+)
+
+// OSType - either ostArm, ostLinux or ostWindows
+type OSType int
+
+const (
+	// OSTArm - Arm
+	OSTArm OSType = iota
+	// OSTLinux - Linux
+	OSTLinux
+	// OSTWindows - Windows
+	OSTWindows
+)
 
 type BlockchainInfoRespStruct struct {
 	Result struct {
@@ -105,55 +177,6 @@ type GetInfoRespStruct struct {
 	ID    string      `json:"id"`
 }
 
-type LotteryRespStruct struct {
-	Lottery struct {
-		AverageBlockTime float64 `json:"averageBlockTime"`
-		CurrentBlock     int     `json:"currentBlock"`
-		NextLotteryBlock int     `json:"nextLotteryBlock"`
-		Countdown        struct {
-			Milliseconds float64 `json:"milliseconds"`
-			Humanized    string  `json:"humanized"`
-		} `json:"countdown"`
-	} `json:"lottery"`
-	Stats string `json:"stats"`
-}
-
-type StakingStatusRespStruct struct {
-	Result struct {
-		Validtime       bool `json:"validtime"`
-		Haveconnections bool `json:"haveconnections"`
-		Walletunlocked  bool `json:"walletunlocked"`
-		Mintablecoins   bool `json:"mintablecoins"`
-		Enoughcoins     bool `json:"enoughcoins"`
-		Mnsync          bool `json:"mnsync"`
-		StakingStatus   bool `json:"staking status"`
-	} `json:"result"`
-	Error interface{} `json:"error"`
-	ID    string      `json:"id"`
-}
-
-type WalletInfoDiviRespStruct struct {
-	Result struct {
-		Walletversion      int     `json:"walletversion"`
-		Balance            float64 `json:"balance"`
-		UnconfirmedBalance float64 `json:"unconfirmed_balance"`
-		ImmatureBalance    float64 `json:"immature_balance"`
-		Txcount            int     `json:"txcount"`
-		Keypoololdest      int     `json:"keypoololdest"`
-		Keypoolsize        int     `json:"keypoolsize"`
-		EncryptionStatus   string  `json:"encryption_status"`
-		Hdchainid          string  `json:"hdchainid"`
-		Hdaccountcount     int     `json:"hdaccountcount"`
-		Hdaccounts         []struct {
-			Hdaccountindex     int `json:"hdaccountindex"`
-			Hdexternalkeyindex int `json:"hdexternalkeyindex"`
-			Hdinternalkeyindex int `json:"hdinternalkeyindex"`
-		} `json:"hdaccounts"`
-	} `json:"result"`
-	Error interface{} `json:"error"`
-	ID    string      `json:"id"`
-}
-
 type WalletInfoPhoreRespStruct struct {
 	Result struct {
 		Walletversion int     `json:"walletversion"`
@@ -162,24 +185,6 @@ type WalletInfoPhoreRespStruct struct {
 		Keypoololdest int     `json:"keypoololdest"`
 		Keypoolsize   int     `json:"keypoolsize"`
 		UnlockedUntil int     `json:"unlocked_until"`
-	} `json:"result"`
-	Error interface{} `json:"error"`
-	ID    string      `json:"id"`
-}
-
-type MNSyncStatusRespStruct struct {
-	Result struct {
-		IsBlockchainSynced         bool `json:"IsBlockchainSynced"`
-		LastMasternodeList         int  `json:"lastMasternodeList"`
-		LastMasternodeWinner       int  `json:"lastMasternodeWinner"`
-		LastFailure                int  `json:"lastFailure"`
-		NCountFailures             int  `json:"nCountFailures"`
-		SumMasternodeList          int  `json:"sumMasternodeList"`
-		SumMasternodeWinner        int  `json:"sumMasternodeWinner"`
-		CountMasternodeList        int  `json:"countMasternodeList"`
-		CountMasternodeWinner      int  `json:"countMasternodeWinner"`
-		RequestedMasternodeAssets  int  `json:"RequestedMasternodeAssets"`
-		RequestedMasternodeAttempt int  `json:"RequestedMasternodeAttempt"`
 	} `json:"result"`
 	Error interface{} `json:"error"`
 	ID    string      `json:"id"`
@@ -236,42 +241,32 @@ const (
 	WFTReSync
 )
 
-func AddNodesAlreadyExist() (bool, error) {
-	gwconf, err := gwc.GetCLIConfStruct()
-	if err != nil {
-		return false, fmt.Errorf("unable to GetConfigStruct - %v", err)
-	}
-	switch gwconf.ProjectType {
-	case gwc.PTDivi:
-		chd, _ := gwc.GetCoinHomeFolder(gwc.APPTCLI)
+func AddNodesDiviAlreadyExist() (bool, error) {
+	chd, _ := GetCoinHomeFolder(APPTCLI)
 
-		exists, err := gwc.StringExistsInFile("addnode=", chd+gwc.CDiviConfFile)
-		if err != nil {
-			return false, nil
-		}
-		if exists {
-			return true, nil
-		}
-	case gwc.PTTrezarcoin:
-	default:
-		err = errors.New("unable to determine ProjectType")
+	exists, err := StringExistsInFile("addnode=", chd+CDiviConfFile)
+	if err != nil {
+		return false, nil
+	}
+	if exists {
+		return true, nil
 	}
 	return false, nil
 }
 
 func AddAddNodesIfRequired() error {
-	doExist, err := AddNodesAlreadyExist()
+	doExist, err := AddNodesDiviAlreadyExist()
 	if err != nil {
 		return err
 	}
 	if !doExist {
-		gwconf, err := gwc.GetCLIConfStruct()
+		bwconf, err := GetConfigStruct("", false) //GetCLIConfStruct()
 		if err != nil {
 			return fmt.Errorf("unable to GetConfigStruct - %v", err)
 		}
-		switch gwconf.ProjectType {
-		case gwc.PTDivi:
-			chd, _ := gwc.GetCoinHomeFolder(gwc.APPTCLI)
+		switch bwconf.ProjectType {
+		case PTDivi:
+			chd, _ := GetCoinHomeFolder(APPTCLI)
 			if err := os.MkdirAll(chd, os.ModePerm); err != nil {
 				return fmt.Errorf("unable to make directory - %v", err)
 			}
@@ -285,17 +280,28 @@ func AddAddNodesIfRequired() error {
 				return fmt.Errorf("unable to retrieve addnodes, please try again")
 			}
 
-			if err := gwc.WriteTextToFile(chd+gwc.CDiviConfFile, sAddnodes); err != nil {
+			if err := WriteTextToFile(chd+CDiviConfFile, sAddnodes); err != nil {
 				return fmt.Errorf("unable to write addnodes to file - %v", err)
 			}
 
-		case gwc.PTTrezarcoin:
+		case PTTrezarcoin:
 
 		default:
 			err = errors.New("unable to determine ProjectType")
 		}
 	}
 	return nil
+}
+
+// ConvertBCVerification - Convert Blockchain verification progress
+func ConvertBCVerification(verificationPG float64) string {
+	var sProg string
+	var fProg float64
+
+	fProg = verificationPG * 100
+	sProg = fmt.Sprintf("%.2f", fProg)
+
+	return sProg
 }
 
 func findProcess(key string) (int, string, error) {
@@ -325,7 +331,7 @@ func getAddNodes() ([]byte, error) {
 		return nil, err
 	}
 
-	req.Header.Set("User-Agent", "boxdivi")
+	req.Header.Set("User-Agent", "boxwallet")
 
 	res, getErr := addNodesClient.Do(req)
 	if getErr != nil {
@@ -338,6 +344,23 @@ func getAddNodes() ([]byte, error) {
 	}
 
 	return body, nil
+}
+
+// GetAppFileName - Returns the name of the app binary file e.g. boxwallet or boxwallet.exe
+func GetAppFileName() (string, error) {
+	switch runtime.GOOS {
+	case "arm":
+		return CAppFilename, nil
+	case "linux":
+		return CAppFilename, nil
+	case "windows":
+		return CAppFilenameWin, nil
+	default:
+		err := errors.New("unable to determine runtime.GOOS")
+		return "", err
+	}
+
+	return "", nil
 }
 
 //func GetPrivKey() (privateSeedStruct, walletResponseType, error) {
@@ -449,7 +472,94 @@ func getAddNodes() ([]byte, error) {
 //	return bci, nil
 //}
 
-func GetBlockchainInfo(cliConf *gwc.CLIConfStruct) (BlockchainInfoRespStruct, error) {
+// GetCoinDaemonFilename - Return the coin daemon file name e.g. divid
+func GetCoinDaemonFilename(at APPType) (string, error) {
+	var pt ProjectType
+	switch at {
+	case APPTCLI:
+		conf, err := GetConfigStruct("", false)
+		if err != nil {
+			return "", err
+		}
+		pt = conf.ProjectType
+	//case APPTServer:
+	//	conf, err := GetServerConfStruct()
+	//	if err != nil {
+	//		return "", err
+	//	}
+	//	pt = conf.ProjectType
+	default:
+		err := errors.New("unable to determine AppType")
+		return "", err
+	}
+
+	switch pt {
+	case PTDivi:
+		return CDiviDFile, nil
+	case PTPhore:
+		return CPhoreDFile, nil
+	case PTPIVX:
+		return CPIVXDFile, nil
+	case PTTrezarcoin:
+		return CTrezarcoinDFile, nil
+	default:
+		err := errors.New("unable to determine ProjectType")
+		return "", err
+	}
+
+	return "", nil
+}
+
+// GetCoinName - Returns the name of the coin e.g. Divi
+func GetCoinName(at APPType) (string, error) {
+	var pt ProjectType
+	switch at {
+	case APPTCLI:
+		conf, err := GetConfigStruct("", false)
+		if err != nil {
+			return "", err
+		}
+		pt = conf.ProjectType
+	default:
+		err := errors.New("unable to determine AppType")
+		return "", err
+	}
+
+	switch pt {
+	case PTDivi:
+		return CCoinNameDivi, nil
+	case PTPhore:
+		return CCoinNamePhore, nil
+	case PTPIVX:
+		return CCoinNamePIVX, nil
+	case PTTrezarcoin:
+		return CCoinNameTrezarcoin, nil
+	default:
+		err := errors.New("unable to determine ProjectType")
+		return "", err
+	}
+
+	return "", nil
+}
+
+// GetAppsBinFolder - Returns the directory of where the BoxWallet binary files are stored
+func GetAppsBinFolder() (string, error) {
+	var s string
+	u, err := user.Current()
+	if err != nil {
+		return "", err
+	}
+	hd := u.HomeDir
+	if runtime.GOOS == "windows" {
+		// add the "appdata\roaming" part.
+		s = AddTrailingSlash(hd) + "appdata\\roaming\\" + AddTrailingSlash(CAppBinDirWin)
+	} else {
+		s = AddTrailingSlash(hd) + AddTrailingSlash(CAppBinDir)
+	}
+	return s, nil
+}
+
+func GetBlockchainInfo(cliConf *ConfStruct) (BlockchainInfoRespStruct, error) {
 	var respStruct BlockchainInfoRespStruct
 
 	body := strings.NewReader("{\"jsonrpc\":\"1.0\",\"id\":\"curltext\",\"method\":\"getblockchaininfo\",\"params\":[]}")
@@ -476,6 +586,60 @@ func GetBlockchainInfo(cliConf *gwc.CLIConfStruct) (BlockchainInfoRespStruct, er
 	return respStruct, nil
 }
 
+// GetCoinHomeFolder - Returns the ome folder for the coin e.g. .divi
+func GetCoinHomeFolder(at APPType) (string, error) {
+	var pt ProjectType
+	switch at {
+	case APPTCLI:
+		conf, err := GetConfigStruct("", false)
+		if err != nil {
+			return "", err
+		}
+		pt = conf.ProjectType
+	default:
+		err := errors.New("unable to determine AppType")
+		return "", err
+	}
+
+	var s string
+	u, err := user.Current()
+	if err != nil {
+		return "", err
+	}
+	hd := u.HomeDir
+	if runtime.GOOS == "windows" {
+		// add the "appdata\roaming" part.
+		switch pt {
+		case PTDivi:
+			s = AddTrailingSlash(hd) + "appdata\\roaming\\" + AddTrailingSlash(CDiviHomeDirWin)
+		case PTPhore:
+			s = AddTrailingSlash(hd) + "appdata\\roaming\\" + AddTrailingSlash(CPhoreHomeDirWin)
+		case PTPIVX:
+			s = AddTrailingSlash(hd) + "appdata\\roaming\\" + AddTrailingSlash(cPIVXHomeDirWin)
+		case PTTrezarcoin:
+			s = AddTrailingSlash(hd) + "appdata\\roaming\\" + AddTrailingSlash(CTrezarcoinHomeDirWin)
+		default:
+			err = errors.New("unable to determine ProjectType")
+
+		}
+	} else {
+		switch pt {
+		case PTDivi:
+			s = AddTrailingSlash(hd) + AddTrailingSlash(CDiviHomeDir)
+		case PTPhore:
+			s = AddTrailingSlash(hd) + AddTrailingSlash(CPhoreHomeDir)
+		case PTPIVX:
+			s = AddTrailingSlash(hd) + AddTrailingSlash(cPIVXHomeDir)
+		case PTTrezarcoin:
+			s = AddTrailingSlash(hd) + AddTrailingSlash(CTrezarcoinHomeDir)
+		default:
+			err = errors.New("unable to determine ProjectType")
+
+		}
+	}
+	return s, nil
+}
+
 //func getMNSyncStatus() (mnSyncStatus, error) {
 //	// gdConfig, err := getConfStruct("./")
 //	// if err != nil {
@@ -494,8 +658,8 @@ func GetBlockchainInfo(cliConf *gwc.CLIConfStruct) (BlockchainInfoRespStruct, er
 //	return mnss, nil
 //}
 
-func GetMNSyncStatus(cliConf *gwc.CLIConfStruct) (MNSyncStatusRespStruct, error) {
-	var respStruct MNSyncStatusRespStruct
+func GetMNSyncStatus(cliConf *ConfStruct) (MNSyncStatusDiviRespStruct, error) {
+	var respStruct MNSyncStatusDiviRespStruct
 
 	body := strings.NewReader("{\"jsonrpc\":\"1.0\",\"id\":\"curltext\",\"method\":\"mnsync\",\"params\":[\"status\"]}")
 	req, err := http.NewRequest("POST", "http://"+cliConf.ServerIP+":"+cliConf.Port, body)
@@ -522,7 +686,7 @@ func GetMNSyncStatus(cliConf *gwc.CLIConfStruct) (MNSyncStatusRespStruct, error)
 }
 
 // GetWalletAddress - Sends a "getaddressesbyaccount" to the daemon, and returns the result
-func GetWalletAddress(cliConf *gwc.CLIConfStruct) (GetAddressesByAccountRespStruct, error) {
+func GetWalletAddress(cliConf *ConfStruct) (GetAddressesByAccountRespStruct, error) {
 	var respStruct GetAddressesByAccountRespStruct
 
 	body := strings.NewReader("{\"jsonrpc\":\"1.0\",\"id\":\"curltext\",\"method\":\"getaddressesbyaccount\",\"params\":[\"\"]}")
@@ -698,34 +862,34 @@ func getWalletResponse(sOut string) walletResponseType {
 // IsCoinDaemonRunning - Works out whether the coin Daemon is running e.g. divid
 func IsCoinDaemonRunning() (bool, int, error) {
 	var pid int
-	gwconf, err := gwc.GetCLIConfStruct()
+	gwconf, err := GetConfigStruct("", false)
 	if err != nil {
 		return false, pid, err
 	}
 	switch gwconf.ProjectType {
-	case gwc.PTDivi:
+	case PTDivi:
 		if runtime.GOOS == "windows" {
-			pid, _, err = findProcess(gwc.CDiviDFileWin)
+			pid, _, err = findProcess(CDiviDFileWin)
 		} else {
-			pid, _, err = findProcess(gwc.CDiviDFile)
+			pid, _, err = findProcess(CDiviDFile)
 		}
-	case gwc.PTPhore:
+	case PTPhore:
 		if runtime.GOOS == "windows" {
-			pid, _, err = findProcess(gwc.CPhoreDFileWin)
+			pid, _, err = findProcess(CPhoreDFileWin)
 		} else {
-			pid, _, err = findProcess(gwc.CPhoreDFile)
+			pid, _, err = findProcess(CPhoreDFile)
 		}
-	case gwc.PTPIVX:
+	case PTPIVX:
 		if runtime.GOOS == "windows" {
-			pid, _, err = findProcess(gwc.CPIVXDFileWin)
+			pid, _, err = findProcess(CPIVXDFileWin)
 		} else {
-			pid, _, err = findProcess(gwc.CPIVXDFile)
+			pid, _, err = findProcess(CPIVXDFile)
 		}
-	case gwc.PTTrezarcoin:
+	case PTTrezarcoin:
 		if runtime.GOOS == "windows" {
-			pid, _, err = findProcess(gwc.CTrezarcoinDFileWin)
+			pid, _, err = findProcess(CTrezarcoinDFileWin)
 		} else {
-			pid, _, err = findProcess(gwc.CTrezarcoinDFile)
+			pid, _, err = findProcess(CTrezarcoinDFile)
 		}
 	default:
 		err = errors.New("unable to determine ProjectType")
@@ -739,25 +903,25 @@ func IsCoinDaemonRunning() (bool, int, error) {
 
 // PopulateDaemonConfFile - Populates the divi.conf file
 func PopulateDaemonConfFile() (rpcuser, rpcpassword string, err error) {
-	abf, err := gwc.GetAppsBinFolder(gwc.APPTCLI)
+	abf, err := GetAppsBinFolder()
 	if err != nil {
 		return "", "", fmt.Errorf("unable to GetAppsBinFolder - %v", err)
 	}
-	coind, err := gwc.GetCoinDaemonFilename(gwc.APPTCLI)
+	coind, err := GetCoinDaemonFilename(APPTCLI)
 	if err != nil {
 		return "", "", fmt.Errorf("unable to GetCoinDaemonFilename - %v", err)
 	}
 
-	gwconf, err := gwc.GetCLIConfStruct()
+	gwconf, err := GetConfigStruct("", false)
 	if err != nil {
 		return "", "", fmt.Errorf("unable to GetConfigStruct - %v", err)
 	}
 	switch gwconf.ProjectType {
-	case gwc.PTDivi:
+	case PTDivi:
 
-		fmt.Println("Populating " + gwc.CDiviConfFile + " for initial setup...")
+		fmt.Println("Populating " + CDiviConfFile + " for initial setup...")
 
-		chd, _ := gwc.GetCoinHomeFolder(gwc.APPTCLI)
+		chd, _ := GetCoinHomeFolder(APPTCLI)
 		if err := os.MkdirAll(chd, os.ModePerm); err != nil {
 			return "", "", fmt.Errorf("unable to make directory - %v", err)
 		}
@@ -766,28 +930,28 @@ func PopulateDaemonConfFile() (rpcuser, rpcpassword string, err error) {
 		rpcu := "divirpc"
 		rpcpw := rand.String(20)
 
-		if err := gwc.WriteTextToFile(chd+gwc.CDiviConfFile, cRPCUserStr+"="+rpcu); err != nil {
+		if err := WriteTextToFile(chd+CDiviConfFile, cRPCUserStr+"="+rpcu); err != nil {
 			log.Fatal(err)
 		}
-		if err := gwc.WriteTextToFile(chd+gwc.CDiviConfFile, cRPCPasswordStr+"="+rpcpw); err != nil {
+		if err := WriteTextToFile(chd+CDiviConfFile, cRPCPasswordStr+"="+rpcpw); err != nil {
 			log.Fatal(err)
 		}
-		if err := gwc.WriteTextToFile(chd+gwc.CDiviConfFile, ""); err != nil {
+		if err := WriteTextToFile(chd+CDiviConfFile, ""); err != nil {
 			log.Fatal(err)
 		}
-		if err := gwc.WriteTextToFile(chd+gwc.CDiviConfFile, "daemon=1"); err != nil {
+		if err := WriteTextToFile(chd+CDiviConfFile, "daemon=1"); err != nil {
 			log.Fatal(err)
 		}
-		if err := gwc.WriteTextToFile(chd+gwc.CDiviConfFile, ""); err != nil {
+		if err := WriteTextToFile(chd+CDiviConfFile, ""); err != nil {
 			log.Fatal(err)
 		}
-		if err := gwc.WriteTextToFile(chd+gwc.CDiviConfFile, "server=1"); err != nil {
+		if err := WriteTextToFile(chd+CDiviConfFile, "server=1"); err != nil {
 			log.Fatal(err)
 		}
-		if err := gwc.WriteTextToFile(chd+gwc.CDiviConfFile, "rpcallowip=192.168.1.0/255.255.255.0"); err != nil {
+		if err := WriteTextToFile(chd+CDiviConfFile, "rpcallowip=192.168.1.0/255.255.255.0"); err != nil {
 			log.Fatal(err)
 		}
-		if err := gwc.WriteTextToFile(chd+gwc.CDiviConfFile, "rpcport=51473"); err != nil {
+		if err := WriteTextToFile(chd+CDiviConfFile, "rpcport=51473"); err != nil {
 			log.Fatal(err)
 		}
 
@@ -798,10 +962,10 @@ func PopulateDaemonConfFile() (rpcuser, rpcpassword string, err error) {
 		//}
 
 		return rpcu, rpcpw, nil
-	case gwc.PTPhore:
-		fmt.Println("Populating " + gwc.CPhoreConfFile + " for initial setup...")
+	case PTPhore:
+		fmt.Println("Populating " + CPhoreConfFile + " for initial setup...")
 
-		chd, _ := gwc.GetCoinHomeFolder(gwc.APPTCLI)
+		chd, _ := GetCoinHomeFolder(APPTCLI)
 		if err := os.MkdirAll(chd, os.ModePerm); err != nil {
 			return "", "", fmt.Errorf("unable to make directory - %v", err)
 		}
@@ -810,28 +974,28 @@ func PopulateDaemonConfFile() (rpcuser, rpcpassword string, err error) {
 		rpcu := "phorerpc"
 		rpcpw := rand.String(20)
 
-		if err := gwc.WriteTextToFile(chd+gwc.CPhoreConfFile, cRPCUserStr+"="+rpcu); err != nil {
+		if err := WriteTextToFile(chd+CPhoreConfFile, cRPCUserStr+"="+rpcu); err != nil {
 			log.Fatal(err)
 		}
-		if err := gwc.WriteTextToFile(chd+gwc.CPhoreConfFile, cRPCPasswordStr+"="+rpcpw); err != nil {
+		if err := WriteTextToFile(chd+CPhoreConfFile, cRPCPasswordStr+"="+rpcpw); err != nil {
 			log.Fatal(err)
 		}
-		if err := gwc.WriteTextToFile(chd+gwc.CPhoreConfFile, ""); err != nil {
+		if err := WriteTextToFile(chd+CPhoreConfFile, ""); err != nil {
 			log.Fatal(err)
 		}
-		if err := gwc.WriteTextToFile(chd+gwc.CPhoreConfFile, "daemon=1"); err != nil {
+		if err := WriteTextToFile(chd+CPhoreConfFile, "daemon=1"); err != nil {
 			log.Fatal(err)
 		}
-		if err := gwc.WriteTextToFile(chd+gwc.CPhoreConfFile, ""); err != nil {
+		if err := WriteTextToFile(chd+CPhoreConfFile, ""); err != nil {
 			log.Fatal(err)
 		}
-		if err := gwc.WriteTextToFile(chd+gwc.CPhoreConfFile, "server=1"); err != nil {
+		if err := WriteTextToFile(chd+CPhoreConfFile, "server=1"); err != nil {
 			log.Fatal(err)
 		}
-		if err := gwc.WriteTextToFile(chd+gwc.CPhoreConfFile, "rpcallowip=192.168.1.0/255.255.255.0"); err != nil {
+		if err := WriteTextToFile(chd+CPhoreConfFile, "rpcallowip=192.168.1.0/255.255.255.0"); err != nil {
 			log.Fatal(err)
 		}
-		if err := gwc.WriteTextToFile(chd+gwc.CPhoreConfFile, "rpcport=11772"); err != nil {
+		if err := WriteTextToFile(chd+CPhoreConfFile, "rpcport=11772"); err != nil {
 			log.Fatal(err)
 		}
 
@@ -842,10 +1006,10 @@ func PopulateDaemonConfFile() (rpcuser, rpcpassword string, err error) {
 		//}
 
 		return rpcu, rpcpw, nil
-	case gwc.PTPIVX:
-		fmt.Println("Populating " + gwc.CPIVXConfFile + " for initial setup...")
+	case PTPIVX:
+		fmt.Println("Populating " + CPIVXConfFile + " for initial setup...")
 
-		chd, _ := gwc.GetCoinHomeFolder(gwc.APPTCLI)
+		chd, _ := GetCoinHomeFolder(APPTCLI)
 		if err := os.MkdirAll(chd, os.ModePerm); err != nil {
 			return "", "", fmt.Errorf("unable to make directory - %v", err)
 		}
@@ -854,28 +1018,28 @@ func PopulateDaemonConfFile() (rpcuser, rpcpassword string, err error) {
 		rpcu := "pivxrpc"
 		rpcpw := rand.String(20)
 
-		if err := gwc.WriteTextToFile(chd+gwc.CPIVXConfFile, cRPCUserStr+"="+rpcu); err != nil {
+		if err := WriteTextToFile(chd+CPIVXConfFile, cRPCUserStr+"="+rpcu); err != nil {
 			log.Fatal(err)
 		}
-		if err := gwc.WriteTextToFile(chd+gwc.CPIVXConfFile, cRPCPasswordStr+"="+rpcpw); err != nil {
+		if err := WriteTextToFile(chd+CPIVXConfFile, cRPCPasswordStr+"="+rpcpw); err != nil {
 			log.Fatal(err)
 		}
-		if err := gwc.WriteTextToFile(chd+gwc.CPIVXConfFile, ""); err != nil {
+		if err := WriteTextToFile(chd+CPIVXConfFile, ""); err != nil {
 			log.Fatal(err)
 		}
-		if err := gwc.WriteTextToFile(chd+gwc.CPIVXConfFile, "daemon=1"); err != nil {
+		if err := WriteTextToFile(chd+CPIVXConfFile, "daemon=1"); err != nil {
 			log.Fatal(err)
 		}
-		if err := gwc.WriteTextToFile(chd+gwc.CPIVXConfFile, ""); err != nil {
+		if err := WriteTextToFile(chd+CPIVXConfFile, ""); err != nil {
 			log.Fatal(err)
 		}
-		if err := gwc.WriteTextToFile(chd+gwc.CPIVXConfFile, "server=1"); err != nil {
+		if err := WriteTextToFile(chd+CPIVXConfFile, "server=1"); err != nil {
 			log.Fatal(err)
 		}
-		if err := gwc.WriteTextToFile(chd+gwc.CPIVXConfFile, "rpcallowip=192.168.1.0/255.255.255.0"); err != nil {
+		if err := WriteTextToFile(chd+CPIVXConfFile, "rpcallowip=192.168.1.0/255.255.255.0"); err != nil {
 			log.Fatal(err)
 		}
-		if err := gwc.WriteTextToFile(chd+gwc.CPIVXConfFile, "rpcport=51473"); err != nil {
+		if err := WriteTextToFile(chd+CPIVXConfFile, "rpcport=51473"); err != nil {
 			log.Fatal(err)
 		}
 
@@ -886,7 +1050,7 @@ func PopulateDaemonConfFile() (rpcuser, rpcpassword string, err error) {
 		//}
 
 		return rpcu, rpcpw, nil
-	case gwc.PTTrezarcoin:
+	case PTTrezarcoin:
 		//Run divid for the first time, so that we can get the outputted info to build the conf file
 		fmt.Println("Attempting to run " + coind + " for the first time...")
 		cmdTrezarCDRun := exec.Command(abf + coind)
@@ -909,17 +1073,17 @@ func WalletHardFix() error {
 		return fmt.Errorf("unable to StopDiviD: %v", err)
 	}
 
-	chf, err := gwc.GetCoinHomeFolder(gwc.APPTCLI)
+	chf, err := GetCoinHomeFolder(APPTCLI)
 	if err != nil {
 		return fmt.Errorf("unable to get coin home folder: %v", err)
 	}
 
-	gwconf, err := gwc.GetCLIConfStruct()
+	gwconf, err := GetConfigStruct("", false)
 	if err != nil {
 		return err
 	}
 	switch gwconf.ProjectType {
-	case gwc.PTDivi:
+	case PTDivi:
 		if runtime.GOOS == "windows" {
 			// TODO Complete for Windows
 		} else {
@@ -979,9 +1143,9 @@ func WalletHardFix() error {
 			//	log.Fatalf("failed to run divid: %v", err)
 			//}
 		}
-	case gwc.PTPhore:
-	case gwc.PTPIVX:
-	case gwc.PTTrezarcoin:
+	case PTPhore:
+	case PTPIVX:
+	case PTTrezarcoin:
 	default:
 		err = errors.New("unable to determine ProjectType")
 	}
@@ -995,18 +1159,18 @@ func WalletFix(wft WalletFixType) error {
 		return fmt.Errorf("unable to StopDiviD: %v", err)
 	}
 
-	dbf, _ := gwc.GetAppsBinFolder(gwc.APPTCLI)
-	coind, err := gwc.GetCoinDaemonFilename(gwc.APPTCLI)
+	dbf, _ := GetAppsBinFolder()
+	coind, err := GetCoinDaemonFilename(APPTCLI)
 	if err != nil {
 		return fmt.Errorf("unable to GetCoinDaemonFilename - %v", err)
 	}
 
-	gwconf, err := gwc.GetCLIConfStruct()
+	gwconf, err := GetConfigStruct("", false)
 	if err != nil {
 		return err
 	}
 	switch gwconf.ProjectType {
-	case gwc.PTDivi:
+	case PTDivi:
 		if runtime.GOOS == "windows" {
 			// TODO Complete for Windows
 		} else {
@@ -1023,7 +1187,7 @@ func WalletFix(wft WalletFixType) error {
 				return fmt.Errorf("unable to run divid -reindex: %v", err)
 			}
 		}
-	case gwc.PTPIVX:
+	case PTPIVX:
 		if runtime.GOOS == "windows" {
 			// TODO Complete for Windows
 		} else {
@@ -1032,7 +1196,7 @@ func WalletFix(wft WalletFixType) error {
 				return fmt.Errorf("unable to run pivxd -reindex: %v", err)
 			}
 		}
-	case gwc.PTTrezarcoin:
+	case PTTrezarcoin:
 		if runtime.GOOS == "windows" {
 			// TODO Complete for Windows
 		} else {
@@ -1091,17 +1255,17 @@ func RunCoinDaemon(displayOutput bool) error {
 		return nil
 	}
 
-	gwconf, err := gwc.GetCLIConfStruct()
+	gwconf, err := GetConfigStruct("", false)
 	if err != nil {
 		return err
 	}
-	abf, _ := gwc.GetAppsBinFolder(gwc.APPTCLI)
+	abf, _ := GetAppsBinFolder()
 
 	switch gwconf.ProjectType {
-	case gwc.PTDivi:
+	case PTDivi:
 		if runtime.GOOS == "windows" {
 			//_ = exec.Command(GetAppsBinFolder() + cDiviDFileWin)
-			fp := abf + gwc.CDiviDFileWin
+			fp := abf + CDiviDFileWin
 			cmd := exec.Command("cmd.exe", "/C", "start", "/b", fp)
 			if err := cmd.Run(); err != nil {
 				return err
@@ -1111,7 +1275,7 @@ func RunCoinDaemon(displayOutput bool) error {
 				fmt.Println("Attempting to run the divid daemon...")
 			}
 
-			cmdRun := exec.Command(abf + gwc.CDiviDFile)
+			cmdRun := exec.Command(abf + CDiviDFile)
 			stdout, err := cmdRun.StdoutPipe()
 			if err != nil {
 				return err
@@ -1139,9 +1303,9 @@ func RunCoinDaemon(displayOutput bool) error {
 				}
 			}
 		}
-	case gwc.PTPhore:
+	case PTPhore:
 		if runtime.GOOS == "windows" {
-			fp := abf + gwc.CDiviDFileWin
+			fp := abf + CDiviDFileWin
 			cmd := exec.Command("cmd.exe", "/C", "start", "/b", fp)
 			if err := cmd.Run(); err != nil {
 				return err
@@ -1151,7 +1315,7 @@ func RunCoinDaemon(displayOutput bool) error {
 				fmt.Println("Attempting to run the phored daemon...")
 			}
 
-			cmdRun := exec.Command(abf + gwc.CPhoreDFile)
+			cmdRun := exec.Command(abf + CPhoreDFile)
 			stdout, err := cmdRun.StdoutPipe()
 			if err != nil {
 				return err
@@ -1179,7 +1343,7 @@ func RunCoinDaemon(displayOutput bool) error {
 				}
 			}
 		}
-	case gwc.PTTrezarcoin:
+	case PTTrezarcoin:
 		// TODO Need to code this bit for Trezarcoin
 	default:
 		err = errors.New("unable to determine ProjectType")
@@ -1189,29 +1353,29 @@ func RunCoinDaemon(displayOutput bool) error {
 
 // stopCoinDaemon - Stops the coin daemon (e.g. divid) from running
 func StopCoinDaemon(displayOutput bool) error {
-	idr, _, _ := gwc.IsCoinDaemonRunning() //DiviDRunning()
+	idr, _, _ := IsCoinDaemonRunning() //DiviDRunning()
 	if idr != true {
 		// Not running anyway ...
 		return nil
 	}
 
-	dbf, _ := gwc.GetAppsBinFolder(gwc.APPTCLI)
-	coind, err := gwc.GetCoinDaemonFilename(gwc.APPTCLI)
+	dbf, _ := GetAppsBinFolder()
+	coind, err := GetCoinDaemonFilename(APPTCLI)
 	if err != nil {
 		return fmt.Errorf("unable to GetCoinDaemonFilename - %v", err)
 	}
 
-	gwconf, err := gwc.GetCLIConfStruct()
+	gwconf, err := GetConfigStruct("", false)
 	if err != nil {
 		return err
 	}
 	switch gwconf.ProjectType {
-	case gwc.PTDivi:
+	case PTDivi:
 		if runtime.GOOS == "windows" {
 			// TODO Complete for Windows
 		} else {
 			for i := 0; i < 50; i++ {
-				cRun := exec.Command(dbf+gwc.CDiviCliFile, "stop")
+				cRun := exec.Command(dbf+CDiviCliFile, "stop")
 				_ = cRun.Run()
 
 				sr, _, _ := IsCoinDaemonRunning() //DiviDRunning()
@@ -1226,12 +1390,12 @@ func StopCoinDaemon(displayOutput bool) error {
 				time.Sleep(3 * time.Second)
 			}
 		}
-	case gwc.PTPhore:
+	case PTPhore:
 		if runtime.GOOS == "windows" {
 			// TODO Complete for Windows
 		} else {
 			for i := 0; i < 50; i++ {
-				cRun := exec.Command(dbf+gwc.CPhoreCliFile, "stop")
+				cRun := exec.Command(dbf+CPhoreCliFile, "stop")
 				_ = cRun.Run()
 
 				sr, _, _ := IsCoinDaemonRunning()
@@ -1246,11 +1410,11 @@ func StopCoinDaemon(displayOutput bool) error {
 				time.Sleep(3 * time.Second)
 			}
 		}
-	case gwc.PTPIVX:
+	case PTPIVX:
 		if runtime.GOOS == "windows" {
 			// TODO Complete for Windows
 		} else {
-			cRun := exec.Command(dbf+gwc.CPIVXCliFile, "stop")
+			cRun := exec.Command(dbf+CPIVXCliFile, "stop")
 			if err := cRun.Run(); err != nil {
 				return fmt.Errorf("unable to StopPIVXD:%v", err)
 			}
@@ -1267,11 +1431,11 @@ func StopCoinDaemon(displayOutput bool) error {
 
 			}
 		}
-	case gwc.PTTrezarcoin:
+	case PTTrezarcoin:
 		if runtime.GOOS == "windows" {
 			// TODO Complete for Windows
 		} else {
-			cRun := exec.Command(dbf+gwc.CTrezarcoinCliFile, "stop")
+			cRun := exec.Command(dbf+CTrezarcoinCliFile, "stop")
 			if err := cRun.Run(); err != nil {
 				return fmt.Errorf("unable to StopCoinDaemon:%v", err)
 			}
@@ -1297,26 +1461,26 @@ func StopCoinDaemon(displayOutput bool) error {
 
 // RunInitialDaemon - Runs the divid Daemon for the first time to populate the divi.conf file
 func RunInitialDaemon() (rpcuser, rpcpassword string, err error) {
-	abf, err := gwc.GetAppsBinFolder(gwc.APPTCLI)
+	abf, err := GetAppsBinFolder()
 	if err != nil {
 		return "", "", fmt.Errorf("unable to GetAppsBinFolder - %v", err)
 	}
-	coind, err := gwc.GetCoinDaemonFilename(gwc.APPTCLI)
+	coind, err := GetCoinDaemonFilename(APPTCLI)
 	if err != nil {
 		return "", "", fmt.Errorf("unable to GetCoinDaemonFilename - %v", err)
 	}
 
-	gwconf, err := gwc.GetCLIConfStruct()
+	gwconf, err := GetConfigStruct("", false)
 	if err != nil {
 		return "", "", fmt.Errorf("unable to GetConfigStruct - %v", err)
 	}
 	switch gwconf.ProjectType {
-	case gwc.PTDivi:
+	case PTDivi:
 		//Run divid for the first time, so that we can get the outputted info to build the conf file
 		fmt.Println("About to run " + coind + " for the first time...")
-		cmdDividRun := exec.Command(abf + gwc.CDiviDFile)
+		cmdDividRun := exec.Command(abf + CDiviDFile)
 		out, _ := cmdDividRun.CombinedOutput()
-		fmt.Println("Populating " + gwc.CDiviConfFile + " for initial setup...")
+		fmt.Println("Populating " + CDiviConfFile + " for initial setup...")
 
 		scanner := bufio.NewScanner(strings.NewReader(string(out)))
 		var rpcuser, rpcpw string
@@ -1330,30 +1494,30 @@ func RunInitialDaemon() (rpcuser, rpcpassword string, err error) {
 			}
 		}
 
-		chd, _ := gwc.GetCoinHomeFolder(gwc.APPTCLI)
+		chd, _ := GetCoinHomeFolder(APPTCLI)
 
-		if err := gwc.WriteTextToFile(chd+gwc.CDiviConfFile, cRPCUserStr+"="+rpcuser); err != nil {
+		if err := WriteTextToFile(chd+CDiviConfFile, cRPCUserStr+"="+rpcuser); err != nil {
 			log.Fatal(err)
 		}
-		if err := gwc.WriteTextToFile(chd+gwc.CDiviConfFile, cRPCPasswordStr+"="+rpcpw); err != nil {
+		if err := WriteTextToFile(chd+CDiviConfFile, cRPCPasswordStr+"="+rpcpw); err != nil {
 			log.Fatal(err)
 		}
-		if err := gwc.WriteTextToFile(chd+gwc.CDiviConfFile, ""); err != nil {
+		if err := WriteTextToFile(chd+CDiviConfFile, ""); err != nil {
 			log.Fatal(err)
 		}
-		if err := gwc.WriteTextToFile(chd+gwc.CDiviConfFile, "daemon=1"); err != nil {
+		if err := WriteTextToFile(chd+CDiviConfFile, "daemon=1"); err != nil {
 			log.Fatal(err)
 		}
-		if err := gwc.WriteTextToFile(chd+gwc.CDiviConfFile, ""); err != nil {
+		if err := WriteTextToFile(chd+CDiviConfFile, ""); err != nil {
 			log.Fatal(err)
 		}
-		if err := gwc.WriteTextToFile(chd+gwc.CDiviConfFile, "server=1"); err != nil {
+		if err := WriteTextToFile(chd+CDiviConfFile, "server=1"); err != nil {
 			log.Fatal(err)
 		}
-		if err := gwc.WriteTextToFile(chd+gwc.CDiviConfFile, "rpcallowip=0.0.0.0/0"); err != nil {
+		if err := WriteTextToFile(chd+CDiviConfFile, "rpcallowip=0.0.0.0/0"); err != nil {
 			log.Fatal(err)
 		}
-		if err := gwc.WriteTextToFile(chd+gwc.CDiviConfFile, "rpcport=8332"); err != nil {
+		if err := WriteTextToFile(chd+CDiviConfFile, "rpcport=8332"); err != nil {
 			log.Fatal(err)
 		}
 
@@ -1368,7 +1532,7 @@ func RunInitialDaemon() (rpcuser, rpcpassword string, err error) {
 		// gdc.WriteTextToFile(dhd+gdc.CDiviConfFile, sAddnodes)
 
 		return rpcuser, rpcpw, nil
-	case gwc.PTTrezarcoin:
+	case PTTrezarcoin:
 		//Run divid for the first time, so that we can get the outputted info to build the conf file
 		fmt.Println("Attempting to run " + coind + " for the first time...")
 		cmdTrezarCDRun := exec.Command(abf + coind)
@@ -1385,7 +1549,7 @@ func RunInitialDaemon() (rpcuser, rpcpassword string, err error) {
 }
 
 // StopDaemon - Send a "stop" to the daemon, and returns the result
-func StopDaemon(cliConf *gwc.CLIConfStruct) (GenericRespStruct, error) {
+func StopDaemon(cliConf *ConfStruct) (GenericRespStruct, error) {
 	var respStruct GenericRespStruct
 
 	body := strings.NewReader("{\"jsonrpc\":\"1.0\",\"id\":\"curltext\",\"method\":\"stop\",\"params\":[]}")

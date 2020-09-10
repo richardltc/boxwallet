@@ -21,9 +21,10 @@ import (
 	"fmt"
 	"log"
 	"os"
+	be "richardmace.co.uk/boxwallet/cmd/cli/cmd/bend"
 	"strings"
 
-	gwc "github.com/richardltc/gwcommon"
+	//gwc "github.com/richardltc/gwcommon"
 	"github.com/spf13/cobra"
 )
 
@@ -38,7 +39,7 @@ var restoreCmd = &cobra.Command{
 		// 	log.Fatal("Unable to GetAppCLIName " + err.Error())
 		// }
 
-		sAppFileCLIName, err := gwc.GetAppFileName(gwc.APPTCLI)
+		sAppFileCLIName, err := be.GetAppFileName()
 		if err != nil {
 			log.Fatal("Unable to GetAppFileCLIName " + err.Error())
 		}

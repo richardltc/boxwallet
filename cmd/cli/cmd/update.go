@@ -18,28 +18,28 @@ limitations under the License.
 package cmd
 
 import (
-	"log"
+	be "richardmace.co.uk/boxwallet/cmd/cli/cmd/bend"
 
-	gwc "github.com/richardltc/gwcommon"
+	// gwc "github.com/richardltc/gwcommon"
 	"github.com/spf13/cobra"
 )
 
 // updateCmd represents the update command
 var updateCmd = &cobra.Command{
 	Use:   "update",
-	Short: "You can update " + sAppCLIName + " to the latest version by running " + sAppUpdaterFile,
+	Short: "You can update " + be.CAppName + " to the latest version by running ",
 	Long:  ``,
 	Run: func(cmd *cobra.Command, args []string) {
-		sAppName, err := gwc.GetAppName(gwc.APPTCLI)
-		if err != nil {
-			log.Fatal("Unable to GetAppName " + err.Error())
-		}
-		abf, err := gwc.GetAppsBinFolder(gwc.APPTCLI)
-		if err != nil {
-			log.Fatal("Unable to GetAppsBinFolder " + err.Error())
-		}
-
-		log.Fatal(sAppName + ` can be updated to the latest version by running "./` + sAppUpdaterFile + `" from within the ` + abf + " folder.")
+		//sAppName, err := be.GetAppName(gwc.APPTCLI)
+		//if err != nil {
+		//	log.Fatal("Unable to GetAppName " + err.Error())
+		//}
+		//abf, err := gwc.GetAppsBinFolder(gwc.APPTCLI)
+		//if err != nil {
+		//	log.Fatal("Unable to GetAppsBinFolder " + err.Error())
+		//}
+		//
+		//log.Fatal(sAppName + ` can be updated to the latest version by running "./` + sAppUpdaterFile + `" from within the ` + abf + " folder.")
 	},
 }
 
