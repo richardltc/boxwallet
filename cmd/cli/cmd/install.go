@@ -83,8 +83,8 @@ You can then view the ` + be.CAppName + ` dashboard by running the command: ` + 
 		}
 
 		// Check for the App Config file
-		if !be.FileExists("./" + be.CCLIConfFile + be.CCLIConfFileExt) {
-			log.Fatal("Unable to find the file " + be.CCLIConfFile)
+		if !be.FileExists("./" + be.CConfFile + be.CConfFileExt) {
+			log.Fatal("Unable to find the file " + be.CConfFile)
 		}
 
 		// // Check for the App Server
@@ -99,44 +99,10 @@ You can then view the ` + be.CAppName + ` dashboard by running the command: ` + 
 		//}
 
 		lfp := abf + be.CAppLogfile
-		// 	// Check to make sure we have enough memory
-		// 	trkb := sysinfo.Get().TotalRam
-		// 	trmb := int(trkb) / 1024
 
-		// 	gwc.AddToLog(lfp, "Detected total memory of: "+strconv.Itoa(trmb)+"MB")
-		// 	if trmb < gwc.CMinRequiredMemoryMB {
-		// 		gwc.AddToLog(lfp, "The amount of memory you have for running a "+sCoinName+" wallet is too low, so checking swap...")
-		// 		// The total ram is less than the minimum required, so lets make sure adequate swap is in place
-		// 		ts := int(sysinfo.Get().TotalSwap) / 1024
-		// 		if ts < gwc.CMinRequiredSwapMB {
-		// 			gwc.AddToLog(lfp, "Detected swap total of: "+strconv.Itoa(ts)+"MB")
-		// 			gwc.AddToLog(lfp, "The amount of swap you have for running a "+sCoinName+" wallet is to low, so we need to increase swap useage...\n\n")
-		// 			gwc.AddToLog(lfp, `Please follow the following notes to add 2GB of swap:
+		// Now let's make sure that we have our apps bin folder...
+		if _, err := os.Stat(abf); os.IsNotExist(err) {
 
-		// Step 1
-
-		// # sudo fallocate -l 2G /swapfile
-		// # sudo chmod 600 /swapfile
-		// # sudo mkswap /swapfile
-		// # sudo swapon /swapfile
-
-		// Step 2
-
-		// # sudo nano /etc/fstab
-
-		// ...and then add the line below:
-
-		// /swapfile swap swap defaults 0 0
-		// `)
-		// 			os.Exit(0)
-		// 		}
-		// 	}
-
-		// Now let's make sure that we have our divi bin folder
-		if _, err := os.Stat(abf); !os.IsNotExist(err) {
-			// /home/user/boxwallet/ bin folder already exists, so lets stop
-			log.Fatal("It looks like you have already installed the " + sCoinName + " binaries in the folder " + abf)
-		} else {
 			// the /home/user/.divi/ bin folder does not exist, so lets create it
 			log.Print(abf + " not found, so creating...")
 			if err := os.Mkdir(abf, 0700); err != nil {
@@ -394,7 +360,7 @@ func doRequiredFiles() error {
 
 	// Copy files to correct location
 	var srcPath, srcFileCLI, srcFileD, srcFileTX, srcFileBWConfCLI, srcFileBWCLI string
-	srcFileBWConfCLI = be.CCLIConfFile + be.CCLIConfFileExt
+	srcFileBWConfCLI = be.CConfFile + be.CConfFileExt
 	//srcFileGWConfSrv = gwc.CServerConfFile + gwc.CServerConfFileExt
 	var srcREADMEFile = "README.md"
 
@@ -525,26 +491,28 @@ func doRequiredFiles() error {
 		return fmt.Errorf("error getting exe - %v", err)
 	}
 
-	err = be.FileCopy(ex, abf+srcFileBWCLI, false)
-	if err != nil {
-		return fmt.Errorf("unable to copyFile: %v - %v", abf+srcFileBWCLI, err)
-	}
+	// We're only going to attempt to copy it, because it might already be in place...
+	_ = be.FileCopy(ex, abf+srcFileBWCLI, false)
+	//err = be.FileCopy(ex, abf+srcFileBWCLI, false)
+	//if err != nil {
+	//	return fmt.Errorf("unable to copyFile: %v - %v", abf+srcFileBWCLI, err)
+	//}
 	err = os.Chmod(abf+srcFileBWCLI, 0777)
 	if err != nil {
 		return fmt.Errorf("unable to chmod file: %v - %v", abf+srcFileBWCLI, err)
 	}
 
-	// Copy the README.md file
-	err = be.FileCopy("./"+srcREADMEFile, abf+srcREADMEFile, false)
-	if err != nil {
-		return fmt.Errorf("unable to copyFile from: %v to %v - %v", "./"+srcREADMEFile, abf+srcREADMEFile, err)
-	}
+	// Attempt to copy the README.md file
+	_ = be.FileCopy("./"+srcREADMEFile, abf+srcREADMEFile, false)
+	//if err != nil {
+	//	return fmt.Errorf("unable to copyFile from: %v to %v - %v", "./"+srcREADMEFile, abf+srcREADMEFile, err)
+	//}
 
-	// Copy the CLI config file
-	err = be.FileCopy("./"+srcFileBWConfCLI, abf+srcFileBWConfCLI, false)
-	if err != nil {
-		return fmt.Errorf("unable to copyFile: %v - %v", abf+srcFileBWConfCLI, err)
-	}
+	// Attempt to copy the CLI config file
+	_ = be.FileCopy("./"+srcFileBWConfCLI, abf+srcFileBWConfCLI, false)
+	//if err != nil {
+	//	return fmt.Errorf("unable to copyFile: %v - %v", abf+srcFileBWConfCLI, err)
+	//}
 
 	return nil
 }

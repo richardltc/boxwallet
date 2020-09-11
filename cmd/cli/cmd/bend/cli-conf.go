@@ -8,9 +8,9 @@ import (
 )
 
 const (
-	// CCLIConfFile - To be used only by GoDeploy
-	CCLIConfFile    string = "conf"
-	CCLIConfFileExt string = ".yaml"
+// CCLIConfFile - To be used only by GoDeploy
+//CCLIConfFile    string = "conf"
+//CCLIConfFileExt string = ".yaml"
 )
 
 // CLIConfStruct - The CLI application config struct
@@ -30,7 +30,7 @@ type CLIConfStruct struct {
 
 func getCLIConfStruct() (CLIConfStruct, error) {
 
-	viper.SetConfigName(CCLIConfFile)
+	viper.SetConfigName(CConfFile)
 	viper.SetConfigType("yaml")
 	viper.AddConfigPath(".")
 	var cs CLIConfStruct
@@ -48,7 +48,7 @@ func getCLIConfStruct() (CLIConfStruct, error) {
 // SetCLIConfStruct - Save the CLI config struct via viper
 func setCLIConfStruct(cs CLIConfStruct) error {
 
-	viper.SetConfigName(CCLIConfFile)
+	viper.SetConfigName(CConfFile)
 	viper.SetConfigType("yaml")
 	viper.AddConfigPath(".")
 
@@ -72,7 +72,7 @@ func setCLIConfStruct(cs CLIConfStruct) error {
 		log.Fatal(err)
 	}
 	if !os.IsExist(err) {
-		if _, err := os.Create(dir + "/" + CCLIConfFile + CCLIConfFileExt); err != nil { // perm 0666
+		if _, err := os.Create(dir + "/" + CConfFile + CConfFileExt); err != nil { // perm 0666
 			log.Fatal("Unable to create config file: ", err)
 		}
 	}

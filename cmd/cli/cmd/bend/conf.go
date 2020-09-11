@@ -9,7 +9,8 @@ import (
 )
 
 const (
-	cConfFile string = "conf.json"
+	CConfFile    string = "conf"
+	CConfFileExt string = ".json"
 )
 
 type ConfStruct struct {
@@ -51,7 +52,7 @@ func createDefaultConfFile(confDir string) error {
 		return err
 	}
 
-	f, err := os.Create(confDir + cConfFile)
+	f, err := os.Create(confDir + CConfFile + CConfFileExt)
 	if err != nil {
 		return err
 	}
@@ -68,21 +69,22 @@ func createDefaultConfFile(confDir string) error {
 // GetConfigStruct
 func GetConfigStruct(confDir string, refreshFields bool) (ConfStruct, error) {
 	// If the passed in confDir is blank, then assume current working directory
-	dir, err := os.Getwd()
-	if err != nil {
-		return ConfStruct{}, err
+	//dir := ""
+	if confDir == "" {
+		confDir, _ = os.Getwd()
 	}
 
+	confDir = addTrailingSlash(confDir)
+
 	// Create the file if it doesn't already exist
-	dir = addTrailingSlash(confDir)
-	if _, err := os.Stat(dir + cConfFile); os.IsNotExist(err) {
+	if _, err := os.Stat(confDir + CConfFile + CConfFileExt); os.IsNotExist(err) {
 		if err := createDefaultConfFile(confDir); err != nil {
 			return ConfStruct{}, err
 		}
 	}
 
 	// Get the config file
-	file, err := ioutil.ReadFile(dir + cConfFile)
+	file, err := ioutil.ReadFile(confDir + CConfFile + CConfFileExt)
 	if err != nil {
 		return ConfStruct{}, err
 	}
@@ -96,7 +98,7 @@ func GetConfigStruct(confDir string, refreshFields bool) (ConfStruct, error) {
 
 	// Now, let's write the file back because it may have some new fields
 	if refreshFields {
-		if err := SetConfigStruct(dir, cs); err != nil {
+		if err := SetConfigStruct(confDir, cs); err != nil {
 			return ConfStruct{}, err
 		}
 	}
@@ -129,7 +131,7 @@ func SetConfigStruct(dir string, cs ConfStruct) error {
 
 	jssb, _ := json.MarshalIndent(cs, "", "  ")
 	dir = addTrailingSlash(dir)
-	sFile := dir + cConfFile
+	sFile := dir + CConfFile + CConfFileExt
 
 	f, err := os.Create(sFile)
 	if err != nil {
