@@ -912,11 +912,11 @@ func PopulateDaemonConfFile() (rpcuser, rpcpassword string, err error) {
 		return "", "", fmt.Errorf("unable to GetCoinDaemonFilename - %v", err)
 	}
 
-	gwconf, err := GetConfigStruct("", false)
+	bwconf, err := GetConfigStruct("", false)
 	if err != nil {
 		return "", "", fmt.Errorf("unable to GetConfigStruct - %v", err)
 	}
-	switch gwconf.ProjectType {
+	switch bwconf.ProjectType {
 	case PTDivi:
 
 		fmt.Println("Populating " + CDiviConfFile + " for initial setup...")

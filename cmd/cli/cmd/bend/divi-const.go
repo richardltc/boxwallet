@@ -15,7 +15,7 @@ const (
 
 	CDiviExtractedDir = "divi-" + CDiviCoreVersion + "/"
 
-	CDownloadURLDivi = "https://github.com/DiviProject/Divi/releases/download/" + CDiviCoreVersion + "/"
+	CDownloadURLDivi = "https://github.com/DiviProject/Divi/releases/download/v" + CDiviCoreVersion + "/"
 
 	CDiviConfFile   string = "divi.conf"
 	CDiviCliFile    string = "divi-cli"

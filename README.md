@@ -1,6 +1,6 @@
 # BoxWallet #
 
-BoxWallet is a CLI application that makes it very easy to set up and view a CLI wallet, by just using the command line on the platform of your choosing, with a single command.
+BoxWallet is a CLI application that makes it very easy to set up and view a CLI wallet and node, by just using the command line on the platform of your choosing, with a single command.
 
 ## What is BoxWallet used for? ###
 
@@ -15,9 +15,11 @@ BoxWallet is a CLI application that makes it very easy to set up and view a CLI 
 
 ### How do I run? ###
 
-* Download the archived file, for the platform of your choosing, extract the files and simply run: `./boxwallet install`
+Download BoxWallet, for your platform of choice, extract the files to a location of your choosing and then choose your coin by running `./boxwallet coin`.
+ 
+After you've chosen your coin of choice, simply run: `./boxwallet install`
 
-This will download the official binaries from the coin's Project website, and installs the BoxWallet CLI app.
+This will download the official binaries from the coin's Project website, and installs them in /home/<your_user>/boxwallet/.
 
 Then, change to the `boxwallet` folder in your home folder, and run `./boxwallet start`, to start the coin's damon server and then you can run  `./boxwallet dash`, where you should be prompted through an initial wizard to get you going.
 
