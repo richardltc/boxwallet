@@ -23,7 +23,7 @@ import (
 
 const (
 	CAppName        string = "BoxWallet"
-	CAppVersion     string = "0.32.0"
+	CBWAppVersion   string = "0.32.0"
 	CAppFilename    string = "boxwallet"
 	CAppFilenameWin string = "boxwallet.exe"
 	CAppLogfile     string = "boxwallet.log"
@@ -927,39 +927,82 @@ func PopulateDaemonConfFile() (rpcuser, rpcpassword string, err error) {
 		}
 
 		// Generate a random password
-		rpcu := "divirpc"
-		rpcpw := rand.String(20)
+		var rpcu string
+		var rpcpw string
 
-		if err := WriteTextToFile(chd+CDiviConfFile, cRPCUserStr+"="+rpcu); err != nil {
-			log.Fatal(err)
+		// Add rpcuser info if required
+		b, err := StringExistsInFile(cRPCUserStr+"=", chd+CDiviConfFile)
+		if err != nil {
+			return "", "", fmt.Errorf("unable to search for text in file - %v", err)
 		}
-		if err := WriteTextToFile(chd+CDiviConfFile, cRPCPasswordStr+"="+rpcpw); err != nil {
-			log.Fatal(err)
-		}
-		if err := WriteTextToFile(chd+CDiviConfFile, ""); err != nil {
-			log.Fatal(err)
-		}
-		if err := WriteTextToFile(chd+CDiviConfFile, "daemon=1"); err != nil {
-			log.Fatal(err)
-		}
-		if err := WriteTextToFile(chd+CDiviConfFile, ""); err != nil {
-			log.Fatal(err)
-		}
-		if err := WriteTextToFile(chd+CDiviConfFile, "server=1"); err != nil {
-			log.Fatal(err)
-		}
-		if err := WriteTextToFile(chd+CDiviConfFile, "rpcallowip=192.168.1.0/255.255.255.0"); err != nil {
-			log.Fatal(err)
-		}
-		if err := WriteTextToFile(chd+CDiviConfFile, "rpcport=51473"); err != nil {
-			log.Fatal(err)
+		if !b {
+			rpcu = "divirpc"
+			if err := WriteTextToFile(chd+CDiviConfFile, cRPCUserStr+"="+rpcu); err != nil {
+				log.Fatal(err)
+			}
 		}
 
-		// Now get a list of the latest "addnodes" and add them to the file:
-		// gdc.AddToLog(lfp, "Adding latest master nodes to "+gdc.CDiviConfFile)
-		//if err := AddAddNodesIfRequired(); err != nil {
-		//	log.Println("Unable to add addnodes, but will try again on start...")
-		//}
+		// Add rpcpassword info if required
+		b, err = StringExistsInFile(cRPCPasswordStr+"=", chd+CDiviConfFile)
+		if err != nil {
+			return "", "", fmt.Errorf("unable to search for text in file - %v", err)
+		}
+		if !b {
+			rpcpw = rand.String(20)
+			if err := WriteTextToFile(chd+CDiviConfFile, cRPCPasswordStr+"="+rpcpw); err != nil {
+				log.Fatal(err)
+			}
+			if err := WriteTextToFile(chd+CDiviConfFile, ""); err != nil {
+				log.Fatal(err)
+			}
+		}
+
+		// Add daemon=1 info if required
+		b, err = StringExistsInFile("daemon=1", chd+CDiviConfFile)
+		if err != nil {
+			return "", "", fmt.Errorf("unable to search for text in file - %v", err)
+		}
+		if !b {
+			if err := WriteTextToFile(chd+CDiviConfFile, "daemon=1"); err != nil {
+				log.Fatal(err)
+			}
+			if err := WriteTextToFile(chd+CDiviConfFile, ""); err != nil {
+				log.Fatal(err)
+			}
+		}
+
+		// Add server=1 info if required
+		b, err = StringExistsInFile("server=1", chd+CDiviConfFile)
+		if err != nil {
+			return "", "", fmt.Errorf("unable to search for text in file - %v", err)
+		}
+		if !b {
+			if err := WriteTextToFile(chd+CDiviConfFile, "server=1"); err != nil {
+				log.Fatal(err)
+			}
+		}
+
+		// Add rpcallowip= info if required
+		b, err = StringExistsInFile("rpcallowip=", chd+CDiviConfFile)
+		if err != nil {
+			return "", "", fmt.Errorf("unable to search for text in file - %v", err)
+		}
+		if !b {
+			if err := WriteTextToFile(chd+CDiviConfFile, "rpcallowip=192.168.1.0/255.255.255.0"); err != nil {
+				log.Fatal(err)
+			}
+		}
+
+		// Add rpcport= info if required
+		b, err = StringExistsInFile("rpcport=", chd+CDiviConfFile)
+		if err != nil {
+			return "", "", fmt.Errorf("unable to search for text in file - %v", err)
+		}
+		if !b {
+			if err := WriteTextToFile(chd+CDiviConfFile, "rpcport=51473"); err != nil {
+				log.Fatal(err)
+			}
+		}
 
 		return rpcu, rpcpw, nil
 	case PTPhore:
@@ -971,39 +1014,82 @@ func PopulateDaemonConfFile() (rpcuser, rpcpassword string, err error) {
 		}
 
 		// Generate a random password
-		rpcu := "phorerpc"
-		rpcpw := rand.String(20)
+		var rpcu string
+		var rpcpw string
 
-		if err := WriteTextToFile(chd+CPhoreConfFile, cRPCUserStr+"="+rpcu); err != nil {
-			log.Fatal(err)
+		// Add rpcuser info if required
+		b, err := StringExistsInFile(cRPCUserStr+"=", chd+CPhoreConfFile)
+		if err != nil {
+			return "", "", fmt.Errorf("unable to search for text in file - %v", err)
 		}
-		if err := WriteTextToFile(chd+CPhoreConfFile, cRPCPasswordStr+"="+rpcpw); err != nil {
-			log.Fatal(err)
-		}
-		if err := WriteTextToFile(chd+CPhoreConfFile, ""); err != nil {
-			log.Fatal(err)
-		}
-		if err := WriteTextToFile(chd+CPhoreConfFile, "daemon=1"); err != nil {
-			log.Fatal(err)
-		}
-		if err := WriteTextToFile(chd+CPhoreConfFile, ""); err != nil {
-			log.Fatal(err)
-		}
-		if err := WriteTextToFile(chd+CPhoreConfFile, "server=1"); err != nil {
-			log.Fatal(err)
-		}
-		if err := WriteTextToFile(chd+CPhoreConfFile, "rpcallowip=192.168.1.0/255.255.255.0"); err != nil {
-			log.Fatal(err)
-		}
-		if err := WriteTextToFile(chd+CPhoreConfFile, "rpcport=11772"); err != nil {
-			log.Fatal(err)
+		if !b {
+			rpcu = "phorerpc"
+			if err := WriteTextToFile(chd+CPhoreConfFile, cRPCUserStr+"="+rpcu); err != nil {
+				log.Fatal(err)
+			}
 		}
 
-		// Now get a list of the latest "addnodes" and add them to the file:
-		// gdc.AddToLog(lfp, "Adding latest master nodes to "+gdc.CDiviConfFile)
-		//if err := AddAddNodesIfRequired(); err != nil {
-		//	log.Println("Unable to add addnodes, but will try again on start...")
-		//}
+		// Add rpcpassword info if required
+		b, err = StringExistsInFile(cRPCPasswordStr+"=", chd+CPhoreConfFile)
+		if err != nil {
+			return "", "", fmt.Errorf("unable to search for text in file - %v", err)
+		}
+		if !b {
+			rpcpw = rand.String(20)
+			if err := WriteTextToFile(chd+CPhoreConfFile, cRPCPasswordStr+"="+rpcpw); err != nil {
+				log.Fatal(err)
+			}
+			if err := WriteTextToFile(chd+CPhoreConfFile, ""); err != nil {
+				log.Fatal(err)
+			}
+		}
+
+		// Add daemon=1 info if required
+		b, err = StringExistsInFile("daemon=1", chd+CPhoreConfFile)
+		if err != nil {
+			return "", "", fmt.Errorf("unable to search for text in file - %v", err)
+		}
+		if !b {
+			if err := WriteTextToFile(chd+CPhoreConfFile, "daemon=1"); err != nil {
+				log.Fatal(err)
+			}
+			if err := WriteTextToFile(chd+CPhoreConfFile, ""); err != nil {
+				log.Fatal(err)
+			}
+		}
+
+		// Add server=1 info if required
+		b, err = StringExistsInFile("server=1", chd+CPhoreConfFile)
+		if err != nil {
+			return "", "", fmt.Errorf("unable to search for text in file - %v", err)
+		}
+		if !b {
+			if err := WriteTextToFile(chd+CPhoreConfFile, "server=1"); err != nil {
+				log.Fatal(err)
+			}
+		}
+
+		// Add rpcallowip= info if required
+		b, err = StringExistsInFile("rpcallowip=", chd+CPhoreConfFile)
+		if err != nil {
+			return "", "", fmt.Errorf("unable to search for text in file - %v", err)
+		}
+		if !b {
+			if err := WriteTextToFile(chd+CPhoreConfFile, "rpcallowip=192.168.1.0/255.255.255.0"); err != nil {
+				log.Fatal(err)
+			}
+		}
+
+		// Add rpcport= info if required
+		b, err = StringExistsInFile("rpcport=", chd+CPhoreConfFile)
+		if err != nil {
+			return "", "", fmt.Errorf("unable to search for text in file - %v", err)
+		}
+		if !b {
+			if err := WriteTextToFile(chd+CPhoreConfFile, "rpcport=11772"); err != nil {
+				log.Fatal(err)
+			}
+		}
 
 		return rpcu, rpcpw, nil
 	case PTPIVX:
@@ -1015,39 +1101,82 @@ func PopulateDaemonConfFile() (rpcuser, rpcpassword string, err error) {
 		}
 
 		// Generate a random password
-		rpcu := "pivxrpc"
-		rpcpw := rand.String(20)
+		var rpcu string
+		var rpcpw string
 
-		if err := WriteTextToFile(chd+CPIVXConfFile, cRPCUserStr+"="+rpcu); err != nil {
-			log.Fatal(err)
+		// Add rpcuser info if required
+		b, err := StringExistsInFile(cRPCUserStr+"=", chd+CPIVXConfFile)
+		if err != nil {
+			return "", "", fmt.Errorf("unable to search for text in file - %v", err)
 		}
-		if err := WriteTextToFile(chd+CPIVXConfFile, cRPCPasswordStr+"="+rpcpw); err != nil {
-			log.Fatal(err)
-		}
-		if err := WriteTextToFile(chd+CPIVXConfFile, ""); err != nil {
-			log.Fatal(err)
-		}
-		if err := WriteTextToFile(chd+CPIVXConfFile, "daemon=1"); err != nil {
-			log.Fatal(err)
-		}
-		if err := WriteTextToFile(chd+CPIVXConfFile, ""); err != nil {
-			log.Fatal(err)
-		}
-		if err := WriteTextToFile(chd+CPIVXConfFile, "server=1"); err != nil {
-			log.Fatal(err)
-		}
-		if err := WriteTextToFile(chd+CPIVXConfFile, "rpcallowip=192.168.1.0/255.255.255.0"); err != nil {
-			log.Fatal(err)
-		}
-		if err := WriteTextToFile(chd+CPIVXConfFile, "rpcport=51473"); err != nil {
-			log.Fatal(err)
+		if !b {
+			rpcu = "pivxrpc"
+			if err := WriteTextToFile(chd+CPIVXConfFile, cRPCUserStr+"="+rpcu); err != nil {
+				log.Fatal(err)
+			}
 		}
 
-		// Now get a list of the latest "addnodes" and add them to the file:
-		// gdc.AddToLog(lfp, "Adding latest master nodes to "+gdc.CDiviConfFile)
-		//if err := AddAddNodesIfRequired(); err != nil {
-		//	log.Println("Unable to add addnodes, but will try again on start...")
-		//}
+		// Add rpcpassword info if required
+		b, err = StringExistsInFile(cRPCPasswordStr+"=", chd+CPIVXConfFile)
+		if err != nil {
+			return "", "", fmt.Errorf("unable to search for text in file - %v", err)
+		}
+		if !b {
+			rpcpw = rand.String(20)
+			if err := WriteTextToFile(chd+CPIVXConfFile, cRPCPasswordStr+"="+rpcpw); err != nil {
+				log.Fatal(err)
+			}
+			if err := WriteTextToFile(chd+CPIVXConfFile, ""); err != nil {
+				log.Fatal(err)
+			}
+		}
+
+		// Add daemon=1 info if required
+		b, err = StringExistsInFile("daemon=1", chd+CPIVXConfFile)
+		if err != nil {
+			return "", "", fmt.Errorf("unable to search for text in file - %v", err)
+		}
+		if !b {
+			if err := WriteTextToFile(chd+CPIVXConfFile, "daemon=1"); err != nil {
+				log.Fatal(err)
+			}
+			if err := WriteTextToFile(chd+CPIVXConfFile, ""); err != nil {
+				log.Fatal(err)
+			}
+		}
+
+		// Add server=1 info if required
+		b, err = StringExistsInFile("server=1", chd+CPIVXConfFile)
+		if err != nil {
+			return "", "", fmt.Errorf("unable to search for text in file - %v", err)
+		}
+		if !b {
+			if err := WriteTextToFile(chd+CPIVXConfFile, "server=1"); err != nil {
+				log.Fatal(err)
+			}
+		}
+
+		// Add rpcallowip= info if required
+		b, err = StringExistsInFile("rpcallowip=", chd+CPIVXConfFile)
+		if err != nil {
+			return "", "", fmt.Errorf("unable to search for text in file - %v", err)
+		}
+		if !b {
+			if err := WriteTextToFile(chd+CPIVXConfFile, "rpcallowip=192.168.1.0/255.255.255.0"); err != nil {
+				log.Fatal(err)
+			}
+		}
+
+		// Add rpcport= info if required
+		b, err = StringExistsInFile("rpcport=", chd+CPIVXConfFile)
+		if err != nil {
+			return "", "", fmt.Errorf("unable to search for text in file - %v", err)
+		}
+		if !b {
+			if err := WriteTextToFile(chd+CPIVXConfFile, "rpcport=51473"); err != nil {
+				log.Fatal(err)
+			}
+		}
 
 		return rpcu, rpcpw, nil
 	case PTTrezarcoin:
@@ -1064,6 +1193,112 @@ func PopulateDaemonConfFile() (rpcuser, rpcpassword string, err error) {
 		err = errors.New("unable to determine ProjectType")
 	}
 	return "", "", nil
+}
+
+func AllProjectBinaryFilesExists() (bool, error) {
+	abf, err := GetAppsBinFolder()
+	if err != nil {
+		return false, fmt.Errorf("Unable to GetAppsBinFolder - %v ", err)
+	}
+
+	bwconf, err := GetConfigStruct("", false)
+	if err != nil {
+		return false, fmt.Errorf("unable to GetConfigStruct - %v", err)
+	}
+	switch bwconf.ProjectType {
+	case PTDivi:
+		if runtime.GOOS == "windows" {
+			if !FileExists(abf + CDiviCliFileWin) {
+				return false, nil
+			}
+			if !FileExists(abf + CDiviDFileWin) {
+				return false, nil
+			}
+			if !FileExists(abf + CDiviTxFileWin) {
+				return false, nil
+			}
+		} else {
+			if !FileExists(abf + CDiviCliFile) {
+				return false, nil
+			}
+			if !FileExists(abf + CDiviDFile) {
+				return false, nil
+			}
+			if !FileExists(abf + CDiviTxFile) {
+				return false, nil
+			}
+		}
+	case PTPhore:
+		if runtime.GOOS == "windows" {
+			if !FileExists(abf + CPhoreCliFileWin) {
+				return false, nil
+			}
+			if !FileExists(abf + CPhoreDFileWin) {
+				return false, nil
+			}
+			if !FileExists(abf + CPhoreTxFileWin) {
+				return false, nil
+			}
+		} else {
+			if !FileExists(abf + CPhoreCliFile) {
+				return false, nil
+			}
+			if !FileExists(abf + CPhoreDFile) {
+				return false, nil
+			}
+			if !FileExists(abf + CPhoreTxFile) {
+				return false, nil
+			}
+		}
+	case PTPIVX:
+		if runtime.GOOS == "windows" {
+			if !FileExists(abf + CPIVXCliFileWin) {
+				return false, nil
+			}
+			if !FileExists(abf + CPIVXDFileWin) {
+				return false, nil
+			}
+			if !FileExists(abf + CPIVXTxFileWin) {
+				return false, nil
+			}
+		} else {
+			if !FileExists(abf + CPIVXCliFile) {
+				return false, nil
+			}
+			if !FileExists(abf + CPIVXDFile) {
+				return false, nil
+			}
+			if !FileExists(abf + CPIVXTxFile) {
+				return false, nil
+			}
+		}
+	case PTTrezarcoin:
+		if runtime.GOOS == "windows" {
+			if !FileExists(abf + CTrezarcoinCliFileWin) {
+				return false, nil
+			}
+			if !FileExists(abf + CTrezarcoinDFileWin) {
+				return false, nil
+			}
+			if !FileExists(abf + CTrezarcoinTxFileWin) {
+				return false, nil
+			}
+		} else {
+			if !FileExists(abf + CTrezarcoinCliFile) {
+				return false, nil
+			}
+			if !FileExists(abf + CTrezarcoinDFile) {
+				return false, nil
+			}
+			if !FileExists(abf + CTrezarcoinTxFile) {
+				return false, nil
+			}
+		}
+	default:
+		err = errors.New("unable to determine ProjectType")
+	}
+
+	return true, nil
 }
 
 // WalletHardFix - Deletes the local blockchain and forces it to sync again, a re-index should be performed first

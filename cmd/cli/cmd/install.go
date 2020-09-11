@@ -77,26 +77,15 @@ You can then view the ` + be.CAppName + ` dashboard by running the command: ` + 
 		if err != nil {
 			log.Fatal("Unable to GetAppsBinFolder " + err.Error())
 		}
-		chf, err := be.GetCoinHomeFolder(be.APPTCLI)
-		if err != nil {
-			log.Fatal("Unable to GetCoinHomeFolder " + err.Error())
-		}
+		//chf, err := be.GetCoinHomeFolder(be.APPTCLI)
+		//if err != nil {
+		//	log.Fatal("Unable to GetCoinHomeFolder " + err.Error())
+		//}
 
 		// Check for the App Config file
 		if !be.FileExists("./" + be.CConfFile + be.CConfFileExt) {
 			log.Fatal("Unable to find the file " + be.CConfFile)
 		}
-
-		// // Check for the App Server
-		// if !gwc.FileExists("./" + sAppFileServerName) {
-		// 	log.Fatal("Unable to find the file " + sAppFileServerName)
-		// }
-
-		// Check for Godivi Updater
-		// Check for the App Updater
-		//if !gwc.FileExists("./" + sAppFileUpdaterName) {
-		//	log.Fatal("Unable to find the file " + sAppFileUpdaterName)
-		//}
 
 		lfp := abf + be.CAppLogfile
 
@@ -113,7 +102,7 @@ You can then view the ` + be.CAppName + ` dashboard by running the command: ` + 
 			}
 		}
 
-		if err := be.AddToLog(lfp, be.CAppName+" "+be.CPIVXCoreVersion+" Starting..."); err != nil {
+		if err := be.AddToLog(lfp, be.CAppName+" "+be.CBWAppVersion+" Starting..."); err != nil {
 			log.Fatal(err)
 		}
 
@@ -121,23 +110,13 @@ You can then view the ` + be.CAppName + ` dashboard by running the command: ` + 
 			log.Fatal(err)
 		}
 
-		bCoinFolderExists := false
-		if _, err = os.Stat(chf); !os.IsNotExist(err) {
-			// The coin home folder exists, so lets record that...
-			bCoinFolderExists = true
-			//s := "It looks like you already have a " + sCoinName + " wallet installed in the folder " + chf
-			//if err := gwc.AddToLog(lfp, s); err != nil {
-			//	log.Fatal(err)
-			//}
-			//log.Fatal(s)
-		}
-
 		// Now populate the coin daemon conf file, if required, and store the rpc username and password into the cli conf file
-		if !bCoinFolderExists {
-			rpcu, rpcpw, err := be.PopulateDaemonConfFile()
-			if err != nil {
-				log.Fatal(err)
-			}
+		rpcu, rpcpw, err := be.PopulateDaemonConfFile()
+		if err != nil {
+			log.Fatal(err)
+		}
+		// If the user OR password is not blank, then save them in the conf file.
+		if (rpcpw != "") || (rpcu != "") {
 			cliConf.RPCuser = rpcu
 			cliConf.RPCpassword = rpcpw
 			err = be.SetConfigStruct("", cliConf)
@@ -145,8 +124,12 @@ You can then view the ` + be.CAppName + ` dashboard by running the command: ` + 
 				log.Fatal(err)
 			}
 		}
-		if err := doRequiredFiles(); err != nil {
-			log.Fatal(err)
+
+		b, err := be.AllProjectBinaryFilesExists()
+		if !b {
+			if err := doRequiredFiles(); err != nil {
+				log.Fatal(err)
+			}
 		}
 
 		if err := be.AddToLog(lfp, "The "+sCoinName+" CLI bin files have been installed in "+abf); err != nil {
