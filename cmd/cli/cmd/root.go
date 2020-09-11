@@ -40,7 +40,7 @@ var sAppBinFolder, _ = be.GetAppsBinFolder()
 // rootCmd represents the base command when called without any subcommands
 var rootCmd = &cobra.Command{
 	Use:   be.CAppName, //sAppCLIFilename, //"boxwallet",
-	Short: be.CAppName + " v" + be.CAppVersion + " is a CLI app that makes it very easy to setup a wallet/node with a single command",
+	Short: be.CAppName + " v" + be.CBWAppVersion + " is a CLI app that makes it very easy to setup a wallet/node with a single command",
 	Long:  ``,
 	// Uncomment the following line if your bare application
 	// has an action associated with it:

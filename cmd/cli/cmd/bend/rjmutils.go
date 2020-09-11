@@ -388,6 +388,10 @@ func createTarball(tarballFilePath string, filePaths []string) error {
 }
 
 func StringExistsInFile(str, file string) (bool, error) {
+	if !FileExists(file) {
+		return false, nil
+	}
+
 	data, err := ioutil.ReadFile(file)
 	if err != nil {
 		log.Fatal(err)
