@@ -25,4 +25,7 @@ const (
 	CPIVXDFileWin   string = "pivxd.exe"
 	CPIVXTxFile     string = "pivx-tx"
 	CPIVXTxFileWin  string = "pivx-tx.exe"
+
+	// pivx.conf file constants
+	CPIVXRPCPort string = "51473"
 )

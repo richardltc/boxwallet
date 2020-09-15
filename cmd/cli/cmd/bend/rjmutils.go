@@ -387,6 +387,41 @@ func createTarball(tarballFilePath string, filePaths []string) error {
 	return nil
 }
 
+func GetStrAfterStr(value string, a string) string {
+	// Get substring after a string.
+	pos := strings.LastIndex(value, a)
+	if pos == -1 {
+		return ""
+	}
+	adjustedPos := pos + len(a)
+	if adjustedPos >= len(value) {
+		return ""
+	}
+	return value[adjustedPos:len(value)]
+}
+
+// GetStringAfterStrFromFile - Returns the string after the passed string: e.g line in file is "greeting=hi", if the stringToFind was "greeting=" it would return "hi""
+func GetStringAfterStrFromFile(stringToFind, file string) (string, error) {
+	if !FileExists(file) {
+		return "", nil
+	}
+
+	data, err := ioutil.ReadFile(file)
+	if err != nil {
+		log.Fatal(err)
+	}
+	scanner := bufio.NewScanner(strings.NewReader(string(data)))
+	for scanner.Scan() {
+		s := scanner.Text()
+		if strings.Contains(s, stringToFind) {
+			t := GetStrAfterStr(s, "=") //strings.Replace(s,stringToFind,"", -1)
+			return t, nil
+		}
+	}
+	return "", nil
+
+}
+
 func StringExistsInFile(str, file string) (bool, error) {
 	if !FileExists(file) {
 		return false, nil

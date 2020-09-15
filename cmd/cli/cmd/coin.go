@@ -16,6 +16,7 @@ limitations under the License.
 package cmd
 
 import (
+	"fmt"
 	"github.com/AlecAivazis/survey/v2"
 	"log"
 	be "richardmace.co.uk/boxwallet/cmd/cli/cmd/bend"
@@ -41,14 +42,52 @@ var coinCmd = &cobra.Command{
 		switch coin {
 		case be.CCoinNameDivi:
 			cliConf.ProjectType = be.PTDivi
-			cliConf.Port = "51473"
+			cliConf.Port = be.CDiviRPCPort
+			cliConf.ServerIP = "127.0.0.1"
 		case be.CCoinNamePhore:
 			cliConf.ProjectType = be.PTPhore
+			cliConf.Port = be.CPhoreRPCPort
+			cliConf.ServerIP = "127.0.0.1"
+		case be.CCoinNamePIVX:
+			cliConf.ProjectType = be.PTPIVX
+			cliConf.Port = be.CPIVXRPCPort
+			cliConf.ServerIP = "127.0.0.1"
+		case be.CCoinNameTrezarcoin:
+			cliConf.ProjectType = be.PTTrezarcoin
+			cliConf.Port = be.CTrezarcoinRPCPort
+			cliConf.ServerIP = "127.0.0.1"
 		default:
 			log.Fatal("Unable to determine coin choice")
 		}
 		if err := be.SetConfigStruct("", cliConf); err != nil {
 			log.Fatal("Unable to write to config file: ", err)
+		}
+		sCoinName, err := be.GetCoinName(be.APPTCLI)
+		if err != nil {
+			log.Fatal("Unable to GetCoinName " + err.Error())
+		}
+
+		rpcu, rpcpw, err := be.PopulateDaemonConfFile()
+		if err != nil {
+			log.Fatal(err)
+		}
+		// because it's possible that the conf file for this coin has already been created, we need to store the returned user and password
+		// so, effectively, will either be storing the existing info, or the freshly generated info
+		cliConf.RPCuser = rpcu
+		cliConf.RPCpassword = rpcpw
+		err = be.SetConfigStruct("", cliConf)
+		if err != nil {
+			log.Fatal(err)
+		}
+
+		b, err := be.AllProjectBinaryFilesExists()
+		if !b {
+			if err := doRequiredFiles(); err != nil {
+				log.Fatal(err)
+			}
+			fmt.Println("The " + sCoinName + " CLI bin files haven't been installed yet. Please run ./" + be.CAppFilename + " install to install them.")
+		} else {
+			fmt.Println("The " + sCoinName + " CLI bin files have already been installed.")
 		}
 	},
 }

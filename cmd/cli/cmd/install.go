@@ -110,19 +110,19 @@ You can then view the ` + be.CAppName + ` dashboard by running the command: ` + 
 			log.Fatal(err)
 		}
 
+		// I think this can be done within the "coin" command, so I'm going to move it there...
 		// Now populate the coin daemon conf file, if required, and store the rpc username and password into the cli conf file
 		rpcu, rpcpw, err := be.PopulateDaemonConfFile()
 		if err != nil {
 			log.Fatal(err)
 		}
-		// If the user OR password is not blank, then save them in the conf file.
-		if (rpcpw != "") || (rpcu != "") {
-			cliConf.RPCuser = rpcu
-			cliConf.RPCpassword = rpcpw
-			err = be.SetConfigStruct("", cliConf)
-			if err != nil {
-				log.Fatal(err)
-			}
+		// because it's possible that the conf file for this coin has already been created, we need to store the returned user and password
+		// so, effectively, will either be storing the existing info, or the freshly generated info
+		cliConf.RPCuser = rpcu
+		cliConf.RPCpassword = rpcpw
+		err = be.SetConfigStruct("", cliConf)
+		if err != nil {
+			log.Fatal(err)
 		}
 
 		b, err := be.AllProjectBinaryFilesExists()
@@ -130,10 +130,13 @@ You can then view the ` + be.CAppName + ` dashboard by running the command: ` + 
 			if err := doRequiredFiles(); err != nil {
 				log.Fatal(err)
 			}
-		}
-
-		if err := be.AddToLog(lfp, "The "+sCoinName+" CLI bin files have been installed in "+abf); err != nil {
-			log.Fatal(err)
+			if err := be.AddToLog(lfp, "The "+sCoinName+" CLI bin files have been installed in "+abf); err != nil {
+				log.Fatal(err)
+			}
+		} else {
+			if err := be.AddToLog(lfp, "The "+sCoinName+" CLI bin files already exist in "+abf); err != nil {
+				log.Fatal(err)
+			}
 		}
 
 		// Add path to bash
@@ -151,17 +154,18 @@ You can then view the ` + be.CAppName + ` dashboard by running the command: ` + 
 
 		switch cliConf.ProjectType {
 		case be.PTDivi:
-			fmt.Println("DSniZmeSr62wiQXzooWk7XN4wospZdqePt\n\n")
+			fmt.Println("DSniZmeSr62wiQXzooWk7XN4wospZdqePt")
 		case be.PTPhore:
-			fmt.Println("PKFcy7UTEWegnAq7Wci8Aj76bQyHMottF8\n\n")
+			fmt.Println("\n\nPKFcy7UTEWegnAq7Wci8Aj76bQyHMottF8")
 		case be.PTPIVX:
-			fmt.Println("DFHmj4dExVC24eWoRKmQJDx57r4svGVs3J\n\n")
+			fmt.Println("\n\nDFHmj4dExVC24eWoRKmQJDx57r4svGVs3J")
 		case be.PTTrezarcoin:
 		default:
 			err = errors.New("unable to determine ProjectType")
 		}
 
-		fmt.Println("Thank you for using " + be.CAppName + "\n\n")
+		fmt.Println("\n\nThank you for using " + be.CAppName)
+		fmt.Println("\n\n")
 	},
 }
 

@@ -24,4 +24,7 @@ const (
 	CDiviDFileWin   string = "divid.exe"
 	CDiviTxFile     string = "divi-tx"
 	CDiviTxFileWin  string = "divi-tx.exe"
+
+	// divi.conf file constants
+	CDiviRPCPort string = "51473"
 )

@@ -1,10 +1,10 @@
 # BoxWallet #
 
-BoxWallet is a CLI application that makes it very easy to set up and view a CLI wallet and node, by just using the command line on the platform of your choosing, with a single command.
+BoxWallet is a CLI application that makes it very easy to set up and view a CLI wallet and node, by just using the command line on the platform of your choosing, with just a few commands.
 
 ## What is BoxWallet used for? ###
 
-* Making the initial installation of a DIVI or PHORE wallet trivial with the single command `./boxwallet install`
+* Making the initial installation of a CLI node or wallet simple by using the commands `./boxwallet coin` and `./boxwallet install`
 * Web enabling your existing wallet.
 * Displaying the staking status of your wallet. 
 * Displaying blockchain and master node syncing status
@@ -68,7 +68,7 @@ After the settings have been implemented, you'll need to restart your `divid` se
 
 Download the latest version of BoxWallet from the website, or just copy the files from an existing installation.
 
-Edit the `cli.yml` config file, and make sure the following settings exist:
+Edit the `conf.json` config file, and make sure the following settings exist:
 ```
 port: "51473"
 rpcpassword: A_Random_Password
