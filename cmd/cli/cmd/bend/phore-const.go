@@ -23,4 +23,7 @@ const (
 	CPhoreDFileWin   string = "phored.exe"
 	CPhoreTxFile     string = "phore-tx"
 	CPhoreTxFileWin  string = "phore-tx.exe"
+
+	// phore.conf file constants
+	CPhoreRPCPort string = "11772"
 )

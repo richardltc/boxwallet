@@ -371,10 +371,10 @@ var dashCmd = &cobra.Command{
 		pAbout.BorderStyle.Fg = ui.ColorGreen
 		switch cliConf.ProjectType {
 		case be.PTDivi:
-			pAbout.Text = "  [" + be.CAppName + "      v" + be.CBWAppVersion + "](fg:white)\n" +
+			pAbout.Text = "  [" + be.CAppName + "    v" + be.CBWAppVersion + "](fg:white)\n" +
 				"  [" + sCoinName + " Core    v" + be.CDiviCoreVersion + "](fg:white)\n\n"
 		case be.PTPhore:
-			pAbout.Text = "  [" + be.CAppName + "     v" + be.CBWAppVersion + "](fg:white)\n" +
+			pAbout.Text = "  [" + be.CAppName + "    v" + be.CBWAppVersion + "](fg:white)\n" +
 				"  [" + sCoinName + " Core   v" + be.CPhoreCoreVersion + "](fg:white)\n\n"
 		case be.PTTrezarcoin:
 		default:

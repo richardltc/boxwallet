@@ -3,8 +3,8 @@ package bend
 const (
 	CCoinNameTrezarcoin string = "Trezarcoin"
 
-	CTrezarcoinCoreVersion string = "2.0.1"
-	CDFTrezarcoinRPi       string = "trezarcoin-" + CTrezarcoinCoreVersion + "-rPI.zip"
+	CTrezarcoinCoreVersion string = "2.1.1"
+	CDFTrezarcoinRPi       string = "Trezarcoin-" + CTrezarcoinCoreVersion + "-rPI.zip"
 	CDFTrezarcoinLinux     string = "trezarcoin-" + CTrezarcoinCoreVersion + "-linux64.tar.gz"
 	CDFTrezarcoinWindows   string = "trezarcoin-" + CTrezarcoinCoreVersion + "-win64-setup.exe"
 
@@ -21,4 +21,7 @@ const (
 	CTrezarcoinDFileWin   string = "trezarcoind.exe"
 	CTrezarcoinTxFile     string = "trezarcoin-tx"
 	CTrezarcoinTxFileWin  string = "trezarcoin-tx.exe"
+
+	// trezarcoin.conf file constants
+	CTrezarcoinRPCPort string = "17299"
 )

@@ -903,19 +903,24 @@ func IsCoinDaemonRunning() (bool, int, error) {
 
 // PopulateDaemonConfFile - Populates the divi.conf file
 func PopulateDaemonConfFile() (rpcuser, rpcpassword string, err error) {
-	abf, err := GetAppsBinFolder()
-	if err != nil {
-		return "", "", fmt.Errorf("unable to GetAppsBinFolder - %v", err)
-	}
-	coind, err := GetCoinDaemonFilename(APPTCLI)
-	if err != nil {
-		return "", "", fmt.Errorf("unable to GetCoinDaemonFilename - %v", err)
-	}
+	//abf, err := GetAppsBinFolder()
+	//if err != nil {
+	//	return "", "", fmt.Errorf("unable to GetAppsBinFolder - %v", err)
+	//}
+	//coind, err := GetCoinDaemonFilename(APPTCLI)
+	//if err != nil {
+	//	return "", "", fmt.Errorf("unable to GetCoinDaemonFilename - %v", err)
+	//}
 
 	bwconf, err := GetConfigStruct("", false)
 	if err != nil {
 		return "", "", fmt.Errorf("unable to GetConfigStruct - %v", err)
 	}
+
+	// Create user and password variables
+	var rpcu string
+	var rpcpw string
+
 	switch bwconf.ProjectType {
 	case PTDivi:
 
@@ -926,11 +931,7 @@ func PopulateDaemonConfFile() (rpcuser, rpcpassword string, err error) {
 			return "", "", fmt.Errorf("unable to make directory - %v", err)
 		}
 
-		// Generate a random password
-		var rpcu string
-		var rpcpw string
-
-		// Add rpcuser info if required
+		// Add rpcuser info if required, or retrieve the existing one
 		b, err := StringExistsInFile(cRPCUserStr+"=", chd+CDiviConfFile)
 		if err != nil {
 			return "", "", fmt.Errorf("unable to search for text in file - %v", err)
@@ -940,9 +941,14 @@ func PopulateDaemonConfFile() (rpcuser, rpcpassword string, err error) {
 			if err := WriteTextToFile(chd+CDiviConfFile, cRPCUserStr+"="+rpcu); err != nil {
 				log.Fatal(err)
 			}
+		} else {
+			rpcu, err = GetStringAfterStrFromFile(cRPCUserStr+"=", chd+CDiviConfFile)
+			if err != nil {
+				return "", "", fmt.Errorf("unable to search for text in file - %v", err)
+			}
 		}
 
-		// Add rpcpassword info if required
+		// Add rpcpassword info if required, or retrieve the xisting one
 		b, err = StringExistsInFile(cRPCPasswordStr+"=", chd+CDiviConfFile)
 		if err != nil {
 			return "", "", fmt.Errorf("unable to search for text in file - %v", err)
@@ -954,6 +960,11 @@ func PopulateDaemonConfFile() (rpcuser, rpcpassword string, err error) {
 			}
 			if err := WriteTextToFile(chd+CDiviConfFile, ""); err != nil {
 				log.Fatal(err)
+			}
+		} else {
+			rpcpw, err = GetStringAfterStrFromFile(cRPCPasswordStr+"=", chd+CDiviConfFile)
+			if err != nil {
+				return "", "", fmt.Errorf("unable to search for text in file - %v", err)
 			}
 		}
 
@@ -999,7 +1010,7 @@ func PopulateDaemonConfFile() (rpcuser, rpcpassword string, err error) {
 			return "", "", fmt.Errorf("unable to search for text in file - %v", err)
 		}
 		if !b {
-			if err := WriteTextToFile(chd+CDiviConfFile, "rpcport=51473"); err != nil {
+			if err := WriteTextToFile(chd+CDiviConfFile, "rpcport="+CDiviRPCPort); err != nil {
 				log.Fatal(err)
 			}
 		}
@@ -1013,10 +1024,6 @@ func PopulateDaemonConfFile() (rpcuser, rpcpassword string, err error) {
 			return "", "", fmt.Errorf("unable to make directory - %v", err)
 		}
 
-		// Generate a random password
-		var rpcu string
-		var rpcpw string
-
 		// Add rpcuser info if required
 		b, err := StringExistsInFile(cRPCUserStr+"=", chd+CPhoreConfFile)
 		if err != nil {
@@ -1026,6 +1033,11 @@ func PopulateDaemonConfFile() (rpcuser, rpcpassword string, err error) {
 			rpcu = "phorerpc"
 			if err := WriteTextToFile(chd+CPhoreConfFile, cRPCUserStr+"="+rpcu); err != nil {
 				log.Fatal(err)
+			}
+		} else {
+			rpcu, err = GetStringAfterStrFromFile(cRPCUserStr+"=", chd+CPhoreConfFile)
+			if err != nil {
+				return "", "", fmt.Errorf("unable to search for text in file - %v", err)
 			}
 		}
 
@@ -1041,6 +1053,11 @@ func PopulateDaemonConfFile() (rpcuser, rpcpassword string, err error) {
 			}
 			if err := WriteTextToFile(chd+CPhoreConfFile, ""); err != nil {
 				log.Fatal(err)
+			}
+		} else {
+			rpcpw, err = GetStringAfterStrFromFile(cRPCPasswordStr+"=", chd+CPhoreConfFile)
+			if err != nil {
+				return "", "", fmt.Errorf("unable to search for text in file - %v", err)
 			}
 		}
 
@@ -1100,10 +1117,6 @@ func PopulateDaemonConfFile() (rpcuser, rpcpassword string, err error) {
 			return "", "", fmt.Errorf("unable to make directory - %v", err)
 		}
 
-		// Generate a random password
-		var rpcu string
-		var rpcpw string
-
 		// Add rpcuser info if required
 		b, err := StringExistsInFile(cRPCUserStr+"=", chd+CPIVXConfFile)
 		if err != nil {
@@ -1113,6 +1126,11 @@ func PopulateDaemonConfFile() (rpcuser, rpcpassword string, err error) {
 			rpcu = "pivxrpc"
 			if err := WriteTextToFile(chd+CPIVXConfFile, cRPCUserStr+"="+rpcu); err != nil {
 				log.Fatal(err)
+			}
+		} else {
+			rpcu, err = GetStringAfterStrFromFile(cRPCUserStr+"=", chd+CPIVXConfFile)
+			if err != nil {
+				return "", "", fmt.Errorf("unable to search for text in file - %v", err)
 			}
 		}
 
@@ -1128,6 +1146,11 @@ func PopulateDaemonConfFile() (rpcuser, rpcpassword string, err error) {
 			}
 			if err := WriteTextToFile(chd+CPIVXConfFile, ""); err != nil {
 				log.Fatal(err)
+			}
+		} else {
+			rpcpw, err = GetStringAfterStrFromFile(cRPCPasswordStr+"=", chd+CPIVXConfFile)
+			if err != nil {
+				return "", "", fmt.Errorf("unable to search for text in file - %v", err)
 			}
 		}
 
@@ -1173,22 +1196,105 @@ func PopulateDaemonConfFile() (rpcuser, rpcpassword string, err error) {
 			return "", "", fmt.Errorf("unable to search for text in file - %v", err)
 		}
 		if !b {
-			if err := WriteTextToFile(chd+CPIVXConfFile, "rpcport=51473"); err != nil {
+			if err := WriteTextToFile(chd+CPIVXConfFile, "rpcport="+CPIVXRPCPort); err != nil {
 				log.Fatal(err)
 			}
 		}
 
 		return rpcu, rpcpw, nil
 	case PTTrezarcoin:
-		//Run divid for the first time, so that we can get the outputted info to build the conf file
-		fmt.Println("Attempting to run " + coind + " for the first time...")
-		cmdTrezarCDRun := exec.Command(abf + coind)
-		if err := cmdTrezarCDRun.Start(); err != nil {
-			return "", "", fmt.Errorf("failed to start %v: %v", coind, err)
+		fmt.Println("Populating " + CTrezarcoinConfFile + " for initial setup...")
+
+		chd, _ := GetCoinHomeFolder(APPTCLI)
+		if err := os.MkdirAll(chd, os.ModePerm); err != nil {
+			return "", "", fmt.Errorf("unable to make directory - %v", err)
 		}
 
-		return "", "", nil
+		// Add rpcuser info if required
+		b, err := StringExistsInFile(cRPCUserStr+"=", chd+CTrezarcoinConfFile)
+		if err != nil {
+			return "", "", fmt.Errorf("unable to search for text in file - %v", err)
+		}
+		if !b {
+			rpcu = "pivxrpc"
+			if err := WriteTextToFile(chd+CTrezarcoinConfFile, cRPCUserStr+"="+rpcu); err != nil {
+				log.Fatal(err)
+			}
+		} else {
+			rpcu, err = GetStringAfterStrFromFile(cRPCUserStr+"=", chd+CTrezarcoinConfFile)
+			if err != nil {
+				return "", "", fmt.Errorf("unable to search for text in file - %v", err)
+			}
+		}
 
+		// Add rpcpassword info if required
+		b, err = StringExistsInFile(cRPCPasswordStr+"=", chd+CTrezarcoinConfFile)
+		if err != nil {
+			return "", "", fmt.Errorf("unable to search for text in file - %v", err)
+		}
+		if !b {
+			rpcpw = rand.String(20)
+			if err := WriteTextToFile(chd+CTrezarcoinConfFile, cRPCPasswordStr+"="+rpcpw); err != nil {
+				log.Fatal(err)
+			}
+			if err := WriteTextToFile(chd+CTrezarcoinConfFile, ""); err != nil {
+				log.Fatal(err)
+			}
+		} else {
+			rpcpw, err = GetStringAfterStrFromFile(cRPCPasswordStr+"=", chd+CTrezarcoinConfFile)
+			if err != nil {
+				return "", "", fmt.Errorf("unable to search for text in file - %v", err)
+			}
+		}
+
+		// Add daemon=1 info if required
+		b, err = StringExistsInFile("daemon=1", chd+CTrezarcoinConfFile)
+		if err != nil {
+			return "", "", fmt.Errorf("unable to search for text in file - %v", err)
+		}
+		if !b {
+			if err := WriteTextToFile(chd+CTrezarcoinConfFile, "daemon=1"); err != nil {
+				log.Fatal(err)
+			}
+			if err := WriteTextToFile(chd+CTrezarcoinConfFile, ""); err != nil {
+				log.Fatal(err)
+			}
+		}
+
+		// Add server=1 info if required
+		b, err = StringExistsInFile("server=1", chd+CTrezarcoinConfFile)
+		if err != nil {
+			return "", "", fmt.Errorf("unable to search for text in file - %v", err)
+		}
+		if !b {
+			if err := WriteTextToFile(chd+CTrezarcoinConfFile, "server=1"); err != nil {
+				log.Fatal(err)
+			}
+		}
+
+		// Add rpcallowip= info if required
+		b, err = StringExistsInFile("rpcallowip=", chd+CTrezarcoinConfFile)
+		if err != nil {
+			return "", "", fmt.Errorf("unable to search for text in file - %v", err)
+		}
+		if !b {
+			if err := WriteTextToFile(chd+CTrezarcoinConfFile, "rpcallowip=192.168.1.0/255.255.255.0"); err != nil {
+				log.Fatal(err)
+			}
+		}
+
+		// Add rpcport= info if required
+		b, err = StringExistsInFile("rpcport=", chd+CTrezarcoinConfFile)
+		if err != nil {
+			return "", "", fmt.Errorf("unable to search for text in file - %v", err)
+		}
+		if !b {
+			if err := WriteTextToFile(chd+CTrezarcoinConfFile, "rpcport="+CTrezarcoinRPCPort); err != nil {
+				log.Fatal(err)
+			}
+		}
+
+		return rpcu, rpcpw, nil
 	default:
 		err = errors.New("unable to determine ProjectType")
 	}
