@@ -38,24 +38,21 @@ var coinCmd = &cobra.Command{
 		}
 		survey.AskOne(prompt, &coin)
 		cliConf := be.ConfStruct{}
+		cliConf.ServerIP = "127.0.0.1"
 
 		switch coin {
 		case be.CCoinNameDivi:
 			cliConf.ProjectType = be.PTDivi
 			cliConf.Port = be.CDiviRPCPort
-			cliConf.ServerIP = "127.0.0.1"
 		case be.CCoinNamePhore:
 			cliConf.ProjectType = be.PTPhore
 			cliConf.Port = be.CPhoreRPCPort
-			cliConf.ServerIP = "127.0.0.1"
 		case be.CCoinNamePIVX:
 			cliConf.ProjectType = be.PTPIVX
 			cliConf.Port = be.CPIVXRPCPort
-			cliConf.ServerIP = "127.0.0.1"
 		case be.CCoinNameTrezarcoin:
 			cliConf.ProjectType = be.PTTrezarcoin
 			cliConf.Port = be.CTrezarcoinRPCPort
-			cliConf.ServerIP = "127.0.0.1"
 		default:
 			log.Fatal("Unable to determine coin choice")
 		}
