@@ -82,7 +82,7 @@ You can then view the ` + be.CAppName + ` dashboard by running the command: ` + 
 		//	log.Fatal("Unable to GetCoinHomeFolder " + err.Error())
 		//}
 
-		// Check for the App Config file
+		// Check for the App Config file. This should have already been created by the "coin" command
 		if !be.FileExists("./" + be.CConfFile + be.CConfFileExt) {
 			log.Fatal("Unable to find the file " + be.CConfFile)
 		}

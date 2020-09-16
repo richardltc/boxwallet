@@ -102,6 +102,46 @@ func ClearScreen() {
 	}
 }
 
+// BackupFile - Copy file from srcFile to destFile, and display output if requested
+func BackupFile(srcFile string, failOnNoSrc bool) error {
+	dt := time.Now()
+	dtStr := dt.Format("2006-01-02")
+
+	if failOnNoSrc {
+		if !FileExists(srcFile) {
+			return errors.New(srcFile + " doesn't exist")
+		}
+	}
+	// Open original file
+	originalFile, err := os.Open(srcFile)
+	if err != nil {
+		return err
+	}
+	defer originalFile.Close()
+
+	// Create new file
+	newFile, err := os.Create(dtStr + srcFile)
+	if err != nil {
+		return err
+	}
+	defer newFile.Close()
+
+	// Copy the bytes to destination from source
+	_, err = io.Copy(newFile, originalFile)
+	if err != nil {
+		return err
+	}
+
+	// Commit the file contents
+	// Flushes memory to disk
+	err = newFile.Sync()
+	if err != nil {
+		return err
+	}
+
+	return nil
+}
+
 func compressFilesInDir(dir, filespec string, removeSF bool) (compressedFile string, err error) {
 	files, err := ioutil.ReadDir(dir)
 	var fps []string
