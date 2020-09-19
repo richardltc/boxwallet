@@ -20,6 +20,8 @@ package cmd
 import (
 	"bufio"
 	"fmt"
+	"path/filepath"
+
 	// gwc "github.com/richardltc/gwcommon"
 	"github.com/spf13/cobra"
 	"log"
@@ -36,10 +38,12 @@ var uninstallCmd = &cobra.Command{
 	Short: "*** WARNING *** this command completely removes your chosen coins' wallet.",
 	Long:  ``,
 	Run: func(cmd *cobra.Command, args []string) {
-		abf, err := be.GetAppsBinFolder()
+		ex, err := os.Executable()
 		if err != nil {
-			log.Fatal("Unable to GetAppsBinFolder " + err.Error())
+			log.Fatal("unable to retrieve running binary: %v ", err)
 		}
+		abf := be.AddTrailingSlash(filepath.Dir(ex))
+
 		chf, err := be.GetCoinHomeFolder(be.APPTCLI)
 		if err != nil {
 			log.Fatal("Unable to GetCoinHomeFolder " + err.Error())

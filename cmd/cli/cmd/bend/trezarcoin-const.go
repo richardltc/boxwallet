@@ -5,12 +5,13 @@ const (
 
 	CTrezarcoinCoreVersion string = "2.1.1"
 	CDFTrezarcoinRPi       string = "Trezarcoin-" + CTrezarcoinCoreVersion + "-rPI.zip"
-	CDFTrezarcoinLinux     string = "trezarcoin-" + CTrezarcoinCoreVersion + "-linux64.tar.gz"
+	CDFTrezarcoinLinux     string = "trezarcoin-" + CTrezarcoinCoreVersion + "-x86_64-linux-gnu.tar.gz"
 	CDFTrezarcoinWindows   string = "trezarcoin-" + CTrezarcoinCoreVersion + "-win64-setup.exe"
 
-	CDownloadURLTC string = "https://github.com/TrezarCoin/TrezarCoin/releases/download/" + CTrezarcoinCoreVersion + ".0/"
+	CTrezarcoinExtractedDir = "trezarcoin-" + CTrezarcoinCoreVersion + "/"
 
-	// CTrezarcoinAppVersion - The app version of Trezarcoin
+	CDownloadURLTC string = "https://github.com/TrezarCoin/TrezarCoin/releases/download/v" + CTrezarcoinCoreVersion + ".0/"
+
 	CTrezarcoinHomeDir    string = ".trezarcoin"
 	CTrezarcoinHomeDirWin string = "TREZARCOIN"
 

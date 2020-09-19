@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/exec"
 	"os/user"
+	"path/filepath"
 	"runtime"
 	"strconv"
 	"strings"
@@ -23,7 +24,7 @@ import (
 
 const (
 	CAppName        string = "BoxWallet"
-	CBWAppVersion   string = "0.32.2"
+	CBWAppVersion   string = "0.32.3"
 	CAppFilename    string = "boxwallet"
 	CAppFilenameWin string = "boxwallet.exe"
 	CAppLogfile     string = "boxwallet.log"
@@ -543,7 +544,7 @@ func GetCoinName(at APPType) (string, error) {
 }
 
 // GetAppsBinFolder - Returns the directory of where the BoxWallet binary files are stored
-func GetAppsBinFolder() (string, error) {
+func GetAppsBinFolderOld() (string, error) {
 	var s string
 	u, err := user.Current()
 	if err != nil {
@@ -940,7 +941,7 @@ func PopulateDaemonConfFile() (rpcuser, rpcpassword string, err error) {
 		if !b {
 			if !bFileHasBeenBU {
 				bFileHasBeenBU = true
-				if err := BackupFile(chd+CDiviConfFile, false); err != nil {
+				if err := BackupFile(chd, CDiviConfFile, false); err != nil {
 					return "", "", fmt.Errorf("unable to backup file - %v", err)
 				}
 			}
@@ -963,7 +964,7 @@ func PopulateDaemonConfFile() (rpcuser, rpcpassword string, err error) {
 		if !b {
 			if !bFileHasBeenBU {
 				bFileHasBeenBU = true
-				if err := BackupFile(chd+CDiviConfFile, false); err != nil {
+				if err := BackupFile(chd, CDiviConfFile, false); err != nil {
 					return "", "", fmt.Errorf("unable to backup file - %v", err)
 				}
 				rpcpw = rand.String(20)
@@ -989,7 +990,7 @@ func PopulateDaemonConfFile() (rpcuser, rpcpassword string, err error) {
 		if !b {
 			if !bFileHasBeenBU {
 				bFileHasBeenBU = true
-				if err := BackupFile(chd+CDiviConfFile, false); err != nil {
+				if err := BackupFile(chd, CDiviConfFile, false); err != nil {
 					return "", "", fmt.Errorf("unable to backup file - %v", err)
 				}
 				if err := WriteTextToFile(chd+CDiviConfFile, "daemon=1"); err != nil {
@@ -1008,7 +1009,7 @@ func PopulateDaemonConfFile() (rpcuser, rpcpassword string, err error) {
 		if !b {
 			if !bFileHasBeenBU {
 				bFileHasBeenBU = true
-				if err := BackupFile(chd+CDiviConfFile, false); err != nil {
+				if err := BackupFile(chd, CDiviConfFile, false); err != nil {
 					return "", "", fmt.Errorf("unable to backup file - %v", err)
 				}
 				if err := WriteTextToFile(chd+CDiviConfFile, "server=1"); err != nil {
@@ -1024,7 +1025,7 @@ func PopulateDaemonConfFile() (rpcuser, rpcpassword string, err error) {
 		if !b {
 			if !bFileHasBeenBU {
 				bFileHasBeenBU = true
-				if err := BackupFile(chd+CDiviConfFile, false); err != nil {
+				if err := BackupFile(chd, CDiviConfFile, false); err != nil {
 					return "", "", fmt.Errorf("unable to backup file - %v", err)
 				}
 				if err := WriteTextToFile(chd+CDiviConfFile, "rpcallowip=192.168.1.0/255.255.255.0"); err != nil {
@@ -1040,7 +1041,7 @@ func PopulateDaemonConfFile() (rpcuser, rpcpassword string, err error) {
 		if !b {
 			if !bFileHasBeenBU {
 				bFileHasBeenBU = true
-				if err := BackupFile(chd+CDiviConfFile, false); err != nil {
+				if err := BackupFile(chd, CDiviConfFile, false); err != nil {
 					return "", "", fmt.Errorf("unable to backup file - %v", err)
 				}
 				if err := WriteTextToFile(chd+CDiviConfFile, "rpcport="+CDiviRPCPort); err != nil {
@@ -1065,7 +1066,7 @@ func PopulateDaemonConfFile() (rpcuser, rpcpassword string, err error) {
 		if !b {
 			if !bFileHasBeenBU {
 				bFileHasBeenBU = true
-				if err := BackupFile(chd+CPhoreConfFile, false); err != nil {
+				if err := BackupFile(chd, CPhoreConfFile, false); err != nil {
 					return "", "", fmt.Errorf("unable to backup file - %v", err)
 				}
 			}
@@ -1088,7 +1089,7 @@ func PopulateDaemonConfFile() (rpcuser, rpcpassword string, err error) {
 		if !b {
 			if !bFileHasBeenBU {
 				bFileHasBeenBU = true
-				if err := BackupFile(chd+CPhoreConfFile, false); err != nil {
+				if err := BackupFile(chd, CPhoreConfFile, false); err != nil {
 					return "", "", fmt.Errorf("unable to backup file - %v", err)
 				}
 			}
@@ -1114,7 +1115,7 @@ func PopulateDaemonConfFile() (rpcuser, rpcpassword string, err error) {
 		if !b {
 			if !bFileHasBeenBU {
 				bFileHasBeenBU = true
-				if err := BackupFile(chd+CPhoreConfFile, false); err != nil {
+				if err := BackupFile(chd, CPhoreConfFile, false); err != nil {
 					return "", "", fmt.Errorf("unable to backup file - %v", err)
 				}
 			}
@@ -1134,7 +1135,7 @@ func PopulateDaemonConfFile() (rpcuser, rpcpassword string, err error) {
 		if !b {
 			if !bFileHasBeenBU {
 				bFileHasBeenBU = true
-				if err := BackupFile(chd+CPhoreConfFile, false); err != nil {
+				if err := BackupFile(chd, CPhoreConfFile, false); err != nil {
 					return "", "", fmt.Errorf("unable to backup file - %v", err)
 				}
 			}
@@ -1150,7 +1151,7 @@ func PopulateDaemonConfFile() (rpcuser, rpcpassword string, err error) {
 		if !b {
 			if !bFileHasBeenBU {
 				bFileHasBeenBU = true
-				if err := BackupFile(chd+CPhoreConfFile, false); err != nil {
+				if err := BackupFile(chd, CPhoreConfFile, false); err != nil {
 					return "", "", fmt.Errorf("unable to backup file - %v", err)
 				}
 			}
@@ -1166,7 +1167,7 @@ func PopulateDaemonConfFile() (rpcuser, rpcpassword string, err error) {
 		if !b {
 			if !bFileHasBeenBU {
 				bFileHasBeenBU = true
-				if err := BackupFile(chd+CPhoreConfFile, false); err != nil {
+				if err := BackupFile(chd, CPhoreConfFile, false); err != nil {
 					return "", "", fmt.Errorf("unable to backup file - %v", err)
 				}
 			}
@@ -1191,7 +1192,7 @@ func PopulateDaemonConfFile() (rpcuser, rpcpassword string, err error) {
 		if !b {
 			if !bFileHasBeenBU {
 				bFileHasBeenBU = true
-				if err := BackupFile(chd+CPIVXConfFile, false); err != nil {
+				if err := BackupFile(chd, CPIVXConfFile, false); err != nil {
 					return "", "", fmt.Errorf("unable to backup file - %v", err)
 				}
 			}
@@ -1214,7 +1215,7 @@ func PopulateDaemonConfFile() (rpcuser, rpcpassword string, err error) {
 		if !b {
 			if !bFileHasBeenBU {
 				bFileHasBeenBU = true
-				if err := BackupFile(chd+CPIVXConfFile, false); err != nil {
+				if err := BackupFile(chd, CPIVXConfFile, false); err != nil {
 					return "", "", fmt.Errorf("unable to backup file - %v", err)
 				}
 			}
@@ -1240,7 +1241,7 @@ func PopulateDaemonConfFile() (rpcuser, rpcpassword string, err error) {
 		if !b {
 			if !bFileHasBeenBU {
 				bFileHasBeenBU = true
-				if err := BackupFile(chd+CPIVXConfFile, false); err != nil {
+				if err := BackupFile(chd, CPIVXConfFile, false); err != nil {
 					return "", "", fmt.Errorf("unable to backup file - %v", err)
 				}
 			}
@@ -1259,7 +1260,7 @@ func PopulateDaemonConfFile() (rpcuser, rpcpassword string, err error) {
 		if !b {
 			if !bFileHasBeenBU {
 				bFileHasBeenBU = true
-				if err := BackupFile(chd+CPIVXConfFile, false); err != nil {
+				if err := BackupFile(chd, CPIVXConfFile, false); err != nil {
 					return "", "", fmt.Errorf("unable to backup file - %v", err)
 				}
 			}
@@ -1275,7 +1276,7 @@ func PopulateDaemonConfFile() (rpcuser, rpcpassword string, err error) {
 		if !b {
 			if !bFileHasBeenBU {
 				bFileHasBeenBU = true
-				if err := BackupFile(chd+CPIVXConfFile, false); err != nil {
+				if err := BackupFile(chd, CPIVXConfFile, false); err != nil {
 					return "", "", fmt.Errorf("unable to backup file - %v", err)
 				}
 			}
@@ -1292,7 +1293,7 @@ func PopulateDaemonConfFile() (rpcuser, rpcpassword string, err error) {
 		if !b {
 			if !bFileHasBeenBU {
 				bFileHasBeenBU = true
-				if err := BackupFile(chd+CPIVXConfFile, false); err != nil {
+				if err := BackupFile(chd, CPIVXConfFile, false); err != nil {
 					return "", "", fmt.Errorf("unable to backup file - %v", err)
 				}
 			}
@@ -1317,7 +1318,7 @@ func PopulateDaemonConfFile() (rpcuser, rpcpassword string, err error) {
 		if !b {
 			if !bFileHasBeenBU {
 				bFileHasBeenBU = true
-				if err := BackupFile(chd+CTrezarcoinConfFile, false); err != nil {
+				if err := BackupFile(chd, CTrezarcoinConfFile, false); err != nil {
 					return "", "", fmt.Errorf("unable to backup file - %v", err)
 				}
 			}
@@ -1340,7 +1341,7 @@ func PopulateDaemonConfFile() (rpcuser, rpcpassword string, err error) {
 		if !b {
 			if !bFileHasBeenBU {
 				bFileHasBeenBU = true
-				if err := BackupFile(chd+CTrezarcoinConfFile, false); err != nil {
+				if err := BackupFile(chd, CTrezarcoinConfFile, false); err != nil {
 					return "", "", fmt.Errorf("unable to backup file - %v", err)
 				}
 			}
@@ -1366,7 +1367,7 @@ func PopulateDaemonConfFile() (rpcuser, rpcpassword string, err error) {
 		if !b {
 			if !bFileHasBeenBU {
 				bFileHasBeenBU = true
-				if err := BackupFile(chd+CTrezarcoinConfFile, false); err != nil {
+				if err := BackupFile(chd, CTrezarcoinConfFile, false); err != nil {
 					return "", "", fmt.Errorf("unable to backup file - %v", err)
 				}
 			}
@@ -1385,7 +1386,7 @@ func PopulateDaemonConfFile() (rpcuser, rpcpassword string, err error) {
 		if !b {
 			if !bFileHasBeenBU {
 				bFileHasBeenBU = true
-				if err := BackupFile(chd+CTrezarcoinConfFile, false); err != nil {
+				if err := BackupFile(chd, CTrezarcoinConfFile, false); err != nil {
 					return "", "", fmt.Errorf("unable to backup file - %v", err)
 				}
 			}
@@ -1401,7 +1402,7 @@ func PopulateDaemonConfFile() (rpcuser, rpcpassword string, err error) {
 		if !b {
 			if !bFileHasBeenBU {
 				bFileHasBeenBU = true
-				if err := BackupFile(chd+CTrezarcoinConfFile, false); err != nil {
+				if err := BackupFile(chd, CTrezarcoinConfFile, false); err != nil {
 					return "", "", fmt.Errorf("unable to backup file - %v", err)
 				}
 			}
@@ -1417,7 +1418,7 @@ func PopulateDaemonConfFile() (rpcuser, rpcpassword string, err error) {
 		if !b {
 			if !bFileHasBeenBU {
 				bFileHasBeenBU = true
-				if err := BackupFile(chd+CTrezarcoinConfFile, false); err != nil {
+				if err := BackupFile(chd, CTrezarcoinConfFile, false); err != nil {
 					return "", "", fmt.Errorf("unable to backup file - %v", err)
 				}
 			}
@@ -1433,10 +1434,16 @@ func PopulateDaemonConfFile() (rpcuser, rpcpassword string, err error) {
 }
 
 func AllProjectBinaryFilesExists() (bool, error) {
-	abf, err := GetAppsBinFolder()
+	//abf, err := GetAppsBinFolder()
+	//if err != nil {
+	//	return false, fmt.Errorf("Unable to GetAppsBinFolder - %v ", err)
+	//}
+
+	ex, err := os.Executable()
 	if err != nil {
-		return false, fmt.Errorf("Unable to GetAppsBinFolder - %v ", err)
+		return false, fmt.Errorf("Unable to retrieve running binary: %v ", err)
 	}
+	abf := AddTrailingSlash(filepath.Dir(ex))
 
 	bwconf, err := GetConfigStruct("", false)
 	if err != nil {
@@ -1631,7 +1638,14 @@ func WalletFix(wft WalletFixType) error {
 		return fmt.Errorf("unable to StopDiviD: %v", err)
 	}
 
-	dbf, _ := GetAppsBinFolder()
+	//abf, _ := GetAppsBinFolder()
+
+	ex, err := os.Executable()
+	if err != nil {
+		return fmt.Errorf("Unable to retrieve running binary: %v ", err)
+	}
+	abf := AddTrailingSlash(filepath.Dir(ex))
+
 	coind, err := GetCoinDaemonFilename(APPTCLI)
 	if err != nil {
 		return fmt.Errorf("unable to GetCoinDaemonFilename - %v", err)
@@ -1654,7 +1668,7 @@ func WalletFix(wft WalletFixType) error {
 				arg1 = "-resync"
 			}
 
-			cRun := exec.Command(dbf+coind, arg1)
+			cRun := exec.Command(abf+coind, arg1)
 			if err := cRun.Run(); err != nil {
 				return fmt.Errorf("unable to run divid -reindex: %v", err)
 			}
@@ -1663,7 +1677,7 @@ func WalletFix(wft WalletFixType) error {
 		if runtime.GOOS == "windows" {
 			// TODO Complete for Windows
 		} else {
-			cRun := exec.Command(dbf+coind, "-reindex")
+			cRun := exec.Command(abf+coind, "-reindex")
 			if err := cRun.Run(); err != nil {
 				return fmt.Errorf("unable to run pivxd -reindex: %v", err)
 			}
@@ -1672,7 +1686,7 @@ func WalletFix(wft WalletFixType) error {
 		if runtime.GOOS == "windows" {
 			// TODO Complete for Windows
 		} else {
-			cRun := exec.Command(dbf+coind, "-reindex")
+			cRun := exec.Command(abf+coind, "-reindex")
 			if err := cRun.Run(); err != nil {
 				return fmt.Errorf("unable to run trezardcoind -reindex: %v", err)
 			}
@@ -1731,7 +1745,12 @@ func RunCoinDaemon(displayOutput bool) error {
 	if err != nil {
 		return err
 	}
-	abf, _ := GetAppsBinFolder()
+	//abf, _ := GetAppsBinFolder()
+	ex, err := os.Executable()
+	if err != nil {
+		return fmt.Errorf("Unable to retrieve running binary: %v ", err)
+	}
+	abf := AddTrailingSlash(filepath.Dir(ex))
 
 	switch gwconf.ProjectType {
 	case PTDivi:
@@ -1816,7 +1835,45 @@ func RunCoinDaemon(displayOutput bool) error {
 			}
 		}
 	case PTTrezarcoin:
-		// TODO Need to code this bit for Trezarcoin
+		if runtime.GOOS == "windows" {
+			fp := abf + CDiviDFileWin
+			cmd := exec.Command("cmd.exe", "/C", "start", "/b", fp)
+			if err := cmd.Run(); err != nil {
+				return err
+			}
+		} else {
+			if displayOutput {
+				fmt.Println("Attempting to run the trezarcoin daemon...")
+			}
+
+			cmdRun := exec.Command(abf + CTrezarcoinDFile)
+			stdout, err := cmdRun.StdoutPipe()
+			if err != nil {
+				return err
+			}
+			err = cmdRun.Start()
+			if err != nil {
+				return err
+			}
+
+			buf := bufio.NewReader(stdout) // Notice that this is not in a loop
+			num := 1
+			for {
+				line, _, _ := buf.ReadLine()
+				if num > 3 {
+					os.Exit(0)
+				}
+				num++
+				if string(line) == "Trezarcoin server starting" {
+					if displayOutput {
+						fmt.Println("Trezarcoin server starting")
+					}
+					return nil
+				} else {
+					return errors.New("unable to start Trezarcoin server: " + string(line))
+				}
+			}
+		}
 	default:
 		err = errors.New("unable to determine ProjectType")
 	}
@@ -1831,7 +1888,13 @@ func StopCoinDaemon(displayOutput bool) error {
 		return nil
 	}
 
-	dbf, _ := GetAppsBinFolder()
+	//abf, _ := GetAppsBinFolder()
+	ex, err := os.Executable()
+	if err != nil {
+		return fmt.Errorf("Unable to retrieve running binary: %v ", err)
+	}
+	abf := AddTrailingSlash(filepath.Dir(ex))
+
 	coind, err := GetCoinDaemonFilename(APPTCLI)
 	if err != nil {
 		return fmt.Errorf("unable to GetCoinDaemonFilename - %v", err)
@@ -1847,7 +1910,7 @@ func StopCoinDaemon(displayOutput bool) error {
 			// TODO Complete for Windows
 		} else {
 			for i := 0; i < 50; i++ {
-				cRun := exec.Command(dbf+CDiviCliFile, "stop")
+				cRun := exec.Command(abf+CDiviCliFile, "stop")
 				_ = cRun.Run()
 
 				sr, _, _ := IsCoinDaemonRunning() //DiviDRunning()
@@ -1867,7 +1930,7 @@ func StopCoinDaemon(displayOutput bool) error {
 			// TODO Complete for Windows
 		} else {
 			for i := 0; i < 50; i++ {
-				cRun := exec.Command(dbf+CPhoreCliFile, "stop")
+				cRun := exec.Command(abf+CPhoreCliFile, "stop")
 				_ = cRun.Run()
 
 				sr, _, _ := IsCoinDaemonRunning()
@@ -1886,7 +1949,7 @@ func StopCoinDaemon(displayOutput bool) error {
 		if runtime.GOOS == "windows" {
 			// TODO Complete for Windows
 		} else {
-			cRun := exec.Command(dbf+CPIVXCliFile, "stop")
+			cRun := exec.Command(abf+CPIVXCliFile, "stop")
 			if err := cRun.Run(); err != nil {
 				return fmt.Errorf("unable to StopPIVXD:%v", err)
 			}
@@ -1907,7 +1970,7 @@ func StopCoinDaemon(displayOutput bool) error {
 		if runtime.GOOS == "windows" {
 			// TODO Complete for Windows
 		} else {
-			cRun := exec.Command(dbf+CTrezarcoinCliFile, "stop")
+			cRun := exec.Command(abf+CTrezarcoinCliFile, "stop")
 			if err := cRun.Run(); err != nil {
 				return fmt.Errorf("unable to StopCoinDaemon:%v", err)
 			}
@@ -1933,10 +1996,12 @@ func StopCoinDaemon(displayOutput bool) error {
 
 // RunInitialDaemon - Runs the divid Daemon for the first time to populate the divi.conf file
 func RunInitialDaemon() (rpcuser, rpcpassword string, err error) {
-	abf, err := GetAppsBinFolder()
+	ex, err := os.Executable()
 	if err != nil {
-		return "", "", fmt.Errorf("unable to GetAppsBinFolder - %v", err)
+		return "", "", fmt.Errorf("Unable to retrieve running binary: %v ", err)
 	}
+	abf := AddTrailingSlash(filepath.Dir(ex))
+
 	coind, err := GetCoinDaemonFilename(APPTCLI)
 	if err != nil {
 		return "", "", fmt.Errorf("unable to GetCoinDaemonFilename - %v", err)
