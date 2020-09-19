@@ -28,7 +28,8 @@ import (
 )
 
 var cfgFile string
-var sAppBinFolder, _ = be.GetAppsBinFolder()
+
+//var sAppBinFolder, _ = be.GetAppsBinFolder()
 
 //var sAppCLIName, _ = gwc.GetAppCLIName(gwc.APPTCLI) // e.g. GoDivi CLI
 //var sAppName, _ = gwc.GetAppName(gwc.APPTCLI)       // e.g. GoDivi

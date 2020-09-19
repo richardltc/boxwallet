@@ -1,27 +1,25 @@
 # BoxWallet #
 
-BoxWallet is a CLI application that makes it very easy to set up and view a CLI wallet and node, by just using the command line on the platform of your choosing, with just a few commands.
+BoxWallet is a CLI application that makes it very easy to set up and view a CLI wallet or full node, on the platform of your choosing, with just a few commands.
 
 ## What is BoxWallet used for? ###
 
-* Making the initial installation of a CLI node or wallet simple by using the commands `./boxwallet coin` and `./boxwallet install`
+* Making the initial installation of a CLI node or wallet simple, by using the command: `./boxwallet coin` and choosing your coin of choice.
 * Web enabling your existing wallet.
 * Displaying the staking status of your wallet. 
 * Displaying blockchain and master node syncing status
 * Displaying of block count and network difficulty
 * Displaying of % coins required for staking. (for DIVI)
 * Auto fixing common wallet issues.
-* Balance in DIVI/PHORE, USD, AUD and GBP (more coming soon...)
+* Balance in your coin, USD, AUD and GBP (more coming soon...)
 
 ### How do I run? ###
 
-Download BoxWallet, for your platform of choice, extract the files to a location of your choosing and then choose your coin by running `./boxwallet coin`.
+Download BoxWallet, for your platform of choice, extract the files to a location of your choosing and then choose your preferred coin by running `./boxwallet coin`.
  
-After you've chosen your coin of choice, simply run: `./boxwallet install`
+This will download the official binaries from the coin's Project website, and install them in the same folder that you're running `boxwallet` from.
 
-This will download the official binaries from the coin's Project website, and installs them in /home/<your_user>/boxwallet/.
-
-Then, change to the `boxwallet` folder in your home folder, and run `./boxwallet start`, to start the coin's damon server and then you can run  `./boxwallet dash`, where you should be prompted through an initial wizard to get you going.
+Then run `./boxwallet start`, to start the coin's damon server and then you can run  `./boxwallet dash`, where you should be prompted through an initial wizard to get you going.
 
 ### OK, but what else can BoxWallet do? ###
 
@@ -29,7 +27,7 @@ Then, change to the `boxwallet` folder in your home folder, and run `./boxwallet
 
 * Takes you through an initial wizard to ensure your wallet is secure.
 
-* `boxwallet install` - Installs the official coin project CLI files, and creates a new wallet.
+* `boxwallet coin` - Installs the official coin project CLI files, and creates a new wallet.
 
 * `boxwallet dash` - Displays blockchain, syncing, staking and coin balance and AUD/USD/GBP (Divi only) balance info.
 

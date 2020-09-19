@@ -19,12 +19,13 @@ package cmd
 import (
 	"errors"
 	"fmt"
+	"path/filepath"
+
 	// gwc "github.com/richardltc/gwcommon"
 	"github.com/spf13/cobra"
 	"log"
 	"os"
 	be "richardmace.co.uk/boxwallet/cmd/cli/cmd/bend"
-	"runtime"
 )
 
 const ()
@@ -33,10 +34,12 @@ const ()
 var installCmd = &cobra.Command{
 	Use:   "install",
 	Short: "Downloads, installs, configures and creates a new wallet, for the coin of your choosing",
-	Long: `Downloads the latest official binary files for the coin of your choosing and installs them in a directory called ` + sAppBinFolder + `,
+	Long: `Downloads the latest official binary files for the coin of your choosing,
 
 You can then view the ` + be.CAppName + ` dashboard by running the command: ` + be.CAppFilename + ` dash`,
 	Run: func(cmd *cobra.Command, args []string) {
+		log.Fatal("The install command is no longer required or supported. Use the coin command instead.") //err.Error())
+
 		// Lets load our config file first, to see if the user has made their coin choice...
 		cliConf, err := be.GetConfigStruct("", true)
 		if err != nil {
@@ -69,14 +72,13 @@ You can then view the ` + be.CAppName + ` dashboard by running the command: ` + 
 		if err != nil {
 			log.Fatal("Unable to GetAppFileCLIName " + err.Error())
 		}
-		//sAppFileUpdaterName, err := gwc.GetAppFileName(gwc.APPTUpdater)
-		//if err != nil {
-		//	log.Fatal("Unable to GetAppFileName " + err.Error())
-		//}
-		abf, err := be.GetAppsBinFolder()
+
+		ex, err := os.Executable()
 		if err != nil {
-			log.Fatal("Unable to GetAppsBinFolder " + err.Error())
+			log.Fatal("Unable to retrieve running binary: %v ", err)
 		}
+		abf := be.AddTrailingSlash(filepath.Dir(ex))
+
 		//chf, err := be.GetCoinHomeFolder(be.APPTCLI)
 		//if err != nil {
 		//	log.Fatal("Unable to GetCoinHomeFolder " + err.Error())
@@ -160,6 +162,7 @@ You can then view the ` + be.CAppName + ` dashboard by running the command: ` + 
 		case be.PTPIVX:
 			fmt.Println("\n\nDFHmj4dExVC24eWoRKmQJDx57r4svGVs3J")
 		case be.PTTrezarcoin:
+			fmt.Println("\n\nTnkHScr6iTcfK11GDPFjNgJ7V3GZtHEy9V")
 		default:
 			err = errors.New("unable to determine ProjectType")
 		}
@@ -181,327 +184,6 @@ func init() {
 	// Cobra supports local flags which will only run when this command
 	// is called directly, e.g.:
 	// installCmd.Flags().BoolP("toggle", "t", false, "Help message for toggle")
-}
-
-// doRequiredFiles - Download and install required files
-func doRequiredFiles() error {
-	var filePath, fileURL string
-	abf, err := be.GetAppsBinFolder()
-	if err != nil {
-		return fmt.Errorf("Unable to perform GetAppsBinFolder: %v ", err)
-	}
-
-	bwconf, err := be.GetConfigStruct("", true)
-	if err != nil {
-		return fmt.Errorf("Unable to get CLIConfigStruct: %v ", err)
-	}
-	switch bwconf.ProjectType {
-	case be.PTDivi:
-		if runtime.GOOS == "windows" {
-			filePath = abf + be.CDFDiviWindows
-			fileURL = be.CDownloadURLDivi + be.CDFDiviWindows
-		} else if runtime.GOARCH == "arm" {
-			filePath = abf + be.CDFDiviRPi
-			fileURL = be.CDownloadURLDivi + be.CDFDiviRPi
-		} else {
-			filePath = abf + be.CDFDiviLinux
-			fileURL = be.CDownloadURLDivi + be.CDFDiviLinux
-		}
-	case be.PTPhore:
-		if runtime.GOOS == "windows" {
-			filePath = abf + be.CDFPhoreWindows
-			fileURL = be.CDownloadURLPhore + be.CDFPhoreWindows
-		} else if runtime.GOARCH == "arm" {
-			filePath = abf + be.CDFPhoreRPi
-			fileURL = be.CDownloadURLPhore + be.CDFPhoreRPi
-		} else {
-			filePath = abf + be.CDFPhoreLinux
-			fileURL = be.CDownloadURLPhore + be.CDFPhoreLinux
-		}
-	case be.PTPIVX:
-		if runtime.GOOS == "windows" {
-			filePath = abf + be.CDFPIVXFileWindows
-			fileURL = be.CDownloadURLPIVX + be.CDFPIVXFileWindows
-		} else if runtime.GOARCH == "arm" {
-			filePath = abf + be.CDFPIVXFileRPi
-			fileURL = be.CDownloadURLPIVX + be.CDFPIVXFileRPi
-		} else {
-			filePath = abf + be.CDFPIVXFileLinux
-			fileURL = be.CDownloadURLPIVX + be.CDFPIVXFileLinux
-		}
-	case be.PTTrezarcoin:
-		if runtime.GOOS == "windows" {
-			filePath = abf + be.CDFTrezarcoinWindows
-			fileURL = be.CDownloadURLTC + be.CDFTrezarcoinWindows
-		} else if runtime.GOARCH == "arm" {
-			filePath = abf + be.CDFTrezarcoinRPi
-			fileURL = be.CDownloadURLTC + be.CDFTrezarcoinRPi
-		} else {
-			filePath = abf + be.CDFTrezarcoinLinux
-			fileURL = be.CDownloadURLTC + be.CDFTrezarcoinLinux
-		}
-	default:
-		err = errors.New("unable to determine ProjectType")
-	}
-	if err != nil {
-		return fmt.Errorf("error - %v", err)
-	}
-
-	log.Print("Downloading required files...")
-	if err := be.DownloadFile(filePath, fileURL); err != nil {
-		return fmt.Errorf("unable to download file: %v - %v", filePath+fileURL, err)
-	}
-	defer os.Remove(filePath)
-
-	r, err := os.Open(filePath)
-	if err != nil {
-		return fmt.Errorf("unable to open file: %v - %v", filePath, err)
-	}
-
-	// Now, decompress the files...
-	log.Print("decompressing files...")
-	switch bwconf.ProjectType {
-	case be.PTDivi:
-		if runtime.GOOS == "windows" {
-			_, err = be.UnZip(filePath, "tmp")
-			if err != nil {
-				return fmt.Errorf("unable to unzip file: %v - %v", filePath, err)
-			}
-			defer os.RemoveAll("tmp")
-		} else if runtime.GOARCH == "arm" {
-			err = be.ExtractTarGz(r)
-			if err != nil {
-				return fmt.Errorf("unable to extractTarGz file: %v - %v", r, err)
-			}
-			defer os.RemoveAll("./" + be.CDiviExtractedDir)
-		} else {
-			err = be.ExtractTarGz(r)
-			if err != nil {
-				return fmt.Errorf("unable to extractTarGz file: %v - %v", r, err)
-			}
-			defer os.RemoveAll("./" + be.CDiviExtractedDir)
-		}
-	case be.PTPhore:
-		if runtime.GOOS == "windows" {
-			_, err = be.UnZip(filePath, "tmp")
-			if err != nil {
-				return fmt.Errorf("unable to unzip file: %v - %v", filePath, err)
-			}
-			defer os.RemoveAll("tmp")
-		} else if runtime.GOARCH == "arm" {
-			err = be.ExtractTarGz(r)
-			if err != nil {
-				return fmt.Errorf("unable to extractTarGz file: %v - %v", r, err)
-			}
-			defer os.RemoveAll("./" + be.CPhoreExtractedDir)
-		} else {
-			err = be.ExtractTarGz(r)
-			if err != nil {
-				return fmt.Errorf("unable to extractTarGz file: %v - %v", r, err)
-			}
-			defer os.RemoveAll("./" + be.CPhoreExtractedDir)
-		}
-	case be.PTPIVX:
-		if runtime.GOOS == "windows" {
-			_, err = be.UnZip(filePath, "tmp")
-			if err != nil {
-				return fmt.Errorf("unable to unzip file: %v - %v", filePath, err)
-			}
-			defer os.RemoveAll("tmp")
-		} else if runtime.GOARCH == "arm" {
-			err = be.ExtractTarGz(r)
-			if err != nil {
-				return fmt.Errorf("unable to extractTarGz file: %v - %v", r, err)
-			}
-			defer os.RemoveAll("./" + be.CPIVXExtractedDirArm)
-		} else {
-			err = be.ExtractTarGz(r)
-			if err != nil {
-				return fmt.Errorf("unable to extractTarGz file: %v - %v", r, err)
-			}
-			defer os.RemoveAll("./" + be.CPIVXExtractedDirLinux)
-		}
-	case be.PTTrezarcoin:
-		if runtime.GOOS == "windows" {
-			_, err = be.UnZip(filePath, "tmp")
-			if err != nil {
-				return fmt.Errorf("unable to unzip file: %v - %v", filePath, err)
-			}
-			defer os.RemoveAll("tmp")
-		} else if runtime.GOARCH == "arm" {
-			err = be.ExtractTarGz(r)
-			if err != nil {
-				return fmt.Errorf("unable to extractTarGz file: %v - %v", r, err)
-			}
-		} else {
-			err = be.ExtractTarGz(r)
-			if err != nil {
-				return fmt.Errorf("unable to extractTarGz file: %v - %v", r, err)
-			}
-		}
-	default:
-		err = errors.New("unable to determine ProjectType")
-	}
-
-	log.Print("Installing files...")
-
-	// Copy files to correct location
-	var srcPath, srcFileCLI, srcFileD, srcFileTX, srcFileBWConfCLI, srcFileBWCLI string
-	srcFileBWConfCLI = be.CConfFile + be.CConfFileExt
-	//srcFileGWConfSrv = gwc.CServerConfFile + gwc.CServerConfFileExt
-	var srcREADMEFile = "README.md"
-
-	switch bwconf.ProjectType {
-	case be.PTDivi:
-		switch runtime.GOOS {
-		case "windows":
-			srcPath = "./tmp/" + be.CDiviExtractedDir + "bin/"
-			srcFileCLI = be.CDiviCliFileWin
-			srcFileD = be.CDiviDFileWin
-			srcFileTX = be.CDiviTxFileWin
-			srcFileBWCLI = be.CAppFilenameWin
-		case "arm":
-			srcPath = "./" + be.CDiviExtractedDir + "bin/"
-			srcFileCLI = be.CDiviCliFile
-			srcFileD = be.CDiviDFile
-			srcFileTX = be.CDiviTxFile
-			srcFileBWCLI = be.CAppFilename
-		case "linux":
-			srcPath = "./" + be.CDiviExtractedDir + "bin/"
-			srcFileCLI = be.CDiviCliFile
-			srcFileD = be.CDiviDFile
-			srcFileTX = be.CDiviTxFile
-			srcFileBWCLI = be.CAppFilename
-		default:
-			err = errors.New("unable to determine runtime.GOOS")
-		}
-	case be.PTPhore:
-		switch runtime.GOOS {
-		case "windows":
-			srcPath = "./tmp/" + be.CPhoreExtractedDir + "bin/"
-			srcFileCLI = be.CPhoreCliFileWin
-			srcFileD = be.CPhoreDFileWin
-			srcFileTX = be.CPhoreTxFileWin
-			srcFileBWCLI = be.CAppFilenameWin
-		case "arm":
-			srcPath = "./" + be.CPhoreExtractedDir + "bin/"
-			srcFileCLI = be.CPhoreCliFile
-			srcFileD = be.CPhoreDFile
-			srcFileTX = be.CPhoreTxFile
-			srcFileBWCLI = be.CAppFilename
-		case "linux":
-			srcPath = "./" + be.CPhoreExtractedDir + "bin/"
-			srcFileCLI = be.CPhoreCliFile
-			srcFileD = be.CPhoreDFile
-			srcFileTX = be.CPhoreTxFile
-			srcFileBWCLI = be.CAppFilename
-		default:
-			err = errors.New("unable to determine runtime.GOOS")
-		}
-	case be.PTPIVX:
-		switch runtime.GOOS {
-		case "windows":
-			srcPath = "./tmp/" + be.CPIVXExtractedDirWindows + "pivx-" + be.CPIVXCoreVersion + "bin/"
-			srcFileCLI = be.CPIVXCliFileWin
-			srcFileD = be.CPIVXDFileWin
-			srcFileTX = be.CPIVXTxFileWin
-			srcFileBWCLI = be.CAppFilenameWin
-		case "arm":
-			srcPath = "./" + be.CPIVXExtractedDirArm + "bin/"
-			srcFileCLI = be.CPIVXCliFile
-			srcFileD = be.CPIVXDFile
-			srcFileTX = be.CPIVXTxFile
-			srcFileBWCLI = be.CAppFilename
-		case "linux":
-			srcPath = "./" + be.CPIVXExtractedDirLinux + "bin/"
-			srcFileCLI = be.CPIVXCliFile
-			srcFileD = be.CPIVXDFile
-			srcFileTX = be.CPIVXTxFile
-			srcFileBWCLI = be.CAppFilename
-		default:
-			err = errors.New("unable to determine runtime.GOOS")
-		}
-	case be.PTTrezarcoin:
-		switch runtime.GOOS {
-		case "windows":
-			err = errors.New("windows is not currently supported for Trezarcoin")
-		case "arm":
-			err = errors.New("arm is not currently supported for Trezarcoin")
-		case "linux":
-			srcPath = "./"
-			srcFileCLI = be.CTrezarcoinCliFile
-			srcFileD = be.CTrezarcoinDFile
-			srcFileTX = be.CTrezarcoinTxFile
-			srcFileBWCLI = be.CAppFilename
-		default:
-			err = errors.New("unable to determine runtime.GOOS")
-		}
-	default:
-		err = errors.New("unable to determine ProjectType")
-	}
-	if err != nil {
-		return fmt.Errorf("error: - %v", err)
-	}
-
-	// coin-cli
-	err = be.FileCopy(srcPath+srcFileCLI, abf+srcFileCLI, false)
-	if err != nil {
-		return fmt.Errorf("unable to copyFile from: %v to %v - %v", srcPath+srcFileCLI, abf+srcFileCLI, err)
-	}
-	err = os.Chmod(abf+srcFileCLI, 0777)
-	if err != nil {
-		return fmt.Errorf("unable to chmod file: %v - %v", abf+srcFileCLI, err)
-	}
-	// coind
-	err = be.FileCopy(srcPath+srcFileD, abf+srcFileD, false)
-	if err != nil {
-		return fmt.Errorf("unable to copyFile: %v - %v", srcPath+srcFileD, err)
-	}
-	err = os.Chmod(abf+srcFileD, 0777)
-	if err != nil {
-		return fmt.Errorf("unable to chmod file: %v - %v", abf+srcFileD, err)
-	}
-
-	// cointx
-	err = be.FileCopy(srcPath+srcFileTX, abf+srcFileTX, false)
-	if err != nil {
-		return fmt.Errorf("unable to copyFile: %v - %v", srcPath+srcFileTX, err)
-	}
-	err = os.Chmod(abf+srcFileTX, 0777)
-	if err != nil {
-		return fmt.Errorf("unable to chmod file: %v - %v", abf+srcFileTX, err)
-	}
-
-	// Copy the BoxWallet binary itself
-	ex, err := os.Executable()
-	if err != nil {
-		return fmt.Errorf("error getting exe - %v", err)
-	}
-
-	// We're only going to attempt to copy it, because it might already be in place...
-	_ = be.FileCopy(ex, abf+srcFileBWCLI, false)
-	//err = be.FileCopy(ex, abf+srcFileBWCLI, false)
-	//if err != nil {
-	//	return fmt.Errorf("unable to copyFile: %v - %v", abf+srcFileBWCLI, err)
-	//}
-	err = os.Chmod(abf+srcFileBWCLI, 0777)
-	if err != nil {
-		return fmt.Errorf("unable to chmod file: %v - %v", abf+srcFileBWCLI, err)
-	}
-
-	// Attempt to copy the README.md file
-	_ = be.FileCopy("./"+srcREADMEFile, abf+srcREADMEFile, false)
-	//if err != nil {
-	//	return fmt.Errorf("unable to copyFile from: %v to %v - %v", "./"+srcREADMEFile, abf+srcREADMEFile, err)
-	//}
-
-	// Attempt to copy the CLI config file
-	_ = be.FileCopy("./"+srcFileBWConfCLI, abf+srcFileBWConfCLI, false)
-	//if err != nil {
-	//	return fmt.Errorf("unable to copyFile: %v - %v", abf+srcFileBWConfCLI, err)
-	//}
-
-	return nil
 }
 
 // getCoinDownloadLink - Returns a link to the required file

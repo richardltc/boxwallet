@@ -85,11 +85,7 @@ var startCmd = &cobra.Command{
 		if err != nil {
 			log.Fatal("Unable to GetAppFileCLIName " + err.Error())
 		}
-		abf, err := be.GetAppsBinFolder()
-		if err != nil {
-			log.Fatal("Unable to GetAppsBinFolder " + err.Error())
-		}
-		fmt.Println("Now, simply run " + abf + sAppFileCLIName + " dash\n\n")
+		fmt.Println("\nNow, simply run ./" + sAppFileCLIName + " dash\n\n")
 	},
 }
 
