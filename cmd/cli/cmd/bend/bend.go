@@ -79,6 +79,15 @@ const (
 	cCircProg4 string = "\u25F4"
 
 	cUtfLock string = "\u1F512"
+
+	cProg1 string = "|"
+	cProg2 string = "/"
+	cProg3 string = "-"
+	cProg4 string = "\\"
+	cProg5 string = "|"
+	cProg6 string = "/"
+	cProg7 string = "-"
+	cProg8 string = "\\"
 )
 
 // APPType - either APPTCLI, APPTCLICompiled, APPTInstaller, APPTUpdater, APPTServer
@@ -126,20 +135,6 @@ const (
 	// OSTWindows - Windows
 	OSTWindows
 )
-
-type BlockchainInfoRespStruct struct {
-	Result struct {
-		Chain                string  `json:"chain"`
-		Blocks               int     `json:"blocks"`
-		Headers              int     `json:"headers"`
-		Bestblockhash        string  `json:"bestblockhash"`
-		Difficulty           float64 `json:"difficulty"`
-		Verificationprogress float64 `json:"verificationprogress"`
-		Chainwork            string  `json:"chainwork"`
-	} `json:"result"`
-	Error interface{} `json:"error"`
-	ID    string      `json:"id"`
-}
 
 type GenericRespStruct struct {
 	Result string      `json:"result"`
@@ -241,6 +236,8 @@ const (
 	WFTReIndex
 	WFTReSync
 )
+
+var gLastMNSyncStatus string = ""
 
 func AddNodesDiviAlreadyExist() (bool, error) {
 	chd, _ := GetCoinHomeFolder(APPTCLI)
@@ -560,33 +557,6 @@ func GetAppsBinFolderOld() (string, error) {
 	return s, nil
 }
 
-func GetBlockchainInfo(cliConf *ConfStruct) (BlockchainInfoRespStruct, error) {
-	var respStruct BlockchainInfoRespStruct
-
-	body := strings.NewReader("{\"jsonrpc\":\"1.0\",\"id\":\"curltext\",\"method\":\"getblockchaininfo\",\"params\":[]}")
-	req, err := http.NewRequest("POST", "http://"+cliConf.ServerIP+":"+cliConf.Port, body)
-	if err != nil {
-		return respStruct, err
-	}
-	req.SetBasicAuth(cliConf.RPCuser, cliConf.RPCpassword)
-	req.Header.Set("Content-Type", "text/plain;")
-
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		return respStruct, err
-	}
-	defer resp.Body.Close()
-	bodyResp, err := ioutil.ReadAll(resp.Body)
-	if err != nil {
-		return respStruct, err
-	}
-	err = json.Unmarshal(bodyResp, &respStruct)
-	if err != nil {
-		return respStruct, err
-	}
-	return respStruct, nil
-}
-
 // GetCoinHomeFolder - Returns the ome folder for the coin e.g. .divi
 func GetCoinHomeFolder(at APPType) (string, error) {
 	var pt ProjectType
@@ -659,31 +629,35 @@ func GetCoinHomeFolder(at APPType) (string, error) {
 //	return mnss, nil
 //}
 
-func GetMNSyncStatus(cliConf *ConfStruct) (MNSyncStatusDiviRespStruct, error) {
-	var respStruct MNSyncStatusDiviRespStruct
-
-	body := strings.NewReader("{\"jsonrpc\":\"1.0\",\"id\":\"curltext\",\"method\":\"mnsync\",\"params\":[\"status\"]}")
-	req, err := http.NewRequest("POST", "http://"+cliConf.ServerIP+":"+cliConf.Port, body)
-	if err != nil {
-		return respStruct, err
+func getNextProgMNIndicator(LIndicator string) string {
+	if LIndicator == cProg1 {
+		gLastMNSyncStatus = cProg2
+		return cProg2
+	} else if LIndicator == cProg2 {
+		gLastMNSyncStatus = cProg3
+		return cProg3
+	} else if LIndicator == cProg3 {
+		gLastMNSyncStatus = cProg4
+		return cProg4
+	} else if LIndicator == cProg4 {
+		gLastMNSyncStatus = cProg5
+		return cProg5
+	} else if LIndicator == cProg5 {
+		gLastMNSyncStatus = cProg6
+		return cProg6
+	} else if LIndicator == cProg6 {
+		gLastMNSyncStatus = cProg7
+		return cProg7
+	} else if LIndicator == cProg7 {
+		gLastMNSyncStatus = cProg8
+		return cProg8
+	} else if LIndicator == cProg8 || LIndicator == "" {
+		gLastMNSyncStatus = cProg1
+		return cProg1
+	} else {
+		gLastMNSyncStatus = cProg1
+		return cProg1
 	}
-	req.SetBasicAuth(cliConf.RPCuser, cliConf.RPCpassword)
-	req.Header.Set("Content-Type", "text/plain;")
-
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		return respStruct, err
-	}
-	defer resp.Body.Close()
-	bodyResp, err := ioutil.ReadAll(resp.Body)
-	if err != nil {
-		return respStruct, err
-	}
-	err = json.Unmarshal(bodyResp, &respStruct)
-	if err != nil {
-		return respStruct, err
-	}
-	return respStruct, nil
 }
 
 // GetWalletAddress - Sends a "getaddressesbyaccount" to the daemon, and returns the result

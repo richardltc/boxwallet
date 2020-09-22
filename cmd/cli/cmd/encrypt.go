@@ -39,7 +39,7 @@ var encryptCmd = &cobra.Command{
 		}
 
 		// Check wallet encryption status
-		wi, err := getWalletInfo(&cliConf)
+		wi, err := be.GetWalletInfoDivi(&cliConf)
 		if err != nil {
 			log.Fatal("Unable to getWalletInfo " + err.Error())
 		}

@@ -112,10 +112,8 @@ var gGetBCInfoCount int = 0
 var gBCSyncStuckCount int = 0
 var gWalletRICount int = 0
 var gLastBCSyncPosStr string = ""
-var gLastBCSyncPos float64 = 0
 
 //var lastRMNAssets int = 0
-var lastMNSyncStatus string = ""
 var NextLotteryStored string = ""
 var NextLotteryCounter int = 0
 
@@ -127,15 +125,6 @@ var gTicker tickerStruct
 
 // Progress constants
 const (
-	cProg1 string = "|"
-	cProg2 string = "/"
-	cProg3 string = "-"
-	cProg4 string = "\\"
-	cProg5 string = "|"
-	cProg6 string = "/"
-	cProg7 string = "-"
-	cProg8 string = "\\"
-
 	cWalletESUnlockedForStaking = "unlocked-for-staking"
 	cWalletESLocked             = "locked"
 	cWalletESUnlocked           = "unlocked"
@@ -154,6 +143,7 @@ var dashCmd = &cobra.Command{
 	* Wallet encryption status
 	* Balance info`,
 	Run: func(cmd *cobra.Command, args []string) {
+		fmt.Println("  ____          __          __   _ _      _   \n |  _ \\         \\ \\        / /  | | |    | |  \n | |_) | _____  _\\ \\  /\\  / /_ _| | | ___| |_ \n |  _ < / _ \\ \\/ /\\ \\/  \\/ / _` | | |/ _ \\ __|\n | |_) | (_) >  <  \\  /\\  / (_| | | |  __/ |_ \n |____/ \\___/_/\\_\\  \\/  \\/ \\__,_|_|_|\\___|\\__|\n                                              \n                                              ")
 		// Lets load our config file first, to see if the user has made their coin choice...
 		cliConf, err := be.GetConfigStruct("", true)
 		if err != nil {
@@ -198,7 +188,7 @@ var dashCmd = &cobra.Command{
 		}
 		switch cliConf.ProjectType {
 		case be.PTDivi:
-			gi, err := be.DiviGetInfo(&cliConf)
+			gi, err := be.GetInfoDivi(&cliConf)
 			if err != nil {
 
 				if err := spinner.Stop(); err != nil {
@@ -208,10 +198,10 @@ var dashCmd = &cobra.Command{
 					"./" + sAppFileCLIName + " start\n\n")
 			}
 			if gi.Result.Version == "" {
-				log.Fatalf("Unable to getPrivateKey(): failed with %s\n", err)
+				log.Fatalf("Unable to call getinfo %s\n", err)
 			}
 		case be.PTPhore:
-			gi, err := be.PhoreGetInfo(&cliConf)
+			gi, err := be.GetInfoPhore(&cliConf)
 			if err != nil {
 
 				if err := spinner.Stop(); err != nil {
@@ -221,10 +211,23 @@ var dashCmd = &cobra.Command{
 					"./" + sAppFileCLIName + " start\n\n")
 			}
 			if gi.Result.Version == 0 {
-				log.Fatalf("Unable to getPrivateKey(): failed with %s\n", err)
+				log.Fatalf("Unable to call getinfo %s\n", err)
+			}
+		case be.PTTrezarcoin:
+			gi, err := be.GetInfoTrezarcoin(&cliConf)
+			if err != nil {
+
+				if err := spinner.Stop(); err != nil {
+				}
+				fmt.Println("")
+				log.Fatal("Unable to communicate with the " + coind + " server. Please make sure the " + coind + " server is running, by running:\n\n" +
+					"./" + sAppFileCLIName + " start\n\n")
+			}
+			if gi.Result.Version == 0 {
+				log.Fatalf("Unable to call getinfo %s\n", err)
 			}
 		default:
-			err = errors.New("unable to determine ProjectType")
+			log.Fatalf("Unable to determine project type")
 		}
 		spinner.Stop()
 
@@ -273,30 +276,57 @@ var dashCmd = &cobra.Command{
 		}
 
 		// Check wallet encryption status
-		// todo this needs to call the getWalletInfoDivi or getWalletInfoPhore... as the response types are different
-		wi, err := getWalletInfo(&cliConf)
-		if err != nil {
-			log.Fatal("Unable to getWalletInfo " + err.Error())
+		bWalletNeedsEncrypting := false
+		switch cliConf.ProjectType {
+		case be.PTDivi:
+			wi, err := be.GetWalletInfoDivi(&cliConf)
+			if err != nil {
+				log.Fatal("Unable to perform GetWalletInfoDivi " + err.Error())
+			}
+
+			if wi.Result.EncryptionStatus == cWalletESUnencrypted {
+				bWalletNeedsEncrypting = true
+			}
+		case be.PTPhore:
+			wi, err := be.GetWalletInfoPhore(&cliConf)
+			if err != nil {
+				log.Fatal("Unable to perform GetWalletInfoPhore " + err.Error())
+			}
+
+			if wi.Result.UnlockedUntil < 0 {
+				bWalletNeedsEncrypting = true
+			}
+		case be.PTTrezarcoin:
+			wi, err := be.GetWalletInfoTrezarcoin(&cliConf)
+			if err != nil {
+				log.Fatal("Unable to perform GetWalletInfoTrezarcoin " + err.Error())
+			}
+
+			if wi.Result.UnlockedUntil < 0 {
+				bWalletNeedsEncrypting = true
+			}
+		default:
+			log.Fatalf("Unable to determine project type")
 		}
 
-		if wi.Result.EncryptionStatus == cWalletESUnencrypted {
+		if bWalletNeedsEncrypting {
 			be.ClearScreen()
 			resp := be.GetWalletEncryptionResp()
 			if resp == true {
-				wep := be.GetPasswordToEncryptWallet() //gwc.GetWalletEncryptionPassword()
+				wep := be.GetPasswordToEncryptWallet()
 				r, err := encryptWallet(&cliConf, wep)
 				if err != nil {
 					log.Fatalf("failed to encrypt wallet %s\n", err)
 				}
 				fmt.Println(r.Result)
-				//os.Exit(0)
-				// gwc.ClearScreen()
 				fmt.Println("Restarting wallet after encryption...")
 				if err := be.RunCoinDaemon(false); err != nil {
-					log.Fatalf("failed to run divid: %v", err)
+					log.Fatalf("failed to run "+coind+": %v", err)
 				}
 			}
 		}
+
+		// Init display...
 
 		if err := ui.Init(); err != nil {
 			log.Fatalf("failed to initialize termui: %v", err)
@@ -316,6 +346,8 @@ var dashCmd = &cobra.Command{
 			pAbout.Text = "  [" + be.CAppName + "    v" + be.CBWAppVersion + "](fg:white)\n" +
 				"  [" + sCoinName + " Core   v" + be.CPhoreCoreVersion + "](fg:white)\n\n"
 		case be.PTTrezarcoin:
+			pAbout.Text = "  [" + be.CAppName + "         v" + be.CBWAppVersion + "](fg:white)\n" +
+				"  [" + sCoinName + " Core   v" + be.CTrezarcoinCoreVersion + "](fg:white)\n\n"
 		default:
 			err = errors.New("unable to determine ProjectType")
 		}
@@ -339,6 +371,9 @@ var dashCmd = &cobra.Command{
 				"  Security:         [waiting...](fg:yellow)\n" +
 				"  Actively Staking: [waiting...](fg:yellow)\n"
 		case be.PTTrezarcoin:
+			pWallet.Text = "  Balance:          [waiting...](fg:yellow)\n" +
+				"  Security:         [waiting...](fg:yellow)\n" +
+				"  Actively Staking: [waiting...](fg:yellow)\n"
 		default:
 			err = errors.New("unable to determine ProjectType")
 		}
@@ -358,65 +393,136 @@ var dashCmd = &cobra.Command{
 		pNetwork.SetRect(0, 10, 32, 4)
 		pNetwork.TextStyle.Fg = ui.ColorWhite
 		pNetwork.BorderStyle.Fg = ui.ColorWhite
-		pNetwork.Text = "  Blocks:      [checking...](fg:yellow)\n" +
-			"  Difficulty:  [checking...](fg:yellow)\n" +
-			"  Blockchain:  [checking...](fg:yellow)\n" +
-			"  Masternodes: [checking...](fg:yellow)"
+
+		switch cliConf.ProjectType {
+		case be.PTDivi:
+			pNetwork.Text = "  Blocks:      [checking...](fg:yellow)\n" +
+				"  Difficulty:  [checking...](fg:yellow)\n" +
+				"  Blockchain:  [checking...](fg:yellow)\n" +
+				"  Masternodes: [checking...](fg:yellow)"
+		case be.PTPhore:
+			pNetwork.Text = "  Blocks:      [checking...](fg:yellow)\n" +
+				"  Difficulty:  [checking...](fg:yellow)\n" +
+				"  Blockchain:  [checking...](fg:yellow)\n" +
+				"  Masternodes: [checking...](fg:yellow)"
+		case be.PTTrezarcoin:
+			pNetwork.Text = "  Blocks:      [checking...](fg:yellow)\n" +
+				"  Difficulty:  [checking...](fg:yellow)\n" +
+				"  Blockchain:  [checking...](fg:yellow)\n" +
+				"  Masternodes: [checking...](fg:yellow)"
+		default:
+			err = errors.New("unable to determine ProjectType")
+		}
 
 		// var numSeconds int = -1
 		updateParagraph := func(count int) {
-			var bci be.BlockchainInfoRespStruct
+			var bciDivi be.DiviBlockchainInfoRespStruct
+			var bciPhore be.PhoreBlockchainInfoRespStruct
 			//var gi be.GetInfoRespStruct
-			var mnss be.MNSyncStatusDiviRespStruct
-			var ss be.StakingStatusDiviRespStruct
-			var wi be.WalletInfoDiviRespStruct
+			var mnssDivi be.DiviMNSyncStatusRespStruct
+			var mnssPhore be.PhoreMNSyncStatusRespStruct
+			var ssDivi be.DiviStakingStatusRespStruct
+			var ssPhore be.PhoreStakingStatusRespStruct
+			var wiDivi be.DiviWalletInfoRespStruct
+			var wiPhore be.PhoreWalletInfoRespStruct
 			if gGetBCInfoCount == 0 || gGetBCInfoCount > cliConf.RefreshTimer {
 				if gGetBCInfoCount > cliConf.RefreshTimer {
 					gGetBCInfoCount = 1
 				}
-				bci, _ = be.GetBlockchainInfo(&cliConf)
-
+				switch cliConf.ProjectType {
+				case be.PTDivi:
+					bciDivi, _ = be.GetBlockchainInfoDivi(&cliConf)
+				case be.PTPhore:
+					bciPhore, _ = be.GetBlockchainInfoPhore(&cliConf)
+				case be.PTTrezarcoin:
+					// todo bciDivi, _ = be.GetBlockchainInfoTrezarcoin(&cliConf)
+				default:
+					err = errors.New("unable to determine ProjectType")
+				}
 			} else {
 				gGetBCInfoCount++
 			}
 			//gi, _ := diviGetInfo(&cliConf)
 
 			// Check the blockchain sync health
-			if err := checkHealth(&bci); err != nil {
+			if err := checkHealth(&bciDivi); err != nil {
 				log.Fatalf("Unable to check health: %v", err)
 			}
 
 			// Now, we only want to get this other stuff, when the blockchain has synced.
-			if bci.Result.Verificationprogress > 0.99 {
-				mnss, _ = be.GetMNSyncStatus(&cliConf)
-				ss, _ = getStakingStatus(&cliConf)
-				if wi, err = getWalletInfo(&cliConf); err != nil {
-					log.Fatalf("Unable to get Wallet Info: %v", err)
+			switch cliConf.ProjectType {
+			case be.PTDivi:
+				if bciDivi.Result.Verificationprogress > 0.99 {
+					mnssDivi, _ = be.GetMNSyncStatusDivi(&cliConf)
+					ssDivi, _ = be.GetStakingStatusDivi(&cliConf)
+					wiDivi, _ = be.GetWalletInfoDivi(&cliConf)
 				}
+			case be.PTPhore:
+				if bciPhore.Result.Verificationprogress > 0.99 {
+					mnssPhore, _ = be.GetMNSyncStatusPhore(&cliConf)
+					ssPhore, _ = be.GetStakingStatusPhore(&cliConf)
+					wiPhore, _ = be.GetWalletInfoPhore(&cliConf)
+				}
+			case be.PTTrezarcoin:
+			default:
+				err = errors.New("unable to determine ProjectType")
 			}
 
 			// Decide what colour the network panel border should be...
-			// If the blockchain or masternodes aren't synced or the network difficulty is < 5000...
-			if !mnss.Result.IsBlockchainSynced ||
-				mnss.Result.RequestedMasternodeAssets < 999 ||
-				bci.Result.Difficulty < 5000 {
-				// Now check to see if it's worse than that, and that the nw difficulty is less than 3000
-				if bci.Result.Difficulty < 3000 {
-					pNetwork.BorderStyle.Fg = ui.ColorRed
+			switch cliConf.ProjectType {
+			case be.PTDivi:
+				if mnssDivi.Result.IsBlockchainSynced {
+					pNetwork.BorderStyle.Fg = ui.ColorGreen
 				} else {
-					// nw difficulty is between 3k-5k
 					pNetwork.BorderStyle.Fg = ui.ColorYellow
 				}
-			} else {
-				// We're all good...
-				pNetwork.BorderStyle.Fg = ui.ColorGreen
+			case be.PTPhore:
+				if mnssPhore.Result.IsBlockchainSynced {
+					pNetwork.BorderStyle.Fg = ui.ColorGreen
+				} else {
+					pNetwork.BorderStyle.Fg = ui.ColorYellow
+				}
+			case be.PTTrezarcoin:
+			default:
+				err = errors.New("unable to determine ProjectType")
 			}
 
+			// If the blockchain or masternodes aren't synced or the network difficulty is < 5000...
+			//if !mnssDivi.Result.IsBlockchainSynced ||
+			//	mnssDivi.Result.RequestedMasternodeAssets < 999 ||
+			//	bciDivi.Result.Difficulty < 5000 {
+			//	// Now check to see if it's worse than that, and that the nw difficulty is less than 3000
+			//	if bciDivi.Result.Difficulty < 3000 {
+			//		pNetwork.BorderStyle.Fg = ui.ColorRed
+			//	} else {
+			//		// nw difficulty is between 3k-5k
+			//		pNetwork.BorderStyle.Fg = ui.ColorYellow
+			//	}
+			//} else {
+			//	// We're all good...
+			//	pNetwork.BorderStyle.Fg = ui.ColorGreen
+			//}
+
 			// Populate the Network panel
-			sBlocks := getNetworkBlocksTxt(&bci)
-			sDiff := getDifficultyTxt(bci.Result.Difficulty)
-			sBlockchainSync := getBlockchainSyncTxt(mnss.Result.IsBlockchainSynced, &bci)
-			sMNSync := getMNSyncStatusTxt(&mnss)
+			var sBlocks string
+			var sDiff string
+			var sBlockchainSync string
+			var sMNSync string
+			switch cliConf.ProjectType {
+			case be.PTDivi:
+				sBlocks = be.GetNetworkBlocksTxtDivi(&bciDivi)
+				sDiff = be.GetNetworkDifficultyTxtDivi(bciDivi.Result.Difficulty)
+				sBlockchainSync = be.GetBlockchainSyncTxtDivi(mnssDivi.Result.IsBlockchainSynced, &bciDivi)
+				sMNSync = be.GetMNSyncStatusTxtDivi(&mnssDivi)
+			case be.PTPhore:
+				sBlocks = be.GetNetworkBlocksTxtPhore(&bciPhore)
+				sDiff = be.GetNetworkDifficultyTxtPhore(bciPhore.Result.Difficulty)
+				sBlockchainSync = be.GetBlockchainSyncTxtPhore(mnssPhore.Result.IsBlockchainSynced, &bciPhore)
+				sMNSync = be.GetMNSyncStatusTxtPhore(&mnssPhore)
+			case be.PTTrezarcoin:
+			default:
+				err = errors.New("unable to determine ProjectType")
+			}
 
 			pNetwork.Text = "  " + sBlocks + "\n" +
 				"  " + sDiff + "\n" +
@@ -426,39 +532,47 @@ var dashCmd = &cobra.Command{
 			// Populate the Wallet panel
 
 			// Decide what colour the wallet panel border should be...
-			switch wi.Result.EncryptionStatus {
-			case cWalletESLocked:
-				pWallet.BorderStyle.Fg = ui.ColorYellow
-			case cWalletESUnlocked:
-				pWallet.BorderStyle.Fg = ui.ColorRed
-			case cWalletESUnlockedForStaking:
-				pWallet.BorderStyle.Fg = ui.ColorGreen
-			case cWalletESUnencrypted:
-				pWallet.BorderStyle.Fg = ui.ColorRed
+			switch cliConf.ProjectType {
+			case be.PTDivi:
+				switch wiDivi.Result.EncryptionStatus {
+				case cWalletESLocked:
+					pWallet.BorderStyle.Fg = ui.ColorYellow
+				case cWalletESUnlocked:
+					pWallet.BorderStyle.Fg = ui.ColorRed
+				case cWalletESUnlockedForStaking:
+					pWallet.BorderStyle.Fg = ui.ColorGreen
+				case cWalletESUnencrypted:
+					pWallet.BorderStyle.Fg = ui.ColorRed
+				default:
+					pWallet.BorderStyle.Fg = ui.ColorYellow
+				}
+			case be.PTPhore:
+			case be.PTTrezarcoin:
 			default:
-				pWallet.BorderStyle.Fg = ui.ColorYellow
+				err = errors.New("unable to determine ProjectType")
 			}
 
 			// Update the wallet display, if we're all synced up
-			if bci.Result.Verificationprogress > 0.9999 {
-				switch cliConf.ProjectType {
-				case be.PTDivi:
-					pWallet.Text = "" + getBalanceInDiviTxt(&wi) + "\n" +
-						"  " + getBalanceInCurrencyTxt(&cliConf, &wi) + "\n" +
-						"  " + getWalletSecurityStatusTxt(&wi) + "\n" +
-						"  " + getWalletStakingTxt(&wi) + "\n" + //e.g. "15%" or "staking"
-						"  " + getActivelyStakingTxt(&ss, &wi) + "\n" + //e.g. "15%" or "staking"
+			switch cliConf.ProjectType {
+			case be.PTDivi:
+				if bciDivi.Result.Verificationprogress > 0.9999 {
+					pWallet.Text = "" + getBalanceInDiviTxt(&wiDivi) + "\n" +
+						"  " + getBalanceInCurrencyTxt(&cliConf, &wiDivi) + "\n" +
+						"  " + getWalletSecurityStatusTxtDivi(&wiDivi) + "\n" +
+						"  " + getWalletStakingTxt(&wiDivi) + "\n" + //e.g. "15%" or "staking"
+						"  " + getActivelyStakingTxtDivi(&ssDivi, &wiDivi) + "\n" + //e.g. "15%" or "staking"
 						"  " + getNextLotteryTxt(&cliConf) + "\n" +
 						"  " + "Lottery tickets:  0"
-				case be.PTPhore:
-					pWallet.Text = "" + getBalanceInDiviTxt(&wi) + "\n" +
-						"  " + getWalletSecurityStatusTxt(&wi) + "\n" +
-						"  " + getActivelyStakingTxt(&ss, &wi) + "\n" //e.g. "15%" or "staking"
-				case be.PTTrezarcoin:
-				default:
-					err = errors.New("unable to determine ProjectType")
 				}
-
+			case be.PTPhore:
+				if bciPhore.Result.Verificationprogress > 0.9999 {
+					pWallet.Text = "" + getBalanceInPhoreTxt(&wiPhore) + "\n" +
+						"  " + getWalletSecurityStatusTxtPhore(&wiPhore) + "\n" +
+						"  " + getActivelyStakingTxtPhore(&ssPhore, &wiPhore) + "\n" //e.g. "15%" or "staking"
+				}
+			case be.PTTrezarcoin:
+			default:
+				err = errors.New("unable to determine ProjectType")
 			}
 
 			// Update Ticker display
@@ -530,7 +644,7 @@ func init() {
 	// dashCmd.Flags().BoolP("toggle", "t", false, "Help message for toggle")
 }
 
-func checkHealth(bci *be.BlockchainInfoRespStruct) error {
+func checkHealth(bci *be.DiviBlockchainInfoRespStruct) error {
 	// This func will be called regularly and will check the health of the local wallet. It will...
 
 	// If the blockchain verification is 0.99 or higher, than all so good, otherwise...
@@ -615,71 +729,6 @@ func encryptWallet(cliConf *be.ConfStruct, pw string) (be.GenericRespStruct, err
 	return respStruct, nil
 }
 
-func getNetworkBlocksTxt(bci *be.BlockchainInfoRespStruct) string {
-	blocksStr := humanize.Comma(int64(bci.Result.Blocks))
-
-	if bci.Result.Blocks > 100 {
-		return "Blocks:      [" + blocksStr + "](fg:green)"
-	} else {
-		return "[Blocks:      " + blocksStr + "](fg:red)"
-	}
-}
-
-func getBlockchainSyncTxt(synced bool, bci *be.BlockchainInfoRespStruct) string {
-	s := be.ConvertBCVerification(bci.Result.Verificationprogress)
-	if s == "0.0" {
-		s = ""
-	} else {
-		s = s + "%"
-	}
-
-	if !synced {
-		if bci.Result.Verificationprogress > gLastBCSyncPos {
-			gLastBCSyncPos = bci.Result.Verificationprogress
-			return "Blockchain:  [syncing " + s + " ](fg:yellow)"
-		} else {
-			gLastBCSyncPos = bci.Result.Verificationprogress
-			return "Blockchain:  [waiting " + s + " ](fg:yellow)"
-		}
-	} else {
-		return "Blockchain:  [synced " + be.CUtfTickBold + "](fg:green)"
-	}
-
-}
-
-func getDifficultyTxt(difficulty float64) string {
-	var s string
-	if difficulty > 1000 {
-		s = humanize.FormatFloat("#.#", difficulty/1000) + "k"
-	} else {
-		s = humanize.Ftoa(difficulty)
-	}
-	if difficulty > 6000 {
-		return "Difficulty:  [" + s + "](fg:green)"
-	} else if difficulty > 3000 {
-		return "[Difficulty:  " + s + "](fg:yellow)"
-	} else {
-		return "[Difficulty:  " + s + "](fg:red)"
-	}
-}
-
-func getMNSyncStatusTxt(mnss *be.MNSyncStatusDiviRespStruct) string {
-	if mnss.Result.RequestedMasternodeAssets == 999 {
-		return "Masternodes: [synced " + be.CUtfTickBold + "](fg:green)"
-	} else {
-		return "Masternodes: [syncing " + getNextProgMNIndicator(lastMNSyncStatus) + "](fg:yellow)"
-	}
-	//if mnss.Result.RequestedMasternodeAssets < 999 {
-	//	if mnss.Result.RequestedMasternodeAssets != lastRMNAssets {
-	//		lastRMNAssets = mnss.Result.RequestedMasternodeAssets
-	//		return "Masternodes: [syncing " + getNextProgMNIndicator(lastMNSyncStatus) + "](fg:yellow)"
-	//	}
-	//} else {
-	//	return "Masternodes: [synced " + gwc.CUtfTickBold + "](fg:green)"
-	//}
-	//return ""
-}
-
 func getNextLotteryTxt(conf *be.ConfStruct) string {
 	if NextLotteryCounter > (60*30) || NextLotteryStored == "" {
 		NextLotteryCounter = 0
@@ -694,7 +743,7 @@ func getNextLotteryTxt(conf *be.ConfStruct) string {
 	}
 }
 
-func getActivelyStakingTxt(ss *be.StakingStatusDiviRespStruct, wi *be.WalletInfoDiviRespStruct) string {
+func getActivelyStakingTxtDivi(ss *be.DiviStakingStatusRespStruct, wi *be.DiviWalletInfoRespStruct) string {
 	// Work out balance
 	//todo Make sure that we only return yes, if the StakingStatus is true AND we have enough coins
 	if ss.Result.StakingStatus == true && (wi.Result.Balance > 10000) {
@@ -704,7 +753,17 @@ func getActivelyStakingTxt(ss *be.StakingStatusDiviRespStruct, wi *be.WalletInfo
 	}
 }
 
-func getBalanceInDiviTxt(wi *be.WalletInfoDiviRespStruct) string {
+func getActivelyStakingTxtPhore(ss *be.PhoreStakingStatusRespStruct, wi *be.PhoreWalletInfoRespStruct) string {
+	// Work out balance
+	//todo Make sure that we only return yes, if the StakingStatus is true AND we have enough coins
+	if ss.Result.StakingStatus == true {
+		return "Actively Staking: [Yes](fg:green)"
+	} else {
+		return "Actively Staking: [No](fg:yellow)"
+	}
+}
+
+func getBalanceInDiviTxt(wi *be.DiviWalletInfoRespStruct) string {
 	tBalance := wi.Result.ImmatureBalance + wi.Result.UnconfirmedBalance + wi.Result.Balance
 	tBalanceStr := humanize.FormatFloat("#,###.####", tBalance)
 
@@ -718,7 +777,15 @@ func getBalanceInDiviTxt(wi *be.WalletInfoDiviRespStruct) string {
 	}
 }
 
-func getBalanceInCurrencyTxt(conf *be.ConfStruct, wi *be.WalletInfoDiviRespStruct) string {
+func getBalanceInPhoreTxt(wi *be.PhoreWalletInfoRespStruct) string {
+	tBalance := wi.Result.Balance
+	tBalanceStr := humanize.FormatFloat("#,###.####", tBalance)
+
+	// Work out balance
+	return "  Balance:          [" + tBalanceStr + "](fg:green)"
+}
+
+func getBalanceInCurrencyTxt(conf *be.ConfStruct, wi *be.DiviWalletInfoRespStruct) string {
 	tBalance := wi.Result.ImmatureBalance + wi.Result.UnconfirmedBalance + wi.Result.Balance
 	var pricePerCoin float64
 	var symbol string
@@ -753,7 +820,7 @@ func getBalanceInCurrencyTxt(conf *be.ConfStruct, wi *be.WalletInfoDiviRespStruc
 	}
 }
 
-func getWalletStakingTxt(wi *be.WalletInfoDiviRespStruct) string {
+func getWalletStakingTxt(wi *be.DiviWalletInfoRespStruct) string {
 	var fPercent float64
 	if wi.Result.Balance > 10000 {
 		fPercent = 100
@@ -772,7 +839,7 @@ func getWalletStakingTxt(wi *be.WalletInfoDiviRespStruct) string {
 
 }
 
-func getWalletSecurityStatusTxt(wi *be.WalletInfoDiviRespStruct) string {
+func getWalletSecurityStatusTxtDivi(wi *be.DiviWalletInfoRespStruct) string {
 	switch wi.Result.EncryptionStatus {
 	case cWalletESLocked:
 		return "Security:         [Locked - Not Staking](fg:yellow)"
@@ -785,6 +852,22 @@ func getWalletSecurityStatusTxt(wi *be.WalletInfoDiviRespStruct) string {
 	default:
 		return "Security:         [checking...](fg:yellow)"
 	}
+}
+
+func getWalletSecurityStatusTxtPhore(wi *be.PhoreWalletInfoRespStruct) string {
+	//switch wi.Result.UnlockedUntil EncryptionStatus {
+	//case cWalletESLocked:
+	//	return "Security:         [Locked - Not Staking](fg:yellow)"
+	//case cWalletESUnlocked:
+	//	return "Security:         [UNLOCKED](fg:red)"
+	//case cWalletESUnlockedForStaking:
+	//	return "Security:         [Locked and Staking](fg:green)"
+	//case cWalletESUnencrypted:
+	//	return "Security:         [UNENCRYPTED](fg:red)"
+	//default:
+	//	return "Security:         [checking...](fg:yellow)"
+	//}
+	return "Security:         [UNENCRYPTED](fg:red)"
 }
 
 func getLotteryInfo(cliConf *be.ConfStruct) (be.LotteryDiviRespStruct, error) {
@@ -859,37 +942,6 @@ func updateTickerInfo() error {
 		return err
 	}
 	return errors.New("unable to updateTicketInfo")
-}
-
-func getNextProgMNIndicator(LIndicator string) string {
-	if LIndicator == cProg1 {
-		lastMNSyncStatus = cProg2
-		return cProg2
-	} else if LIndicator == cProg2 {
-		lastMNSyncStatus = cProg3
-		return cProg3
-	} else if LIndicator == cProg3 {
-		lastMNSyncStatus = cProg4
-		return cProg4
-	} else if LIndicator == cProg4 {
-		lastMNSyncStatus = cProg5
-		return cProg5
-	} else if LIndicator == cProg5 {
-		lastMNSyncStatus = cProg6
-		return cProg6
-	} else if LIndicator == cProg6 {
-		lastMNSyncStatus = cProg7
-		return cProg7
-	} else if LIndicator == cProg7 {
-		lastMNSyncStatus = cProg8
-		return cProg8
-	} else if LIndicator == cProg8 || LIndicator == "" {
-		lastMNSyncStatus = cProg1
-		return cProg1
-	} else {
-		lastMNSyncStatus = cProg1
-		return cProg1
-	}
 }
 
 //func getPrivateKey(token string) (m.PrivateKeyStruct, error) {
@@ -979,33 +1031,6 @@ func getPrivateKeyNew(cliConf *be.ConfStruct) (hdinfoRespStruct, error) {
 	return respStruct, nil
 }
 
-func getStakingStatus(cliConf *be.ConfStruct) (be.StakingStatusDiviRespStruct, error) {
-	var respStruct be.StakingStatusDiviRespStruct
-
-	body := strings.NewReader("{\"jsonrpc\":\"1.0\",\"id\":\"curltext\",\"method\":\"getstakingstatus\",\"params\":[]}")
-	req, err := http.NewRequest("POST", "http://"+cliConf.ServerIP+":"+cliConf.Port, body)
-	if err != nil {
-		return respStruct, err
-	}
-	req.SetBasicAuth(cliConf.RPCuser, cliConf.RPCpassword)
-	req.Header.Set("Content-Type", "text/plain;")
-
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		return respStruct, err
-	}
-	defer resp.Body.Close()
-	bodyResp, err := ioutil.ReadAll(resp.Body)
-	if err != nil {
-		return respStruct, err
-	}
-	err = json.Unmarshal(bodyResp, &respStruct)
-	if err != nil {
-		return respStruct, err
-	}
-	return respStruct, nil
-}
-
 func getWalletSeedRecoveryResp() string {
 	reader := bufio.NewReader(os.Stdin)
 	fmt.Println("\n\n*** WARNING ***" + "\n\n" +
@@ -1027,33 +1052,6 @@ func getWalletSeedRecoveryConfirmationResp() bool {
 	}
 
 	return false
-}
-
-func getWalletInfo(cliConf *be.ConfStruct) (be.WalletInfoDiviRespStruct, error) {
-	var respStruct be.WalletInfoDiviRespStruct
-
-	body := strings.NewReader("{\"jsonrpc\":\"1.0\",\"id\":\"curltext\",\"method\":\"getwalletinfo\",\"params\":[]}")
-	req, err := http.NewRequest("POST", "http://"+cliConf.ServerIP+":"+cliConf.Port, body)
-	if err != nil {
-		return respStruct, err
-	}
-	req.SetBasicAuth(cliConf.RPCuser, cliConf.RPCpassword)
-	req.Header.Set("Content-Type", "text/plain;")
-
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		return respStruct, err
-	}
-	defer resp.Body.Close()
-	bodyResp, err := ioutil.ReadAll(resp.Body)
-	if err != nil {
-		return respStruct, err
-	}
-	err = json.Unmarshal(bodyResp, &respStruct)
-	if err != nil {
-		return respStruct, err
-	}
-	return respStruct, nil
 }
 
 // func getWalletStatusStruct(token string) (m.WalletStatusStruct, error) {
