@@ -41,7 +41,7 @@ var unlockfsCmd = &cobra.Command{
 		}
 
 		// Check to make sure wallet is actually encrypted
-		wi, err := getWalletInfo(&cliConf)
+		wi, err := be.GetWalletInfoDivi(&cliConf)
 		if err != nil {
 			log.Fatal("Unable to getWalletInfo " + err.Error())
 		}

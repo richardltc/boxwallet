@@ -31,6 +31,8 @@ var stopCmd = &cobra.Command{
 	Short: "Stops the your chosen coins daemon server",
 	Long:  ``,
 	Run: func(cmd *cobra.Command, args []string) {
+		fmt.Println("  ____          __          __   _ _      _   \n |  _ \\         \\ \\        / /  | | |    | |  \n | |_) | _____  _\\ \\  /\\  / /_ _| | | ___| |_ \n |  _ < / _ \\ \\/ /\\ \\/  \\/ / _` | | |/ _ \\ __|\n | |_) | (_) >  <  \\  /\\  / (_| | | |  __/ |_ \n |____/ \\___/_/\\_\\  \\/  \\/ \\__,_|_|_|\\___|\\__|\n                                              \n                                              ")
+
 		cliConf, err := be.GetConfigStruct("", true)
 		if err != nil {
 			log.Fatal("Unable to GetCLIConfStruct " + err.Error())

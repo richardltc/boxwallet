@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"github.com/dustin/go-humanize"
 	"io/ioutil"
 	"net/http"
 	"strconv"
@@ -13,7 +14,48 @@ import (
 
 const (
 	cDiviAddNodeURL string = "https://api.diviproject.org/v1/addnode"
+
+	CCoinNameDivi string = "Divi"
+
+	// CDiviAppVersion - The app version of Divi
+	//CDiviAppVersion string = "1.1.2"
+	CDiviHomeDir    string = ".divi"
+	CDiviHomeDirWin string = "DIVI"
+
+	CDiviCoreVersion string = "1.1.2"
+	CDFDiviRPi              = "divi-" + CDiviCoreVersion + "-RPi2.tar.gz"
+	CDFDiviLinux            = "divi-" + CDiviCoreVersion + "-x86_64-linux-gnu.tar.gz"
+	CDFDiviWindows          = "divi-" + CDiviCoreVersion + "-win64.zip"
+
+	CDiviExtractedDir = "divi-" + CDiviCoreVersion + "/"
+
+	CDownloadURLDivi = "https://github.com/DiviProject/Divi/releases/download/v" + CDiviCoreVersion + "/"
+
+	CDiviConfFile   string = "divi.conf"
+	CDiviCliFile    string = "divi-cli"
+	CDiviCliFileWin string = "divi-cli.exe"
+	CDiviDFile      string = "divid"
+	CDiviDFileWin   string = "divid.exe"
+	CDiviTxFile     string = "divi-tx"
+	CDiviTxFileWin  string = "divi-tx.exe"
+
+	// divi.conf file constants
+	CDiviRPCPort string = "51473"
 )
+
+type DiviBlockchainInfoRespStruct struct {
+	Result struct {
+		Chain                string  `json:"chain"`
+		Blocks               int     `json:"blocks"`
+		Headers              int     `json:"headers"`
+		Bestblockhash        string  `json:"bestblockhash"`
+		Difficulty           float64 `json:"difficulty"`
+		Verificationprogress float64 `json:"verificationprogress"`
+		Chainwork            string  `json:"chainwork"`
+	} `json:"result"`
+	Error interface{} `json:"error"`
+	ID    string      `json:"id"`
+}
 
 type diviGetInfoRespStruct struct {
 	Result struct {
@@ -53,7 +95,7 @@ type LotteryDiviRespStruct struct {
 	Stats string `json:"stats"`
 }
 
-type MNSyncStatusDiviRespStruct struct {
+type DiviMNSyncStatusRespStruct struct {
 	Result struct {
 		IsBlockchainSynced         bool `json:"IsBlockchainSynced"`
 		LastMasternodeList         int  `json:"lastMasternodeList"`
@@ -71,7 +113,7 @@ type MNSyncStatusDiviRespStruct struct {
 	ID    string      `json:"id"`
 }
 
-type StakingStatusDiviRespStruct struct {
+type DiviStakingStatusRespStruct struct {
 	Result struct {
 		Validtime       bool `json:"validtime"`
 		Haveconnections bool `json:"haveconnections"`
@@ -85,7 +127,7 @@ type StakingStatusDiviRespStruct struct {
 	ID    string      `json:"id"`
 }
 
-type WalletInfoDiviRespStruct struct {
+type DiviWalletInfoRespStruct struct {
 	Result struct {
 		Walletversion      int     `json:"walletversion"`
 		Balance            float64 `json:"balance"`
@@ -107,7 +149,57 @@ type WalletInfoDiviRespStruct struct {
 	ID    string      `json:"id"`
 }
 
-func DiviGetInfo(cliConf *ConfStruct) (diviGetInfoRespStruct, error) {
+var gLastBCSyncPos float64 = 0
+
+func GetBlockchainInfoDivi(cliConf *ConfStruct) (DiviBlockchainInfoRespStruct, error) {
+	var respStruct DiviBlockchainInfoRespStruct
+
+	body := strings.NewReader("{\"jsonrpc\":\"1.0\",\"id\":\"curltext\",\"method\":\"getblockchaininfo\",\"params\":[]}")
+	req, err := http.NewRequest("POST", "http://"+cliConf.ServerIP+":"+cliConf.Port, body)
+	if err != nil {
+		return respStruct, err
+	}
+	req.SetBasicAuth(cliConf.RPCuser, cliConf.RPCpassword)
+	req.Header.Set("Content-Type", "text/plain;")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return respStruct, err
+	}
+	defer resp.Body.Close()
+	bodyResp, err := ioutil.ReadAll(resp.Body)
+	if err != nil {
+		return respStruct, err
+	}
+	err = json.Unmarshal(bodyResp, &respStruct)
+	if err != nil {
+		return respStruct, err
+	}
+	return respStruct, nil
+}
+
+func GetBlockchainSyncTxtDivi(synced bool, bci *DiviBlockchainInfoRespStruct) string {
+	s := ConvertBCVerification(bci.Result.Verificationprogress)
+	if s == "0.0" {
+		s = ""
+	} else {
+		s = s + "%"
+	}
+
+	if !synced {
+		if bci.Result.Verificationprogress > gLastBCSyncPos {
+			gLastBCSyncPos = bci.Result.Verificationprogress
+			return "Blockchain:  [syncing " + s + " ](fg:yellow)"
+		} else {
+			gLastBCSyncPos = bci.Result.Verificationprogress
+			return "Blockchain:  [waiting " + s + " ](fg:yellow)"
+		}
+	} else {
+		return "Blockchain:  [synced " + CUtfTickBold + "](fg:green)"
+	}
+}
+
+func GetInfoDivi(cliConf *ConfStruct) (diviGetInfoRespStruct, error) {
 	attempts := 5
 	waitingStr := "Checking server..."
 
@@ -148,6 +240,121 @@ func DiviGetInfo(cliConf *ConfStruct) (diviGetInfoRespStruct, error) {
 			_ = json.Unmarshal(bodyResp, &respStruct)
 			return respStruct, err
 		}
+	}
+	return respStruct, nil
+}
+
+func GetMNSyncStatusDivi(cliConf *ConfStruct) (DiviMNSyncStatusRespStruct, error) {
+	var respStruct DiviMNSyncStatusRespStruct
+
+	body := strings.NewReader("{\"jsonrpc\":\"1.0\",\"id\":\"curltext\",\"method\":\"mnsync\",\"params\":[\"status\"]}")
+	req, err := http.NewRequest("POST", "http://"+cliConf.ServerIP+":"+cliConf.Port, body)
+	if err != nil {
+		return respStruct, err
+	}
+	req.SetBasicAuth(cliConf.RPCuser, cliConf.RPCpassword)
+	req.Header.Set("Content-Type", "text/plain;")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return respStruct, err
+	}
+	defer resp.Body.Close()
+	bodyResp, err := ioutil.ReadAll(resp.Body)
+	if err != nil {
+		return respStruct, err
+	}
+	err = json.Unmarshal(bodyResp, &respStruct)
+	if err != nil {
+		return respStruct, err
+	}
+	return respStruct, nil
+}
+
+func GetMNSyncStatusTxtDivi(mnss *DiviMNSyncStatusRespStruct) string {
+	if mnss.Result.RequestedMasternodeAssets == 999 {
+		return "Masternodes: [synced " + CUtfTickBold + "](fg:green)"
+	} else {
+		return "Masternodes: [syncing " + getNextProgMNIndicator(gLastMNSyncStatus) + "](fg:yellow)"
+	}
+}
+
+func GetNetworkBlocksTxtDivi(bci *DiviBlockchainInfoRespStruct) string {
+	blocksStr := humanize.Comma(int64(bci.Result.Blocks))
+
+	if bci.Result.Blocks > 100 {
+		return "Blocks:      [" + blocksStr + "](fg:green)"
+	} else {
+		return "[Blocks:      " + blocksStr + "](fg:red)"
+	}
+}
+
+func GetNetworkDifficultyTxtDivi(difficulty float64) string {
+	var s string
+	if difficulty > 1000 {
+		s = humanize.FormatFloat("#.#", difficulty/1000) + "k"
+	} else {
+		s = humanize.Ftoa(difficulty)
+	}
+	if difficulty > 6000 {
+		return "Difficulty:  [" + s + "](fg:green)"
+	} else if difficulty > 3000 {
+		return "[Difficulty:  " + s + "](fg:yellow)"
+	} else {
+		return "[Difficulty:  " + s + "](fg:red)"
+	}
+}
+
+func GetStakingStatusDivi(cliConf *ConfStruct) (DiviStakingStatusRespStruct, error) {
+	var respStruct DiviStakingStatusRespStruct
+
+	body := strings.NewReader("{\"jsonrpc\":\"1.0\",\"id\":\"curltext\",\"method\":\"getstakingstatus\",\"params\":[]}")
+	req, err := http.NewRequest("POST", "http://"+cliConf.ServerIP+":"+cliConf.Port, body)
+	if err != nil {
+		return respStruct, err
+	}
+	req.SetBasicAuth(cliConf.RPCuser, cliConf.RPCpassword)
+	req.Header.Set("Content-Type", "text/plain;")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return respStruct, err
+	}
+	defer resp.Body.Close()
+	bodyResp, err := ioutil.ReadAll(resp.Body)
+	if err != nil {
+		return respStruct, err
+	}
+	err = json.Unmarshal(bodyResp, &respStruct)
+	if err != nil {
+		return respStruct, err
+	}
+	return respStruct, nil
+}
+
+func GetWalletInfoDivi(cliConf *ConfStruct) (DiviWalletInfoRespStruct, error) {
+	var respStruct DiviWalletInfoRespStruct
+
+	body := strings.NewReader("{\"jsonrpc\":\"1.0\",\"id\":\"curltext\",\"method\":\"getwalletinfo\",\"params\":[]}")
+	req, err := http.NewRequest("POST", "http://"+cliConf.ServerIP+":"+cliConf.Port, body)
+	if err != nil {
+		return respStruct, err
+	}
+	req.SetBasicAuth(cliConf.RPCuser, cliConf.RPCpassword)
+	req.Header.Set("Content-Type", "text/plain;")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return respStruct, err
+	}
+	defer resp.Body.Close()
+	bodyResp, err := ioutil.ReadAll(resp.Body)
+	if err != nil {
+		return respStruct, err
+	}
+	err = json.Unmarshal(bodyResp, &respStruct)
+	if err != nil {
+		return respStruct, err
 	}
 	return respStruct, nil
 }
