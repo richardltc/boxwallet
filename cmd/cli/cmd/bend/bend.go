@@ -136,6 +136,17 @@ const (
 	OSTWindows
 )
 
+// WEType = either wetUnencrypted, wetLocked, wetUnlocked, weUnlockedForStaking
+type WEType int
+
+const (
+	WETUnencrypted WEType = iota
+	WETLocked
+	WETUnlocked
+	WETUnlockedForStaking
+	WETUnknown
+)
+
 type GenericRespStruct struct {
 	Result string      `json:"result"`
 	Error  interface{} `json:"error"`
@@ -219,6 +230,22 @@ type stakingStatusStruct struct {
 	StakingStatus   bool `json:"staking status"`
 }
 
+type usd2AUDRespStruct struct {
+	Rates struct {
+		AUD float64 `json:"AUD"`
+	} `json:"rates"`
+	Base string `json:"base"`
+	Date string `json:"date"`
+}
+
+type usd2GBPRespStruct struct {
+	Rates struct {
+		GBP float64 `json:"GBP"`
+	} `json:"rates"`
+	Base string `json:"base"`
+	Date string `json:"date"`
+}
+
 type walletResponseType int
 
 const (
@@ -238,6 +265,12 @@ const (
 )
 
 var gLastMNSyncStatus string = ""
+
+// Ticker related variables
+var gGetTickerInfoCount int
+var gPricePerCoinAUD usd2AUDRespStruct
+var gPricePerCoinGBP usd2GBPRespStruct
+var gTicker DiviTickerStruct
 
 func AddNodesDiviAlreadyExist() (bool, error) {
 	chd, _ := GetCoinHomeFolder(APPTCLI)
@@ -1517,6 +1550,42 @@ func AllProjectBinaryFilesExists() (bool, error) {
 	}
 
 	return true, nil
+}
+
+func updateAUDPriceInfo() error {
+	resp, err := http.Get("https://api.exchangeratesapi.io/latest?base=USD&symbols=AUD")
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	body, err := ioutil.ReadAll(resp.Body)
+	if err != nil {
+		return err
+	}
+	err = json.Unmarshal(body, &gPricePerCoinAUD)
+	if err != nil {
+		return err
+	}
+	return errors.New("unable to updateAUDPriceInfo")
+}
+
+func updateGBPPriceInfo() error {
+	resp, err := http.Get("https://api.exchangeratesapi.io/latest?base=USD&symbols=GBP")
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	body, err := ioutil.ReadAll(resp.Body)
+	if err != nil {
+		return err
+	}
+	err = json.Unmarshal(body, &gPricePerCoinGBP)
+	if err != nil {
+		return err
+	}
+	return errors.New("unable to updateGBPPriceInfo")
 }
 
 // WalletHardFix - Deletes the local blockchain and forces it to sync again, a re-index should be performed first

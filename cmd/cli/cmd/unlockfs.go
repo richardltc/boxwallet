@@ -46,7 +46,7 @@ var unlockfsCmd = &cobra.Command{
 			log.Fatal("Unable to getWalletInfo " + err.Error())
 		}
 
-		if wi.Result.EncryptionStatus == cWalletESUnencrypted {
+		if wi.Result.EncryptionStatus == be.CWalletESUnencrypted {
 			log.Fatal("Wallet is not encrypted")
 		}
 

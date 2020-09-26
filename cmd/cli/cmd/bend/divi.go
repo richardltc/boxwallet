@@ -3,6 +3,7 @@ package bend
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"github.com/dustin/go-humanize"
 	"io/ioutil"
@@ -41,6 +42,12 @@ const (
 
 	// divi.conf file constants
 	CDiviRPCPort string = "51473"
+
+	// Wallet encryption status
+	CWalletESUnlockedForStaking = "unlocked-for-staking"
+	CWalletESLocked             = "locked"
+	CWalletESUnlocked           = "unlocked"
+	CWalletESUnencrypted        = "unencrypted"
 )
 
 type DiviBlockchainInfoRespStruct struct {
@@ -127,6 +134,44 @@ type DiviStakingStatusRespStruct struct {
 	ID    string      `json:"id"`
 }
 
+type DiviTickerStruct struct {
+	DIVI struct {
+		ID                int         `json:"id"`
+		Name              string      `json:"name"`
+		Symbol            string      `json:"symbol"`
+		Slug              string      `json:"slug"`
+		NumMarketPairs    int         `json:"num_market_pairs"`
+		DateAdded         time.Time   `json:"date_added"`
+		Tags              []string    `json:"tags"`
+		MaxSupply         interface{} `json:"max_supply"`
+		CirculatingSupply float64     `json:"circulating_supply"`
+		TotalSupply       float64     `json:"total_supply"`
+		Platform          interface{} `json:"platform"`
+		CmcRank           int         `json:"cmc_rank"`
+		LastUpdated       time.Time   `json:"last_updated"`
+		Quote             struct {
+			BTC struct {
+				Price            float64   `json:"price"`
+				Volume24H        float64   `json:"volume_24h"`
+				PercentChange1H  float64   `json:"percent_change_1h"`
+				PercentChange24H float64   `json:"percent_change_24h"`
+				PercentChange7D  float64   `json:"percent_change_7d"`
+				MarketCap        float64   `json:"market_cap"`
+				LastUpdated      time.Time `json:"last_updated"`
+			} `json:"BTC"`
+			USD struct {
+				Price            float64   `json:"price"`
+				Volume24H        float64   `json:"volume_24h"`
+				PercentChange1H  float64   `json:"percent_change_1h"`
+				PercentChange24H float64   `json:"percent_change_24h"`
+				PercentChange7D  float64   `json:"percent_change_7d"`
+				MarketCap        float64   `json:"market_cap"`
+				LastUpdated      time.Time `json:"last_updated"`
+			} `json:"USD"`
+		} `json:"quote"`
+	} `json:"DIVI"`
+}
+
 type DiviWalletInfoRespStruct struct {
 	Result struct {
 		Walletversion      int     `json:"walletversion"`
@@ -150,6 +195,41 @@ type DiviWalletInfoRespStruct struct {
 }
 
 var gLastBCSyncPos float64 = 0
+
+func GetBalanceInCurrencyTxtDivi(conf *ConfStruct, wi *DiviWalletInfoRespStruct) string {
+	tBalance := wi.Result.ImmatureBalance + wi.Result.UnconfirmedBalance + wi.Result.Balance
+	var pricePerCoin float64
+	var symbol string
+
+	// Work out what currency
+	switch conf.Currency {
+	case "AUD":
+		symbol = "$"
+		pricePerCoin = gTicker.DIVI.Quote.USD.Price * gPricePerCoinAUD.Rates.AUD
+	case "USD":
+		symbol = "$"
+		pricePerCoin = gTicker.DIVI.Quote.USD.Price
+	case "GBP":
+		symbol = "£"
+		pricePerCoin = gTicker.DIVI.Quote.USD.Price * gPricePerCoinGBP.Rates.GBP
+	default:
+		symbol = "$"
+		pricePerCoin = gTicker.DIVI.Quote.USD.Price
+	}
+
+	tBalanceCurrency := pricePerCoin * tBalance
+
+	tBalanceCurrencyStr := humanize.FormatFloat("###,###.##", tBalanceCurrency) //humanize.Commaf(tBalanceCurrency) //FormatFloat("#,###.####", tBalanceCurrency)
+
+	// Work out balance
+	if wi.Result.ImmatureBalance > 0 {
+		return "Incoming......... [" + symbol + tBalanceCurrencyStr + "](fg:cyan)"
+	} else if wi.Result.UnconfirmedBalance > 0 {
+		return "Confirming....... [" + symbol + tBalanceCurrencyStr + "](fg:yellow)"
+	} else {
+		return "Currency:         [" + symbol + tBalanceCurrencyStr + "](fg:green)"
+	}
+}
 
 func GetBlockchainInfoDivi(cliConf *ConfStruct) (DiviBlockchainInfoRespStruct, error) {
 	var respStruct DiviBlockchainInfoRespStruct
@@ -357,4 +437,36 @@ func GetWalletInfoDivi(cliConf *ConfStruct) (DiviWalletInfoRespStruct, error) {
 		return respStruct, err
 	}
 	return respStruct, nil
+}
+
+func GetWalletSecurityStateDivi(wi *DiviWalletInfoRespStruct) WEType {
+	if wi.Result.EncryptionStatus == CWalletESLocked {
+		return WETLocked
+	} else if wi.Result.EncryptionStatus == CWalletESUnlocked {
+		return WETUnlocked
+	} else if wi.Result.EncryptionStatus == CWalletESUnlockedForStaking {
+		return WETUnlockedForStaking
+	} else if wi.Result.EncryptionStatus == CWalletESUnencrypted {
+		return WETUnencrypted
+	} else {
+		return WETUnknown
+	}
+}
+
+func UpdateTickerInfoDivi() error {
+	resp, err := http.Get("https://ticker.neist.io/DIVI")
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	body, err := ioutil.ReadAll(resp.Body)
+	if err != nil {
+		return err
+	}
+	err = json.Unmarshal(body, &gTicker)
+	if err != nil {
+		return err
+	}
+	return errors.New("unable to updateTicketInfo")
 }

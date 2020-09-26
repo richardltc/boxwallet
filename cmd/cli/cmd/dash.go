@@ -54,60 +54,6 @@ type hdinfoRespStruct struct {
 	ID    string      `json:"id"`
 }
 
-type tickerStruct struct {
-	DIVI struct {
-		ID                int         `json:"id"`
-		Name              string      `json:"name"`
-		Symbol            string      `json:"symbol"`
-		Slug              string      `json:"slug"`
-		NumMarketPairs    int         `json:"num_market_pairs"`
-		DateAdded         time.Time   `json:"date_added"`
-		Tags              []string    `json:"tags"`
-		MaxSupply         interface{} `json:"max_supply"`
-		CirculatingSupply float64     `json:"circulating_supply"`
-		TotalSupply       float64     `json:"total_supply"`
-		Platform          interface{} `json:"platform"`
-		CmcRank           int         `json:"cmc_rank"`
-		LastUpdated       time.Time   `json:"last_updated"`
-		Quote             struct {
-			BTC struct {
-				Price            float64   `json:"price"`
-				Volume24H        float64   `json:"volume_24h"`
-				PercentChange1H  float64   `json:"percent_change_1h"`
-				PercentChange24H float64   `json:"percent_change_24h"`
-				PercentChange7D  float64   `json:"percent_change_7d"`
-				MarketCap        float64   `json:"market_cap"`
-				LastUpdated      time.Time `json:"last_updated"`
-			} `json:"BTC"`
-			USD struct {
-				Price            float64   `json:"price"`
-				Volume24H        float64   `json:"volume_24h"`
-				PercentChange1H  float64   `json:"percent_change_1h"`
-				PercentChange24H float64   `json:"percent_change_24h"`
-				PercentChange7D  float64   `json:"percent_change_7d"`
-				MarketCap        float64   `json:"market_cap"`
-				LastUpdated      time.Time `json:"last_updated"`
-			} `json:"USD"`
-		} `json:"quote"`
-	} `json:"DIVI"`
-}
-
-type usd2AUDRespStruct struct {
-	Rates struct {
-		AUD float64 `json:"AUD"`
-	} `json:"rates"`
-	Base string `json:"base"`
-	Date string `json:"date"`
-}
-
-type usd2GBPRespStruct struct {
-	Rates struct {
-		GBP float64 `json:"GBP"`
-	} `json:"rates"`
-	Base string `json:"base"`
-	Date string `json:"date"`
-}
-
 var gGetBCInfoCount int = 0
 var gBCSyncStuckCount int = 0
 var gWalletRICount int = 0
@@ -116,20 +62,6 @@ var gLastBCSyncPosStr string = ""
 //var lastRMNAssets int = 0
 var NextLotteryStored string = ""
 var NextLotteryCounter int = 0
-
-// Ticker related variables
-var gGetTickerInfoCount int
-var gPricePerCoinAUD usd2AUDRespStruct
-var gPricePerCoinGBP usd2GBPRespStruct
-var gTicker tickerStruct
-
-// Progress constants
-const (
-	cWalletESUnlockedForStaking = "unlocked-for-staking"
-	cWalletESLocked             = "locked"
-	cWalletESUnlocked           = "unlocked"
-	cWalletESUnencrypted        = "unencrypted"
-)
 
 // dashCmd represents the dash command
 var dashCmd = &cobra.Command{
@@ -284,7 +216,7 @@ var dashCmd = &cobra.Command{
 				log.Fatal("Unable to perform GetWalletInfoDivi " + err.Error())
 			}
 
-			if wi.Result.EncryptionStatus == cWalletESUnencrypted {
+			if wi.Result.EncryptionStatus == be.CWalletESUnencrypted {
 				bWalletNeedsEncrypting = true
 			}
 		case be.PTPhore:
@@ -418,13 +350,17 @@ var dashCmd = &cobra.Command{
 		updateParagraph := func(count int) {
 			var bciDivi be.DiviBlockchainInfoRespStruct
 			var bciPhore be.PhoreBlockchainInfoRespStruct
+			var bciTrezarcoin be.TrezarcoinBlockchainInfoRespStruct
 			//var gi be.GetInfoRespStruct
 			var mnssDivi be.DiviMNSyncStatusRespStruct
 			var mnssPhore be.PhoreMNSyncStatusRespStruct
+			bTZCBlockchainIsSynced := false
 			var ssDivi be.DiviStakingStatusRespStruct
 			var ssPhore be.PhoreStakingStatusRespStruct
+			var ssTrezarcoin be.TrezarcoinStakingInfoRespStruct
 			var wiDivi be.DiviWalletInfoRespStruct
 			var wiPhore be.PhoreWalletInfoRespStruct
+			var wiTrezarcoin be.TrezarcoinWalletInfoRespStruct
 			if gGetBCInfoCount == 0 || gGetBCInfoCount > cliConf.RefreshTimer {
 				if gGetBCInfoCount > cliConf.RefreshTimer {
 					gGetBCInfoCount = 1
@@ -435,7 +371,10 @@ var dashCmd = &cobra.Command{
 				case be.PTPhore:
 					bciPhore, _ = be.GetBlockchainInfoPhore(&cliConf)
 				case be.PTTrezarcoin:
-					// todo bciDivi, _ = be.GetBlockchainInfoTrezarcoin(&cliConf)
+					bciTrezarcoin, _ = be.GetBlockchainInfoTrezarcoin(&cliConf)
+					if bciTrezarcoin.Result.Verificationprogress > 0.9999 {
+						bTZCBlockchainIsSynced = true
+					}
 				default:
 					err = errors.New("unable to determine ProjectType")
 				}
@@ -452,18 +391,22 @@ var dashCmd = &cobra.Command{
 			// Now, we only want to get this other stuff, when the blockchain has synced.
 			switch cliConf.ProjectType {
 			case be.PTDivi:
-				if bciDivi.Result.Verificationprogress > 0.99 {
+				if bciDivi.Result.Verificationprogress > 0.999 {
 					mnssDivi, _ = be.GetMNSyncStatusDivi(&cliConf)
 					ssDivi, _ = be.GetStakingStatusDivi(&cliConf)
 					wiDivi, _ = be.GetWalletInfoDivi(&cliConf)
 				}
 			case be.PTPhore:
-				if bciPhore.Result.Verificationprogress > 0.99 {
+				if bciPhore.Result.Verificationprogress > 0.999 {
 					mnssPhore, _ = be.GetMNSyncStatusPhore(&cliConf)
 					ssPhore, _ = be.GetStakingStatusPhore(&cliConf)
 					wiPhore, _ = be.GetWalletInfoPhore(&cliConf)
 				}
 			case be.PTTrezarcoin:
+				if bTZCBlockchainIsSynced {
+					ssTrezarcoin, _ = be.GetStakingInfoTrezarcoin(&cliConf)
+					wiTrezarcoin, _ = be.GetWalletInfoTrezarcoin(&cliConf)
+				}
 			default:
 				err = errors.New("unable to determine ProjectType")
 			}
@@ -483,6 +426,11 @@ var dashCmd = &cobra.Command{
 					pNetwork.BorderStyle.Fg = ui.ColorYellow
 				}
 			case be.PTTrezarcoin:
+				if bTZCBlockchainIsSynced {
+					pNetwork.BorderStyle.Fg = ui.ColorGreen
+				} else {
+					pNetwork.BorderStyle.Fg = ui.ColorYellow
+				}
 			default:
 				err = errors.New("unable to determine ProjectType")
 			}
@@ -520,6 +468,9 @@ var dashCmd = &cobra.Command{
 				sBlockchainSync = be.GetBlockchainSyncTxtPhore(mnssPhore.Result.IsBlockchainSynced, &bciPhore)
 				sMNSync = be.GetMNSyncStatusTxtPhore(&mnssPhore)
 			case be.PTTrezarcoin:
+				sBlocks = be.GetNetworkBlocksTxtTrezarcoin(&bciTrezarcoin)
+				sDiff = be.GetNetworkDifficultyTxtTrezarcoin(bciTrezarcoin.Result.Difficulty)
+				sBlockchainSync = be.GetBlockchainSyncTxtTrezarcoin(bTZCBlockchainIsSynced, &bciTrezarcoin)
 			default:
 				err = errors.New("unable to determine ProjectType")
 			}
@@ -532,22 +483,50 @@ var dashCmd = &cobra.Command{
 			// Populate the Wallet panel
 
 			// Decide what colour the wallet panel border should be...
+
 			switch cliConf.ProjectType {
 			case be.PTDivi:
-				switch wiDivi.Result.EncryptionStatus {
-				case cWalletESLocked:
+				wet := be.GetWalletSecurityStateDivi(&wiDivi)
+				switch wet {
+				case be.WETLocked:
 					pWallet.BorderStyle.Fg = ui.ColorYellow
-				case cWalletESUnlocked:
+				case be.WETUnlocked:
 					pWallet.BorderStyle.Fg = ui.ColorRed
-				case cWalletESUnlockedForStaking:
+				case be.WETUnlockedForStaking:
 					pWallet.BorderStyle.Fg = ui.ColorGreen
-				case cWalletESUnencrypted:
+				case be.WETUnencrypted:
 					pWallet.BorderStyle.Fg = ui.ColorRed
 				default:
 					pWallet.BorderStyle.Fg = ui.ColorYellow
 				}
 			case be.PTPhore:
+				wet := be.GetWalletSecurityStatePhore(&wiPhore)
+				switch wet {
+				case be.WETLocked:
+					pWallet.BorderStyle.Fg = ui.ColorYellow
+				case be.WETUnlocked:
+					pWallet.BorderStyle.Fg = ui.ColorRed
+				case be.WETUnlockedForStaking:
+					pWallet.BorderStyle.Fg = ui.ColorGreen
+				case be.WETUnencrypted:
+					pWallet.BorderStyle.Fg = ui.ColorRed
+				default:
+					pWallet.BorderStyle.Fg = ui.ColorYellow
+				}
 			case be.PTTrezarcoin:
+				wet := be.GetWalletSecurityStateTrezarcoin(&wiTrezarcoin)
+				switch wet {
+				case be.WETLocked:
+					pWallet.BorderStyle.Fg = ui.ColorYellow
+				case be.WETUnlocked:
+					pWallet.BorderStyle.Fg = ui.ColorRed
+				case be.WETUnlockedForStaking:
+					pWallet.BorderStyle.Fg = ui.ColorGreen
+				case be.WETUnencrypted:
+					pWallet.BorderStyle.Fg = ui.ColorRed
+				default:
+					pWallet.BorderStyle.Fg = ui.ColorYellow
+				}
 			default:
 				err = errors.New("unable to determine ProjectType")
 			}
@@ -557,7 +536,7 @@ var dashCmd = &cobra.Command{
 			case be.PTDivi:
 				if bciDivi.Result.Verificationprogress > 0.9999 {
 					pWallet.Text = "" + getBalanceInDiviTxt(&wiDivi) + "\n" +
-						"  " + getBalanceInCurrencyTxt(&cliConf, &wiDivi) + "\n" +
+						"  " + be.GetBalanceInCurrencyTxtDivi(&cliConf, &wiDivi) + "\n" +
 						"  " + getWalletSecurityStatusTxtDivi(&wiDivi) + "\n" +
 						"  " + getWalletStakingTxt(&wiDivi) + "\n" + //e.g. "15%" or "staking"
 						"  " + getActivelyStakingTxtDivi(&ssDivi, &wiDivi) + "\n" + //e.g. "15%" or "staking"
@@ -568,38 +547,39 @@ var dashCmd = &cobra.Command{
 				if bciPhore.Result.Verificationprogress > 0.9999 {
 					pWallet.Text = "" + getBalanceInPhoreTxt(&wiPhore) + "\n" +
 						"  " + getWalletSecurityStatusTxtPhore(&wiPhore) + "\n" +
-						"  " + getActivelyStakingTxtPhore(&ssPhore, &wiPhore) + "\n" //e.g. "15%" or "staking"
+						"  " + getActivelyStakingTxtPhore(&ssPhore) + "\n" //e.g. "15%" or "staking"
 				}
 			case be.PTTrezarcoin:
+				if bciTrezarcoin.Result.Verificationprogress > 0.9999 {
+					pWallet.Text = "" + getBalanceInTrezarcoinTxt(&wiTrezarcoin) + "\n" +
+						"  " + getWalletSecurityStatusTxtTrezarcoin(&wiTrezarcoin) + "\n" +
+						"  " + getActivelyStakingTxtTrezarcoin(&ssTrezarcoin) + "\n" //e.g. "15%" or "staking"
+				}
 			default:
 				err = errors.New("unable to determine ProjectType")
 			}
 
 			// Update Ticker display
-			if gGetTickerInfoCount == 0 || gGetTickerInfoCount > 30 {
-				if gGetTickerInfoCount > 30 {
-					gGetTickerInfoCount = 1
-				}
-				_ = updateTickerInfo()
-				// Now check to see which currency the user is interested in...
-				switch cliConf.Currency {
-				case "AUD":
-					_ = updateAUDPriceInfo()
-				case "GBP":
-					_ = updateGBPPriceInfo()
-				}
-				_ = updateGBPPriceInfo()
-				//pTicker.Text = "  " + getTickerPricePerCoinTxt() + "\n" +
-				//	"  " + getTickerBTCValueTxt() + "\n" +
-				//	"  " + getTicker24HrChangeTxt() + "\n" +
-				//	"  " + getTickerWeekChangeTxt() + "\n" +
-
-			}
-			gGetTickerInfoCount++
-			// numSeconds = numSeconds + 1
-			// if numSeconds >= 10 || numSeconds == 0 {
-			// 	numSeconds = 0
-			// }
+			//if gGetTickerInfoCount == 0 || gGetTickerInfoCount > 30 {
+			//	if gGetTickerInfoCount > 30 {m
+			//		gGetTickerInfoCount = 1
+			//	}
+			//	_ = be.UpdateTickerInfoDivi()
+			//	// Now check to see which currency the user is interested in...
+			//	switch cliConf.Currency {
+			//	case "AUD":
+			//		_ = updateAUDPriceInfo()
+			//	case "GBP":
+			//		_ = updateGBPPriceInfo()
+			//	}
+			//	_ = updateGBPPriceInfo()
+			//	//pTicker.Text = "  " + getTickerPricePerCoinTxt() + "\n" +
+			//	//	"  " + getTickerBTCValueTxt() + "\n" +
+			//	//	"  " + getTicker24HrChangeTxt() + "\n" +
+			//	//	"  " + getTickerWeekChangeTxt() + "\n" +
+			//
+			//}
+			//gGetTickerInfoCount++
 		}
 
 		draw := func(count int) {
@@ -753,10 +733,16 @@ func getActivelyStakingTxtDivi(ss *be.DiviStakingStatusRespStruct, wi *be.DiviWa
 	}
 }
 
-func getActivelyStakingTxtPhore(ss *be.PhoreStakingStatusRespStruct, wi *be.PhoreWalletInfoRespStruct) string {
-	// Work out balance
-	//todo Make sure that we only return yes, if the StakingStatus is true AND we have enough coins
+func getActivelyStakingTxtPhore(ss *be.PhoreStakingStatusRespStruct) string {
 	if ss.Result.StakingStatus == true {
+		return "Actively Staking: [Yes](fg:green)"
+	} else {
+		return "Actively Staking: [No](fg:yellow)"
+	}
+}
+
+func getActivelyStakingTxtTrezarcoin(ss *be.TrezarcoinStakingInfoRespStruct) string {
+	if ss.Result.Staking == true {
 		return "Actively Staking: [Yes](fg:green)"
 	} else {
 		return "Actively Staking: [No](fg:yellow)"
@@ -785,39 +771,12 @@ func getBalanceInPhoreTxt(wi *be.PhoreWalletInfoRespStruct) string {
 	return "  Balance:          [" + tBalanceStr + "](fg:green)"
 }
 
-func getBalanceInCurrencyTxt(conf *be.ConfStruct, wi *be.DiviWalletInfoRespStruct) string {
-	tBalance := wi.Result.ImmatureBalance + wi.Result.UnconfirmedBalance + wi.Result.Balance
-	var pricePerCoin float64
-	var symbol string
-
-	// Work out what currency
-	switch conf.Currency {
-	case "AUD":
-		symbol = "$"
-		pricePerCoin = gTicker.DIVI.Quote.USD.Price * gPricePerCoinAUD.Rates.AUD
-	case "USD":
-		symbol = "$"
-		pricePerCoin = gTicker.DIVI.Quote.USD.Price
-	case "GBP":
-		symbol = "£"
-		pricePerCoin = gTicker.DIVI.Quote.USD.Price * gPricePerCoinGBP.Rates.GBP
-	default:
-		symbol = "$"
-		pricePerCoin = gTicker.DIVI.Quote.USD.Price
-	}
-
-	tBalanceCurrency := pricePerCoin * tBalance
-
-	tBalanceCurrencyStr := humanize.FormatFloat("###,###.##", tBalanceCurrency) //humanize.Commaf(tBalanceCurrency) //FormatFloat("#,###.####", tBalanceCurrency)
+func getBalanceInTrezarcoinTxt(wi *be.TrezarcoinWalletInfoRespStruct) string {
+	tBalance := wi.Result.Balance
+	tBalanceStr := humanize.FormatFloat("#,###.####", tBalance)
 
 	// Work out balance
-	if wi.Result.ImmatureBalance > 0 {
-		return "Incoming......... [" + symbol + tBalanceCurrencyStr + "](fg:cyan)"
-	} else if wi.Result.UnconfirmedBalance > 0 {
-		return "Confirming....... [" + symbol + tBalanceCurrencyStr + "](fg:yellow)"
-	} else {
-		return "Currency:         [" + symbol + tBalanceCurrencyStr + "](fg:green)"
-	}
+	return "  Balance:          [" + tBalanceStr + "](fg:green)"
 }
 
 func getWalletStakingTxt(wi *be.DiviWalletInfoRespStruct) string {
@@ -841,13 +800,13 @@ func getWalletStakingTxt(wi *be.DiviWalletInfoRespStruct) string {
 
 func getWalletSecurityStatusTxtDivi(wi *be.DiviWalletInfoRespStruct) string {
 	switch wi.Result.EncryptionStatus {
-	case cWalletESLocked:
+	case be.CWalletESLocked:
 		return "Security:         [Locked - Not Staking](fg:yellow)"
-	case cWalletESUnlocked:
+	case be.CWalletESUnlocked:
 		return "Security:         [UNLOCKED](fg:red)"
-	case cWalletESUnlockedForStaking:
+	case be.CWalletESUnlockedForStaking:
 		return "Security:         [Locked and Staking](fg:green)"
-	case cWalletESUnencrypted:
+	case be.CWalletESUnencrypted:
 		return "Security:         [UNENCRYPTED](fg:red)"
 	default:
 		return "Security:         [checking...](fg:yellow)"
@@ -855,19 +814,27 @@ func getWalletSecurityStatusTxtDivi(wi *be.DiviWalletInfoRespStruct) string {
 }
 
 func getWalletSecurityStatusTxtPhore(wi *be.PhoreWalletInfoRespStruct) string {
-	//switch wi.Result.UnlockedUntil EncryptionStatus {
-	//case cWalletESLocked:
-	//	return "Security:         [Locked - Not Staking](fg:yellow)"
-	//case cWalletESUnlocked:
-	//	return "Security:         [UNLOCKED](fg:red)"
-	//case cWalletESUnlockedForStaking:
-	//	return "Security:         [Locked and Staking](fg:green)"
-	//case cWalletESUnencrypted:
-	//	return "Security:         [UNENCRYPTED](fg:red)"
-	//default:
-	//	return "Security:         [checking...](fg:yellow)"
-	//}
-	return "Security:         [UNENCRYPTED](fg:red)"
+	if wi.Result.UnlockedUntil == 0 {
+		return "Security:         [Locked - Not Staking](fg:yellow)"
+	} else if wi.Result.UnlockedUntil == -1 {
+		return "Security:         [UNENCRYPTED](fg:red)"
+	} else if wi.Result.UnlockedUntil > 0 {
+		return "Security:         [Locked and Staking](fg:green)"
+	} else {
+		return "Security:         [checking...](fg:yellow)"
+	}
+}
+
+func getWalletSecurityStatusTxtTrezarcoin(wi *be.TrezarcoinWalletInfoRespStruct) string {
+	if wi.Result.UnlockedUntil == 0 {
+		return "Security:         [Locked - Not Staking](fg:yellow)"
+	} else if wi.Result.UnlockedUntil == -1 {
+		return "Security:         [UNENCRYPTED](fg:red)"
+	} else if wi.Result.UnlockedUntil > 0 {
+		return "Security:         [Locked and Staking](fg:green)"
+	} else {
+		return "Security:         [checking...](fg:yellow)"
+	}
 }
 
 func getLotteryInfo(cliConf *be.ConfStruct) (be.LotteryDiviRespStruct, error) {
@@ -888,60 +855,6 @@ func getLotteryInfo(cliConf *be.ConfStruct) (be.LotteryDiviRespStruct, error) {
 		return respStruct, err
 	}
 	return respStruct, errors.New("unable to getLotteryInfo")
-}
-
-func updateAUDPriceInfo() error {
-	resp, err := http.Get("https://api.exchangeratesapi.io/latest?base=USD&symbols=AUD")
-	if err != nil {
-		return err
-	}
-	defer resp.Body.Close()
-
-	body, err := ioutil.ReadAll(resp.Body)
-	if err != nil {
-		return err
-	}
-	err = json.Unmarshal(body, &gPricePerCoinAUD)
-	if err != nil {
-		return err
-	}
-	return errors.New("unable to updateAUDPriceInfo")
-}
-
-func updateGBPPriceInfo() error {
-	resp, err := http.Get("https://api.exchangeratesapi.io/latest?base=USD&symbols=GBP")
-	if err != nil {
-		return err
-	}
-	defer resp.Body.Close()
-
-	body, err := ioutil.ReadAll(resp.Body)
-	if err != nil {
-		return err
-	}
-	err = json.Unmarshal(body, &gPricePerCoinGBP)
-	if err != nil {
-		return err
-	}
-	return errors.New("unable to updateGBPPriceInfo")
-}
-
-func updateTickerInfo() error {
-	resp, err := http.Get("https://ticker.neist.io/DIVI")
-	if err != nil {
-		return err
-	}
-	defer resp.Body.Close()
-
-	body, err := ioutil.ReadAll(resp.Body)
-	if err != nil {
-		return err
-	}
-	err = json.Unmarshal(body, &gTicker)
-	if err != nil {
-		return err
-	}
-	return errors.New("unable to updateTicketInfo")
 }
 
 //func getPrivateKey(token string) (m.PrivateKeyStruct, error) {

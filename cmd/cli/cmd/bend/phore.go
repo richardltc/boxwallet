@@ -354,3 +354,15 @@ func GetMNSyncStatusPhore(cliConf *ConfStruct) (PhoreMNSyncStatusRespStruct, err
 	}
 	return respStruct, nil
 }
+
+func GetWalletSecurityStatePhore(wi *PhoreWalletInfoRespStruct) WEType {
+	if wi.Result.UnlockedUntil == 0 {
+		return WETLocked
+	} else if wi.Result.UnlockedUntil == -1 {
+		return WETUnencrypted
+	} else if wi.Result.UnlockedUntil > 0 {
+		return WETUnlockedForStaking
+	} else {
+		return WETUnknown
+	}
+}
