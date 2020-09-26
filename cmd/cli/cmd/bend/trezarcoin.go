@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"github.com/dustin/go-humanize"
 	"io/ioutil"
 	"net/http"
 	"strconv"
@@ -38,7 +39,50 @@ const (
 	CTrezarcoinRPCPort string = "17299"
 )
 
-type trezarcoinGetInfoRespStruct struct {
+type TrezarcoinBlockchainInfoRespStruct struct {
+	Result struct {
+		Chain                string  `json:"chain"`
+		Blocks               int     `json:"blocks"`
+		Headers              int     `json:"headers"`
+		Bestblockhash        string  `json:"bestblockhash"`
+		Difficulty           float64 `json:"difficulty"`
+		Mediantime           int     `json:"mediantime"`
+		Verificationprogress float64 `json:"verificationprogress"`
+		Chainwork            string  `json:"chainwork"`
+		Pruned               bool    `json:"pruned"`
+		Softforks            []struct {
+			ID      string `json:"id"`
+			Version int    `json:"version"`
+			Enforce struct {
+				Status   bool `json:"status"`
+				Found    int  `json:"found"`
+				Required int  `json:"required"`
+				Window   int  `json:"window"`
+			} `json:"enforce"`
+			Reject struct {
+				Status   bool `json:"status"`
+				Found    int  `json:"found"`
+				Required int  `json:"required"`
+				Window   int  `json:"window"`
+			} `json:"reject"`
+		} `json:"softforks"`
+		Bip9Softforks struct {
+			Csv struct {
+				Status    string `json:"status"`
+				StartTime int    `json:"startTime"`
+				Timeout   int    `json:"timeout"`
+			} `json:"csv"`
+			Segwit struct {
+				Status    string `json:"status"`
+				StartTime int    `json:"startTime"`
+				Timeout   int    `json:"timeout"`
+			} `json:"segwit"`
+		} `json:"bip9_softforks"`
+	} `json:"result"`
+	Error interface{} `json:"error"`
+	ID    string      `json:"id"`
+}
+type trezarcoinInfoRespStruct struct {
 	Result struct {
 		Version            int     `json:"version"`
 		Protocolversion    int     `json:"protocolversion"`
@@ -68,6 +112,27 @@ type trezarcoinGetInfoRespStruct struct {
 	ID    string      `json:"id"`
 }
 
+type TrezarcoinStakingInfoRespStruct struct {
+	Result struct {
+		Enabled          bool    `json:"enabled"`
+		Staking          bool    `json:"staking"`
+		Errors           string  `json:"errors"`
+		Currentblocksize int     `json:"currentblocksize"`
+		Currentblocktx   int     `json:"currentblocktx"`
+		Difficulty       float64 `json:"difficulty"`
+		SearchInterval   int     `json:"search-interval"`
+		Weight           int64   `json:"weight"`
+		Netstakeweight   int64   `json:"netstakeweight"`
+		Stakemintime     int     `json:"stakemintime"`
+		Stakeminvalue    float64 `json:"stakeminvalue"`
+		Stakecombine     float64 `json:"stakecombine"`
+		Stakesplit       float64 `json:"stakesplit"`
+		Expectedtime     int     `json:"expectedtime"`
+	} `json:"result"`
+	Error interface{} `json:"error"`
+	ID    string      `json:"id"`
+}
+
 type TrezarcoinWalletInfoRespStruct struct {
 	Result struct {
 		Walletversion      int     `json:"walletversion"`
@@ -86,11 +151,38 @@ type TrezarcoinWalletInfoRespStruct struct {
 	ID    string      `json:"id"`
 }
 
-func GetInfoTrezarcoin(cliConf *ConfStruct) (trezarcoinGetInfoRespStruct, error) {
+func GetBlockchainInfoTrezarcoin(cliConf *ConfStruct) (TrezarcoinBlockchainInfoRespStruct, error) {
+	var respStruct TrezarcoinBlockchainInfoRespStruct
+
+	body := strings.NewReader("{\"jsonrpc\":\"1.0\",\"id\":\"curltext\",\"method\":\"getblockchaininfo\",\"params\":[]}")
+	req, err := http.NewRequest("POST", "http://"+cliConf.ServerIP+":"+cliConf.Port, body)
+	if err != nil {
+		return respStruct, err
+	}
+	req.SetBasicAuth(cliConf.RPCuser, cliConf.RPCpassword)
+	req.Header.Set("Content-Type", "text/plain;")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return respStruct, err
+	}
+	defer resp.Body.Close()
+	bodyResp, err := ioutil.ReadAll(resp.Body)
+	if err != nil {
+		return respStruct, err
+	}
+	err = json.Unmarshal(bodyResp, &respStruct)
+	if err != nil {
+		return respStruct, err
+	}
+	return respStruct, nil
+}
+
+func GetInfoTrezarcoin(cliConf *ConfStruct) (trezarcoinInfoRespStruct, error) {
 	attempts := 5
 	waitingStr := "Checking server..."
 
-	var respStruct trezarcoinGetInfoRespStruct
+	var respStruct trezarcoinInfoRespStruct
 
 	for i := 1; i < 50; i++ {
 		fmt.Printf("\r"+waitingStr+" %d/"+strconv.Itoa(attempts), i)
@@ -131,6 +223,80 @@ func GetInfoTrezarcoin(cliConf *ConfStruct) (trezarcoinGetInfoRespStruct, error)
 	return respStruct, nil
 }
 
+func GetNetworkBlocksTxtTrezarcoin(bci *TrezarcoinBlockchainInfoRespStruct) string {
+	blocksStr := humanize.Comma(int64(bci.Result.Blocks))
+
+	if bci.Result.Blocks > 100 {
+		return "Blocks:      [" + blocksStr + "](fg:green)"
+	} else {
+		return "[Blocks:      " + blocksStr + "](fg:red)"
+	}
+}
+
+func GetBlockchainSyncTxtTrezarcoin(synced bool, bci *TrezarcoinBlockchainInfoRespStruct) string {
+	s := ConvertBCVerification(bci.Result.Verificationprogress)
+	if s == "0.0" {
+		s = ""
+	} else {
+		s = s + "%"
+	}
+
+	if !synced {
+		if bci.Result.Verificationprogress > gLastBCSyncPos {
+			gLastBCSyncPos = bci.Result.Verificationprogress
+			return "Blockchain:  [syncing " + s + " ](fg:yellow)"
+		} else {
+			gLastBCSyncPos = bci.Result.Verificationprogress
+			return "Blockchain:  [waiting " + s + " ](fg:yellow)"
+		}
+	} else {
+		return "Blockchain:  [synced " + CUtfTickBold + "](fg:green)"
+	}
+}
+
+func GetNetworkDifficultyTxtTrezarcoin(difficulty float64) string {
+	var s string
+	if difficulty > 1000 {
+		s = humanize.FormatFloat("#.#", difficulty/1000) + "k"
+	} else {
+		s = humanize.Ftoa(difficulty)
+	}
+	if difficulty > 6000 {
+		return "Difficulty:  [" + s + "](fg:green)"
+	} else if difficulty > 3000 {
+		return "[Difficulty:  " + s + "](fg:yellow)"
+	} else {
+		return "[Difficulty:  " + s + "](fg:red)"
+	}
+}
+
+func GetStakingInfoTrezarcoin(cliConf *ConfStruct) (TrezarcoinStakingInfoRespStruct, error) {
+	var respStruct TrezarcoinStakingInfoRespStruct
+
+	body := strings.NewReader("{\"jsonrpc\":\"1.0\",\"id\":\"curltext\",\"method\":\"getstakinginfo\",\"params\":[]}")
+	req, err := http.NewRequest("POST", "http://"+cliConf.ServerIP+":"+cliConf.Port, body)
+	if err != nil {
+		return respStruct, err
+	}
+	req.SetBasicAuth(cliConf.RPCuser, cliConf.RPCpassword)
+	req.Header.Set("Content-Type", "text/plain;")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return respStruct, err
+	}
+	defer resp.Body.Close()
+	bodyResp, err := ioutil.ReadAll(resp.Body)
+	if err != nil {
+		return respStruct, err
+	}
+	err = json.Unmarshal(bodyResp, &respStruct)
+	if err != nil {
+		return respStruct, err
+	}
+	return respStruct, nil
+}
+
 func GetWalletInfoTrezarcoin(cliConf *ConfStruct) (TrezarcoinWalletInfoRespStruct, error) {
 	var respStruct TrezarcoinWalletInfoRespStruct
 
@@ -164,4 +330,16 @@ func GetWalletInfoTrezarcoin(cliConf *ConfStruct) (TrezarcoinWalletInfoRespStruc
 	}
 
 	return respStruct, nil
+}
+
+func GetWalletSecurityStateTrezarcoin(wi *TrezarcoinWalletInfoRespStruct) WEType {
+	if wi.Result.UnlockedUntil == 0 {
+		return WETLocked
+	} else if wi.Result.UnlockedUntil == -1 {
+		return WETUnencrypted
+	} else if wi.Result.UnlockedUntil > 0 {
+		return WETUnlockedForStaking
+	} else {
+		return WETUnknown
+	}
 }
