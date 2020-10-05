@@ -40,14 +40,27 @@ var unlockfsCmd = &cobra.Command{
 			log.Fatal("Unable to GetCLIConfStruct " + err.Error())
 		}
 
-		// Check to make sure wallet is actually encrypted
-		wi, err := be.GetWalletInfoDivi(&cliConf)
-		if err != nil {
-			log.Fatal("Unable to getWalletInfo " + err.Error())
-		}
-
-		if wi.Result.EncryptionStatus == be.CWalletESUnencrypted {
-			log.Fatal("Wallet is not encrypted")
+		var wiDivi be.DiviWalletInfoRespStruct
+		var wiPhore be.PhoreWalletInfoRespStruct
+		var wiTrezarcoin be.TrezarcoinWalletInfoRespStruct
+		switch cliConf.ProjectType {
+		case be.PTDivi:
+			wet := be.GetWalletSecurityStateDivi(&wiDivi)
+			if wet == be.WETUnlocked {
+				log.Fatal("Wallet is not encrypted")
+			}
+		case be.PTPhore:
+			wet := be.GetWalletSecurityStatePhore(&wiPhore)
+			if wet == be.WETUnlocked {
+				log.Fatal("Wallet is not encrypted")
+			}
+		case be.PTTrezarcoin:
+			wet := be.GetWalletSecurityStateTrezarcoin(&wiTrezarcoin)
+			if wet == be.WETUnlocked {
+				log.Fatal("Wallet is not encrypted")
+			}
+		default:
+			log.Fatal("unable to determine ProjectType")
 		}
 
 		wep := be.GetWalletEncryptionPassword()

@@ -107,11 +107,14 @@ func BackupFile(srcFolder, srcFile string, failOnNoSrc bool) error {
 	dt := time.Now()
 	dtStr := dt.Format("2006-01-02")
 
-	if failOnNoSrc {
-		if !FileExists(srcFolder + srcFile) {
+	if !FileExists(srcFolder + srcFile) {
+		if failOnNoSrc {
 			return errors.New(srcFolder + srcFile + " doesn't exist")
+		} else {
+			return nil
 		}
 	}
+
 	// Open original file
 	originalFile, err := os.Open(srcFolder + srcFile)
 	if err != nil {
