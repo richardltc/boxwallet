@@ -114,14 +114,11 @@ const (
 type ProjectType int
 
 const (
-	// PTDivi - Divi
 	PTDivi ProjectType = iota
-	// PTPhore - Phore
 	PTPhore
-	// PTPIVX - PIVX
 	PTPIVX
-	// PTTrezarcoin - TrezarCoin
 	PTTrezarcoin
+	PTFeathercoin
 )
 
 // OSType - either ostArm, ostLinux or ostWindows
@@ -394,44 +391,6 @@ func GetAppFileName() (string, error) {
 	return "", nil
 }
 
-//func GetPrivKey() (privateSeedStruct, walletResponseType, error) {
-//	ps := privateSeedStruct{}
-//
-//	// Start the DiviD server if required...
-//	if err := RunCoinDaemon(false); err != nil {
-//		return ps, wrtUnknown, fmt.Errorf("Unable to RunDiviD: %v ", err)
-//	}
-//
-//	dbf, err := gwc.GetAppsBinFolder(gwc.APPTServer)
-//	if err != nil {
-//		return ps, wrtUnknown, fmt.Errorf("Unable to GetAppsBinFolder: %v ", err)
-//	}
-//
-//	for i := 0; i <= 4; i++ {
-//		cmd := exec.Command(dbf+gwc.CDiviCliFile, cCommandDumpHDInfo)
-//		var stdout bytes.Buffer
-//		cmd.Stdout = &stdout
-//		cmd.Run()
-//		if err != nil {
-//			return ps, wrtUnknown, err
-//		}
-//
-//		outStr := string(stdout.Bytes())
-//		wr := getWalletResponse(outStr)
-//
-//		if wr == wrtAllOK {
-//			errUM := json.Unmarshal([]byte(outStr), &ps)
-//			if errUM == nil {
-//				return ps, wrtAllOK, err
-//			}
-//		}
-//
-//		time.Sleep(1 * time.Second)
-//	}
-//
-//	return ps, wrtUnknown, errors.New("unable to retrieve private key")
-//}
-
 // // DoPrivKeyFile - Handles the private key
 // func DoPrivKeyFile() error {
 // 	dbf, err := GetAppsBinFolder()
@@ -513,12 +472,6 @@ func GetCoinDaemonFilename(at APPType) (string, error) {
 			return "", err
 		}
 		pt = conf.ProjectType
-	//case APPTServer:
-	//	conf, err := GetServerConfStruct()
-	//	if err != nil {
-	//		return "", err
-	//	}
-	//	pt = conf.ProjectType
 	default:
 		err := errors.New("unable to determine AppType")
 		return "", err
@@ -527,6 +480,8 @@ func GetCoinDaemonFilename(at APPType) (string, error) {
 	switch pt {
 	case PTDivi:
 		return CDiviDFile, nil
+	case PTFeathercoin:
+		return CFeathercoinDFile, nil
 	case PTPhore:
 		return CPhoreDFile, nil
 	case PTPIVX:
@@ -559,6 +514,8 @@ func GetCoinName(at APPType) (string, error) {
 	switch pt {
 	case PTDivi:
 		return CCoinNameDivi, nil
+	case PTFeathercoin:
+		return CCoinNameFeathercoin, nil
 	case PTPhore:
 		return CCoinNamePhore, nil
 	case PTPIVX:
@@ -590,7 +547,7 @@ func GetAppsBinFolderOld() (string, error) {
 	return s, nil
 }
 
-// GetCoinHomeFolder - Returns the ome folder for the coin e.g. .divi
+// GetCoinHomeFolder - Returns the home folder for the coin e.g. .divi
 func GetCoinHomeFolder(at APPType) (string, error) {
 	var pt ProjectType
 	switch at {
@@ -616,6 +573,8 @@ func GetCoinHomeFolder(at APPType) (string, error) {
 		switch pt {
 		case PTDivi:
 			s = AddTrailingSlash(hd) + "appdata\\roaming\\" + AddTrailingSlash(CDiviHomeDirWin)
+		case PTFeathercoin:
+			s = AddTrailingSlash(hd) + "appdata\\roaming\\" + AddTrailingSlash(CFeathercoinHomeDirWin)
 		case PTPhore:
 			s = AddTrailingSlash(hd) + "appdata\\roaming\\" + AddTrailingSlash(CPhoreHomeDirWin)
 		case PTPIVX:
@@ -630,6 +589,8 @@ func GetCoinHomeFolder(at APPType) (string, error) {
 		switch pt {
 		case PTDivi:
 			s = AddTrailingSlash(hd) + AddTrailingSlash(CDiviHomeDir)
+		case PTFeathercoin:
+			s = AddTrailingSlash(hd) + AddTrailingSlash(CFeathercoinHomeDir)
 		case PTPhore:
 			s = AddTrailingSlash(hd) + AddTrailingSlash(CPhoreHomeDir)
 		case PTPIVX:
@@ -881,6 +842,12 @@ func IsCoinDaemonRunning() (bool, int, error) {
 		} else {
 			pid, _, err = findProcess(CDiviDFile)
 		}
+	case PTFeathercoin:
+		if runtime.GOOS == "windows" {
+			pid, _, err = findProcess(CFeathercoinDFileWin)
+		} else {
+			pid, _, err = findProcess(CFeathercoinDFile)
+		}
 	case PTPhore:
 		if runtime.GOOS == "windows" {
 			pid, _, err = findProcess(CPhoreDFileWin)
@@ -911,19 +878,17 @@ func IsCoinDaemonRunning() (bool, int, error) {
 
 // PopulateDaemonConfFile - Populates the divi.conf file
 func PopulateDaemonConfFile() (rpcuser, rpcpassword string, err error) {
-	//abf, err := GetAppsBinFolder()
-	//if err != nil {
-	//	return "", "", fmt.Errorf("unable to GetAppsBinFolder - %v", err)
-	//}
-	//coind, err := GetCoinDaemonFilename(APPTCLI)
-	//if err != nil {
-	//	return "", "", fmt.Errorf("unable to GetCoinDaemonFilename - %v", err)
-	//}
 
 	bFileHasBeenBU := false
 	bwconf, err := GetConfigStruct("", false)
 	if err != nil {
 		return "", "", fmt.Errorf("unable to GetConfigStruct - %v", err)
+	}
+
+	// Create the coins home folder if required...
+	chd, _ := GetCoinHomeFolder(APPTCLI)
+	if err := os.MkdirAll(chd, os.ModePerm); err != nil {
+		return "", "", fmt.Errorf("unable to make directory - %v", err)
 	}
 
 	// Create user and password variables
@@ -932,13 +897,7 @@ func PopulateDaemonConfFile() (rpcuser, rpcpassword string, err error) {
 
 	switch bwconf.ProjectType {
 	case PTDivi:
-
 		fmt.Println("Populating " + CDiviConfFile + " for initial setup...")
-
-		chd, _ := GetCoinHomeFolder(APPTCLI)
-		if err := os.MkdirAll(chd, os.ModePerm); err != nil {
-			return "", "", fmt.Errorf("unable to make directory - %v", err)
-		}
 
 		// Add rpcuser info if required, or retrieve the existing one
 		b, err := StringExistsInFile(cRPCUserStr+"=", chd+CDiviConfFile)
@@ -1057,13 +1016,184 @@ func PopulateDaemonConfFile() (rpcuser, rpcpassword string, err error) {
 			}
 		}
 		return rpcu, rpcpw, nil
+	case PTFeathercoin:
+		fmt.Println("Populating " + CFeathercoinConfFile + " for initial setup...")
+
+		// Add rpcuser info if required, or retrieve the existing one
+		bNeedToWriteStr := true
+		if FileExists(chd + CFeathercoinConfFile) {
+			bStrFound, err := StringExistsInFile(cRPCUserStr+"=", chd+CFeathercoinConfFile)
+			if err != nil {
+				return "", "", fmt.Errorf("unable to search for text in file - %v", err)
+			}
+			if !bStrFound {
+				// String not found
+				if !bFileHasBeenBU {
+					bFileHasBeenBU = true
+					if err := BackupFile(chd, CFeathercoinConfFile, false); err != nil {
+						return "", "", fmt.Errorf("unable to backup file - %v", err)
+					}
+				}
+			} else {
+				bNeedToWriteStr = false
+				rpcu, err = GetStringAfterStrFromFile(cRPCUserStr+"=", chd+CFeathercoinConfFile)
+				if err != nil {
+					return "", "", fmt.Errorf("unable to search for text in file - %v", err)
+				}
+			}
+		} else {
+			if bNeedToWriteStr {
+				rpcu = "feathercoinrpc"
+				if err := WriteTextToFile(chd+CFeathercoinConfFile, cRPCUserStr+"="+rpcu); err != nil {
+					log.Fatal(err)
+				}
+			}
+		}
+
+		// Add rpcpassword info if required, or retrieve the existing one
+		bNeedToWriteStr = true
+		if FileExists(chd + CFeathercoinConfFile) {
+			bStrFound, err := StringExistsInFile(cRPCPasswordStr+"=", chd+CFeathercoinConfFile)
+			if err != nil {
+				return "", "", fmt.Errorf("unable to search for text in file - %v", err)
+			}
+			if !bStrFound {
+				// String not found
+				if !bFileHasBeenBU {
+					bFileHasBeenBU = true
+					if err := BackupFile(chd, CFeathercoinConfFile, false); err != nil {
+						return "", "", fmt.Errorf("unable to backup file - %v", err)
+					}
+				}
+			} else {
+				bNeedToWriteStr = false
+				rpcpw, err = GetStringAfterStrFromFile(cRPCPasswordStr+"=", chd+CFeathercoinConfFile)
+				if err != nil {
+					return "", "", fmt.Errorf("unable to search for text in file - %v", err)
+				}
+			}
+		} else {
+			if bNeedToWriteStr {
+				rpcpw = rand.String(20)
+				if err := WriteTextToFile(chd+CFeathercoinConfFile, cRPCPasswordStr+"="+rpcpw); err != nil {
+					log.Fatal(err)
+				}
+				if err := WriteTextToFile(chd+CFeathercoinConfFile, ""); err != nil {
+					log.Fatal(err)
+				}
+			}
+		}
+
+		// Add daemon=1 info if required
+		bNeedToWriteStr = true
+		if FileExists(chd + CFeathercoinConfFile) {
+			bStrFound, err := StringExistsInFile("daemon=1", chd+CFeathercoinConfFile)
+			if err != nil {
+				return "", "", fmt.Errorf("unable to search for text in file - %v", err)
+			}
+			if !bStrFound {
+				// String not found
+				if !bFileHasBeenBU {
+					bFileHasBeenBU = true
+					if err := BackupFile(chd, CFeathercoinConfFile, false); err != nil {
+						return "", "", fmt.Errorf("unable to backup file - %v", err)
+					}
+				}
+			} else {
+				bNeedToWriteStr = false
+			}
+		} else {
+			if bNeedToWriteStr {
+				if err := WriteTextToFile(chd+CFeathercoinConfFile, "daemon=1"); err != nil {
+					log.Fatal(err)
+				}
+				if err := WriteTextToFile(chd+CFeathercoinConfFile, ""); err != nil {
+					log.Fatal(err)
+				}
+			}
+		}
+
+		// Add server=1 info if required
+		bNeedToWriteStr = true
+		if FileExists(chd + CFeathercoinConfFile) {
+			bStrFound, err := StringExistsInFile("server=1", chd+CFeathercoinConfFile)
+			if err != nil {
+				return "", "", fmt.Errorf("unable to search for text in file - %v", err)
+			}
+			if !bStrFound {
+				// String not found
+				if !bFileHasBeenBU {
+					bFileHasBeenBU = true
+					if err := BackupFile(chd, CFeathercoinConfFile, false); err != nil {
+						return "", "", fmt.Errorf("unable to backup file - %v", err)
+					}
+				}
+			} else {
+				bNeedToWriteStr = false
+			}
+		} else {
+			if bNeedToWriteStr {
+				if err := WriteTextToFile(chd+CFeathercoinConfFile, "server=1"); err != nil {
+					log.Fatal(err)
+				}
+			}
+		}
+
+		// Add rpcallowip= info if required
+		bNeedToWriteStr = true
+		if FileExists(chd + CFeathercoinConfFile) {
+			bStrFound, err := StringExistsInFile("rpcallowip=", chd+CFeathercoinConfFile)
+			if err != nil {
+				return "", "", fmt.Errorf("unable to search for text in file - %v", err)
+			}
+			if !bStrFound {
+				// String not found
+				if !bFileHasBeenBU {
+					bFileHasBeenBU = true
+					if err := BackupFile(chd, CFeathercoinConfFile, false); err != nil {
+						return "", "", fmt.Errorf("unable to backup file - %v", err)
+					}
+				}
+			} else {
+				bNeedToWriteStr = false
+			}
+		} else {
+			if bNeedToWriteStr {
+				if err := WriteTextToFile(chd+CFeathercoinConfFile, "rpcallowip=192.168.1.0/255.255.255.0"); err != nil {
+					log.Fatal(err)
+				}
+			}
+		}
+
+		// Add rpcport= info if required
+		bNeedToWriteStr = true
+		if FileExists(chd + CFeathercoinConfFile) {
+			bStrFound, err := StringExistsInFile("rpcport=", chd+CFeathercoinConfFile)
+			if err != nil {
+				return "", "", fmt.Errorf("unable to search for text in file - %v", err)
+			}
+			if !bStrFound {
+				// String not found
+				if !bFileHasBeenBU {
+					bFileHasBeenBU = true
+					if err := BackupFile(chd, CFeathercoinConfFile, false); err != nil {
+						return "", "", fmt.Errorf("unable to backup file - %v", err)
+					}
+				}
+			} else {
+				bNeedToWriteStr = false
+			}
+		} else {
+			if bNeedToWriteStr {
+				if err := WriteTextToFile(chd+CFeathercoinConfFile, "rpcport="+CFeathercoinRPCPort); err != nil {
+					log.Fatal(err)
+				}
+			}
+		}
+
+		return rpcu, rpcpw, nil
 	case PTPhore:
 		fmt.Println("Populating " + CPhoreConfFile + " for initial setup...")
-
-		chd, _ := GetCoinHomeFolder(APPTCLI)
-		if err := os.MkdirAll(chd, os.ModePerm); err != nil {
-			return "", "", fmt.Errorf("unable to make directory - %v", err)
-		}
 
 		// Add rpcuser info if required
 		b, err := StringExistsInFile(cRPCUserStr+"=", chd+CPhoreConfFile)
@@ -1186,11 +1316,6 @@ func PopulateDaemonConfFile() (rpcuser, rpcpassword string, err error) {
 	case PTPIVX:
 		fmt.Println("Populating " + CPIVXConfFile + " for initial setup...")
 
-		chd, _ := GetCoinHomeFolder(APPTCLI)
-		if err := os.MkdirAll(chd, os.ModePerm); err != nil {
-			return "", "", fmt.Errorf("unable to make directory - %v", err)
-		}
-
 		// Add rpcuser info if required
 		b, err := StringExistsInFile(cRPCUserStr+"=", chd+CPIVXConfFile)
 		if err != nil {
@@ -1311,11 +1436,6 @@ func PopulateDaemonConfFile() (rpcuser, rpcpassword string, err error) {
 		return rpcu, rpcpw, nil
 	case PTTrezarcoin:
 		fmt.Println("Populating " + CTrezarcoinConfFile + " for initial setup...")
-
-		chd, _ := GetCoinHomeFolder(APPTCLI)
-		if err := os.MkdirAll(chd, os.ModePerm); err != nil {
-			return "", "", fmt.Errorf("unable to make directory - %v", err)
-		}
 
 		// Add rpcuser info if required
 		b, err := StringExistsInFile(cRPCUserStr+"=", chd+CTrezarcoinConfFile)
@@ -1476,6 +1596,28 @@ func AllProjectBinaryFilesExists() (bool, error) {
 				return false, nil
 			}
 			if !FileExists(abf + CDiviTxFile) {
+				return false, nil
+			}
+		}
+	case PTFeathercoin:
+		if runtime.GOOS == "windows" {
+			if !FileExists(abf + CFeathercoinCliFileWin) {
+				return false, nil
+			}
+			if !FileExists(abf + CFeathercoinDFileWin) {
+				return false, nil
+			}
+			if !FileExists(abf + CFeathercoinTxFileWin) {
+				return false, nil
+			}
+		} else {
+			if !FileExists(abf + CFeathercoinCliFile) {
+				return false, nil
+			}
+			if !FileExists(abf + CFeathercoinDFile) {
+				return false, nil
+			}
+			if !FileExists(abf + CFeathercoinTxFile) {
 				return false, nil
 			}
 		}
@@ -1716,6 +1858,23 @@ func WalletFix(wft WalletFixType) error {
 				return fmt.Errorf("unable to run divid -reindex: %v", err)
 			}
 		}
+	case PTFeathercoin:
+		if runtime.GOOS == "windows" {
+			// TODO Complete for Windows
+		} else {
+			var arg1 string
+			switch wft {
+			case WFTReIndex:
+				arg1 = "-reindex"
+			case WFTReSync:
+				arg1 = "-resync"
+			}
+
+			cRun := exec.Command(abf+coind, arg1)
+			if err := cRun.Run(); err != nil {
+				return fmt.Errorf("unable to run divid -reindex: %v", err)
+			}
+		}
 	case PTPIVX:
 		if runtime.GOOS == "windows" {
 			// TODO Complete for Windows
@@ -1834,6 +1993,47 @@ func RunCoinDaemon(displayOutput bool) error {
 					return nil
 				} else {
 					return errors.New("unable to start Divi server: " + string(line))
+				}
+			}
+		}
+	case PTFeathercoin:
+		if runtime.GOOS == "windows" {
+			//_ = exec.Command(GetAppsBinFolder() + cDiviDFileWin)
+			fp := abf + CFeathercoinDFileWin
+			cmd := exec.Command("cmd.exe", "/C", "start", "/b", fp)
+			if err := cmd.Run(); err != nil {
+				return err
+			}
+		} else {
+			if displayOutput {
+				fmt.Println("Attempting to run the feathercoind daemon...")
+			}
+
+			cmdRun := exec.Command(abf + CFeathercoinDFile)
+			stdout, err := cmdRun.StdoutPipe()
+			if err != nil {
+				return err
+			}
+			err = cmdRun.Start()
+			if err != nil {
+				return err
+			}
+
+			buf := bufio.NewReader(stdout) // Notice that this is not in a loop
+			num := 1
+			for {
+				line, _, _ := buf.ReadLine()
+				if num > 3 {
+					os.Exit(0)
+				}
+				num++
+				if string(line) == "Feathercoin server starting" {
+					if displayOutput {
+						fmt.Println("Feathercoin server starting")
+					}
+					return nil
+				} else {
+					return errors.New("unable to start Feathercoin server: " + string(line))
 				}
 			}
 		}
@@ -1964,6 +2164,26 @@ func StopCoinDaemon(displayOutput bool) error {
 				}
 				if displayOutput {
 					fmt.Printf("\rWaiting for divid server to stop %d/"+strconv.Itoa(50), i+1)
+				}
+				time.Sleep(3 * time.Second)
+			}
+		}
+	case PTFeathercoin:
+		if runtime.GOOS == "windows" {
+			// TODO Complete for Windows
+		} else {
+			for i := 0; i < 50; i++ {
+				cRun := exec.Command(abf+CFeathercoinCliFile, "stop")
+				_ = cRun.Run()
+
+				sr, _, _ := IsCoinDaemonRunning()
+				if !sr {
+					// Lets wait a little longer before returning
+					time.Sleep(3 * time.Second)
+					return nil
+				}
+				if displayOutput {
+					fmt.Printf("\rWaiting for feathercoind server to stop %d/"+strconv.Itoa(50), i+1)
 				}
 				time.Sleep(3 * time.Second)
 			}

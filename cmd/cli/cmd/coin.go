@@ -39,7 +39,7 @@ var coinCmd = &cobra.Command{
 		coin := ""
 		prompt := &survey.Select{
 			Message: "Please choose your preferred coin:",
-			Options: []string{be.CCoinNameDivi, be.CCoinNamePhore, be.CCoinNameTrezarcoin},
+			Options: []string{be.CCoinNameDivi, be.CCoinNameFeathercoin, be.CCoinNamePhore, be.CCoinNameTrezarcoin},
 		}
 		survey.AskOne(prompt, &coin)
 		cliConf := be.ConfStruct{}
@@ -49,6 +49,9 @@ var coinCmd = &cobra.Command{
 		case be.CCoinNameDivi:
 			cliConf.ProjectType = be.PTDivi
 			cliConf.Port = be.CDiviRPCPort
+		case be.CCoinNameFeathercoin:
+			cliConf.ProjectType = be.PTFeathercoin
+			cliConf.Port = be.CFeathercoinRPCPort
 		case be.CCoinNamePhore:
 			cliConf.ProjectType = be.PTPhore
 			cliConf.Port = be.CPhoreRPCPort
