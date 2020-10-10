@@ -58,6 +58,11 @@ var gGetBCInfoCount int = 0
 var gBCSyncStuckCount int = 0
 var gWalletRICount int = 0
 var gLastBCSyncPosStr string = ""
+var gDiffGood float64
+var gDiffWarning float64
+
+// General counter
+var gTickerCounter int = 0
 
 //var lastRMNAssets int = 0
 var NextLotteryStored string = ""
@@ -131,6 +136,19 @@ var dashCmd = &cobra.Command{
 			}
 			if gi.Result.Version == "" {
 				log.Fatalf("Unable to call getinfo %s\n", err)
+			}
+		case be.PTFeathercoin:
+			gi, err := be.GetNetworkInfoFeathercoin(&cliConf)
+			if err != nil {
+
+				if err := spinner.Stop(); err != nil {
+				}
+				fmt.Println("")
+				log.Fatal("Unable to communicate with the " + coind + " server. Please make sure the " + coind + " server is running, by running:\n\n" +
+					"./" + sAppFileCLIName + " start\n\n")
+			}
+			if gi.Result.Version == 0 {
+				log.Fatalf("Unable to call getnetworkinfo %s\n", err)
 			}
 		case be.PTPhore:
 			gi, err := be.GetInfoPhore(&cliConf)
@@ -219,6 +237,15 @@ var dashCmd = &cobra.Command{
 			if wi.Result.EncryptionStatus == be.CWalletESUnencrypted {
 				bWalletNeedsEncrypting = true
 			}
+		case be.PTFeathercoin:
+			wi, err := be.GetWalletInfoFeathercoin(&cliConf)
+			if err != nil {
+				log.Fatal("Unable to perform GetWalletInfoFeathercoin " + err.Error())
+			}
+
+			if wi.Result.UnlockedUntil < 0 {
+				bWalletNeedsEncrypting = true
+			}
 		case be.PTPhore:
 			wi, err := be.GetWalletInfoPhore(&cliConf)
 			if err != nil {
@@ -274,6 +301,9 @@ var dashCmd = &cobra.Command{
 		case be.PTDivi:
 			pAbout.Text = "  [" + be.CAppName + "    v" + be.CBWAppVersion + "](fg:white)\n" +
 				"  [" + sCoinName + " Core    v" + be.CDiviCoreVersion + "](fg:white)\n\n"
+		case be.PTFeathercoin:
+			pAbout.Text = "  [" + be.CAppName + "           v" + be.CBWAppVersion + "](fg:white)\n" +
+				"  [" + sCoinName + " Core    v" + be.CFeathercoinCoreVersion + "](fg:white)\n\n"
 		case be.PTPhore:
 			pAbout.Text = "  [" + be.CAppName + "    v" + be.CBWAppVersion + "](fg:white)\n" +
 				"  [" + sCoinName + " Core   v" + be.CPhoreCoreVersion + "](fg:white)\n\n"
@@ -298,6 +328,9 @@ var dashCmd = &cobra.Command{
 				"  Actively Staking: [waiting...](fg:yellow)\n" +
 				"  Next Lottery:     [waiting...](fg:yellow)\n" +
 				"  Lottery tickets:	  [waiting...](fg:yellow)"
+		case be.PTFeathercoin:
+			pWallet.Text = "  Balance:          [waiting...](fg:yellow)\n" +
+				"  Security:         [waiting...](fg:yellow)\n"
 		case be.PTPhore:
 			pWallet.Text = "  Balance:          [waiting...](fg:yellow)\n" +
 				"  Security:         [waiting...](fg:yellow)\n" +
@@ -332,6 +365,11 @@ var dashCmd = &cobra.Command{
 				"  Difficulty:  [checking...](fg:yellow)\n" +
 				"  Blockchain:  [checking...](fg:yellow)\n" +
 				"  Masternodes: [checking...](fg:yellow)"
+		case be.PTFeathercoin:
+			pNetwork.Text = "  Headers:     [checking...](fg:yellow)\n" +
+				"  Blocks:      [checking...](fg:yellow)\n" +
+				"  Difficulty:  [checking...](fg:yellow)\n" +
+				"  Blockchain:  [checking...](fg:yellow)\n"
 		case be.PTPhore:
 			pNetwork.Text = "  Blocks:      [checking...](fg:yellow)\n" +
 				"  Difficulty:  [checking...](fg:yellow)\n" +
@@ -349,16 +387,19 @@ var dashCmd = &cobra.Command{
 		// var numSeconds int = -1
 		updateParagraph := func(count int) {
 			var bciDivi be.DiviBlockchainInfoRespStruct
+			var bciFeathercoin be.FeathercoinBlockchainInfoRespStruct
 			var bciPhore be.PhoreBlockchainInfoRespStruct
 			var bciTrezarcoin be.TrezarcoinBlockchainInfoRespStruct
 			//var gi be.GetInfoRespStruct
 			var mnssDivi be.DiviMNSyncStatusRespStruct
 			var mnssPhore be.PhoreMNSyncStatusRespStruct
+			bFTCBlockchainIsSynced := false
 			bTZCBlockchainIsSynced := false
 			var ssDivi be.DiviStakingStatusRespStruct
 			var ssPhore be.PhoreStakingStatusRespStruct
 			var ssTrezarcoin be.TrezarcoinStakingInfoRespStruct
 			var wiDivi be.DiviWalletInfoRespStruct
+			var wiFeathercoin be.FeathercoinWalletInfoRespStruct
 			var wiPhore be.PhoreWalletInfoRespStruct
 			var wiTrezarcoin be.TrezarcoinWalletInfoRespStruct
 			if gGetBCInfoCount == 0 || gGetBCInfoCount > cliConf.RefreshTimer {
@@ -368,6 +409,11 @@ var dashCmd = &cobra.Command{
 				switch cliConf.ProjectType {
 				case be.PTDivi:
 					bciDivi, _ = be.GetBlockchainInfoDivi(&cliConf)
+				case be.PTFeathercoin:
+					bciFeathercoin, _ = be.GetBlockchainInfoFeathercoin(&cliConf)
+					if bciFeathercoin.Result.Verificationprogress > 0.9999 {
+						bFTCBlockchainIsSynced = true
+					}
 				case be.PTPhore:
 					bciPhore, _ = be.GetBlockchainInfoPhore(&cliConf)
 				case be.PTTrezarcoin:
@@ -396,6 +442,10 @@ var dashCmd = &cobra.Command{
 					ssDivi, _ = be.GetStakingStatusDivi(&cliConf)
 					wiDivi, _ = be.GetWalletInfoDivi(&cliConf)
 				}
+			case be.PTFeathercoin:
+				if bFTCBlockchainIsSynced {
+					wiFeathercoin, _ = be.GetWalletInfoFeathercoin(&cliConf)
+				}
 			case be.PTPhore:
 				if bciPhore.Result.Verificationprogress > 0.999 {
 					mnssPhore, _ = be.GetMNSyncStatusPhore(&cliConf)
@@ -415,6 +465,12 @@ var dashCmd = &cobra.Command{
 			switch cliConf.ProjectType {
 			case be.PTDivi:
 				if mnssDivi.Result.IsBlockchainSynced {
+					pNetwork.BorderStyle.Fg = ui.ColorGreen
+				} else {
+					pNetwork.BorderStyle.Fg = ui.ColorYellow
+				}
+			case be.PTFeathercoin:
+				if bFTCBlockchainIsSynced {
 					pNetwork.BorderStyle.Fg = ui.ColorGreen
 				} else {
 					pNetwork.BorderStyle.Fg = ui.ColorYellow
@@ -455,6 +511,7 @@ var dashCmd = &cobra.Command{
 			var sBlocks string
 			var sDiff string
 			var sBlockchainSync string
+			var sHeaders string
 			var sMNSync string
 			switch cliConf.ProjectType {
 			case be.PTDivi:
@@ -462,6 +519,11 @@ var dashCmd = &cobra.Command{
 				sDiff = be.GetNetworkDifficultyTxtDivi(bciDivi.Result.Difficulty)
 				sBlockchainSync = be.GetBlockchainSyncTxtDivi(mnssDivi.Result.IsBlockchainSynced, &bciDivi)
 				sMNSync = be.GetMNSyncStatusTxtDivi(&mnssDivi)
+			case be.PTFeathercoin:
+				sHeaders = be.GetNetworkHeadersTxtFeathercoin(&bciFeathercoin)
+				sBlocks = be.GetNetworkBlocksTxtFeathercoin(&bciFeathercoin)
+				sDiff = be.GetNetworkDifficultyTxtFeathercoin(bciFeathercoin.Result.Difficulty, gDiffGood, gDiffWarning)
+				sBlockchainSync = be.GetBlockchainSyncTxtFeathercoin(bFTCBlockchainIsSynced, &bciFeathercoin)
 			case be.PTPhore:
 				sBlocks = be.GetNetworkBlocksTxtPhore(&bciPhore)
 				sDiff = be.GetNetworkDifficultyTxtPhore(bciPhore.Result.Difficulty)
@@ -475,10 +537,34 @@ var dashCmd = &cobra.Command{
 				err = errors.New("unable to determine ProjectType")
 			}
 
-			pNetwork.Text = "  " + sBlocks + "\n" +
-				"  " + sDiff + "\n" +
-				"  " + sBlockchainSync + "\n" +
-				"  " + sMNSync
+			switch cliConf.ProjectType {
+			case be.PTDivi:
+				pNetwork.Text = "  " + sBlocks + "\n" +
+					"  " + sDiff + "\n" +
+					"  " + sBlockchainSync + "\n" +
+					"  " + sMNSync
+			case be.PTFeathercoin:
+				pNetwork.Text = "  " + sHeaders + "\n" +
+					"  " + sBlocks + "\n" +
+					"  " + sDiff + "\n" +
+					"  " + sBlockchainSync + "\n" +
+					"  " + sMNSync
+			case be.PTPhore:
+				pNetwork.Text = "  " + sBlocks + "\n" +
+					"  " + sDiff + "\n" +
+					"  " + sBlockchainSync + "\n" +
+					"  " + sMNSync
+			case be.PTTrezarcoin:
+				pNetwork.Text = "  " + sBlocks + "\n" +
+					"  " + sDiff + "\n" +
+					"  " + sBlockchainSync + "\n" +
+					"  " + sMNSync
+			default:
+				pNetwork.Text = "  " + sBlocks + "\n" +
+					"  " + sDiff + "\n" +
+					"  " + sBlockchainSync + "\n" +
+					"  " + sMNSync
+			}
 
 			// Populate the Wallet panel
 
@@ -487,6 +573,20 @@ var dashCmd = &cobra.Command{
 			switch cliConf.ProjectType {
 			case be.PTDivi:
 				wet := be.GetWalletSecurityStateDivi(&wiDivi)
+				switch wet {
+				case be.WETLocked:
+					pWallet.BorderStyle.Fg = ui.ColorYellow
+				case be.WETUnlocked:
+					pWallet.BorderStyle.Fg = ui.ColorRed
+				case be.WETUnlockedForStaking:
+					pWallet.BorderStyle.Fg = ui.ColorGreen
+				case be.WETUnencrypted:
+					pWallet.BorderStyle.Fg = ui.ColorRed
+				default:
+					pWallet.BorderStyle.Fg = ui.ColorYellow
+				}
+			case be.PTFeathercoin:
+				wet := be.GetWalletSecurityStateFeathercoin(&wiFeathercoin)
 				switch wet {
 				case be.WETLocked:
 					pWallet.BorderStyle.Fg = ui.ColorYellow
@@ -543,6 +643,11 @@ var dashCmd = &cobra.Command{
 						"  " + getNextLotteryTxt(&cliConf) + "\n" +
 						"  " + "Lottery tickets:  0"
 				}
+			case be.PTFeathercoin:
+				if bciFeathercoin.Result.Verificationprogress > 0.9999 {
+					pWallet.Text = "" + getBalanceInFeathercoinTxt(&wiFeathercoin) + "\n" +
+						"  " + getWalletSecurityStatusTxtFeathercoin(&wiFeathercoin) + "\n"
+				}
 			case be.PTPhore:
 				if bciPhore.Result.Verificationprogress > 0.9999 {
 					pWallet.Text = "" + getBalanceInPhoreTxt(&wiPhore) + "\n" +
@@ -559,7 +664,24 @@ var dashCmd = &cobra.Command{
 				err = errors.New("unable to determine ProjectType")
 			}
 
-			// Update Ticker display
+			// Update stuff every 30 seconds...
+			if gTickerCounter == 0 || gTickerCounter > 30 {
+				if gTickerCounter > 30 {
+					gTickerCounter = 1
+				}
+				switch cliConf.ProjectType {
+				case be.PTDivi:
+				case be.PTFeathercoin:
+					gDiffGood, gDiffWarning, _ = getNetworkDifficultyInfo(be.PTFeathercoin)
+				case be.PTPhore:
+				case be.PTTrezarcoin:
+				default:
+					err = errors.New("unable to determine ProjectType")
+				}
+
+			}
+			gTickerCounter++
+
 			//if gGetTickerInfoCount == 0 || gGetTickerInfoCount > 30 {
 			//	if gGetTickerInfoCount > 30 {m
 			//		gGetTickerInfoCount = 1
@@ -763,6 +885,14 @@ func getBalanceInDiviTxt(wi *be.DiviWalletInfoRespStruct) string {
 	}
 }
 
+func getBalanceInFeathercoinTxt(wi *be.FeathercoinWalletInfoRespStruct) string {
+	tBalance := wi.Result.Balance
+	tBalanceStr := humanize.FormatFloat("#,###.####", tBalance)
+
+	// Work out balance
+	return "  Balance:          [" + tBalanceStr + "](fg:green)"
+}
+
 func getBalanceInPhoreTxt(wi *be.PhoreWalletInfoRespStruct) string {
 	tBalance := wi.Result.Balance
 	tBalanceStr := humanize.FormatFloat("#,###.####", tBalance)
@@ -813,6 +943,18 @@ func getWalletSecurityStatusTxtDivi(wi *be.DiviWalletInfoRespStruct) string {
 	}
 }
 
+func getWalletSecurityStatusTxtFeathercoin(wi *be.FeathercoinWalletInfoRespStruct) string {
+	if wi.Result.UnlockedUntil == 0 {
+		return "Security:         [Locked](fg:green)"
+	} else if wi.Result.UnlockedUntil == -1 {
+		return "Security:         [UNENCRYPTED](fg:red)"
+	} else if wi.Result.UnlockedUntil > 0 {
+		return "Security:         [Locked](fg:green)"
+	} else {
+		return "Security:         [checking...](fg:yellow)"
+	}
+}
+
 func getWalletSecurityStatusTxtPhore(wi *be.PhoreWalletInfoRespStruct) string {
 	if wi.Result.UnlockedUntil == 0 {
 		return "Security:         [Locked - Not Staking](fg:yellow)"
@@ -857,46 +999,37 @@ func getLotteryInfo(cliConf *be.ConfStruct) (be.LotteryDiviRespStruct, error) {
 	return respStruct, errors.New("unable to getLotteryInfo")
 }
 
-//func getPrivateKey(token string) (m.PrivateKeyStruct, error) {
-//	ws := m.WalletRequestStruct{}
-//	ws.WalletRequest = gwc.CWalletRequestGetPrivateKey
-//
-//	var respStruct m.PrivateKeyStruct
-//	waitingStr := "Attempt..."
-//	attempts := 5
-//	requestBody, err := json.Marshal(ws)
-//	if err != nil {
-//		return respStruct, err
-//	}
-//
-//	for i := 1; i < 5; i++ {
-//		fmt.Printf("\r"+waitingStr+" %d/"+strconv.Itoa(attempts), i)
-//
-//		//_, _ = http.Post("http://127.0.0.1:4000/server/", "application/json", bytes.NewBuffer(requestBody))
-//		resp, err := http.Post("http://127.0.0.1:4000/wallet/", "application/json", bytes.NewBuffer(requestBody))
-//		if err != nil {
-//			return respStruct, err
-//		}
-//		defer resp.Body.Close()
-//
-//		body, err := ioutil.ReadAll(resp.Body)
-//		if err != nil {
-//			return respStruct, err
-//		}
-//		err = json.Unmarshal(body, &respStruct)
-//		if err != nil {
-//			return respStruct, err
-//		}
-//
-//		if err == nil && respStruct.ResponseCode == gwc.NoServerError {
-//			return respStruct, nil
-//		} else {
-//			time.Sleep(1 * time.Second)
-//		}
-//	}
-//
-//	return respStruct, errors.New("unable to retrieve WalletStatus from server")
-//}
+func getNetworkDifficultyInfo(pt be.ProjectType) (float64, float64, error) {
+	var coin string
+	// https://chainz.cryptoid.info/ftc/api.dws?q=getdifficulty
+
+	switch pt {
+	case be.PTFeathercoin:
+		coin = "ftc"
+	default:
+		return 0, 0, errors.New("unable to determine project type")
+	}
+
+	resp, err := http.Get("https://chainz.cryptoid.info/" + coin + "/api.dws?q=getdifficulty")
+	if err != nil {
+		return 0, 0, err
+	}
+	defer resp.Body.Close()
+
+	body, err := ioutil.ReadAll(resp.Body)
+	if err != nil {
+		return 0, 0, err
+	}
+
+	var fGood float64
+	var fWarning float64
+	// Now calculate the correct levels...
+	if fDiff, err := strconv.ParseFloat(string(body), 32); err == nil {
+		fGood = fDiff * 0.75
+		fWarning = fDiff * 0.50
+	}
+	return fGood, fWarning, nil
+}
 
 func getPrivateKeyNew(cliConf *be.ConfStruct) (hdinfoRespStruct, error) {
 	attempts := 5

@@ -1042,11 +1042,13 @@ func PopulateDaemonConfFile() (rpcuser, rpcpassword string, err error) {
 				}
 			}
 		} else {
-			if bNeedToWriteStr {
-				rpcu = "feathercoinrpc"
-				if err := WriteTextToFile(chd+CFeathercoinConfFile, cRPCUserStr+"="+rpcu); err != nil {
-					log.Fatal(err)
-				}
+			// Set this to true, because the file has just been freshly created and we don't want to back it up
+			bFileHasBeenBU = true
+		}
+		if bNeedToWriteStr {
+			rpcu = "feathercoinrpc"
+			if err := WriteTextToFile(chd+CFeathercoinConfFile, cRPCUserStr+"="+rpcu); err != nil {
+				log.Fatal(err)
 			}
 		}
 
@@ -1072,15 +1074,14 @@ func PopulateDaemonConfFile() (rpcuser, rpcpassword string, err error) {
 					return "", "", fmt.Errorf("unable to search for text in file - %v", err)
 				}
 			}
-		} else {
-			if bNeedToWriteStr {
-				rpcpw = rand.String(20)
-				if err := WriteTextToFile(chd+CFeathercoinConfFile, cRPCPasswordStr+"="+rpcpw); err != nil {
-					log.Fatal(err)
-				}
-				if err := WriteTextToFile(chd+CFeathercoinConfFile, ""); err != nil {
-					log.Fatal(err)
-				}
+		}
+		if bNeedToWriteStr {
+			rpcpw = rand.String(20)
+			if err := WriteTextToFile(chd+CFeathercoinConfFile, cRPCPasswordStr+"="+rpcpw); err != nil {
+				log.Fatal(err)
+			}
+			if err := WriteTextToFile(chd+CFeathercoinConfFile, ""); err != nil {
+				log.Fatal(err)
 			}
 		}
 
@@ -1102,14 +1103,13 @@ func PopulateDaemonConfFile() (rpcuser, rpcpassword string, err error) {
 			} else {
 				bNeedToWriteStr = false
 			}
-		} else {
-			if bNeedToWriteStr {
-				if err := WriteTextToFile(chd+CFeathercoinConfFile, "daemon=1"); err != nil {
-					log.Fatal(err)
-				}
-				if err := WriteTextToFile(chd+CFeathercoinConfFile, ""); err != nil {
-					log.Fatal(err)
-				}
+		}
+		if bNeedToWriteStr {
+			if err := WriteTextToFile(chd+CFeathercoinConfFile, "daemon=1"); err != nil {
+				log.Fatal(err)
+			}
+			if err := WriteTextToFile(chd+CFeathercoinConfFile, ""); err != nil {
+				log.Fatal(err)
 			}
 		}
 
@@ -1131,11 +1131,10 @@ func PopulateDaemonConfFile() (rpcuser, rpcpassword string, err error) {
 			} else {
 				bNeedToWriteStr = false
 			}
-		} else {
-			if bNeedToWriteStr {
-				if err := WriteTextToFile(chd+CFeathercoinConfFile, "server=1"); err != nil {
-					log.Fatal(err)
-				}
+		}
+		if bNeedToWriteStr {
+			if err := WriteTextToFile(chd+CFeathercoinConfFile, "server=1"); err != nil {
+				log.Fatal(err)
 			}
 		}
 
@@ -1157,11 +1156,10 @@ func PopulateDaemonConfFile() (rpcuser, rpcpassword string, err error) {
 			} else {
 				bNeedToWriteStr = false
 			}
-		} else {
-			if bNeedToWriteStr {
-				if err := WriteTextToFile(chd+CFeathercoinConfFile, "rpcallowip=192.168.1.0/255.255.255.0"); err != nil {
-					log.Fatal(err)
-				}
+		}
+		if bNeedToWriteStr {
+			if err := WriteTextToFile(chd+CFeathercoinConfFile, "rpcallowip=192.168.1.0/255.255.255.0"); err != nil {
+				log.Fatal(err)
 			}
 		}
 
@@ -1183,11 +1181,10 @@ func PopulateDaemonConfFile() (rpcuser, rpcpassword string, err error) {
 			} else {
 				bNeedToWriteStr = false
 			}
-		} else {
-			if bNeedToWriteStr {
-				if err := WriteTextToFile(chd+CFeathercoinConfFile, "rpcport="+CFeathercoinRPCPort); err != nil {
-					log.Fatal(err)
-				}
+		}
+		if bNeedToWriteStr {
+			if err := WriteTextToFile(chd+CFeathercoinConfFile, "rpcport="+CFeathercoinRPCPort); err != nil {
+				log.Fatal(err)
 			}
 		}
 
@@ -2010,7 +2007,7 @@ func RunCoinDaemon(displayOutput bool) error {
 			}
 
 			cmdRun := exec.Command(abf + CFeathercoinDFile)
-			stdout, err := cmdRun.StdoutPipe()
+			//stdout, err := cmdRun.StdoutPipe()
 			if err != nil {
 				return err
 			}
@@ -2018,24 +2015,25 @@ func RunCoinDaemon(displayOutput bool) error {
 			if err != nil {
 				return err
 			}
+			fmt.Println("Feathercoin server starting")
 
-			buf := bufio.NewReader(stdout) // Notice that this is not in a loop
-			num := 1
-			for {
-				line, _, _ := buf.ReadLine()
-				if num > 3 {
-					os.Exit(0)
-				}
-				num++
-				if string(line) == "Feathercoin server starting" {
-					if displayOutput {
-						fmt.Println("Feathercoin server starting")
-					}
-					return nil
-				} else {
-					return errors.New("unable to start Feathercoin server: " + string(line))
-				}
-			}
+			//buf := bufio.NewReader(stdout) // Notice that this is not in a loop
+			//num := 1
+			//for {
+			//	line, _, _ := buf.ReadLine()
+			//	if num > 3 {
+			//		os.Exit(0)
+			//	}
+			//	num++
+			//	if string(line) == "Feathercoin Core starting" {
+			//		if displayOutput {
+			//			fmt.Println("Feathercoin server starting")
+			//		}
+			//		return nil
+			//	} else {
+			//		return errors.New("unable to start Feathercoin server: " + string(line))
+			//	}
+			//}
 		}
 	case PTPhore:
 		if runtime.GOOS == "windows" {

@@ -257,9 +257,9 @@ func GetNetworkDifficultyTxtPhore(difficulty float64) string {
 	} else {
 		s = humanize.Ftoa(difficulty)
 	}
-	if difficulty > 6000 {
+	if difficulty > 75000 {
 		return "Difficulty:  [" + s + "](fg:green)"
-	} else if difficulty > 3000 {
+	} else if difficulty > 30000 {
 		return "[Difficulty:  " + s + "](fg:yellow)"
 	} else {
 		return "[Difficulty:  " + s + "](fg:red)"

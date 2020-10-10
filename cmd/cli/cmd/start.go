@@ -65,6 +65,7 @@ var startCmd = &cobra.Command{
 				}
 				log.Println("addnodes added...")
 			}
+		case be.PTFeathercoin:
 		case be.PTPhore:
 		case be.PTTrezarcoin:
 		default:
