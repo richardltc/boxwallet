@@ -125,6 +125,16 @@ func doRequiredFiles() error {
 			filePath = abf + be.CDFDiviLinux
 			fileURL = be.CDownloadURLDivi + be.CDFDiviLinux
 		}
+	case be.PTFeathercoin:
+		if runtime.GOOS == "windows" {
+			filePath = abf + be.CDFFeathercoinWindows
+			fileURL = be.CDownloadURLFeathercoin + be.CDFFeathercoinWindows
+		} else if runtime.GOARCH == "arm" {
+			return fmt.Errorf("ARM is not supported for this build: %v ", err)
+		} else {
+			filePath = abf + be.CDFFeathercoinLinux
+			fileURL = be.CDownloadURLFeathercoin + be.CDFFeathercoinLinux
+		}
 	case be.PTPhore:
 		if runtime.GOOS == "windows" {
 			filePath = abf + be.CDFPhoreWindows
@@ -168,6 +178,7 @@ func doRequiredFiles() error {
 	log.Print("Downloading required files...")
 	if err := be.DownloadFile(filePath, fileURL); err != nil {
 		return fmt.Errorf("unable to download file: %v - %v", filePath+fileURL, err)
+		//https://github.com/FeatherCoin/Feathercoin/releases/download/v0.19.1/feathercoin-0.19.1-linux64.tar.gz
 	}
 	defer os.Remove(filePath)
 
@@ -198,6 +209,26 @@ func doRequiredFiles() error {
 				return fmt.Errorf("unable to extractTarGz file: %v - %v", r, err)
 			}
 			defer os.RemoveAll("./" + be.CDiviExtractedDir)
+		}
+	case be.PTFeathercoin:
+		if runtime.GOOS == "windows" {
+			_, err = be.UnZip(filePath, "tmp")
+			if err != nil {
+				return fmt.Errorf("unable to unzip file: %v - %v", filePath, err)
+			}
+			defer os.RemoveAll("tmp")
+		} else if runtime.GOARCH == "arm" {
+			err = be.ExtractTarGz(r)
+			if err != nil {
+				return fmt.Errorf("unable to extractTarGz file: %v - %v", r, err)
+			}
+			defer os.RemoveAll("./" + be.CFeathercoinExtractedDirLinux)
+		} else {
+			err = be.ExtractTarGz(r)
+			if err != nil {
+				return fmt.Errorf("unable to extractTarGz file: %v - %v", r, err)
+			}
+			defer os.RemoveAll("./" + be.CFeathercoinExtractedDirLinux)
 		}
 	case be.PTPhore:
 		if runtime.GOOS == "windows" {
@@ -294,6 +325,29 @@ func doRequiredFiles() error {
 		default:
 			err = errors.New("unable to determine runtime.GOOS")
 		}
+	case be.PTFeathercoin:
+		switch runtime.GOOS {
+		case "windows":
+			srcPath = "./tmp/" + be.CFeathercoinExtractedDirLinux
+			srcFileCLI = be.CFeathercoinCliFileWin
+			srcFileD = be.CFeathercoinDFileWin
+			srcFileTX = be.CFeathercoinTxFileWin
+			//srcFileBWCLI = be.CAppFilenameWin
+		case "arm":
+			srcPath = "./" + be.CFeathercoinExtractedDirLinux
+			srcFileCLI = be.CFeathercoinCliFile
+			srcFileD = be.CFeathercoinDFile
+			srcFileTX = be.CFeathercoinTxFile
+			//srcFileBWCLI = be.CAppFilename
+		case "linux":
+			srcPath = "./" + be.CFeathercoinExtractedDirLinux
+			srcFileCLI = be.CFeathercoinCliFile
+			srcFileD = be.CFeathercoinDFile
+			srcFileTX = be.CFeathercoinTxFile
+			//srcFileBWCLI = be.CAppFilename
+		default:
+			err = errors.New("unable to determine runtime.GOOS")
+		}
 	case be.PTPhore:
 		switch runtime.GOOS {
 		case "windows":
@@ -363,18 +417,20 @@ func doRequiredFiles() error {
 	}
 
 	// coin-cli
-	err = be.FileCopy(srcPath+srcFileCLI, abf+srcFileCLI, false)
-	if err != nil {
-		return fmt.Errorf("unable to copyFile from: %v to %v - %v", srcPath+srcFileCLI, abf+srcFileCLI, err)
+	if !be.FileExists(abf + srcFileCLI) {
+		if err := be.FileCopy(srcPath+srcFileCLI, abf+srcFileCLI, false); err != nil {
+			return fmt.Errorf("unable to copyFile from: %v to %v - %v", srcPath+srcFileCLI, abf+srcFileCLI, err)
+		}
 	}
-	err = os.Chmod(abf+srcFileCLI, 0777)
-	if err != nil {
+	if err := os.Chmod(abf+srcFileCLI, 0777); err != nil {
 		return fmt.Errorf("unable to chmod file: %v - %v", abf+srcFileCLI, err)
 	}
+
 	// coind
-	err = be.FileCopy(srcPath+srcFileD, abf+srcFileD, false)
-	if err != nil {
-		return fmt.Errorf("unable to copyFile: %v - %v", srcPath+srcFileD, err)
+	if !be.FileExists(abf + srcFileD) {
+		if err := be.FileCopy(srcPath+srcFileD, abf+srcFileD, false); err != nil {
+			return fmt.Errorf("unable to copyFile: %v - %v", srcPath+srcFileD, err)
+		}
 	}
 	err = os.Chmod(abf+srcFileD, 0777)
 	if err != nil {
@@ -382,43 +438,15 @@ func doRequiredFiles() error {
 	}
 
 	// cointx
-	err = be.FileCopy(srcPath+srcFileTX, abf+srcFileTX, false)
-	if err != nil {
-		return fmt.Errorf("unable to copyFile: %v - %v", srcPath+srcFileTX, err)
+	if !be.FileExists(abf + srcFileTX) {
+		if err := be.FileCopy(srcPath+srcFileTX, abf+srcFileTX, false); err != nil {
+			return fmt.Errorf("unable to copyFile: %v - %v", srcPath+srcFileTX, err)
+		}
 	}
 	err = os.Chmod(abf+srcFileTX, 0777)
 	if err != nil {
 		return fmt.Errorf("unable to chmod file: %v - %v", abf+srcFileTX, err)
 	}
-
-	// Copy the BoxWallet binary itself
-	//ex, err := os.Executable()
-	//if err != nil {
-	//	return fmt.Errorf("error getting exe - %v", err)
-	//}
-	//
-	//// We're only going to attempt to copy it, because it might already be in place...
-	//_ = be.FileCopy(ex, abf+srcFileBWCLI, false)
-	////err = be.FileCopy(ex, abf+srcFileBWCLI, false)
-	////if err != nil {
-	////	return fmt.Errorf("unable to copyFile: %v - %v", abf+srcFileBWCLI, err)
-	////}
-	//err = os.Chmod(abf+srcFileBWCLI, 0777)
-	//if err != nil {
-	//	return fmt.Errorf("unable to chmod file: %v - %v", abf+srcFileBWCLI, err)
-	//}
-
-	// Attempt to copy the README.md file
-	//_ = be.FileCopy("./"+srcREADMEFile, abf+srcREADMEFile, false)
-	////if err != nil {
-	////	return fmt.Errorf("unable to copyFile from: %v to %v - %v", "./"+srcREADMEFile, abf+srcREADMEFile, err)
-	////}
-	//
-	//// Attempt to copy the CLI config file
-	//_ = be.FileCopy("./"+srcFileBWConfCLI, abf+srcFileBWConfCLI, false)
-	////if err != nil {
-	////	return fmt.Errorf("unable to copyFile: %v - %v", abf+srcFileBWConfCLI, err)
-	////}
 
 	return nil
 }
