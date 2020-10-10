@@ -516,7 +516,7 @@ var dashCmd = &cobra.Command{
 			switch cliConf.ProjectType {
 			case be.PTDivi:
 				sBlocks = be.GetNetworkBlocksTxtDivi(&bciDivi)
-				sDiff = be.GetNetworkDifficultyTxtDivi(bciDivi.Result.Difficulty)
+				sDiff = be.GetNetworkDifficultyTxtDivi(bciDivi.Result.Difficulty, gDiffGood, gDiffWarning)
 				sBlockchainSync = be.GetBlockchainSyncTxtDivi(mnssDivi.Result.IsBlockchainSynced, &bciDivi)
 				sMNSync = be.GetMNSyncStatusTxtDivi(&mnssDivi)
 			case be.PTFeathercoin:
@@ -1004,6 +1004,8 @@ func getNetworkDifficultyInfo(pt be.ProjectType) (float64, float64, error) {
 	// https://chainz.cryptoid.info/ftc/api.dws?q=getdifficulty
 
 	switch pt {
+	case be.PTDivi:
+		coin = "divi"
 	case be.PTFeathercoin:
 		coin = "ftc"
 	default:
