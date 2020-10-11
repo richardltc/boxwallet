@@ -254,16 +254,16 @@ func GetBlockchainSyncTxtTrezarcoin(synced bool, bci *TrezarcoinBlockchainInfoRe
 	}
 }
 
-func GetNetworkDifficultyTxtTrezarcoin(difficulty float64) string {
+func GetNetworkDifficultyTxtTrezarcoin(difficulty, good, warn float64) string {
 	var s string
 	if difficulty > 1000 {
 		s = humanize.FormatFloat("#.#", difficulty/1000) + "k"
 	} else {
 		s = humanize.Ftoa(difficulty)
 	}
-	if difficulty > 6000 {
+	if difficulty >= good {
 		return "Difficulty:  [" + s + "](fg:green)"
-	} else if difficulty > 3000 {
+	} else if difficulty >= warn {
 		return "[Difficulty:  " + s + "](fg:yellow)"
 	} else {
 		return "[Difficulty:  " + s + "](fg:red)"

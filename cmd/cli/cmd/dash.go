@@ -531,7 +531,7 @@ var dashCmd = &cobra.Command{
 				sMNSync = be.GetMNSyncStatusTxtPhore(&mnssPhore)
 			case be.PTTrezarcoin:
 				sBlocks = be.GetNetworkBlocksTxtTrezarcoin(&bciTrezarcoin)
-				sDiff = be.GetNetworkDifficultyTxtTrezarcoin(bciTrezarcoin.Result.Difficulty)
+				sDiff = be.GetNetworkDifficultyTxtTrezarcoin(bciTrezarcoin.Result.Difficulty, gDiffGood, gDiffWarning)
 				sBlockchainSync = be.GetBlockchainSyncTxtTrezarcoin(bTZCBlockchainIsSynced, &bciTrezarcoin)
 			default:
 				err = errors.New("unable to determine ProjectType")
