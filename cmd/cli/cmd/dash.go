@@ -526,7 +526,7 @@ var dashCmd = &cobra.Command{
 				sBlockchainSync = be.GetBlockchainSyncTxtFeathercoin(bFTCBlockchainIsSynced, &bciFeathercoin)
 			case be.PTPhore:
 				sBlocks = be.GetNetworkBlocksTxtPhore(&bciPhore)
-				sDiff = be.GetNetworkDifficultyTxtPhore(bciPhore.Result.Difficulty)
+				sDiff = be.GetNetworkDifficultyTxtPhore(bciPhore.Result.Difficulty, gDiffGood, gDiffWarning)
 				sBlockchainSync = be.GetBlockchainSyncTxtPhore(mnssPhore.Result.IsBlockchainSynced, &bciPhore)
 				sMNSync = be.GetMNSyncStatusTxtPhore(&mnssPhore)
 			case be.PTTrezarcoin:
