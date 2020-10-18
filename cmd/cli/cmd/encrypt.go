@@ -38,6 +38,11 @@ var encryptCmd = &cobra.Command{
 			//log.Fatal("Unable to GetCLIConfStruct " + err.Error())
 		}
 
+		sCoinDaemonName, err := be.GetCoinDaemonFilename(be.APPTCLI)
+		if err != nil {
+			log.Fatal("Unable to GetCoinDaemonFilename " + err.Error())
+		}
+
 		// Check wallet encryption status
 		wi, err := be.GetWalletInfoDivi(&cliConf)
 		if err != nil {
@@ -54,7 +59,10 @@ var encryptCmd = &cobra.Command{
 			log.Fatalf("failed to encrypt wallet %s\n", err)
 		}
 		fmt.Println(r.Result)
-		// TODO Start the coind daemon again?
+		// Start the coin daemon server if required...
+		if err := be.RunCoinDaemon(true); err != nil {
+			log.Fatalf("failed to run "+sCoinDaemonName+": %v", err)
+		}
 
 		// sAppCLIName, err := gwc.GetAppCLIName() // e.g. GoDivi CLI
 		// if err != nil {

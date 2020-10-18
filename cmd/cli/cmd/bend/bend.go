@@ -24,7 +24,7 @@ import (
 
 const (
 	CAppName        string = "BoxWallet"
-	CBWAppVersion   string = "0.33.0"
+	CBWAppVersion   string = "0.33.1"
 	CAppFilename    string = "boxwallet"
 	CAppFilenameWin string = "boxwallet.exe"
 	CAppLogfile     string = "boxwallet.log"
@@ -1691,7 +1691,7 @@ func AllProjectBinaryFilesExists() (bool, error) {
 	return true, nil
 }
 
-func updateAUDPriceInfo() error {
+func UpdateAUDPriceInfo() error {
 	resp, err := http.Get("https://api.exchangeratesapi.io/latest?base=USD&symbols=AUD")
 	if err != nil {
 		return err
@@ -1709,7 +1709,7 @@ func updateAUDPriceInfo() error {
 	return errors.New("unable to updateAUDPriceInfo")
 }
 
-func updateGBPPriceInfo() error {
+func UpdateGBPPriceInfo() error {
 	resp, err := http.Get("https://api.exchangeratesapi.io/latest?base=USD&symbols=GBP")
 	if err != nil {
 		return err
