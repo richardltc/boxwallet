@@ -38,11 +38,27 @@ var displayaddressCmd = &cobra.Command{
 			log.Fatal("Unable to GetCLIConfStruct " + err.Error())
 		}
 
-		r, err := be.GetWalletAddress(&cliConf)
-		if err != nil {
-			log.Fatalf("failed to displayaddress %s\n", err)
+		var sAddress string
+		switch cliConf.ProjectType {
+		case be.PTDivi:
+		case be.PTFeathercoin:
+			addresses, _ := be.ListReceivedByAddressFeathercoin(&cliConf, false)
+			if len(addresses.Result) > 0 {
+				sAddress = addresses.Result[0].Address
+			} else {
+				r, err := be.GetNewAddressFeathercoin(&cliConf)
+				if err != nil {
+					log.Fatalf("Unable to GetNewAddressFeathercoin")
+				}
+				sAddress = r.Result
+			}
+		case be.PTPhore:
+		case be.PTTrezarcoin:
+		default:
+			log.Fatalf("Unable to determine project type")
 		}
-		fmt.Println("Your address is: \n\n" + r.Result[0] + "\n")
+
+		fmt.Println("Your address is: \n\n" + sAddress + "\n")
 
 		// sAppCLIName, err := gwc.GetAppCLIName() // e.g. GoDivi CLI
 		// if err != nil {
