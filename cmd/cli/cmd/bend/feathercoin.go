@@ -81,6 +81,17 @@ type FeathercoinBlockchainInfoRespStruct struct {
 	ID    string      `json:"id"`
 }
 
+type FeathercoinListReceivedByAddressRespStruct struct {
+	Result []struct {
+		Address       string        `json:"address"`
+		Amount        float64       `json:"amount"`
+		Confirmations int           `json:"confirmations"`
+		Label         string        `json:"label"`
+		Txids         []interface{} `json:"txids"`
+	} `json:"result"`
+	Error interface{} `json:"error"`
+	ID    string      `json:"id"`
+}
 type FeathercoinNetworkInfoRespStruct struct {
 	Result struct {
 		Version            int      `json:"version"`
@@ -187,6 +198,10 @@ func GetNetworkInfoFeathercoin(cliConf *ConfStruct) (FeathercoinNetworkInfoRespS
 func GetNetworkBlocksTxtFeathercoin(bci *FeathercoinBlockchainInfoRespStruct) string {
 	blocksStr := humanize.Comma(int64(bci.Result.Blocks))
 
+	if blocksStr == "0" {
+		return "Blocks:      [waiting...](fg:white)"
+	}
+
 	return "Blocks:      [" + blocksStr + "](fg:green)"
 	//if bci.Result.Blocks > 0 {
 	//	return "Blocks:      [" + blocksStr + "](fg:green)"
@@ -233,12 +248,18 @@ func GetNetworkDifficultyTxtFeathercoin(difficulty, good, warn float64) string {
 	} else {
 		s = humanize.Ftoa(difficulty)
 	}
+
+	// If Diff is less than 1, then we're not even calculating it properly yet...
+	if difficulty < 1 {
+		return "[Difficulty:  waiting...](fg:white)"
+	}
+
 	if difficulty >= good {
 		return "Difficulty:  [" + s + "](fg:green)"
 	} else if difficulty >= warn {
-		return "[Difficulty:  " + s + "](fg:yellow)"
+		return "Difficulty:  [" + s + "](fg:yellow)"
 	} else {
-		return "[Difficulty:  " + s + "](fg:red)"
+		return "Difficulty:  [" + s + "](fg:red)"
 	}
 }
 
@@ -281,4 +302,39 @@ func GetWalletSecurityStateFeathercoin(wi *FeathercoinWalletInfoRespStruct) WETy
 	} else {
 		return WETUnknown
 	}
+}
+
+func ListReceivedByAddressFeathercoin(cliConf *ConfStruct, includeZero bool) (FeathercoinListReceivedByAddressRespStruct, error) {
+	var respStruct FeathercoinListReceivedByAddressRespStruct
+
+	var s string
+	if includeZero {
+		s = "{\"jsonrpc\":\"1.0\",\"id\":\"curltext\",\"method\":\"listreceivedbyaddress\",\"params\":[1, true]}"
+	} else {
+		s = "{\"jsonrpc\":\"1.0\",\"id\":\"curltext\",\"method\":\"listreceivedbyaddress\",\"params\":[1, false]}"
+	}
+	body := strings.NewReader(s)
+	req, err := http.NewRequest("POST", "http://"+cliConf.ServerIP+":"+cliConf.Port, body)
+	if err != nil {
+		return respStruct, err
+	}
+	req.SetBasicAuth(cliConf.RPCuser, cliConf.RPCpassword)
+	req.Header.Set("Content-Type", "text/plain;")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return respStruct, err
+	}
+	defer resp.Body.Close()
+	bodyResp, err := ioutil.ReadAll(resp.Body)
+	if err != nil {
+		return respStruct, err
+	}
+
+	err = json.Unmarshal(bodyResp, &respStruct)
+	if err != nil {
+		return respStruct, err
+	}
+
+	return respStruct, nil
 }

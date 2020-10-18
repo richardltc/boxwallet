@@ -181,7 +181,22 @@ var dashCmd = &cobra.Command{
 		}
 		spinner.Stop()
 
-		if !cliConf.UserConfirmedSeedRecovery {
+		// The first thing we need to check is to see if the wallet currently has amy addresses
+		bWalletExists := false
+		switch cliConf.ProjectType {
+		case be.PTDivi:
+		case be.PTFeathercoin:
+			addresses, _ := be.ListReceivedByAddressFeathercoin(&cliConf, false)
+			if len(addresses.Result) > 0 {
+				bWalletExists = true
+			}
+		case be.PTPhore:
+		case be.PTTrezarcoin:
+		default:
+			log.Fatalf("Unable to determine project type")
+		}
+
+		if !cliConf.UserConfirmedSeedRecovery && bWalletExists {
 			// d = Display seed, f= Save seed to file, c = confirm backed up, m = move on
 			resp := getWalletSeedRecoveryResp()
 			switch resp {
@@ -302,8 +317,8 @@ var dashCmd = &cobra.Command{
 			pAbout.Text = "  [" + be.CAppName + "    v" + be.CBWAppVersion + "](fg:white)\n" +
 				"  [" + sCoinName + " Core    v" + be.CDiviCoreVersion + "](fg:white)\n\n"
 		case be.PTFeathercoin:
-			pAbout.Text = "  [" + be.CAppName + "           v" + be.CBWAppVersion + "](fg:white)\n" +
-				"  [" + sCoinName + " Core    v" + be.CFeathercoinCoreVersion + "](fg:white)\n\n"
+			pAbout.Text = "  [" + be.CAppName + "          v" + be.CBWAppVersion + "](fg:white)\n" +
+				"  [" + sCoinName + " Core   v" + be.CFeathercoinCoreVersion + "](fg:white)\n\n"
 		case be.PTPhore:
 			pAbout.Text = "  [" + be.CAppName + "    v" + be.CBWAppVersion + "](fg:white)\n" +
 				"  [" + sCoinName + " Core   v" + be.CPhoreCoreVersion + "](fg:white)\n\n"
@@ -671,6 +686,15 @@ var dashCmd = &cobra.Command{
 				}
 				switch cliConf.ProjectType {
 				case be.PTDivi:
+					_ = be.UpdateTickerInfoDivi()
+					// Now check to see which currency the user is interested in...
+					switch cliConf.Currency {
+					case "AUD":
+						_ = be.UpdateAUDPriceInfo()
+					case "GBP":
+						_ = be.UpdateGBPPriceInfo()
+					}
+					_ = be.UpdateGBPPriceInfo()
 				case be.PTFeathercoin:
 					gDiffGood, gDiffWarning, _ = getNetworkDifficultyInfo(be.PTFeathercoin)
 				case be.PTPhore:
