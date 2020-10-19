@@ -89,6 +89,24 @@ type diviGetInfoRespStruct struct {
 	ID    string      `json:"id"`
 }
 
+type DiviGetNewAddressStruct struct {
+	Result string      `json:"result"`
+	Error  interface{} `json:"error"`
+	ID     string      `json:"id"`
+}
+type DiviListReceivedByAddressRespStruct struct {
+	Result []struct {
+		Address         string   `json:"address"`
+		Account         string   `json:"account"`
+		Amount          float64  `json:"amount"`
+		Confirmations   int      `json:"confirmations"`
+		Bcconfirmations int      `json:"bcconfirmations"`
+		Txids           []string `json:"txids"`
+	} `json:"result"`
+	Error interface{} `json:"error"`
+	ID    string      `json:"id"`
+}
+
 type LotteryDiviRespStruct struct {
 	Lottery struct {
 		AverageBlockTime float64 `json:"averageBlockTime"`
@@ -385,6 +403,35 @@ func GetNetworkDifficultyTxtDivi(difficulty, good, warn float64) string {
 	}
 }
 
+func GetNewAddressDivi(cliConf *ConfStruct) (DiviGetNewAddressStruct, error) {
+	var respStruct DiviGetNewAddressStruct
+
+	body := strings.NewReader("{\"jsonrpc\":\"1.0\",\"id\":\"curltext\",\"method\":\"getnewaddress\",\"params\":[]}")
+	req, err := http.NewRequest("POST", "http://"+cliConf.ServerIP+":"+cliConf.Port, body)
+	if err != nil {
+		return respStruct, err
+	}
+	req.SetBasicAuth(cliConf.RPCuser, cliConf.RPCpassword)
+	req.Header.Set("Content-Type", "text/plain;")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return respStruct, err
+	}
+	defer resp.Body.Close()
+	bodyResp, err := ioutil.ReadAll(resp.Body)
+	if err != nil {
+		return respStruct, err
+	}
+
+	err = json.Unmarshal(bodyResp, &respStruct)
+	if err != nil {
+		return respStruct, err
+	}
+
+	return respStruct, nil
+}
+
 //func GetNetworkDifficultyTxtDivi(difficulty float64) string {
 //	var s string
 //	if difficulty > 1000 {
@@ -467,6 +514,41 @@ func GetWalletSecurityStateDivi(wi *DiviWalletInfoRespStruct) WEType {
 	} else {
 		return WETUnknown
 	}
+}
+
+func ListReceivedByAddressDivi(cliConf *ConfStruct, includeZero bool) (DiviListReceivedByAddressRespStruct, error) {
+	var respStruct DiviListReceivedByAddressRespStruct
+
+	var s string
+	if includeZero {
+		s = "{\"jsonrpc\":\"1.0\",\"id\":\"curltext\",\"method\":\"listreceivedbyaddress\",\"params\":[1, true]}"
+	} else {
+		s = "{\"jsonrpc\":\"1.0\",\"id\":\"curltext\",\"method\":\"listreceivedbyaddress\",\"params\":[1, false]}"
+	}
+	body := strings.NewReader(s)
+	req, err := http.NewRequest("POST", "http://"+cliConf.ServerIP+":"+cliConf.Port, body)
+	if err != nil {
+		return respStruct, err
+	}
+	req.SetBasicAuth(cliConf.RPCuser, cliConf.RPCpassword)
+	req.Header.Set("Content-Type", "text/plain;")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return respStruct, err
+	}
+	defer resp.Body.Close()
+	bodyResp, err := ioutil.ReadAll(resp.Body)
+	if err != nil {
+		return respStruct, err
+	}
+
+	err = json.Unmarshal(bodyResp, &respStruct)
+	if err != nil {
+		return respStruct, err
+	}
+
+	return respStruct, nil
 }
 
 func UpdateTickerInfoDivi() error {
