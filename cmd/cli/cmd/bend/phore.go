@@ -90,6 +90,18 @@ type phoreInfoRespStruct struct {
 	ID    string      `json:"id"`
 }
 
+type PhoreListReceivedByAddressRespStruct struct {
+	Result []struct {
+		Address         string        `json:"address"`
+		Account         string        `json:"account"`
+		Amount          float64       `json:"amount"`
+		Confirmations   int           `json:"confirmations"`
+		Bcconfirmations int           `json:"bcconfirmations"`
+		Txids           []interface{} `json:"txids"`
+	} `json:"result"`
+	Error interface{} `json:"error"`
+	ID    string      `json:"id"`
+}
 type PhoreStakingStatusRespStruct struct {
 	Result struct {
 		Validtime       bool `json:"validtime"`
@@ -365,4 +377,39 @@ func GetWalletSecurityStatePhore(wi *PhoreWalletInfoRespStruct) WEType {
 	} else {
 		return WETUnknown
 	}
+}
+
+func ListReceivedByAddressPhore(cliConf *ConfStruct, includeZero bool) (PhoreListReceivedByAddressRespStruct, error) {
+	var respStruct PhoreListReceivedByAddressRespStruct
+
+	var s string
+	if includeZero {
+		s = "{\"jsonrpc\":\"1.0\",\"id\":\"curltext\",\"method\":\"listreceivedbyaddress\",\"params\":[1, true]}"
+	} else {
+		s = "{\"jsonrpc\":\"1.0\",\"id\":\"curltext\",\"method\":\"listreceivedbyaddress\",\"params\":[1, false]}"
+	}
+	body := strings.NewReader(s)
+	req, err := http.NewRequest("POST", "http://"+cliConf.ServerIP+":"+cliConf.Port, body)
+	if err != nil {
+		return respStruct, err
+	}
+	req.SetBasicAuth(cliConf.RPCuser, cliConf.RPCpassword)
+	req.Header.Set("Content-Type", "text/plain;")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return respStruct, err
+	}
+	defer resp.Body.Close()
+	bodyResp, err := ioutil.ReadAll(resp.Body)
+	if err != nil {
+		return respStruct, err
+	}
+
+	err = json.Unmarshal(bodyResp, &respStruct)
+	if err != nil {
+		return respStruct, err
+	}
+
+	return respStruct, nil
 }

@@ -101,85 +101,20 @@ var dashCmd = &cobra.Command{
 			log.Fatal("Unable to GetAppFileCLIName " + err.Error())
 		}
 
-		// Lets make sure that we have a running daemon
-		cfg := yacspin.Config{
-			Frequency:       250 * time.Millisecond,
-			CharSet:         yacspin.CharSets[43],
-			Suffix:          "",
-			SuffixAutoColon: true,
-			Message:         " waiting for wallet to load...",
-			StopCharacter:   "",
-			StopColors:      []string{"fgGreen"},
-		}
-
-		spinner, err := yacspin.New(cfg)
+		wRunning, err := confirmWalletReady()
 		if err != nil {
-			log.Fatalf("Unable to initialise spinner - %v", err)
+			log.Fatal("Unable to determine if wallet is ready: " + err.Error())
 		}
-
-		spinner.Start()
 
 		coind, err := be.GetCoinDaemonFilename(be.APPTCLI)
 		if err != nil {
 			log.Fatalf("Unable to GetCoinDaemonFilename - %v", err)
 		}
-		switch cliConf.ProjectType {
-		case be.PTDivi:
-			gi, err := be.GetInfoDivi(&cliConf)
-			if err != nil {
-
-				if err := spinner.Stop(); err != nil {
-				}
-				fmt.Println("")
-				log.Fatal("Unable to communicate with the " + coind + " server. Please make sure the " + coind + " server is running, by running:\n\n" +
-					"./" + sAppFileCLIName + " start\n\n")
-			}
-			if gi.Result.Version == "" {
-				log.Fatalf("Unable to call getinfo %s\n", err)
-			}
-		case be.PTFeathercoin:
-			gi, err := be.GetNetworkInfoFeathercoin(&cliConf)
-			if err != nil {
-
-				if err := spinner.Stop(); err != nil {
-				}
-				fmt.Println("")
-				log.Fatal("Unable to communicate with the " + coind + " server. Please make sure the " + coind + " server is running, by running:\n\n" +
-					"./" + sAppFileCLIName + " start\n\n")
-			}
-			if gi.Result.Version == 0 {
-				log.Fatalf("Unable to call getnetworkinfo %s\n", err)
-			}
-		case be.PTPhore:
-			gi, err := be.GetInfoPhore(&cliConf)
-			if err != nil {
-
-				if err := spinner.Stop(); err != nil {
-				}
-				fmt.Println("")
-				log.Fatal("Unable to communicate with the " + coind + " server. Please make sure the " + coind + " server is running, by running:\n\n" +
-					"./" + sAppFileCLIName + " start\n\n")
-			}
-			if gi.Result.Version == 0 {
-				log.Fatalf("Unable to call getinfo %s\n", err)
-			}
-		case be.PTTrezarcoin:
-			gi, err := be.GetInfoTrezarcoin(&cliConf)
-			if err != nil {
-
-				if err := spinner.Stop(); err != nil {
-				}
-				fmt.Println("")
-				log.Fatal("Unable to communicate with the " + coind + " server. Please make sure the " + coind + " server is running, by running:\n\n" +
-					"./" + sAppFileCLIName + " start\n\n")
-			}
-			if gi.Result.Version == 0 {
-				log.Fatalf("Unable to call getinfo %s\n", err)
-			}
-		default:
-			log.Fatalf("Unable to determine project type")
+		if !wRunning {
+			fmt.Println("")
+			log.Fatal("Unable to communicate with the " + coind + " server. Please make sure the " + coind + " server is running, by running:\n\n" +
+				"./" + sAppFileCLIName + " start\n\n")
 		}
-		spinner.Stop()
 
 		// The first thing we need to check is to see if the wallet currently has amy addresses
 		bWalletExists := false
@@ -826,6 +761,83 @@ func checkHealth(bci *be.DiviBlockchainInfoRespStruct) error {
 	//}
 
 	return nil
+}
+
+func confirmWalletReady() (bool, error) {
+	cliConf, err := be.GetConfigStruct("", true)
+	if err != nil {
+		return false, fmt.Errorf("unable to determine coin type. Please run "+be.CAppFilename+" coin: %v", err.Error())
+	}
+
+	// Lets make sure that we have a running daemon
+	cfg := yacspin.Config{
+		Frequency:       250 * time.Millisecond,
+		CharSet:         yacspin.CharSets[43],
+		Suffix:          "",
+		SuffixAutoColon: true,
+		Message:         " waiting for wallet to load...",
+		StopCharacter:   "",
+		StopColors:      []string{"fgGreen"},
+	}
+
+	spinner, err := yacspin.New(cfg)
+	if err != nil {
+		return false, fmt.Errorf("unable to initialise spinner - %v", err)
+	}
+
+	spinner.Start()
+
+	coind, err := be.GetCoinDaemonFilename(be.APPTCLI)
+	if err != nil {
+		log.Fatalf("Unable to GetCoinDaemonFilename - %v", err)
+	}
+	switch cliConf.ProjectType {
+	case be.PTDivi:
+		gi, err := be.GetInfoDivi(&cliConf)
+		if err != nil {
+			if err := spinner.Stop(); err != nil {
+			}
+			return false, fmt.Errorf("Unable to communicate with the " + coind + " server.")
+		}
+		if gi.Result.Version == "" {
+			return false, fmt.Errorf("unable to call getinfo %s\n", err)
+		}
+	case be.PTFeathercoin:
+		gi, err := be.GetNetworkInfoFeathercoin(&cliConf)
+		if err != nil {
+			if err := spinner.Stop(); err != nil {
+			}
+			return false, fmt.Errorf("Unable to communicate with the " + coind + " server.")
+		}
+		if gi.Result.Version == 0 {
+			return false, fmt.Errorf("unable to call getinfo %s\n", err)
+		}
+	case be.PTPhore:
+		gi, err := be.GetInfoPhore(&cliConf)
+		if err != nil {
+			if err := spinner.Stop(); err != nil {
+			}
+			return false, fmt.Errorf("Unable to communicate with the " + coind + " server.")
+		}
+		if gi.Result.Version == 0 {
+			return false, fmt.Errorf("unable to call getinfo %s\n", err)
+		}
+	case be.PTTrezarcoin:
+		gi, err := be.GetInfoTrezarcoin(&cliConf)
+		if err != nil {
+			if err := spinner.Stop(); err != nil {
+			}
+			return false, fmt.Errorf("Unable to communicate with the " + coind + " server.")
+		}
+		if gi.Result.Version == 0 {
+			return false, fmt.Errorf("unable to call getinfo %s\n", err)
+		}
+	default:
+		return false, fmt.Errorf("unable to determine project type")
+	}
+	spinner.Stop()
+
+	return true, nil
 }
 
 func encryptWallet(cliConf *be.ConfStruct, pw string) (be.GenericRespStruct, error) {

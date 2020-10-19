@@ -112,6 +112,18 @@ type trezarcoinInfoRespStruct struct {
 	ID    string      `json:"id"`
 }
 
+type TrezarcoinListReceivedByAddressRespStruct struct {
+	Result []struct {
+		Address       string   `json:"address"`
+		Account       string   `json:"account"`
+		Amount        float64  `json:"amount"`
+		Confirmations int      `json:"confirmations"`
+		Label         string   `json:"label"`
+		Txids         []string `json:"txids"`
+	} `json:"result"`
+	Error interface{} `json:"error"`
+	ID    string      `json:"id"`
+}
 type TrezarcoinStakingInfoRespStruct struct {
 	Result struct {
 		Enabled          bool    `json:"enabled"`
@@ -342,4 +354,39 @@ func GetWalletSecurityStateTrezarcoin(wi *TrezarcoinWalletInfoRespStruct) WEType
 	} else {
 		return WETUnknown
 	}
+}
+
+func ListReceivedByAddressTrezarcoin(cliConf *ConfStruct, includeZero bool) (TrezarcoinListReceivedByAddressRespStruct, error) {
+	var respStruct TrezarcoinListReceivedByAddressRespStruct
+
+	var s string
+	if includeZero {
+		s = "{\"jsonrpc\":\"1.0\",\"id\":\"curltext\",\"method\":\"listreceivedbyaddress\",\"params\":[1, true]}"
+	} else {
+		s = "{\"jsonrpc\":\"1.0\",\"id\":\"curltext\",\"method\":\"listreceivedbyaddress\",\"params\":[1, false]}"
+	}
+	body := strings.NewReader(s)
+	req, err := http.NewRequest("POST", "http://"+cliConf.ServerIP+":"+cliConf.Port, body)
+	if err != nil {
+		return respStruct, err
+	}
+	req.SetBasicAuth(cliConf.RPCuser, cliConf.RPCpassword)
+	req.Header.Set("Content-Type", "text/plain;")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return respStruct, err
+	}
+	defer resp.Body.Close()
+	bodyResp, err := ioutil.ReadAll(resp.Body)
+	if err != nil {
+		return respStruct, err
+	}
+
+	err = json.Unmarshal(bodyResp, &respStruct)
+	if err != nil {
+		return respStruct, err
+	}
+
+	return respStruct, nil
 }
