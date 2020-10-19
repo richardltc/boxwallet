@@ -38,10 +38,30 @@ var displayaddressCmd = &cobra.Command{
 			log.Fatal("Unable to GetCLIConfStruct " + err.Error())
 		}
 
+		sAppFileCLIName, err := be.GetAppFileName()
+		if err != nil {
+			log.Fatal("Unable to GetAppFileCLIName " + err.Error())
+		}
+
+		wRunning, err := confirmWalletReady()
+		if err != nil {
+			log.Fatal("Unable to determine if wallet is ready: " + err.Error())
+		}
+
+		coind, err := be.GetCoinDaemonFilename(be.APPTCLI)
+		if err != nil {
+			log.Fatalf("Unable to GetCoinDaemonFilename - %v", err)
+		}
+		if !wRunning {
+			fmt.Println("")
+			log.Fatal("Unable to communicate with the " + coind + " server. Please make sure the " + coind + " server is running, by running:\n\n" +
+				"./" + sAppFileCLIName + " start\n\n")
+		}
+
 		var sAddress string
 		switch cliConf.ProjectType {
 		case be.PTDivi:
-			addresses, _ := be.ListReceivedByAddressDivi(&cliConf, false)
+			addresses, _ := be.ListReceivedByAddressDivi(&cliConf, true)
 			if len(addresses.Result) > 0 {
 				sAddress = addresses.Result[0].Address
 			} else {
@@ -52,7 +72,7 @@ var displayaddressCmd = &cobra.Command{
 				sAddress = r.Result
 			}
 		case be.PTFeathercoin:
-			addresses, _ := be.ListReceivedByAddressFeathercoin(&cliConf, false)
+			addresses, _ := be.ListReceivedByAddressFeathercoin(&cliConf, true)
 			if len(addresses.Result) > 0 {
 				sAddress = addresses.Result[0].Address
 			} else {
@@ -63,7 +83,15 @@ var displayaddressCmd = &cobra.Command{
 				sAddress = r.Result
 			}
 		case be.PTPhore:
+			addresses, _ := be.ListReceivedByAddressPhore(&cliConf, true)
+			if len(addresses.Result) > 0 {
+				sAddress = addresses.Result[0].Address
+			}
 		case be.PTTrezarcoin:
+			addresses, _ := be.ListReceivedByAddressTrezarcoin(&cliConf, true)
+			if len(addresses.Result) > 0 {
+				sAddress = addresses.Result[0].Address
+			}
 		default:
 			log.Fatalf("Unable to determine project type")
 		}
