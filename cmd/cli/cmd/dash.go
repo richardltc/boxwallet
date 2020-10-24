@@ -23,7 +23,6 @@ import (
 	"errors"
 	"fmt"
 
-	//gwc "github.com/richardltc/gwcommon"
 	"io/ioutil"
 	"log"
 	"net/http"
@@ -33,7 +32,6 @@ import (
 	"time"
 
 	"github.com/dustin/go-humanize"
-	//gwc "github.com/richardltc/gwcommon"
 	"github.com/spf13/cobra"
 	"github.com/theckman/yacspin"
 
@@ -61,8 +59,9 @@ var gLastBCSyncPosStr string = ""
 var gDiffGood float64
 var gDiffWarning float64
 
-// General counter
+// General counters
 var gTickerCounter int = 0
+var gCheckWalletHealthCounter int = 0
 
 //var lastRMNAssets int = 0
 var NextLotteryStored string = ""
@@ -120,59 +119,52 @@ var dashCmd = &cobra.Command{
 		bWalletExists := false
 		switch cliConf.ProjectType {
 		case be.PTDivi:
+			addresses, _ := be.ListReceivedByAddressDivi(&cliConf, false)
+			if len(addresses.Result) > 0 {
+				bWalletExists = true
+			}
 		case be.PTFeathercoin:
 			addresses, _ := be.ListReceivedByAddressFeathercoin(&cliConf, false)
 			if len(addresses.Result) > 0 {
 				bWalletExists = true
 			}
 		case be.PTPhore:
+			addresses, _ := be.ListReceivedByAddressPhore(&cliConf, false)
+			if len(addresses.Result) > 0 {
+				bWalletExists = true
+			}
 		case be.PTTrezarcoin:
+			addresses, _ := be.ListReceivedByAddressTrezarcoin(&cliConf, false)
+			if len(addresses.Result) > 0 {
+				bWalletExists = true
+			}
 		default:
 			log.Fatalf("Unable to determine project type")
 		}
 
-		if !cliConf.UserConfirmedSeedRecovery && bWalletExists {
-			// d = Display seed, f= Save seed to file, c = confirm backed up, m = move on
-			resp := getWalletSeedRecoveryResp()
-			switch resp {
-			case "d":
-				pk, err := getPrivateKeyNew(&cliConf)
+		pw := ""
+		if !cliConf.UserConfirmedWalletBU && bWalletExists {
+			// We need to work out what coin we are, to see what options we have.
+			switch cliConf.ProjectType {
+			case be.PTDivi:
+				wet, err := be.GetWalletEncryptionStatus()
 				if err != nil {
-					log.Fatalf("Unable to getPrivateKey(): failed with %s\n", err)
+					log.Fatalf("Unable to determine wallet encryption status")
 				}
-				fmt.Printf("\n\nYour private seed recovery details are as follows:\n\nHdseed: " +
-					pk.Result.Hdseed + "\n\nMnemonic phrase: " +
-					pk.Result.Mnemonic + "\n\nPlease make sure you safely secure this information, and then re-run " + be.CAppFilename + " dash again.\n\n")
-
-				os.Exit(0)
-			case "f":
-				// TODO ask user to run the command line to save seed to file
-				// err = gwc.DoPrivKeyFile()
-				// if err != nil {
-				// 	log.Fatalf("gdc.DoPrivKeyFile() failed with %s\n", err)
-				// }
-
-				// os.Exit(0)
-			case "c":
-				// Users confirmed that they have backed up
-				allOk := getWalletSeedRecoveryConfirmationResp()
-
-				if allOk {
-					// dir, err := gwc.GetRunningDir()
-					// if err != nil {
-					// 	log.Fatalf("Unable to GetRunningDir - %v", err)
-					// }
-
-					cliConf.UserConfirmedSeedRecovery = true
-					err := be.SetConfigStruct("", cliConf)
-					if err != nil {
-						log.Fatalf("Unable to SetCLIConfStruct(): failed with %s\n", err)
-						// gdConfig.UserConfirmedSeedRecovery = true
-						// gwc.SetCLIConfigStruct(dir, gdConfig)
-					}
+				if wet == be.WETLocked {
+					pw = be.GetWalletEncryptionPassword()
 				}
+				bConfirmedBU, err := HandleWalletBUDivi(pw)
+				cliConf.UserConfirmedWalletBU = bConfirmedBU
+				if err := be.SetConfigStruct("", cliConf); err != nil {
+					log.Fatalf("Unable to SetCLIConfStruct(): failed with %s\n", err)
+				}
+			case be.PTFeathercoin:
+			case be.PTPhore:
+			case be.PTTrezarcoin:
+			default:
+				log.Fatalf("Unable to determine project type")
 			}
-
 		}
 
 		// Check wallet encryption status
@@ -441,22 +433,6 @@ var dashCmd = &cobra.Command{
 				err = errors.New("unable to determine ProjectType")
 			}
 
-			// If the blockchain or masternodes aren't synced or the network difficulty is < 5000...
-			//if !mnssDivi.Result.IsBlockchainSynced ||
-			//	mnssDivi.Result.RequestedMasternodeAssets < 999 ||
-			//	bciDivi.Result.Difficulty < 5000 {
-			//	// Now check to see if it's worse than that, and that the nw difficulty is less than 3000
-			//	if bciDivi.Result.Difficulty < 3000 {
-			//		pNetwork.BorderStyle.Fg = ui.ColorRed
-			//	} else {
-			//		// nw difficulty is between 3k-5k
-			//		pNetwork.BorderStyle.Fg = ui.ColorYellow
-			//	}
-			//} else {
-			//	// We're all good...
-			//	pNetwork.BorderStyle.Fg = ui.ColorGreen
-			//}
-
 			// Populate the Network panel
 			var sBlocks string
 			var sDiff string
@@ -614,7 +590,7 @@ var dashCmd = &cobra.Command{
 				err = errors.New("unable to determine ProjectType")
 			}
 
-			// Update stuff every 30 seconds...
+			// Update ticker info every 30 seconds...
 			if gTickerCounter == 0 || gTickerCounter > 30 {
 				if gTickerCounter > 30 {
 					gTickerCounter = 1
@@ -630,10 +606,13 @@ var dashCmd = &cobra.Command{
 						_ = be.UpdateGBPPriceInfo()
 					}
 					_ = be.UpdateGBPPriceInfo()
+					gDiffGood, gDiffWarning, _ = getNetworkDifficultyInfo(be.PTDivi)
 				case be.PTFeathercoin:
 					gDiffGood, gDiffWarning, _ = getNetworkDifficultyInfo(be.PTFeathercoin)
 				case be.PTPhore:
+					// todo do for Phore
 				case be.PTTrezarcoin:
+					// todo do for Trezarcoin
 				default:
 					err = errors.New("unable to determine ProjectType")
 				}
@@ -641,26 +620,6 @@ var dashCmd = &cobra.Command{
 			}
 			gTickerCounter++
 
-			//if gGetTickerInfoCount == 0 || gGetTickerInfoCount > 30 {
-			//	if gGetTickerInfoCount > 30 {m
-			//		gGetTickerInfoCount = 1
-			//	}
-			//	_ = be.UpdateTickerInfoDivi()
-			//	// Now check to see which currency the user is interested in...
-			//	switch cliConf.Currency {
-			//	case "AUD":
-			//		_ = updateAUDPriceInfo()
-			//	case "GBP":
-			//		_ = updateGBPPriceInfo()
-			//	}
-			//	_ = updateGBPPriceInfo()
-			//	//pTicker.Text = "  " + getTickerPricePerCoinTxt() + "\n" +
-			//	//	"  " + getTickerBTCValueTxt() + "\n" +
-			//	//	"  " + getTicker24HrChangeTxt() + "\n" +
-			//	//	"  " + getTickerWeekChangeTxt() + "\n" +
-			//
-			//}
-			//gGetTickerInfoCount++
 		}
 
 		draw := func(count int) {
