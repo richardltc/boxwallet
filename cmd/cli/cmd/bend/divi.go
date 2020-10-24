@@ -16,7 +16,7 @@ import (
 const (
 	cDiviAddNodeURL string = "https://api.diviproject.org/v1/addnode"
 
-	CCoinNameDivi string = "Divi"
+	CCoinNameDivi string = "DIVI"
 
 	// CDiviAppVersion - The app version of Divi
 	//CDiviAppVersion string = "1.1.2"

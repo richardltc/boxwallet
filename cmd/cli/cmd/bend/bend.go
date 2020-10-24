@@ -123,6 +123,7 @@ const (
 	PTPIVX
 	PTTrezarcoin
 	PTFeathercoin
+	PTVertcoin
 )
 
 // OSType - either ostArm, ostLinux or ostWindows
@@ -492,6 +493,8 @@ func GetCoinDaemonFilename(at APPType) (string, error) {
 		return CPIVXDFile, nil
 	case PTTrezarcoin:
 		return CTrezarcoinDFile, nil
+	case PTVertcoin:
+		return CVertcoinDFile, nil
 	default:
 		err := errors.New("unable to determine ProjectType")
 		return "", err
@@ -526,6 +529,8 @@ func GetCoinName(at APPType) (string, error) {
 		return CCoinNamePIVX, nil
 	case PTTrezarcoin:
 		return CCoinNameTrezarcoin, nil
+	case PTVertcoin:
+		return CCoinNameVertcoin, nil
 	default:
 		err := errors.New("unable to determine ProjectType")
 		return "", err
@@ -585,6 +590,8 @@ func GetCoinHomeFolder(at APPType) (string, error) {
 			s = AddTrailingSlash(hd) + "appdata\\roaming\\" + AddTrailingSlash(cPIVXHomeDirWin)
 		case PTTrezarcoin:
 			s = AddTrailingSlash(hd) + "appdata\\roaming\\" + AddTrailingSlash(CTrezarcoinHomeDirWin)
+		case PTVertcoin:
+			s = AddTrailingSlash(hd) + "appdata\\roaming\\" + AddTrailingSlash(CVertcoinHomeDirWin)
 		default:
 			err = errors.New("unable to determine ProjectType")
 
@@ -601,6 +608,8 @@ func GetCoinHomeFolder(at APPType) (string, error) {
 			s = AddTrailingSlash(hd) + AddTrailingSlash(cPIVXHomeDir)
 		case PTTrezarcoin:
 			s = AddTrailingSlash(hd) + AddTrailingSlash(CTrezarcoinHomeDir)
+		case PTVertcoin:
+			s = AddTrailingSlash(hd) + AddTrailingSlash(CVertcoinHomeDir)
 		default:
 			err = errors.New("unable to determine ProjectType")
 
@@ -867,6 +876,12 @@ func IsCoinDaemonRunning() (bool, int, error) {
 			pid, _, err = findProcess(CTrezarcoinDFileWin)
 		} else {
 			pid, _, err = findProcess(CTrezarcoinDFile)
+		}
+	case PTVertcoin:
+		if runtime.GOOS == "windows" {
+			pid, _, err = findProcess(CVertcoinDFileWin)
+		} else {
+			pid, _, err = findProcess(CVertcoinDFile)
 		}
 	default:
 		err = errors.New("unable to determine ProjectType")
@@ -1553,6 +1568,179 @@ func PopulateDaemonConfFile() (rpcuser, rpcpassword string, err error) {
 			}
 		}
 		return rpcu, rpcpw, nil
+	case PTVertcoin:
+		fmt.Println("Populating " + CVertcoinConfFile + " for initial setup...")
+
+		// Add rpcuser info if required, or retrieve the existing one
+		bNeedToWriteStr := true
+		if FileExists(chd + CVertcoinConfFile) {
+			bStrFound, err := StringExistsInFile(cRPCUserStr+"=", chd+CVertcoinConfFile)
+			if err != nil {
+				return "", "", fmt.Errorf("unable to search for text in file - %v", err)
+			}
+			if !bStrFound {
+				// String not found
+				if !bFileHasBeenBU {
+					bFileHasBeenBU = true
+					if err := BackupFile(chd, CVertcoinConfFile, false); err != nil {
+						return "", "", fmt.Errorf("unable to backup file - %v", err)
+					}
+				}
+			} else {
+				bNeedToWriteStr = false
+				rpcu, err = GetStringAfterStrFromFile(cRPCUserStr+"=", chd+CVertcoinConfFile)
+				if err != nil {
+					return "", "", fmt.Errorf("unable to search for text in file - %v", err)
+				}
+			}
+		} else {
+			// Set this to true, because the file has just been freshly created and we don't want to back it up
+			bFileHasBeenBU = true
+		}
+		if bNeedToWriteStr {
+			rpcu = "vertcoinrpc"
+			if err := WriteTextToFile(chd+CVertcoinConfFile, cRPCUserStr+"="+rpcu); err != nil {
+				log.Fatal(err)
+			}
+		}
+
+		// Add rpcpassword info if required, or retrieve the existing one
+		bNeedToWriteStr = true
+		if FileExists(chd + CVertcoinConfFile) {
+			bStrFound, err := StringExistsInFile(cRPCPasswordStr+"=", chd+CVertcoinConfFile)
+			if err != nil {
+				return "", "", fmt.Errorf("unable to search for text in file - %v", err)
+			}
+			if !bStrFound {
+				// String not found
+				if !bFileHasBeenBU {
+					bFileHasBeenBU = true
+					if err := BackupFile(chd, CVertcoinConfFile, false); err != nil {
+						return "", "", fmt.Errorf("unable to backup file - %v", err)
+					}
+				}
+			} else {
+				bNeedToWriteStr = false
+				rpcpw, err = GetStringAfterStrFromFile(cRPCPasswordStr+"=", chd+CVertcoinConfFile)
+				if err != nil {
+					return "", "", fmt.Errorf("unable to search for text in file - %v", err)
+				}
+			}
+		}
+		if bNeedToWriteStr {
+			rpcpw = rand.String(20)
+			if err := WriteTextToFile(chd+CVertcoinConfFile, cRPCPasswordStr+"="+rpcpw); err != nil {
+				log.Fatal(err)
+			}
+			if err := WriteTextToFile(chd+CVertcoinConfFile, ""); err != nil {
+				log.Fatal(err)
+			}
+		}
+
+		// Add daemon=1 info if required
+		bNeedToWriteStr = true
+		if FileExists(chd + CVertcoinConfFile) {
+			bStrFound, err := StringExistsInFile("daemon=1", chd+CVertcoinConfFile)
+			if err != nil {
+				return "", "", fmt.Errorf("unable to search for text in file - %v", err)
+			}
+			if !bStrFound {
+				// String not found
+				if !bFileHasBeenBU {
+					bFileHasBeenBU = true
+					if err := BackupFile(chd, CVertcoinConfFile, false); err != nil {
+						return "", "", fmt.Errorf("unable to backup file - %v", err)
+					}
+				}
+			} else {
+				bNeedToWriteStr = false
+			}
+		}
+		if bNeedToWriteStr {
+			if err := WriteTextToFile(chd+CVertcoinConfFile, "daemon=1"); err != nil {
+				log.Fatal(err)
+			}
+			if err := WriteTextToFile(chd+CVertcoinConfFile, ""); err != nil {
+				log.Fatal(err)
+			}
+		}
+
+		// Add server=1 info if required
+		bNeedToWriteStr = true
+		if FileExists(chd + CVertcoinConfFile) {
+			bStrFound, err := StringExistsInFile("server=1", chd+CVertcoinConfFile)
+			if err != nil {
+				return "", "", fmt.Errorf("unable to search for text in file - %v", err)
+			}
+			if !bStrFound {
+				// String not found
+				if !bFileHasBeenBU {
+					bFileHasBeenBU = true
+					if err := BackupFile(chd, CVertcoinConfFile, false); err != nil {
+						return "", "", fmt.Errorf("unable to backup file - %v", err)
+					}
+				}
+			} else {
+				bNeedToWriteStr = false
+			}
+		}
+		if bNeedToWriteStr {
+			if err := WriteTextToFile(chd+CVertcoinConfFile, "server=1"); err != nil {
+				log.Fatal(err)
+			}
+		}
+
+		// Add rpcallowip= info if required
+		bNeedToWriteStr = true
+		if FileExists(chd + CVertcoinConfFile) {
+			bStrFound, err := StringExistsInFile("rpcallowip=", chd+CVertcoinConfFile)
+			if err != nil {
+				return "", "", fmt.Errorf("unable to search for text in file - %v", err)
+			}
+			if !bStrFound {
+				// String not found
+				if !bFileHasBeenBU {
+					bFileHasBeenBU = true
+					if err := BackupFile(chd, CVertcoinConfFile, false); err != nil {
+						return "", "", fmt.Errorf("unable to backup file - %v", err)
+					}
+				}
+			} else {
+				bNeedToWriteStr = false
+			}
+		}
+		if bNeedToWriteStr {
+			if err := WriteTextToFile(chd+CVertcoinConfFile, "rpcallowip=192.168.1.0/255.255.255.0"); err != nil {
+				log.Fatal(err)
+			}
+		}
+
+		// Add rpcport= info if required
+		bNeedToWriteStr = true
+		if FileExists(chd + CVertcoinConfFile) {
+			bStrFound, err := StringExistsInFile("rpcport=", chd+CVertcoinConfFile)
+			if err != nil {
+				return "", "", fmt.Errorf("unable to search for text in file - %v", err)
+			}
+			if !bStrFound {
+				// String not found
+				if !bFileHasBeenBU {
+					bFileHasBeenBU = true
+					if err := BackupFile(chd, CVertcoinConfFile, false); err != nil {
+						return "", "", fmt.Errorf("unable to backup file - %v", err)
+					}
+				}
+			} else {
+				bNeedToWriteStr = false
+			}
+		}
+		if bNeedToWriteStr {
+			if err := WriteTextToFile(chd+CVertcoinConfFile, "rpcport="+CVertcoinRPCPort); err != nil {
+				log.Fatal(err)
+			}
+		}
+
+		return rpcu, rpcpw, nil
 	default:
 		err = errors.New("unable to determine ProjectType")
 	}
@@ -1686,6 +1874,28 @@ func AllProjectBinaryFilesExists() (bool, error) {
 				return false, nil
 			}
 		}
+	case PTVertcoin:
+		if runtime.GOOS == "windows" {
+			if !FileExists(abf + CVertcoinCliFileWin) {
+				return false, nil
+			}
+			if !FileExists(abf + CVertcoinDFileWin) {
+				return false, nil
+			}
+			if !FileExists(abf + CVertcoinTxFileWin) {
+				return false, nil
+			}
+		} else {
+			if !FileExists(abf + CVertcoinCliFile) {
+				return false, nil
+			}
+			if !FileExists(abf + CVertcoinDFile) {
+				return false, nil
+			}
+			if !FileExists(abf + CVertcoinTxFile) {
+				return false, nil
+			}
+		}
 	default:
 		err = errors.New("unable to determine ProjectType")
 	}
@@ -1727,93 +1937,6 @@ func UpdateGBPPriceInfo() error {
 		return err
 	}
 	return errors.New("unable to updateGBPPriceInfo")
-}
-
-// WalletHardFix - Deletes the local blockchain and forces it to sync again, a re-index should be performed first
-func WalletHardFix() error {
-	// Stop divid if it's running
-	if err := StopCoinDaemon(false); err != nil {
-		return fmt.Errorf("unable to StopDiviD: %v", err)
-	}
-
-	chf, err := GetCoinHomeFolder(APPTCLI)
-	if err != nil {
-		return fmt.Errorf("unable to get coin home folder: %v", err)
-	}
-
-	gwconf, err := GetConfigStruct("", false)
-	if err != nil {
-		return err
-	}
-	switch gwconf.ProjectType {
-	case PTDivi:
-		if runtime.GOOS == "windows" {
-			// TODO Complete for Windows
-		} else {
-			//rm -r ~/.divi/blocks
-			if err := os.RemoveAll(chf + "blocks"); err != nil {
-				return fmt.Errorf("unable to remove the blocks folder: %v", err)
-			}
-			//rm -r ~/.divi/chainstate
-			if err := os.RemoveAll(chf + "chainstate"); err != nil {
-				return fmt.Errorf("unable to remove the chainstate folder: %v", err)
-			}
-			//rm -r ~/.divi/database
-			if err := os.RemoveAll(chf + "database"); err != nil {
-				return fmt.Errorf("unable to remove the database folder: %v", err)
-			}
-			//rm -r ~/.divi/sporks
-			if err := os.RemoveAll(chf + "sporks"); err != nil {
-				return fmt.Errorf("unable to remove the sporks folder: %v", err)
-			}
-			//rm -r ~/.divi/zerocoin
-			if err := os.RemoveAll(chf + "zerocoin"); err != nil {
-				return fmt.Errorf("unable to remove the zerocoin folder: %v", err)
-			}
-
-			//rm -r ~/.divi/db.log
-			if err := os.Remove(chf + "db.log"); err != nil {
-				return fmt.Errorf("unable to remove the db.log file: %v", err)
-			}
-			//rm -r ~/.divi/debug.log
-			if err := os.Remove(chf + "debug.log"); err != nil {
-				return fmt.Errorf("unable to remove the debug.log file: %v", err)
-			}
-			//rm -r ~/.divi/fee_estimates.dat
-			if err := os.Remove(chf + "fee_estimates.dat"); err != nil {
-				return fmt.Errorf("unable to remove the fee_estimates.dat file: %v", err)
-			}
-			//rm -r ~/.divi/peers.dat
-			if err := os.Remove(chf + "peers.dat"); err != nil {
-				return fmt.Errorf("unable to remove the peers.dat file: %v", err)
-			}
-			//rm -r ~/.divi/mncache.dat
-			if err := os.Remove(chf + "mncache.dat"); err != nil {
-				return fmt.Errorf("unable to remove the mncache.dat file: %v", err)
-			}
-			//rm -r ~/.divi/mnpayments.dat
-			if err := os.Remove(chf + "mnpayments.dat"); err != nil {
-				return fmt.Errorf("unable to remove the mnpayments.dat file: %v", err)
-			}
-			//rm -r ~/.divi/netfulfilled.dat
-			if err := os.Remove(chf + "netfulfilled.dat"); err != nil {
-				return fmt.Errorf("unable to remove the netfulfilled.dat file: %v", err)
-			}
-
-			// Now start the divid daemon again...
-			os.Exit(0)
-			//if err := RunCoinDaemon(false); err != nil {
-			//	log.Fatalf("failed to run divid: %v", err)
-			//}
-		}
-	case PTPhore:
-	case PTPIVX:
-	case PTTrezarcoin:
-	default:
-		err = errors.New("unable to determine ProjectType")
-	}
-
-	return nil
 }
 
 func WalletFix(wft WalletFixType) error {
@@ -1890,6 +2013,23 @@ func WalletFix(wft WalletFixType) error {
 			cRun := exec.Command(abf+coind, "-reindex")
 			if err := cRun.Run(); err != nil {
 				return fmt.Errorf("unable to run trezardcoind -reindex: %v", err)
+			}
+		}
+	case PTVertcoin:
+		if runtime.GOOS == "windows" {
+			// TODO Complete for Windows
+		} else {
+			var arg1 string
+			switch wft {
+			case WFTReIndex:
+				arg1 = "-reindex"
+			case WFTReSync:
+				arg1 = "-resync"
+			}
+
+			cRun := exec.Command(abf+coind, arg1)
+			if err := cRun.Run(); err != nil {
+				return fmt.Errorf("unable to run divid -reindex: %v", err)
 			}
 		}
 	default:
@@ -2117,6 +2257,30 @@ func RunCoinDaemon(displayOutput bool) error {
 				}
 			}
 		}
+	case PTVertcoin:
+		if runtime.GOOS == "windows" {
+			//_ = exec.Command(GetAppsBinFolder() + cDiviDFileWin)
+			fp := abf + CVertcoinDFileWin
+			cmd := exec.Command("cmd.exe", "/C", "start", "/b", fp)
+			if err := cmd.Run(); err != nil {
+				return err
+			}
+		} else {
+			if displayOutput {
+				fmt.Println("Attempting to run the vertcoind daemon...")
+			}
+
+			cmdRun := exec.Command(abf + CVertcoinDFile)
+			//stdout, err := cmdRun.StdoutPipe()
+			if err != nil {
+				return err
+			}
+			err = cmdRun.Start()
+			if err != nil {
+				return err
+			}
+			fmt.Println("Vertcoin server starting")
+		}
 	default:
 		err = errors.New("unable to determine ProjectType")
 	}
@@ -2248,6 +2412,26 @@ func StopCoinDaemon(displayOutput bool) error {
 				}
 				time.Sleep(3 * time.Second)
 
+			}
+		}
+	case PTVertcoin:
+		if runtime.GOOS == "windows" {
+			// TODO Complete for Windows
+		} else {
+			for i := 0; i < 50; i++ {
+				cRun := exec.Command(abf+CVertcoinCliFile, "stop")
+				_ = cRun.Run()
+
+				sr, _, _ := IsCoinDaemonRunning()
+				if !sr {
+					// Lets wait a little longer before returning
+					time.Sleep(3 * time.Second)
+					return nil
+				}
+				if displayOutput {
+					fmt.Printf("\rWaiting for vertcoind server to stop %d/"+strconv.Itoa(50), i+1)
+				}
+				time.Sleep(3 * time.Second)
 			}
 		}
 	default:
