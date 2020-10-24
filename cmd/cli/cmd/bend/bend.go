@@ -24,7 +24,7 @@ import (
 
 const (
 	CAppName        string = "BoxWallet"
-	CBWAppVersion   string = "0.33.1"
+	CBWAppVersion   string = "0.33.2"
 	CAppFilename    string = "boxwallet"
 	CAppFilenameWin string = "boxwallet.exe"
 	CAppLogfile     string = "boxwallet.log"
@@ -88,6 +88,10 @@ const (
 	cProg6 string = "/"
 	cProg7 string = "-"
 	cProg8 string = "\\"
+
+	BUWWalletDat     string = "Backup wallet.dat"
+	BUWDisplayHDSeed string = "Display recovery seed"
+	BUWStoreSeed     string = "Store seed"
 )
 
 // APPType - either APPTCLI, APPTCLICompiled, APPTInstaller, APPTUpdater, APPTServer
@@ -684,32 +688,6 @@ func GetWalletAddress(cliConf *ConfStruct) (GetAddressesByAccountRespStruct, err
 	return respStruct, nil
 }
 
-// func getWalletAddress(attempts int) (string, error) {
-// 	var err error
-// 	var s string = "waiting for wallet."
-// 	dbf, _ := gwc.GetAppsBinFolder(gwc.APPTServer)
-// 	app := dbf + gwc.CDiviCliFile
-// 	arg1 := cCommandDisplayWalletAddress
-// 	arg2 := ""
-
-// 	for i := 0; i < attempts; i++ {
-
-// 		cmd := exec.Command(app, arg1, arg2)
-// 		out, err := cmd.CombinedOutput()
-
-// 		if err == nil {
-// 			return string(out), err
-// 		}
-
-// 		fmt.Printf("\r"+s+" %d/"+strconv.Itoa(attempts), i+1)
-
-// 		time.Sleep(3 * time.Second)
-// 	}
-
-// 	return "", err
-
-// }
-
 // func GetWalletInfo(dispProgress bool) (walletInfoStruct, walletResponseType, error) {
 // 	wi := walletInfoStruct{}
 
@@ -810,6 +788,30 @@ Encrypt it now?:`,
 	}
 	survey.AskOne(prompt, &ans)
 	return ans
+}
+
+func GetWalletEncryptionStatus() (WEType, error) {
+	conf, err := GetConfigStruct("", false)
+	if err != nil {
+		return WETUnknown, err
+	}
+	pt := conf.ProjectType
+	switch pt {
+	case PTDivi:
+		wi, err := GetWalletInfoDivi(&conf)
+		if err != nil {
+			return WETUnknown, fmt.Errorf("unable to GetWalletInfoDivi", err)
+		}
+		wet := GetWalletSecurityStateDivi(&wi)
+		return wet, nil
+	case PTFeathercoin:
+	case PTPhore:
+	case PTPIVX:
+	case PTTrezarcoin:
+	default:
+		err = errors.New("unable to determine ProjectType")
+	}
+	return WETUnknown, nil
 }
 
 func getWalletResponse(sOut string) walletResponseType {

@@ -14,16 +14,16 @@ const (
 )
 
 type ConfStruct struct {
-	BinFolder                 string      // The folder that contains the coin binary files
-	Currency                  string      // USD, GBP
-	FirstTimeRun              bool        // Is this the first time the server has run? If so, we need to store the BinFolder
-	ProjectType               ProjectType // The project type
-	Port                      string      // The port that the server should run on
-	RefreshTimer              int         // Refresh interval
-	RPCuser                   string      // The rpcuser
-	RPCpassword               string      // The rpc password
-	ServerIP                  string      // The IP address of the coin daemon server
-	UserConfirmedSeedRecovery bool        // Whether or not the user has said they've stored their recovery seed has been stored
+	BinFolder             string      // The folder that contains the coin binary files
+	Currency              string      // USD, GBP
+	FirstTimeRun          bool        // Is this the first time the server has run? If so, we need to store the BinFolder
+	ProjectType           ProjectType // The project type
+	Port                  string      // The port that the server should run on
+	RefreshTimer          int         // Refresh interval
+	RPCuser               string      // The rpcuser
+	RPCpassword           string      // The rpc password
+	ServerIP              string      // The IP address of the coin daemon server
+	UserConfirmedWalletBU bool        // Whether or not the user has said they've stored their recovery seed has been stored
 }
 
 func addTrailingSlash(filePath string) string {
@@ -117,7 +117,7 @@ func newConfStruct() ConfStruct {
 	cnf.RPCpassword = ""
 	cnf.ServerIP = "127.0.0.1"
 	cnf.Port = ""
-	cnf.UserConfirmedSeedRecovery = false
+	cnf.UserConfirmedWalletBU = false
 
 	return cnf
 }
