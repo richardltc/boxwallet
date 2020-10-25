@@ -39,7 +39,7 @@ var coinCmd = &cobra.Command{
 		coin := ""
 		prompt := &survey.Select{
 			Message: "Please choose your preferred coin:",
-			Options: []string{be.CCoinNameDivi, be.CCoinNameFeathercoin, be.CCoinNamePhore, be.CCoinNameTrezarcoin},
+			Options: []string{be.CCoinNameDivi, be.CCoinNameFeathercoin, be.CCoinNamePhore, be.CCoinNameTrezarcoin, be.CCoinNameVertcoin},
 		}
 		survey.AskOne(prompt, &coin)
 		cliConf := be.ConfStruct{}
@@ -61,6 +61,9 @@ var coinCmd = &cobra.Command{
 		case be.CCoinNameTrezarcoin:
 			cliConf.ProjectType = be.PTTrezarcoin
 			cliConf.Port = be.CTrezarcoinRPCPort
+		case be.CCoinNameVertcoin:
+			cliConf.ProjectType = be.PTVertcoin
+			cliConf.Port = be.CVertcoinRPCPort
 		default:
 			log.Fatal("Unable to determine coin choice")
 		}
@@ -168,6 +171,16 @@ func doRequiredFiles() error {
 			filePath = abf + be.CDFTrezarcoinLinux
 			fileURL = be.CDownloadURLTC + be.CDFTrezarcoinLinux
 		}
+	case be.PTVertcoin:
+		if runtime.GOOS == "windows" {
+			filePath = abf + be.CDFVertcoinWindows
+			fileURL = be.CDownloadURLVertcoin + be.CDFVertcoinWindows
+		} else if runtime.GOARCH == "arm" {
+			return fmt.Errorf("ARM is not supported for this build: %v ", err)
+		} else {
+			filePath = abf + be.CDFVertcoinLinux
+			fileURL = be.CDownloadURLVertcoin + be.CDFVertcoinLinux
+		}
 	default:
 		err = errors.New("unable to determine ProjectType")
 	}
@@ -178,7 +191,6 @@ func doRequiredFiles() error {
 	log.Print("Downloading required files...")
 	if err := be.DownloadFile(filePath, fileURL); err != nil {
 		return fmt.Errorf("unable to download file: %v - %v", filePath+fileURL, err)
-		//https://github.com/FeatherCoin/Feathercoin/releases/download/v0.19.1/feathercoin-0.19.1-linux64.tar.gz
 	}
 	defer os.Remove(filePath)
 
@@ -289,6 +301,26 @@ func doRequiredFiles() error {
 			}
 			defer os.RemoveAll("./" + be.CTrezarcoinExtractedDir)
 		}
+	case be.PTVertcoin:
+		if runtime.GOOS == "windows" {
+			_, err = be.UnZip(filePath, "tmp")
+			if err != nil {
+				return fmt.Errorf("unable to unzip file: %v - %v", filePath, err)
+			}
+			defer os.RemoveAll("tmp")
+		} else if runtime.GOARCH == "arm" {
+			err = be.ExtractTarGz(r)
+			if err != nil {
+				return fmt.Errorf("unable to extractTarGz file: %v - %v", r, err)
+			}
+			defer os.RemoveAll("./" + be.CVertcoinExtractedDirLinux)
+		} else {
+			_, err = be.UnZip(filePath, "./tmp/")
+			if err != nil {
+				return fmt.Errorf("unable to unzip file: %v - %v", filePath, err)
+			}
+			defer os.RemoveAll("tmp")
+		}
 	default:
 		err = errors.New("unable to determine ProjectType")
 	}
@@ -297,9 +329,6 @@ func doRequiredFiles() error {
 
 	// Copy files to correct location
 	var srcPath, srcFileCLI, srcFileD, srcFileTX string //srcFileBWConfCLI, srcFileBWCLI string
-	//srcFileBWConfCLI = be.CConfFile + be.CConfFileExt
-	//srcFileGWConfSrv = gwc.CServerConfFile + gwc.CServerConfFileExt
-	//var srcREADMEFile = "README.md"
 
 	switch bwconf.ProjectType {
 	case be.PTDivi:
@@ -405,6 +434,29 @@ func doRequiredFiles() error {
 			srcFileCLI = be.CTrezarcoinCliFile
 			srcFileD = be.CTrezarcoinDFile
 			srcFileTX = be.CTrezarcoinTxFile
+			//srcFileBWCLI = be.CAppFilename
+		default:
+			err = errors.New("unable to determine runtime.GOOS")
+		}
+	case be.PTVertcoin:
+		switch runtime.GOOS {
+		case "windows":
+			srcPath = "./tmp/" + be.CVertcoinExtractedDirLinux
+			srcFileCLI = be.CVertcoinCliFileWin
+			srcFileD = be.CVertcoinDFileWin
+			srcFileTX = be.CVertcoinTxFileWin
+			//srcFileBWCLI = be.CAppFilenameWin
+		case "arm":
+			srcPath = "./" + be.CVertcoinExtractedDirLinux
+			srcFileCLI = be.CVertcoinCliFile
+			srcFileD = be.CVertcoinDFile
+			srcFileTX = be.CVertcoinTxFile
+			//srcFileBWCLI = be.CAppFilename
+		case "linux":
+			srcPath = "./" + be.CVertcoinExtractedDirLinux
+			srcFileCLI = be.CVertcoinCliFile
+			srcFileD = be.CVertcoinDFile
+			srcFileTX = be.CVertcoinTxFile
 			//srcFileBWCLI = be.CAppFilename
 		default:
 			err = errors.New("unable to determine runtime.GOOS")
