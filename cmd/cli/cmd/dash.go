@@ -138,6 +138,11 @@ var dashCmd = &cobra.Command{
 			if len(addresses.Result) > 0 {
 				bWalletExists = true
 			}
+		case be.PTVertcoin:
+			addresses, _ := be.ListReceivedByAddressVTC(&cliConf, false)
+			if len(addresses.Result) > 0 {
+				bWalletExists = true
+			}
 		default:
 			log.Fatalf("Unable to determine project type")
 		}
@@ -162,6 +167,19 @@ var dashCmd = &cobra.Command{
 			case be.PTFeathercoin:
 			case be.PTPhore:
 			case be.PTTrezarcoin:
+			case be.PTVertcoin:
+				wet, err := be.GetWalletEncryptionStatus()
+				if err != nil {
+					log.Fatalf("Unable to determine wallet encryption status")
+				}
+				if wet == be.WETLocked {
+					pw = be.GetWalletEncryptionPassword()
+				}
+				bConfirmedBU, err := HandleWalletBUVTC(pw)
+				cliConf.UserConfirmedWalletBU = bConfirmedBU
+				if err := be.SetConfigStruct("", cliConf); err != nil {
+					log.Fatalf("Unable to SetCLIConfStruct(): failed with %s\n", err)
+				}
 			default:
 				log.Fatalf("Unable to determine project type")
 			}
@@ -201,6 +219,15 @@ var dashCmd = &cobra.Command{
 			wi, err := be.GetWalletInfoTrezarcoin(&cliConf)
 			if err != nil {
 				log.Fatal("Unable to perform GetWalletInfoTrezarcoin " + err.Error())
+			}
+
+			if wi.Result.UnlockedUntil < 0 {
+				bWalletNeedsEncrypting = true
+			}
+		case be.PTVertcoin:
+			wi, err := be.GetWalletInfoVTC(&cliConf)
+			if err != nil {
+				log.Fatal("Unable to perform GetWalletInfoVTC " + err.Error())
 			}
 
 			if wi.Result.UnlockedUntil < 0 {
@@ -252,6 +279,9 @@ var dashCmd = &cobra.Command{
 		case be.PTTrezarcoin:
 			pAbout.Text = "  [" + be.CAppName + "         v" + be.CBWAppVersion + "](fg:white)\n" +
 				"  [" + sCoinName + " Core   v" + be.CTrezarcoinCoreVersion + "](fg:white)\n\n"
+		case be.PTVertcoin:
+			pAbout.Text = "  [" + be.CAppName + "         v" + be.CBWAppVersion + "](fg:white)\n" +
+				"  [" + sCoinName + " Core   v" + be.CVertcoinCoreVersion + "](fg:white)\n\n"
 		default:
 			err = errors.New("unable to determine ProjectType")
 		}
@@ -281,6 +311,9 @@ var dashCmd = &cobra.Command{
 			pWallet.Text = "  Balance:          [waiting...](fg:yellow)\n" +
 				"  Security:         [waiting...](fg:yellow)\n" +
 				"  Actively Staking: [waiting...](fg:yellow)\n"
+		case be.PTVertcoin:
+			pWallet.Text = "  Balance:          [waiting...](fg:yellow)\n" +
+				"  Security:         [waiting...](fg:yellow)\n"
 		default:
 			err = errors.New("unable to determine ProjectType")
 		}
@@ -322,6 +355,11 @@ var dashCmd = &cobra.Command{
 				"  Difficulty:  [checking...](fg:yellow)\n" +
 				"  Blockchain:  [checking...](fg:yellow)\n" +
 				"  Masternodes: [checking...](fg:yellow)"
+		case be.PTVertcoin:
+			pNetwork.Text = "  Headers:     [checking...](fg:yellow)\n" +
+				"  Blocks:      [checking...](fg:yellow)\n" +
+				"  Difficulty:  [checking...](fg:yellow)\n" +
+				"  Blockchain:  [checking...](fg:yellow)\n"
 		default:
 			err = errors.New("unable to determine ProjectType")
 		}
@@ -332,11 +370,13 @@ var dashCmd = &cobra.Command{
 			var bciFeathercoin be.FeathercoinBlockchainInfoRespStruct
 			var bciPhore be.PhoreBlockchainInfoRespStruct
 			var bciTrezarcoin be.TrezarcoinBlockchainInfoRespStruct
+			var bciVertcoin be.VTCBlockchainInfoRespStruct
 			//var gi be.GetInfoRespStruct
 			var mnssDivi be.DiviMNSyncStatusRespStruct
 			var mnssPhore be.PhoreMNSyncStatusRespStruct
 			bFTCBlockchainIsSynced := false
 			bTZCBlockchainIsSynced := false
+			bVTCBlockchainIsSynced := false
 			var ssDivi be.DiviStakingStatusRespStruct
 			var ssPhore be.PhoreStakingStatusRespStruct
 			var ssTrezarcoin be.TrezarcoinStakingInfoRespStruct
@@ -344,6 +384,7 @@ var dashCmd = &cobra.Command{
 			var wiFeathercoin be.FeathercoinWalletInfoRespStruct
 			var wiPhore be.PhoreWalletInfoRespStruct
 			var wiTrezarcoin be.TrezarcoinWalletInfoRespStruct
+			var wiVertcoin be.VTCWalletInfoRespStruct
 			if gGetBCInfoCount == 0 || gGetBCInfoCount > cliConf.RefreshTimer {
 				if gGetBCInfoCount > cliConf.RefreshTimer {
 					gGetBCInfoCount = 1
@@ -362,6 +403,11 @@ var dashCmd = &cobra.Command{
 					bciTrezarcoin, _ = be.GetBlockchainInfoTrezarcoin(&cliConf)
 					if bciTrezarcoin.Result.Verificationprogress > 0.9999 {
 						bTZCBlockchainIsSynced = true
+					}
+				case be.PTVertcoin:
+					bciVertcoin, _ = be.GetBlockchainInfoVTC(&cliConf)
+					if bciVertcoin.Result.Verificationprogress > 0.9999 {
+						bVTCBlockchainIsSynced = true
 					}
 				default:
 					err = errors.New("unable to determine ProjectType")
@@ -399,6 +445,10 @@ var dashCmd = &cobra.Command{
 					ssTrezarcoin, _ = be.GetStakingInfoTrezarcoin(&cliConf)
 					wiTrezarcoin, _ = be.GetWalletInfoTrezarcoin(&cliConf)
 				}
+			case be.PTVertcoin:
+				if bVTCBlockchainIsSynced {
+					wiVertcoin, _ = be.GetWalletInfoVTC(&cliConf)
+				}
 			default:
 				err = errors.New("unable to determine ProjectType")
 			}
@@ -425,6 +475,12 @@ var dashCmd = &cobra.Command{
 				}
 			case be.PTTrezarcoin:
 				if bTZCBlockchainIsSynced {
+					pNetwork.BorderStyle.Fg = ui.ColorGreen
+				} else {
+					pNetwork.BorderStyle.Fg = ui.ColorYellow
+				}
+			case be.PTVertcoin:
+				if bVTCBlockchainIsSynced {
 					pNetwork.BorderStyle.Fg = ui.ColorGreen
 				} else {
 					pNetwork.BorderStyle.Fg = ui.ColorYellow
@@ -459,6 +515,11 @@ var dashCmd = &cobra.Command{
 				sBlocks = be.GetNetworkBlocksTxtTrezarcoin(&bciTrezarcoin)
 				sDiff = be.GetNetworkDifficultyTxtTrezarcoin(bciTrezarcoin.Result.Difficulty, gDiffGood, gDiffWarning)
 				sBlockchainSync = be.GetBlockchainSyncTxtTrezarcoin(bTZCBlockchainIsSynced, &bciTrezarcoin)
+			case be.PTVertcoin:
+				sHeaders = be.GetNetworkHeadersTxtVTC(&bciVertcoin)
+				sBlocks = be.GetNetworkBlocksTxtVTC(&bciVertcoin)
+				sDiff = be.GetNetworkDifficultyTxtVTC(bciVertcoin.Result.Difficulty, gDiffGood, gDiffWarning)
+				sBlockchainSync = be.GetBlockchainSyncTxtVTC(bFTCBlockchainIsSynced, &bciVertcoin)
 			default:
 				err = errors.New("unable to determine ProjectType")
 			}
@@ -482,6 +543,12 @@ var dashCmd = &cobra.Command{
 					"  " + sMNSync
 			case be.PTTrezarcoin:
 				pNetwork.Text = "  " + sBlocks + "\n" +
+					"  " + sDiff + "\n" +
+					"  " + sBlockchainSync + "\n" +
+					"  " + sMNSync
+			case be.PTVertcoin:
+				pNetwork.Text = "  " + sHeaders + "\n" +
+					"  " + sBlocks + "\n" +
 					"  " + sDiff + "\n" +
 					"  " + sBlockchainSync + "\n" +
 					"  " + sMNSync
@@ -553,6 +620,20 @@ var dashCmd = &cobra.Command{
 				default:
 					pWallet.BorderStyle.Fg = ui.ColorYellow
 				}
+			case be.PTVertcoin:
+				wet := be.GetWalletSecurityStateVTC(&wiVertcoin)
+				switch wet {
+				case be.WETLocked:
+					pWallet.BorderStyle.Fg = ui.ColorYellow
+				case be.WETUnlocked:
+					pWallet.BorderStyle.Fg = ui.ColorRed
+				case be.WETUnlockedForStaking:
+					pWallet.BorderStyle.Fg = ui.ColorGreen
+				case be.WETUnencrypted:
+					pWallet.BorderStyle.Fg = ui.ColorRed
+				default:
+					pWallet.BorderStyle.Fg = ui.ColorYellow
+				}
 			default:
 				err = errors.New("unable to determine ProjectType")
 			}
@@ -566,7 +647,7 @@ var dashCmd = &cobra.Command{
 						"  " + getWalletSecurityStatusTxtDivi(&wiDivi) + "\n" +
 						"  " + getWalletStakingTxt(&wiDivi) + "\n" + //e.g. "15%" or "staking"
 						"  " + getActivelyStakingTxtDivi(&ssDivi, &wiDivi) + "\n" + //e.g. "15%" or "staking"
-						"  " + getNextLotteryTxt(&cliConf) + "\n" +
+						"  " + getNextLotteryTxtDIVI(&cliConf) + "\n" +
 						"  " + "Lottery tickets:  0"
 				}
 			case be.PTFeathercoin:
@@ -585,6 +666,11 @@ var dashCmd = &cobra.Command{
 					pWallet.Text = "" + getBalanceInTrezarcoinTxt(&wiTrezarcoin) + "\n" +
 						"  " + getWalletSecurityStatusTxtTrezarcoin(&wiTrezarcoin) + "\n" +
 						"  " + getActivelyStakingTxtTrezarcoin(&ssTrezarcoin) + "\n" //e.g. "15%" or "staking"
+				}
+			case be.PTVertcoin:
+				if bciVertcoin.Result.Verificationprogress > 0.9999 {
+					pWallet.Text = "" + getBalanceInVTCTxt(&wiVertcoin) + "\n" +
+						"  " + getWalletSecurityStatusTxtFeathercoin(&wiFeathercoin) + "\n"
 				}
 			default:
 				err = errors.New("unable to determine ProjectType")
@@ -613,6 +699,8 @@ var dashCmd = &cobra.Command{
 					// todo do for Phore
 				case be.PTTrezarcoin:
 					// todo do for Trezarcoin
+				case be.PTVertcoin:
+					gDiffGood, gDiffWarning, _ = getNetworkDifficultyInfo(be.PTVertcoin)
 				default:
 					err = errors.New("unable to determine ProjectType")
 				}
@@ -686,39 +774,6 @@ func checkHealth(bci *be.DiviBlockchainInfoRespStruct) error {
 		}
 	}
 
-	//// Check "bcSyncStuckCount" to see if it's higher than X, if it is, we know that we need to perform a -reindex, if not...
-	//if gBCSyncStuckCount > 3600/3 {
-	//	gBCSyncStuckCount = 0
-	//	// First, let's see if we need to bring the big guns out...
-	//	if gWalletRICount >= 1 {
-	//		gWalletRICount = 0
-	//		// We have already tried 1 -reindex so let's go for a hard fix with -resync.
-	//		if err := be.WalletFix(be.WFTReSync); err != nil {
-	//			return fmt.Errorf("unable to perform wallet resync: %v", err)
-	//		}
-	//
-	//		return nil
-	//	}
-	//
-	//	// We've been stuck at the same blockchain verification point for > 25...
-	//	if err := be.WalletFix(be.WFTReIndex); err != nil {
-	//		return fmt.Errorf("unable to perform wallet reindex: %v", err)
-	//	}
-	//	gWalletRICount++
-	//	return nil
-	//}
-
-	//// Check what verification status it is, if it's the same as last time "BCLastVerificationStatus" then, inc a "BCSyncStatus" by 1
-	//s := gwc.ConvertBCVerification(bci.Result.Verificationprogress)
-	//if s == gLastBCSyncPosStr {
-	//	// Check to make sure we are online, and if we are, bump the bcSyncStuckCount
-	//	if gwc.WebIsReachable() {
-	//		gBCSyncStuckCount++
-	//	}
-	//} else {
-	//	gLastBCSyncPosStr = s
-	//}
-
 	return nil
 }
 
@@ -791,6 +846,16 @@ func confirmWalletReady() (bool, error) {
 		if gi.Result.Version == 0 {
 			return false, fmt.Errorf("unable to call getinfo %s\n", err)
 		}
+	case be.PTVertcoin:
+		gi, err := be.GetNetworkInfoVTC(&cliConf)
+		if err != nil {
+			if err := spinner.Stop(); err != nil {
+			}
+			return false, fmt.Errorf("Unable to communicate with the " + coind + " server.")
+		}
+		if gi.Result.Version == 0 {
+			return false, fmt.Errorf("unable to call getinfo %s\n", err)
+		}
 	default:
 		return false, fmt.Errorf("unable to determine project type")
 	}
@@ -826,7 +891,7 @@ func encryptWallet(cliConf *be.ConfStruct, pw string) (be.GenericRespStruct, err
 	return respStruct, nil
 }
 
-func getNextLotteryTxt(conf *be.ConfStruct) string {
+func getNextLotteryTxtDIVI(conf *be.ConfStruct) string {
 	if NextLotteryCounter > (60*30) || NextLotteryStored == "" {
 		NextLotteryCounter = 0
 		lrs, _ := getLotteryInfo(conf)
@@ -897,6 +962,14 @@ func getBalanceInPhoreTxt(wi *be.PhoreWalletInfoRespStruct) string {
 }
 
 func getBalanceInTrezarcoinTxt(wi *be.TrezarcoinWalletInfoRespStruct) string {
+	tBalance := wi.Result.Balance
+	tBalanceStr := humanize.FormatFloat("#,###.####", tBalance)
+
+	// Work out balance
+	return "  Balance:          [" + tBalanceStr + "](fg:green)"
+}
+
+func getBalanceInVTCTxt(wi *be.VTCWalletInfoRespStruct) string {
 	tBalance := wi.Result.Balance
 	tBalanceStr := humanize.FormatFloat("#,###.####", tBalance)
 
