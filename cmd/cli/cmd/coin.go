@@ -26,6 +26,7 @@ import (
 	"runtime"
 
 	//_ "github.com/AlecAivazis/survey/v2"
+	"github.com/artdarek/go-unzip"
 	"github.com/spf13/cobra"
 )
 
@@ -98,7 +99,7 @@ var coinCmd = &cobra.Command{
 			fmt.Println("The " + sCoinName + " CLI bin files have already been installed.")
 		}
 		fmt.Println("\nAll done!")
-		fmt.Println("\nYou can now run './boxwallet dash' to view your " + sCoinName + " Dashboard")
+		fmt.Println("\nYou can now run './boxwallet start' and then './boxwallet dash' to view your " + sCoinName + " Dashboard")
 	},
 }
 
@@ -315,7 +316,8 @@ func doRequiredFiles() error {
 			}
 			defer os.RemoveAll("./" + be.CVertcoinExtractedDirLinux)
 		} else {
-			_, err = be.UnZip(filePath, "./tmp/")
+			uz := unzip.New(filePath, abf)
+			err := uz.Extract()
 			if err != nil {
 				return fmt.Errorf("unable to unzip file: %v - %v", filePath, err)
 			}
