@@ -280,7 +280,7 @@ var dashCmd = &cobra.Command{
 			pAbout.Text = "  [" + be.CAppName + "         v" + be.CBWAppVersion + "](fg:white)\n" +
 				"  [" + sCoinName + " Core   v" + be.CTrezarcoinCoreVersion + "](fg:white)\n\n"
 		case be.PTVertcoin:
-			pAbout.Text = "  [" + be.CAppName + "         v" + be.CBWAppVersion + "](fg:white)\n" +
+			pAbout.Text = "  [" + be.CAppName + "       v" + be.CBWAppVersion + "](fg:white)\n" +
 				"  [" + sCoinName + " Core   v" + be.CVertcoinCoreVersion + "](fg:white)\n\n"
 		default:
 			err = errors.New("unable to determine ProjectType")
@@ -519,7 +519,7 @@ var dashCmd = &cobra.Command{
 				sHeaders = be.GetNetworkHeadersTxtVTC(&bciVertcoin)
 				sBlocks = be.GetNetworkBlocksTxtVTC(&bciVertcoin)
 				sDiff = be.GetNetworkDifficultyTxtVTC(bciVertcoin.Result.Difficulty, gDiffGood, gDiffWarning)
-				sBlockchainSync = be.GetBlockchainSyncTxtVTC(bFTCBlockchainIsSynced, &bciVertcoin)
+				sBlockchainSync = be.GetBlockchainSyncTxtVTC(bVTCBlockchainIsSynced, &bciVertcoin)
 			default:
 				err = errors.New("unable to determine ProjectType")
 			}
@@ -670,7 +670,7 @@ var dashCmd = &cobra.Command{
 			case be.PTVertcoin:
 				if bciVertcoin.Result.Verificationprogress > 0.9999 {
 					pWallet.Text = "" + getBalanceInVTCTxt(&wiVertcoin) + "\n" +
-						"  " + getWalletSecurityStatusTxtFeathercoin(&wiFeathercoin) + "\n"
+						"  " + getWalletSecurityStatusTxtVTC(&wiVertcoin) + "\n"
 				}
 			default:
 				err = errors.New("unable to determine ProjectType")
@@ -1047,6 +1047,18 @@ func getWalletSecurityStatusTxtTrezarcoin(wi *be.TrezarcoinWalletInfoRespStruct)
 	}
 }
 
+func getWalletSecurityStatusTxtVTC(wi *be.VTCWalletInfoRespStruct) string {
+	if wi.Result.UnlockedUntil == 0 {
+		return "Security:         [Locked](fg:green)"
+	} else if wi.Result.UnlockedUntil == -1 {
+		return "Security:         [UNENCRYPTED](fg:red)"
+	} else if wi.Result.UnlockedUntil > 0 {
+		return "Security:         [Locked](fg:green)"
+	} else {
+		return "Security:         [checking...](fg:yellow)"
+	}
+}
+
 func getLotteryInfo(cliConf *be.ConfStruct) (be.LotteryDiviRespStruct, error) {
 	var respStruct be.LotteryDiviRespStruct
 
@@ -1076,6 +1088,8 @@ func getNetworkDifficultyInfo(pt be.ProjectType) (float64, float64, error) {
 		coin = "divi"
 	case be.PTFeathercoin:
 		coin = "ftc"
+	case be.PTVertcoin:
+		coin = "vtc"
 	default:
 		return 0, 0, errors.New("unable to determine project type")
 	}

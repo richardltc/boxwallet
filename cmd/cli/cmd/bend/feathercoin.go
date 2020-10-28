@@ -333,6 +333,12 @@ func GetWalletInfoFeathercoin(cliConf *ConfStruct) (FeathercoinWalletInfoRespStr
 		return respStruct, err
 	}
 
+	// Check to see if the json response contains "unlocked_until"
+	s := string([]byte(bodyResp))
+	if !strings.Contains(s, "unlocked_until") {
+		respStruct.Result.UnlockedUntil = -1
+	}
+
 	return respStruct, nil
 }
 
