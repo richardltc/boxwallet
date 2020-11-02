@@ -33,7 +33,6 @@ const (
 	CVertcoinTxFile     string = "vertcoin-tx"
 	CVertcoinTxFileWin  string = "vertcoin-tx.exe"
 
-	// feathercoin.conf file constants
 	CVertcoinRPCPort string = "5888"
 )
 
