@@ -1,7 +1,7 @@
 package bend
 
 const (
-	CCoinNameScala string = "Vertcoin"
+	CCoinNameScala string = "Scala"
 
 	CScalaCoreVersion string = "0.15.0.1"
 	//CDFScalaRPi       string = "Vertcoin-" + CScalaCoreVersion + "-rPI.zip"
