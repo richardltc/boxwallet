@@ -5,12 +5,12 @@ const (
 
 	CGroestlcoinCoreVersion string = "2.20.1"
 	CDFGroestlcoinRPi       string = "groestlcoin-" + CGroestlcoinCoreVersion + "-arm-linux-gnueabihf.taf.gz"
-	CDFGroestlcoinLinux     string = "groestlcoin-" + CGroestlcoinCoreVersion + "-x86_64-linux-gnu-tar.gz"
+	CDFGroestlcoinLinux     string = "groestlcoin-" + CGroestlcoinCoreVersion + "-x86_64-linux-gnu.tar.gz"
 	CDFGroestlcoinWindows   string = "groestlcoin-" + CGroestlcoinCoreVersion + "-win64.zip"
 
-	CGroestlcoinExtractedDirLinux = "groestlcoin-" + CGroestlcoinCoreVersion + "-linux-amd64/"
+	CGroestlcoinExtractedDirLinux = "groestlcoin-" + CGroestlcoinCoreVersion + "/"
 
-	CDownloadURLGroestlcoin string = "https://github.com/Groestlcoin/groestlcoin/releases/download/" + CGroestlcoinCoreVersion + "/"
+	CDownloadURLGroestlcoin string = "https://github.com/Groestlcoin/groestlcoin/releases/download/v" + CGroestlcoinCoreVersion + "/"
 
 	CGroestlcoinHomeDir    string = ".groestlcoin"
 	CGroestlcoinHomeDirWin string = "GROESTLCOIN"

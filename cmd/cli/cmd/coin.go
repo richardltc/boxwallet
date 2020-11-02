@@ -40,7 +40,7 @@ var coinCmd = &cobra.Command{
 		coin := ""
 		prompt := &survey.Select{
 			Message: "Please choose your preferred coin:",
-			Options: []string{be.CCoinNameDivi, be.CCoinNameFeathercoin, be.CCoinNamePhore, be.CCoinNameTrezarcoin, be.CCoinNameVertcoin},
+			Options: []string{be.CCoinNameDivi, be.CCoinNameFeathercoin, be.CCoinNameGroestlcoin, be.CCoinNamePhore, be.CCoinNameTrezarcoin, be.CCoinNameVertcoin},
 		}
 		survey.AskOne(prompt, &coin)
 		cliConf := be.ConfStruct{}
@@ -53,6 +53,9 @@ var coinCmd = &cobra.Command{
 		case be.CCoinNameFeathercoin:
 			cliConf.ProjectType = be.PTFeathercoin
 			cliConf.Port = be.CFeathercoinRPCPort
+		case be.CCoinNameGroestlcoin:
+			cliConf.ProjectType = be.PTGroestlcoin
+			cliConf.Port = be.CGroestlcoinRPCPort
 		case be.CCoinNamePhore:
 			cliConf.ProjectType = be.PTPhore
 			cliConf.Port = be.CPhoreRPCPort
@@ -139,6 +142,17 @@ func doRequiredFiles() error {
 			filePath = abf + be.CDFFeathercoinLinux
 			fileURL = be.CDownloadURLFeathercoin + be.CDFFeathercoinLinux
 		}
+	case be.PTGroestlcoin:
+		if runtime.GOOS == "windows" {
+			filePath = abf + be.CDFGroestlcoinWindows
+			fileURL = be.CDownloadURLGroestlcoin + be.CDFGroestlcoinWindows
+		} else if runtime.GOARCH == "arm" {
+			filePath = abf + be.CDFGroestlcoinRPi
+			fileURL = be.CDownloadURLGroestlcoin + be.CDFGroestlcoinRPi
+		} else {
+			filePath = abf + be.CDFGroestlcoinLinux
+			fileURL = be.CDownloadURLGroestlcoin + be.CDFGroestlcoinLinux
+		}
 	case be.PTPhore:
 		if runtime.GOOS == "windows" {
 			filePath = abf + be.CDFPhoreWindows
@@ -193,6 +207,7 @@ func doRequiredFiles() error {
 	if err := be.DownloadFile(filePath, fileURL); err != nil {
 		return fmt.Errorf("unable to download file: %v - %v", filePath+fileURL, err)
 	}
+	//https://github.com/Groestlcoin/groestlcoin/releases/download/v2.20.1/groestlcoin-2.20.1-x86_64-linux-gnu.tar.gz
 	defer os.Remove(filePath)
 
 	r, err := os.Open(filePath)
@@ -242,6 +257,30 @@ func doRequiredFiles() error {
 				return fmt.Errorf("unable to extractTarGz file: %v - %v", r, err)
 			}
 			defer os.RemoveAll("./" + be.CFeathercoinExtractedDirLinux)
+		}
+	case be.PTGroestlcoin:
+		if runtime.GOOS == "windows" {
+			_, err = be.UnZip(filePath, "tmp")
+			if err != nil {
+				return fmt.Errorf("unable to unzip file: %v - %v", filePath, err)
+			}
+			defer os.RemoveAll("tmp")
+		} else if runtime.GOARCH == "arm" {
+			err = be.ExtractTarGz(r)
+			if err != nil {
+				return fmt.Errorf("unable to extractTarGz file: %v - %v", r, err)
+			}
+			defer os.RemoveAll("./" + be.CGroestlcoinExtractedDirLinux)
+		} else {
+			//data, _ := ioutil.ReadFile("path/to/file.tar.bz2")
+			//buffer := bytes.NewBuffer(data)
+			//extract.Bz2(data, "/path/where/to/extract", nil)
+
+			err = be.ExtractTarGz(r)
+			if err != nil {
+				return fmt.Errorf("unable to extractTarGz file: %v - %v", r, err)
+			}
+			defer os.RemoveAll("./" + be.CGroestlcoinExtractedDirLinux)
 		}
 	case be.PTPhore:
 		if runtime.GOOS == "windows" {
@@ -375,6 +414,29 @@ func doRequiredFiles() error {
 			srcFileCLI = be.CFeathercoinCliFile
 			srcFileD = be.CFeathercoinDFile
 			srcFileTX = be.CFeathercoinTxFile
+			//srcFileBWCLI = be.CAppFilename
+		default:
+			err = errors.New("unable to determine runtime.GOOS")
+		}
+	case be.PTGroestlcoin:
+		switch runtime.GOOS {
+		case "windows":
+			srcPath = "./tmp/" + be.CGroestlcoinExtractedDirLinux + "bin/"
+			srcFileCLI = be.CGroestlcoinCliFileWin
+			srcFileD = be.CGroestlcoinDFileWin
+			srcFileTX = be.CGroestlcoinTxFileWin
+			//srcFileBWCLI = be.CAppFilenameWin
+		case "arm":
+			srcPath = "./" + be.CGroestlcoinExtractedDirLinux + "bin/"
+			srcFileCLI = be.CGroestlcoinCliFile
+			srcFileD = be.CGroestlcoinDFile
+			srcFileTX = be.CGroestlcoinTxFile
+			//srcFileBWCLI = be.CAppFilename
+		case "linux":
+			srcPath = "./" + be.CGroestlcoinExtractedDirLinux + "bin/"
+			srcFileCLI = be.CGroestlcoinCliFile
+			srcFileD = be.CGroestlcoinDFile
+			srcFileTX = be.CGroestlcoinTxFile
 			//srcFileBWCLI = be.CAppFilename
 		default:
 			err = errors.New("unable to determine runtime.GOOS")
