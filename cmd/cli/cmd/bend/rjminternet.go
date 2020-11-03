@@ -44,7 +44,7 @@ Loop:
 		return err
 	}
 
-	fmt.Printf("Download saved to ./%v \n", resp.Filename)
+	fmt.Printf("Download saved to %v \n", resp.Filename)
 
 	return nil
 }
