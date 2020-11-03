@@ -27,6 +27,7 @@ import (
 
 	//_ "github.com/AlecAivazis/survey/v2"
 	"github.com/artdarek/go-unzip"
+	"github.com/mholt/archiver/v3"
 	"github.com/spf13/cobra"
 )
 
@@ -207,7 +208,6 @@ func doRequiredFiles() error {
 	if err := be.DownloadFile(filePath, fileURL); err != nil {
 		return fmt.Errorf("unable to download file: %v - %v", filePath+fileURL, err)
 	}
-	//https://github.com/Groestlcoin/groestlcoin/releases/download/v2.20.1/groestlcoin-2.20.1-x86_64-linux-gnu.tar.gz
 	defer os.Remove(filePath)
 
 	r, err := os.Open(filePath)
@@ -272,11 +272,8 @@ func doRequiredFiles() error {
 			}
 			defer os.RemoveAll("./" + be.CGroestlcoinExtractedDirLinux)
 		} else {
-			//data, _ := ioutil.ReadFile("path/to/file.tar.bz2")
-			//buffer := bytes.NewBuffer(data)
-			//extract.Bz2(data, "/path/where/to/extract", nil)
-
-			err = be.ExtractTarGz(r)
+			//err = be.ExtractTarGz(r)
+			err = archiver.Unarchive(filePath, abf)
 			if err != nil {
 				return fmt.Errorf("unable to extractTarGz file: %v - %v", r, err)
 			}
@@ -369,7 +366,7 @@ func doRequiredFiles() error {
 	log.Print("Installing files...")
 
 	// Copy files to correct location
-	var srcPath, srcFileCLI, srcFileD, srcFileTX string //srcFileBWConfCLI, srcFileBWCLI string
+	var srcPath, srcFileCLI, srcFileD, srcFileTX string
 
 	switch bwconf.ProjectType {
 	case be.PTDivi:

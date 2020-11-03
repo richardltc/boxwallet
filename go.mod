@@ -15,6 +15,7 @@ require (
 	github.com/inconshreveable/go-update v0.0.0-20160112193335-8152e7eb6ccf // indirect
 	github.com/justinas/alice v1.2.0
 	github.com/magiconair/properties v1.8.2 // indirect
+	github.com/mholt/archiver/v3 v3.5.0
 	github.com/mitchellh/go-homedir v1.1.0
 	github.com/mitchellh/go-ps v1.0.0
 	github.com/mitchellh/mapstructure v1.3.3 // indirect
