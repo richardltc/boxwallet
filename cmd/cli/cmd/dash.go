@@ -128,6 +128,11 @@ var dashCmd = &cobra.Command{
 			if len(addresses.Result) > 0 {
 				bWalletExists = true
 			}
+		case be.PTGroestlcoin:
+			addresses, _ := be.ListReceivedByAddressGRS(&cliConf, false)
+			if len(addresses.Result) > 0 {
+				bWalletExists = true
+			}
 		case be.PTPhore:
 			addresses, _ := be.ListReceivedByAddressPhore(&cliConf, false)
 			if len(addresses.Result) > 0 {
@@ -165,6 +170,19 @@ var dashCmd = &cobra.Command{
 					log.Fatalf("Unable to SetCLIConfStruct(): failed with %s\n", err)
 				}
 			case be.PTFeathercoin:
+			case be.PTGroestlcoin:
+				wet, err := be.GetWalletEncryptionStatus()
+				if err != nil {
+					log.Fatalf("Unable to determine wallet encryption status")
+				}
+				if wet == be.WETLocked {
+					pw = be.GetWalletEncryptionPassword()
+				}
+				bConfirmedBU, err := HandleWalletBUGRS(pw)
+				cliConf.UserConfirmedWalletBU = bConfirmedBU
+				if err := be.SetConfigStruct("", cliConf); err != nil {
+					log.Fatalf("Unable to SetCLIConfStruct(): failed with %s\n", err)
+				}
 			case be.PTPhore:
 			case be.PTTrezarcoin:
 			case be.PTVertcoin:
@@ -201,6 +219,15 @@ var dashCmd = &cobra.Command{
 			wi, err := be.GetWalletInfoFeathercoin(&cliConf)
 			if err != nil {
 				log.Fatal("Unable to perform GetWalletInfoFeathercoin " + err.Error())
+			}
+
+			if wi.Result.UnlockedUntil < 0 {
+				bWalletNeedsEncrypting = true
+			}
+		case be.PTGroestlcoin:
+			wi, err := be.GetWalletInfoGRS(&cliConf)
+			if err != nil {
+				log.Fatal("Unable to perform GetWalletInfoGRS " + err.Error())
 			}
 
 			if wi.Result.UnlockedUntil < 0 {
@@ -273,6 +300,9 @@ var dashCmd = &cobra.Command{
 		case be.PTFeathercoin:
 			pAbout.Text = "  [" + be.CAppName + "          v" + be.CBWAppVersion + "](fg:white)\n" +
 				"  [" + sCoinName + " Core   v" + be.CFeathercoinCoreVersion + "](fg:white)\n\n"
+		case be.PTGroestlcoin:
+			pAbout.Text = "  [" + be.CAppName + "          v" + be.CBWAppVersion + "](fg:white)\n" +
+				"  [" + sCoinName + " Core   v" + be.CGroestlcoinCoreVersion + "](fg:white)\n\n"
 		case be.PTPhore:
 			pAbout.Text = "  [" + be.CAppName + "    v" + be.CBWAppVersion + "](fg:white)\n" +
 				"  [" + sCoinName + " Core   v" + be.CPhoreCoreVersion + "](fg:white)\n\n"
@@ -301,6 +331,9 @@ var dashCmd = &cobra.Command{
 				"  Next Lottery:     [waiting...](fg:yellow)\n" +
 				"  Lottery tickets:	  [waiting...](fg:yellow)"
 		case be.PTFeathercoin:
+			pWallet.Text = "  Balance:          [waiting...](fg:yellow)\n" +
+				"  Security:         [waiting...](fg:yellow)\n"
+		case be.PTGroestlcoin:
 			pWallet.Text = "  Balance:          [waiting...](fg:yellow)\n" +
 				"  Security:         [waiting...](fg:yellow)\n"
 		case be.PTPhore:
@@ -345,6 +378,11 @@ var dashCmd = &cobra.Command{
 				"  Blocks:      [checking...](fg:yellow)\n" +
 				"  Difficulty:  [checking...](fg:yellow)\n" +
 				"  Blockchain:  [checking...](fg:yellow)\n"
+		case be.PTGroestlcoin:
+			pNetwork.Text = "  Headers:     [checking...](fg:yellow)\n" +
+				"  Blocks:      [checking...](fg:yellow)\n" +
+				"  Difficulty:  [checking...](fg:yellow)\n" +
+				"  Blockchain:  [checking...](fg:yellow)\n"
 		case be.PTPhore:
 			pNetwork.Text = "  Blocks:      [checking...](fg:yellow)\n" +
 				"  Difficulty:  [checking...](fg:yellow)\n" +
@@ -368,6 +406,7 @@ var dashCmd = &cobra.Command{
 		updateParagraph := func(count int) {
 			var bciDivi be.DiviBlockchainInfoRespStruct
 			var bciFeathercoin be.FeathercoinBlockchainInfoRespStruct
+			var bciGroestlcoin be.GRSBlockchainInfoRespStruct
 			var bciPhore be.PhoreBlockchainInfoRespStruct
 			var bciTrezarcoin be.TrezarcoinBlockchainInfoRespStruct
 			var bciVertcoin be.VTCBlockchainInfoRespStruct
@@ -375,6 +414,7 @@ var dashCmd = &cobra.Command{
 			var mnssDivi be.DiviMNSyncStatusRespStruct
 			var mnssPhore be.PhoreMNSyncStatusRespStruct
 			bFTCBlockchainIsSynced := false
+			bGRSBlockchainIsSynced := false
 			bTZCBlockchainIsSynced := false
 			bVTCBlockchainIsSynced := false
 			var ssDivi be.DiviStakingStatusRespStruct
@@ -382,6 +422,7 @@ var dashCmd = &cobra.Command{
 			var ssTrezarcoin be.TrezarcoinStakingInfoRespStruct
 			var wiDivi be.DiviWalletInfoRespStruct
 			var wiFeathercoin be.FeathercoinWalletInfoRespStruct
+			var wiGroestlcoin be.GRSWalletInfoRespStruct
 			var wiPhore be.PhoreWalletInfoRespStruct
 			var wiTrezarcoin be.TrezarcoinWalletInfoRespStruct
 			var wiVertcoin be.VTCWalletInfoRespStruct
@@ -396,6 +437,11 @@ var dashCmd = &cobra.Command{
 					bciFeathercoin, _ = be.GetBlockchainInfoFeathercoin(&cliConf)
 					if bciFeathercoin.Result.Verificationprogress > 0.9999 {
 						bFTCBlockchainIsSynced = true
+					}
+				case be.PTGroestlcoin:
+					bciGroestlcoin, _ = be.GetBlockchainInfoGRS(&cliConf)
+					if bciGroestlcoin.Result.Verificationprogress > 0.9999 {
+						bGRSBlockchainIsSynced = true
 					}
 				case be.PTPhore:
 					bciPhore, _ = be.GetBlockchainInfoPhore(&cliConf)
@@ -434,6 +480,10 @@ var dashCmd = &cobra.Command{
 				if bFTCBlockchainIsSynced {
 					wiFeathercoin, _ = be.GetWalletInfoFeathercoin(&cliConf)
 				}
+			case be.PTGroestlcoin:
+				if bGRSBlockchainIsSynced {
+					wiGroestlcoin, _ = be.GetWalletInfoGRS(&cliConf)
+				}
 			case be.PTPhore:
 				if bciPhore.Result.Verificationprogress > 0.999 {
 					mnssPhore, _ = be.GetMNSyncStatusPhore(&cliConf)
@@ -463,6 +513,12 @@ var dashCmd = &cobra.Command{
 				}
 			case be.PTFeathercoin:
 				if bFTCBlockchainIsSynced {
+					pNetwork.BorderStyle.Fg = ui.ColorGreen
+				} else {
+					pNetwork.BorderStyle.Fg = ui.ColorYellow
+				}
+			case be.PTGroestlcoin:
+				if bGRSBlockchainIsSynced {
 					pNetwork.BorderStyle.Fg = ui.ColorGreen
 				} else {
 					pNetwork.BorderStyle.Fg = ui.ColorYellow
@@ -506,6 +562,11 @@ var dashCmd = &cobra.Command{
 				sBlocks = be.GetNetworkBlocksTxtFeathercoin(&bciFeathercoin)
 				sDiff = be.GetNetworkDifficultyTxtFeathercoin(bciFeathercoin.Result.Difficulty, gDiffGood, gDiffWarning)
 				sBlockchainSync = be.GetBlockchainSyncTxtFeathercoin(bFTCBlockchainIsSynced, &bciFeathercoin)
+			case be.PTGroestlcoin:
+				sHeaders = be.GetNetworkHeadersTxtGRS(&bciGroestlcoin)
+				sBlocks = be.GetNetworkBlocksTxtGRS(&bciGroestlcoin)
+				sDiff = be.GetNetworkDifficultyTxtGRS(bciGroestlcoin.Result.Difficulty, gDiffGood, gDiffWarning)
+				sBlockchainSync = be.GetBlockchainSyncTxtGRS(bGRSBlockchainIsSynced, &bciGroestlcoin)
 			case be.PTPhore:
 				sBlocks = be.GetNetworkBlocksTxtPhore(&bciPhore)
 				sDiff = be.GetNetworkDifficultyTxtPhore(bciPhore.Result.Difficulty, gDiffGood, gDiffWarning)
@@ -531,6 +592,12 @@ var dashCmd = &cobra.Command{
 					"  " + sBlockchainSync + "\n" +
 					"  " + sMNSync
 			case be.PTFeathercoin:
+				pNetwork.Text = "  " + sHeaders + "\n" +
+					"  " + sBlocks + "\n" +
+					"  " + sDiff + "\n" +
+					"  " + sBlockchainSync + "\n" +
+					"  " + sMNSync
+			case be.PTGroestlcoin:
 				pNetwork.Text = "  " + sHeaders + "\n" +
 					"  " + sBlocks + "\n" +
 					"  " + sDiff + "\n" +
@@ -580,6 +647,20 @@ var dashCmd = &cobra.Command{
 				}
 			case be.PTFeathercoin:
 				wet := be.GetWalletSecurityStateFeathercoin(&wiFeathercoin)
+				switch wet {
+				case be.WETLocked:
+					pWallet.BorderStyle.Fg = ui.ColorYellow
+				case be.WETUnlocked:
+					pWallet.BorderStyle.Fg = ui.ColorRed
+				case be.WETUnlockedForStaking:
+					pWallet.BorderStyle.Fg = ui.ColorGreen
+				case be.WETUnencrypted:
+					pWallet.BorderStyle.Fg = ui.ColorRed
+				default:
+					pWallet.BorderStyle.Fg = ui.ColorYellow
+				}
+			case be.PTGroestlcoin:
+				wet := be.GetWalletSecurityStateGRS(&wiGroestlcoin)
 				switch wet {
 				case be.WETLocked:
 					pWallet.BorderStyle.Fg = ui.ColorYellow
@@ -655,6 +736,11 @@ var dashCmd = &cobra.Command{
 					pWallet.Text = "" + getBalanceInFeathercoinTxt(&wiFeathercoin) + "\n" +
 						"  " + getWalletSecurityStatusTxtFeathercoin(&wiFeathercoin) + "\n"
 				}
+			case be.PTGroestlcoin:
+				if bciGroestlcoin.Result.Verificationprogress > 0.9999 {
+					pWallet.Text = "" + getBalanceInGRSTxt(&wiGroestlcoin) + "\n" +
+						"  " + getWalletSecurityStatusTxtGRS(&wiGroestlcoin) + "\n"
+				}
 			case be.PTPhore:
 				if bciPhore.Result.Verificationprogress > 0.9999 {
 					pWallet.Text = "" + getBalanceInPhoreTxt(&wiPhore) + "\n" +
@@ -695,6 +781,8 @@ var dashCmd = &cobra.Command{
 					gDiffGood, gDiffWarning, _ = getNetworkDifficultyInfo(be.PTDivi)
 				case be.PTFeathercoin:
 					gDiffGood, gDiffWarning, _ = getNetworkDifficultyInfo(be.PTFeathercoin)
+				case be.PTGroestlcoin:
+					gDiffGood, gDiffWarning, _ = getNetworkDifficultyInfo(be.PTGroestlcoin)
 				case be.PTPhore:
 					// todo do for Phore
 				case be.PTTrezarcoin:
@@ -818,6 +906,16 @@ func confirmWalletReady() (bool, error) {
 		}
 	case be.PTFeathercoin:
 		gi, err := be.GetNetworkInfoFeathercoin(&cliConf)
+		if err != nil {
+			if err := spinner.Stop(); err != nil {
+			}
+			return false, fmt.Errorf("Unable to communicate with the " + coind + " server.")
+		}
+		if gi.Result.Version == 0 {
+			return false, fmt.Errorf("unable to call getinfo %s\n", err)
+		}
+	case be.PTGroestlcoin:
+		gi, err := be.GetNetworkInfoGRS(&cliConf)
 		if err != nil {
 			if err := spinner.Stop(); err != nil {
 			}
@@ -953,6 +1051,14 @@ func getBalanceInFeathercoinTxt(wi *be.FeathercoinWalletInfoRespStruct) string {
 	return "  Balance:          [" + tBalanceStr + "](fg:green)"
 }
 
+func getBalanceInGRSTxt(wi *be.GRSWalletInfoRespStruct) string {
+	tBalance := wi.Result.Balance
+	tBalanceStr := humanize.FormatFloat("#,###.####", tBalance)
+
+	// Work out balance
+	return "  Balance:          [" + tBalanceStr + "](fg:green)"
+}
+
 func getBalanceInPhoreTxt(wi *be.PhoreWalletInfoRespStruct) string {
 	tBalance := wi.Result.Balance
 	tBalanceStr := humanize.FormatFloat("#,###.####", tBalance)
@@ -1012,6 +1118,18 @@ func getWalletSecurityStatusTxtDivi(wi *be.DiviWalletInfoRespStruct) string {
 }
 
 func getWalletSecurityStatusTxtFeathercoin(wi *be.FeathercoinWalletInfoRespStruct) string {
+	if wi.Result.UnlockedUntil == 0 {
+		return "Security:         [Locked](fg:green)"
+	} else if wi.Result.UnlockedUntil == -1 {
+		return "Security:         [UNENCRYPTED](fg:red)"
+	} else if wi.Result.UnlockedUntil > 0 {
+		return "Security:         [Locked](fg:green)"
+	} else {
+		return "Security:         [checking...](fg:yellow)"
+	}
+}
+
+func getWalletSecurityStatusTxtGRS(wi *be.GRSWalletInfoRespStruct) string {
 	if wi.Result.UnlockedUntil == 0 {
 		return "Security:         [Locked](fg:green)"
 	} else if wi.Result.UnlockedUntil == -1 {
@@ -1088,6 +1206,8 @@ func getNetworkDifficultyInfo(pt be.ProjectType) (float64, float64, error) {
 		coin = "divi"
 	case be.PTFeathercoin:
 		coin = "ftc"
+	case be.PTGroestlcoin:
+		coin = "grs"
 	case be.PTVertcoin:
 		coin = "vtc"
 	default:
@@ -1128,7 +1248,6 @@ func getPrivateKeyNew(cliConf *be.ConfStruct) (hdinfoRespStruct, error) {
 		if err != nil {
 			return respStruct, err
 		}
-		//req.SetBasicAuth("divirpc", "3toXJZWrcrBzGERpCxkJ3LmTezF4yiCLDj5z3Y9nJebr")
 		req.SetBasicAuth(cliConf.RPCuser, cliConf.RPCpassword)
 		req.Header.Set("Content-Type", "text/plain;")
 

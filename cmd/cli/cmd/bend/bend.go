@@ -801,14 +801,19 @@ func GetWalletEncryptionStatus() (WEType, error) {
 	case PTDivi:
 		wi, err := GetWalletInfoDivi(&conf)
 		if err != nil {
-			return WETUnknown, fmt.Errorf("unable to GetWalletInfoDivi", err)
+			return WETUnknown, fmt.Errorf("unable to GetWalletInfoDivi %v", err)
 		}
 		wet := GetWalletSecurityStateDivi(&wi)
 		return wet, nil
 	case PTFeathercoin:
 		// todo Do for Feathercoin
 	case PTGroestlcoin:
-		// todo Do for Groestlcoin
+		wi, err := GetWalletInfoGRS(&conf)
+		if err != nil {
+			return WETUnknown, fmt.Errorf("unable to GteWalletInfoGRS %v", err)
+		}
+		wet := GetWalletSecurityStateGRS(&wi)
+		return wet, nil
 	case PTPhore:
 		// todo Do for Phore
 	case PTPIVX:
@@ -2416,24 +2421,6 @@ func RunCoinDaemon(displayOutput bool) error {
 				return err
 			}
 			fmt.Println("Groestlcoin server starting")
-
-			//buf := bufio.NewReader(stdout) // Notice that this is not in a loop
-			//num := 1
-			//for {
-			//	line, _, _ := buf.ReadLine()
-			//	if num > 3 {
-			//		os.Exit(0)
-			//	}
-			//	num++
-			//	if string(line) == "Feathercoin Core starting" {
-			//		if displayOutput {
-			//			fmt.Println("Feathercoin server starting")
-			//		}
-			//		return nil
-			//	} else {
-			//		return errors.New("unable to start Feathercoin server: " + string(line))
-			//	}
-			//}
 		}
 	case PTPhore:
 		if runtime.GOOS == "windows" {
