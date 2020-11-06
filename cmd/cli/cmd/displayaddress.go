@@ -82,6 +82,17 @@ var displayaddressCmd = &cobra.Command{
 				}
 				sAddress = r.Result
 			}
+		case be.PTGroestlcoin:
+			addresses, _ := be.ListReceivedByAddressGRS(&cliConf, true)
+			if len(addresses.Result) > 0 {
+				sAddress = addresses.Result[0].Address
+			} else {
+				r, err := be.GetNewAddressGRS(&cliConf)
+				if err != nil {
+					log.Fatalf("Unable to GetNewAddressGRS")
+				}
+				sAddress = r.Result
+			}
 		case be.PTPhore:
 			addresses, _ := be.ListReceivedByAddressPhore(&cliConf, true)
 			if len(addresses.Result) > 0 {

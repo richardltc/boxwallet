@@ -102,7 +102,7 @@ var dashCmd = &cobra.Command{
 
 		wRunning, err := confirmWalletReady()
 		if err != nil {
-			log.Fatal("Unable to determine if wallet is ready: " + err.Error())
+			log.Fatalf("Unable to determine if wallet is ready: %v", err)
 		}
 
 		coind, err := be.GetCoinDaemonFilename(be.APPTCLI)

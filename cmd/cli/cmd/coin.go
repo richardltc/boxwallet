@@ -34,7 +34,7 @@ import (
 // coinCmd represents the coin command
 var coinCmd = &cobra.Command{
 	Use:   "coin",
-	Short: "The coin command is used to specify which coin you wish to work with",
+	Short: "Select which coin you wish to work with",
 	Long:  ``,
 	Run: func(cmd *cobra.Command, args []string) {
 		fmt.Println("  ____          __          __   _ _      _   \n |  _ \\         \\ \\        / /  | | |    | |  \n | |_) | _____  _\\ \\  /\\  / /_ _| | | ___| |_ \n |  _ < / _ \\ \\/ /\\ \\/  \\/ / _` | | |/ _ \\ __|\n | |_) | (_) >  <  \\  /\\  / (_| | | |  __/ |_ \n |____/ \\___/_/\\_\\  \\/  \\/ \\__,_|_|_|\\___|\\__|\n                                              \n                                              ")
@@ -63,6 +63,9 @@ var coinCmd = &cobra.Command{
 		case be.CCoinNamePIVX:
 			cliConf.ProjectType = be.PTPIVX
 			cliConf.Port = be.CPIVXRPCPort
+		case be.CCoinNameScala:
+			cliConf.ProjectType = be.PTScala
+			cliConf.Port = be.CScalaRPCPort
 		case be.CCoinNameTrezarcoin:
 			cliConf.ProjectType = be.PTTrezarcoin
 			cliConf.Port = be.CTrezarcoinRPCPort
@@ -84,8 +87,9 @@ var coinCmd = &cobra.Command{
 		if err != nil {
 			log.Fatal(err)
 		}
-		// because it's possible that the conf file for this coin has already been created, we need to store the returned user and password
-		// so, effectively, will either be storing the existing info, or the freshly generated info
+		// because it's possible that the conf file for this coin has already been created, we need to store the
+		// returned user and password so, effectively, will either be storing the existing info, or
+		// the freshly generated info
 		cliConf.RPCuser = rpcu
 		cliConf.RPCpassword = rpcpw
 		err = be.SetConfigStruct("", cliConf)
@@ -107,7 +111,7 @@ var coinCmd = &cobra.Command{
 	},
 }
 
-// doRequiredFiles - Download and install required files
+// doRequiredFiles - Download and install required files.
 func doRequiredFiles() error {
 	var filePath, fileURL string
 	//abf, err := be.GetAppsBinFolder()

@@ -3,25 +3,25 @@ package bend
 const (
 	CCoinNameScala string = "Scala"
 
-	CScalaCoreVersion string = "0.15.0.1"
+	CScalaCoreVersion string = "4.1.0"
 	//CDFScalaRPi       string = "Vertcoin-" + CScalaCoreVersion + "-rPI.zip"
-	CDFScalaLinux   string = "scala-v" + CScalaCoreVersion + "-linux-amd64.zip"
-	CDFScalaWindows string = "scala-v" + CScalaCoreVersion + "-win64.zip"
+	CDFScalaLinux   string = "linux-x64-" + CScalaCoreVersion + ".zip"
+	CDFScalaWindows string = "windows-x64-v" + CScalaCoreVersion + ".zip"
 
-	CScalaExtractedDirLinux = "scala-v" + CScalaCoreVersion + "-linux-amd64/"
+	CScalaExtractedDirLinux = "linux-x64-" + CScalaCoreVersion
 
-	CDownloadURLScala string = "https://github.com/scala-project/scala-core/releases/download/" + CScalaCoreVersion + "/"
+	CDownloadURLScala string = "https://github.com/scala-network/Scala/releases/download/v" + CScalaCoreVersion + "/"
 
 	CScalaHomeDir    string = ".scala"
 	CScalaHomeDirWin string = "SCALA"
 
 	CScalaConfFile   string = "scala.conf"
-	CScalaCliFile    string = "scala-cli"
-	CScalaCliFileWin string = "scala-cli.exe"
+	CScalaCliFile    string = "scala-wallet-cli"
+	CScalaCliFileWin string = "scala-wallet-cli.exe"
 	CScalaDFile      string = "scalad"
 	CScalaDFileWin   string = "scalad.exe"
 	CScalaTxFile     string = "scala-tx"
 	CScalaTxFileWin  string = "scala-tx.exe"
 
-	CScalaRPCPort string = "5888"
+	CScalaRPCPort string = "11812"
 )
