@@ -24,7 +24,7 @@ import (
 
 const (
 	CAppName        string = "BoxWallet"
-	CBWAppVersion   string = "0.33.2"
+	CBWAppVersion   string = "0.34.0"
 	CAppFilename    string = "boxwallet"
 	CAppFilenameWin string = "boxwallet.exe"
 	CAppLogfile     string = "boxwallet.log"
@@ -125,6 +125,7 @@ const (
 	PTFeathercoin
 	PTVertcoin
 	PTGroestlcoin
+	PTScala
 )
 
 // OSType - either ostArm, ostLinux or ostWindows

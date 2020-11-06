@@ -35,7 +35,6 @@ var encryptCmd = &cobra.Command{
 		cliConf, err := be.GetConfigStruct("", true)
 		if err != nil {
 			log.Fatal("Unable to determine coin type. Please run " + be.CAppFilename + " coin" + err.Error())
-			//log.Fatal("Unable to GetCLIConfStruct " + err.Error())
 		}
 
 		sCoinDaemonName, err := be.GetCoinDaemonFilename(be.APPTCLI)
@@ -53,7 +52,7 @@ var encryptCmd = &cobra.Command{
 			log.Fatal("Wallet is already encrypted")
 		}
 
-		wep := be.GetPasswordToEncryptWallet() //gwc.GetWalletEncryptionPassword()
+		wep := be.GetPasswordToEncryptWallet()
 		r, err := encryptWallet(&cliConf, wep)
 		if err != nil {
 			log.Fatalf("failed to encrypt wallet %s\n", err)

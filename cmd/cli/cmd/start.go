@@ -17,7 +17,6 @@ limitations under the License.
 package cmd
 
 import (
-	"errors"
 	"fmt"
 	// gwc "github.com/richardltc/gwcommon"
 	"github.com/spf13/cobra"
@@ -66,10 +65,12 @@ var startCmd = &cobra.Command{
 				log.Println("addnodes added...")
 			}
 		case be.PTFeathercoin:
+		case be.PTGroestlcoin:
 		case be.PTPhore:
 		case be.PTTrezarcoin:
+		case be.PTVertcoin:
 		default:
-			err = errors.New("unable to determine ProjectType")
+			log.Fatal("unable to determine ProjectType")
 		}
 
 		// Start the coin daemon server if required...
