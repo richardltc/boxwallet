@@ -180,6 +180,17 @@ func doRequiredFiles() error {
 			filePath = abf + be.CDFPIVXFileLinux
 			fileURL = be.CDownloadURLPIVX + be.CDFPIVXFileLinux
 		}
+	case be.PTScala:
+		if runtime.GOOS == "windows" {
+			filePath = abf + be.CDFScalaWindows
+			fileURL = be.CDownloadURLScala + be.CDFScalaWindows
+		} else if runtime.GOARCH == "arm" {
+			filePath = abf + be.CDFScalaRPi
+			fileURL = be.CDownloadURLScala + be.CDFScalaRPi
+		} else {
+			filePath = abf + be.CDFScalaLinux
+			fileURL = be.CDownloadURLScala + be.CDFScalaLinux
+		}
 	case be.PTTrezarcoin:
 		if runtime.GOOS == "windows" {
 			filePath = abf + be.CDFTrezarcoinWindows
@@ -322,6 +333,27 @@ func doRequiredFiles() error {
 				return fmt.Errorf("unable to extractTarGz file: %v - %v", r, err)
 			}
 			defer os.RemoveAll("./" + be.CPIVXExtractedDirLinux)
+		}
+	case be.PTScala:
+		if runtime.GOOS == "windows" {
+			_, err = be.UnZip(filePath, "tmp")
+			if err != nil {
+				return fmt.Errorf("unable to unzip file: %v - %v", filePath, err)
+			}
+			defer os.RemoveAll("tmp")
+		} else if runtime.GOARCH == "arm" {
+			err = be.ExtractTarGz(r)
+			if err != nil {
+				return fmt.Errorf("unable to extractTarGz file: %v - %v", r, err)
+			}
+			defer os.RemoveAll("./" + be.CScalaExtractedDirLinux)
+		} else {
+			uz := unzip.New(filePath, abf)
+			err := uz.Extract()
+			if err != nil {
+				return fmt.Errorf("unable to unzip file: %v - %v", filePath, err)
+			}
+			defer os.RemoveAll("tmp")
 		}
 	case be.PTTrezarcoin:
 		if runtime.GOOS == "windows" {
@@ -484,6 +516,29 @@ func doRequiredFiles() error {
 			srcFileCLI = be.CPIVXCliFile
 			srcFileD = be.CPIVXDFile
 			srcFileTX = be.CPIVXTxFile
+			//srcFileBWCLI = be.CAppFilename
+		default:
+			err = errors.New("unable to determine runtime.GOOS")
+		}
+	case be.PTScala:
+		switch runtime.GOOS {
+		case "windows":
+			srcPath = "./tmp/" + be.CScalaExtractedDirLinux + "bin/"
+			srcFileCLI = be.CScalaCliFileWin
+			srcFileD = be.CScalaDFileWin
+			srcFileTX = be.CScalaTxFileWin
+			//srcFileBWCLI = be.CAppFilenameWin
+		case "arm":
+			srcPath = "./" + be.CScalaExtractedDirLinux + "bin/"
+			srcFileCLI = be.CScalaCliFile
+			srcFileD = be.CScalaDFile
+			srcFileTX = be.CScalaTxFile
+			//srcFileBWCLI = be.CAppFilename
+		case "linux":
+			srcPath = "./" + be.CVertcoinExtractedDirLinux + "bin/"
+			srcFileCLI = be.CVertcoinCliFile
+			srcFileD = be.CVertcoinDFile
+			srcFileTX = be.CVertcoinTxFile
 			//srcFileBWCLI = be.CAppFilename
 		default:
 			err = errors.New("unable to determine runtime.GOOS")
