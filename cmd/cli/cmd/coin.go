@@ -108,6 +108,29 @@ var coinCmd = &cobra.Command{
 		}
 		fmt.Println("\nAll done!")
 		fmt.Println("\nYou can now run './boxwallet start' and then './boxwallet dash' to view your " + sCoinName + " Dashboard")
+		fmt.Println("\n\nThank you for using " + be.CAppName + " to run your " + sCoinName + " wallet/node.")
+		fmt.Println(be.CAppName + " is FREE to use, and if you'd like to send a tip, please feel free to at the following " + sCoinName + " address below:")
+
+		// Display tip message.
+		switch cliConf.ProjectType {
+		case be.PTDivi:
+			fmt.Println("\nDIVI: DGvhjUXznuDyALk9zX4Y3ko4QQTmRhF7jZ")
+		case be.PTFeathercoin:
+			fmt.Println("\nFTC: 6yWAnPUcgWGXnXAM9u4faDVmfJwxKphcLf")
+		case be.PTGroestlcoin:
+			fmt.Println("\nGRS: 3HBqpZ1JH125FmW52GYjoBpNEAwyxjL9t9")
+		case be.PTPhore:
+		case be.PTPIVX:
+			fmt.Println("\nPIVX: DFHmj4dExVC24eWoRKmQJDx57r4svGVs3J")
+		case be.PTScala:
+			fmt.Println("\nXLA: Svkhh1KJ7qSPEtoAzAuriLUzVSseezcs2GS21bAL5rWEYD2iBykLvHUaMaQEcrF1pPfTkfEbWGsXz4zfXJWmQvat2Q2EHhS1e")
+		case be.PTTrezarcoin:
+			fmt.Println("\nTZC: TnkHScr6iTcfK11GDPFjNgJ7V3GZtHEy9V")
+		case be.PTVertcoin:
+			fmt.Println("\nVTC: vtc1q72j7fre83q8a7feppj28qkzfdt5vkcjr7xd74p")
+		default:
+			fmt.Println("\nDIVI: DGvhjUXznuDyALk9zX4Y3ko4QQTmRhF7jZ")
+		}
 	},
 }
 
