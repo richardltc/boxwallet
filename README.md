@@ -1,25 +1,26 @@
 # BoxWallet #
 
-BoxWallet is a CLI application that makes it very easy to set up and view a CLI wallet or full node, on the platform of your choosing, with just a few commands.
+BoxWallet is a multi-coin CLI application that makes it very easy to set up and run a CLI wallet or full node, with just a few commands.
 
 ## What is BoxWallet used for? ###
 
-* Making the initial installation of a CLI node or wallet simple, by using the command: `./boxwallet coin` and choosing your coin of choice.
-* Web enabling your existing wallet.
+* Install and run a CLI node or wallet simple, by using two commands: `coin`, to choose your coin of choice and `start` to start the syncing.
+* Setting up multiple nodes/staking wallets on a single machine.
+* Viewing your wallet/node from another computer such as Linux, Mac or Windows.
 * Displaying the staking status of your wallet. 
 * Displaying blockchain and master node syncing status
 * Displaying of block count and network difficulty
 * Displaying of % coins required for staking. (for DIVI)
-* Auto fixing common wallet issues.
+* Auto fixing common wallet issues, which can be common after power failures.
 * Balance in your coin, USD, AUD and GBP (more coming soon...)
 
 ### How do I run? ###
 
 Download BoxWallet, for your platform of choice, extract the files to a location of your choosing and then choose your preferred coin by running `./boxwallet coin`.
  
-This will download the official binaries from the coin's Project website, and install them in the same folder that you're running `boxwallet` from.
+This will download the official binaries from the coin's project website, and install them in the same folder that you're running `boxwallet` from.
 
-Then run `./boxwallet start`, to start the coin's damon server and then you can run  `./boxwallet dash`, where you should be prompted through an initial wizard to get you going.
+Then run `./boxwallet start`, to start the coin's damon server and then you can run  `./boxwallet dash`, where you will be greeted with an initial wizard to get you going.
 
 ### OK, but what else can BoxWallet do? ###
 
