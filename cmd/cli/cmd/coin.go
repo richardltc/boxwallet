@@ -41,7 +41,7 @@ var coinCmd = &cobra.Command{
 		coin := ""
 		prompt := &survey.Select{
 			Message: "Please choose your preferred coin:",
-			Options: []string{be.CCoinNameDivi, be.CCoinNameFeathercoin, be.CCoinNameGroestlcoin, be.CCoinNamePhore, be.CCoinNameTrezarcoin, be.CCoinNameVertcoin},
+			Options: []string{be.CCoinNameDivi, be.CCoinNameFeathercoin, be.CCoinNameGroestlcoin, be.CCoinNamePhore, be.CCoinNameScala, be.CCoinNameTrezarcoin, be.CCoinNameVertcoin},
 		}
 		survey.AskOne(prompt, &coin)
 		cliConf := be.ConfStruct{}
@@ -97,7 +97,7 @@ var coinCmd = &cobra.Command{
 			log.Fatal(err)
 		}
 
-		b, err := be.AllProjectBinaryFilesExists()
+		b, _ := be.AllProjectBinaryFilesExists()
 		if !b {
 			fmt.Println("The " + sCoinName + " CLI bin files haven't been installed yet. So installing them now...")
 			if err := doRequiredFiles(); err != nil {
@@ -546,22 +546,22 @@ func doRequiredFiles() error {
 	case be.PTScala:
 		switch runtime.GOOS {
 		case "windows":
-			srcPath = "./tmp/" + be.CScalaExtractedDirLinux + "bin/"
+			srcPath = "./tmp/" + be.CScalaExtractedDirLinux
 			srcFileCLI = be.CScalaCliFileWin
 			srcFileD = be.CScalaDFileWin
 			srcFileTX = be.CScalaTxFileWin
 			//srcFileBWCLI = be.CAppFilenameWin
 		case "arm":
-			srcPath = "./" + be.CScalaExtractedDirLinux + "bin/"
+			srcPath = "./" + be.CScalaExtractedDirLinux
 			srcFileCLI = be.CScalaCliFile
 			srcFileD = be.CScalaDFile
 			srcFileTX = be.CScalaTxFile
 			//srcFileBWCLI = be.CAppFilename
 		case "linux":
-			srcPath = "./" + be.CVertcoinExtractedDirLinux + "bin/"
-			srcFileCLI = be.CVertcoinCliFile
-			srcFileD = be.CVertcoinDFile
-			srcFileTX = be.CVertcoinTxFile
+			srcPath = "./" + be.CScalaExtractedDirLinux
+			srcFileCLI = be.CScalaCliFile
+			srcFileD = be.CScalaDFile
+			srcFileTX = be.CScalaTxFile
 			//srcFileBWCLI = be.CAppFilename
 		default:
 			err = errors.New("unable to determine runtime.GOOS")
