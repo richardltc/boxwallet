@@ -14,8 +14,8 @@ boxwallet "dash" - displays a dashboard with the coins Blockchain and wallet inf
 * Setting up multiple nodes/staking wallets on a single machine.
 * Viewing your wallet/node that might be running on a Pi, from another computer such as Linux, Mac or Windows.
 * Displaying the staking status of your wallet. 
-* Displaying blockchain and master node syncing status
-* Displaying of block count and network difficulty
+* Displaying blockchain and master node syncing status.
+* Displaying of block count and network difficulty.
 * Displaying of % coins required for staking. (for DIVI)
 * Auto fixing common wallet issues, which can be common after power failures.
 * Balance in your coin, USD, AUD and GBP (more coming soon...)
