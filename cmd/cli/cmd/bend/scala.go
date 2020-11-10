@@ -8,7 +8,8 @@ const (
 	CDFScalaLinux     string = "linux-x64-" + CScalaCoreVersion + ".zip"
 	CDFScalaWindows   string = "windows-x64-v" + CScalaCoreVersion + ".zip"
 
-	CScalaExtractedDirLinux = "linux-x64-" + CScalaCoreVersion
+	//CScalaExtractedDirLinux = "linux-x64-" + CScalaCoreVersion + "/"
+	CScalaExtractedDirLinux = "bin/"
 
 	CDownloadURLScala string = "https://github.com/scala-network/Scala/releases/download/v" + CScalaCoreVersion + "/"
 

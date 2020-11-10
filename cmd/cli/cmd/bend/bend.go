@@ -495,6 +495,8 @@ func GetCoinDaemonFilename(at APPType) (string, error) {
 		return CPhoreDFile, nil
 	case PTPIVX:
 		return CPIVXDFile, nil
+	case PTScala:
+		return CScalaDFile, nil
 	case PTTrezarcoin:
 		return CTrezarcoinDFile, nil
 	case PTVertcoin:
@@ -533,6 +535,8 @@ func GetCoinName(at APPType) (string, error) {
 		return CCoinNamePhore, nil
 	case PTPIVX:
 		return CCoinNamePIVX, nil
+	case PTScala:
+		return CCoinNameScala, nil
 	case PTTrezarcoin:
 		return CCoinNameTrezarcoin, nil
 	case PTVertcoin:
@@ -579,6 +583,8 @@ func GetCoinHomeFolder(at APPType) (string, error) {
 			s = AddTrailingSlash(hd) + "appdata\\roaming\\" + AddTrailingSlash(CPhoreHomeDirWin)
 		case PTPIVX:
 			s = AddTrailingSlash(hd) + "appdata\\roaming\\" + AddTrailingSlash(cPIVXHomeDirWin)
+		case PTScala:
+			s = AddTrailingSlash(hd) + "appdata\\roaming\\" + AddTrailingSlash(CScalaHomeDirWin)
 		case PTTrezarcoin:
 			s = AddTrailingSlash(hd) + "appdata\\roaming\\" + AddTrailingSlash(CTrezarcoinHomeDirWin)
 		case PTVertcoin:
@@ -599,6 +605,8 @@ func GetCoinHomeFolder(at APPType) (string, error) {
 			s = AddTrailingSlash(hd) + AddTrailingSlash(CPhoreHomeDir)
 		case PTPIVX:
 			s = AddTrailingSlash(hd) + AddTrailingSlash(cPIVXHomeDir)
+		case PTScala:
+			s = AddTrailingSlash(hd) + AddTrailingSlash(CScalaHomeDir)
 		case PTTrezarcoin:
 			s = AddTrailingSlash(hd) + AddTrailingSlash(CTrezarcoinHomeDir)
 		case PTVertcoin:
@@ -610,24 +618,6 @@ func GetCoinHomeFolder(at APPType) (string, error) {
 	}
 	return s, nil
 }
-
-//func getMNSyncStatus() (mnSyncStatus, error) {
-//	// gdConfig, err := getConfStruct("./")
-//	// if err != nil {
-//	// 	log.Print(err)
-//	// }
-//
-//	mnss := mnSyncStatus{}
-//	dbf, _ := gwc.GetAppsBinFolder(gwc.APPTServer)
-//
-//	cmdMNSS := exec.Command(dbf+gwc.CDiviCliFile, cCommandMNSyncStatus1, cCommandMNSyncStatus2)
-//	out, _ := cmdMNSS.CombinedOutput()
-//	err := json.Unmarshal([]byte(out), &mnss)
-//	if err != nil {
-//		return mnss, err
-//	}
-//	return mnss, nil
-//}
 
 func getNextProgMNIndicator(LIndicator string) string {
 	if LIndicator == cProg1 {
@@ -753,21 +743,6 @@ func GetPasswordToEncryptWallet() string {
 		}
 	}
 	return ""
-	//reader := bufio.NewReader(os.Stdin)
-	//for i := 0; i <= 2; i++ {
-	//	fmt.Print("\nPlease enter a password to encrypt your wallet: ")
-	//	epw1, _ := reader.ReadString('\n')
-	//	fmt.Print("\nNow please re-enter your password: ")
-	//	epw2, _ := reader.ReadString('\n')
-	//	if epw1 != epw2 {
-	//		fmt.Print("\nThe passwords don't match, please try again...\n")
-	//	} else {
-	//		s := strings.ReplaceAll(epw1, "\n", "")
-	//
-	//		return s
-	//	}
-	//}
-	//return ""
 }
 
 func GetWalletEncryptionPassword() string {
@@ -880,6 +855,12 @@ func IsCoinDaemonRunning() (bool, int, error) {
 			pid, _, err = findProcess(CPIVXDFileWin)
 		} else {
 			pid, _, err = findProcess(CPIVXDFile)
+		}
+	case PTScala:
+		if runtime.GOOS == "windows" {
+			pid, _, err = findProcess(CScalaDFileWin)
+		} else {
+			pid, _, err = findProcess(CScalaDFile)
 		}
 	case PTTrezarcoin:
 		if runtime.GOOS == "windows" {
@@ -1631,6 +1612,179 @@ func PopulateDaemonConfFile() (rpcuser, rpcpassword string, err error) {
 			}
 		}
 		return rpcu, rpcpw, nil
+	case PTScala:
+		fmt.Println("Populating " + CScalaConfFile + " for initial setup...")
+
+		// Add rpcuser info if required, or retrieve the existing one
+		bNeedToWriteStr := true
+		if FileExists(chd + CScalaConfFile) {
+			bStrFound, err := StringExistsInFile(cRPCUserStr+"=", chd+CScalaConfFile)
+			if err != nil {
+				return "", "", fmt.Errorf("unable to search for text in file - %v", err)
+			}
+			if !bStrFound {
+				// String not found
+				if !bFileHasBeenBU {
+					bFileHasBeenBU = true
+					if err := BackupFile(chd, CScalaConfFile, false); err != nil {
+						return "", "", fmt.Errorf("unable to backup file - %v", err)
+					}
+				}
+			} else {
+				bNeedToWriteStr = false
+				rpcu, err = GetStringAfterStrFromFile(cRPCUserStr+"=", chd+CScalaConfFile)
+				if err != nil {
+					return "", "", fmt.Errorf("unable to search for text in file - %v", err)
+				}
+			}
+		} else {
+			// Set this to true, because the file has just been freshly created and we don't want to back it up
+			bFileHasBeenBU = true
+		}
+		if bNeedToWriteStr {
+			rpcu = "scalarpc"
+			if err := WriteTextToFile(chd+CScalaConfFile, cRPCUserStr+"="+rpcu); err != nil {
+				log.Fatal(err)
+			}
+		}
+
+		// Add rpcpassword info if required, or retrieve the existing one
+		bNeedToWriteStr = true
+		if FileExists(chd + CScalaConfFile) {
+			bStrFound, err := StringExistsInFile(cRPCPasswordStr+"=", chd+CScalaConfFile)
+			if err != nil {
+				return "", "", fmt.Errorf("unable to search for text in file - %v", err)
+			}
+			if !bStrFound {
+				// String not found
+				if !bFileHasBeenBU {
+					bFileHasBeenBU = true
+					if err := BackupFile(chd, CScalaConfFile, false); err != nil {
+						return "", "", fmt.Errorf("unable to backup file - %v", err)
+					}
+				}
+			} else {
+				bNeedToWriteStr = false
+				rpcpw, err = GetStringAfterStrFromFile(cRPCPasswordStr+"=", chd+CScalaConfFile)
+				if err != nil {
+					return "", "", fmt.Errorf("unable to search for text in file - %v", err)
+				}
+			}
+		}
+		if bNeedToWriteStr {
+			rpcpw = rand.String(20)
+			if err := WriteTextToFile(chd+CScalaConfFile, cRPCPasswordStr+"="+rpcpw); err != nil {
+				log.Fatal(err)
+			}
+			if err := WriteTextToFile(chd+CScalaConfFile, ""); err != nil {
+				log.Fatal(err)
+			}
+		}
+
+		// Add daemon=1 info if required
+		bNeedToWriteStr = true
+		if FileExists(chd + CScalaConfFile) {
+			bStrFound, err := StringExistsInFile("daemon=1", chd+CScalaConfFile)
+			if err != nil {
+				return "", "", fmt.Errorf("unable to search for text in file - %v", err)
+			}
+			if !bStrFound {
+				// String not found
+				if !bFileHasBeenBU {
+					bFileHasBeenBU = true
+					if err := BackupFile(chd, CScalaConfFile, false); err != nil {
+						return "", "", fmt.Errorf("unable to backup file - %v", err)
+					}
+				}
+			} else {
+				bNeedToWriteStr = false
+			}
+		}
+		if bNeedToWriteStr {
+			if err := WriteTextToFile(chd+CScalaConfFile, "daemon=1"); err != nil {
+				log.Fatal(err)
+			}
+			if err := WriteTextToFile(chd+CScalaConfFile, ""); err != nil {
+				log.Fatal(err)
+			}
+		}
+
+		// Add server=1 info if required
+		bNeedToWriteStr = true
+		if FileExists(chd + CScalaConfFile) {
+			bStrFound, err := StringExistsInFile("server=1", chd+CScalaConfFile)
+			if err != nil {
+				return "", "", fmt.Errorf("unable to search for text in file - %v", err)
+			}
+			if !bStrFound {
+				// String not found
+				if !bFileHasBeenBU {
+					bFileHasBeenBU = true
+					if err := BackupFile(chd, CScalaConfFile, false); err != nil {
+						return "", "", fmt.Errorf("unable to backup file - %v", err)
+					}
+				}
+			} else {
+				bNeedToWriteStr = false
+			}
+		}
+		if bNeedToWriteStr {
+			if err := WriteTextToFile(chd+CScalaConfFile, "server=1"); err != nil {
+				log.Fatal(err)
+			}
+		}
+
+		// Add rpcallowip= info if required
+		bNeedToWriteStr = true
+		if FileExists(chd + CScalaConfFile) {
+			bStrFound, err := StringExistsInFile("rpcallowip=", chd+CScalaConfFile)
+			if err != nil {
+				return "", "", fmt.Errorf("unable to search for text in file - %v", err)
+			}
+			if !bStrFound {
+				// String not found
+				if !bFileHasBeenBU {
+					bFileHasBeenBU = true
+					if err := BackupFile(chd, CScalaConfFile, false); err != nil {
+						return "", "", fmt.Errorf("unable to backup file - %v", err)
+					}
+				}
+			} else {
+				bNeedToWriteStr = false
+			}
+		}
+		if bNeedToWriteStr {
+			if err := WriteTextToFile(chd+CScalaConfFile, "rpcallowip=192.168.1.0/255.255.255.0"); err != nil {
+				log.Fatal(err)
+			}
+		}
+
+		// Add rpcport= info if required
+		bNeedToWriteStr = true
+		if FileExists(chd + CScalaConfFile) {
+			bStrFound, err := StringExistsInFile("rpcport=", chd+CScalaConfFile)
+			if err != nil {
+				return "", "", fmt.Errorf("unable to search for text in file - %v", err)
+			}
+			if !bStrFound {
+				// String not found
+				if !bFileHasBeenBU {
+					bFileHasBeenBU = true
+					if err := BackupFile(chd, CScalaConfFile, false); err != nil {
+						return "", "", fmt.Errorf("unable to backup file - %v", err)
+					}
+				}
+			} else {
+				bNeedToWriteStr = false
+			}
+		}
+		if bNeedToWriteStr {
+			if err := WriteTextToFile(chd+CScalaConfFile, "rpcport="+CScalaRPCPort); err != nil {
+				log.Fatal(err)
+			}
+		}
+
+		return rpcu, rpcpw, nil
 	case PTTrezarcoin:
 		fmt.Println("Populating " + CTrezarcoinConfFile + " for initial setup...")
 
@@ -2057,6 +2211,28 @@ func AllProjectBinaryFilesExists() (bool, error) {
 				return false, nil
 			}
 		}
+	case PTScala:
+		if runtime.GOOS == "windows" {
+			if !FileExists(abf + CScalaCliFileWin) {
+				return false, nil
+			}
+			if !FileExists(abf + CScalaDFileWin) {
+				return false, nil
+			}
+			if !FileExists(abf + CScalaTxFileWin) {
+				return false, nil
+			}
+		} else {
+			if !FileExists(abf + CScalaCliFile) {
+				return false, nil
+			}
+			if !FileExists(abf + CScalaDFile) {
+				return false, nil
+			}
+			if !FileExists(abf + CScalaTxFile) {
+				return false, nil
+			}
+		}
 	case PTTrezarcoin:
 		if runtime.GOOS == "windows" {
 			if !FileExists(abf + CTrezarcoinCliFileWin) {
@@ -2226,6 +2402,23 @@ func WalletFix(wft WalletFixType) error {
 			cRun := exec.Command(abf+coind, "-reindex")
 			if err := cRun.Run(); err != nil {
 				return fmt.Errorf("unable to run pivxd -reindex: %v", err)
+			}
+		}
+	case PTScala:
+		if runtime.GOOS == "windows" {
+			// TODO Complete for Windows
+		} else {
+			var arg1 string
+			switch wft {
+			case WFTReIndex:
+				arg1 = "-reindex"
+			case WFTReSync:
+				arg1 = "-resync"
+			}
+
+			cRun := exec.Command(abf+coind, arg1)
+			if err := cRun.Run(); err != nil {
+				return fmt.Errorf("unable to run divid -reindex: %v", err)
 			}
 		}
 	case PTTrezarcoin:
@@ -2463,6 +2656,30 @@ func RunCoinDaemon(displayOutput bool) error {
 				}
 			}
 		}
+	case PTScala:
+		if runtime.GOOS == "windows" {
+			//_ = exec.Command(GetAppsBinFolder() + cDiviDFileWin)
+			fp := abf + CScalaDFileWin
+			cmd := exec.Command("cmd.exe", "/C", "start", "/b", fp)
+			if err := cmd.Run(); err != nil {
+				return err
+			}
+		} else {
+			if displayOutput {
+				fmt.Println("Attempting to run the scala daemon...")
+			}
+
+			cmdRun := exec.Command(abf + CScalaDFile)
+			//stdout, err := cmdRun.StdoutPipe()
+			if err != nil {
+				return err
+			}
+			err = cmdRun.Start()
+			if err != nil {
+				return err
+			}
+			fmt.Println("Scala server starting")
+		}
 	case PTTrezarcoin:
 		if runtime.GOOS == "windows" {
 			fp := abf + CDiviDFileWin
@@ -2553,11 +2770,11 @@ func StopCoinDaemon(displayOutput bool) error {
 		return fmt.Errorf("unable to GetCoinDaemonFilename - %v", err)
 	}
 
-	gwconf, err := GetConfigStruct("", false)
+	bwconf, err := GetConfigStruct("", false)
 	if err != nil {
 		return err
 	}
-	switch gwconf.ProjectType {
+	switch bwconf.ProjectType {
 	case PTDivi:
 		if runtime.GOOS == "windows" {
 			// TODO Complete for Windows
@@ -2657,6 +2874,26 @@ func StopCoinDaemon(displayOutput bool) error {
 				}
 				time.Sleep(3 * time.Second)
 
+			}
+		}
+	case PTScala:
+		if runtime.GOOS == "windows" {
+			// TODO Complete for Windows
+		} else {
+			for i := 0; i < 50; i++ {
+				cRun := exec.Command(abf+CScalaCliFile, "stop")
+				_ = cRun.Run()
+
+				sr, _, _ := IsCoinDaemonRunning()
+				if !sr {
+					// Lets wait a little longer before returning
+					time.Sleep(3 * time.Second)
+					return nil
+				}
+				if displayOutput {
+					fmt.Printf("\rWaiting for scala server to stop %d/"+strconv.Itoa(50), i+1)
+				}
+				time.Sleep(3 * time.Second)
 			}
 		}
 	case PTTrezarcoin:
