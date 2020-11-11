@@ -1,6 +1,6 @@
 # What is BoxWallet? #
 
-BoxWallet is a CLI tool, that gets your coin-of-choice wallet/node set-up fast with just a few commands:
+BoxWallet is a multi-coin CLI tool, that gets your coin-of-choice wallet/node set-up fast with just a few commands:
 
 boxwallet "coin" - allows you to choose your coin of choice, which, when selected, downloads the projects core files from their official website and installs them automatically.
 
