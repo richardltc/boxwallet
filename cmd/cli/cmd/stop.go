@@ -28,7 +28,7 @@ import (
 // stopCmd represents the stop command
 var stopCmd = &cobra.Command{
 	Use:   "stop",
-	Short: "Stops the your chosen coins daemon server",
+	Short: "Stops your chosen coins daemon server",
 	Long:  ``,
 	Run: func(cmd *cobra.Command, args []string) {
 		fmt.Println("  ____          __          __   _ _      _   \n |  _ \\         \\ \\        / /  | | |    | |  \n | |_) | _____  _\\ \\  /\\  / /_ _| | | ___| |_ \n |  _ < / _ \\ \\/ /\\ \\/  \\/ / _` | | |/ _ \\ __|\n | |_) | (_) >  <  \\  /\\  / (_| | | |  __/ |_ \n |____/ \\___/_/\\_\\  \\/  \\/ \\__,_|_|_|\\___|\\__|\n                                              \n                                              ")
@@ -37,11 +37,22 @@ var stopCmd = &cobra.Command{
 		if err != nil {
 			log.Fatal("Unable to GetCLIConfStruct " + err.Error())
 		}
-		resp, err := be.StopDaemon(&cliConf)
-		if err != nil {
-			log.Fatal("Unable to StopDaemon " + err.Error())
+
+		switch cliConf.ProjectType {
+		case be.PTScala:
+			resp, err := be.StopDaemonMonero(&cliConf)
+			if err != nil {
+				log.Fatal("Unable to StopDaemon " + err.Error())
+			}
+			fmt.Println(resp.Status)
+			fmt.Println("daemon stopping")
+		default:
+			resp, err := be.StopDaemon(&cliConf)
+			if err != nil {
+				log.Fatal("Unable to StopDaemon " + err.Error())
+			}
+			fmt.Println(resp.Result)
 		}
-		fmt.Println(resp.Result)
 
 		// sAppCLIName, err := gwc.GetAppCLIName() // e.g. GoDivi CLI
 		// if err != nil {
