@@ -74,6 +74,7 @@ var coinCmd = &cobra.Command{
 		default:
 			log.Fatal("Unable to determine coin choice")
 		}
+
 		if err := be.SetConfigStruct("", cliConf); err != nil {
 			log.Fatal("Unable to write to config file: ", err)
 		}
