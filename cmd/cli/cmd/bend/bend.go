@@ -432,9 +432,9 @@ func GetAppFileName() (string, error) {
 // }
 
 // func doWalletAdressDisplay() error {
-// 	err := gwc.RunCoinDaemon(false)
+// 	err := gwc.StartCoinDaemon(false)
 // 	if err != nil {
-// 		return fmt.Errorf("Unable to RunCoinDaemon: %v ", err)
+// 		return fmt.Errorf("Unable to StartCoinDaemon: %v ", err)
 // 	}
 
 // 	dbf, err := gwc.GetAppsBinFolder()
@@ -684,7 +684,7 @@ func GetWalletAddress(cliConf *ConfStruct) (GetAddressesByAccountRespStruct, err
 // 	wi := walletInfoStruct{}
 
 // 	// Start the DiviD server if required...
-// 	err := RunCoinDaemon(false)
+// 	err := StartCoinDaemon(false)
 // 	if err != nil {
 // 		return wi, wrtUnknown, fmt.Errorf("Unable to RunDiviD: %v ", err)
 // 	}
@@ -2321,8 +2321,8 @@ func runDCCommandWithValue(cmdBaseStr, cmdStr, valueStr, waitingStr string, atte
 	return "", err
 }
 
-// RunCoinDaemon - Run the coins Daemon e.g. Run divid
-func RunCoinDaemon(displayOutput bool) error {
+// StartCoinDaemon - Run the coins Daemon e.g. Run divid
+func StartCoinDaemon(displayOutput bool) error {
 	idr, _, _ := IsCoinDaemonRunning()
 	if idr == true {
 		// Already running...
@@ -2489,11 +2489,6 @@ func RunCoinDaemon(displayOutput bool) error {
 			}
 		}
 	case PTScala:
-		conf, err := GetConfigStruct("", false)
-		if err != nil {
-			return err
-		}
-
 		if runtime.GOOS == "windows" {
 			//_ = exec.Command(GetAppsBinFolder() + cDiviDFileWin)
 			fp := abf + CScalaDFileWin
@@ -2506,7 +2501,8 @@ func RunCoinDaemon(displayOutput bool) error {
 				fmt.Println("Attempting to run the scala daemon...")
 			}
 
-			args := []string{"--rpc-login", conf.RPCuser + ":" + conf.RPCpassword, "--detach"}
+			//args := []string{"--rpc-login", conf.RPCuser + ":" + conf.RPCpassword, "--detach"}
+			args := []string{"--detach"}
 			cmdRun := exec.Command(abf+CScalaDFile, args...)
 			//stdout, err := cmdRun.StdoutPipe()
 			if err != nil {
@@ -2902,24 +2898,32 @@ func StopDaemon(cliConf *ConfStruct) (GenericRespStruct, error) {
 }
 
 // StopDaemonMonero - Stops Monero based coin daemons
-func StopDaemonMonero(cliConf *ConfStruct) error {
-	ex, err := os.Executable()
+func StopDaemonMonero(cliConf *ConfStruct) (XLAStopDaemonRespStruct, error) {
+	var respStruct XLAStopDaemonRespStruct
+
+	//body := strings.NewReader("{\"jsonrpc\":\"1.0\",\"id\":\"curltext\",\"method\":\"stop_daemon\",\"params\":[]}")
+	body := strings.NewReader("")
+	req, err := http.NewRequest("POST", "http://"+cliConf.ServerIP+":"+cliConf.Port+"/stop_daemon", body)
 	if err != nil {
-		return fmt.Errorf("Unable to retrieve running binary: %v ", err)
+		return respStruct, err
 	}
-	abf := AddTrailingSlash(filepath.Dir(ex))
+	//req.SetBasicAuth(cliConf.RPCuser, cliConf.RPCpassword)
+	req.Header.Set("Content-Type", "application/json;")
 
-	switch cliConf.ProjectType {
-	case PTScala:
-		args := []string{"exit"}
-		cmdRun := exec.Command(abf+CScalaDFile, args...)
-
-		err = cmdRun.Start()
-		if err != nil {
-			return err
-		}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return respStruct, err
 	}
-	return nil
+	defer resp.Body.Close()
+	bodyResp, err := ioutil.ReadAll(resp.Body)
+	if err != nil {
+		return respStruct, err
+	}
+	err = json.Unmarshal(bodyResp, &respStruct)
+	if err != nil {
+		return respStruct, err
+	}
+	return respStruct, nil
 }
 
 // UnlockWallet - Used by the server to unlock the wallet
