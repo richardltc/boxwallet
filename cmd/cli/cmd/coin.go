@@ -25,7 +25,6 @@ import (
 	be "richardmace.co.uk/boxwallet/cmd/cli/cmd/bend"
 	"runtime"
 
-	//_ "github.com/AlecAivazis/survey/v2"
 	"github.com/artdarek/go-unzip"
 	"github.com/mholt/archiver/v3"
 	"github.com/spf13/cobra"
