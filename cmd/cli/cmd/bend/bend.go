@@ -1613,176 +1613,8 @@ func PopulateDaemonConfFile() (rpcuser, rpcpassword string, err error) {
 		}
 		return rpcu, rpcpw, nil
 	case PTScala:
-		fmt.Println("Populating " + CScalaConfFile + " for initial setup...")
-
-		// Add rpcuser info if required, or retrieve the existing one
-		bNeedToWriteStr := true
-		if FileExists(chd + CScalaConfFile) {
-			bStrFound, err := StringExistsInFile(cRPCUserStr+"=", chd+CScalaConfFile)
-			if err != nil {
-				return "", "", fmt.Errorf("unable to search for text in file - %v", err)
-			}
-			if !bStrFound {
-				// String not found
-				if !bFileHasBeenBU {
-					bFileHasBeenBU = true
-					if err := BackupFile(chd, CScalaConfFile, false); err != nil {
-						return "", "", fmt.Errorf("unable to backup file - %v", err)
-					}
-				}
-			} else {
-				bNeedToWriteStr = false
-				rpcu, err = GetStringAfterStrFromFile(cRPCUserStr+"=", chd+CScalaConfFile)
-				if err != nil {
-					return "", "", fmt.Errorf("unable to search for text in file - %v", err)
-				}
-			}
-		} else {
-			// Set this to true, because the file has just been freshly created and we don't want to back it up
-			bFileHasBeenBU = true
-		}
-		if bNeedToWriteStr {
-			rpcu = "scalarpc"
-			if err := WriteTextToFile(chd+CScalaConfFile, cRPCUserStr+"="+rpcu); err != nil {
-				log.Fatal(err)
-			}
-		}
-
-		// Add rpcpassword info if required, or retrieve the existing one
-		bNeedToWriteStr = true
-		if FileExists(chd + CScalaConfFile) {
-			bStrFound, err := StringExistsInFile(cRPCPasswordStr+"=", chd+CScalaConfFile)
-			if err != nil {
-				return "", "", fmt.Errorf("unable to search for text in file - %v", err)
-			}
-			if !bStrFound {
-				// String not found
-				if !bFileHasBeenBU {
-					bFileHasBeenBU = true
-					if err := BackupFile(chd, CScalaConfFile, false); err != nil {
-						return "", "", fmt.Errorf("unable to backup file - %v", err)
-					}
-				}
-			} else {
-				bNeedToWriteStr = false
-				rpcpw, err = GetStringAfterStrFromFile(cRPCPasswordStr+"=", chd+CScalaConfFile)
-				if err != nil {
-					return "", "", fmt.Errorf("unable to search for text in file - %v", err)
-				}
-			}
-		}
-		if bNeedToWriteStr {
-			rpcpw = rand.String(20)
-			if err := WriteTextToFile(chd+CScalaConfFile, cRPCPasswordStr+"="+rpcpw); err != nil {
-				log.Fatal(err)
-			}
-			if err := WriteTextToFile(chd+CScalaConfFile, ""); err != nil {
-				log.Fatal(err)
-			}
-		}
-
-		// Add daemon=1 info if required
-		bNeedToWriteStr = true
-		if FileExists(chd + CScalaConfFile) {
-			bStrFound, err := StringExistsInFile("daemon=1", chd+CScalaConfFile)
-			if err != nil {
-				return "", "", fmt.Errorf("unable to search for text in file - %v", err)
-			}
-			if !bStrFound {
-				// String not found
-				if !bFileHasBeenBU {
-					bFileHasBeenBU = true
-					if err := BackupFile(chd, CScalaConfFile, false); err != nil {
-						return "", "", fmt.Errorf("unable to backup file - %v", err)
-					}
-				}
-			} else {
-				bNeedToWriteStr = false
-			}
-		}
-		if bNeedToWriteStr {
-			if err := WriteTextToFile(chd+CScalaConfFile, "daemon=1"); err != nil {
-				log.Fatal(err)
-			}
-			if err := WriteTextToFile(chd+CScalaConfFile, ""); err != nil {
-				log.Fatal(err)
-			}
-		}
-
-		// Add server=1 info if required
-		bNeedToWriteStr = true
-		if FileExists(chd + CScalaConfFile) {
-			bStrFound, err := StringExistsInFile("server=1", chd+CScalaConfFile)
-			if err != nil {
-				return "", "", fmt.Errorf("unable to search for text in file - %v", err)
-			}
-			if !bStrFound {
-				// String not found
-				if !bFileHasBeenBU {
-					bFileHasBeenBU = true
-					if err := BackupFile(chd, CScalaConfFile, false); err != nil {
-						return "", "", fmt.Errorf("unable to backup file - %v", err)
-					}
-				}
-			} else {
-				bNeedToWriteStr = false
-			}
-		}
-		if bNeedToWriteStr {
-			if err := WriteTextToFile(chd+CScalaConfFile, "server=1"); err != nil {
-				log.Fatal(err)
-			}
-		}
-
-		// Add rpcallowip= info if required
-		bNeedToWriteStr = true
-		if FileExists(chd + CScalaConfFile) {
-			bStrFound, err := StringExistsInFile("rpcallowip=", chd+CScalaConfFile)
-			if err != nil {
-				return "", "", fmt.Errorf("unable to search for text in file - %v", err)
-			}
-			if !bStrFound {
-				// String not found
-				if !bFileHasBeenBU {
-					bFileHasBeenBU = true
-					if err := BackupFile(chd, CScalaConfFile, false); err != nil {
-						return "", "", fmt.Errorf("unable to backup file - %v", err)
-					}
-				}
-			} else {
-				bNeedToWriteStr = false
-			}
-		}
-		if bNeedToWriteStr {
-			if err := WriteTextToFile(chd+CScalaConfFile, "rpcallowip=192.168.1.0/255.255.255.0"); err != nil {
-				log.Fatal(err)
-			}
-		}
-
-		// Add rpcport= info if required
-		bNeedToWriteStr = true
-		if FileExists(chd + CScalaConfFile) {
-			bStrFound, err := StringExistsInFile("rpcport=", chd+CScalaConfFile)
-			if err != nil {
-				return "", "", fmt.Errorf("unable to search for text in file - %v", err)
-			}
-			if !bStrFound {
-				// String not found
-				if !bFileHasBeenBU {
-					bFileHasBeenBU = true
-					if err := BackupFile(chd, CScalaConfFile, false); err != nil {
-						return "", "", fmt.Errorf("unable to backup file - %v", err)
-					}
-				}
-			} else {
-				bNeedToWriteStr = false
-			}
-		}
-		if bNeedToWriteStr {
-			if err := WriteTextToFile(chd+CScalaConfFile, "rpcport="+CScalaRPCPort); err != nil {
-				log.Fatal(err)
-			}
-		}
+		rpcu = "scalarpc"
+		rpcpw = rand.String(20)
 
 		return rpcu, rpcpw, nil
 	case PTTrezarcoin:
@@ -2657,6 +2489,11 @@ func RunCoinDaemon(displayOutput bool) error {
 			}
 		}
 	case PTScala:
+		conf, err := GetConfigStruct("", false)
+		if err != nil {
+			return err
+		}
+
 		if runtime.GOOS == "windows" {
 			//_ = exec.Command(GetAppsBinFolder() + cDiviDFileWin)
 			fp := abf + CScalaDFileWin
@@ -2669,7 +2506,8 @@ func RunCoinDaemon(displayOutput bool) error {
 				fmt.Println("Attempting to run the scala daemon...")
 			}
 
-			cmdRun := exec.Command(abf + CScalaDFile)
+			args := []string{"--rpc-login", conf.RPCuser + ":" + conf.RPCpassword}
+			cmdRun := exec.Command(abf+CScalaDFile, args...)
 			//stdout, err := cmdRun.StdoutPipe()
 			if err != nil {
 				return err
