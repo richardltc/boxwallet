@@ -2329,7 +2329,7 @@ func RunCoinDaemon(displayOutput bool) error {
 		return nil
 	}
 
-	gwconf, err := GetConfigStruct("", false)
+	bwconf, err := GetConfigStruct("", false)
 	if err != nil {
 		return err
 	}
@@ -2340,7 +2340,7 @@ func RunCoinDaemon(displayOutput bool) error {
 	}
 	abf := AddTrailingSlash(filepath.Dir(ex))
 
-	switch gwconf.ProjectType {
+	switch bwconf.ProjectType {
 	case PTDivi:
 		if runtime.GOOS == "windows" {
 			//_ = exec.Command(GetAppsBinFolder() + cDiviDFileWin)
@@ -2506,7 +2506,7 @@ func RunCoinDaemon(displayOutput bool) error {
 				fmt.Println("Attempting to run the scala daemon...")
 			}
 
-			args := []string{"--rpc-login", conf.RPCuser + ":" + conf.RPCpassword}
+			args := []string{"--rpc-login", conf.RPCuser + ":" + conf.RPCpassword, "--detach"}
 			cmdRun := exec.Command(abf+CScalaDFile, args...)
 			//stdout, err := cmdRun.StdoutPipe()
 			if err != nil {
@@ -2899,6 +2899,27 @@ func StopDaemon(cliConf *ConfStruct) (GenericRespStruct, error) {
 		return respStruct, err
 	}
 	return respStruct, nil
+}
+
+// StopDaemonMonero - Stops Monero based coin daemons
+func StopDaemonMonero(cliConf *ConfStruct) error {
+	ex, err := os.Executable()
+	if err != nil {
+		return fmt.Errorf("Unable to retrieve running binary: %v ", err)
+	}
+	abf := AddTrailingSlash(filepath.Dir(ex))
+
+	switch cliConf.ProjectType {
+	case PTScala:
+		args := []string{"exit"}
+		cmdRun := exec.Command(abf+CScalaDFile, args...)
+
+		err = cmdRun.Start()
+		if err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // UnlockWallet - Used by the server to unlock the wallet
