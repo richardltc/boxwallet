@@ -67,6 +67,7 @@ var startCmd = &cobra.Command{
 		case be.PTFeathercoin:
 		case be.PTGroestlcoin:
 		case be.PTPhore:
+		case be.PTScala:
 		case be.PTTrezarcoin:
 		case be.PTVertcoin:
 		default:
