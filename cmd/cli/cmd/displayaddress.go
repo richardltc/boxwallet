@@ -124,7 +124,7 @@ var displayaddressCmd = &cobra.Command{
 		// }
 
 		// Start the Coin Daemon service if required...
-		// err = gwc.RunCoinDaemon(true)
+		// err = gwc.StartCoinDaemon(true)
 		// if err != nil {
 		// 	log.Fatalf("failed to run the coin daemon: %v", err)
 		// }

@@ -275,7 +275,7 @@ var dashCmd = &cobra.Command{
 				}
 				fmt.Println(r.Result)
 				fmt.Println("Restarting wallet after encryption...")
-				if err := be.RunCoinDaemon(false); err != nil {
+				if err := be.StartCoinDaemon(false); err != nil {
 					log.Fatalf("failed to run "+coind+": %v", err)
 				}
 			}
