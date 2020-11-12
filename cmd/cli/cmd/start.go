@@ -75,7 +75,7 @@ var startCmd = &cobra.Command{
 		}
 
 		// Start the coin daemon server if required...
-		if err := be.RunCoinDaemon(true); err != nil {
+		if err := be.StartCoinDaemon(true); err != nil {
 			log.Fatalf("failed to run "+sCoinDaemonName+": %v", err)
 		}
 

@@ -81,7 +81,7 @@ var unlockfsCmd = &cobra.Command{
 		// // Looks like this is needed...
 		// gwc.ClearScreen()
 		// fmt.Println("Restarting wallet after unlock for staking...")
-		// err = gwc.RunCoinDaemon(false)
+		// err = gwc.StartCoinDaemon(false)
 		// if err != nil {
 		// 	log.Fatalf("failed to run "+sCoinDaemonFile+": %v", err)
 		// }

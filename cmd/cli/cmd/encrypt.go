@@ -59,7 +59,7 @@ var encryptCmd = &cobra.Command{
 		}
 		fmt.Println(r.Result)
 		// Start the coin daemon server if required...
-		if err := be.RunCoinDaemon(true); err != nil {
+		if err := be.StartCoinDaemon(true); err != nil {
 			log.Fatalf("failed to run "+sCoinDaemonName+": %v", err)
 		}
 
@@ -83,7 +83,7 @@ var encryptCmd = &cobra.Command{
 		// }
 
 		// // Start the Coin Daemon server if required...
-		// err = gwc.RunCoinDaemon(true) //DiviD(true)
+		// err = gwc.StartCoinDaemon(true) //DiviD(true)
 		// if err != nil {
 		// 	log.Fatalf("failed to run "+sCoinDaemonFile+": %v", err)
 		// }
@@ -112,7 +112,7 @@ var encryptCmd = &cobra.Command{
 		// 	if err != nil {
 		// 		log.Fatalf("failed to stop "+sCoinDaemonFile+": %v", err)
 		// 	}
-		// 	err = gwc.RunCoinDaemon(false) //DiviD(false)
+		// 	err = gwc.StartCoinDaemon(false) //DiviD(false)
 		// 	if err != nil {
 		// 		log.Fatalf("failed to run "+sCoinDaemonFile+": %v", err)
 		// 	}
