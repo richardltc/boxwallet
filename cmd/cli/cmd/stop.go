@@ -28,7 +28,7 @@ import (
 // stopCmd represents the stop command
 var stopCmd = &cobra.Command{
 	Use:   "stop",
-	Short: "Stops your chosen coins daemon server",
+	Short: "Stops your chosen coin's daemon server",
 	Long:  ``,
 	Run: func(cmd *cobra.Command, args []string) {
 		fmt.Println("  ____          __          __   _ _      _   \n |  _ \\         \\ \\        / /  | | |    | |  \n | |_) | _____  _\\ \\  /\\  / /_ _| | | ___| |_ \n |  _ < / _ \\ \\/ /\\ \\/  \\/ / _` | | |/ _ \\ __|\n | |_) | (_) >  <  \\  /\\  / (_| | | |  __/ |_ \n |____/ \\___/_/\\_\\  \\/  \\/ \\__,_|_|_|\\___|\\__|\n                                              \n                                              ")
@@ -73,11 +73,10 @@ var stopCmd = &cobra.Command{
 		// 	log.Fatal(sAppCLIName + ` doesn't appear to be installed yet. Please run "` + sAppFileCLIName + ` install" first`)
 		// }
 
-		// err = gwc.StopCoinDaemon()
+		// err = gwc.StopCoinDaemon().
 		// if err != nil {
 		// 	log.Fatal(`Unable to stop ` + sCoinDaemonFile + ` server:` + err.Error())
 		// }
-		//fmt.Println("\nThe divid server has now stopped")
 	},
 }
 
