@@ -40,13 +40,23 @@ var coinCmd = &cobra.Command{
 		coin := ""
 		prompt := &survey.Select{
 			Message: "Please choose your preferred coin:",
-			Options: []string{be.CCoinNameDivi, be.CCoinNameFeathercoin, be.CCoinNameGroestlcoin, be.CCoinNamePhore, be.CCoinNameScala, be.CCoinNameTrezarcoin, be.CCoinNameVertcoin},
+			Options: []string{be.CCoinNameDivi,
+				be.CCoinNameDeVault,
+				be.CCoinNameFeathercoin,
+				be.CCoinNameGroestlcoin,
+				be.CCoinNamePhore,
+				be.CCoinNameScala,
+				be.CCoinNameTrezarcoin,
+				be.CCoinNameVertcoin},
 		}
 		survey.AskOne(prompt, &coin)
 		cliConf := be.ConfStruct{}
 		cliConf.ServerIP = "127.0.0.1"
 
 		switch coin {
+		case be.CCoinNameDeVault:
+			cliConf.ProjectType = be.PTDeVault
+			cliConf.Port = be.CDeVaultRPCPort
 		case be.CCoinNameDivi:
 			cliConf.ProjectType = be.PTDivi
 			cliConf.Port = be.CDiviRPCPort
@@ -89,7 +99,7 @@ var coinCmd = &cobra.Command{
 		}
 		// because it's possible that the conf file for this coin has already been created, we need to store the
 		// returned user and password so, effectively, will either be storing the existing info, or
-		// the freshly generated info
+		// the freshly generated info.
 		cliConf.RPCuser = rpcu
 		cliConf.RPCpassword = rpcpw
 		err = be.SetConfigStruct("", cliConf)
@@ -149,6 +159,17 @@ func doRequiredFiles() error {
 		return fmt.Errorf("Unable to get CLIConfigStruct: %v ", err)
 	}
 	switch bwconf.ProjectType {
+	case be.PTDeVault:
+		if runtime.GOOS == "windows" {
+			filePath = abf + be.CDFDeVaultWindows
+			fileURL = be.CDownloadURLDeVault + be.CDFDeVaultWindows
+		} else if runtime.GOARCH == "arm" {
+			filePath = abf + be.CDFDeVaultRPi
+			fileURL = be.CDownloadURLDeVault + be.CDFDeVaultRPi
+		} else {
+			filePath = abf + be.CDFDeVaultLinux
+			fileURL = be.CDownloadURLDeVault + be.CDFDeVaultLinux
+		}
 	case be.PTDivi:
 		if runtime.GOOS == "windows" {
 			filePath = abf + be.CDFDiviWindows
@@ -256,6 +277,27 @@ func doRequiredFiles() error {
 	// Now, decompress the files...
 	log.Print("decompressing files...")
 	switch bwconf.ProjectType {
+	case be.PTDeVault:
+		if runtime.GOOS == "windows" {
+			_, err = be.UnZip(filePath, "tmp")
+			if err != nil {
+				return fmt.Errorf("unable to unzip file: %v - %v", filePath, err)
+			}
+			defer os.RemoveAll("tmp")
+		} else if runtime.GOARCH == "arm" {
+			err = be.ExtractTarGz(r)
+			if err != nil {
+				return fmt.Errorf("unable to extractTarGz file: %v - %v", r, err)
+			}
+			defer os.RemoveAll("./" + be.CDeVaultExtractedDirLinux)
+		} else {
+			uz := unzip.New(filePath, abf)
+			err := uz.Extract()
+			if err != nil {
+				return fmt.Errorf("unable to unzip file: %v - %v", filePath, err)
+			}
+			defer os.RemoveAll("tmp")
+		}
 	case be.PTDivi:
 		if runtime.GOOS == "windows" {
 			_, err = be.UnZip(filePath, "tmp")
