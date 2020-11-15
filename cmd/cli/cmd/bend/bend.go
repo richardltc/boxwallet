@@ -24,7 +24,7 @@ import (
 
 const (
 	CAppName        string = "BoxWallet"
-	CBWAppVersion   string = "0.34.1"
+	CBWAppVersion   string = "0.35.0"
 	CAppFilename    string = "boxwallet"
 	CAppFilenameWin string = "boxwallet.exe"
 	CAppLogfile     string = "boxwallet.log"
@@ -126,6 +126,7 @@ const (
 	PTVertcoin
 	PTGroestlcoin
 	PTScala
+	PTDeVault
 )
 
 // OSType - either ostArm, ostLinux or ostWindows
@@ -485,6 +486,8 @@ func GetCoinDaemonFilename(at APPType) (string, error) {
 	}
 
 	switch pt {
+	case PTDeVault:
+		return CDeVaultDFile, nil
 	case PTDivi:
 		return CDiviDFile, nil
 	case PTFeathercoin:
@@ -525,6 +528,8 @@ func GetCoinName(at APPType) (string, error) {
 	}
 
 	switch pt {
+	case PTDeVault:
+		return CCoinNameDeVault, nil
 	case PTDivi:
 		return CCoinNameDivi, nil
 	case PTFeathercoin:
@@ -573,6 +578,8 @@ func GetCoinHomeFolder(at APPType) (string, error) {
 	if runtime.GOOS == "windows" {
 		// add the "appdata\roaming" part.
 		switch pt {
+		case PTDeVault:
+			s = AddTrailingSlash(hd) + "appdata\\roaming\\" + AddTrailingSlash(CDeVaultHomeDirWin)
 		case PTDivi:
 			s = AddTrailingSlash(hd) + "appdata\\roaming\\" + AddTrailingSlash(CDiviHomeDirWin)
 		case PTFeathercoin:
@@ -595,6 +602,8 @@ func GetCoinHomeFolder(at APPType) (string, error) {
 		}
 	} else {
 		switch pt {
+		case PTDeVault:
+			s = AddTrailingSlash(hd) + AddTrailingSlash(CDeVaultHomeDir)
 		case PTDivi:
 			s = AddTrailingSlash(hd) + AddTrailingSlash(CDiviHomeDir)
 		case PTFeathercoin:
@@ -2341,6 +2350,30 @@ func StartCoinDaemon(displayOutput bool) error {
 	abf := AddTrailingSlash(filepath.Dir(ex))
 
 	switch bwconf.ProjectType {
+	case PTDeVault:
+		if runtime.GOOS == "windows" {
+			//_ = exec.Command(GetAppsBinFolder() + cDiviDFileWin)
+			fp := abf + CDeVaultDFileWin
+			cmd := exec.Command("cmd.exe", "/C", "start", "/b", fp)
+			if err := cmd.Run(); err != nil {
+				return err
+			}
+		} else {
+			if displayOutput {
+				fmt.Println("Attempting to run the devault daemon...")
+			}
+
+			cmdRun := exec.Command(abf + CDeVaultDFile)
+			//stdout, err := cmdRun.StdoutPipe()
+			if err != nil {
+				return err
+			}
+			err = cmdRun.Start()
+			if err != nil {
+				return err
+			}
+			fmt.Println("DeVault server starting")
+		}
 	case PTDivi:
 		if runtime.GOOS == "windows" {
 			//_ = exec.Command(GetAppsBinFolder() + cDiviDFileWin)
@@ -2364,7 +2397,7 @@ func StartCoinDaemon(displayOutput bool) error {
 				return err
 			}
 
-			buf := bufio.NewReader(stdout) // Notice that this is not in a loop
+			buf := bufio.NewReader(stdout)
 			num := 1
 			for {
 				line, _, _ := buf.ReadLine()
