@@ -11,11 +11,10 @@ const (
 	CCoinNameScala string = "Scala"
 
 	CScalaCoreVersion string = "4.1.0"
-	CDFScalaRPi       string = "Vertcoin-" + CScalaCoreVersion + "-rPI.zip"
+	CDFScalaRPi       string = "arm-" + CScalaCoreVersion + "-rPI.zip"
 	CDFScalaLinux     string = "linux-x64-" + CScalaCoreVersion + ".zip"
 	CDFScalaWindows   string = "windows-x64-v" + CScalaCoreVersion + ".zip"
 
-	//CScalaExtractedDirLinux = "linux-x64-" + CScalaCoreVersion + "/"
 	CScalaExtractedDirLinux = "bin/"
 
 	CDownloadURLScala string = "https://github.com/scala-network/Scala/releases/download/v" + CScalaCoreVersion + "/"
