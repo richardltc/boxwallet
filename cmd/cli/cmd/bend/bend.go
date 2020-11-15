@@ -2062,6 +2062,28 @@ func AllProjectBinaryFilesExists() (bool, error) {
 		return false, fmt.Errorf("unable to GetConfigStruct - %v", err)
 	}
 	switch bwconf.ProjectType {
+	case PTDeVault:
+		if runtime.GOOS == "windows" {
+			if !FileExists(abf + CDeVaultCliFileWin) {
+				return false, nil
+			}
+			if !FileExists(abf + CDeVaultDFileWin) {
+				return false, nil
+			}
+			if !FileExists(abf + CDeVaultTxFileWin) {
+				return false, nil
+			}
+		} else {
+			if !FileExists(abf + CDeVaultCliFile) {
+				return false, nil
+			}
+			if !FileExists(abf + CDeVaultDFile) {
+				return false, nil
+			}
+			if !FileExists(abf + CDeVaultTxFile) {
+				return false, nil
+			}
+		}
 	case PTDivi:
 		if runtime.GOOS == "windows" {
 			if !FileExists(abf + CDiviCliFileWin) {
