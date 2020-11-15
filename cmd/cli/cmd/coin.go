@@ -291,12 +291,11 @@ func doRequiredFiles() error {
 			}
 			defer os.RemoveAll("./" + be.CDeVaultExtractedDirLinux)
 		} else {
-			uz := unzip.New(filePath, abf)
-			err := uz.Extract()
+			err = archiver.Unarchive(filePath, abf)
 			if err != nil {
-				return fmt.Errorf("unable to unzip file: %v - %v", filePath, err)
+				return fmt.Errorf("unable to extractTarGz file: %v - %v", r, err)
 			}
-			defer os.RemoveAll("tmp")
+			defer os.RemoveAll("./" + be.CDeVaultExtractedDirLinux)
 		}
 	case be.PTDivi:
 		if runtime.GOOS == "windows" {
@@ -470,6 +469,29 @@ func doRequiredFiles() error {
 	var srcPath, srcFileCLI, srcFileD, srcFileTX string
 
 	switch bwconf.ProjectType {
+	case be.PTDeVault:
+		switch runtime.GOOS {
+		case "windows":
+			srcPath = "./tmp/" + be.CDeVaultExtractedDirLinux
+			srcFileCLI = be.CDeVaultCliFileWin
+			srcFileD = be.CDeVaultDFileWin
+			srcFileTX = be.CDeVaultTxFileWin
+			//srcFileBWCLI = be.CAppFilenameWin
+		case "arm":
+			srcPath = "./" + be.CDeVaultExtractedDirLinux + "bin/"
+			srcFileCLI = be.CDeVaultCliFile
+			srcFileD = be.CDeVaultDFile
+			srcFileTX = be.CDeVaultTxFile
+			//srcFileBWCLI = be.CAppFilename
+		case "linux":
+			srcPath = "./" + be.CDeVaultExtractedDirLinux + "bin/"
+			srcFileCLI = be.CDeVaultCliFile
+			srcFileD = be.CDeVaultDFile
+			srcFileTX = be.CDeVaultTxFile
+			//srcFileBWCLI = be.CAppFilename
+		default:
+			err = errors.New("unable to determine runtime.GOOS")
+		}
 	case be.PTDivi:
 		switch runtime.GOOS {
 		case "windows":
