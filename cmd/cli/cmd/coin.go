@@ -123,6 +123,8 @@ var coinCmd = &cobra.Command{
 
 		// Display tip message.
 		switch cliConf.ProjectType {
+		case be.PTDeVault:
+			fmt.Println("\nDVT: devault:qp7w4pnm774c0uwch8ty6tj7sw86hze9ps4sqrwcue")
 		case be.PTDivi:
 			fmt.Println("\nDIVI: DGvhjUXznuDyALk9zX4Y3ko4QQTmRhF7jZ")
 		case be.PTFeathercoin:
@@ -130,6 +132,7 @@ var coinCmd = &cobra.Command{
 		case be.PTGroestlcoin:
 			fmt.Println("\nGRS: 3HBqpZ1JH125FmW52GYjoBpNEAwyxjL9t9")
 		case be.PTPhore:
+			fmt.Println("\nPHR: PKFcy7UTEWegnAq7Wci8Aj76bQyHMottF8")
 		case be.PTPIVX:
 			fmt.Println("\nPIVX: DFHmj4dExVC24eWoRKmQJDx57r4svGVs3J")
 		case be.PTScala:
