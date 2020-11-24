@@ -48,6 +48,7 @@ var startCmd = &cobra.Command{
 		}
 
 		switch cliConf.ProjectType {
+		case be.PTDeVault:
 		case be.PTDivi:
 			// Add the addnodes if required...
 			log.Println("Checking for addnodes...")
@@ -67,6 +68,7 @@ var startCmd = &cobra.Command{
 		case be.PTFeathercoin:
 		case be.PTGroestlcoin:
 		case be.PTPhore:
+		case be.PTReddCoin:
 		case be.PTScala:
 		case be.PTTrezarcoin:
 		case be.PTVertcoin:
