@@ -127,6 +127,7 @@ const (
 	PTGroestlcoin
 	PTScala
 	PTDeVault
+	PTReddCoin
 )
 
 // OSType - either ostArm, ostLinux or ostWindows
@@ -498,6 +499,8 @@ func GetCoinDaemonFilename(at APPType) (string, error) {
 		return CPhoreDFile, nil
 	case PTPIVX:
 		return CPIVXDFile, nil
+	case PTReddCoin:
+		return CReddCoinDFile, nil
 	case PTScala:
 		return CScalaDFile, nil
 	case PTTrezarcoin:
@@ -540,6 +543,8 @@ func GetCoinName(at APPType) (string, error) {
 		return CCoinNamePhore, nil
 	case PTPIVX:
 		return CCoinNamePIVX, nil
+	case PTReddCoin:
+		return CCoinNameReddCoin, nil
 	case PTScala:
 		return CCoinNameScala, nil
 	case PTTrezarcoin:
@@ -590,6 +595,8 @@ func GetCoinHomeFolder(at APPType) (string, error) {
 			s = AddTrailingSlash(hd) + "appdata\\roaming\\" + AddTrailingSlash(CPhoreHomeDirWin)
 		case PTPIVX:
 			s = AddTrailingSlash(hd) + "appdata\\roaming\\" + AddTrailingSlash(cPIVXHomeDirWin)
+		case PTReddCoin:
+			s = AddTrailingSlash(hd) + "appdata\\roaming\\" + AddTrailingSlash(CReddCoinHomeDirWin)
 		case PTScala:
 			s = AddTrailingSlash(hd) + "appdata\\roaming\\" + AddTrailingSlash(CScalaHomeDirWin)
 		case PTTrezarcoin:
@@ -614,6 +621,8 @@ func GetCoinHomeFolder(at APPType) (string, error) {
 			s = AddTrailingSlash(hd) + AddTrailingSlash(CPhoreHomeDir)
 		case PTPIVX:
 			s = AddTrailingSlash(hd) + AddTrailingSlash(cPIVXHomeDir)
+		case PTReddCoin:
+			s = AddTrailingSlash(hd) + AddTrailingSlash(CReddCoinHomeDir)
 		case PTScala:
 			s = AddTrailingSlash(hd) + AddTrailingSlash(CScalaHomeDir)
 		case PTTrezarcoin:
@@ -783,6 +792,13 @@ func GetWalletEncryptionStatus() (WEType, error) {
 	}
 	pt := conf.ProjectType
 	switch pt {
+	case PTDeVault:
+		wi, err := GetWalletInfoDVT(&conf)
+		if err != nil {
+			return WETUnknown, fmt.Errorf("unable to GetWalletInfoDVT %v", err)
+		}
+		wet := GetWalletSecurityStateDVT(&wi)
+		return wet, nil
 	case PTDivi:
 		wi, err := GetWalletInfoDivi(&conf)
 		if err != nil {
@@ -917,121 +933,174 @@ func PopulateDaemonConfFile() (rpcuser, rpcpassword string, err error) {
 		fmt.Println("Populating " + CDeVaultConfFile + " for initial setup...")
 
 		// Add rpcuser info if required, or retrieve the existing one
-		b, err := StringExistsInFile(cRPCUserStr+"=", chd+CDeVaultConfFile)
-		if err != nil {
-			return "", "", fmt.Errorf("unable to search for text in file - %v", err)
-		}
-		if !b {
-			if !bFileHasBeenBU {
-				bFileHasBeenBU = true
-				if err := BackupFile(chd, CDeVaultConfFile, false); err != nil {
-					return "", "", fmt.Errorf("unable to backup file - %v", err)
+		bNeedToWriteStr := true
+		if FileExists(chd + CDeVaultConfFile) {
+			bStrFound, err := StringExistsInFile(cRPCUserStr+"=", chd+CDeVaultConfFile)
+			if err != nil {
+				return "", "", fmt.Errorf("unable to search for text in file - %v", err)
+			}
+			if !bStrFound {
+				// String not found
+				if !bFileHasBeenBU {
+					bFileHasBeenBU = true
+					if err := BackupFile(chd, CDeVaultConfFile, false); err != nil {
+						return "", "", fmt.Errorf("unable to backup file - %v", err)
+					}
+				}
+			} else {
+				bNeedToWriteStr = false
+				rpcu, err = GetStringAfterStrFromFile(cRPCUserStr+"=", chd+CDeVaultConfFile)
+				if err != nil {
+					return "", "", fmt.Errorf("unable to search for text in file - %v", err)
 				}
 			}
+		} else {
+			// Set this to true, because the file has just been freshly created and we don't want to back it up
+			bFileHasBeenBU = true
+		}
+		if bNeedToWriteStr {
 			rpcu = "devaultrpc"
 			if err := WriteTextToFile(chd+CDeVaultConfFile, cRPCUserStr+"="+rpcu); err != nil {
 				log.Fatal(err)
 			}
-		} else {
-			rpcu, err = GetStringAfterStrFromFile(cRPCUserStr+"=", chd+CDeVaultConfFile)
-			if err != nil {
-				return "", "", fmt.Errorf("unable to search for text in file - %v", err)
-			}
 		}
 
 		// Add rpcpassword info if required, or retrieve the existing one
-		b, err = StringExistsInFile(cRPCPasswordStr+"=", chd+CDeVaultConfFile)
-		if err != nil {
-			return "", "", fmt.Errorf("unable to search for text in file - %v", err)
-		}
-		if !b {
-			if !bFileHasBeenBU {
-				bFileHasBeenBU = true
-				if err := BackupFile(chd, CDeVaultConfFile, false); err != nil {
-					return "", "", fmt.Errorf("unable to backup file - %v", err)
-				}
-				rpcpw = rand.String(20)
-				if err := WriteTextToFile(chd+CDeVaultConfFile, cRPCPasswordStr+"="+rpcpw); err != nil {
-					log.Fatal(err)
-				}
-				if err := WriteTextToFile(chd+CDeVaultConfFile, ""); err != nil {
-					log.Fatal(err)
-				}
-			}
-		} else {
-			rpcpw, err = GetStringAfterStrFromFile(cRPCPasswordStr+"=", chd+CDeVaultConfFile)
+		bNeedToWriteStr = true
+		if FileExists(chd + CDeVaultConfFile) {
+			bStrFound, err := StringExistsInFile(cRPCPasswordStr+"=", chd+CDeVaultConfFile)
 			if err != nil {
 				return "", "", fmt.Errorf("unable to search for text in file - %v", err)
+			}
+			if !bStrFound {
+				// String not found
+				if !bFileHasBeenBU {
+					bFileHasBeenBU = true
+					if err := BackupFile(chd, CDeVaultConfFile, false); err != nil {
+						return "", "", fmt.Errorf("unable to backup file - %v", err)
+					}
+				}
+			} else {
+				bNeedToWriteStr = false
+				rpcpw, err = GetStringAfterStrFromFile(cRPCPasswordStr+"=", chd+CDeVaultConfFile)
+				if err != nil {
+					return "", "", fmt.Errorf("unable to search for text in file - %v", err)
+				}
+			}
+		}
+		if bNeedToWriteStr {
+			rpcpw = rand.String(20)
+			if err := WriteTextToFile(chd+CDeVaultConfFile, cRPCPasswordStr+"="+rpcpw); err != nil {
+				log.Fatal(err)
+			}
+			if err := WriteTextToFile(chd+CDeVaultConfFile, ""); err != nil {
+				log.Fatal(err)
 			}
 		}
 
 		// Add daemon=1 info if required
-		b, err = StringExistsInFile("daemon=1", chd+CDeVaultConfFile)
-		if err != nil {
-			return "", "", fmt.Errorf("unable to search for text in file - %v", err)
-		}
-		if !b {
-			if !bFileHasBeenBU {
-				bFileHasBeenBU = true
-				if err := BackupFile(chd, CDeVaultConfFile, false); err != nil {
-					return "", "", fmt.Errorf("unable to backup file - %v", err)
+		bNeedToWriteStr = true
+		if FileExists(chd + CDeVaultConfFile) {
+			bStrFound, err := StringExistsInFile("daemon=1", chd+CDeVaultConfFile)
+			if err != nil {
+				return "", "", fmt.Errorf("unable to search for text in file - %v", err)
+			}
+			if !bStrFound {
+				// String not found
+				if !bFileHasBeenBU {
+					bFileHasBeenBU = true
+					if err := BackupFile(chd, CDeVaultConfFile, false); err != nil {
+						return "", "", fmt.Errorf("unable to backup file - %v", err)
+					}
 				}
-				if err := WriteTextToFile(chd+CDeVaultConfFile, "daemon=1"); err != nil {
-					log.Fatal(err)
-				}
-				if err := WriteTextToFile(chd+CDeVaultConfFile, ""); err != nil {
-					log.Fatal(err)
-				}
+			} else {
+				bNeedToWriteStr = false
 			}
 		}
+		if bNeedToWriteStr {
+			if err := WriteTextToFile(chd+CDeVaultConfFile, "daemon=1"); err != nil {
+				log.Fatal(err)
+			}
+			if err := WriteTextToFile(chd+CDeVaultConfFile, ""); err != nil {
+				log.Fatal(err)
+			}
+		}
+
 		// Add server=1 info if required
-		b, err = StringExistsInFile("server=1", chd+CDeVaultConfFile)
-		if err != nil {
-			return "", "", fmt.Errorf("unable to search for text in file - %v", err)
-		}
-		if !b {
-			if !bFileHasBeenBU {
-				bFileHasBeenBU = true
-				if err := BackupFile(chd, CDeVaultConfFile, false); err != nil {
-					return "", "", fmt.Errorf("unable to backup file - %v", err)
+		bNeedToWriteStr = true
+		if FileExists(chd + CDeVaultConfFile) {
+			bStrFound, err := StringExistsInFile("server=1", chd+CDeVaultConfFile)
+			if err != nil {
+				return "", "", fmt.Errorf("unable to search for text in file - %v", err)
+			}
+			if !bStrFound {
+				// String not found
+				if !bFileHasBeenBU {
+					bFileHasBeenBU = true
+					if err := BackupFile(chd, CDeVaultConfFile, false); err != nil {
+						return "", "", fmt.Errorf("unable to backup file - %v", err)
+					}
 				}
-				if err := WriteTextToFile(chd+CDeVaultConfFile, "server=1"); err != nil {
-					log.Fatal(err)
-				}
+			} else {
+				bNeedToWriteStr = false
 			}
 		}
+		if bNeedToWriteStr {
+			if err := WriteTextToFile(chd+CDeVaultConfFile, "server=1"); err != nil {
+				log.Fatal(err)
+			}
+		}
+
 		// Add rpcallowip= info if required
-		b, err = StringExistsInFile("rpcallowip=", chd+CDeVaultConfFile)
-		if err != nil {
-			return "", "", fmt.Errorf("unable to search for text in file - %v", err)
-		}
-		if !b {
-			if !bFileHasBeenBU {
-				bFileHasBeenBU = true
-				if err := BackupFile(chd, CDeVaultConfFile, false); err != nil {
-					return "", "", fmt.Errorf("unable to backup file - %v", err)
+		bNeedToWriteStr = true
+		if FileExists(chd + CDeVaultConfFile) {
+			bStrFound, err := StringExistsInFile("rpcallowip=", chd+CDeVaultConfFile)
+			if err != nil {
+				return "", "", fmt.Errorf("unable to search for text in file - %v", err)
+			}
+			if !bStrFound {
+				// String not found
+				if !bFileHasBeenBU {
+					bFileHasBeenBU = true
+					if err := BackupFile(chd, CDeVaultConfFile, false); err != nil {
+						return "", "", fmt.Errorf("unable to backup file - %v", err)
+					}
 				}
-				if err := WriteTextToFile(chd+CDeVaultConfFile, "rpcallowip=192.168.1.0/255.255.255.0"); err != nil {
-					log.Fatal(err)
-				}
+			} else {
+				bNeedToWriteStr = false
 			}
 		}
+		if bNeedToWriteStr {
+			if err := WriteTextToFile(chd+CDeVaultConfFile, "rpcallowip=192.168.1.0/255.255.255.0"); err != nil {
+				log.Fatal(err)
+			}
+		}
+
 		// Add rpcport= info if required
-		b, err = StringExistsInFile("rpcport=", chd+CDeVaultConfFile)
-		if err != nil {
-			return "", "", fmt.Errorf("unable to search for text in file - %v", err)
-		}
-		if !b {
-			if !bFileHasBeenBU {
-				bFileHasBeenBU = true
-				if err := BackupFile(chd, CDeVaultConfFile, false); err != nil {
-					return "", "", fmt.Errorf("unable to backup file - %v", err)
+		bNeedToWriteStr = true
+		if FileExists(chd + CDeVaultConfFile) {
+			bStrFound, err := StringExistsInFile("rpcport=", chd+CDeVaultConfFile)
+			if err != nil {
+				return "", "", fmt.Errorf("unable to search for text in file - %v", err)
+			}
+			if !bStrFound {
+				// String not found
+				if !bFileHasBeenBU {
+					bFileHasBeenBU = true
+					if err := BackupFile(chd, CDeVaultConfFile, false); err != nil {
+						return "", "", fmt.Errorf("unable to backup file - %v", err)
+					}
 				}
-				if err := WriteTextToFile(chd+CDeVaultConfFile, "rpcport="+CDeVaultRPCPort); err != nil {
-					log.Fatal(err)
-				}
+			} else {
+				bNeedToWriteStr = false
 			}
 		}
+		if bNeedToWriteStr {
+			if err := WriteTextToFile(chd+CDeVaultConfFile, "rpcport="+CDeVaultRPCPort); err != nil {
+				log.Fatal(err)
+			}
+		}
+
 		return rpcu, rpcpw, nil
 	case PTDivi:
 		fmt.Println("Populating " + CDiviConfFile + " for initial setup...")
@@ -1741,6 +1810,179 @@ func PopulateDaemonConfFile() (rpcuser, rpcpassword string, err error) {
 			}
 		}
 		return rpcu, rpcpw, nil
+	case PTReddCoin:
+		fmt.Println("Populating " + CReddCoinConfFile + " for initial setup...")
+
+		// Add rpcuser info if required, or retrieve the existing one
+		bNeedToWriteStr := true
+		if FileExists(chd + CReddCoinConfFile) {
+			bStrFound, err := StringExistsInFile(cRPCUserStr+"=", chd+CReddCoinConfFile)
+			if err != nil {
+				return "", "", fmt.Errorf("unable to search for text in file - %v", err)
+			}
+			if !bStrFound {
+				// String not found
+				if !bFileHasBeenBU {
+					bFileHasBeenBU = true
+					if err := BackupFile(chd, CReddCoinConfFile, false); err != nil {
+						return "", "", fmt.Errorf("unable to backup file - %v", err)
+					}
+				}
+			} else {
+				bNeedToWriteStr = false
+				rpcu, err = GetStringAfterStrFromFile(cRPCUserStr+"=", chd+CReddCoinConfFile)
+				if err != nil {
+					return "", "", fmt.Errorf("unable to search for text in file - %v", err)
+				}
+			}
+		} else {
+			// Set this to true, because the file has just been freshly created and we don't want to back it up
+			bFileHasBeenBU = true
+		}
+		if bNeedToWriteStr {
+			rpcu = cReddCoinRPCUser
+			if err := WriteTextToFile(chd+CReddCoinConfFile, cRPCUserStr+"="+rpcu); err != nil {
+				log.Fatal(err)
+			}
+		}
+
+		// Add rpcpassword info if required, or retrieve the existing one
+		bNeedToWriteStr = true
+		if FileExists(chd + CReddCoinConfFile) {
+			bStrFound, err := StringExistsInFile(cRPCPasswordStr+"=", chd+CReddCoinConfFile)
+			if err != nil {
+				return "", "", fmt.Errorf("unable to search for text in file - %v", err)
+			}
+			if !bStrFound {
+				// String not found
+				if !bFileHasBeenBU {
+					bFileHasBeenBU = true
+					if err := BackupFile(chd, CReddCoinConfFile, false); err != nil {
+						return "", "", fmt.Errorf("unable to backup file - %v", err)
+					}
+				}
+			} else {
+				bNeedToWriteStr = false
+				rpcpw, err = GetStringAfterStrFromFile(cRPCPasswordStr+"=", chd+CReddCoinConfFile)
+				if err != nil {
+					return "", "", fmt.Errorf("unable to search for text in file - %v", err)
+				}
+			}
+		}
+		if bNeedToWriteStr {
+			rpcpw = rand.String(20)
+			if err := WriteTextToFile(chd+CReddCoinConfFile, cRPCPasswordStr+"="+rpcpw); err != nil {
+				log.Fatal(err)
+			}
+			if err := WriteTextToFile(chd+CReddCoinConfFile, ""); err != nil {
+				log.Fatal(err)
+			}
+		}
+
+		// Add daemon=1 info if required
+		bNeedToWriteStr = true
+		if FileExists(chd + CReddCoinConfFile) {
+			bStrFound, err := StringExistsInFile("daemon=1", chd+CReddCoinConfFile)
+			if err != nil {
+				return "", "", fmt.Errorf("unable to search for text in file - %v", err)
+			}
+			if !bStrFound {
+				// String not found
+				if !bFileHasBeenBU {
+					bFileHasBeenBU = true
+					if err := BackupFile(chd, CReddCoinConfFile, false); err != nil {
+						return "", "", fmt.Errorf("unable to backup file - %v", err)
+					}
+				}
+			} else {
+				bNeedToWriteStr = false
+			}
+		}
+		if bNeedToWriteStr {
+			if err := WriteTextToFile(chd+CReddCoinConfFile, "daemon=1"); err != nil {
+				log.Fatal(err)
+			}
+			if err := WriteTextToFile(chd+CReddCoinConfFile, ""); err != nil {
+				log.Fatal(err)
+			}
+		}
+
+		// Add server=1 info if required
+		bNeedToWriteStr = true
+		if FileExists(chd + CReddCoinConfFile) {
+			bStrFound, err := StringExistsInFile("server=1", chd+CReddCoinConfFile)
+			if err != nil {
+				return "", "", fmt.Errorf("unable to search for text in file - %v", err)
+			}
+			if !bStrFound {
+				// String not found
+				if !bFileHasBeenBU {
+					bFileHasBeenBU = true
+					if err := BackupFile(chd, CReddCoinConfFile, false); err != nil {
+						return "", "", fmt.Errorf("unable to backup file - %v", err)
+					}
+				}
+			} else {
+				bNeedToWriteStr = false
+			}
+		}
+		if bNeedToWriteStr {
+			if err := WriteTextToFile(chd+CReddCoinConfFile, "server=1"); err != nil {
+				log.Fatal(err)
+			}
+		}
+
+		// Add rpcallowip= info if required
+		bNeedToWriteStr = true
+		if FileExists(chd + CReddCoinConfFile) {
+			bStrFound, err := StringExistsInFile("rpcallowip=", chd+CReddCoinConfFile)
+			if err != nil {
+				return "", "", fmt.Errorf("unable to search for text in file - %v", err)
+			}
+			if !bStrFound {
+				// String not found
+				if !bFileHasBeenBU {
+					bFileHasBeenBU = true
+					if err := BackupFile(chd, CReddCoinConfFile, false); err != nil {
+						return "", "", fmt.Errorf("unable to backup file - %v", err)
+					}
+				}
+			} else {
+				bNeedToWriteStr = false
+			}
+		}
+		if bNeedToWriteStr {
+			if err := WriteTextToFile(chd+CReddCoinConfFile, "rpcallowip=192.168.1.0/255.255.255.0"); err != nil {
+				log.Fatal(err)
+			}
+		}
+
+		// Add rpcport= info if required
+		bNeedToWriteStr = true
+		if FileExists(chd + CReddCoinConfFile) {
+			bStrFound, err := StringExistsInFile("rpcport=", chd+CReddCoinConfFile)
+			if err != nil {
+				return "", "", fmt.Errorf("unable to search for text in file - %v", err)
+			}
+			if !bStrFound {
+				// String not found
+				if !bFileHasBeenBU {
+					bFileHasBeenBU = true
+					if err := BackupFile(chd, CReddCoinConfFile, false); err != nil {
+						return "", "", fmt.Errorf("unable to backup file - %v", err)
+					}
+				}
+			} else {
+				bNeedToWriteStr = false
+			}
+		}
+		if bNeedToWriteStr {
+			if err := WriteTextToFile(chd+CReddCoinConfFile, "rpcport="+CReddCoinRPCPort); err != nil {
+				log.Fatal(err)
+			}
+		}
+
+		return rpcu, rpcpw, nil
 	case PTScala:
 		rpcu = "scalarpc"
 		rpcpw = rand.String(20)
@@ -2194,6 +2436,28 @@ func AllProjectBinaryFilesExists() (bool, error) {
 				return false, nil
 			}
 		}
+	case PTReddCoin:
+		if runtime.GOOS == "windows" {
+			if !FileExists(abf + CReddCoinCliFileWin) {
+				return false, nil
+			}
+			if !FileExists(abf + CReddCoinDFileWin) {
+				return false, nil
+			}
+			if !FileExists(abf + CReddCoinTxFileWin) {
+				return false, nil
+			}
+		} else {
+			if !FileExists(abf + CReddCoinCliFile) {
+				return false, nil
+			}
+			if !FileExists(abf + CReddCoinDFile) {
+				return false, nil
+			}
+			if !FileExists(abf + CReddCoinTxFile) {
+				return false, nil
+			}
+		}
 	case PTScala:
 		if runtime.GOOS == "windows" {
 			if !FileExists(abf + CScalaCliFileWin) {
@@ -2505,7 +2769,8 @@ func StartCoinDaemon(displayOutput bool) error {
 				fmt.Println("Attempting to run the devault daemon...")
 			}
 
-			cmdRun := exec.Command(abf + CDeVaultDFile)
+			args := []string{"-bypasspassword"}
+			cmdRun := exec.Command(abf+CDeVaultDFile, args...)
 			//stdout, err := cmdRun.StdoutPipe()
 			if err != nil {
 				return err
@@ -2663,6 +2928,30 @@ func StartCoinDaemon(displayOutput bool) error {
 				}
 			}
 		}
+	case PTReddCoin:
+		if runtime.GOOS == "windows" {
+			//_ = exec.Command(GetAppsBinFolder() + cDiviDFileWin)
+			fp := abf + CReddCoinDFileWin
+			cmd := exec.Command("cmd.exe", "/C", "start", "/b", fp)
+			if err := cmd.Run(); err != nil {
+				return err
+			}
+		} else {
+			if displayOutput {
+				fmt.Println("Attempting to run the reddcoin daemon...")
+			}
+
+			cmdRun := exec.Command(abf + CReddCoinDFile)
+			//stdout, err := cmdRun.StdoutPipe()
+			if err != nil {
+				return err
+			}
+			err = cmdRun.Start()
+			if err != nil {
+				return err
+			}
+			fmt.Println("ReddCoin server starting")
+		}
 	case PTScala:
 		if runtime.GOOS == "windows" {
 			//_ = exec.Command(GetAppsBinFolder() + cDiviDFileWin)
@@ -2676,7 +2965,6 @@ func StartCoinDaemon(displayOutput bool) error {
 				fmt.Println("Attempting to run the scala daemon...")
 			}
 
-			//args := []string{"--rpc-login", conf.RPCuser + ":" + conf.RPCpassword, "--detach"}
 			args := []string{"--detach"}
 			cmdRun := exec.Command(abf+CScalaDFile, args...)
 			//stdout, err := cmdRun.StdoutPipe()
