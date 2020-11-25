@@ -45,6 +45,7 @@ var coinCmd = &cobra.Command{
 				be.CCoinNameFeathercoin,
 				be.CCoinNameGroestlcoin,
 				be.CCoinNamePhore,
+				be.CCoinNameReddCoin,
 				be.CCoinNameScala,
 				be.CCoinNameTrezarcoin,
 				be.CCoinNameVertcoin},
@@ -72,6 +73,9 @@ var coinCmd = &cobra.Command{
 		case be.CCoinNamePIVX:
 			cliConf.ProjectType = be.PTPIVX
 			cliConf.Port = be.CPIVXRPCPort
+		case be.CCoinNameReddCoin:
+			cliConf.ProjectType = be.PTReddCoin
+			cliConf.Port = be.CReddCoinRPCPort
 		case be.CCoinNameScala:
 			cliConf.ProjectType = be.PTScala
 			cliConf.Port = be.CScalaRPCPort
@@ -97,7 +101,7 @@ var coinCmd = &cobra.Command{
 		if err != nil {
 			log.Fatal(err)
 		}
-		// because it's possible that the conf file for this coin has already been created, we need to store the
+		// ...because it's possible that the conf file for this coin has already been created, we need to store the
 		// returned user and password so, effectively, will either be storing the existing info, or
 		// the freshly generated info.
 		cliConf.RPCuser = rpcu
@@ -135,6 +139,8 @@ var coinCmd = &cobra.Command{
 			fmt.Println("\nPHR: PKFcy7UTEWegnAq7Wci8Aj76bQyHMottF8")
 		case be.PTPIVX:
 			fmt.Println("\nPIVX: DFHmj4dExVC24eWoRKmQJDx57r4svGVs3J")
+		case be.PTReddCoin:
+			fmt.Println("\nRDD: RtH6nZvmnstUsy5w5cmdwTrarbTPm6zyrC")
 		case be.PTScala:
 			fmt.Println("\nXLA: Svkhh1KJ7qSPEtoAzAuriLUzVSseezcs2GS21bAL5rWEYD2iBykLvHUaMaQEcrF1pPfTkfEbWGsXz4zfXJWmQvat2Q2EHhS1e")
 		case be.PTTrezarcoin:
@@ -226,6 +232,17 @@ func doRequiredFiles() error {
 		} else {
 			filePath = abf + be.CDFPIVXFileLinux
 			fileURL = be.CDownloadURLPIVX + be.CDFPIVXFileLinux
+		}
+	case be.PTReddCoin:
+		if runtime.GOOS == "windows" {
+			filePath = abf + be.CDFReddCoinWindows
+			fileURL = be.CDownloadURLReddCoin + be.CDFReddCoinWindows
+		} else if runtime.GOARCH == "arm" {
+			filePath = abf + be.CDFReddCoinRPi
+			fileURL = be.CDownloadURLReddCoin + be.CDFReddCoinRPi
+		} else {
+			filePath = abf + be.CDFReddCoinLinux
+			fileURL = be.CDownloadURLReddCoin + be.CDFReddCoinLinux
 		}
 	case be.PTScala:
 		if runtime.GOOS == "windows" {
@@ -400,6 +417,26 @@ func doRequiredFiles() error {
 				return fmt.Errorf("unable to extractTarGz file: %v - %v", r, err)
 			}
 			defer os.RemoveAll("./" + be.CPIVXExtractedDirLinux)
+		}
+	case be.PTReddCoin:
+		if runtime.GOOS == "windows" {
+			_, err = be.UnZip(filePath, "tmp")
+			if err != nil {
+				return fmt.Errorf("unable to unzip file: %v - %v", filePath, err)
+			}
+			defer os.RemoveAll("tmp")
+		} else if runtime.GOARCH == "arm" {
+			err = be.ExtractTarGz(r)
+			if err != nil {
+				return fmt.Errorf("unable to extractTarGz file: %v - %v", r, err)
+			}
+			defer os.RemoveAll(abf + be.CReddCoinExtractedDirLinux)
+		} else {
+			err = archiver.Unarchive(filePath, abf)
+			if err != nil {
+				return fmt.Errorf("unable to extractTarGz file: %v - %v", r, err)
+			}
+			defer os.RemoveAll(abf + be.CReddCoinExtractedDirLinux)
 		}
 	case be.PTScala:
 		if runtime.GOOS == "windows" {
@@ -606,6 +643,29 @@ func doRequiredFiles() error {
 			srcFileCLI = be.CPIVXCliFile
 			srcFileD = be.CPIVXDFile
 			srcFileTX = be.CPIVXTxFile
+			//srcFileBWCLI = be.CAppFilename
+		default:
+			err = errors.New("unable to determine runtime.GOOS")
+		}
+	case be.PTReddCoin:
+		switch runtime.GOOS {
+		case "windows":
+			srcPath = "./tmp/" + be.CReddCoinExtractedDirLinux
+			srcFileCLI = be.CReddCoinCliFileWin
+			srcFileD = be.CReddCoinDFileWin
+			srcFileTX = be.CReddCoinTxFileWin
+			//srcFileBWCLI = be.CAppFilenameWin
+		case "arm":
+			srcPath = "./" + be.CReddCoinExtractedDirLinux + "bin/"
+			srcFileCLI = be.CReddCoinCliFile
+			srcFileD = be.CReddCoinDFile
+			srcFileTX = be.CReddCoinTxFile
+			//srcFileBWCLI = be.CAppFilename
+		case "linux":
+			srcPath = abf + be.CReddCoinExtractedDirLinux + "bin/"
+			srcFileCLI = be.CReddCoinCliFile
+			srcFileD = be.CReddCoinDFile
+			srcFileTX = be.CReddCoinTxFile
 			//srcFileBWCLI = be.CAppFilename
 		default:
 			err = errors.New("unable to determine runtime.GOOS")
