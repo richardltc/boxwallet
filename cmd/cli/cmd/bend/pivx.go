@@ -3,7 +3,7 @@ package bend
 const (
 	CCoinNamePIVX string = "PIVX"
 
-	CPIVXCoreVersion   string = "4.2.0"
+	CPIVXCoreVersion   string = "4.3.0"
 	CDFPIVXFileRPi            = "pivx-" + CPIVXCoreVersion + "-arm-linux-gnueabihf.tar.gz"
 	CDFPIVXFileLinux          = "pivx-" + CPIVXCoreVersion + "-x86_64-linux-gnu.tar.gz"
 	CDFPIVXFileWindows        = "pivx-" + CPIVXCoreVersion + "-win64.zip"
