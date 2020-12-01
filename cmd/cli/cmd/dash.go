@@ -143,6 +143,11 @@ var dashCmd = &cobra.Command{
 			if len(addresses.Result) > 0 {
 				bWalletExists = true
 			}
+		case be.PTReddCoin:
+			addresses, _ := be.ListReceivedByAddressRDD(&cliConf, false)
+			if len(addresses.Result) > 0 {
+				bWalletExists = true
+			}
 		case be.PTScala:
 		case be.PTTrezarcoin:
 			addresses, _ := be.ListReceivedByAddressTrezarcoin(&cliConf, false)
@@ -203,6 +208,19 @@ var dashCmd = &cobra.Command{
 					log.Fatalf("Unable to SetCLIConfStruct(): failed with %s\n", err)
 				}
 			case be.PTPhore:
+			case be.PTReddCoin:
+				wet, err := be.GetWalletEncryptionStatus()
+				if err != nil {
+					log.Fatalf("Unable to determine wallet encryption status")
+				}
+				if wet == be.WETLocked {
+					pw = be.GetWalletEncryptionPassword()
+				}
+				bConfirmedBU, err := HandleWalletBURDD(pw)
+				cliConf.UserConfirmedWalletBU = bConfirmedBU
+				if err := be.SetConfigStruct("", cliConf); err != nil {
+					log.Fatalf("Unable to SetCLIConfStruct(): failed with %s\n", err)
+				}
 			case be.PTTrezarcoin:
 			case be.PTVertcoin:
 				wet, err := be.GetWalletEncryptionStatus()
@@ -265,6 +283,15 @@ var dashCmd = &cobra.Command{
 			wi, err := be.GetWalletInfoPhore(&cliConf)
 			if err != nil {
 				log.Fatal("Unable to perform GetWalletInfoPhore " + err.Error())
+			}
+
+			if wi.Result.UnlockedUntil < 0 {
+				bWalletNeedsEncrypting = true
+			}
+		case be.PTReddCoin:
+			wi, err := be.GetWalletInfoRDD(&cliConf)
+			if err != nil {
+				log.Fatal("Unable to perform GetWalletInfoDVT " + err.Error())
 			}
 
 			if wi.Result.UnlockedUntil < 0 {
@@ -337,6 +364,9 @@ var dashCmd = &cobra.Command{
 		case be.PTPhore:
 			pAbout.Text = "  [" + be.CAppName + "    v" + be.CBWAppVersion + "](fg:white)\n" +
 				"  [" + sCoinName + " Core   v" + be.CPhoreCoreVersion + "](fg:white)\n\n"
+		case be.PTReddCoin:
+			pAbout.Text = "  [" + be.CAppName + "     v" + be.CBWAppVersion + "](fg:white)\n" +
+				"  [" + sCoinName + " Core v" + be.CReddCoinCoreVersion + "](fg:white)\n\n"
 		case be.PTTrezarcoin:
 			pAbout.Text = "  [" + be.CAppName + "         v" + be.CBWAppVersion + "](fg:white)\n" +
 				"  [" + sCoinName + " Core   v" + be.CTrezarcoinCoreVersion + "](fg:white)\n\n"
@@ -374,6 +404,9 @@ var dashCmd = &cobra.Command{
 			pWallet.Text = "  Balance:          [waiting...](fg:yellow)\n" +
 				"  Security:         [waiting...](fg:yellow)\n" +
 				"  Actively Staking: [waiting...](fg:yellow)\n"
+		case be.PTReddCoin:
+			pWallet.Text = "  Balance:          [waiting...](fg:yellow)\n" +
+				"  Security:         [waiting...](fg:yellow)\n"
 		case be.PTTrezarcoin:
 			pWallet.Text = "  Balance:          [waiting...](fg:yellow)\n" +
 				"  Security:         [waiting...](fg:yellow)\n" +
@@ -427,6 +460,11 @@ var dashCmd = &cobra.Command{
 				"  Difficulty:  [checking...](fg:yellow)\n" +
 				"  Blockchain:  [checking...](fg:yellow)\n" +
 				"  Masternodes: [checking...](fg:yellow)"
+		case be.PTReddCoin:
+			pNetwork.Text = "  Headers:     [checking...](fg:yellow)\n" +
+				"  Blocks:      [checking...](fg:yellow)\n" +
+				"  Difficulty:  [checking...](fg:yellow)\n" +
+				"  Blockchain:  [checking...](fg:yellow)\n"
 		case be.PTTrezarcoin:
 			pNetwork.Text = "  Blocks:      [checking...](fg:yellow)\n" +
 				"  Difficulty:  [checking...](fg:yellow)\n" +
@@ -448,6 +486,7 @@ var dashCmd = &cobra.Command{
 			var bciFeathercoin be.FeathercoinBlockchainInfoRespStruct
 			var bciGroestlcoin be.GRSBlockchainInfoRespStruct
 			var bciPhore be.PhoreBlockchainInfoRespStruct
+			var bciReddCoin be.RDDBlockchainInfoRespStruct
 			var bciTrezarcoin be.TrezarcoinBlockchainInfoRespStruct
 			var bciVertcoin be.VTCBlockchainInfoRespStruct
 			//var gi be.GetInfoRespStruct
@@ -456,6 +495,7 @@ var dashCmd = &cobra.Command{
 			bDVTBlockchainIsSynced := false
 			bFTCBlockchainIsSynced := false
 			bGRSBlockchainIsSynced := false
+			bRDDBlockchainIsSynced := false
 			bTZCBlockchainIsSynced := false
 			bVTCBlockchainIsSynced := false
 			var ssDivi be.DiviStakingStatusRespStruct
@@ -466,6 +506,7 @@ var dashCmd = &cobra.Command{
 			var wiFeathercoin be.FeathercoinWalletInfoRespStruct
 			var wiGroestlcoin be.GRSWalletInfoRespStruct
 			var wiPhore be.PhoreWalletInfoRespStruct
+			var wiReddCoin be.RDDWalletInfoRespStruct
 			var wiTrezarcoin be.TrezarcoinWalletInfoRespStruct
 			var wiVertcoin be.VTCWalletInfoRespStruct
 			if gGetBCInfoCount == 0 || gGetBCInfoCount > cliConf.RefreshTimer {
@@ -475,31 +516,36 @@ var dashCmd = &cobra.Command{
 				switch cliConf.ProjectType {
 				case be.PTDeVault:
 					bciDeVault, _ = be.GetBlockchainInfoDVT(&cliConf)
-					if bciDeVault.Result.Verificationprogress > 0.9999 {
+					if bciDeVault.Result.Verificationprogress > 0.99999 {
 						bDVTBlockchainIsSynced = true
 					}
 				case be.PTDivi:
 					bciDivi, _ = be.GetBlockchainInfoDivi(&cliConf)
 				case be.PTFeathercoin:
 					bciFeathercoin, _ = be.GetBlockchainInfoFeathercoin(&cliConf)
-					if bciFeathercoin.Result.Verificationprogress > 0.9999 {
+					if bciFeathercoin.Result.Verificationprogress > 0.99999 {
 						bFTCBlockchainIsSynced = true
 					}
 				case be.PTGroestlcoin:
 					bciGroestlcoin, _ = be.GetBlockchainInfoGRS(&cliConf)
-					if bciGroestlcoin.Result.Verificationprogress > 0.9999 {
+					if bciGroestlcoin.Result.Verificationprogress > 0.99999 {
 						bGRSBlockchainIsSynced = true
 					}
 				case be.PTPhore:
 					bciPhore, _ = be.GetBlockchainInfoPhore(&cliConf)
+				case be.PTReddCoin:
+					bciReddCoin, _ = be.GetBlockchainInfoRDD(&cliConf)
+					if bciReddCoin.Result.Verificationprogress > 0.99999 {
+						bRDDBlockchainIsSynced = true
+					}
 				case be.PTTrezarcoin:
 					bciTrezarcoin, _ = be.GetBlockchainInfoTrezarcoin(&cliConf)
-					if bciTrezarcoin.Result.Verificationprogress > 0.9999 {
+					if bciTrezarcoin.Result.Verificationprogress > 0.99999 {
 						bTZCBlockchainIsSynced = true
 					}
 				case be.PTVertcoin:
 					bciVertcoin, _ = be.GetBlockchainInfoVTC(&cliConf)
-					if bciVertcoin.Result.Verificationprogress > 0.9999 {
+					if bciVertcoin.Result.Verificationprogress > 0.99999 {
 						bVTCBlockchainIsSynced = true
 					}
 				default:
@@ -540,6 +586,10 @@ var dashCmd = &cobra.Command{
 					mnssPhore, _ = be.GetMNSyncStatusPhore(&cliConf)
 					ssPhore, _ = be.GetStakingStatusPhore(&cliConf)
 					wiPhore, _ = be.GetWalletInfoPhore(&cliConf)
+				}
+			case be.PTReddCoin:
+				if bRDDBlockchainIsSynced {
+					wiReddCoin, _ = be.GetWalletInfoRDD(&cliConf)
 				}
 			case be.PTTrezarcoin:
 				if bTZCBlockchainIsSynced {
@@ -582,6 +632,12 @@ var dashCmd = &cobra.Command{
 				}
 			case be.PTPhore:
 				if mnssPhore.Result.IsBlockchainSynced {
+					pNetwork.BorderStyle.Fg = ui.ColorGreen
+				} else {
+					pNetwork.BorderStyle.Fg = ui.ColorYellow
+				}
+			case be.PTReddCoin:
+				if bRDDBlockchainIsSynced {
 					pNetwork.BorderStyle.Fg = ui.ColorGreen
 				} else {
 					pNetwork.BorderStyle.Fg = ui.ColorYellow
@@ -634,6 +690,11 @@ var dashCmd = &cobra.Command{
 				sDiff = be.GetNetworkDifficultyTxtPhore(bciPhore.Result.Difficulty, gDiffGood, gDiffWarning)
 				sBlockchainSync = be.GetBlockchainSyncTxtPhore(mnssPhore.Result.IsBlockchainSynced, &bciPhore)
 				sMNSync = be.GetMNSyncStatusTxtPhore(&mnssPhore)
+			case be.PTReddCoin:
+				sHeaders = be.GetNetworkHeadersTxtRDD(&bciReddCoin)
+				sBlocks = be.GetNetworkBlocksTxtRDD(&bciReddCoin)
+				sDiff = be.GetNetworkDifficultyTxtRDD(bciReddCoin.Result.Difficulty, gDiffGood, gDiffWarning)
+				sBlockchainSync = be.GetBlockchainSyncTxtRDD(bRDDBlockchainIsSynced, &bciReddCoin)
 			case be.PTTrezarcoin:
 				sBlocks = be.GetNetworkBlocksTxtTrezarcoin(&bciTrezarcoin)
 				sDiff = be.GetNetworkDifficultyTxtTrezarcoin(bciTrezarcoin.Result.Difficulty, gDiffGood, gDiffWarning)
@@ -652,8 +713,7 @@ var dashCmd = &cobra.Command{
 				pNetwork.Text = "  " + sHeaders + "\n" +
 					"  " + sBlocks + "\n" +
 					"  " + sDiff + "\n" +
-					"  " + sBlockchainSync + "\n" +
-					"  " + sMNSync
+					"  " + sBlockchainSync + "\n"
 			case be.PTDivi:
 				pNetwork.Text = "  " + sBlocks + "\n" +
 					"  " + sDiff + "\n" +
@@ -676,6 +736,11 @@ var dashCmd = &cobra.Command{
 					"  " + sDiff + "\n" +
 					"  " + sBlockchainSync + "\n" +
 					"  " + sMNSync
+			case be.PTReddCoin:
+				pNetwork.Text = "  " + sHeaders + "\n" +
+					"  " + sBlocks + "\n" +
+					"  " + sDiff + "\n" +
+					"  " + sBlockchainSync + "\n"
 			case be.PTTrezarcoin:
 				pNetwork.Text = "  " + sBlocks + "\n" +
 					"  " + sDiff + "\n" +
@@ -769,6 +834,20 @@ var dashCmd = &cobra.Command{
 				default:
 					pWallet.BorderStyle.Fg = ui.ColorYellow
 				}
+			case be.PTReddCoin:
+				wet := be.GetWalletSecurityStateRDD(&wiReddCoin)
+				switch wet {
+				case be.WETLocked:
+					pWallet.BorderStyle.Fg = ui.ColorYellow
+				case be.WETUnlocked:
+					pWallet.BorderStyle.Fg = ui.ColorRed
+				case be.WETUnlockedForStaking:
+					pWallet.BorderStyle.Fg = ui.ColorGreen
+				case be.WETUnencrypted:
+					pWallet.BorderStyle.Fg = ui.ColorRed
+				default:
+					pWallet.BorderStyle.Fg = ui.ColorYellow
+				}
 			case be.PTTrezarcoin:
 				wet := be.GetWalletSecurityStateTrezarcoin(&wiTrezarcoin)
 				switch wet {
@@ -804,12 +883,12 @@ var dashCmd = &cobra.Command{
 			// Update the wallet display, if we're all synced up
 			switch cliConf.ProjectType {
 			case be.PTDeVault:
-				if bciDeVault.Result.Verificationprogress > 0.9999 {
+				if bciDeVault.Result.Verificationprogress > 0.99999 {
 					pWallet.Text = "" + getBalanceInDVTTxt(&wiDeVault) + "\n" +
 						"  " + getWalletSecurityStatusTxtDVT(&wiDeVault) + "\n"
 				}
 			case be.PTDivi:
-				if bciDivi.Result.Verificationprogress > 0.9999 {
+				if bciDivi.Result.Verificationprogress > 0.99999 {
 					pWallet.Text = "" + getBalanceInDiviTxt(&wiDivi) + "\n" +
 						"  " + be.GetBalanceInCurrencyTxtDivi(&cliConf, &wiDivi) + "\n" +
 						"  " + getWalletSecurityStatusTxtDivi(&wiDivi) + "\n" +
@@ -819,29 +898,34 @@ var dashCmd = &cobra.Command{
 						"  " + "Lottery tickets:  0"
 				}
 			case be.PTFeathercoin:
-				if bciFeathercoin.Result.Verificationprogress > 0.9999 {
+				if bciFeathercoin.Result.Verificationprogress > 0.99999 {
 					pWallet.Text = "" + getBalanceInFeathercoinTxt(&wiFeathercoin) + "\n" +
 						"  " + getWalletSecurityStatusTxtFeathercoin(&wiFeathercoin) + "\n"
 				}
 			case be.PTGroestlcoin:
-				if bciGroestlcoin.Result.Verificationprogress > 0.9999 {
+				if bciGroestlcoin.Result.Verificationprogress > 0.99999 {
 					pWallet.Text = "" + getBalanceInGRSTxt(&wiGroestlcoin) + "\n" +
 						"  " + getWalletSecurityStatusTxtGRS(&wiGroestlcoin) + "\n"
 				}
 			case be.PTPhore:
-				if bciPhore.Result.Verificationprogress > 0.9999 {
+				if bciPhore.Result.Verificationprogress > 0.99999 {
 					pWallet.Text = "" + getBalanceInPhoreTxt(&wiPhore) + "\n" +
 						"  " + getWalletSecurityStatusTxtPhore(&wiPhore) + "\n" +
 						"  " + getActivelyStakingTxtPhore(&ssPhore) + "\n" //e.g. "15%" or "staking"
 				}
+			case be.PTReddCoin:
+				if bciReddCoin.Result.Verificationprogress > 0.99999 {
+					pWallet.Text = "" + getBalanceInRDDTxt(&wiReddCoin) + "\n" +
+						"  " + getWalletSecurityStatusTxtRDD(&wiReddCoin) + "\n"
+				}
 			case be.PTTrezarcoin:
-				if bciTrezarcoin.Result.Verificationprogress > 0.9999 {
+				if bciTrezarcoin.Result.Verificationprogress > 0.99999 {
 					pWallet.Text = "" + getBalanceInTrezarcoinTxt(&wiTrezarcoin) + "\n" +
 						"  " + getWalletSecurityStatusTxtTrezarcoin(&wiTrezarcoin) + "\n" +
 						"  " + getActivelyStakingTxtTrezarcoin(&ssTrezarcoin) + "\n" //e.g. "15%" or "staking"
 				}
 			case be.PTVertcoin:
-				if bciVertcoin.Result.Verificationprogress > 0.9999 {
+				if bciVertcoin.Result.Verificationprogress > 0.99999 {
 					pWallet.Text = "" + getBalanceInVTCTxt(&wiVertcoin) + "\n" +
 						"  " + getWalletSecurityStatusTxtVTC(&wiVertcoin) + "\n"
 				}
@@ -874,6 +958,8 @@ var dashCmd = &cobra.Command{
 					gDiffGood, gDiffWarning, _ = getNetworkDifficultyInfo(be.PTGroestlcoin)
 				case be.PTPhore:
 					// todo do for Phore
+				case be.PTReddCoin:
+					//gDiffGood, gDiffWarning, _ = getNetworkDifficultyInfo(be.PTReddCoin)
 				case be.PTTrezarcoin:
 					// todo do for Trezarcoin
 				case be.PTVertcoin:
@@ -1033,6 +1119,16 @@ func confirmWalletReady() (bool, error) {
 		if gi.Result.Version == 0 {
 			return false, fmt.Errorf("unable to call getinfo %s\n", err)
 		}
+	case be.PTReddCoin:
+		gi, err := be.GetNetworkInfoRDD(&cliConf)
+		if err != nil {
+			if err := spinner.Stop(); err != nil {
+			}
+			return false, fmt.Errorf("Unable to communicate with the " + coind + " server.")
+		}
+		if gi.Result.Version == 0 {
+			return false, fmt.Errorf("unable to call getinfo %s\n", err)
+		}
 	case be.PTTrezarcoin:
 		gi, err := be.GetInfoTrezarcoin(&cliConf)
 		if err != nil {
@@ -1132,7 +1228,7 @@ func getBalanceInDVTTxt(wi *be.DVTWalletInfoRespStruct) string {
 	tBalance := wi.Result.Balance
 	tBalanceStr := humanize.FormatFloat("#,###.####", tBalance)
 
-	// Work out balance
+	// Work out balance.
 	return "  Balance:          [" + tBalanceStr + "](fg:green)"
 }
 
@@ -1167,6 +1263,14 @@ func getBalanceInGRSTxt(wi *be.GRSWalletInfoRespStruct) string {
 }
 
 func getBalanceInPhoreTxt(wi *be.PhoreWalletInfoRespStruct) string {
+	tBalance := wi.Result.Balance
+	tBalanceStr := humanize.FormatFloat("#,###.####", tBalance)
+
+	// Work out balance
+	return "  Balance:          [" + tBalanceStr + "](fg:green)"
+}
+
+func getBalanceInRDDTxt(wi *be.RDDWalletInfoRespStruct) string {
 	tBalance := wi.Result.Balance
 	tBalanceStr := humanize.FormatFloat("#,###.####", tBalance)
 
@@ -1267,6 +1371,18 @@ func getWalletSecurityStatusTxtPhore(wi *be.PhoreWalletInfoRespStruct) string {
 		return "Security:         [UNENCRYPTED](fg:red)"
 	} else if wi.Result.UnlockedUntil > 0 {
 		return "Security:         [Locked and Staking](fg:green)"
+	} else {
+		return "Security:         [checking...](fg:yellow)"
+	}
+}
+
+func getWalletSecurityStatusTxtRDD(wi *be.RDDWalletInfoRespStruct) string {
+	if wi.Result.UnlockedUntil == 0 {
+		return "Security:         [Locked](fg:green)"
+	} else if wi.Result.UnlockedUntil == -1 {
+		return "Security:         [UNENCRYPTED](fg:red)"
+	} else if wi.Result.UnlockedUntil > 0 {
+		return "Security:         [Locked](fg:green)"
 	} else {
 		return "Security:         [checking...](fg:yellow)"
 	}
