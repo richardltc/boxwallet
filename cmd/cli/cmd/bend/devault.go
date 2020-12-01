@@ -330,10 +330,10 @@ func ListReceivedByAddressDVT(cliConf *ConfStruct, includeZero bool) (DVTListRec
 	return respStruct, nil
 }
 
-func UnlockWalleDVT(cliConf *ConfStruct, pw string) error {
+func UnlockWalletDVT(cliConf *ConfStruct, pw string) error {
 	var respStruct GenericRespStruct
 
-	body := strings.NewReader("{\"jsonrpc\":\"1.0\",\"id\":\"curltext\",\"method\":\"walletpassphrase\",\"params\":[\"" + pw + "\",0]}")
+	body := strings.NewReader("{\"jsonrpc\":\"1.0\",\"id\":\"boxwallet\",\"method\":\"walletpassphrase\",\"params\":[\"" + pw + "\",0]}")
 	req, err := http.NewRequest("POST", "http://"+cliConf.ServerIP+":"+cliConf.Port, body)
 	if err != nil {
 		return err
