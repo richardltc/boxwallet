@@ -1,6 +1,6 @@
 # What is BoxWallet? #
 
-BoxWallet is a multi-coin CLI tool, that gets your coin-of-choice wallet/node set-up fast with just a few commands:
+BoxWallet is a single binary multi-coin CLI tool, that gets your coin-of-choice wallet/node set-up fast with just a few commands:
 
 boxwallet "coin" - allows you to choose your coin of choice, which, when selected, downloads the projects core files from their official website and installs them automatically.
 
@@ -8,10 +8,10 @@ boxwallet "start" - starts the coin's daemon, which syncs the Blockchain.
 
 boxwallet "dash" - displays a dashboard with the coins Blockchain and wallet info.
 
-## What are some of BoxWallet's features? ###
+## What are some of BoxWallet's features? ##
 
 * Install and run a CLI node or wallet simple, by using two commands: `coin`, to choose your coin of choice and `start` to start the syncing.
-* Setting up multiple nodes/staking wallets on a single machine.
+* Setting up multiple nodes/staking wallets on a single machine, and easily switch between them.
 * Viewing your wallet/node that might be running on a Pi, from another computer such as Linux, Mac or Windows.
 * Displaying the staking status of your wallet. 
 * Displaying blockchain and master node syncing status.
