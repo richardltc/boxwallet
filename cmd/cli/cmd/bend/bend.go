@@ -1692,41 +1692,63 @@ func PopulateDaemonConfFile() (rpcuser, rpcpassword string, err error) {
 	case PTPIVX:
 		fmt.Println("Populating " + CPIVXConfFile + " for initial setup...")
 
-		// Add rpcuser info if required
-		b, err := StringExistsInFile(cRPCUserStr+"=", chd+CPIVXConfFile)
-		if err != nil {
-			return "", "", fmt.Errorf("unable to search for text in file - %v", err)
-		}
-		if !b {
-			if !bFileHasBeenBU {
-				bFileHasBeenBU = true
-				if err := BackupFile(chd, CPIVXConfFile, false); err != nil {
-					return "", "", fmt.Errorf("unable to backup file - %v", err)
-				}
-			}
-			rpcu = "pivxrpc"
-			if err := WriteTextToFile(chd+CPIVXConfFile, cRPCUserStr+"="+rpcu); err != nil {
-				log.Fatal(err)
-			}
-		} else {
-			rpcu, err = GetStringAfterStrFromFile(cRPCUserStr+"=", chd+CPIVXConfFile)
+		// Add rpcuser info if required, or retrieve the existing one
+		bNeedToWriteStr := true
+		if FileExists(chd + CPIVXConfFile) {
+			bStrFound, err := StringExistsInFile(cRPCUserStr+"=", chd+CPIVXConfFile)
 			if err != nil {
 				return "", "", fmt.Errorf("unable to search for text in file - %v", err)
 			}
-		}
-
-		// Add rpcpassword info if required
-		b, err = StringExistsInFile(cRPCPasswordStr+"=", chd+CPIVXConfFile)
-		if err != nil {
-			return "", "", fmt.Errorf("unable to search for text in file - %v", err)
-		}
-		if !b {
-			if !bFileHasBeenBU {
-				bFileHasBeenBU = true
-				if err := BackupFile(chd, CPIVXConfFile, false); err != nil {
-					return "", "", fmt.Errorf("unable to backup file - %v", err)
+			if !bStrFound {
+				// String not found
+				if !bFileHasBeenBU {
+					bFileHasBeenBU = true
+					if err := BackupFile(chd, CPIVXConfFile, false); err != nil {
+						return "", "", fmt.Errorf("unable to backup file - %v", err)
+					}
+				}
+			} else {
+				bNeedToWriteStr = false
+				rpcu, err = GetStringAfterStrFromFile(cRPCUserStr+"=", chd+CPIVXConfFile)
+				if err != nil {
+					return "", "", fmt.Errorf("unable to search for text in file - %v", err)
 				}
 			}
+		} else {
+			// Set this to true, because the file has just been freshly created and we don't want to back it up
+			bFileHasBeenBU = true
+		}
+		if bNeedToWriteStr {
+			rpcu = cPIVXRPCUser
+			if err := WriteTextToFile(chd+CPIVXConfFile, cRPCUserStr+"="+rpcu); err != nil {
+				log.Fatal(err)
+			}
+		}
+
+		// Add rpcpassword info if required, or retrieve the existing one
+		bNeedToWriteStr = true
+		if FileExists(chd + CPIVXConfFile) {
+			bStrFound, err := StringExistsInFile(cRPCPasswordStr+"=", chd+CPIVXConfFile)
+			if err != nil {
+				return "", "", fmt.Errorf("unable to search for text in file - %v", err)
+			}
+			if !bStrFound {
+				// String not found
+				if !bFileHasBeenBU {
+					bFileHasBeenBU = true
+					if err := BackupFile(chd, CPIVXConfFile, false); err != nil {
+						return "", "", fmt.Errorf("unable to backup file - %v", err)
+					}
+				}
+			} else {
+				bNeedToWriteStr = false
+				rpcpw, err = GetStringAfterStrFromFile(cRPCPasswordStr+"=", chd+CPIVXConfFile)
+				if err != nil {
+					return "", "", fmt.Errorf("unable to search for text in file - %v", err)
+				}
+			}
+		}
+		if bNeedToWriteStr {
 			rpcpw = rand.String(20)
 			if err := WriteTextToFile(chd+CPIVXConfFile, cRPCPasswordStr+"="+rpcpw); err != nil {
 				log.Fatal(err)
@@ -1734,25 +1756,28 @@ func PopulateDaemonConfFile() (rpcuser, rpcpassword string, err error) {
 			if err := WriteTextToFile(chd+CPIVXConfFile, ""); err != nil {
 				log.Fatal(err)
 			}
-		} else {
-			rpcpw, err = GetStringAfterStrFromFile(cRPCPasswordStr+"=", chd+CPIVXConfFile)
-			if err != nil {
-				return "", "", fmt.Errorf("unable to search for text in file - %v", err)
-			}
 		}
 
 		// Add daemon=1 info if required
-		b, err = StringExistsInFile("daemon=1", chd+CPIVXConfFile)
-		if err != nil {
-			return "", "", fmt.Errorf("unable to search for text in file - %v", err)
-		}
-		if !b {
-			if !bFileHasBeenBU {
-				bFileHasBeenBU = true
-				if err := BackupFile(chd, CPIVXConfFile, false); err != nil {
-					return "", "", fmt.Errorf("unable to backup file - %v", err)
-				}
+		bNeedToWriteStr = true
+		if FileExists(chd + CPIVXConfFile) {
+			bStrFound, err := StringExistsInFile("daemon=1", chd+CPIVXConfFile)
+			if err != nil {
+				return "", "", fmt.Errorf("unable to search for text in file - %v", err)
 			}
+			if !bStrFound {
+				// String not found
+				if !bFileHasBeenBU {
+					bFileHasBeenBU = true
+					if err := BackupFile(chd, CPIVXConfFile, false); err != nil {
+						return "", "", fmt.Errorf("unable to backup file - %v", err)
+					}
+				}
+			} else {
+				bNeedToWriteStr = false
+			}
+		}
+		if bNeedToWriteStr {
 			if err := WriteTextToFile(chd+CPIVXConfFile, "daemon=1"); err != nil {
 				log.Fatal(err)
 			}
@@ -1760,55 +1785,82 @@ func PopulateDaemonConfFile() (rpcuser, rpcpassword string, err error) {
 				log.Fatal(err)
 			}
 		}
+
 		// Add server=1 info if required
-		b, err = StringExistsInFile("server=1", chd+CPIVXConfFile)
-		if err != nil {
-			return "", "", fmt.Errorf("unable to search for text in file - %v", err)
-		}
-		if !b {
-			if !bFileHasBeenBU {
-				bFileHasBeenBU = true
-				if err := BackupFile(chd, CPIVXConfFile, false); err != nil {
-					return "", "", fmt.Errorf("unable to backup file - %v", err)
-				}
+		bNeedToWriteStr = true
+		if FileExists(chd + CPIVXConfFile) {
+			bStrFound, err := StringExistsInFile("server=1", chd+CPIVXConfFile)
+			if err != nil {
+				return "", "", fmt.Errorf("unable to search for text in file - %v", err)
 			}
+			if !bStrFound {
+				// String not found
+				if !bFileHasBeenBU {
+					bFileHasBeenBU = true
+					if err := BackupFile(chd, CPIVXConfFile, false); err != nil {
+						return "", "", fmt.Errorf("unable to backup file - %v", err)
+					}
+				}
+			} else {
+				bNeedToWriteStr = false
+			}
+		}
+		if bNeedToWriteStr {
 			if err := WriteTextToFile(chd+CPIVXConfFile, "server=1"); err != nil {
 				log.Fatal(err)
 			}
 		}
+
 		// Add rpcallowip= info if required
-		b, err = StringExistsInFile("rpcallowip=", chd+CPIVXConfFile)
-		if err != nil {
-			return "", "", fmt.Errorf("unable to search for text in file - %v", err)
-		}
-		if !b {
-			if !bFileHasBeenBU {
-				bFileHasBeenBU = true
-				if err := BackupFile(chd, CPIVXConfFile, false); err != nil {
-					return "", "", fmt.Errorf("unable to backup file - %v", err)
-				}
+		bNeedToWriteStr = true
+		if FileExists(chd + CPIVXConfFile) {
+			bStrFound, err := StringExistsInFile("rpcallowip=", chd+CPIVXConfFile)
+			if err != nil {
+				return "", "", fmt.Errorf("unable to search for text in file - %v", err)
 			}
+			if !bStrFound {
+				// String not found
+				if !bFileHasBeenBU {
+					bFileHasBeenBU = true
+					if err := BackupFile(chd, CPIVXConfFile, false); err != nil {
+						return "", "", fmt.Errorf("unable to backup file - %v", err)
+					}
+				}
+			} else {
+				bNeedToWriteStr = false
+			}
+		}
+		if bNeedToWriteStr {
 			if err := WriteTextToFile(chd+CPIVXConfFile, "rpcallowip=192.168.1.0/255.255.255.0"); err != nil {
 				log.Fatal(err)
 			}
 		}
 
 		// Add rpcport= info if required
-		b, err = StringExistsInFile("rpcport=", chd+CPIVXConfFile)
-		if err != nil {
-			return "", "", fmt.Errorf("unable to search for text in file - %v", err)
-		}
-		if !b {
-			if !bFileHasBeenBU {
-				bFileHasBeenBU = true
-				if err := BackupFile(chd, CPIVXConfFile, false); err != nil {
-					return "", "", fmt.Errorf("unable to backup file - %v", err)
-				}
+		bNeedToWriteStr = true
+		if FileExists(chd + CPIVXConfFile) {
+			bStrFound, err := StringExistsInFile("rpcport=", chd+CPIVXConfFile)
+			if err != nil {
+				return "", "", fmt.Errorf("unable to search for text in file - %v", err)
 			}
+			if !bStrFound {
+				// String not found
+				if !bFileHasBeenBU {
+					bFileHasBeenBU = true
+					if err := BackupFile(chd, CPIVXConfFile, false); err != nil {
+						return "", "", fmt.Errorf("unable to backup file - %v", err)
+					}
+				}
+			} else {
+				bNeedToWriteStr = false
+			}
+		}
+		if bNeedToWriteStr {
 			if err := WriteTextToFile(chd+CPIVXConfFile, "rpcport="+CPIVXRPCPort); err != nil {
 				log.Fatal(err)
 			}
 		}
+
 		return rpcu, rpcpw, nil
 	case PTReddCoin:
 		fmt.Println("Populating " + CReddCoinConfFile + " for initial setup...")
