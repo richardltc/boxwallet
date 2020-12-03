@@ -45,6 +45,7 @@ var coinCmd = &cobra.Command{
 				be.CCoinNameFeathercoin,
 				be.CCoinNameGroestlcoin,
 				be.CCoinNamePhore,
+				be.CCoinNamePIVX,
 				be.CCoinNameReddCoin,
 				be.CCoinNameScala,
 				be.CCoinNameTrezarcoin,
