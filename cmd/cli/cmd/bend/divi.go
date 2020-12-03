@@ -41,6 +41,7 @@ const (
 	CDiviTxFileWin  string = "divi-tx.exe"
 
 	// divi.conf file constants
+	cDiviRPCUser string = "divirpc"
 	CDiviRPCPort string = "51473"
 
 	// Wallet encryption status
