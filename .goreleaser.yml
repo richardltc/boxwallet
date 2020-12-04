@@ -16,18 +16,30 @@ builds:
     goarch:
       - amd64
       - arm64
+      - arm
+      #- 386
+    ignore:
+      #- goos: darwin
+      #  goarch: 386
+      #- goos: windows
+      #  goarch: 386
+      #- goos: linux
+      #  goarch: 386
 
     main: ./cmd/cli/main.go
 archives:
-  #- format_overrides:
-  #    - goos: windows
-  #      format: zip
-  - replacements:
+  -
+    format: tar.gz
+    format_overrides:
+      - goos: windows
+        format: zip
+    replacements:
       darwin: macOS
-      #linux: Linux
-      #windows: Windows
-      386: i386
-      amd64: x86_64
+      linux: Linux
+      windows: Windows
+      #386: 32bit
+      amd64: 64bit
+      arm: arm32bit
     files:
       - README.md
 checksum:
