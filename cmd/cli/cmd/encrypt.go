@@ -42,14 +42,30 @@ var encryptCmd = &cobra.Command{
 			log.Fatal("Unable to GetCoinDaemonFilename " + err.Error())
 		}
 
-		// Check wallet encryption status
-		wi, err := be.GetWalletInfoDivi(&cliConf)
-		if err != nil {
-			log.Fatal("Unable to getWalletInfo " + err.Error())
-		}
+		switch cliConf.ProjectType {
+		case be.PTDivi:
+			// Check wallet encryption status
+			wi, err := be.GetWalletInfoDivi(&cliConf)
+			if err != nil {
+				log.Fatal("Unable to getWalletInfo " + err.Error())
+			}
 
-		if (wi.Result.EncryptionStatus != "unencrypted") && (wi.Result.EncryptionStatus != "") {
-			log.Fatal("Wallet is already encrypted")
+			if (wi.Result.EncryptionStatus != "unencrypted") && (wi.Result.EncryptionStatus != "") {
+				log.Fatal("Wallet is already encrypted")
+			}
+		case be.PTPIVX:
+			// todo Put the below code back in again when we have a reliable way of detecting.
+			// Check wallet encryption status
+			//wi, err := be.GetWalletInfoPIVX(&cliConf)
+			//if err != nil {
+			//	log.Fatal("Unable to getWalletInfo " + err.Error())
+			//}
+			//
+			//if (wi.Result.unEncryptionStatus != "unencrypted") && (wi.Result.EncryptionStatus != "") {
+			//	log.Fatal("Wallet is already encrypted")
+			//}
+		default:
+			log.Fatal("Unable to determine project type ")
 		}
 
 		wep := be.GetPasswordToEncryptWallet()
