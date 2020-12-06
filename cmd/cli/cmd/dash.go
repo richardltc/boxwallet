@@ -93,7 +93,7 @@ var dashCmd = &cobra.Command{
 		// 	log.Fatal("Unable to GetAppLogfileName " + err.Error())
 		// }
 
-		//lfp := abf + sLogfileName
+		// lfp := abf + sLogfileName
 
 		sAppFileCLIName, err := be.GetAppFileName()
 		if err != nil {
@@ -140,6 +140,11 @@ var dashCmd = &cobra.Command{
 			}
 		case be.PTPhore:
 			addresses, _ := be.ListReceivedByAddressPhore(&cliConf, false)
+			if len(addresses.Result) > 0 {
+				bWalletExists = true
+			}
+		case be.PTPIVX:
+			addresses, _ := be.ListReceivedByAddressPIVX(&cliConf, false)
 			if len(addresses.Result) > 0 {
 				bWalletExists = true
 			}
