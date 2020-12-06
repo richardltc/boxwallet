@@ -807,7 +807,7 @@ func GetWalletEncryptionStatus() (WEType, error) {
 		wet := GetWalletSecurityStateDivi(&wi)
 		return wet, nil
 	case PTFeathercoin:
-		// todo Do for Feathercoin
+		// todo Complete for Feathercoin
 	case PTGroestlcoin:
 		wi, err := GetWalletInfoGRS(&conf)
 		if err != nil {
@@ -818,7 +818,12 @@ func GetWalletEncryptionStatus() (WEType, error) {
 	case PTPhore:
 		// todo Do for Phore
 	case PTPIVX:
-		// todo Do for PIVX
+		wi, err := GetWalletInfoPIVX(&conf)
+		if err != nil {
+			return WETUnknown, fmt.Errorf("unable to GetWalletInfoPIVX %v", err)
+		}
+		wet := GetWalletSecurityStatePIVX(&wi)
+		return wet, nil
 	case PTTrezarcoin:
 		// todo Do for TZC
 	default:
@@ -2977,6 +2982,46 @@ func StartCoinDaemon(displayOutput bool) error {
 					return nil
 				} else {
 					return errors.New("unable to start Phore server: " + string(line))
+				}
+			}
+		}
+	case PTPIVX:
+		if runtime.GOOS == "windows" {
+			fp := abf + CPIVXDFileWin
+			cmd := exec.Command("cmd.exe", "/C", "start", "/b", fp)
+			if err := cmd.Run(); err != nil {
+				return err
+			}
+		} else {
+			if displayOutput {
+				fmt.Println("Attempting to run the pivxd daemon...")
+			}
+
+			cmdRun := exec.Command(abf + CPIVXDFile)
+			stdout, err := cmdRun.StdoutPipe()
+			if err != nil {
+				return err
+			}
+			err = cmdRun.Start()
+			if err != nil {
+				return err
+			}
+
+			buf := bufio.NewReader(stdout)
+			num := 1
+			for {
+				line, _, _ := buf.ReadLine()
+				if num > 3 {
+					os.Exit(0)
+				}
+				num++
+				if string(line) == "PIVX server starting" {
+					if displayOutput {
+						fmt.Println("PIVX server starting")
+					}
+					return nil
+				} else {
+					return errors.New("unable to start PIVX server: " + string(line))
 				}
 			}
 		}
