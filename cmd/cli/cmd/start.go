@@ -31,7 +31,7 @@ var startCmd = &cobra.Command{
 	Long:  ``,
 	Run: func(cmd *cobra.Command, args []string) {
 		fmt.Println("  ____          __          __   _ _      _   \n |  _ \\         \\ \\        / /  | | |    | |  \n | |_) | _____  _\\ \\  /\\  / /_ _| | | ___| |_ \n |  _ < / _ \\ \\/ /\\ \\/  \\/ / _` | | |/ _ \\ __|\n | |_) | (_) >  <  \\  /\\  / (_| | | |  __/ |_ \n |____/ \\___/_/\\_\\  \\/  \\/ \\__,_|_|_|\\___|\\__|\n                                              \n                                              ")
-		// Lets load our config file first, to see if the user has made their coin choice...
+		// Lets load our config file first, to see if the user has made their coin choice..
 		cliConf, err := be.GetConfigStruct("", true)
 		if err != nil {
 			log.Fatal("Unable to determine coin type. Please run " + be.CAppFilename + " coin" + err.Error())
@@ -68,6 +68,7 @@ var startCmd = &cobra.Command{
 		case be.PTFeathercoin:
 		case be.PTGroestlcoin:
 		case be.PTPhore:
+		case be.PTPIVX:
 		case be.PTReddCoin:
 		case be.PTScala:
 		case be.PTTrezarcoin:
