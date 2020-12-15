@@ -71,7 +71,7 @@ func GetConfigStruct(confDir string, refreshFields bool) (ConfStruct, error) {
 	// If the passed in confDir is blank, then assume current working directory
 	//dir := ""
 	if confDir == "" {
-		confDir, _ = os.Getwd()
+		confDir, _ = GetAppWorkingFolder() // os.Getwd()
 	}
 
 	confDir = addTrailingSlash(confDir)
@@ -122,16 +122,20 @@ func newConfStruct() ConfStruct {
 	return cnf
 }
 
-func SetConfigStruct(dir string, cs ConfStruct) error {
-	// If the passed in confDir is blank, then assume current working directory
-	dir, err := os.Getwd()
-	if err != nil {
-		return err
+func SetConfigStruct(confDir string, cs ConfStruct) error {
+	if confDir == "" {
+		confDir, _ = GetAppWorkingFolder() //os.Getwd()
 	}
 
+	// If the passed in confDir is blank, then assume current working directory
+	//dir, err := os.Getwd()
+	//if err != nil {
+	//	return err
+	//}
+
 	jssb, _ := json.MarshalIndent(cs, "", "  ")
-	dir = addTrailingSlash(dir)
-	sFile := dir + CConfFile + CConfFileExt
+	confDir = addTrailingSlash(confDir)
+	sFile := confDir + CConfFile + CConfFileExt
 
 	f, err := os.Create(sFile)
 	if err != nil {
