@@ -21,7 +21,6 @@ import (
 	"github.com/AlecAivazis/survey/v2"
 	"log"
 	"os"
-	"path/filepath"
 	be "richardmace.co.uk/boxwallet/cmd/cli/cmd/bend"
 	"runtime"
 
@@ -46,6 +45,7 @@ var coinCmd = &cobra.Command{
 				be.CCoinNameGroestlcoin,
 				be.CCoinNamePhore,
 				be.CCoinNamePIVX,
+				be.CCoinNameRapids,
 				be.CCoinNameReddCoin,
 				be.CCoinNameScala,
 				be.CCoinNameTrezarcoin,
@@ -74,6 +74,9 @@ var coinCmd = &cobra.Command{
 		case be.CCoinNamePIVX:
 			cliConf.ProjectType = be.PTPIVX
 			cliConf.Port = be.CPIVXRPCPort
+		case be.CCoinNameRapids:
+			cliConf.ProjectType = be.PTRapids
+			cliConf.Port = be.CRapidsRPCPort
 		case be.CCoinNameReddCoin:
 			cliConf.ProjectType = be.PTReddCoin
 			cliConf.Port = be.CReddCoinRPCPort
@@ -88,6 +91,12 @@ var coinCmd = &cobra.Command{
 			cliConf.Port = be.CVertcoinRPCPort
 		default:
 			log.Fatal("Unable to determine coin choice")
+		}
+
+		// Create the App Working folder if required...
+		awf, _ := be.GetAppWorkingFolder()
+		if err := os.MkdirAll(awf, os.ModePerm); err != nil {
+			log.Fatal("unable to make directory: ", err)
 		}
 
 		if err := be.SetConfigStruct("", cliConf); err != nil {
@@ -112,7 +121,10 @@ var coinCmd = &cobra.Command{
 			log.Fatal(err)
 		}
 
-		b, _ := be.AllProjectBinaryFilesExists()
+		b, err := be.AllProjectBinaryFilesExists()
+		if err != nil {
+			log.Fatal(err)
+		}
 		if !b {
 			fmt.Println("The " + sCoinName + " CLI bin files haven't been installed yet. So installing them now...")
 			if err := doRequiredFiles(); err != nil {
@@ -140,6 +152,8 @@ var coinCmd = &cobra.Command{
 			fmt.Println("\nPHR: PKFcy7UTEWegnAq7Wci8Aj76bQyHMottF8")
 		case be.PTPIVX:
 			fmt.Println("\nPIVX: DFHmj4dExVC24eWoRKmQJDx57r4svGVs3J")
+		case be.PTRapids:
+			fmt.Println("\nRPD: RvxCvM2VWVKq2iSLNoAmzdqH4eF9bhvn6k")
 		case be.PTReddCoin:
 			fmt.Println("\nRDD: RtH6nZvmnstUsy5w5cmdwTrarbTPm6zyrC")
 		case be.PTScala:
@@ -156,13 +170,14 @@ var coinCmd = &cobra.Command{
 
 // doRequiredFiles - Download and install required files.
 func doRequiredFiles() error {
-	var filePath, fileURL string
-	//abf, err := be.GetAppsBinFolder()
-	ex, err := os.Executable()
-	if err != nil {
-		return fmt.Errorf("Unable to retrieve running binary: %v ", err)
-	}
-	abf := be.AddTrailingSlash(filepath.Dir(ex))
+	var filePath, filePath2, fileURL, fileURL2 string
+	abf, err := be.GetAppWorkingFolder()
+
+	//ex, err := os.Executable()
+	//if err != nil {
+	//	return fmt.Errorf("Unable to retrieve running binary: %v ", err)
+	//}
+	//abf := be.AddTrailingSlash(filepath.Dir(ex))
 
 	bwconf, err := be.GetConfigStruct("", true)
 	if err != nil {
@@ -234,6 +249,19 @@ func doRequiredFiles() error {
 			filePath = abf + be.CDFPIVXFileLinux
 			fileURL = be.CDownloadURLPIVX + be.CDFPIVXFileLinux
 		}
+	case be.PTRapids:
+		if runtime.GOOS == "windows" {
+			filePath = abf + be.CDFRapidsFileWindows
+			fileURL = be.CDownloadURLRapids + be.CDFRapidsFileWindows
+		} else if runtime.GOARCH == "arm" {
+			filePath = abf + be.CDFRapidsFileRPi
+			fileURL = be.CDownloadURLRapids + be.CDFRapidsFileRPi
+		} else {
+			filePath = abf + be.CDFRapidsFileLinux
+			filePath2 = abf + be.CDFRapidsFileLinuxDaemon
+			fileURL = be.CDownloadURLRapids + be.CDFRapidsFileLinux
+			fileURL2 = be.CDownloadURLRapids + be.CDFRapidsFileLinuxDaemon
+		}
 	case be.PTReddCoin:
 		if runtime.GOOS == "windows" {
 			filePath = abf + be.CDFReddCoinWindows
@@ -285,10 +313,24 @@ func doRequiredFiles() error {
 	}
 
 	log.Print("Downloading required files...")
-	if err := be.DownloadFile(filePath, fileURL); err != nil {
-		return fmt.Errorf("unable to download file: %v - %v", filePath+fileURL, err)
+
+	// Has been added because Rapids requires 2x file downloads.
+	switch bwconf.ProjectType {
+	case be.PTRapids:
+		if err := be.DownloadFile(filePath, fileURL); err != nil {
+			return fmt.Errorf("unable to download file: %v - %v", filePath+fileURL, err)
+		}
+		defer os.Remove(filePath)
+		if err := be.DownloadFile(filePath2, fileURL2); err != nil {
+			return fmt.Errorf("unable to download file: %v - %v", filePath2+fileURL2, err)
+		}
+		defer os.Remove(filePath2)
+	default:
+		if err := be.DownloadFile(filePath, fileURL); err != nil {
+			return fmt.Errorf("unable to download file: %v - %v", filePath+fileURL, err)
+		}
+		defer os.Remove(filePath)
 	}
-	defer os.Remove(filePath)
 
 	r, err := os.Open(filePath)
 	if err != nil {
@@ -300,7 +342,8 @@ func doRequiredFiles() error {
 	switch bwconf.ProjectType {
 	case be.PTDeVault:
 		if runtime.GOOS == "windows" {
-			_, err = be.UnZip(filePath, "tmp")
+			//_, err = be.UnZip(filePath, "tmp")
+			_, err = be.UnZip(filePath, abf)
 			if err != nil {
 				return fmt.Errorf("unable to unzip file: %v - %v", filePath, err)
 			}
@@ -316,7 +359,7 @@ func doRequiredFiles() error {
 			if err != nil {
 				return fmt.Errorf("unable to extractTarGz file: %v - %v", r, err)
 			}
-			defer os.RemoveAll("./" + be.CDeVaultExtractedDirLinux)
+			defer os.RemoveAll(abf + be.CDeVaultExtractedDirLinux)
 		}
 	case be.PTDivi:
 		if runtime.GOOS == "windows" {
@@ -352,11 +395,12 @@ func doRequiredFiles() error {
 			}
 			defer os.RemoveAll("./" + be.CFeathercoinExtractedDirLinux)
 		} else {
-			err = be.ExtractTarGz(r)
+			//err = be.ExtractTarGz(r)
+			err = archiver.Unarchive(filePath, abf)
 			if err != nil {
 				return fmt.Errorf("unable to extractTarGz file: %v - %v", r, err)
 			}
-			defer os.RemoveAll("./" + be.CFeathercoinExtractedDirLinux)
+			defer os.RemoveAll(abf + be.CFeathercoinExtractedDirLinux)
 		}
 	case be.PTGroestlcoin:
 		if runtime.GOOS == "windows" {
@@ -377,7 +421,7 @@ func doRequiredFiles() error {
 			if err != nil {
 				return fmt.Errorf("unable to extractTarGz file: %v - %v", r, err)
 			}
-			defer os.RemoveAll("./" + be.CGroestlcoinExtractedDirLinux)
+			defer os.RemoveAll(abf + be.CGroestlcoinExtractedDirLinux)
 		}
 	case be.PTPhore:
 		if runtime.GOOS == "windows" {
@@ -418,6 +462,34 @@ func doRequiredFiles() error {
 				return fmt.Errorf("unable to extractTarGz file: %v - %v", r, err)
 			}
 			defer os.RemoveAll("./" + be.CPIVXExtractedDirLinux)
+		}
+	case be.PTRapids:
+		if runtime.GOOS == "windows" {
+			_, err = be.UnZip(filePath, "tmp")
+			if err != nil {
+				return fmt.Errorf("unable to unzip file: %v - %v", filePath, err)
+			}
+			defer os.RemoveAll("tmp")
+		} else if runtime.GOARCH == "arm" {
+			err = be.ExtractTarGz(r)
+			if err != nil {
+				return fmt.Errorf("unable to extractTarGz file: %v - %v", r, err)
+			}
+			defer os.RemoveAll("./" + be.CRapidsExtractedDirLinux)
+		} else {
+			// First the normal file...
+			err = archiver.Unarchive(filePath, abf)
+			if err != nil {
+				return fmt.Errorf("unable to extractTarGz file: %v - %v", r, err)
+			}
+			defer os.RemoveAll("./" + be.CRapidsExtractedDirLinux)
+
+			// Then the daemon file...
+			err = archiver.Unarchive(filePath2, abf)
+			if err != nil {
+				return fmt.Errorf("unable to extractTarGz file: %v - %v", r, err)
+			}
+			defer os.RemoveAll("./" + be.CRapidsExtractedDirDaemon)
 		}
 	case be.PTReddCoin:
 		if runtime.GOOS == "windows" {
@@ -468,12 +540,14 @@ func doRequiredFiles() error {
 			}
 			defer os.RemoveAll("tmp")
 		} else if runtime.GOARCH == "arm" {
-			err = be.ExtractTarGz(r)
+			//err = be.ExtractTarGz(r)
+			err = archiver.Unarchive(filePath, abf)
 			if err != nil {
 				return fmt.Errorf("unable to extractTarGz file: %v - %v", r, err)
 			}
 		} else {
-			err = be.ExtractTarGz(r)
+			//err = be.ExtractTarGz(r)
+			err = archiver.Unarchive(filePath, abf)
 			if err != nil {
 				return fmt.Errorf("unable to extractTarGz file: %v - %v", r, err)
 			}
@@ -507,25 +581,25 @@ func doRequiredFiles() error {
 	log.Print("Installing files...")
 
 	// Copy files to correct location
-	var srcPath, srcFileCLI, srcFileD, srcFileTX string
+	var srcPath, srcPathD, srcFileCLI, srcFileD, srcFileTX string
 
 	switch bwconf.ProjectType {
 	case be.PTDeVault:
 		switch runtime.GOOS {
 		case "windows":
-			srcPath = "./tmp/" + be.CDeVaultExtractedDirLinux
+			srcPath = abf + be.CDeVaultExtractedDirWin + "bin\\"
 			srcFileCLI = be.CDeVaultCliFileWin
 			srcFileD = be.CDeVaultDFileWin
 			srcFileTX = be.CDeVaultTxFileWin
 			//srcFileBWCLI = be.CAppFilenameWin
 		case "arm":
-			srcPath = "./" + be.CDeVaultExtractedDirLinux + "bin/"
+			srcPath = abf + be.CDeVaultExtractedDirLinux + "bin/"
 			srcFileCLI = be.CDeVaultCliFile
 			srcFileD = be.CDeVaultDFile
 			srcFileTX = be.CDeVaultTxFile
 			//srcFileBWCLI = be.CAppFilename
 		case "linux":
-			srcPath = "./" + be.CDeVaultExtractedDirLinux + "bin/"
+			srcPath = abf + be.CDeVaultExtractedDirLinux + "bin/"
 			srcFileCLI = be.CDeVaultCliFile
 			srcFileD = be.CDeVaultDFile
 			srcFileTX = be.CDeVaultTxFile
@@ -588,13 +662,13 @@ func doRequiredFiles() error {
 			srcFileTX = be.CGroestlcoinTxFileWin
 			//srcFileBWCLI = be.CAppFilenameWin
 		case "arm":
-			srcPath = "./" + be.CGroestlcoinExtractedDirLinux + "bin/"
+			srcPath = abf + be.CGroestlcoinExtractedDirLinux + "bin/"
 			srcFileCLI = be.CGroestlcoinCliFile
 			srcFileD = be.CGroestlcoinDFile
 			srcFileTX = be.CGroestlcoinTxFile
 			//srcFileBWCLI = be.CAppFilename
 		case "linux":
-			srcPath = "./" + be.CGroestlcoinExtractedDirLinux + "bin/"
+			srcPath = abf + be.CGroestlcoinExtractedDirLinux + "bin/"
 			srcFileCLI = be.CGroestlcoinCliFile
 			srcFileD = be.CGroestlcoinDFile
 			srcFileTX = be.CGroestlcoinTxFile
@@ -628,7 +702,7 @@ func doRequiredFiles() error {
 	case be.PTPIVX:
 		switch runtime.GOOS {
 		case "windows":
-			srcPath = "./tmp/" + be.CPIVXExtractedDirWindows + "pivx-" + be.CPIVXCoreVersion + "bin/"
+			srcPath = abf + be.CPIVXExtractedDirWindows + "bin\\"
 			srcFileCLI = be.CPIVXCliFileWin
 			srcFileD = be.CPIVXDFileWin
 			srcFileTX = be.CPIVXTxFileWin
@@ -648,6 +722,27 @@ func doRequiredFiles() error {
 		default:
 			err = errors.New("unable to determine runtime.GOOS")
 		}
+	case be.PTRapids:
+		switch runtime.GOOS {
+		case "windows":
+			srcPath = "./tmp/" + be.CRapidsExtractedDirLinux
+			srcFileCLI = be.CRapidsCliFileWin
+			srcFileD = be.CRapidsDFileWin
+			srcFileTX = be.CRapidsTxFileWin
+		case "arm":
+			srcPath = "./" + be.CRapidsExtractedDirLinux
+			srcFileCLI = be.CRapidsCliFile
+			srcFileD = be.CRapidsDFile
+			srcFileTX = be.CRapidsTxFile
+		case "linux":
+			srcPath = "./" + be.CRapidsExtractedDirLinux
+			srcPathD = "./" + be.CRapidsExtractedDirDaemon
+			srcFileCLI = be.CRapidsCliFile
+			srcFileD = be.CRapidsDFile
+			srcFileTX = be.CRapidsTxFile
+		default:
+			err = errors.New("unable to determine runtime.GOOS")
+		}
 	case be.PTReddCoin:
 		switch runtime.GOOS {
 		case "windows":
@@ -657,7 +752,7 @@ func doRequiredFiles() error {
 			srcFileTX = be.CReddCoinTxFileWin
 			//srcFileBWCLI = be.CAppFilenameWin
 		case "arm":
-			srcPath = "./" + be.CReddCoinExtractedDirLinux + "bin/"
+			srcPath = abf + be.CReddCoinExtractedDirLinux + "bin/"
 			srcFileCLI = be.CReddCoinCliFile
 			srcFileD = be.CReddCoinDFile
 			srcFileTX = be.CReddCoinTxFile
@@ -680,13 +775,13 @@ func doRequiredFiles() error {
 			srcFileTX = be.CScalaTxFileWin
 			//srcFileBWCLI = be.CAppFilenameWin
 		case "arm":
-			srcPath = "./" + be.CScalaExtractedDirLinux
+			srcPath = abf + be.CScalaExtractedDirLinux
 			srcFileCLI = be.CScalaCliFile
 			srcFileD = be.CScalaDFile
 			srcFileTX = be.CScalaTxFile
 			//srcFileBWCLI = be.CAppFilename
 		case "linux":
-			srcPath = "./" + be.CScalaExtractedDirLinux
+			srcPath = abf + be.CScalaExtractedDirLinux
 			srcFileCLI = be.CScalaCliFile
 			srcFileD = be.CScalaDFile
 			srcFileTX = be.CScalaTxFile
@@ -751,8 +846,15 @@ func doRequiredFiles() error {
 
 	// coind
 	if !be.FileExists(abf + srcFileD) {
-		if err := be.FileCopy(srcPath+srcFileD, abf+srcFileD, false); err != nil {
-			return fmt.Errorf("unable to copyFile: %v - %v", srcPath+srcFileD, err)
+		// This is only required for Rapids on Linux because there are 2 different directory locations.
+		if srcPathD != "" {
+			if err := be.FileCopy(srcPathD+srcFileD, abf+srcFileD, false); err != nil {
+				return fmt.Errorf("unable to copyFile: %v - %v", srcPathD+srcFileD, err)
+			}
+		} else {
+			if err := be.FileCopy(srcPath+srcFileD, abf+srcFileD, false); err != nil {
+				return fmt.Errorf("unable to copyFile: %v - %v", srcPath+srcFileD, err)
+			}
 		}
 	}
 	err = os.Chmod(abf+srcFileD, 0777)
