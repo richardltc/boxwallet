@@ -24,13 +24,13 @@ import (
 
 const (
 	CAppName        string = "BoxWallet"
-	CBWAppVersion   string = "0.35.0"
+	CBWAppVersion   string = "0.35.1"
 	CAppFilename    string = "boxwallet"
 	CAppFilenameWin string = "boxwallet.exe"
 	CAppLogfile     string = "boxwallet.log"
 
-	CAppBinDir    string = "boxwallet"
-	CAppBinDirWin string = "BoxWallet"
+	cAppWorkingDir    string = ".boxwallet"
+	cAppWorkingDirWin string = "BoxWallet"
 
 	// Divi-cli command constants
 	cCommandGetBCInfo     string = "getblockchaininfo"
@@ -128,6 +128,7 @@ const (
 	PTScala
 	PTDeVault
 	PTReddCoin
+	PTRapids
 )
 
 // OSType - either ostArm, ostLinux or ostWindows
@@ -278,13 +279,29 @@ var gPricePerCoinAUD usd2AUDRespStruct
 var gPricePerCoinGBP usd2GBPRespStruct
 var gTicker DiviTickerStruct
 
-func AddNodesDiviAlreadyExist() (bool, error) {
+func AddNodesAlreadyExist() (bool, error) {
 	chd, _ := GetCoinHomeFolder(APPTCLI)
+	var exists bool
 
-	exists, err := StringExistsInFile("addnode=", chd+CDiviConfFile)
+	bwconf, err := GetConfigStruct("", false) //GetCLIConfStruct()
 	if err != nil {
-		return false, nil
+		return false, fmt.Errorf("unable to GetConfigStruct - %v", err)
 	}
+	switch bwconf.ProjectType {
+	case PTDivi:
+		exists, err = StringExistsInFile("addnode=", chd+CDiviConfFile)
+		if err != nil {
+			return false, nil
+		}
+	case PTRapids:
+		exists, err = StringExistsInFile("addnode=", chd+CRapidsConfFile)
+		if err != nil {
+			return false, nil
+		}
+	default:
+		err = errors.New("unable to determine ProjectType")
+	}
+
 	if exists {
 		return true, nil
 	}
@@ -292,7 +309,7 @@ func AddNodesDiviAlreadyExist() (bool, error) {
 }
 
 func AddAddNodesIfRequired() error {
-	doExist, err := AddNodesDiviAlreadyExist()
+	doExist, err := AddNodesAlreadyExist()
 	if err != nil {
 		return err
 	}
@@ -301,31 +318,55 @@ func AddAddNodesIfRequired() error {
 		if err != nil {
 			return fmt.Errorf("unable to GetConfigStruct - %v", err)
 		}
+		chd, _ := GetCoinHomeFolder(APPTCLI)
+		if err := os.MkdirAll(chd, os.ModePerm); err != nil {
+			return fmt.Errorf("unable to make directory - %v", err)
+		}
+
+		var addnodes []byte
+		var sAddnodes string
+
 		switch bwconf.ProjectType {
 		case PTDivi:
-			chd, _ := GetCoinHomeFolder(APPTCLI)
-			if err := os.MkdirAll(chd, os.ModePerm); err != nil {
-				return fmt.Errorf("unable to make directory - %v", err)
-			}
-			addnodes, err := getAddNodes()
+			addnodes, err = getDiviAddNodes()
 			if err != nil {
-				return fmt.Errorf("unable to getAddNodes - %v", err)
-			}
-
-			sAddnodes := string(addnodes[:])
-			if !strings.Contains(sAddnodes, "addnode") {
-				return fmt.Errorf("unable to retrieve addnodes, please try again")
+				return fmt.Errorf("unable to getDiviAddNodes - %v", err)
 			}
 
 			if err := WriteTextToFile(chd+CDiviConfFile, sAddnodes); err != nil {
 				return fmt.Errorf("unable to write addnodes to file - %v", err)
 			}
+		case PTRapids:
+			addnodes, err = getRapidsAddNodes()
+			if err != nil {
+				return fmt.Errorf("unable to getRapidsAddNodes - %v", err)
+			}
 
-		case PTTrezarcoin:
-
+			if err := WriteTextToFile(chd+CRapidsConfFile, sAddnodes); err != nil {
+				return fmt.Errorf("unable to write addnodes to file - %v", err)
+			}
 		default:
 			err = errors.New("unable to determine ProjectType")
 		}
+
+		sAddnodes = string(addnodes[:])
+		if !strings.Contains(sAddnodes, "addnode") {
+			return fmt.Errorf("unable to retrieve addnodes, please try again")
+		}
+
+		switch bwconf.ProjectType {
+		case PTDivi:
+			if err := WriteTextToFile(chd+CDiviConfFile, sAddnodes); err != nil {
+				return fmt.Errorf("unable to write addnodes to file - %v", err)
+			}
+		case PTRapids:
+			if err := WriteTextToFile(chd+CRapidsConfFile, sAddnodes); err != nil {
+				return fmt.Errorf("unable to write addnodes to file - %v", err)
+			}
+		default:
+			err = errors.New("unable to determine ProjectType")
+		}
+
 	}
 	return nil
 }
@@ -345,42 +386,17 @@ func findProcess(key string) (int, string, error) {
 	pname := ""
 	pid := 0
 	err := errors.New("not found")
-	ps, _ := ps.Processes()
+	process, _ := ps.Processes()
 
-	for i := range ps {
-		if ps[i].Executable() == key {
-			pid = ps[i].Pid()
-			pname = ps[i].Executable()
+	for i := range process {
+		if process[i].Executable() == key {
+			pid = process[i].Pid()
+			pname = process[i].Executable()
 			err = nil
 			break
 		}
 	}
 	return pid, pname, err
-}
-
-func getAddNodes() ([]byte, error) {
-	addNodesClient := http.Client{
-		Timeout: time.Second * 3, // Maximum of 3 secs
-	}
-
-	req, err := http.NewRequest(http.MethodGet, cDiviAddNodeURL, nil)
-	if err != nil {
-		return nil, err
-	}
-
-	req.Header.Set("User-Agent", "boxwallet")
-
-	res, getErr := addNodesClient.Do(req)
-	if getErr != nil {
-		return nil, err
-	}
-
-	body, readErr := ioutil.ReadAll(res.Body)
-	if readErr != nil {
-		return nil, err
-	}
-
-	return body, nil
 }
 
 // GetAppFileName - Returns the name of the app binary file e.g. boxwallet or boxwallet.exe
@@ -499,6 +515,8 @@ func GetCoinDaemonFilename(at APPType) (string, error) {
 		return CPhoreDFile, nil
 	case PTPIVX:
 		return CPIVXDFile, nil
+	case PTRapids:
+		return CRapidsDFile, nil
 	case PTReddCoin:
 		return CReddCoinDFile, nil
 	case PTScala:
@@ -543,6 +561,8 @@ func GetCoinName(at APPType) (string, error) {
 		return CCoinNamePhore, nil
 	case PTPIVX:
 		return CCoinNamePIVX, nil
+	case PTRapids:
+		return CCoinNameRapids, nil
 	case PTReddCoin:
 		return CCoinNameReddCoin, nil
 	case PTScala:
@@ -595,6 +615,8 @@ func GetCoinHomeFolder(at APPType) (string, error) {
 			s = AddTrailingSlash(hd) + "appdata\\roaming\\" + AddTrailingSlash(CPhoreHomeDirWin)
 		case PTPIVX:
 			s = AddTrailingSlash(hd) + "appdata\\roaming\\" + AddTrailingSlash(cPIVXHomeDirWin)
+		case PTRapids:
+			s = AddTrailingSlash(hd) + "appdata\\roaming\\" + AddTrailingSlash(cRapidsHomeDirWin)
 		case PTReddCoin:
 			s = AddTrailingSlash(hd) + "appdata\\roaming\\" + AddTrailingSlash(CReddCoinHomeDirWin)
 		case PTScala:
@@ -621,6 +643,8 @@ func GetCoinHomeFolder(at APPType) (string, error) {
 			s = AddTrailingSlash(hd) + AddTrailingSlash(CPhoreHomeDir)
 		case PTPIVX:
 			s = AddTrailingSlash(hd) + AddTrailingSlash(cPIVXHomeDir)
+		case PTRapids:
+			s = AddTrailingSlash(hd) + AddTrailingSlash(cRapidsHomeDir)
 		case PTReddCoin:
 			s = AddTrailingSlash(hd) + AddTrailingSlash(CReddCoinHomeDir)
 		case PTScala:
@@ -633,6 +657,22 @@ func GetCoinHomeFolder(at APPType) (string, error) {
 			err = errors.New("unable to determine ProjectType")
 
 		}
+	}
+	return s, nil
+}
+
+func GetAppWorkingFolder() (string, error) {
+	var s string
+	u, err := user.Current()
+	if err != nil {
+		return "", err
+	}
+	hd := u.HomeDir
+	if runtime.GOOS == "windows" {
+		// add the "appdata\roaming" part.
+		s = addTrailingSlash(hd) + "appdata\\roaming\\" + addTrailingSlash(cAppWorkingDirWin)
+	} else {
+		s = AddTrailingSlash(hd) + AddTrailingSlash(cAppWorkingDir)
 	}
 	return s, nil
 }
@@ -764,12 +804,12 @@ func GetPasswordToEncryptWallet() string {
 }
 
 func GetWalletEncryptionPassword() string {
-	pword := ""
+	pw := ""
 	prompt := &survey.Password{
 		Message: "Please enter your encrypted wallet password",
 	}
-	survey.AskOne(prompt, &pword)
-	return pword
+	survey.AskOne(prompt, &pw)
+	return pw
 }
 
 func GetWalletEncryptionResp() bool {
@@ -851,11 +891,11 @@ func getWalletResponse(sOut string) walletResponseType {
 // IsCoinDaemonRunning - Works out whether the coin Daemon is running e.g. divid
 func IsCoinDaemonRunning() (bool, int, error) {
 	var pid int
-	gwconf, err := GetConfigStruct("", false)
+	bwconf, err := GetConfigStruct("", false)
 	if err != nil {
 		return false, pid, err
 	}
-	switch gwconf.ProjectType {
+	switch bwconf.ProjectType {
 	case PTDivi:
 		if runtime.GOOS == "windows" {
 			pid, _, err = findProcess(CDiviDFileWin)
@@ -1867,6 +1907,179 @@ func PopulateDaemonConfFile() (rpcuser, rpcpassword string, err error) {
 		}
 
 		return rpcu, rpcpw, nil
+	case PTRapids:
+		fmt.Println("Populating " + CRapidsConfFile + " for initial setup...")
+
+		// Add rpcuser info if required, or retrieve the existing one
+		bNeedToWriteStr := true
+		if FileExists(chd + CRapidsConfFile) {
+			bStrFound, err := StringExistsInFile(cRPCUserStr+"=", chd+CRapidsConfFile)
+			if err != nil {
+				return "", "", fmt.Errorf("unable to search for text in file - %v", err)
+			}
+			if !bStrFound {
+				// String not found
+				if !bFileHasBeenBU {
+					bFileHasBeenBU = true
+					if err := BackupFile(chd, CRapidsConfFile, false); err != nil {
+						return "", "", fmt.Errorf("unable to backup file - %v", err)
+					}
+				}
+			} else {
+				bNeedToWriteStr = false
+				rpcu, err = GetStringAfterStrFromFile(cRPCUserStr+"=", chd+CRapidsConfFile)
+				if err != nil {
+					return "", "", fmt.Errorf("unable to search for text in file - %v", err)
+				}
+			}
+		} else {
+			// Set this to true, because the file has just been freshly created and we don't want to back it up
+			bFileHasBeenBU = true
+		}
+		if bNeedToWriteStr {
+			rpcu = cRapidsRPCUser
+			if err := WriteTextToFile(chd+CRapidsConfFile, cRPCUserStr+"="+rpcu); err != nil {
+				log.Fatal(err)
+			}
+		}
+
+		// Add rpcpassword info if required, or retrieve the existing one
+		bNeedToWriteStr = true
+		if FileExists(chd + CRapidsConfFile) {
+			bStrFound, err := StringExistsInFile(cRPCPasswordStr+"=", chd+CRapidsConfFile)
+			if err != nil {
+				return "", "", fmt.Errorf("unable to search for text in file - %v", err)
+			}
+			if !bStrFound {
+				// String not found
+				if !bFileHasBeenBU {
+					bFileHasBeenBU = true
+					if err := BackupFile(chd, CRapidsConfFile, false); err != nil {
+						return "", "", fmt.Errorf("unable to backup file - %v", err)
+					}
+				}
+			} else {
+				bNeedToWriteStr = false
+				rpcpw, err = GetStringAfterStrFromFile(cRPCPasswordStr+"=", chd+CRapidsConfFile)
+				if err != nil {
+					return "", "", fmt.Errorf("unable to search for text in file - %v", err)
+				}
+			}
+		}
+		if bNeedToWriteStr {
+			rpcpw = rand.String(20)
+			if err := WriteTextToFile(chd+CRapidsConfFile, cRPCPasswordStr+"="+rpcpw); err != nil {
+				log.Fatal(err)
+			}
+			if err := WriteTextToFile(chd+CRapidsConfFile, ""); err != nil {
+				log.Fatal(err)
+			}
+		}
+
+		// Add daemon=1 info if required
+		bNeedToWriteStr = true
+		if FileExists(chd + CRapidsConfFile) {
+			bStrFound, err := StringExistsInFile("daemon=1", chd+CRapidsConfFile)
+			if err != nil {
+				return "", "", fmt.Errorf("unable to search for text in file - %v", err)
+			}
+			if !bStrFound {
+				// String not found
+				if !bFileHasBeenBU {
+					bFileHasBeenBU = true
+					if err := BackupFile(chd, CRapidsConfFile, false); err != nil {
+						return "", "", fmt.Errorf("unable to backup file - %v", err)
+					}
+				}
+			} else {
+				bNeedToWriteStr = false
+			}
+		}
+		if bNeedToWriteStr {
+			if err := WriteTextToFile(chd+CRapidsConfFile, "daemon=1"); err != nil {
+				log.Fatal(err)
+			}
+			if err := WriteTextToFile(chd+CRapidsConfFile, ""); err != nil {
+				log.Fatal(err)
+			}
+		}
+
+		// Add server=1 info if required
+		bNeedToWriteStr = true
+		if FileExists(chd + CRapidsConfFile) {
+			bStrFound, err := StringExistsInFile("server=1", chd+CRapidsConfFile)
+			if err != nil {
+				return "", "", fmt.Errorf("unable to search for text in file - %v", err)
+			}
+			if !bStrFound {
+				// String not found
+				if !bFileHasBeenBU {
+					bFileHasBeenBU = true
+					if err := BackupFile(chd, CRapidsConfFile, false); err != nil {
+						return "", "", fmt.Errorf("unable to backup file - %v", err)
+					}
+				}
+			} else {
+				bNeedToWriteStr = false
+			}
+		}
+		if bNeedToWriteStr {
+			if err := WriteTextToFile(chd+CRapidsConfFile, "server=1"); err != nil {
+				log.Fatal(err)
+			}
+		}
+
+		// Add rpcallowip= info if required
+		bNeedToWriteStr = true
+		if FileExists(chd + CRapidsConfFile) {
+			bStrFound, err := StringExistsInFile("rpcallowip=", chd+CRapidsConfFile)
+			if err != nil {
+				return "", "", fmt.Errorf("unable to search for text in file - %v", err)
+			}
+			if !bStrFound {
+				// String not found
+				if !bFileHasBeenBU {
+					bFileHasBeenBU = true
+					if err := BackupFile(chd, CRapidsConfFile, false); err != nil {
+						return "", "", fmt.Errorf("unable to backup file - %v", err)
+					}
+				}
+			} else {
+				bNeedToWriteStr = false
+			}
+		}
+		if bNeedToWriteStr {
+			if err := WriteTextToFile(chd+CRapidsConfFile, "rpcallowip=192.168.1.0/255.255.255.0"); err != nil {
+				log.Fatal(err)
+			}
+		}
+
+		// Add rpcport= info if required
+		bNeedToWriteStr = true
+		if FileExists(chd + CRapidsConfFile) {
+			bStrFound, err := StringExistsInFile("rpcport=", chd+CRapidsConfFile)
+			if err != nil {
+				return "", "", fmt.Errorf("unable to search for text in file - %v", err)
+			}
+			if !bStrFound {
+				// String not found
+				if !bFileHasBeenBU {
+					bFileHasBeenBU = true
+					if err := BackupFile(chd, CRapidsConfFile, false); err != nil {
+						return "", "", fmt.Errorf("unable to backup file - %v", err)
+					}
+				}
+			} else {
+				bNeedToWriteStr = false
+			}
+		}
+		if bNeedToWriteStr {
+			if err := WriteTextToFile(chd+CRapidsConfFile, "rpcport="+CRapidsRPCPort); err != nil {
+				log.Fatal(err)
+			}
+		}
+
+		return rpcu, rpcpw, nil
 	case PTReddCoin:
 		fmt.Println("Populating " + CReddCoinConfFile + " for initial setup...")
 
@@ -2048,41 +2261,63 @@ func PopulateDaemonConfFile() (rpcuser, rpcpassword string, err error) {
 	case PTTrezarcoin:
 		fmt.Println("Populating " + CTrezarcoinConfFile + " for initial setup...")
 
-		// Add rpcuser info if required
-		b, err := StringExistsInFile(cRPCUserStr+"=", chd+CTrezarcoinConfFile)
-		if err != nil {
-			return "", "", fmt.Errorf("unable to search for text in file - %v", err)
-		}
-		if !b {
-			if !bFileHasBeenBU {
-				bFileHasBeenBU = true
-				if err := BackupFile(chd, CTrezarcoinConfFile, false); err != nil {
-					return "", "", fmt.Errorf("unable to backup file - %v", err)
-				}
-			}
-			rpcu = "trezarcoinrpc"
-			if err := WriteTextToFile(chd+CTrezarcoinConfFile, cRPCUserStr+"="+rpcu); err != nil {
-				log.Fatal(err)
-			}
-		} else {
-			rpcu, err = GetStringAfterStrFromFile(cRPCUserStr+"=", chd+CTrezarcoinConfFile)
+		// Add rpcuser info if required, or retrieve the existing one
+		bNeedToWriteStr := true
+		if FileExists(chd + CTrezarcoinConfFile) {
+			bStrFound, err := StringExistsInFile(cRPCUserStr+"=", chd+CTrezarcoinConfFile)
 			if err != nil {
 				return "", "", fmt.Errorf("unable to search for text in file - %v", err)
 			}
-		}
-
-		// Add rpcpassword info if required
-		b, err = StringExistsInFile(cRPCPasswordStr+"=", chd+CTrezarcoinConfFile)
-		if err != nil {
-			return "", "", fmt.Errorf("unable to search for text in file - %v", err)
-		}
-		if !b {
-			if !bFileHasBeenBU {
-				bFileHasBeenBU = true
-				if err := BackupFile(chd, CTrezarcoinConfFile, false); err != nil {
-					return "", "", fmt.Errorf("unable to backup file - %v", err)
+			if !bStrFound {
+				// String not found
+				if !bFileHasBeenBU {
+					bFileHasBeenBU = true
+					if err := BackupFile(chd, CTrezarcoinConfFile, false); err != nil {
+						return "", "", fmt.Errorf("unable to backup file - %v", err)
+					}
+				}
+			} else {
+				bNeedToWriteStr = false
+				rpcu, err = GetStringAfterStrFromFile(cRPCUserStr+"=", chd+CTrezarcoinConfFile)
+				if err != nil {
+					return "", "", fmt.Errorf("unable to search for text in file - %v", err)
 				}
 			}
+		} else {
+			// Set this to true, because the file has just been freshly created and we don't want to back it up
+			bFileHasBeenBU = true
+		}
+		if bNeedToWriteStr {
+			rpcu = cTrezarcoinRPCUser
+			if err := WriteTextToFile(chd+CTrezarcoinConfFile, cRPCUserStr+"="+rpcu); err != nil {
+				log.Fatal(err)
+			}
+		}
+
+		// Add rpcpassword info if required, or retrieve the existing one
+		bNeedToWriteStr = true
+		if FileExists(chd + CTrezarcoinConfFile) {
+			bStrFound, err := StringExistsInFile(cRPCPasswordStr+"=", chd+CTrezarcoinConfFile)
+			if err != nil {
+				return "", "", fmt.Errorf("unable to search for text in file - %v", err)
+			}
+			if !bStrFound {
+				// String not found
+				if !bFileHasBeenBU {
+					bFileHasBeenBU = true
+					if err := BackupFile(chd, CTrezarcoinConfFile, false); err != nil {
+						return "", "", fmt.Errorf("unable to backup file - %v", err)
+					}
+				}
+			} else {
+				bNeedToWriteStr = false
+				rpcpw, err = GetStringAfterStrFromFile(cRPCPasswordStr+"=", chd+CTrezarcoinConfFile)
+				if err != nil {
+					return "", "", fmt.Errorf("unable to search for text in file - %v", err)
+				}
+			}
+		}
+		if bNeedToWriteStr {
 			rpcpw = rand.String(20)
 			if err := WriteTextToFile(chd+CTrezarcoinConfFile, cRPCPasswordStr+"="+rpcpw); err != nil {
 				log.Fatal(err)
@@ -2090,25 +2325,28 @@ func PopulateDaemonConfFile() (rpcuser, rpcpassword string, err error) {
 			if err := WriteTextToFile(chd+CTrezarcoinConfFile, ""); err != nil {
 				log.Fatal(err)
 			}
-		} else {
-			rpcpw, err = GetStringAfterStrFromFile(cRPCPasswordStr+"=", chd+CTrezarcoinConfFile)
-			if err != nil {
-				return "", "", fmt.Errorf("unable to search for text in file - %v", err)
-			}
 		}
 
 		// Add daemon=1 info if required
-		b, err = StringExistsInFile("daemon=1", chd+CTrezarcoinConfFile)
-		if err != nil {
-			return "", "", fmt.Errorf("unable to search for text in file - %v", err)
-		}
-		if !b {
-			if !bFileHasBeenBU {
-				bFileHasBeenBU = true
-				if err := BackupFile(chd, CTrezarcoinConfFile, false); err != nil {
-					return "", "", fmt.Errorf("unable to backup file - %v", err)
-				}
+		bNeedToWriteStr = true
+		if FileExists(chd + CTrezarcoinConfFile) {
+			bStrFound, err := StringExistsInFile("daemon=1", chd+CTrezarcoinConfFile)
+			if err != nil {
+				return "", "", fmt.Errorf("unable to search for text in file - %v", err)
 			}
+			if !bStrFound {
+				// String not found
+				if !bFileHasBeenBU {
+					bFileHasBeenBU = true
+					if err := BackupFile(chd, CTrezarcoinConfFile, false); err != nil {
+						return "", "", fmt.Errorf("unable to backup file - %v", err)
+					}
+				}
+			} else {
+				bNeedToWriteStr = false
+			}
+		}
+		if bNeedToWriteStr {
 			if err := WriteTextToFile(chd+CTrezarcoinConfFile, "daemon=1"); err != nil {
 				log.Fatal(err)
 			}
@@ -2116,54 +2354,82 @@ func PopulateDaemonConfFile() (rpcuser, rpcpassword string, err error) {
 				log.Fatal(err)
 			}
 		}
+
 		// Add server=1 info if required
-		b, err = StringExistsInFile("server=1", chd+CTrezarcoinConfFile)
-		if err != nil {
-			return "", "", fmt.Errorf("unable to search for text in file - %v", err)
-		}
-		if !b {
-			if !bFileHasBeenBU {
-				bFileHasBeenBU = true
-				if err := BackupFile(chd, CTrezarcoinConfFile, false); err != nil {
-					return "", "", fmt.Errorf("unable to backup file - %v", err)
-				}
+		bNeedToWriteStr = true
+		if FileExists(chd + CTrezarcoinConfFile) {
+			bStrFound, err := StringExistsInFile("server=1", chd+CTrezarcoinConfFile)
+			if err != nil {
+				return "", "", fmt.Errorf("unable to search for text in file - %v", err)
 			}
+			if !bStrFound {
+				// String not found
+				if !bFileHasBeenBU {
+					bFileHasBeenBU = true
+					if err := BackupFile(chd, CTrezarcoinConfFile, false); err != nil {
+						return "", "", fmt.Errorf("unable to backup file - %v", err)
+					}
+				}
+			} else {
+				bNeedToWriteStr = false
+			}
+		}
+		if bNeedToWriteStr {
 			if err := WriteTextToFile(chd+CTrezarcoinConfFile, "server=1"); err != nil {
 				log.Fatal(err)
 			}
 		}
+
 		// Add rpcallowip= info if required
-		b, err = StringExistsInFile("rpcallowip=", chd+CTrezarcoinConfFile)
-		if err != nil {
-			return "", "", fmt.Errorf("unable to search for text in file - %v", err)
-		}
-		if !b {
-			if !bFileHasBeenBU {
-				bFileHasBeenBU = true
-				if err := BackupFile(chd, CTrezarcoinConfFile, false); err != nil {
-					return "", "", fmt.Errorf("unable to backup file - %v", err)
-				}
+		bNeedToWriteStr = true
+		if FileExists(chd + CTrezarcoinConfFile) {
+			bStrFound, err := StringExistsInFile("rpcallowip=", chd+CTrezarcoinConfFile)
+			if err != nil {
+				return "", "", fmt.Errorf("unable to search for text in file - %v", err)
 			}
+			if !bStrFound {
+				// String not found
+				if !bFileHasBeenBU {
+					bFileHasBeenBU = true
+					if err := BackupFile(chd, CTrezarcoinConfFile, false); err != nil {
+						return "", "", fmt.Errorf("unable to backup file - %v", err)
+					}
+				}
+			} else {
+				bNeedToWriteStr = false
+			}
+		}
+		if bNeedToWriteStr {
 			if err := WriteTextToFile(chd+CTrezarcoinConfFile, "rpcallowip=192.168.1.0/255.255.255.0"); err != nil {
 				log.Fatal(err)
 			}
 		}
+
 		// Add rpcport= info if required
-		b, err = StringExistsInFile("rpcport=", chd+CTrezarcoinConfFile)
-		if err != nil {
-			return "", "", fmt.Errorf("unable to search for text in file - %v", err)
-		}
-		if !b {
-			if !bFileHasBeenBU {
-				bFileHasBeenBU = true
-				if err := BackupFile(chd, CTrezarcoinConfFile, false); err != nil {
-					return "", "", fmt.Errorf("unable to backup file - %v", err)
-				}
+		bNeedToWriteStr = true
+		if FileExists(chd + CTrezarcoinConfFile) {
+			bStrFound, err := StringExistsInFile("rpcport=", chd+CTrezarcoinConfFile)
+			if err != nil {
+				return "", "", fmt.Errorf("unable to search for text in file - %v", err)
 			}
+			if !bStrFound {
+				// String not found
+				if !bFileHasBeenBU {
+					bFileHasBeenBU = true
+					if err := BackupFile(chd, CTrezarcoinConfFile, false); err != nil {
+						return "", "", fmt.Errorf("unable to backup file - %v", err)
+					}
+				}
+			} else {
+				bNeedToWriteStr = false
+			}
+		}
+		if bNeedToWriteStr {
 			if err := WriteTextToFile(chd+CTrezarcoinConfFile, "rpcport="+CTrezarcoinRPCPort); err != nil {
 				log.Fatal(err)
 			}
 		}
+
 		return rpcu, rpcpw, nil
 	case PTVertcoin:
 		fmt.Println("Populating " + CVertcoinConfFile + " for initial setup...")
@@ -2345,16 +2611,16 @@ func PopulateDaemonConfFile() (rpcuser, rpcpassword string, err error) {
 }
 
 func AllProjectBinaryFilesExists() (bool, error) {
-	//abf, err := GetAppsBinFolder()
-	//if err != nil {
-	//	return false, fmt.Errorf("Unable to GetAppsBinFolder - %v ", err)
-	//}
-
-	ex, err := os.Executable()
+	abf, err := GetAppWorkingFolder()
 	if err != nil {
-		return false, fmt.Errorf("Unable to retrieve running binary: %v ", err)
+		return false, fmt.Errorf("Unable to GetAppsBinFolder - %v ", err)
 	}
-	abf := AddTrailingSlash(filepath.Dir(ex))
+
+	//ex, err := os.Executable()
+	//if err != nil {
+	//	return false, fmt.Errorf("Unable to retrieve running binary: %v ", err)
+	//}
+	//abf := AddTrailingSlash(filepath.Dir(ex))
 
 	bwconf, err := GetConfigStruct("", false)
 	if err != nil {
@@ -2493,6 +2759,28 @@ func AllProjectBinaryFilesExists() (bool, error) {
 				return false, nil
 			}
 		}
+	case PTRapids:
+		if runtime.GOOS == "windows" {
+			if !FileExists(abf + CRapidsCliFileWin) {
+				return false, nil
+			}
+			if !FileExists(abf + CRapidsDFileWin) {
+				return false, nil
+			}
+			if !FileExists(abf + CRapidsTxFileWin) {
+				return false, nil
+			}
+		} else {
+			if !FileExists(abf + CRapidsCliFile) {
+				return false, nil
+			}
+			if !FileExists(abf + CRapidsDFile) {
+				return false, nil
+			}
+			if !FileExists(abf + CRapidsTxFile) {
+				return false, nil
+			}
+		}
 	case PTReddCoin:
 		if runtime.GOOS == "windows" {
 			if !FileExists(abf + CReddCoinCliFileWin) {
@@ -2582,7 +2870,8 @@ func AllProjectBinaryFilesExists() (bool, error) {
 			}
 		}
 	default:
-		err = errors.New("unable to determine ProjectType")
+		err = errors.New("unable to determine ProjectType - AllProjectBinaryFilesExists")
+		return false, err
 	}
 
 	return true, nil
@@ -2630,24 +2919,24 @@ func WalletFix(wft WalletFixType) error {
 		return fmt.Errorf("unable to StopDiviD: %v", err)
 	}
 
-	//abf, _ := GetAppsBinFolder()
+	abf, _ := GetAppWorkingFolder()
 
-	ex, err := os.Executable()
-	if err != nil {
-		return fmt.Errorf("Unable to retrieve running binary: %v ", err)
-	}
-	abf := AddTrailingSlash(filepath.Dir(ex))
+	//ex, err := os.Executable()
+	//if err != nil {
+	//	return fmt.Errorf("Unable to retrieve running binary: %v ", err)
+	//}
+	//abf := AddTrailingSlash(filepath.Dir(ex))
 
 	coind, err := GetCoinDaemonFilename(APPTCLI)
 	if err != nil {
 		return fmt.Errorf("unable to GetCoinDaemonFilename - %v", err)
 	}
 
-	gwconf, err := GetConfigStruct("", false)
+	bwconf, err := GetConfigStruct("", false)
 	if err != nil {
 		return err
 	}
-	switch gwconf.ProjectType {
+	switch bwconf.ProjectType {
 	case PTDivi:
 		if runtime.GOOS == "windows" {
 			// TODO Complete for Windows
@@ -2805,12 +3094,13 @@ func StartCoinDaemon(displayOutput bool) error {
 	if err != nil {
 		return err
 	}
-	//abf, _ := GetAppsBinFolder()
-	ex, err := os.Executable()
-	if err != nil {
-		return fmt.Errorf("Unable to retrieve running binary: %v ", err)
-	}
-	abf := AddTrailingSlash(filepath.Dir(ex))
+	abf, _ := GetAppWorkingFolder()
+
+	//ex, err := os.Executable()
+	//if err != nil {
+	//	return fmt.Errorf("Unable to retrieve running binary: %v ", err)
+	//}
+	//abf := AddTrailingSlash(filepath.Dir(ex))
 
 	switch bwconf.ProjectType {
 	case PTDeVault:
@@ -3152,12 +3442,13 @@ func StopCoinDaemon(displayOutput bool) error {
 		return nil
 	}
 
-	//abf, _ := GetAppsBinFolder()
-	ex, err := os.Executable()
-	if err != nil {
-		return fmt.Errorf("Unable to retrieve running binary: %v ", err)
-	}
-	abf := AddTrailingSlash(filepath.Dir(ex))
+	abf, _ := GetAppWorkingFolder()
+
+	//ex, err := os.Executable()
+	//if err != nil {
+	//	return fmt.Errorf("Unable to retrieve running binary: %v ", err)
+	//}
+	//abf := AddTrailingSlash(filepath.Dir(ex))
 
 	coind, err := GetCoinDaemonFilename(APPTCLI)
 	if err != nil {
@@ -3351,11 +3642,11 @@ func RunInitialDaemon() (rpcuser, rpcpassword string, err error) {
 		return "", "", fmt.Errorf("unable to GetCoinDaemonFilename - %v", err)
 	}
 
-	gwconf, err := GetConfigStruct("", false)
+	bwconf, err := GetConfigStruct("", false)
 	if err != nil {
 		return "", "", fmt.Errorf("unable to GetConfigStruct - %v", err)
 	}
-	switch gwconf.ProjectType {
+	switch bwconf.ProjectType {
 	case PTDivi:
 		//Run divid for the first time, so that we can get the outputted info to build the conf file
 		fmt.Println("About to run " + coind + " for the first time...")
