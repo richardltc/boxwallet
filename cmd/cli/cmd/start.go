@@ -52,7 +52,7 @@ var startCmd = &cobra.Command{
 		case be.PTDivi:
 			// Add the addnodes if required...
 			log.Println("Checking for addnodes...")
-			exist, err := be.AddNodesDiviAlreadyExist()
+			exist, err := be.AddNodesAlreadyExist()
 			if err != nil {
 				log.Fatalf("unable to detect whether addnodes already exist: %v", err)
 			}
@@ -69,6 +69,22 @@ var startCmd = &cobra.Command{
 		case be.PTGroestlcoin:
 		case be.PTPhore:
 		case be.PTPIVX:
+		case be.PTRapids:
+			// Add the addnodes if required...
+			log.Println("Checking for addnodes...")
+			exist, err := be.AddNodesAlreadyExist()
+			if err != nil {
+				log.Fatalf("unable to detect whether addnodes already exist: %v", err)
+			}
+			if exist {
+				log.Println("addnodes already exist...")
+			} else {
+				log.Println("addnodes are missing, so attempting to add...")
+				if err := be.AddAddNodesIfRequired(); err != nil {
+					log.Fatalf("failed to add addnodes: %v", err)
+				}
+				log.Println("addnodes added...")
+			}
 		case be.PTReddCoin:
 		case be.PTScala:
 		case be.PTTrezarcoin:
