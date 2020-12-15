@@ -83,7 +83,7 @@ var dashCmd = &cobra.Command{
 		// Lets load our config file first, to see if the user has made their coin choice...
 		cliConf, err := be.GetConfigStruct("", true)
 		if err != nil {
-			log.Fatal("Unable to determine coin type. Please run " + be.CAppFilename + " coin" + err.Error())
+			log.Fatal("Unable to determine coin type. Please run " + be.CAppFilename + " coin: " + err.Error())
 			//log.Fatal("Unable to GetCLIConfStruct " + err.Error())
 		}
 
