@@ -20,6 +20,7 @@ const (
 	CDFDeVaultWindows string = "devault-" + CDeVaultCoreVersion + "-win64.zip"
 
 	CDeVaultExtractedDirLinux = "devault-" + CDeVaultCoreVersion + "-x86_64-linux-gnu/"
+	CDeVaultExtractedDirWin   = "devault-" + CDeVaultCoreVersion + "-x86_64-w64-mingw32\\"
 
 	CDownloadURLDeVault string = "https://github.com/devaultcrypto/devault/releases/download/v" + CDeVaultCoreVersion + "/"
 
