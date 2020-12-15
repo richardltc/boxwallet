@@ -15,9 +15,9 @@ import (
 const (
 	CCoinNameTrezarcoin string = "Trezarcoin"
 
-	CTrezarcoinCoreVersion string = "2.1.1"
-	CDFTrezarcoinRPi       string = "Trezarcoin-" + CTrezarcoinCoreVersion + "-rPI.zip"
-	CDFTrezarcoinLinux     string = "trezarcoin-" + CTrezarcoinCoreVersion + "-x86_64-linux-gnu.tar.gz"
+	CTrezarcoinCoreVersion string = "2.1.3"
+	CDFTrezarcoinRPi       string = CTrezarcoinCoreVersion + "-rpi.zip"
+	CDFTrezarcoinLinux     string = "trezarcoin-" + CTrezarcoinCoreVersion + "-linux64.tar.gz"
 	CDFTrezarcoinWindows   string = "trezarcoin-" + CTrezarcoinCoreVersion + "-win64-setup.exe"
 
 	CTrezarcoinExtractedDir = "trezarcoin-" + CTrezarcoinCoreVersion + "/"
@@ -36,6 +36,7 @@ const (
 	CTrezarcoinTxFileWin  string = "trezarcoin-tx.exe"
 
 	// trezarcoin.conf file constants
+	cTrezarcoinRPCUser string = "trezarcoinrpc"
 	CTrezarcoinRPCPort string = "17299"
 )
 
