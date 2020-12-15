@@ -298,6 +298,31 @@ func GetBlockchainSyncTxtDivi(synced bool, bci *DiviBlockchainInfoRespStruct) st
 	}
 }
 
+func getDiviAddNodes() ([]byte, error) {
+	addNodesClient := http.Client{
+		Timeout: time.Second * 3, // Maximum of 3 secs.
+	}
+
+	req, err := http.NewRequest(http.MethodGet, cDiviAddNodeURL, nil)
+	if err != nil {
+		return nil, err
+	}
+
+	req.Header.Set("User-Agent", "boxwallet")
+
+	res, getErr := addNodesClient.Do(req)
+	if getErr != nil {
+		return nil, err
+	}
+
+	body, readErr := ioutil.ReadAll(res.Body)
+	if readErr != nil {
+		return nil, err
+	}
+
+	return body, nil
+}
+
 func GetInfoDivi(cliConf *ConfStruct) (diviGetInfoRespStruct, error) {
 	attempts := 5
 	waitingStr := "Checking server..."
