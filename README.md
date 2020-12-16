@@ -1,17 +1,17 @@
 # What is BoxWallet? #
 
-BoxWallet is a single binary multi-coin CLI tool, that gets your coin-of-choice wallet/node set-up fast with just a few commands:
+BoxWallet is a single binary multi-coin CLI tool, that gets your coin-of-choice wallet/node set-up ***fast*** with just a few commands:
 
-boxwallet "coin" - allows you to choose your coin of choice, which, when selected, downloads the projects core files from their official website and installs them automatically.
+boxwallet `coin` - allows you to choose your coin of choice, which then downloads the projects core files from their official website and installs them automatically.
 
-boxwallet "start" - starts the coin's daemon, which syncs the Blockchain.
+boxwallet `start` - starts the coin's daemon, which syncs the Blockchain.
 
-boxwallet "dash" - displays a dashboard with the coins Blockchain and wallet info.
+boxwallet `dash` - displays a dashboard with the coins Blockchain and wallet info.
 
 ## What are some of BoxWallet's features? ##
 
-* Install and run a CLI node or wallet simple, by using two commands: `coin`, to choose your coin of choice and `start` to start the syncing.
-* Setting up multiple nodes/staking wallets on a single machine, and easily switch between them.
+* Install and run a CLI node or wallet simply, by using two commands: `coin`, to choose your coin and `start` to start the syncing.
+* Setting up multiple nodes/staking wallets on a single machine, and easily switch between them using the `coin` command.
 * Viewing your wallet/node that might be running on a Pi, from another computer such as Linux, Mac or Windows.
 * Displaying the staking status of your wallet. 
 * Displaying blockchain and master node syncing status.
@@ -26,7 +26,7 @@ Download BoxWallet, for your platform of choice, extract the files to a location
  
 This will download the official binaries from the coin's project website, and install them in the same folder that you're running `boxwallet` from.
 
-Then run `./boxwallet start`, to start the coin's damon server and then you can run  `./boxwallet dash`, where you will be greeted with an initial wizard to get you going.
+Then run `./boxwallet start`, to start the coin's damon server and then you can run  `./boxwallet dash`, where you will be greeted with an initial wizard to get you going, followed by a dashboard.
 
 ### OK, but what else can BoxWallet do? ###
 
