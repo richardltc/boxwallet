@@ -1151,121 +1151,174 @@ func PopulateDaemonConfFile() (rpcuser, rpcpassword string, err error) {
 		fmt.Println("Populating " + CDiviConfFile + " for initial setup...")
 
 		// Add rpcuser info if required, or retrieve the existing one
-		b, err := StringExistsInFile(cRPCUserStr+"=", chd+CDiviConfFile)
-		if err != nil {
-			return "", "", fmt.Errorf("unable to search for text in file - %v", err)
-		}
-		if !b {
-			if !bFileHasBeenBU {
-				bFileHasBeenBU = true
-				if err := BackupFile(chd, CDiviConfFile, false); err != nil {
-					return "", "", fmt.Errorf("unable to backup file - %v", err)
+		bNeedToWriteStr := true
+		if FileExists(chd + CDiviConfFile) {
+			bStrFound, err := StringExistsInFile(cRPCUserStr+"=", chd+CDiviConfFile)
+			if err != nil {
+				return "", "", fmt.Errorf("unable to search for text in file - %v", err)
+			}
+			if !bStrFound {
+				// String not found
+				if !bFileHasBeenBU {
+					bFileHasBeenBU = true
+					if err := BackupFile(chd, CDiviConfFile, false); err != nil {
+						return "", "", fmt.Errorf("unable to backup file - %v", err)
+					}
+				}
+			} else {
+				bNeedToWriteStr = false
+				rpcu, err = GetStringAfterStrFromFile(cRPCUserStr+"=", chd+CDiviConfFile)
+				if err != nil {
+					return "", "", fmt.Errorf("unable to search for text in file - %v", err)
 				}
 			}
-			rpcu = "divirpc"
+		} else {
+			// Set this to true, because the file has just been freshly created and we don't want to back it up
+			bFileHasBeenBU = true
+		}
+		if bNeedToWriteStr {
+			rpcu = cDiviRPCUser
 			if err := WriteTextToFile(chd+CDiviConfFile, cRPCUserStr+"="+rpcu); err != nil {
 				log.Fatal(err)
 			}
-		} else {
-			rpcu, err = GetStringAfterStrFromFile(cRPCUserStr+"=", chd+CDiviConfFile)
-			if err != nil {
-				return "", "", fmt.Errorf("unable to search for text in file - %v", err)
-			}
 		}
 
-		// Add rpcpassword info if required, or retrieve the xisting one
-		b, err = StringExistsInFile(cRPCPasswordStr+"=", chd+CDiviConfFile)
-		if err != nil {
-			return "", "", fmt.Errorf("unable to search for text in file - %v", err)
-		}
-		if !b {
-			if !bFileHasBeenBU {
-				bFileHasBeenBU = true
-				if err := BackupFile(chd, CDiviConfFile, false); err != nil {
-					return "", "", fmt.Errorf("unable to backup file - %v", err)
-				}
-				rpcpw = rand.String(20)
-				if err := WriteTextToFile(chd+CDiviConfFile, cRPCPasswordStr+"="+rpcpw); err != nil {
-					log.Fatal(err)
-				}
-				if err := WriteTextToFile(chd+CDiviConfFile, ""); err != nil {
-					log.Fatal(err)
-				}
-			}
-		} else {
-			rpcpw, err = GetStringAfterStrFromFile(cRPCPasswordStr+"=", chd+CDiviConfFile)
+		// Add rpcpassword info if required, or retrieve the existing one
+		bNeedToWriteStr = true
+		if FileExists(chd + CDiviConfFile) {
+			bStrFound, err := StringExistsInFile(cRPCPasswordStr+"=", chd+CDiviConfFile)
 			if err != nil {
 				return "", "", fmt.Errorf("unable to search for text in file - %v", err)
+			}
+			if !bStrFound {
+				// String not found
+				if !bFileHasBeenBU {
+					bFileHasBeenBU = true
+					if err := BackupFile(chd, CDiviConfFile, false); err != nil {
+						return "", "", fmt.Errorf("unable to backup file - %v", err)
+					}
+				}
+			} else {
+				bNeedToWriteStr = false
+				rpcpw, err = GetStringAfterStrFromFile(cRPCPasswordStr+"=", chd+CDiviConfFile)
+				if err != nil {
+					return "", "", fmt.Errorf("unable to search for text in file - %v", err)
+				}
+			}
+		}
+		if bNeedToWriteStr {
+			rpcpw = rand.String(20)
+			if err := WriteTextToFile(chd+CDiviConfFile, cRPCPasswordStr+"="+rpcpw); err != nil {
+				log.Fatal(err)
+			}
+			if err := WriteTextToFile(chd+CDiviConfFile, ""); err != nil {
+				log.Fatal(err)
 			}
 		}
 
 		// Add daemon=1 info if required
-		b, err = StringExistsInFile("daemon=1", chd+CDiviConfFile)
-		if err != nil {
-			return "", "", fmt.Errorf("unable to search for text in file - %v", err)
-		}
-		if !b {
-			if !bFileHasBeenBU {
-				bFileHasBeenBU = true
-				if err := BackupFile(chd, CDiviConfFile, false); err != nil {
-					return "", "", fmt.Errorf("unable to backup file - %v", err)
+		bNeedToWriteStr = true
+		if FileExists(chd + CDiviConfFile) {
+			bStrFound, err := StringExistsInFile("daemon=1", chd+CDiviConfFile)
+			if err != nil {
+				return "", "", fmt.Errorf("unable to search for text in file - %v", err)
+			}
+			if !bStrFound {
+				// String not found
+				if !bFileHasBeenBU {
+					bFileHasBeenBU = true
+					if err := BackupFile(chd, CDiviConfFile, false); err != nil {
+						return "", "", fmt.Errorf("unable to backup file - %v", err)
+					}
 				}
-				if err := WriteTextToFile(chd+CDiviConfFile, "daemon=1"); err != nil {
-					log.Fatal(err)
-				}
-				if err := WriteTextToFile(chd+CDiviConfFile, ""); err != nil {
-					log.Fatal(err)
-				}
+			} else {
+				bNeedToWriteStr = false
 			}
 		}
+		if bNeedToWriteStr {
+			if err := WriteTextToFile(chd+CDiviConfFile, "daemon=1"); err != nil {
+				log.Fatal(err)
+			}
+			if err := WriteTextToFile(chd+CDiviConfFile, ""); err != nil {
+				log.Fatal(err)
+			}
+		}
+
 		// Add server=1 info if required
-		b, err = StringExistsInFile("server=1", chd+CDiviConfFile)
-		if err != nil {
-			return "", "", fmt.Errorf("unable to search for text in file - %v", err)
-		}
-		if !b {
-			if !bFileHasBeenBU {
-				bFileHasBeenBU = true
-				if err := BackupFile(chd, CDiviConfFile, false); err != nil {
-					return "", "", fmt.Errorf("unable to backup file - %v", err)
+		bNeedToWriteStr = true
+		if FileExists(chd + CDiviConfFile) {
+			bStrFound, err := StringExistsInFile("server=1", chd+CDiviConfFile)
+			if err != nil {
+				return "", "", fmt.Errorf("unable to search for text in file - %v", err)
+			}
+			if !bStrFound {
+				// String not found
+				if !bFileHasBeenBU {
+					bFileHasBeenBU = true
+					if err := BackupFile(chd, CDiviConfFile, false); err != nil {
+						return "", "", fmt.Errorf("unable to backup file - %v", err)
+					}
 				}
-				if err := WriteTextToFile(chd+CDiviConfFile, "server=1"); err != nil {
-					log.Fatal(err)
-				}
+			} else {
+				bNeedToWriteStr = false
 			}
 		}
+		if bNeedToWriteStr {
+			if err := WriteTextToFile(chd+CDiviConfFile, "server=1"); err != nil {
+				log.Fatal(err)
+			}
+		}
+
 		// Add rpcallowip= info if required
-		b, err = StringExistsInFile("rpcallowip=", chd+CDiviConfFile)
-		if err != nil {
-			return "", "", fmt.Errorf("unable to search for text in file - %v", err)
-		}
-		if !b {
-			if !bFileHasBeenBU {
-				bFileHasBeenBU = true
-				if err := BackupFile(chd, CDiviConfFile, false); err != nil {
-					return "", "", fmt.Errorf("unable to backup file - %v", err)
+		bNeedToWriteStr = true
+		if FileExists(chd + CDiviConfFile) {
+			bStrFound, err := StringExistsInFile("rpcallowip=", chd+CDiviConfFile)
+			if err != nil {
+				return "", "", fmt.Errorf("unable to search for text in file - %v", err)
+			}
+			if !bStrFound {
+				// String not found
+				if !bFileHasBeenBU {
+					bFileHasBeenBU = true
+					if err := BackupFile(chd, CDiviConfFile, false); err != nil {
+						return "", "", fmt.Errorf("unable to backup file - %v", err)
+					}
 				}
-				if err := WriteTextToFile(chd+CDiviConfFile, "rpcallowip=192.168.1.0/255.255.255.0"); err != nil {
-					log.Fatal(err)
-				}
+			} else {
+				bNeedToWriteStr = false
 			}
 		}
+		if bNeedToWriteStr {
+			if err := WriteTextToFile(chd+CDiviConfFile, "rpcallowip=192.168.1.0/255.255.255.0"); err != nil {
+				log.Fatal(err)
+			}
+		}
+
 		// Add rpcport= info if required
-		b, err = StringExistsInFile("rpcport=", chd+CDiviConfFile)
-		if err != nil {
-			return "", "", fmt.Errorf("unable to search for text in file - %v", err)
-		}
-		if !b {
-			if !bFileHasBeenBU {
-				bFileHasBeenBU = true
-				if err := BackupFile(chd, CDiviConfFile, false); err != nil {
-					return "", "", fmt.Errorf("unable to backup file - %v", err)
+		bNeedToWriteStr = true
+		if FileExists(chd + CDiviConfFile) {
+			bStrFound, err := StringExistsInFile("rpcport=", chd+CDiviConfFile)
+			if err != nil {
+				return "", "", fmt.Errorf("unable to search for text in file - %v", err)
+			}
+			if !bStrFound {
+				// String not found
+				if !bFileHasBeenBU {
+					bFileHasBeenBU = true
+					if err := BackupFile(chd, CDiviConfFile, false); err != nil {
+						return "", "", fmt.Errorf("unable to backup file - %v", err)
+					}
 				}
-				if err := WriteTextToFile(chd+CDiviConfFile, "rpcport="+CDiviRPCPort); err != nil {
-					log.Fatal(err)
-				}
+			} else {
+				bNeedToWriteStr = false
 			}
 		}
+		if bNeedToWriteStr {
+			if err := WriteTextToFile(chd+CDiviConfFile, "rpcport="+CDiviRPCPort); err != nil {
+				log.Fatal(err)
+			}
+		}
+
 		return rpcu, rpcpw, nil
 	case PTFeathercoin:
 		fmt.Println("Populating " + CFeathercoinConfFile + " for initial setup...")
