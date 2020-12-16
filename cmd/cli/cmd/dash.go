@@ -384,7 +384,7 @@ var dashCmd = &cobra.Command{
 
 		pWallet := widgets.NewParagraph()
 		pWallet.Title = "Wallet"
-		pWallet.SetRect(33, 0, 84, 10)
+		pWallet.SetRect(33, 0, 84, 11)
 		pWallet.TextStyle.Fg = ui.ColorWhite
 		pWallet.BorderStyle.Fg = ui.ColorYellow
 		switch cliConf.ProjectType {
@@ -435,7 +435,7 @@ var dashCmd = &cobra.Command{
 
 		pNetwork := widgets.NewParagraph()
 		pNetwork.Title = "Network"
-		pNetwork.SetRect(0, 10, 32, 4)
+		pNetwork.SetRect(0, 11, 32, 4)
 		pNetwork.TextStyle.Fg = ui.ColorWhite
 		pNetwork.BorderStyle.Fg = ui.ColorWhite
 
@@ -618,7 +618,7 @@ var dashCmd = &cobra.Command{
 					pNetwork.BorderStyle.Fg = ui.ColorYellow
 				}
 			case be.PTDivi:
-				if mnssDivi.Result.IsBlockchainSynced {
+				if mnssDivi.Result.IsBlockchainSynced && mnssDivi.Result.RequestedMasternodeAssets == 999 {
 					pNetwork.BorderStyle.Fg = ui.ColorGreen
 				} else {
 					pNetwork.BorderStyle.Fg = ui.ColorYellow
@@ -636,7 +636,7 @@ var dashCmd = &cobra.Command{
 					pNetwork.BorderStyle.Fg = ui.ColorYellow
 				}
 			case be.PTPhore:
-				if mnssPhore.Result.IsBlockchainSynced {
+				if mnssPhore.Result.IsBlockchainSynced && mnssPhore.Result.RequestedMasternodeAssets == 999 {
 					pNetwork.BorderStyle.Fg = ui.ColorGreen
 				} else {
 					pNetwork.BorderStyle.Fg = ui.ColorYellow
@@ -1057,7 +1057,7 @@ func confirmWalletReady() (bool, error) {
 		CharSet:         yacspin.CharSets[43],
 		Suffix:          "",
 		SuffixAutoColon: true,
-		Message:         " waiting for wallet to load...",
+		Message:         " waiting for wallet to load, this could take several minutes...",
 		StopCharacter:   "",
 		StopColors:      []string{"fgGreen"},
 	}
