@@ -24,7 +24,7 @@ import (
 
 const (
 	CAppName        string = "BoxWallet"
-	CBWAppVersion   string = "0.35.1"
+	CBWAppVersion   string = "0.35.2"
 	CAppFilename    string = "boxwallet"
 	CAppFilenameWin string = "boxwallet.exe"
 	CAppLogfile     string = "boxwallet.log"
@@ -3773,7 +3773,7 @@ func RunInitialDaemon() (rpcuser, rpcpassword string, err error) {
 	return "", "", nil
 }
 
-// StopDaemon - Send a "stop" to the daemon, and returns the result
+// StopDaemon - Send a "stop" to the daemon, and returns the result.
 func StopDaemon(cliConf *ConfStruct) (GenericRespStruct, error) {
 	var respStruct GenericRespStruct
 
