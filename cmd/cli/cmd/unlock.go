@@ -20,7 +20,6 @@ package cmd
 import (
 	"encoding/json"
 	"fmt"
-	// gwc "github.com/richardltc/gwcommon"
 	"github.com/spf13/cobra"
 	"io/ioutil"
 	"log"
