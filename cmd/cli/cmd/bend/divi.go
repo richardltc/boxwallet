@@ -28,7 +28,8 @@ const (
 	CDFDiviLinux            = "divi-" + CDiviCoreVersion + "-x86_64-linux-gnu.tar.gz"
 	CDFDiviWindows          = "divi-" + CDiviCoreVersion + "-win64.zip"
 
-	CDiviExtractedDir = "divi-" + CDiviCoreVersion + "/"
+	CDiviExtractedDirLinux   = "divi-" + CDiviCoreVersion + "/"
+	CDiviExtractedDirWindows = "divi-" + CDiviCoreVersion + "\\"
 
 	CDownloadURLDivi = "https://github.com/DiviProject/Divi/releases/download/v" + CDiviCoreVersion + "/"
 
@@ -350,8 +351,8 @@ func GetInfoDivi(cliConf *ConfStruct) (diviGetInfoRespStruct, error) {
 		}
 
 		// Check to make sure we are not loading the wallet
-		if bytes.Contains(bodyResp, []byte("Loading")) {
-			// The wallet is still loading, so print message, and sleep for 3 seconds and try again...
+		if bytes.Contains(bodyResp, []byte("Loading")) || bytes.Contains(bodyResp, []byte("Rewinding")) {
+			// The wallet is still loading, so print message, and sleep for 3 seconds and try again..
 			var errStruct GenericRespStruct
 			err = json.Unmarshal(bodyResp, &errStruct)
 			if err != nil {
