@@ -35,8 +35,11 @@ var coinCmd = &cobra.Command{
 	Short: "Select which coin you wish to work with",
 	Long:  ``,
 	Run: func(cmd *cobra.Command, args []string) {
-		fmt.Println("  ____          __          __   _ _      _   \n |  _ \\         \\ \\        / /  | | |    | |  \n | |_) | _____  _\\ \\  /\\  / /_ _| | | ___| |_ \n |  _ < / _ \\ \\/ /\\ \\/  \\/ / _` | | |/ _ \\ __|\n | |_) | (_) >  <  \\  /\\  / (_| | | |  __/ |_ \n |____/ \\___/_/\\_\\  \\/  \\/ \\__,_|_|_|\\___|\\__|\n                                              \n                                              ")
+		fmt.Println("  ____          __          __   _ _      _   \n |  _ \\         \\ \\        / /  | | |    | |  \n | |_) | _____  _\\ \\  /\\  / /_ _| | | ___| |_ \n |  _ < / _ \\ \\/ /\\ \\/  \\/ / _` | | |/ _ \\ __|\n | |_) | (_) >  <  \\  /\\  / (_| | | |  __/ |_ \n |____/ \\___/_/\\_\\  \\/  \\/ \\__,_|_|_|\\___|\\__| v" + be.CBWAppVersion + "\n                                              \n                                               ")
 		coin := ""
+		lf, _ := be.GetAppWorkingFolder()
+		lf = lf + be.CAppLogfile
+		be.AddToLog(lf, "coin command invoked", false)
 		prompt := &survey.Select{
 			Message: "Please choose your preferred coin:",
 			Options: []string{be.CCoinNameDivi,
@@ -57,36 +60,47 @@ var coinCmd = &cobra.Command{
 
 		switch coin {
 		case be.CCoinNameDeVault:
+			be.AddToLog(lf, be.CCoinNameDeVault+" selected", false)
 			cliConf.ProjectType = be.PTDeVault
 			cliConf.Port = be.CDeVaultRPCPort
 		case be.CCoinNameDivi:
+			be.AddToLog(lf, be.CCoinNameDivi+" selected", false)
 			cliConf.ProjectType = be.PTDivi
 			cliConf.Port = be.CDiviRPCPort
 		case be.CCoinNameFeathercoin:
+			be.AddToLog(lf, be.CCoinNameFeathercoin+" selected", false)
 			cliConf.ProjectType = be.PTFeathercoin
 			cliConf.Port = be.CFeathercoinRPCPort
 		case be.CCoinNameGroestlcoin:
+			be.AddToLog(lf, be.CCoinNameGroestlcoin+" selected", false)
 			cliConf.ProjectType = be.PTGroestlcoin
 			cliConf.Port = be.CGroestlcoinRPCPort
 		case be.CCoinNamePhore:
+			be.AddToLog(lf, be.CCoinNamePhore+" selected", false)
 			cliConf.ProjectType = be.PTPhore
 			cliConf.Port = be.CPhoreRPCPort
 		case be.CCoinNamePIVX:
+			be.AddToLog(lf, be.CCoinNamePIVX+" selected", false)
 			cliConf.ProjectType = be.PTPIVX
 			cliConf.Port = be.CPIVXRPCPort
 		case be.CCoinNameRapids:
+			be.AddToLog(lf, be.CCoinNameRapids+" selected", false)
 			cliConf.ProjectType = be.PTRapids
 			cliConf.Port = be.CRapidsRPCPort
 		case be.CCoinNameReddCoin:
+			be.AddToLog(lf, be.CCoinNameReddCoin+" selected", false)
 			cliConf.ProjectType = be.PTReddCoin
 			cliConf.Port = be.CReddCoinRPCPort
 		case be.CCoinNameScala:
+			be.AddToLog(lf, be.CCoinNameScala+" selected", false)
 			cliConf.ProjectType = be.PTScala
 			cliConf.Port = be.CScalaRPCPort
 		case be.CCoinNameTrezarcoin:
+			be.AddToLog(lf, be.CCoinNameTrezarcoin+" selected", false)
 			cliConf.ProjectType = be.PTTrezarcoin
 			cliConf.Port = be.CTrezarcoinRPCPort
 		case be.CCoinNameVertcoin:
+			be.AddToLog(lf, be.CCoinNameVertcoin+" selected", false)
 			cliConf.ProjectType = be.PTVertcoin
 			cliConf.Port = be.CVertcoinRPCPort
 		default:
@@ -96,6 +110,7 @@ var coinCmd = &cobra.Command{
 		// Create the App Working folder if required...
 		awf, _ := be.GetAppWorkingFolder()
 		if err := os.MkdirAll(awf, os.ModePerm); err != nil {
+			be.AddToLog(lf, "unable to make directory: "+err.Error(), false)
 			log.Fatal("unable to make directory: ", err)
 		}
 
@@ -121,17 +136,20 @@ var coinCmd = &cobra.Command{
 			log.Fatal(err)
 		}
 
+		be.AddToLog(lf, "checking to see if all required project files exist... ", false)
 		b, err := be.AllProjectBinaryFilesExists()
 		if err != nil {
+			be.AddToLog(lf, "Err: "+err.Error(), false)
 			log.Fatal(err)
 		}
 		if !b {
-			fmt.Println("The " + sCoinName + " CLI bin files haven't been installed yet. So installing them now...")
+			be.AddToLog(lf, "The "+sCoinName+" CLI bin files haven't been installed yet. So installing them now...", true)
 			if err := doRequiredFiles(); err != nil {
+				be.AddToLog(lf, "unable to complete func doRequiredFiles: "+err.Error(), false)
 				log.Fatal(err)
 			}
 		} else {
-			fmt.Println("The " + sCoinName + " CLI bin files have already been installed.")
+			be.AddToLog(lf, "The "+sCoinName+" CLI bin files have already been installed.", true)
 		}
 		fmt.Println("\nAll done!")
 		fmt.Println("\nYou can now run './boxwallet start' and then './boxwallet dash' to view your " + sCoinName + " Dashboard")
@@ -172,6 +190,8 @@ var coinCmd = &cobra.Command{
 func doRequiredFiles() error {
 	var filePath, filePath2, fileURL, fileURL2 string
 	abf, err := be.GetAppWorkingFolder()
+	lf, _ := be.GetAppWorkingFolder()
+	lf = lf + be.CAppLogfile
 
 	//ex, err := os.Executable()
 	//if err != nil {
@@ -285,13 +305,17 @@ func doRequiredFiles() error {
 			fileURL = be.CDownloadURLScala + be.CDFScalaLinux
 		}
 	case be.PTTrezarcoin:
+		be.AddToLog(lf, "TZC detected...", false)
 		if runtime.GOOS == "windows" {
+			be.AddToLog(lf, "windows detected...", false)
 			filePath = abf + be.CDFTrezarcoinWindows
 			fileURL = be.CDownloadURLTC + be.CDFTrezarcoinWindows
 		} else if runtime.GOARCH == "arm" {
+			be.AddToLog(lf, "arm detected...", false)
 			filePath = abf + be.CDFTrezarcoinRPi
 			fileURL = be.CDownloadURLTC + be.CDFTrezarcoinRPi
 		} else {
+			be.AddToLog(lf, "linux detected...", false)
 			filePath = abf + be.CDFTrezarcoinLinux
 			fileURL = be.CDownloadURLTC + be.CDFTrezarcoinLinux
 		}
@@ -312,7 +336,9 @@ func doRequiredFiles() error {
 		return fmt.Errorf("error - %v", err)
 	}
 
-	log.Print("Downloading required files...")
+	be.AddToLog(lf, "filePath="+filePath, false)
+	be.AddToLog(lf, "fileURL="+fileURL, false)
+	be.AddToLog(lf, "Downloading required files...", true)
 
 	// Has been added because Rapids requires 2x file downloads.
 	switch bwconf.ProjectType {
@@ -338,7 +364,7 @@ func doRequiredFiles() error {
 	}
 
 	// Now, decompress the files...
-	log.Print("decompressing files...")
+	be.AddToLog(lf, "decompressing files...", true)
 	switch bwconf.ProjectType {
 	case be.PTDeVault:
 		if runtime.GOOS == "windows" {
@@ -373,13 +399,13 @@ func doRequiredFiles() error {
 			if err != nil {
 				return fmt.Errorf("unable to extractTarGz file: %v - %v", r, err)
 			}
-			defer os.RemoveAll("./" + be.CDiviExtractedDir)
+			defer os.RemoveAll("./" + be.CDiviExtractedDirLinux)
 		} else {
 			err = be.ExtractTarGz(r)
 			if err != nil {
 				return fmt.Errorf("unable to extractTarGz file: %v - %v", r, err)
 			}
-			defer os.RemoveAll("./" + be.CDiviExtractedDir)
+			defer os.RemoveAll("./" + be.CDiviExtractedDirLinux)
 		}
 	case be.PTFeathercoin:
 		if runtime.GOOS == "windows" {
@@ -435,13 +461,13 @@ func doRequiredFiles() error {
 			if err != nil {
 				return fmt.Errorf("unable to extractTarGz file: %v - %v", r, err)
 			}
-			defer os.RemoveAll("./" + be.CPhoreExtractedDir)
+			defer os.RemoveAll("./" + be.CPhoreExtractedDirLinux)
 		} else {
 			err = be.ExtractTarGz(r)
 			if err != nil {
 				return fmt.Errorf("unable to extractTarGz file: %v - %v", r, err)
 			}
-			defer os.RemoveAll("./" + be.CPhoreExtractedDir)
+			defer os.RemoveAll("./" + be.CPhoreExtractedDirLinux)
 		}
 	case be.PTPIVX:
 		if runtime.GOOS == "windows" {
@@ -545,13 +571,14 @@ func doRequiredFiles() error {
 			if err != nil {
 				return fmt.Errorf("unable to extractTarGz file: %v - %v", r, err)
 			}
+			defer os.RemoveAll(abf + be.CTrezarcoinRPiExtractedDir)
 		} else {
 			//err = be.ExtractTarGz(r)
 			err = archiver.Unarchive(filePath, abf)
 			if err != nil {
 				return fmt.Errorf("unable to extractTarGz file: %v - %v", r, err)
 			}
-			defer os.RemoveAll("./" + be.CTrezarcoinExtractedDir)
+			defer os.RemoveAll(abf + be.CTrezarcoinLinuxExtractedDir)
 		}
 	case be.PTVertcoin:
 		if runtime.GOOS == "windows" {
@@ -578,13 +605,16 @@ func doRequiredFiles() error {
 		err = errors.New("unable to determine ProjectType")
 	}
 
-	log.Print("Installing files...")
+	be.AddToLog(lf, "Installing files...", true)
 
 	// Copy files to correct location
 	var srcPath, srcPathD, srcFileCLI, srcFileD, srcFileTX string
 
 	switch bwconf.ProjectType {
 	case be.PTDeVault:
+		if err := be.AddToLog(lf, "DeVault detected...", false); err != nil {
+			return fmt.Errorf("unable to add to log file: %v", err)
+		}
 		switch runtime.GOOS {
 		case "windows":
 			srcPath = abf + be.CDeVaultExtractedDirWin + "bin\\"
@@ -592,114 +622,184 @@ func doRequiredFiles() error {
 			srcFileD = be.CDeVaultDFileWin
 			srcFileTX = be.CDeVaultTxFileWin
 			//srcFileBWCLI = be.CAppFilenameWin
-		case "arm":
-			srcPath = abf + be.CDeVaultExtractedDirLinux + "bin/"
-			srcFileCLI = be.CDeVaultCliFile
-			srcFileD = be.CDeVaultDFile
-			srcFileTX = be.CDeVaultTxFile
-			//srcFileBWCLI = be.CAppFilename
 		case "linux":
-			srcPath = abf + be.CDeVaultExtractedDirLinux + "bin/"
-			srcFileCLI = be.CDeVaultCliFile
-			srcFileD = be.CDeVaultDFile
-			srcFileTX = be.CDeVaultTxFile
+			switch runtime.GOARCH {
+			case "arm":
+				if err := be.AddToLog(lf, "linux arm detected.", false); err != nil {
+					return fmt.Errorf("unable to add to log file: %v", err)
+				}
+				srcPath = abf + be.CDeVaultExtractedDirLinux + "bin/"
+				srcFileCLI = be.CDeVaultCliFile
+				srcFileD = be.CDeVaultDFile
+				srcFileTX = be.CDeVaultTxFile
 			//srcFileBWCLI = be.CAppFilename
+			case "amd64":
+				if err := be.AddToLog(lf, "linux amd64 detected.", false); err != nil {
+					return fmt.Errorf("unable to add to log file: %v", err)
+				}
+				srcPath = abf + be.CDeVaultExtractedDirLinux + "bin/"
+				srcFileCLI = be.CDeVaultCliFile
+				srcFileD = be.CDeVaultDFile
+				srcFileTX = be.CDeVaultTxFile
+			//srcFileBWCLI = be.CAppFilename
+			default:
+				err = errors.New("unable to determine runtime.GOARCH " + runtime.GOARCH)
+			}
 		default:
 			err = errors.New("unable to determine runtime.GOOS")
 		}
 	case be.PTDivi:
+		if err := be.AddToLog(lf, "DIVI detected...", false); err != nil {
+			return fmt.Errorf("unable to add to log file: %v", err)
+		}
 		switch runtime.GOOS {
 		case "windows":
-			srcPath = "./tmp/" + be.CDiviExtractedDir + "bin/"
+			srcPath = abf + be.CDiviExtractedDirWindows + "bin\\"
 			srcFileCLI = be.CDiviCliFileWin
 			srcFileD = be.CDiviDFileWin
 			srcFileTX = be.CDiviTxFileWin
 			//srcFileBWCLI = be.CAppFilenameWin
-		case "arm":
-			srcPath = "./" + be.CDiviExtractedDir + "bin/"
-			srcFileCLI = be.CDiviCliFile
-			srcFileD = be.CDiviDFile
-			srcFileTX = be.CDiviTxFile
-			//srcFileBWCLI = be.CAppFilename
 		case "linux":
-			srcPath = "./" + be.CDiviExtractedDir + "bin/"
-			srcFileCLI = be.CDiviCliFile
-			srcFileD = be.CDiviDFile
-			srcFileTX = be.CDiviTxFile
+			switch runtime.GOARCH {
+			case "arm":
+				if err := be.AddToLog(lf, "linux arm detected.", false); err != nil {
+					return fmt.Errorf("unable to add to log file: %v", err)
+				}
+				srcPath = abf + be.CDiviExtractedDirLinux + "bin/"
+				srcFileCLI = be.CDiviCliFile
+				srcFileD = be.CDiviDFile
+				srcFileTX = be.CDiviTxFile
 			//srcFileBWCLI = be.CAppFilename
+			case "amd64":
+				if err := be.AddToLog(lf, "linux amd64 detected.", false); err != nil {
+					return fmt.Errorf("unable to add to log file: %v", err)
+				}
+				srcPath = abf + be.CDiviExtractedDirLinux + "bin/"
+				srcFileCLI = be.CDiviCliFile
+				srcFileD = be.CDiviDFile
+				srcFileTX = be.CDiviTxFile
+			//srcFileBWCLI = be.CAppFilename
+			default:
+				err = errors.New("unable to determine runtime.GOARCH " + runtime.GOARCH)
+			}
 		default:
 			err = errors.New("unable to determine runtime.GOOS")
 		}
 	case be.PTFeathercoin:
+		if err := be.AddToLog(lf, "Feathercoin detected...", false); err != nil {
+			return fmt.Errorf("unable to add to log file: %v", err)
+		}
 		switch runtime.GOOS {
 		case "windows":
-			srcPath = "./tmp/" + be.CFeathercoinExtractedDirLinux
+			srcPath = abf + be.CFeathercoinExtractedDirLinux
 			srcFileCLI = be.CFeathercoinCliFileWin
 			srcFileD = be.CFeathercoinDFileWin
 			srcFileTX = be.CFeathercoinTxFileWin
 			//srcFileBWCLI = be.CAppFilenameWin
-		case "arm":
-			srcPath = "./" + be.CFeathercoinExtractedDirLinux
-			srcFileCLI = be.CFeathercoinCliFile
-			srcFileD = be.CFeathercoinDFile
-			srcFileTX = be.CFeathercoinTxFile
-			//srcFileBWCLI = be.CAppFilename
 		case "linux":
-			srcPath = "./" + be.CFeathercoinExtractedDirLinux
-			srcFileCLI = be.CFeathercoinCliFile
-			srcFileD = be.CFeathercoinDFile
-			srcFileTX = be.CFeathercoinTxFile
+			switch runtime.GOARCH {
+			case "arm":
+				if err := be.AddToLog(lf, "linux arm detected.", false); err != nil {
+					return fmt.Errorf("unable to add to log file: %v", err)
+				}
+				srcPath = abf + be.CFeathercoinExtractedDirLinux
+				srcFileCLI = be.CFeathercoinCliFile
+				srcFileD = be.CFeathercoinDFile
+				srcFileTX = be.CFeathercoinTxFile
 			//srcFileBWCLI = be.CAppFilename
+			case "amd64":
+				if err := be.AddToLog(lf, "linux amd64 detected.", false); err != nil {
+					return fmt.Errorf("unable to add to log file: %v", err)
+				}
+				srcPath = abf + be.CFeathercoinExtractedDirLinux
+				srcFileCLI = be.CFeathercoinCliFile
+				srcFileD = be.CFeathercoinDFile
+				srcFileTX = be.CFeathercoinTxFile
+			//srcFileBWCLI = be.CAppFilename
+			default:
+				err = errors.New("unable to determine runtime.GOARCH " + runtime.GOARCH)
+			}
 		default:
 			err = errors.New("unable to determine runtime.GOOS")
 		}
 	case be.PTGroestlcoin:
+		if err := be.AddToLog(lf, "Groestlcoin detected...", false); err != nil {
+			return fmt.Errorf("unable to add to log file: %v", err)
+		}
 		switch runtime.GOOS {
 		case "windows":
-			srcPath = "./tmp/" + be.CGroestlcoinExtractedDirLinux + "bin/"
+			srcPath = abf + be.CGroestlcoinExtractedDirWindows + "bin\\"
 			srcFileCLI = be.CGroestlcoinCliFileWin
 			srcFileD = be.CGroestlcoinDFileWin
 			srcFileTX = be.CGroestlcoinTxFileWin
 			//srcFileBWCLI = be.CAppFilenameWin
-		case "arm":
-			srcPath = abf + be.CGroestlcoinExtractedDirLinux + "bin/"
-			srcFileCLI = be.CGroestlcoinCliFile
-			srcFileD = be.CGroestlcoinDFile
-			srcFileTX = be.CGroestlcoinTxFile
-			//srcFileBWCLI = be.CAppFilename
 		case "linux":
-			srcPath = abf + be.CGroestlcoinExtractedDirLinux + "bin/"
-			srcFileCLI = be.CGroestlcoinCliFile
-			srcFileD = be.CGroestlcoinDFile
-			srcFileTX = be.CGroestlcoinTxFile
+			switch runtime.GOARCH {
+			case "arm":
+				if err := be.AddToLog(lf, "linux arm detected.", false); err != nil {
+					return fmt.Errorf("unable to add to log file: %v", err)
+				}
+				srcPath = abf + be.CGroestlcoinExtractedDirLinux + "bin/"
+				srcFileCLI = be.CGroestlcoinCliFile
+				srcFileD = be.CGroestlcoinDFile
+				srcFileTX = be.CGroestlcoinTxFile
 			//srcFileBWCLI = be.CAppFilename
+			case "amd64":
+				if err := be.AddToLog(lf, "linux amd64 detected.", false); err != nil {
+					return fmt.Errorf("unable to add to log file: %v", err)
+				}
+				srcPath = abf + be.CGroestlcoinExtractedDirLinux + "bin/"
+				srcFileCLI = be.CGroestlcoinCliFile
+				srcFileD = be.CGroestlcoinDFile
+				srcFileTX = be.CGroestlcoinTxFile
+			//srcFileBWCLI = be.CAppFilename
+			default:
+				err = errors.New("unable to determine runtime.GOARCH " + runtime.GOARCH)
+			}
 		default:
 			err = errors.New("unable to determine runtime.GOOS")
 		}
 	case be.PTPhore:
+		if err := be.AddToLog(lf, "Phore detected...", false); err != nil {
+			return fmt.Errorf("unable to add to log file: %v", err)
+		}
 		switch runtime.GOOS {
 		case "windows":
-			srcPath = "./tmp/" + be.CPhoreExtractedDir + "bin/"
+			srcPath = abf + be.CPhoreExtractedDirLinux + "bin\\"
 			srcFileCLI = be.CPhoreCliFileWin
 			srcFileD = be.CPhoreDFileWin
 			srcFileTX = be.CPhoreTxFileWin
 			//srcFileBWCLI = be.CAppFilenameWin
-		case "arm":
-			srcPath = "./" + be.CPhoreExtractedDir + "bin/"
-			srcFileCLI = be.CPhoreCliFile
-			srcFileD = be.CPhoreDFile
-			srcFileTX = be.CPhoreTxFile
-			//srcFileBWCLI = be.CAppFilename
 		case "linux":
-			srcPath = "./" + be.CPhoreExtractedDir + "bin/"
-			srcFileCLI = be.CPhoreCliFile
-			srcFileD = be.CPhoreDFile
-			srcFileTX = be.CPhoreTxFile
+			switch runtime.GOARCH {
+			case "arm":
+				if err := be.AddToLog(lf, "linux arm detected.", false); err != nil {
+					return fmt.Errorf("unable to add to log file: %v", err)
+				}
+				srcPath = abf + be.CPhoreExtractedDirLinux + "bin/"
+				srcFileCLI = be.CPhoreCliFile
+				srcFileD = be.CPhoreDFile
+				srcFileTX = be.CPhoreTxFile
 			//srcFileBWCLI = be.CAppFilename
+			case "amd64":
+				if err := be.AddToLog(lf, "linux amd64 detected.", false); err != nil {
+					return fmt.Errorf("unable to add to log file: %v", err)
+				}
+				srcPath = abf + be.CPhoreExtractedDirLinux + "bin/"
+				srcFileCLI = be.CPhoreCliFile
+				srcFileD = be.CPhoreDFile
+				srcFileTX = be.CPhoreTxFile
+			//srcFileBWCLI = be.CAppFilename
+			default:
+				err = errors.New("unable to determine runtime.GOARCH " + runtime.GOARCH)
+			}
 		default:
 			err = errors.New("unable to determine runtime.GOOS")
 		}
 	case be.PTPIVX:
+		if err := be.AddToLog(lf, "PIVX detected...", false); err != nil {
+			return fmt.Errorf("unable to add to log file: %v", err)
+		}
 		switch runtime.GOOS {
 		case "windows":
 			srcPath = abf + be.CPIVXExtractedDirWindows + "bin\\"
@@ -707,123 +807,204 @@ func doRequiredFiles() error {
 			srcFileD = be.CPIVXDFileWin
 			srcFileTX = be.CPIVXTxFileWin
 			//srcFileBWCLI = be.CAppFilenameWin
-		case "arm":
-			srcPath = "./" + be.CPIVXExtractedDirArm + "bin/"
-			srcFileCLI = be.CPIVXCliFile
-			srcFileD = be.CPIVXDFile
-			srcFileTX = be.CPIVXTxFile
-			//srcFileBWCLI = be.CAppFilename
 		case "linux":
-			srcPath = "./" + be.CPIVXExtractedDirLinux + "bin/"
-			srcFileCLI = be.CPIVXCliFile
-			srcFileD = be.CPIVXDFile
-			srcFileTX = be.CPIVXTxFile
+			switch runtime.GOARCH {
+			case "arm":
+				if err := be.AddToLog(lf, "linux arm detected.", false); err != nil {
+					return fmt.Errorf("unable to add to log file: %v", err)
+				}
+				srcPath = abf + be.CPIVXExtractedDirArm + "bin/"
+				srcFileCLI = be.CPIVXCliFile
+				srcFileD = be.CPIVXDFile
+				srcFileTX = be.CPIVXTxFile
 			//srcFileBWCLI = be.CAppFilename
+			case "amd64":
+				if err := be.AddToLog(lf, "linux amd64 detected.", false); err != nil {
+					return fmt.Errorf("unable to add to log file: %v", err)
+				}
+				srcPath = abf + be.CPIVXExtractedDirLinux + "bin/"
+				srcFileCLI = be.CPIVXCliFile
+				srcFileD = be.CPIVXDFile
+				srcFileTX = be.CPIVXTxFile
+			//srcFileBWCLI = be.CAppFilename
+			default:
+				err = errors.New("unable to determine runtime.GOARCH " + runtime.GOARCH)
+			}
 		default:
 			err = errors.New("unable to determine runtime.GOOS")
 		}
 	case be.PTRapids:
+		if err := be.AddToLog(lf, "ReddCoin detected...", false); err != nil {
+			return fmt.Errorf("unable to add to log file: %v", err)
+		}
 		switch runtime.GOOS {
 		case "windows":
-			srcPath = "./tmp/" + be.CRapidsExtractedDirLinux
+			srcPath = abf + be.CRapidsExtractedDirWindows
 			srcFileCLI = be.CRapidsCliFileWin
 			srcFileD = be.CRapidsDFileWin
 			srcFileTX = be.CRapidsTxFileWin
-		case "arm":
-			srcPath = "./" + be.CRapidsExtractedDirLinux
-			srcFileCLI = be.CRapidsCliFile
-			srcFileD = be.CRapidsDFile
-			srcFileTX = be.CRapidsTxFile
 		case "linux":
-			srcPath = "./" + be.CRapidsExtractedDirLinux
-			srcPathD = "./" + be.CRapidsExtractedDirDaemon
-			srcFileCLI = be.CRapidsCliFile
-			srcFileD = be.CRapidsDFile
-			srcFileTX = be.CRapidsTxFile
+			switch runtime.GOARCH {
+			case "arm":
+				if err := be.AddToLog(lf, "linux arm detected.", false); err != nil {
+					return fmt.Errorf("unable to add to log file: %v", err)
+				}
+				srcPath = abf + be.CRapidsExtractedDirLinux
+				srcFileCLI = be.CRapidsCliFile
+				srcFileD = be.CRapidsDFile
+				srcFileTX = be.CRapidsTxFile
+			case "amd64":
+				if err := be.AddToLog(lf, "linux amd64 detected.", false); err != nil {
+					return fmt.Errorf("unable to add to log file: %v", err)
+				}
+				srcPath = abf + be.CRapidsExtractedDirLinux
+				srcFileCLI = be.CRapidsCliFile
+				srcFileD = be.CRapidsDFile
+				srcFileTX = be.CRapidsTxFile
+			default:
+				err = errors.New("unable to determine runtime.GOARCH " + runtime.GOARCH)
+			}
 		default:
 			err = errors.New("unable to determine runtime.GOOS")
 		}
 	case be.PTReddCoin:
+		if err := be.AddToLog(lf, "ReddCoin detected...", false); err != nil {
+			return fmt.Errorf("unable to add to log file: %v", err)
+		}
 		switch runtime.GOOS {
 		case "windows":
-			srcPath = "./tmp/" + be.CReddCoinExtractedDirLinux
+			srcPath = abf + be.CReddCoinExtractedDirLinux
 			srcFileCLI = be.CReddCoinCliFileWin
 			srcFileD = be.CReddCoinDFileWin
 			srcFileTX = be.CReddCoinTxFileWin
 			//srcFileBWCLI = be.CAppFilenameWin
-		case "arm":
-			srcPath = abf + be.CReddCoinExtractedDirLinux + "bin/"
-			srcFileCLI = be.CReddCoinCliFile
-			srcFileD = be.CReddCoinDFile
-			srcFileTX = be.CReddCoinTxFile
-			//srcFileBWCLI = be.CAppFilename
 		case "linux":
-			srcPath = abf + be.CReddCoinExtractedDirLinux + "bin/"
-			srcFileCLI = be.CReddCoinCliFile
-			srcFileD = be.CReddCoinDFile
-			srcFileTX = be.CReddCoinTxFile
+			switch runtime.GOARCH {
+			case "arm":
+				if err := be.AddToLog(lf, "linux arm detected.", false); err != nil {
+					return fmt.Errorf("unable to add to log file: %v", err)
+				}
+				srcPath = abf + be.CReddCoinExtractedDirLinux + "bin/"
+				srcFileCLI = be.CReddCoinCliFile
+				srcFileD = be.CReddCoinDFile
+				srcFileTX = be.CReddCoinTxFile
 			//srcFileBWCLI = be.CAppFilename
+			case "amd64":
+				if err := be.AddToLog(lf, "linux amd64 detected.", false); err != nil {
+					return fmt.Errorf("unable to add to log file: %v", err)
+				}
+				srcPath = abf + be.CReddCoinExtractedDirLinux + "bin/"
+				srcFileCLI = be.CReddCoinCliFile
+				srcFileD = be.CReddCoinDFile
+				srcFileTX = be.CReddCoinTxFile
+			//srcFileBWCLI = be.CAppFilename
+			default:
+				err = errors.New("unable to determine runtime.GOARCH " + runtime.GOARCH)
+			}
 		default:
 			err = errors.New("unable to determine runtime.GOOS")
 		}
 	case be.PTScala:
+		if err := be.AddToLog(lf, "Scala detected...", false); err != nil {
+			return fmt.Errorf("unable to add to log file: %v", err)
+		}
 		switch runtime.GOOS {
 		case "windows":
-			srcPath = "./tmp/" + be.CScalaExtractedDirLinux
+			srcPath = abf + be.CScalaExtractedDirLinux
 			srcFileCLI = be.CScalaCliFileWin
 			srcFileD = be.CScalaDFileWin
 			srcFileTX = be.CScalaTxFileWin
 			//srcFileBWCLI = be.CAppFilenameWin
-		case "arm":
-			srcPath = abf + be.CScalaExtractedDirLinux
-			srcFileCLI = be.CScalaCliFile
-			srcFileD = be.CScalaDFile
-			srcFileTX = be.CScalaTxFile
-			//srcFileBWCLI = be.CAppFilename
 		case "linux":
-			srcPath = abf + be.CScalaExtractedDirLinux
-			srcFileCLI = be.CScalaCliFile
-			srcFileD = be.CScalaDFile
-			srcFileTX = be.CScalaTxFile
+			switch runtime.GOARCH {
+			case "arm":
+				if err := be.AddToLog(lf, "linux arm detected.", false); err != nil {
+					return fmt.Errorf("unable to add to log file: %v", err)
+				}
+				srcPath = abf + be.CScalaExtractedDirLinux
+				srcFileCLI = be.CScalaCliFile
+				srcFileD = be.CScalaDFile
+				srcFileTX = be.CScalaTxFile
 			//srcFileBWCLI = be.CAppFilename
+			case "amd64":
+				if err := be.AddToLog(lf, "linux amd64 detected.", false); err != nil {
+					return fmt.Errorf("unable to add to log file: %v", err)
+				}
+				srcPath = abf + be.CScalaExtractedDirLinux
+				srcFileCLI = be.CScalaCliFile
+				srcFileD = be.CScalaDFile
+				srcFileTX = be.CScalaTxFile
+			//srcFileBWCLI = be.CAppFilename
+			default:
+				err = errors.New("unable to determine runtime.GOARCH " + runtime.GOARCH)
+			}
 		default:
 			err = errors.New("unable to determine runtime.GOOS")
 		}
 	case be.PTTrezarcoin:
+		if err := be.AddToLog(lf, "TZC detected...", false); err != nil {
+			return fmt.Errorf("unable to add to log file: %v", err)
+		}
 		switch runtime.GOOS {
 		case "windows":
 			err = errors.New("windows is not currently supported for Trezarcoin")
-		case "arm":
-			err = errors.New("arm is not currently supported for Trezarcoin")
 		case "linux":
-			srcPath = "./" + be.CTrezarcoinExtractedDir + "bin/"
-			srcFileCLI = be.CTrezarcoinCliFile
-			srcFileD = be.CTrezarcoinDFile
-			srcFileTX = be.CTrezarcoinTxFile
-			//srcFileBWCLI = be.CAppFilename
+			switch runtime.GOARCH {
+			case "arm":
+				if err := be.AddToLog(lf, "linux arm detected.", false); err != nil {
+					return fmt.Errorf("unable to add to log file: %v", err)
+				}
+				srcPath = abf + be.CTrezarcoinRPiExtractedDir + "/"
+				srcFileCLI = be.CTrezarcoinCliFile
+				srcFileD = be.CTrezarcoinDFile
+				srcFileTX = be.CTrezarcoinTxFile
+			case "amd64":
+				if err := be.AddToLog(lf, "linux amd64 detected.", false); err != nil {
+					return fmt.Errorf("unable to add to log file: %v", err)
+				}
+				srcPath = abf + be.CTrezarcoinLinuxExtractedDir + "bin/"
+				srcFileCLI = be.CTrezarcoinCliFile
+				srcFileD = be.CTrezarcoinDFile
+				srcFileTX = be.CTrezarcoinTxFile
+				//srcFileBWCLI = be.CAppFilename
+			default:
+				err = errors.New("unable to determine runtime.GOARCH " + runtime.GOARCH)
+			}
 		default:
 			err = errors.New("unable to determine runtime.GOOS")
 		}
 	case be.PTVertcoin:
+		if err := be.AddToLog(lf, "VTC detected...", false); err != nil {
+			return fmt.Errorf("unable to add to log file: %v", err)
+		}
 		switch runtime.GOOS {
 		case "windows":
-			srcPath = "./tmp/" + be.CVertcoinExtractedDirLinux
+			srcPath = abf + be.CVertcoinExtractedDirWindows
 			srcFileCLI = be.CVertcoinCliFileWin
 			srcFileD = be.CVertcoinDFileWin
 			srcFileTX = be.CVertcoinTxFileWin
 			//srcFileBWCLI = be.CAppFilenameWin
-		case "arm":
-			srcPath = "./" + be.CVertcoinExtractedDirLinux
-			srcFileCLI = be.CVertcoinCliFile
-			srcFileD = be.CVertcoinDFile
-			srcFileTX = be.CVertcoinTxFile
-			//srcFileBWCLI = be.CAppFilename
 		case "linux":
-			srcPath = "./" + be.CVertcoinExtractedDirLinux
-			srcFileCLI = be.CVertcoinCliFile
-			srcFileD = be.CVertcoinDFile
-			srcFileTX = be.CVertcoinTxFile
-			//srcFileBWCLI = be.CAppFilename
+			switch runtime.GOARCH {
+			case "arm":
+				if err := be.AddToLog(lf, "linux arm detected.", false); err != nil {
+					return fmt.Errorf("unable to add to log file: %v", err)
+				}
+				srcPath = abf + be.CVertcoinExtractedDirLinux
+				srcFileCLI = be.CVertcoinCliFile
+				srcFileD = be.CVertcoinDFile
+				srcFileTX = be.CVertcoinTxFile
+			case "amd64":
+				if err := be.AddToLog(lf, "linux amd64 detected.", false); err != nil {
+					return fmt.Errorf("unable to add to log file: %v", err)
+				}
+				srcPath = abf + be.CVertcoinExtractedDirLinux
+				srcFileCLI = be.CVertcoinCliFile
+				srcFileD = be.CVertcoinDFile
+				srcFileTX = be.CVertcoinTxFile
+			default:
+				err = errors.New("unable to determine runtime.GOARCH " + runtime.GOARCH)
+			}
 		default:
 			err = errors.New("unable to determine runtime.GOOS")
 		}
@@ -833,6 +1014,11 @@ func doRequiredFiles() error {
 	if err != nil {
 		return fmt.Errorf("error: - %v", err)
 	}
+
+	be.AddToLog(lf, "srcPath="+srcPath, false)
+	be.AddToLog(lf, "srcFileCLI="+srcFileCLI, false)
+	be.AddToLog(lf, "srcFileD="+srcFileD, false)
+	be.AddToLog(lf, "srcFileTX="+srcFileTX, false)
 
 	// coin-cli
 	if !be.FileExists(abf + srcFileCLI) {
