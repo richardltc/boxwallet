@@ -18,7 +18,8 @@ const (
 	CDFVertcoinLinux   string = "vertcoind-v" + CVertcoinCoreVersion + "-linux-amd64.zip"
 	CDFVertcoinWindows string = "vertcoind-v" + CVertcoinCoreVersion + "-win64.zip"
 
-	CVertcoinExtractedDirLinux = "vertcoind-v" + CVertcoinCoreVersion + "-linux-amd64/"
+	CVertcoinExtractedDirLinux   = "vertcoind-v" + CVertcoinCoreVersion + "-linux-amd64/"
+	CVertcoinExtractedDirWindows = "vertcoind-v" + CVertcoinCoreVersion + "-win64\\"
 
 	CDownloadURLVertcoin string = "https://github.com/vertcoin-project/vertcoin-core/releases/download/" + CVertcoinCoreVersion + "/"
 
@@ -190,8 +191,8 @@ func GetNetworkInfoVTC(cliConf *ConfStruct) (VTCNetworkInfoRespStruct, error) {
 		}
 
 		// Check to make sure we are not loading the wallet
-		if bytes.Contains(bodyResp, []byte("Loading")) {
-			// The wallet is still loading, so print message, and sleep for 3 seconds and try again...
+		if bytes.Contains(bodyResp, []byte("Loading")) || bytes.Contains(bodyResp, []byte("Rewinding")) {
+			// The wallet is still loading, so print message, and sleep for 3 seconds and try again..
 			time.Sleep(5 * time.Second)
 		} else {
 			_ = json.Unmarshal(bodyResp, &respStruct)
