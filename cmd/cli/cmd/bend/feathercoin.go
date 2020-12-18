@@ -199,8 +199,8 @@ func GetNetworkInfoFeathercoin(cliConf *ConfStruct) (FeathercoinNetworkInfoRespS
 		}
 
 		// Check to make sure we are not loading the wallet
-		if bytes.Contains(bodyResp, []byte("Loading")) {
-			// The wallet is still loading, so print message, and sleep for 3 seconds and try again...
+		if bytes.Contains(bodyResp, []byte("Loading")) || bytes.Contains(bodyResp, []byte("Rewinding")) {
+			// The wallet is still loading, so print message, and sleep for 3 seconds and try again..
 			time.Sleep(5 * time.Second)
 		} else {
 			_ = json.Unmarshal(bodyResp, &respStruct)
