@@ -55,7 +55,7 @@ func addFileToZip(zipWriter *zip.Writer, filename string) error {
 	return err
 }
 
-func AddToLog(logFile, txt string) error {
+func AddToLog(logFile, txt string, toScreen bool) error {
 	f, err := os.OpenFile(logFile,
 		os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
 	if err != nil {
@@ -65,7 +65,9 @@ func AddToLog(logFile, txt string) error {
 
 	logger := log.New(f, "", log.LstdFlags)
 	logger.Println(txt)
-	log.Print(txt)
+	if toScreen {
+		fmt.Println(txt)
+	}
 
 	return nil
 }
