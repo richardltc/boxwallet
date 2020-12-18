@@ -18,7 +18,8 @@ const (
 	CDFGroestlcoinLinux     string = "groestlcoin-" + CGroestlcoinCoreVersion + "-x86_64-linux-gnu.tar.gz"
 	CDFGroestlcoinWindows   string = "groestlcoin-" + CGroestlcoinCoreVersion + "-win64.zip"
 
-	CGroestlcoinExtractedDirLinux = "groestlcoin-" + CGroestlcoinCoreVersion + "/"
+	CGroestlcoinExtractedDirLinux   = "groestlcoin-" + CGroestlcoinCoreVersion + "/"
+	CGroestlcoinExtractedDirWindows = "groestlcoin-" + CGroestlcoinCoreVersion + "\\"
 
 	CDownloadURLGroestlcoin string = "https://github.com/Groestlcoin/groestlcoin/releases/download/v" + CGroestlcoinCoreVersion + "/"
 
@@ -329,8 +330,8 @@ func GetNetworkInfoGRS(cliConf *ConfStruct) (GRSNetworkInfoRespStruct, error) {
 		}
 
 		// Check to make sure we are not loading the wallet
-		if bytes.Contains(bodyResp, []byte("Loading")) {
-			// The wallet is still loading, so print message, and sleep for 3 seconds and try again...
+		if bytes.Contains(bodyResp, []byte("Loading")) || bytes.Contains(bodyResp, []byte("Rewinding")) {
+			// The wallet is still loading, so print message, and sleep for 3 seconds and try again..
 			time.Sleep(5 * time.Second)
 		} else {
 			_ = json.Unmarshal(bodyResp, &respStruct)
