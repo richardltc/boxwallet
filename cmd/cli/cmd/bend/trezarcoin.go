@@ -20,7 +20,8 @@ const (
 	CDFTrezarcoinLinux     string = "trezarcoin-" + CTrezarcoinCoreVersion + "-linux64.tar.gz"
 	CDFTrezarcoinWindows   string = "trezarcoin-" + CTrezarcoinCoreVersion + "-win64-setup.exe"
 
-	CTrezarcoinExtractedDir = "trezarcoin-" + CTrezarcoinCoreVersion + "/"
+	CTrezarcoinLinuxExtractedDir = "trezarcoin-" + CTrezarcoinCoreVersion + "/"
+	CTrezarcoinRPiExtractedDir   = CTrezarcoinCoreVersion + "-rpi/"
 
 	CDownloadURLTC string = "https://github.com/TrezarCoin/TrezarCoin/releases/download/v" + CTrezarcoinCoreVersion + ".0/"
 
@@ -192,6 +193,9 @@ func GetBlockchainInfoTrezarcoin(cliConf *ConfStruct) (TrezarcoinBlockchainInfoR
 }
 
 func GetInfoTrezarcoin(cliConf *ConfStruct) (trezarcoinInfoRespStruct, error) {
+	//lf,_ := GetAppWorkingFolder()
+	//lf = lf + CAppLogfile
+
 	attempts := 5
 	waitingStr := "Checking server..."
 
@@ -217,9 +221,11 @@ func GetInfoTrezarcoin(cliConf *ConfStruct) (trezarcoinInfoRespStruct, error) {
 			return respStruct, err
 		}
 
+		//s := string(bodyResp)
+		//AddToLog(lf,s,false)
 		// Check to make sure we are not loading the wallet
-		if bytes.Contains(bodyResp, []byte("Loading")) {
-			// The wallet is still loading, so print message, and sleep for 3 seconds and try again...
+		if bytes.Contains(bodyResp, []byte("Loading")) || bytes.Contains(bodyResp, []byte("Rewinding")) {
+			// The wallet is still loading, so print message, and sleep for 3 seconds and try again..
 			var errStruct GenericRespStruct
 			err = json.Unmarshal(bodyResp, &errStruct)
 			if err != nil {
