@@ -20,7 +20,6 @@ package cmd
 import (
 	"encoding/json"
 	"fmt"
-	// gwc "github.com/richardltc/gwcommon"
 	"github.com/spf13/cobra"
 	"io/ioutil"
 	"log"
@@ -105,8 +104,18 @@ func init() {
 
 func unlockWalletFS(cliConf *be.ConfStruct, pw string) (be.GenericRespStruct, error) {
 	var respStruct be.GenericRespStruct
+	var body *strings.Reader
 
-	body := strings.NewReader("{\"jsonrpc\":\"1.0\",\"id\":\"curltext\",\"method\":\"walletpassphrase\",\"params\":[\"" + pw + "\",0,true]}")
+	switch cliConf.ProjectType {
+	case be.PTTrezarcoin:
+		// Trezarcoin requires some 9's to be passed to unlock a wallet for staking
+		body = strings.NewReader("{\"jsonrpc\":\"1.0\",\"id\":\"boxwallet\",\"method\":\"walletpassphrase\",\"params\":[\"" + pw + "\",99999,true]}")
+	default:
+		// Most other wallets don't require this
+		body = strings.NewReader("{\"jsonrpc\":\"1.0\",\"id\":\"boxwallet\",\"method\":\"walletpassphrase\",\"params\":[\"" + pw + "\",0,true]}")
+	}
+
+	//body := strings.NewReader("{\"jsonrpc\":\"1.0\",\"id\":\"curltext\",\"method\":\"walletpassphrase\",\"params\":[\"" + pw + "\",0,true]}")
 	req, err := http.NewRequest("POST", "http://"+cliConf.ServerIP+":"+cliConf.Port, body)
 	if err != nil {
 		return respStruct, err
