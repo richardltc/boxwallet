@@ -10,8 +10,9 @@ const (
 	CDFRapidsFileLinuxDaemon string = "Rapids-v" + CRapidsCoreVersion + "-daemon-ubuntu1804.tar.gz"
 	CDFRapidsFileWindows     string = "Rapids-v" + CRapidsCoreVersion + "-win64.zip"
 
-	CRapidsExtractedDirLinux  = "Rapids-" + CRapidsCoreVersion + "/"
-	CRapidsExtractedDirDaemon = "Rapids-" + CRapidsCoreVersion + "-daemon-ubuntu1804" + "/"
+	CRapidsExtractedDirLinux   = "Rapids-" + CRapidsCoreVersion + "/"
+	CRapidsExtractedDirDaemon  = "Rapids-" + CRapidsCoreVersion + "-daemon-ubuntu1804" + "/"
+	CRapidsExtractedDirWindows = "rapids-4.3-win64" + "\\"
 
 	CDownloadURLRapids string = "https://github.com/RapidsOfficial/Rapids/releases/download/v" + CRapidsCoreVersion + "/"
 	cRapidsHomeDir     string = ".rapids"
