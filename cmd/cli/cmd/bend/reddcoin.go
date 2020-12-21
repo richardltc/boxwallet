@@ -101,7 +101,7 @@ type RDDWalletInfoRespStruct struct {
 func GetBlockchainInfoRDD(cliConf *ConfStruct) (RDDBlockchainInfoRespStruct, error) {
 	var respStruct RDDBlockchainInfoRespStruct
 
-	body := strings.NewReader("{\"jsonrpc\":\"1.0\",\"id\":\"curltext\",\"method\":\"getblockchaininfo\",\"params\":[]}")
+	body := strings.NewReader("{\"jsonrpc\":\"1.0\",\"id\":\"curltext\",\"method\":\"" + cCommandGetBCInfo + "\",\"params\":[]}")
 	req, err := http.NewRequest("POST", "http://"+cliConf.ServerIP+":"+cliConf.Port, body)
 	if err != nil {
 		return respStruct, err
@@ -227,7 +227,7 @@ func GetNetworkInfoRDD(cliConf *ConfStruct) (RDDNetworkInfoRespStruct, error) {
 func GetWalletInfoRDD(cliConf *ConfStruct) (RDDWalletInfoRespStruct, error) {
 	var respStruct RDDWalletInfoRespStruct
 
-	body := strings.NewReader("{\"jsonrpc\":\"1.0\",\"id\":\"curltext\",\"method\":\"getwalletinfo\",\"params\":[]}")
+	body := strings.NewReader("{\"jsonrpc\":\"1.0\",\"id\":\"curltext\",\"method\":\" getwalletinfo\",\"params\":[]}")
 	req, err := http.NewRequest("POST", "http://"+cliConf.ServerIP+":"+cliConf.Port, body)
 	if err != nil {
 		return respStruct, err
