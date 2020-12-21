@@ -375,11 +375,12 @@ func doRequiredFiles() error {
 			}
 			defer os.RemoveAll("tmp")
 		} else if runtime.GOARCH == "arm" {
-			err = be.ExtractTarGz(r)
+			//err = be.ExtractTarGz(r)
+			err = archiver.Unarchive(filePath, abf)
 			if err != nil {
 				return fmt.Errorf("unable to extractTarGz file: %v - %v", r, err)
 			}
-			defer os.RemoveAll("./" + be.CDeVaultExtractedDirLinux)
+			defer os.RemoveAll(abf + be.CDeVaultExtractedDirLinux)
 		} else {
 			err = archiver.Unarchive(filePath, abf)
 			if err != nil {
@@ -395,17 +396,19 @@ func doRequiredFiles() error {
 			}
 			defer os.RemoveAll("tmp")
 		} else if runtime.GOARCH == "arm" {
-			err = be.ExtractTarGz(r)
+			//err = be.ExtractTarGz(r)
+			err = archiver.Unarchive(filePath, abf)
 			if err != nil {
 				return fmt.Errorf("unable to extractTarGz file: %v - %v", r, err)
 			}
-			defer os.RemoveAll("./" + be.CDiviExtractedDirLinux)
+			defer os.RemoveAll(abf + be.CDiviExtractedDirLinux)
 		} else {
-			err = be.ExtractTarGz(r)
+			//err = be.ExtractTarGz(r)
+			err = archiver.Unarchive(filePath, abf)
 			if err != nil {
 				return fmt.Errorf("unable to extractTarGz file: %v - %v", r, err)
 			}
-			defer os.RemoveAll("./" + be.CDiviExtractedDirLinux)
+			defer os.RemoveAll(abf + be.CDiviExtractedDirLinux)
 		}
 	case be.PTFeathercoin:
 		if runtime.GOOS == "windows" {
@@ -415,11 +418,12 @@ func doRequiredFiles() error {
 			}
 			defer os.RemoveAll("tmp")
 		} else if runtime.GOARCH == "arm" {
-			err = be.ExtractTarGz(r)
+			//err = be.ExtractTarGz(r)
+			err = archiver.Unarchive(filePath, abf)
 			if err != nil {
 				return fmt.Errorf("unable to extractTarGz file: %v - %v", r, err)
 			}
-			defer os.RemoveAll("./" + be.CFeathercoinExtractedDirLinux)
+			defer os.RemoveAll(abf + be.CFeathercoinExtractedDirLinux)
 		} else {
 			//err = be.ExtractTarGz(r)
 			err = archiver.Unarchive(filePath, abf)
@@ -436,11 +440,12 @@ func doRequiredFiles() error {
 			}
 			defer os.RemoveAll("tmp")
 		} else if runtime.GOARCH == "arm" {
-			err = be.ExtractTarGz(r)
+			//err = be.ExtractTarGz(r)
+			err = archiver.Unarchive(filePath, abf)
 			if err != nil {
 				return fmt.Errorf("unable to extractTarGz file: %v - %v", r, err)
 			}
-			defer os.RemoveAll("./" + be.CGroestlcoinExtractedDirLinux)
+			defer os.RemoveAll(abf + be.CGroestlcoinExtractedDirLinux)
 		} else {
 			//err = be.ExtractTarGz(r)
 			err = archiver.Unarchive(filePath, abf)
@@ -457,17 +462,19 @@ func doRequiredFiles() error {
 			}
 			defer os.RemoveAll("tmp")
 		} else if runtime.GOARCH == "arm" {
-			err = be.ExtractTarGz(r)
+			//err = be.ExtractTarGz(r)
+			err = archiver.Unarchive(filePath, abf)
 			if err != nil {
 				return fmt.Errorf("unable to extractTarGz file: %v - %v", r, err)
 			}
-			defer os.RemoveAll("./" + be.CPhoreExtractedDirLinux)
+			defer os.RemoveAll(abf + be.CPhoreExtractedDirLinux)
 		} else {
-			err = be.ExtractTarGz(r)
+			//err = be.ExtractTarGz(r)
+			err = archiver.Unarchive(filePath, abf)
 			if err != nil {
 				return fmt.Errorf("unable to extractTarGz file: %v - %v", r, err)
 			}
-			defer os.RemoveAll("./" + be.CPhoreExtractedDirLinux)
+			defer os.RemoveAll(abf + be.CPhoreExtractedDirLinux)
 		}
 	case be.PTPIVX:
 		if runtime.GOOS == "windows" {
@@ -477,17 +484,19 @@ func doRequiredFiles() error {
 			}
 			defer os.RemoveAll("tmp")
 		} else if runtime.GOARCH == "arm" {
-			err = be.ExtractTarGz(r)
+			//err = be.ExtractTarGz(r)
+			err = archiver.Unarchive(filePath, abf)
 			if err != nil {
 				return fmt.Errorf("unable to extractTarGz file: %v - %v", r, err)
 			}
-			defer os.RemoveAll("./" + be.CPIVXExtractedDirArm)
+			defer os.RemoveAll(abf + be.CPIVXExtractedDirArm)
 		} else {
-			err = be.ExtractTarGz(r)
+			//err = be.ExtractTarGz(r)
+			err = archiver.Unarchive(filePath, abf)
 			if err != nil {
 				return fmt.Errorf("unable to extractTarGz file: %v - %v", r, err)
 			}
-			defer os.RemoveAll("./" + be.CPIVXExtractedDirLinux)
+			defer os.RemoveAll(abf + be.CPIVXExtractedDirLinux)
 		}
 	case be.PTRapids:
 		if runtime.GOOS == "windows" {
@@ -497,25 +506,26 @@ func doRequiredFiles() error {
 			}
 			defer os.RemoveAll("tmp")
 		} else if runtime.GOARCH == "arm" {
-			err = be.ExtractTarGz(r)
+			//err = be.ExtractTarGz(r)
+			err = archiver.Unarchive(filePath, abf)
 			if err != nil {
 				return fmt.Errorf("unable to extractTarGz file: %v - %v", r, err)
 			}
-			defer os.RemoveAll("./" + be.CRapidsExtractedDirLinux)
+			defer os.RemoveAll(abf + be.CRapidsExtractedDirLinux)
 		} else {
 			// First the normal file...
 			err = archiver.Unarchive(filePath, abf)
 			if err != nil {
 				return fmt.Errorf("unable to extractTarGz file: %v - %v", r, err)
 			}
-			defer os.RemoveAll("./" + be.CRapidsExtractedDirLinux)
+			defer os.RemoveAll(abf + be.CRapidsExtractedDirLinux)
 
 			// Then the daemon file...
 			err = archiver.Unarchive(filePath2, abf)
 			if err != nil {
 				return fmt.Errorf("unable to extractTarGz file: %v - %v", r, err)
 			}
-			defer os.RemoveAll("./" + be.CRapidsExtractedDirDaemon)
+			defer os.RemoveAll(abf + be.CRapidsExtractedDirDaemon)
 		}
 	case be.PTReddCoin:
 		if runtime.GOOS == "windows" {
@@ -525,7 +535,8 @@ func doRequiredFiles() error {
 			}
 			defer os.RemoveAll("tmp")
 		} else if runtime.GOARCH == "arm" {
-			err = be.ExtractTarGz(r)
+			//err = be.ExtractTarGz(r)
+			err = archiver.Unarchive(filePath, abf)
 			if err != nil {
 				return fmt.Errorf("unable to extractTarGz file: %v - %v", r, err)
 			}
@@ -545,11 +556,12 @@ func doRequiredFiles() error {
 			}
 			defer os.RemoveAll("tmp")
 		} else if runtime.GOARCH == "arm" {
-			err = be.ExtractTarGz(r)
+			//err = be.ExtractTarGz(r)
+			err = archiver.Unarchive(filePath, abf)
 			if err != nil {
 				return fmt.Errorf("unable to extractTarGz file: %v - %v", r, err)
 			}
-			defer os.RemoveAll("./" + be.CScalaExtractedDirLinux)
+			defer os.RemoveAll(abf + be.CScalaExtractedDirLinux)
 		} else {
 			uz := unzip.New(filePath, abf)
 			err := uz.Extract()
@@ -588,11 +600,12 @@ func doRequiredFiles() error {
 			}
 			defer os.RemoveAll("tmp")
 		} else if runtime.GOARCH == "arm" {
-			err = be.ExtractTarGz(r)
+			//err = be.ExtractTarGz(r)
+			err = archiver.Unarchive(filePath, abf)
 			if err != nil {
 				return fmt.Errorf("unable to extractTarGz file: %v - %v", r, err)
 			}
-			defer os.RemoveAll("./" + be.CVertcoinExtractedDirLinux)
+			defer os.RemoveAll(abf + be.CVertcoinExtractedDirLinux)
 		} else {
 			uz := unzip.New(filePath, abf)
 			err := uz.Extract()
@@ -605,7 +618,9 @@ func doRequiredFiles() error {
 		err = errors.New("unable to determine ProjectType")
 	}
 
-	be.AddToLog(lf, "Installing files...", true)
+	if err := be.AddToLog(lf, "Installing files...", true); err != nil {
+		return fmt.Errorf("unable to add to log file: %v", err)
+	}
 
 	// Copy files to correct location
 	var srcPath, srcPathD, srcFileCLI, srcFileD, srcFileTX string
