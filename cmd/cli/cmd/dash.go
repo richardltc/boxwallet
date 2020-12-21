@@ -1050,6 +1050,7 @@ func confirmWalletReady() (bool, error) {
 	if err != nil {
 		return false, fmt.Errorf("unable to determine coin type. Please run "+be.CAppFilename+" coin: %v", err.Error())
 	}
+	sCoinName, err := be.GetCoinName(be.APPTCLI)
 
 	// Lets make sure that we have a running daemon.
 	cfg := yacspin.Config{
@@ -1057,7 +1058,7 @@ func confirmWalletReady() (bool, error) {
 		CharSet:         yacspin.CharSets[43],
 		Suffix:          "",
 		SuffixAutoColon: true,
-		Message:         " waiting for wallet to load, this could take several minutes...",
+		Message:         " waiting for your " + sCoinName + " wallet to load, this could take several minutes...",
 		StopCharacter:   "",
 		StopColors:      []string{"fgGreen"},
 	}
