@@ -32,7 +32,7 @@ const (
 	cAppWorkingDir    string = ".boxwallet"
 	cAppWorkingDirWin string = "BoxWallet"
 
-	// Divi-cli command constants
+	// General CLI command constants
 	cCommandGetBCInfo     string = "getblockchaininfo"
 	cCommandGetWInfo      string = "getwalletinfo"
 	cCommandMNSyncStatus1 string = "mnsync"
