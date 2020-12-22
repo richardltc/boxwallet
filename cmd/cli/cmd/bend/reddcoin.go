@@ -101,7 +101,7 @@ type RDDWalletInfoRespStruct struct {
 func GetBlockchainInfoRDD(cliConf *ConfStruct) (RDDBlockchainInfoRespStruct, error) {
 	var respStruct RDDBlockchainInfoRespStruct
 
-	body := strings.NewReader("{\"jsonrpc\":\"1.0\",\"id\":\"curltext\",\"method\":\"" + cCommandGetBCInfo + "\",\"params\":[]}")
+	body := strings.NewReader("{\"jsonrpc\":\"1.0\",\"id\":\"boxwallet\",\"method\":\"" + cCommandGetBCInfo + "\",\"params\":[]}")
 	req, err := http.NewRequest("POST", "http://"+cliConf.ServerIP+":"+cliConf.Port, body)
 	if err != nil {
 		return respStruct, err
@@ -251,7 +251,7 @@ func GetWalletInfoRDD(cliConf *ConfStruct) (RDDWalletInfoRespStruct, error) {
 	}
 
 	// Check to see if the json response contains "unlocked_until"
-	s := string([]byte(bodyResp))
+	s := string(bodyResp)
 	if !strings.Contains(s, "unlocked_until") {
 		respStruct.Result.UnlockedUntil = -1
 	}
