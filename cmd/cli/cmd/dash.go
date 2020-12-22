@@ -888,12 +888,12 @@ var dashCmd = &cobra.Command{
 			// Update the wallet display, if we're all synced up
 			switch cliConf.ProjectType {
 			case be.PTDeVault:
-				if bciDeVault.Result.Verificationprogress > 0.99999 {
+				if bciDeVault.Result.Verificationprogress > 0.9999 {
 					pWallet.Text = "" + getBalanceInDVTTxt(&wiDeVault) + "\n" +
 						"  " + getWalletSecurityStatusTxtDVT(&wiDeVault) + "\n"
 				}
 			case be.PTDivi:
-				if bciDivi.Result.Verificationprogress > 0.99999 {
+				if bciDivi.Result.Verificationprogress > 0.9999 {
 					pWallet.Text = "" + getBalanceInDiviTxt(&wiDivi) + "\n" +
 						"  " + be.GetBalanceInCurrencyTxtDivi(&cliConf, &wiDivi) + "\n" +
 						"  " + getWalletSecurityStatusTxtDivi(&wiDivi) + "\n" +
@@ -903,34 +903,34 @@ var dashCmd = &cobra.Command{
 						"  " + "Lottery tickets:  0"
 				}
 			case be.PTFeathercoin:
-				if bciFeathercoin.Result.Verificationprogress > 0.99999 {
+				if bciFeathercoin.Result.Verificationprogress > 0.9999 {
 					pWallet.Text = "" + getBalanceInFeathercoinTxt(&wiFeathercoin) + "\n" +
 						"  " + getWalletSecurityStatusTxtFeathercoin(&wiFeathercoin) + "\n"
 				}
 			case be.PTGroestlcoin:
-				if bciGroestlcoin.Result.Verificationprogress > 0.99999 {
+				if bciGroestlcoin.Result.Verificationprogress > 0.9999 {
 					pWallet.Text = "" + getBalanceInGRSTxt(&wiGroestlcoin) + "\n" +
 						"  " + getWalletSecurityStatusTxtGRS(&wiGroestlcoin) + "\n"
 				}
 			case be.PTPhore:
-				if bciPhore.Result.Verificationprogress > 0.99999 {
+				if bciPhore.Result.Verificationprogress > 0.9999 {
 					pWallet.Text = "" + getBalanceInPhoreTxt(&wiPhore) + "\n" +
 						"  " + getWalletSecurityStatusTxtPhore(&wiPhore) + "\n" +
 						"  " + getActivelyStakingTxtPhore(&ssPhore) + "\n" //e.g. "15%" or "staking"
 				}
 			case be.PTReddCoin:
-				if bciReddCoin.Result.Verificationprogress > 0.99999 {
+				if bciReddCoin.Result.Verificationprogress > 0.9999 {
 					pWallet.Text = "" + getBalanceInRDDTxt(&wiReddCoin) + "\n" +
 						"  " + getWalletSecurityStatusTxtRDD(&wiReddCoin) + "\n"
 				}
 			case be.PTTrezarcoin:
-				if bciTrezarcoin.Result.Verificationprogress > 0.99999 {
+				if bciTrezarcoin.Result.Verificationprogress > 0.9999 {
 					pWallet.Text = "" + getBalanceInTrezarcoinTxt(&wiTrezarcoin) + "\n" +
 						"  " + getWalletSecurityStatusTxtTrezarcoin(&wiTrezarcoin) + "\n" +
 						"  " + getActivelyStakingTxtTrezarcoin(&ssTrezarcoin) + "\n" //e.g. "15%" or "staking"
 				}
 			case be.PTVertcoin:
-				if bciVertcoin.Result.Verificationprogress > 0.99999 {
+				if bciVertcoin.Result.Verificationprogress > 0.9999 {
 					pWallet.Text = "" + getBalanceInVTCTxt(&wiVertcoin) + "\n" +
 						"  " + getWalletSecurityStatusTxtVTC(&wiVertcoin) + "\n"
 				}
@@ -1068,7 +1068,9 @@ func confirmWalletReady() (bool, error) {
 		return false, fmt.Errorf("unable to initialise spinner - %v", err)
 	}
 
-	spinner.Start()
+	if err := spinner.Start(); err != nil {
+		log.Fatalf("Unable to start spinner - %v", err)
+	}
 
 	coind, err := be.GetCoinDaemonFilename(be.APPTCLI)
 	if err != nil {
