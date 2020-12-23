@@ -188,7 +188,7 @@ var coinCmd = &cobra.Command{
 
 // doRequiredFiles - Download and install required files.
 func doRequiredFiles() error {
-	var filePath, filePath2, fileURL, fileURL2 string
+	var filePath, fileURL string
 	abf, err := be.GetAppWorkingFolder()
 	lf, _ := be.GetAppWorkingFolder()
 	lf = lf + be.CAppLogfile
@@ -278,9 +278,9 @@ func doRequiredFiles() error {
 			fileURL = be.CDownloadURLRapids + be.CDFRapidsFileRPi
 		} else {
 			filePath = abf + be.CDFRapidsFileLinux
-			filePath2 = abf + be.CDFRapidsFileLinuxDaemon
+			//filePath2 = abf + be.CDFRapidsFileLinuxDaemon
 			fileURL = be.CDownloadURLRapids + be.CDFRapidsFileLinux
-			fileURL2 = be.CDownloadURLRapids + be.CDFRapidsFileLinuxDaemon
+			//fileURL2 = be.CDownloadURLRapids + be.CDFRapidsFileLinuxDaemon
 		}
 	case be.PTReddCoin:
 		if runtime.GOOS == "windows" {
@@ -340,23 +340,10 @@ func doRequiredFiles() error {
 	be.AddToLog(lf, "fileURL="+fileURL, false)
 	be.AddToLog(lf, "Downloading required files...", true)
 
-	// Has been added because Rapids requires 2x file downloads.
-	switch bwconf.ProjectType {
-	case be.PTRapids:
-		if err := be.DownloadFile(filePath, fileURL); err != nil {
-			return fmt.Errorf("unable to download file: %v - %v", filePath+fileURL, err)
-		}
-		defer os.Remove(filePath)
-		if err := be.DownloadFile(filePath2, fileURL2); err != nil {
-			return fmt.Errorf("unable to download file: %v - %v", filePath2+fileURL2, err)
-		}
-		defer os.Remove(filePath2)
-	default:
-		if err := be.DownloadFile(filePath, fileURL); err != nil {
-			return fmt.Errorf("unable to download file: %v - %v", filePath+fileURL, err)
-		}
-		defer os.Remove(filePath)
+	if err := be.DownloadFile(filePath, fileURL); err != nil {
+		return fmt.Errorf("unable to download file: %v - %v", filePath+fileURL, err)
 	}
+	defer os.Remove(filePath)
 
 	r, err := os.Open(filePath)
 	if err != nil {
@@ -519,13 +506,6 @@ func doRequiredFiles() error {
 				return fmt.Errorf("unable to extractTarGz file: %v - %v", r, err)
 			}
 			defer os.RemoveAll(abf + be.CRapidsExtractedDirLinux)
-
-			// Then the daemon file...
-			err = archiver.Unarchive(filePath2, abf)
-			if err != nil {
-				return fmt.Errorf("unable to extractTarGz file: %v - %v", r, err)
-			}
-			defer os.RemoveAll(abf + be.CRapidsExtractedDirDaemon)
 		}
 	case be.PTReddCoin:
 		if runtime.GOOS == "windows" {
