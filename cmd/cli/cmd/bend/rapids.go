@@ -3,20 +3,21 @@ package bend
 const (
 	CCoinNameRapids string = "Rapids"
 
-	CRapidsCoreVersion string = "3.1"
+	CRapidsCoreVersion string = "3.4"
 
-	CDFRapidsFileRPi         string = "Rapids-v" + CRapidsCoreVersion + "-arm64.tar.gz"
-	CDFRapidsFileLinux       string = "Rapids-v" + CRapidsCoreVersion + "-linux-1804.tar.gz"
-	CDFRapidsFileLinuxDaemon string = "Rapids-v" + CRapidsCoreVersion + "-daemon-ubuntu1804.tar.gz"
-	CDFRapidsFileWindows     string = "Rapids-v" + CRapidsCoreVersion + "-win64.zip"
+	CDFRapidsFileRPi   string = "rapids-" + CRapidsCoreVersion + "-arm64.tar.gz"
+	CDFRapidsFileLinux string = "rapids-" + CRapidsCoreVersion + "-lin64.tgz"
+	//CDFRapidsFileLinuxDaemon string = "rapids-" + CRapidsCoreVersion + "-daemon-ubuntu1804.tar.gz"
+	CDFRapidsFileWindows string = "rapids-" + CRapidsCoreVersion + "-win64.zip"
 
-	CRapidsExtractedDirLinux   = "Rapids-" + CRapidsCoreVersion + "/"
-	CRapidsExtractedDirDaemon  = "Rapids-" + CRapidsCoreVersion + "-daemon-ubuntu1804" + "/"
+	CRapidsExtractedDirLinux = "rapids-" + CRapidsCoreVersion + "-lin64" + "/"
+	//CRapidsExtractedDirDaemon  = "Rapids-" + CRapidsCoreVersion + "-daemon-ubuntu1804" + "/"
 	CRapidsExtractedDirWindows = "rapids-4.3-win64" + "\\"
 
 	CDownloadURLRapids string = "https://github.com/RapidsOfficial/Rapids/releases/download/v" + CRapidsCoreVersion + "/"
-	cRapidsHomeDir     string = ".rapids"
-	cRapidsHomeDirWin  string = "RAPIDS"
+
+	cRapidsHomeDir    string = ".rapids"
+	cRapidsHomeDirWin string = "RAPIDS"
 
 	CRapidsConfFile   string = "rapids.conf"
 	CRapidsCliFile    string = "rapids-cli"
