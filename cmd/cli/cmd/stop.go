@@ -20,7 +20,6 @@ import (
 	"fmt"
 	"log"
 
-	// gwc "github.com/richardltc/gwcommon"
 	"github.com/spf13/cobra"
 	be "richardmace.co.uk/boxwallet/cmd/cli/cmd/bend"
 )
