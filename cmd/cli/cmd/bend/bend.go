@@ -3088,6 +3088,23 @@ func WalletFix(wft WalletFixType) error {
 				return fmt.Errorf("unable to run pivxd -reindex: %v", err)
 			}
 		}
+	case PTRapids:
+		if runtime.GOOS == "windows" {
+			// TODO Complete for Windows
+		} else {
+			var arg1 string
+			switch wft {
+			case WFTReIndex:
+				arg1 = "-reindex"
+			case WFTReSync:
+				arg1 = "-resync"
+			}
+
+			cRun := exec.Command(abf+coind, arg1)
+			if err := cRun.Run(); err != nil {
+				return fmt.Errorf("unable to run divid -reindex: %v", err)
+			}
+		}
 	case PTScala:
 		if runtime.GOOS == "windows" {
 			// TODO Complete for Windows
