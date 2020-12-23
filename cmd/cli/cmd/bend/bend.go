@@ -933,6 +933,12 @@ func IsCoinDaemonRunning() (bool, int, error) {
 		} else {
 			pid, _, err = findProcess(CPIVXDFile)
 		}
+	case PTRapids:
+		if runtime.GOOS == "windows" {
+			pid, _, err = findProcess(CRapidsDFileWin)
+		} else {
+			pid, _, err = findProcess(CRapidsDFile)
+		}
 	case PTScala:
 		if runtime.GOOS == "windows" {
 			pid, _, err = findProcess(CScalaDFileWin)
