@@ -864,6 +864,13 @@ func GetWalletEncryptionStatus() (WEType, error) {
 		}
 		wet := GetWalletSecurityStatePIVX(&wi)
 		return wet, nil
+	case PTRapids:
+		wi, err := GetWalletInfoRapids(&conf)
+		if err != nil {
+			return WETUnknown, fmt.Errorf("unable to GetWalletInfoRapids %v", err)
+		}
+		wet := GetWalletSecurityStateRapids(&wi)
+		return wet, nil
 	case PTTrezarcoin:
 		// todo Do for TZC
 	default:
