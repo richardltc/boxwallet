@@ -19,11 +19,11 @@ const (
 	CCoinNameDivi string = "DIVI"
 
 	// CDiviAppVersion - The app version of Divi
-	//CDiviAppVersion string = "1.1.2"
+	//CDiviAppVersion string = "2.0.1"
 	CDiviHomeDir    string = ".divi"
 	CDiviHomeDirWin string = "DIVI"
 
-	CDiviCoreVersion string = "1.1.2"
+	CDiviCoreVersion string = "2.0.1"
 	CDFDiviRPi              = "divi-" + CDiviCoreVersion + "-RPi2.tar.gz"
 	CDFDiviLinux            = "divi-" + CDiviCoreVersion + "-x86_64-linux-gnu.tar.gz"
 	CDFDiviWindows          = "divi-" + CDiviCoreVersion + "-win64.zip"
