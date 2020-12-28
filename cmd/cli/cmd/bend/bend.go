@@ -3453,7 +3453,7 @@ func StartCoinDaemon(displayOutput bool) error {
 					os.Exit(0)
 				}
 				num++
-				if string(line) == "PIVX server starting" {
+				if string(line) == "Rapids server starting" {
 					if displayOutput {
 						fmt.Println("Rapids server starting")
 					}
