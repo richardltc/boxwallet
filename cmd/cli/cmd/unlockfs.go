@@ -45,11 +45,13 @@ var unlockfsCmd = &cobra.Command{
 		var wiTrezarcoin be.TrezarcoinWalletInfoRespStruct
 		switch cliConf.ProjectType {
 		case be.PTDivi:
+			wiDivi, err = be.GetWalletInfoDivi(&cliConf)
 			wet := be.GetWalletSecurityStateDivi(&wiDivi)
 			if wet == be.WETUnencrypted {
 				log.Fatal("Wallet is not encrypted")
 			}
 		case be.PTPhore:
+			wiPhore, err = be.GetWalletInfoPhore(&cliConf)
 			wet := be.GetWalletSecurityStatePhore(&wiPhore)
 			if wet == be.WETUnencrypted {
 				log.Fatal("Wallet is not encrypted")
@@ -64,6 +66,7 @@ var unlockfsCmd = &cobra.Command{
 				log.Fatal("Wallet is not encrypted")
 			}
 		case be.PTTrezarcoin:
+			wiTrezarcoin, err = be.GetWalletInfoTrezarcoin(&cliConf)
 			wet := be.GetWalletSecurityStateTrezarcoin(&wiTrezarcoin)
 			if wet == be.WETUnencrypted {
 				log.Fatal("Wallet is not encrypted")
