@@ -78,7 +78,7 @@ var unlockfsCmd = &cobra.Command{
 		wep := be.GetWalletEncryptionPassword()
 		r, err := unlockWalletFS(&cliConf, wep)
 		if err != nil || r.Error != nil {
-			log.Fatalf("failed to unlock wallet for staking %s\n", err)
+			log.Fatalf("failed to unlock wallet for staking %s\n", r.Error)
 		}
 		fmt.Println("Wallet unlocked for staking")
 
@@ -122,7 +122,7 @@ func unlockWalletFS(cliConf *be.ConfStruct, pw string) (be.GenericRespStruct, er
 	switch cliConf.ProjectType {
 	case be.PTTrezarcoin:
 		// Trezarcoin requires some 9's to be passed to unlock a wallet for staking
-		body = strings.NewReader("{\"jsonrpc\":\"1.0\",\"id\":\"boxwallet\",\"method\":\"walletpassphrase\",\"params\":[\"" + pw + "\",99999,true]}")
+		body = strings.NewReader("{\"jsonrpc\":\"1.0\",\"id\":\"boxwallet\",\"method\":\"walletpassphrase\",\"params\":[\"" + pw + "\",9999999,true]}")
 	default:
 		// Most other wallets don't require this
 		body = strings.NewReader("{\"jsonrpc\":\"1.0\",\"id\":\"boxwallet\",\"method\":\"walletpassphrase\",\"params\":[\"" + pw + "\",0,true]}")
