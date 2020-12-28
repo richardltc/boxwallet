@@ -46,22 +46,26 @@ var unlockfsCmd = &cobra.Command{
 		switch cliConf.ProjectType {
 		case be.PTDivi:
 			wet := be.GetWalletSecurityStateDivi(&wiDivi)
-			if wet == be.WETUnlocked {
+			if wet == be.WETUnencrypted {
 				log.Fatal("Wallet is not encrypted")
 			}
 		case be.PTPhore:
 			wet := be.GetWalletSecurityStatePhore(&wiPhore)
-			if wet == be.WETUnlocked {
+			if wet == be.WETUnencrypted {
 				log.Fatal("Wallet is not encrypted")
 			}
 		case be.PTRapids:
+			wiRapids, err = be.GetWalletInfoRapids(&cliConf)
+			if err != nil {
+				log.Fatalf("failed to call getwalletinfo %s\n", err)
+			}
 			wet := be.GetWalletSecurityStateRapids(&wiRapids)
-			if wet == be.WETUnlocked {
+			if wet == be.WETUnencrypted {
 				log.Fatal("Wallet is not encrypted")
 			}
 		case be.PTTrezarcoin:
 			wet := be.GetWalletSecurityStateTrezarcoin(&wiTrezarcoin)
-			if wet == be.WETUnlocked {
+			if wet == be.WETUnencrypted {
 				log.Fatal("Wallet is not encrypted")
 			}
 		default:
