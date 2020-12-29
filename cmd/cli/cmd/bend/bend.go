@@ -3477,7 +3477,7 @@ func StartCoinDaemon(displayOutput bool) error {
 			}
 
 			cmdRun := exec.Command(abf + CReddCoinDFile)
-			//stdout, err := cmdRun.StdoutPipe()
+			stdout, err := cmdRun.StdoutPipe()
 			if err != nil {
 				return err
 			}
@@ -3485,7 +3485,26 @@ func StartCoinDaemon(displayOutput bool) error {
 			if err != nil {
 				return err
 			}
-			fmt.Println("ReddCoin server starting")
+
+			buf := bufio.NewReader(stdout)
+			num := 1
+			for {
+				line, _, _ := buf.ReadLine()
+				if num > 3 {
+					os.Exit(0)
+				}
+				num++
+				if string(line) == "Reddcoin server starting" {
+					if displayOutput {
+						fmt.Println("Reddcoin server starting")
+					}
+					return nil
+				} else {
+					fmt.Println("Have you installed these dependencies?\n\nlibssl1.0-dev libprotobuf17 libboost-thread1.62-dev libboost-program-options1.62-dev libboost-filesystem1.62-dev libboost-system1.62-dev")
+					return errors.New("unable to start the Reddcoin server: " + string(line))
+				}
+			}
+
 		}
 	case PTScala:
 		if runtime.GOOS == "windows" {
