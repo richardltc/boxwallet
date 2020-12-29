@@ -15,15 +15,17 @@ const (
 
 	CReddCoinCoreVersion string = "3.10.3"
 
-	CDFReddCoinRPi     string = "reddcoin-" + CReddCoinCoreVersion + "-arm64.tar.gz"
+	CDFReddCoinRPi     string = "reddcoin-" + CReddCoinCoreVersion + "-armhf.zip"
 	CDFReddCoinLinux   string = "reddcoin-" + CReddCoinCoreVersion + "-linux64.tar.gz"
 	CDFReddCoinWindows string = "reddcoin-" + CReddCoinCoreVersion + "-win64.zip"
 
 	CReddCoinExtractedDirLinux = "reddcoin-" + CReddCoinCoreVersion + "/"
 
-	CDownloadURLReddCoin string = "https://download.reddcoin.com/bin/reddcoin-core-" + CReddCoinCoreVersion + "/"
-	CReddCoinHomeDir     string = ".reddcoin"
-	CReddCoinHomeDirWin  string = "REDDCOIN"
+	CDownloadURLReddCoinGen string = "https://download.reddcoin.com/bin/reddcoin-core-" + CReddCoinCoreVersion + "/"
+	CDownloadURLReddCoinArm string = "https://sourceforge.net/projects/reddpi/files/update/reddcoin-" + CReddCoinCoreVersion + "-armhf.zip/download"
+
+	CReddCoinHomeDir    string = ".reddcoin"
+	CReddCoinHomeDirWin string = "REDDCOIN"
 
 	CReddCoinConfFile   string = "reddcoin.conf"
 	CReddCoinCliFile    string = "reddcoin-cli"
