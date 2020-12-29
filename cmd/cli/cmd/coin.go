@@ -285,13 +285,13 @@ func doRequiredFiles() error {
 	case be.PTReddCoin:
 		if runtime.GOOS == "windows" {
 			filePath = abf + be.CDFReddCoinWindows
-			fileURL = be.CDownloadURLReddCoin + be.CDFReddCoinWindows
+			fileURL = be.CDownloadURLReddCoinGen + be.CDFReddCoinWindows
 		} else if runtime.GOARCH == "arm" {
 			filePath = abf + be.CDFReddCoinRPi
-			fileURL = be.CDownloadURLReddCoin + be.CDFReddCoinRPi
+			fileURL = be.CDownloadURLReddCoinArm
 		} else {
 			filePath = abf + be.CDFReddCoinLinux
-			fileURL = be.CDownloadURLReddCoin + be.CDFReddCoinLinux
+			fileURL = be.CDownloadURLReddCoinGen + be.CDFReddCoinLinux
 		}
 	case be.PTScala:
 		if runtime.GOOS == "windows" {
@@ -518,7 +518,7 @@ func doRequiredFiles() error {
 			//err = be.ExtractTarGz(r)
 			err = archiver.Unarchive(filePath, abf)
 			if err != nil {
-				return fmt.Errorf("unable to extractTarGz file: %v - %v", r, err)
+				return fmt.Errorf("unable to unarchive file: %v - %v", r, err)
 			}
 			defer os.RemoveAll(abf + be.CReddCoinExtractedDirLinux)
 		} else {
@@ -879,7 +879,7 @@ func doRequiredFiles() error {
 				if err := be.AddToLog(lf, "linux arm detected.", false); err != nil {
 					return fmt.Errorf("unable to add to log file: %v", err)
 				}
-				srcPath = abf + be.CReddCoinExtractedDirLinux + "bin/"
+				srcPath = abf
 				srcFileCLI = be.CReddCoinCliFile
 				srcFileD = be.CReddCoinDFile
 				srcFileTX = be.CReddCoinTxFile
