@@ -112,7 +112,7 @@ func newConfStruct() ConfStruct {
 	cnf.Currency = "USD"
 	cnf.FirstTimeRun = true
 	cnf.ProjectType = 0
-	cnf.RefreshTimer = 10
+	cnf.RefreshTimer = 3
 	cnf.RPCuser = ""
 	cnf.RPCpassword = ""
 	cnf.ServerIP = "127.0.0.1"
