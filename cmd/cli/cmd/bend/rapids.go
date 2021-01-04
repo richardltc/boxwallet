@@ -15,7 +15,7 @@ import (
 const (
 	CCoinNameRapids string = "Rapids"
 
-	CRapidsCoreVersion string = "3.4"
+	CRapidsCoreVersion string = "3.4.1"
 
 	CDFRapidsFileRPi   string = "rapids-" + CRapidsCoreVersion + "-arm64.tar.gz"
 	CDFRapidsFileLinux string = "rapids-" + CRapidsCoreVersion + "-lin64.tgz"
