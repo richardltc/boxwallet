@@ -13,8 +13,8 @@ import (
 const (
 	CCoinNameGroestlcoin string = "Groestlcoin"
 
-	CGroestlcoinCoreVersion string = "2.20.1"
-	CDFGroestlcoinRPi       string = "groestlcoin-" + CGroestlcoinCoreVersion + "-arm-linux-gnueabihf.taf.gz"
+	CGroestlcoinCoreVersion string = "2.21.0"
+	CDFGroestlcoinRPi       string = "groestlcoin-" + CGroestlcoinCoreVersion + "-arm-linux-gnueabihf.tar.gz"
 	CDFGroestlcoinLinux     string = "groestlcoin-" + CGroestlcoinCoreVersion + "-x86_64-linux-gnu.tar.gz"
 	CDFGroestlcoinWindows   string = "groestlcoin-" + CGroestlcoinCoreVersion + "-win64.zip"
 
