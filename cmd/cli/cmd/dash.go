@@ -1075,7 +1075,7 @@ var dashCmd = &cobra.Command{
 		draw(tickerCount)
 		tickerCount++
 		uiEvents := ui.PollEvents()
-		ticker := time.NewTicker(1 * time.Second).C
+		ticker := time.NewTicker(2 * time.Second).C
 		for {
 			select {
 			case e := <-uiEvents:
