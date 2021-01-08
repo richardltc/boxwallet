@@ -1,10 +1,14 @@
 package bend
 
 import (
+	"bytes"
 	"encoding/json"
+	"github.com/dustin/go-humanize"
 	"io/ioutil"
 	"net/http"
+	"strconv"
 	"strings"
+	"time"
 )
 
 const (
@@ -227,6 +231,223 @@ type PIVXWalletInfoRespStruct struct {
 	ID    string      `json:"id"`
 }
 
+func GetBlockchainInfoPIVX(cliConf *ConfStruct) (PIVXBlockchainInfoRespStruct, error) {
+	var respStruct PIVXBlockchainInfoRespStruct
+
+	body := strings.NewReader("{\"jsonrpc\":\"1.0\",\"id\":\"curltext\",\"method\":\"getblockchaininfo\",\"params\":[]}")
+	req, err := http.NewRequest("POST", "http://"+cliConf.ServerIP+":"+cliConf.Port, body)
+	if err != nil {
+		return respStruct, err
+	}
+	req.SetBasicAuth(cliConf.RPCuser, cliConf.RPCpassword)
+	req.Header.Set("Content-Type", "text/plain;")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return respStruct, err
+	}
+	defer resp.Body.Close()
+	bodyResp, err := ioutil.ReadAll(resp.Body)
+	if err != nil {
+		return respStruct, err
+	}
+	err = json.Unmarshal(bodyResp, &respStruct)
+	if err != nil {
+		return respStruct, err
+	}
+	return respStruct, nil
+}
+
+func GetBlockchainSyncTxtPIVX(synced bool, bci *PIVXBlockchainInfoRespStruct) string {
+	s := ConvertBCVerification(bci.Result.Verificationprogress)
+	if s == "0.0" {
+		s = ""
+	} else {
+		s = s + "%"
+	}
+
+	if !synced {
+		if bci.Result.Verificationprogress > gLastBCSyncPos {
+			gLastBCSyncPos = bci.Result.Verificationprogress
+			return "Blockchain:  [syncing " + s + " ](fg:yellow)"
+		} else {
+			gLastBCSyncPos = bci.Result.Verificationprogress
+			return "Blockchain:  [waiting " + s + " ](fg:yellow)"
+		}
+	} else {
+		return "Blockchain:  [synced " + CUtfTickBold + "](fg:green)"
+	}
+}
+
+func GetInfoPIVX(cliConf *ConfStruct) (PIVXGetInfoRespStruct, error) {
+	//attempts := 5
+	//waitingStr := "Checking server..."
+
+	var respStruct PIVXGetInfoRespStruct
+
+	for i := 1; i < 50; i++ {
+		//fmt.Printf("\r"+waitingStr+" %d/"+strconv.Itoa(attempts), i)
+		body := strings.NewReader("{\"jsonrpc\":\"1.0\",\"id\":\"curltext\",\"method\":\"getinfo\",\"params\":[]}")
+		req, err := http.NewRequest("POST", "http://"+cliConf.ServerIP+":"+cliConf.Port, body)
+		if err != nil {
+			return respStruct, err
+		}
+		req.SetBasicAuth(cliConf.RPCuser, cliConf.RPCpassword)
+		req.Header.Set("Content-Type", "text/plain;")
+
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			return respStruct, err
+		}
+		defer resp.Body.Close()
+		bodyResp, err := ioutil.ReadAll(resp.Body)
+		if err != nil {
+			return respStruct, err
+		}
+
+		// Check to make sure we are not loading the wallet
+		if bytes.Contains(bodyResp, []byte("Loading")) || bytes.Contains(bodyResp, []byte("Rewinding")) {
+			// The wallet is still loading, so print message, and sleep for 3 seconds and try again..
+			var errStruct GenericRespStruct
+			err = json.Unmarshal(bodyResp, &errStruct)
+			if err != nil {
+				return respStruct, err
+			}
+			//fmt.Println("Waiting for wallet to load...")
+			time.Sleep(5 * time.Second)
+		} else {
+
+			_ = json.Unmarshal(bodyResp, &respStruct)
+			return respStruct, err
+		}
+	}
+	return respStruct, nil
+}
+
+func GetMNSyncStatusPIVX(cliConf *ConfStruct) (PIVXMNSyncStatusRespStruct, error) {
+	var respStruct PIVXMNSyncStatusRespStruct
+
+	body := strings.NewReader("{\"jsonrpc\":\"1.0\",\"id\":\"curltext\",\"method\":\"mnsync\",\"params\":[\"status\"]}")
+	req, err := http.NewRequest("POST", "http://"+cliConf.ServerIP+":"+cliConf.Port, body)
+	if err != nil {
+		return respStruct, err
+	}
+	req.SetBasicAuth(cliConf.RPCuser, cliConf.RPCpassword)
+	req.Header.Set("Content-Type", "text/plain;")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return respStruct, err
+	}
+	defer resp.Body.Close()
+	bodyResp, err := ioutil.ReadAll(resp.Body)
+	if err != nil {
+		return respStruct, err
+	}
+	err = json.Unmarshal(bodyResp, &respStruct)
+	if err != nil {
+		return respStruct, err
+	}
+	return respStruct, nil
+}
+
+func GetMNSyncStatusTxtPIVX(mnss *PIVXMNSyncStatusRespStruct) string {
+	if mnss.Result.RequestedMasternodeAssets == 999 {
+		return "Masternodes: [synced " + CUtfTickBold + "](fg:green)"
+	} else {
+		return "Masternodes: [syncing " + getNextProgMNIndicator(gLastMNSyncStatus) + "](fg:yellow)"
+	}
+}
+
+func GetNetworkBlocksTxtPIVX(bci *PIVXBlockchainInfoRespStruct) string {
+	blocksStr := humanize.Comma(int64(bci.Result.Blocks))
+
+	if bci.Result.Blocks > 100 {
+		return "Blocks:      [" + blocksStr + "](fg:green)"
+	} else {
+		return "[Blocks:      " + blocksStr + "](fg:red)"
+	}
+}
+
+func GetNetworkConnectionsTxtPIVX(connections int) string {
+	if connections == 0 {
+		return "Peers:       [0](fg:red)"
+	}
+	return "Peers:       [" + strconv.Itoa(connections) + "](fg:green)"
+}
+
+func GetNetworkDifficultyTxtPIVX(difficulty, good, warn float64) string {
+	var s string
+	if difficulty > 1000 {
+		s = humanize.FormatFloat("#.#", difficulty/1000) + "k"
+	} else {
+		s = humanize.Ftoa(difficulty)
+	}
+	if difficulty >= good {
+		return "Difficulty:  [" + s + "](fg:green)"
+	} else if difficulty >= warn {
+		return "Difficulty:  [" + s + "](fg:yellow)"
+	} else {
+		return "Difficulty:  [" + s + "](fg:red)"
+	}
+}
+
+func GetNewAddressPIVX(cliConf *ConfStruct) (PIVXGetNewAddressStruct, error) {
+	var respStruct PIVXGetNewAddressStruct
+
+	body := strings.NewReader("{\"jsonrpc\":\"1.0\",\"id\":\"curltext\",\"method\":\"getnewaddress\",\"params\":[]}")
+	req, err := http.NewRequest("POST", "http://"+cliConf.ServerIP+":"+cliConf.Port, body)
+	if err != nil {
+		return respStruct, err
+	}
+	req.SetBasicAuth(cliConf.RPCuser, cliConf.RPCpassword)
+	req.Header.Set("Content-Type", "text/plain;")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return respStruct, err
+	}
+	defer resp.Body.Close()
+	bodyResp, err := ioutil.ReadAll(resp.Body)
+	if err != nil {
+		return respStruct, err
+	}
+
+	err = json.Unmarshal(bodyResp, &respStruct)
+	if err != nil {
+		return respStruct, err
+	}
+
+	return respStruct, nil
+}
+
+func GetStakingStatusPIVX(cliConf *ConfStruct) (PIVXStakingStatusRespStruct, error) {
+	var respStruct PIVXStakingStatusRespStruct
+
+	body := strings.NewReader("{\"jsonrpc\":\"1.0\",\"id\":\"curltext\",\"method\":\"getstakingstatus\",\"params\":[]}")
+	req, err := http.NewRequest("POST", "http://"+cliConf.ServerIP+":"+cliConf.Port, body)
+	if err != nil {
+		return respStruct, err
+	}
+	req.SetBasicAuth(cliConf.RPCuser, cliConf.RPCpassword)
+	req.Header.Set("Content-Type", "text/plain;")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return respStruct, err
+	}
+	defer resp.Body.Close()
+	bodyResp, err := ioutil.ReadAll(resp.Body)
+	if err != nil {
+		return respStruct, err
+	}
+	err = json.Unmarshal(bodyResp, &respStruct)
+	if err != nil {
+		return respStruct, err
+	}
+	return respStruct, nil
+}
+
 func GetWalletInfoPIVX(cliConf *ConfStruct) (PIVXWalletInfoRespStruct, error) {
 	var respStruct PIVXWalletInfoRespStruct
 
@@ -306,4 +527,31 @@ func ListReceivedByAddressPIVX(cliConf *ConfStruct, includeZero bool) (PIVXListR
 	}
 
 	return respStruct, nil
+}
+
+func UnlockWalletPIVX(cliConf *ConfStruct, pw string) error {
+	var respStruct GenericRespStruct
+
+	body := strings.NewReader("{\"jsonrpc\":\"1.0\",\"id\":\"curltext\",\"method\":\"walletpassphrase\",\"params\":[\"" + pw + "\",0]}")
+	req, err := http.NewRequest("POST", "http://"+cliConf.ServerIP+":"+cliConf.Port, body)
+	if err != nil {
+		return err
+	}
+	req.SetBasicAuth(cliConf.RPCuser, cliConf.RPCpassword)
+	req.Header.Set("Content-Type", "text/plain;")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	bodyResp, err := ioutil.ReadAll(resp.Body)
+	if err != nil {
+		return err
+	}
+	err = json.Unmarshal(bodyResp, &respStruct)
+	if err != nil {
+		return err
+	}
+	return nil
 }
