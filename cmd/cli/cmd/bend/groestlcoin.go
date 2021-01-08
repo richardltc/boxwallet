@@ -6,6 +6,7 @@ import (
 	"github.com/dustin/go-humanize"
 	"io/ioutil"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -177,6 +178,13 @@ func GetBlockchainInfoGRS(cliConf *ConfStruct) (GRSBlockchainInfoRespStruct, err
 		return respStruct, err
 	}
 	return respStruct, nil
+}
+
+func GetNetworkConnectionsTxtGRS(connections int) string {
+	if connections == 0 {
+		return "Peers:       [0](fg:red)"
+	}
+	return "Peers:       [" + strconv.Itoa(connections) + "](fg:green)"
 }
 
 func GetNewAddressGRS(cliConf *ConfStruct) (GRSNewAddressStruct, error) {
