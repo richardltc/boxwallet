@@ -6,6 +6,7 @@ import (
 	"github.com/dustin/go-humanize"
 	"io/ioutil"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -52,6 +53,29 @@ type DVTBlockchainInfoRespStruct struct {
 		Coinsupply           float64 `json:"coinsupply"`
 		Pruned               bool    `json:"pruned"`
 		Warnings             string  `json:"warnings"`
+	} `json:"result"`
+	Error interface{} `json:"error"`
+	ID    string      `json:"id"`
+}
+
+type DeVaultGetInfoRespStruct struct {
+	Result struct {
+		Version         int     `json:"version"`
+		Protocolversion int     `json:"protocolversion"`
+		Walletversion   int     `json:"walletversion"`
+		Balance         float64 `json:"balance"`
+		Blocks          int     `json:"blocks"`
+		Timeoffset      int     `json:"timeoffset"`
+		Connections     int     `json:"connections"`
+		Proxy           string  `json:"proxy"`
+		Difficulty      float64 `json:"difficulty"`
+		Testnet         bool    `json:"testnet"`
+		Keypoololdest   int     `json:"keypoololdest"`
+		Keypoolsize     int     `json:"keypoolsize"`
+		UnlockedUntil   int     `json:"unlocked_until"`
+		Paytxfee        float64 `json:"paytxfee"`
+		Relayfee        float64 `json:"relayfee"`
+		Errors          string  `json:"errors"`
 	} `json:"result"`
 	Error interface{} `json:"error"`
 	ID    string      `json:"id"`
@@ -171,6 +195,51 @@ func GetBlockchainSyncTxtDVT(synced bool, bci *DVTBlockchainInfoRespStruct) stri
 	}
 }
 
+func GetInfoDVT(cliConf *ConfStruct) (DeVaultGetInfoRespStruct, error) {
+	//attempts := 5
+	//waitingStr := "Checking server..."
+
+	var respStruct DeVaultGetInfoRespStruct
+
+	for i := 1; i < 50; i++ {
+		//fmt.Printf("\r"+waitingStr+" %d/"+strconv.Itoa(attempts), i)
+		body := strings.NewReader("{\"jsonrpc\":\"1.0\",\"id\":\"curltext\",\"method\":\"getinfo\",\"params\":[]}")
+		req, err := http.NewRequest("POST", "http://"+cliConf.ServerIP+":"+cliConf.Port, body)
+		if err != nil {
+			return respStruct, err
+		}
+		req.SetBasicAuth(cliConf.RPCuser, cliConf.RPCpassword)
+		req.Header.Set("Content-Type", "text/plain;")
+
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			return respStruct, err
+		}
+		defer resp.Body.Close()
+		bodyResp, err := ioutil.ReadAll(resp.Body)
+		if err != nil {
+			return respStruct, err
+		}
+
+		// Check to make sure we are not loading the wallet
+		if bytes.Contains(bodyResp, []byte("Loading")) || bytes.Contains(bodyResp, []byte("Rewinding")) {
+			// The wallet is still loading, so print message, and sleep for 3 seconds and try again..
+			var errStruct GenericRespStruct
+			err = json.Unmarshal(bodyResp, &errStruct)
+			if err != nil {
+				return respStruct, err
+			}
+			//fmt.Println("Waiting for wallet to load...")
+			time.Sleep(5 * time.Second)
+		} else {
+
+			_ = json.Unmarshal(bodyResp, &respStruct)
+			return respStruct, err
+		}
+	}
+	return respStruct, nil
+}
+
 func GetNetworkBlocksTxtDVT(bci *DVTBlockchainInfoRespStruct) string {
 	blocksStr := humanize.Comma(int64(bci.Result.Blocks))
 
@@ -180,6 +249,13 @@ func GetNetworkBlocksTxtDVT(bci *DVTBlockchainInfoRespStruct) string {
 
 	return "Blocks:      [" + blocksStr + "](fg:green)"
 
+}
+
+func GetNetworkConnectionsTxtDVT(connections int) string {
+	if connections == 0 {
+		return "Peers:       [0](fg:red)"
+	}
+	return "Peers:       [" + strconv.Itoa(connections) + "](fg:green)"
 }
 
 func GetNetworkDifficultyTxtDVT(difficulty, good, warn float64) string {
