@@ -3,7 +3,6 @@ package bend
 import (
 	"bytes"
 	"encoding/json"
-	"fmt"
 	"github.com/dustin/go-humanize"
 	"io/ioutil"
 	"net/http"
@@ -201,13 +200,13 @@ func GetBlockchainSyncTxtPhore(synced bool, bci *PhoreBlockchainInfoRespStruct) 
 }
 
 func GetInfoPhore(cliConf *ConfStruct) (phoreInfoRespStruct, error) {
-	attempts := 5
-	waitingStr := "Checking server..."
+	//attempts := 5
+	//waitingStr := "Checking server..."
 
 	var respStruct phoreInfoRespStruct
 
 	for i := 1; i < 50; i++ {
-		fmt.Printf("\r"+waitingStr+" %d/"+strconv.Itoa(attempts), i)
+		//fmt.Printf("\r"+waitingStr+" %d/"+strconv.Itoa(attempts), i)
 		body := strings.NewReader("{\"jsonrpc\":\"1.0\",\"id\":\"curltext\",\"method\":\"getinfo\",\"params\":[]}")
 		req, err := http.NewRequest("POST", "http://"+cliConf.ServerIP+":"+cliConf.Port, body)
 		if err != nil {
@@ -261,6 +260,13 @@ func GetNetworkBlocksTxtPhore(bci *PhoreBlockchainInfoRespStruct) string {
 	} else {
 		return "[Blocks:      " + blocksStr + "](fg:red)"
 	}
+}
+
+func GetNetworkConnectionsTxtPhore(connections int) string {
+	if connections == 0 {
+		return "Peers:       [0](fg:red)"
+	}
+	return "Peers:       [" + strconv.Itoa(connections) + "](fg:green)"
 }
 
 func GetNetworkDifficultyTxtPhore(difficulty, good, warn float64) string {
