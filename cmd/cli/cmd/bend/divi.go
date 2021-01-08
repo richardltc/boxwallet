@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"github.com/dustin/go-humanize"
 	"io/ioutil"
 	"net/http"
@@ -323,13 +322,13 @@ func getDiviAddNodes() ([]byte, error) {
 }
 
 func GetInfoDivi(cliConf *ConfStruct) (diviGetInfoRespStruct, error) {
-	attempts := 5
-	waitingStr := "Checking server..."
+	//attempts := 5
+	//waitingStr := "Checking server..."
 
 	var respStruct diviGetInfoRespStruct
 
 	for i := 1; i < 50; i++ {
-		fmt.Printf("\r"+waitingStr+" %d/"+strconv.Itoa(attempts), i)
+		//fmt.Printf("\r"+waitingStr+" %d/"+strconv.Itoa(attempts), i)
 		body := strings.NewReader("{\"jsonrpc\":\"1.0\",\"id\":\"curltext\",\"method\":\"getinfo\",\"params\":[]}")
 		req, err := http.NewRequest("POST", "http://"+cliConf.ServerIP+":"+cliConf.Port, body)
 		if err != nil {
@@ -410,6 +409,13 @@ func GetNetworkBlocksTxtDivi(bci *DiviBlockchainInfoRespStruct) string {
 	} else {
 		return "[Blocks:      " + blocksStr + "](fg:red)"
 	}
+}
+
+func GetNetworkConnectionsTxtDivi(connections int) string {
+	if connections == 0 {
+		return "Peers:       [0](fg:red)"
+	}
+	return "Peers:       [" + strconv.Itoa(connections) + "](fg:green)"
 }
 
 func GetNetworkDifficultyTxtDivi(difficulty, good, warn float64) string {
