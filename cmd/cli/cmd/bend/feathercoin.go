@@ -6,6 +6,7 @@ import (
 	"github.com/dustin/go-humanize"
 	"io/ioutil"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -173,6 +174,13 @@ func GetBlockchainInfoFeathercoin(cliConf *ConfStruct) (FeathercoinBlockchainInf
 		return respStruct, err
 	}
 	return respStruct, nil
+}
+
+func GetNetworkConnectionsTxtFTC(connections int) string {
+	if connections == 0 {
+		return "Peers:       [0](fg:red)"
+	}
+	return "Peers:       [" + strconv.Itoa(connections) + "](fg:green)"
 }
 
 func GetNetworkInfoFeathercoin(cliConf *ConfStruct) (FeathercoinNetworkInfoRespStruct, error) {
