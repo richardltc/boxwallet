@@ -14,14 +14,18 @@ import (
 const (
 	CCoinNamePIVX string = "PIVX"
 
-	CPIVXCoreVersion   string = "4.3.0"
+	CPIVXCoreVersion   string = "5.0.0"
 	CDFPIVXFileRPi            = "pivx-" + CPIVXCoreVersion + "-arm-linux-gnueabihf.tar.gz"
 	CDFPIVXFileLinux          = "pivx-" + CPIVXCoreVersion + "-x86_64-linux-gnu.tar.gz"
+	CDFPIVXFilemacOS          = "pivx-" + CPIVXCoreVersion + "-osx64.tar.gz"
 	CDFPIVXFileWindows        = "pivx-" + CPIVXCoreVersion + "-win64.zip"
 
+	// Directory const
 	CPIVXExtractedDirArm     string = "pivx-" + CPIVXCoreVersion + "/"
 	CPIVXExtractedDirLinux   string = "pivx-" + CPIVXCoreVersion + "/"
 	CPIVXExtractedDirWindows string = "pivx-" + CPIVXCoreVersion + "\\"
+	CPIVXSaplingDirArm       string = ".pivx-params" + "/"
+	CPIVXSaplingDirLinux     string = ".pivx-params" + "/"
 
 	CDownloadURLPIVX string = "https://github.com/PIVX-Project/PIVX/releases/download/v" + CPIVXCoreVersion + "/"
 
@@ -37,6 +41,9 @@ const (
 	CPIVXDFileWin   string = "pivxd.exe"
 	CPIVXTxFile     string = "pivx-tx"
 	CPIVXTxFileWin  string = "pivx-tx.exe"
+
+	CPIVXSapling1 string = "sapling-output.params"
+	CPIVXSapling2 string = "sapling-spend.params"
 
 	// pivx.conf file constants
 	cPIVXRPCUser string = "pivxrpc"
