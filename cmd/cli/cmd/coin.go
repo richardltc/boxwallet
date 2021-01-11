@@ -603,7 +603,7 @@ func doRequiredFiles() error {
 	}
 
 	// Copy files to correct location
-	var srcPath, srcPathD, srcFileCLI, srcFileD, srcFileTX string
+	var srcPath, srcPathD, srcFileCLI, srcFileD, srcFileTX, srcPathSap, srcFileSap1, srcFileSap2 string
 
 	switch bwconf.ProjectType {
 	case be.PTDeVault:
@@ -809,18 +809,24 @@ func doRequiredFiles() error {
 					return fmt.Errorf("unable to add to log file: %v", err)
 				}
 				srcPath = abf + be.CPIVXExtractedDirArm + "bin/"
+				srcPathSap = abf + be.CPIVXExtractedDirArm + "share/pivx/"
 				srcFileCLI = be.CPIVXCliFile
 				srcFileD = be.CPIVXDFile
 				srcFileTX = be.CPIVXTxFile
+				srcFileSap1 = be.CPIVXSapling1
+				srcFileSap2 = be.CPIVXSapling2
 			//srcFileBWCLI = be.CAppFilename
 			case "amd64":
 				if err := be.AddToLog(lf, "linux amd64 detected.", false); err != nil {
 					return fmt.Errorf("unable to add to log file: %v", err)
 				}
 				srcPath = abf + be.CPIVXExtractedDirLinux + "bin/"
+				srcPathSap = abf + be.CPIVXExtractedDirLinux + "share/pivx/"
 				srcFileCLI = be.CPIVXCliFile
 				srcFileD = be.CPIVXDFile
 				srcFileTX = be.CPIVXTxFile
+				srcFileSap1 = be.CPIVXSapling1
+				srcFileSap2 = be.CPIVXSapling2
 			//srcFileBWCLI = be.CAppFilename
 			default:
 				err = errors.New("unable to determine runtime.GOARCH " + runtime.GOARCH)
@@ -1014,6 +1020,40 @@ func doRequiredFiles() error {
 	be.AddToLog(lf, "srcFileCLI="+srcFileCLI, false)
 	be.AddToLog(lf, "srcFileD="+srcFileD, false)
 	be.AddToLog(lf, "srcFileTX="+srcFileTX, false)
+
+	// If it's PIVX, see if we need to copy the sapling files
+	if bwconf.ProjectType == be.PTPIVX {
+		dstSapDir, err := be.GetPIVXSaplingDir()
+		if err != nil {
+			return fmt.Errorf("unable to call GetPIVXSaplingDir: %v", err)
+		}
+
+		// Make sure the Sapling directory exists
+		if err := os.MkdirAll(dstSapDir, os.ModePerm); err != nil {
+			be.AddToLog(lf, "unable to make directory: "+err.Error(), false)
+			return fmt.Errorf("unable to make dir: %v", err)
+		}
+
+		// Sapling1
+		if !be.FileExists(dstSapDir + srcFileSap1) {
+			if err := be.FileCopy(srcPathSap+srcFileSap1, dstSapDir+srcFileSap1, false); err != nil {
+				return fmt.Errorf("unable to copyFile from: %v to %v - %v", srcPathSap+srcFileSap1, dstSapDir+srcFileSap1, err)
+			}
+		}
+		if err := os.Chmod(dstSapDir+srcFileSap1, 0777); err != nil {
+			return fmt.Errorf("unable to chmod file: %v - %v", dstSapDir+srcFileSap1, err)
+		}
+
+		// Sapling2
+		if !be.FileExists(dstSapDir + srcFileSap2) {
+			if err := be.FileCopy(srcPathSap+srcFileSap2, dstSapDir+srcFileSap2, false); err != nil {
+				return fmt.Errorf("unable to copyFile from: %v to %v - %v", srcPathSap+srcFileSap2, dstSapDir+srcFileSap2, err)
+			}
+		}
+		if err := os.Chmod(dstSapDir+srcFileSap2, 0777); err != nil {
+			return fmt.Errorf("unable to chmod file: %v - %v", dstSapDir+srcFileSap2, err)
+		}
+	}
 
 	// coin-cli
 	if !be.FileExists(abf + srcFileCLI) {
