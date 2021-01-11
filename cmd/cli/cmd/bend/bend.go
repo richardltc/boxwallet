@@ -708,6 +708,23 @@ func getNextProgMNIndicator(LIndicator string) string {
 	}
 }
 
+func GetPIVXSaplingDir() (string, error) {
+	var s string
+	u, err := user.Current()
+	if err != nil {
+		return "", err
+	}
+	hd := u.HomeDir
+	if runtime.GOOS == "windows" {
+		// add the "appdata\roaming" part.
+		s = addTrailingSlash(hd) + "appdata\\roaming\\" + addTrailingSlash(CPIVXSaplingDirLinux)
+	} else {
+		// todo this needs changing for Windows.
+		s = AddTrailingSlash(hd) + AddTrailingSlash(CPIVXSaplingDirLinux)
+	}
+	return s, nil
+}
+
 // GetWalletAddress - Sends a "getaddressesbyaccount" to the daemon, and returns the result
 func GetWalletAddress(cliConf *ConfStruct) (GetAddressesByAccountRespStruct, error) {
 	var respStruct GetAddressesByAccountRespStruct
