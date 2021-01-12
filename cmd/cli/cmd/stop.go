@@ -19,6 +19,8 @@ package cmd
 import (
 	"fmt"
 	"log"
+	"strconv"
+	"time"
 
 	"github.com/spf13/cobra"
 	be "richardmace.co.uk/boxwallet/cmd/cli/cmd/bend"
@@ -37,6 +39,11 @@ var stopCmd = &cobra.Command{
 			log.Fatal("Unable to GetCLIConfStruct " + err.Error())
 		}
 
+		sCoinDaemonName, err := be.GetCoinDaemonFilename(be.APPTCLI)
+		if err != nil {
+			log.Fatal("Unable to GetCoinDaemonFilename " + err.Error())
+		}
+
 		switch cliConf.ProjectType {
 		case be.PTScala:
 			resp, err := be.StopDaemonMonero(&cliConf)
@@ -46,12 +53,25 @@ var stopCmd = &cobra.Command{
 			fmt.Println(resp.Status)
 			fmt.Println("daemon stopping")
 		default:
-			resp, err := be.StopDaemon(&cliConf)
+			fmt.Println("Stopping the " + sCoinDaemonName + " server...")
+			_, err := be.StopDaemon(&cliConf)
 			if err != nil {
 				log.Fatal("Unable to StopDaemon " + err.Error())
 			}
-			fmt.Println(resp.Result)
+			for i := 0; i < 50; i++ {
+				bStillRunning, _, _ := be.IsCoinDaemonRunning()
+				if bStillRunning {
+					fmt.Printf("\r" + "Waiting for " + sCoinDaemonName + " to stop... " + strconv.Itoa(i+1) + "/50")
+					//fmt.Println("Waiting for Daemon to stop... " + strconv.Itoa(i + 1) + "/50")
+					time.Sleep(1 * time.Second)
+				} else {
+					fmt.Println("\n" + sCoinDaemonName + " server stopped.")
+					break
+				}
+			}
+			//fmt.Println(resp.Result)
 		}
+
 		// sAppCLIName, err := gwc.GetAppCLIName() // e.g. GoDivi CLI
 		// if err != nil {
 		// 	log.Fatal("Unable to GetAppCLIName " + err.Error())
