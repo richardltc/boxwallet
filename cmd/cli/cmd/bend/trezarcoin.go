@@ -125,6 +125,33 @@ type TrezarcoinListReceivedByAddressRespStruct struct {
 	Error interface{} `json:"error"`
 	ID    string      `json:"id"`
 }
+
+type TZCListTransactionsRespStruct struct {
+	Result []struct {
+		Account           string        `json:"account"`
+		Address           string        `json:"address"`
+		Category          string        `json:"category"`
+		Amount            float64       `json:"amount"`
+		CanStake          bool          `json:"canStake"`
+		CanSpend          bool          `json:"canSpend"`
+		Label             string        `json:"label"`
+		Vout              int           `json:"vout"`
+		Confirmations     int           `json:"confirmations"`
+		Blockhash         string        `json:"blockhash"`
+		Blockindex        int           `json:"blockindex"`
+		Blocktime         int           `json:"blocktime"`
+		Txid              string        `json:"txid"`
+		Walletconflicts   []interface{} `json:"walletconflicts"`
+		Time              int           `json:"time"`
+		TxComment         string        `json:"tx-comment"`
+		Timereceived      int           `json:"timereceived"`
+		Bip125Replaceable string        `json:"bip125-replaceable"`
+		Generated         bool          `json:"generated,omitempty"`
+	} `json:"result"`
+	Error interface{} `json:"error"`
+	ID    string      `json:"id"`
+}
+
 type TrezarcoinStakingInfoRespStruct struct {
 	Result struct {
 		Enabled          bool    `json:"enabled"`
@@ -376,6 +403,35 @@ func ListReceivedByAddressTrezarcoin(cliConf *ConfStruct, includeZero bool) (Tre
 		s = "{\"jsonrpc\":\"1.0\",\"id\":\"curltext\",\"method\":\"listreceivedbyaddress\",\"params\":[1, false]}"
 	}
 	body := strings.NewReader(s)
+	req, err := http.NewRequest("POST", "http://"+cliConf.ServerIP+":"+cliConf.Port, body)
+	if err != nil {
+		return respStruct, err
+	}
+	req.SetBasicAuth(cliConf.RPCuser, cliConf.RPCpassword)
+	req.Header.Set("Content-Type", "text/plain;")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return respStruct, err
+	}
+	defer resp.Body.Close()
+	bodyResp, err := ioutil.ReadAll(resp.Body)
+	if err != nil {
+		return respStruct, err
+	}
+
+	err = json.Unmarshal(bodyResp, &respStruct)
+	if err != nil {
+		return respStruct, err
+	}
+
+	return respStruct, nil
+}
+
+func ListTranactionsTZC(cliConf *ConfStruct) (TZCListTransactionsRespStruct, error) {
+	var respStruct TZCListTransactionsRespStruct
+
+	body := strings.NewReader("{\"jsonrpc\":\"1.0\",\"id\":\"boxwallet\",\"method\":\"listtransactions\",\"params\":[]}")
 	req, err := http.NewRequest("POST", "http://"+cliConf.ServerIP+":"+cliConf.Port, body)
 	if err != nil {
 		return respStruct, err
