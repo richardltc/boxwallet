@@ -24,7 +24,7 @@ import (
 
 const (
 	CAppName        string = "BoxWallet"
-	CBWAppVersion   string = "0.35.7"
+	CBWAppVersion   string = "0.35.8"
 	CAppFilename    string = "boxwallet"
 	CAppFilenameWin string = "boxwallet.exe"
 	CAppLogfile     string = "boxwallet.log"
@@ -717,9 +717,8 @@ func GetPIVXSaplingDir() (string, error) {
 	hd := u.HomeDir
 	if runtime.GOOS == "windows" {
 		// add the "appdata\roaming" part.
-		s = addTrailingSlash(hd) + "appdata\\roaming\\" + addTrailingSlash(CPIVXSaplingDirLinux)
+		s = addTrailingSlash(hd) + "appdata\\roaming\\" + addTrailingSlash(CPIVXSaplingDirWindows)
 	} else {
-		// todo this needs changing for Windows.
 		s = AddTrailingSlash(hd) + AddTrailingSlash(CPIVXSaplingDirLinux)
 	}
 	return s, nil
