@@ -443,11 +443,11 @@ func doRequiredFiles() error {
 		}
 	case be.PTPhore:
 		if runtime.GOOS == "windows" {
-			_, err = be.UnZip(filePath, "tmp")
+			_, err = be.UnZip(filePath, abf)
 			if err != nil {
 				return fmt.Errorf("unable to unzip file: %v - %v", filePath, err)
 			}
-			defer os.RemoveAll("tmp")
+			defer os.RemoveAll(abf)
 		} else if runtime.GOARCH == "arm" {
 			//err = be.ExtractTarGz(r)
 			err = archiver.Unarchive(filePath, abf)
