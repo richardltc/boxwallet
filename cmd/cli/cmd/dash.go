@@ -42,6 +42,12 @@ import (
 	//m "richardmace.co.uk/boxwallet/pkg/models"
 )
 
+const (
+	cStakeReceived   = "\u02764"
+	cPaymentReceived = "\u0293D"
+	cPaymentSent     = "\u0293C"
+)
+
 type hdinfoRespStruct struct {
 	Result struct {
 		Hdseed             string `json:"hdseed"`
@@ -654,6 +660,19 @@ var dashCmd = &cobra.Command{
 		default:
 			err = errors.New("unable to determine ProjectType")
 		}
+
+		pTransactions := widgets.NewTable()
+		pTransactions.Rows = [][]string{
+			[]string{"header1", "header2", "header3"},
+			[]string{"AAA", "BBB", "CCC"},
+			[]string{"DDD", "EEE", "FFF"},
+			[]string{"GGG", "HHH", "III"},
+		}
+		pTransactions.Title = "Transactions"
+		pTransactions.RowSeparator = true
+		pTransactions.SetRect(0, 11, 84, 30)
+		pTransactions.TextStyle.Fg = ui.ColorWhite
+		pTransactions.BorderStyle.Fg = ui.ColorWhite
 
 		// var numSeconds int = -1
 		updateDisplay := func(count int) {
