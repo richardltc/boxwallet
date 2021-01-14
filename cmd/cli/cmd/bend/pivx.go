@@ -292,7 +292,7 @@ func GetInfoPIVX(cliConf *ConfStruct) (PIVXGetInfoRespStruct, error) {
 
 	var respStruct PIVXGetInfoRespStruct
 
-	lf := "/home/richard/.boxwallet/boxwallet.log"
+	//lf := "/home/richard/.boxwallet/boxwallet.log"
 	for i := 1; i < 50; i++ {
 		//fmt.Printf("\r"+waitingStr+" %d/"+strconv.Itoa(attempts), i)
 		body := strings.NewReader("{\"jsonrpc\":\"1.0\",\"id\":\"curltext\",\"method\":\"getinfo\",\"params\":[]}")
@@ -313,9 +313,9 @@ func GetInfoPIVX(cliConf *ConfStruct) (PIVXGetInfoRespStruct, error) {
 			return respStruct, err
 		}
 
-		// todo remove the below after bug fixed
-		s := string(bodyResp)
-		AddToLog(lf, s, false)
+		// todo remove the below after bug fixed.
+		//s := string(bodyResp)
+		//AddToLog(lf, s, false)
 
 		// Check to make sure we are not loading the wallet
 		if bytes.Contains(bodyResp, []byte("Loading")) || bytes.Contains(bodyResp, []byte("Rewinding")) {
