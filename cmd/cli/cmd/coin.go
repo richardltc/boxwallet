@@ -509,7 +509,8 @@ func doRequiredFiles() error {
 		}
 	case be.PTReddCoin:
 		if runtime.GOOS == "windows" {
-			_, err = be.UnZip(filePath, "tmp")
+			//_, err = be.UnZip(filePath, "tmp")
+			_, err = be.UnZip(filePath, abf)
 			if err != nil {
 				return fmt.Errorf("unable to unzip file: %v - %v", filePath, err)
 			}
@@ -874,7 +875,7 @@ func doRequiredFiles() error {
 		}
 		switch runtime.GOOS {
 		case "windows":
-			srcPath = abf + be.CReddCoinExtractedDirLinux
+			srcPath = abf + be.CReddCoinExtractedDirWin + "bin\\"
 			srcFileCLI = be.CReddCoinCliFileWin
 			srcFileD = be.CReddCoinDFileWin
 			srcFileTX = be.CReddCoinTxFileWin
