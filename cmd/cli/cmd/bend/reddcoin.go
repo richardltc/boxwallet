@@ -21,6 +21,7 @@ const (
 	CDFReddCoinWindows string = "reddcoin-" + CReddCoinCoreVersion + "-win64.zip"
 
 	CReddCoinExtractedDirLinux = "reddcoin-" + CReddCoinCoreVersion + "/"
+	CReddCoinExtractedDirWin   = "reddcoin-" + CReddCoinCoreVersion + "\\"
 
 	CDownloadURLReddCoinGen string = "https://download.reddcoin.com/bin/reddcoin-core-" + CReddCoinCoreVersion + "/"
 	CDownloadURLReddCoinArm string = "https://sourceforge.net/projects/reddpi/files/update/reddcoin-" + CReddCoinCoreVersion + "-armhf.zip/download"
