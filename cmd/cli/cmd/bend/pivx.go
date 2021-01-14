@@ -26,6 +26,7 @@ const (
 	CPIVXExtractedDirWindows string = "pivx-" + CPIVXCoreVersion + "\\"
 	CPIVXSaplingDirArm       string = ".pivx-params" + "/"
 	CPIVXSaplingDirLinux     string = ".pivx-params" + "/"
+	CPIVXSaplingDirWindows   string = "PIVXParams" + "\\"
 
 	CDownloadURLPIVX string = "https://github.com/PIVX-Project/PIVX/releases/download/v" + CPIVXCoreVersion + "/"
 
