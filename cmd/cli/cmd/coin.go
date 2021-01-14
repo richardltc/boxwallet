@@ -360,7 +360,7 @@ func doRequiredFiles() error {
 			if err != nil {
 				return fmt.Errorf("unable to unzip file: %v - %v", filePath, err)
 			}
-			defer os.RemoveAll("tmp")
+			defer os.RemoveAll(abf)
 		} else if runtime.GOARCH == "arm" {
 			//err = be.ExtractTarGz(r)
 			err = archiver.Unarchive(filePath, abf)
@@ -465,11 +465,11 @@ func doRequiredFiles() error {
 		}
 	case be.PTPIVX:
 		if runtime.GOOS == "windows" {
-			_, err = be.UnZip(filePath, "tmp")
+			_, err = be.UnZip(filePath, abf)
 			if err != nil {
 				return fmt.Errorf("unable to unzip file: %v - %v", filePath, err)
 			}
-			defer os.RemoveAll("tmp")
+			defer os.RemoveAll(abf)
 		} else if runtime.GOARCH == "arm" {
 			//err = be.ExtractTarGz(r)
 			err = archiver.Unarchive(filePath, abf)
@@ -799,9 +799,12 @@ func doRequiredFiles() error {
 		switch runtime.GOOS {
 		case "windows":
 			srcPath = abf + be.CPIVXExtractedDirWindows + "bin\\"
+			srcPathSap = abf + be.CPIVXExtractedDirWindows + "share\\pivx\\"
 			srcFileCLI = be.CPIVXCliFileWin
 			srcFileD = be.CPIVXDFileWin
 			srcFileTX = be.CPIVXTxFileWin
+			srcFileSap1 = be.CPIVXSapling1
+			srcFileSap2 = be.CPIVXSapling2
 			//srcFileBWCLI = be.CAppFilenameWin
 		case "linux":
 			switch runtime.GOARCH {
