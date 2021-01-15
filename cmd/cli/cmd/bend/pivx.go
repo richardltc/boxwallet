@@ -14,7 +14,7 @@ import (
 const (
 	CCoinNamePIVX string = "PIVX"
 
-	CPIVXCoreVersion   string = "5.0.0"
+	CPIVXCoreVersion   string = "5.0.1"
 	CDFPIVXFileRPi            = "pivx-" + CPIVXCoreVersion + "-arm-linux-gnueabihf.tar.gz"
 	CDFPIVXFileLinux          = "pivx-" + CPIVXCoreVersion + "-x86_64-linux-gnu.tar.gz"
 	CDFPIVXFilemacOS          = "pivx-" + CPIVXCoreVersion + "-osx64.tar.gz"
