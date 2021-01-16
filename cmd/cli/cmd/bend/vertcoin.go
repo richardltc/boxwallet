@@ -192,7 +192,9 @@ func GetNetworkInfoVTC(cliConf *ConfStruct) (VTCNetworkInfoRespStruct, error) {
 		}
 
 		// Check to make sure we are not loading the wallet
-		if bytes.Contains(bodyResp, []byte("Loading")) || bytes.Contains(bodyResp, []byte("Rewinding")) {
+		if bytes.Contains(bodyResp, []byte("Loading")) ||
+			bytes.Contains(bodyResp, []byte("Rewinding")) ||
+			bytes.Contains(bodyResp, []byte("Verifying")) {
 			// The wallet is still loading, so print message, and sleep for 3 seconds and try again..
 			time.Sleep(5 * time.Second)
 		} else {
