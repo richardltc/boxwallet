@@ -205,6 +205,7 @@ func GetInfoPhore(cliConf *ConfStruct) (phoreInfoRespStruct, error) {
 
 	var respStruct phoreInfoRespStruct
 
+	//lf := "/home/pi/.boxwallet/boxwallet.log"
 	for i := 1; i < 50; i++ {
 		//fmt.Printf("\r"+waitingStr+" %d/"+strconv.Itoa(attempts), i)
 		body := strings.NewReader("{\"jsonrpc\":\"1.0\",\"id\":\"curltext\",\"method\":\"getinfo\",\"params\":[]}")
@@ -225,8 +226,14 @@ func GetInfoPhore(cliConf *ConfStruct) (phoreInfoRespStruct, error) {
 			return respStruct, err
 		}
 
+		// todo remove the below after bug fixed.
+		//s := string(bodyResp)
+		//AddToLog(lf, s, false)
+
 		// Check to make sure we are not loading the wallet
-		if bytes.Contains(bodyResp, []byte("Loading")) || bytes.Contains(bodyResp, []byte("Rewinding")) {
+		if bytes.Contains(bodyResp, []byte("Loading")) ||
+			bytes.Contains(bodyResp, []byte("Rewinding")) ||
+			bytes.Contains(bodyResp, []byte("Verifying")) {
 			// The wallet is still loading, so print message, and sleep for 3 seconds and try again..
 			var errStruct GenericRespStruct
 			err = json.Unmarshal(bodyResp, &errStruct)
