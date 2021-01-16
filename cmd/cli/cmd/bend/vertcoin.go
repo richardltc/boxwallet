@@ -15,9 +15,9 @@ const (
 	CCoinNameVertcoin string = "Vertcoin"
 
 	CVertcoinCoreVersion string = "0.17.0.1"
-	//CDFVertcoinRPi       string = "Vertcoin-" + CVertcoinCoreVersion + "-rPI.zip"
-	CDFVertcoinLinux   string = "vertcoind-v" + CVertcoinCoreVersion + "-linux-amd64.zip"
-	CDFVertcoinWindows string = "vertcoind-v" + CVertcoinCoreVersion + "-win64.zip"
+	CDFVertcoinRPi       string = "vertcoind-" + CVertcoinCoreVersion + "-arm-linux-gnueabihf.zip"
+	CDFVertcoinLinux     string = "vertcoind-v" + CVertcoinCoreVersion + "-linux-amd64.zip"
+	CDFVertcoinWindows   string = "vertcoind-v" + CVertcoinCoreVersion + "-win64.zip"
 
 	CVertcoinExtractedDirLinux   = "vertcoind-v" + CVertcoinCoreVersion + "-linux-amd64/"
 	CVertcoinExtractedDirWindows = "vertcoind-v" + CVertcoinCoreVersion + "-win64\\"
