@@ -247,7 +247,9 @@ func GetInfoTrezarcoin(cliConf *ConfStruct) (trezarcoinInfoRespStruct, error) {
 		//s := string(bodyResp)
 		//AddToLog(lf,s,false)
 		// Check to make sure we are not loading the wallet
-		if bytes.Contains(bodyResp, []byte("Loading")) || bytes.Contains(bodyResp, []byte("Rewinding")) {
+		if bytes.Contains(bodyResp, []byte("Loading")) ||
+			bytes.Contains(bodyResp, []byte("Rewinding")) ||
+			bytes.Contains(bodyResp, []byte("Verifying")) {
 			// The wallet is still loading, so print message, and sleep for 3 seconds and try again..
 			var errStruct GenericRespStruct
 			err = json.Unmarshal(bodyResp, &errStruct)
