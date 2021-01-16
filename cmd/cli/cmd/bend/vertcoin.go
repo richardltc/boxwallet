@@ -14,7 +14,7 @@ import (
 const (
 	CCoinNameVertcoin string = "Vertcoin"
 
-	CVertcoinCoreVersion string = "0.15.0.1"
+	CVertcoinCoreVersion string = "0.17.0.1"
 	//CDFVertcoinRPi       string = "Vertcoin-" + CVertcoinCoreVersion + "-rPI.zip"
 	CDFVertcoinLinux   string = "vertcoind-v" + CVertcoinCoreVersion + "-linux-amd64.zip"
 	CDFVertcoinWindows string = "vertcoind-v" + CVertcoinCoreVersion + "-win64.zip"
