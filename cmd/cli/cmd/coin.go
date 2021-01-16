@@ -324,7 +324,8 @@ func doRequiredFiles() error {
 			filePath = abf + be.CDFVertcoinWindows
 			fileURL = be.CDownloadURLVertcoin + be.CDFVertcoinWindows
 		} else if runtime.GOARCH == "arm" {
-			return fmt.Errorf("ARM is not supported for this build: %v ", err)
+			filePath = abf + be.CDFVertcoinRPi
+			fileURL = be.CDownloadURLVertcoin + be.CDFVertcoinRPi
 		} else {
 			filePath = abf + be.CDFVertcoinLinux
 			fileURL = be.CDownloadURLVertcoin + be.CDFVertcoinLinux
