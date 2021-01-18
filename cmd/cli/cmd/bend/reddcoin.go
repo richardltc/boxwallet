@@ -12,7 +12,7 @@ import (
 )
 
 const (
-	CCoinNameReddCoin string = "ReddCoin"
+	CCoinNameReddCoin string = "reddcoin"
 
 	CReddCoinCoreVersion string = "3.10.3"
 
@@ -50,6 +50,33 @@ type RDDBlockchainInfoRespStruct struct {
 		Difficulty           float64 `json:"difficulty"`
 		Verificationprogress float64 `json:"verificationprogress"`
 		Chainwork            string  `json:"chainwork"`
+	} `json:"result"`
+	Error interface{} `json:"error"`
+	ID    string      `json:"id"`
+}
+
+type RDDGetInfoRespStruct struct {
+	Result struct {
+		Version         int     `json:"version"`
+		Protocolversion int     `json:"protocolversion"`
+		Walletversion   int     `json:"walletversion"`
+		Balance         float64 `json:"balance"`
+		Stake           float64 `json:"stake"`
+		Locked          bool    `json:"locked"`
+		Encrypted       bool    `json:"encrypted"`
+		Blocks          int     `json:"blocks"`
+		Timeoffset      int     `json:"timeoffset"`
+		Moneysupply     float64 `json:"moneysupply"`
+		Connections     int     `json:"connections"`
+		Proxy           string  `json:"proxy"`
+		Difficulty      float64 `json:"difficulty"`
+		Testnet         bool    `json:"testnet"`
+		Keypoololdest   int     `json:"keypoololdest"`
+		Keypoolsize     int     `json:"keypoolsize"`
+		UnlockedUntil   int     `json:"unlocked_until"`
+		Paytxfee        float64 `json:"paytxfee"`
+		Relayfee        float64 `json:"relayfee"`
+		Errors          string  `json:"errors"`
 	} `json:"result"`
 	Error interface{} `json:"error"`
 	ID    string      `json:"id"`
@@ -148,6 +175,53 @@ func GetBlockchainSyncTxtRDD(synced bool, bci *RDDBlockchainInfoRespStruct) stri
 	} else {
 		return "Blockchain:  [synced " + CUtfTickBold + "](fg:green)"
 	}
+}
+
+func GetInfoRDD(cliConf *ConfStruct) (RDDGetInfoRespStruct, error) {
+	//attempts := 5
+	//waitingStr := "Checking server..."
+
+	var respStruct RDDGetInfoRespStruct
+
+	for i := 1; i < 50; i++ {
+		//fmt.Printf("\r"+waitingStr+" %d/"+strconv.Itoa(attempts), i)
+		body := strings.NewReader("{\"jsonrpc\":\"1.0\",\"id\":\"boxwallet\",\"method\":\"" + cCommandGetInfo + "\",\"params\":[]}")
+		req, err := http.NewRequest("POST", "http://"+cliConf.ServerIP+":"+cliConf.Port, body)
+		if err != nil {
+			return respStruct, err
+		}
+		req.SetBasicAuth(cliConf.RPCuser, cliConf.RPCpassword)
+		req.Header.Set("Content-Type", "text/plain;")
+
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			return respStruct, err
+		}
+		defer resp.Body.Close()
+		bodyResp, err := ioutil.ReadAll(resp.Body)
+		if err != nil {
+			return respStruct, err
+		}
+
+		// Check to make sure we are not loading the wallet
+		if bytes.Contains(bodyResp, []byte("Loading")) ||
+			bytes.Contains(bodyResp, []byte("Rewinding")) ||
+			bytes.Contains(bodyResp, []byte("Verifying")) {
+			// The wallet is still loading, so print message, and sleep for 3 seconds and try again..
+			var errStruct GenericRespStruct
+			err = json.Unmarshal(bodyResp, &errStruct)
+			if err != nil {
+				return respStruct, err
+			}
+			//fmt.Println("Waiting for wallet to load...")
+			time.Sleep(5 * time.Second)
+		} else {
+
+			_ = json.Unmarshal(bodyResp, &respStruct)
+			return respStruct, err
+		}
+	}
+	return respStruct, nil
 }
 
 func GetNetworkBlocksTxtRDD(bci *RDDBlockchainInfoRespStruct) string {
