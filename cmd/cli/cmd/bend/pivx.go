@@ -15,7 +15,8 @@ const (
 	CCoinNamePIVX string = "PIVX"
 
 	CPIVXCoreVersion   string = "5.0.1"
-	CDFPIVXFileRPi            = "pivx-" + CPIVXCoreVersion + "-arm-linux-gnueabihf.tar.gz"
+	CDFPIVXFileArm32          = "pivx-" + CPIVXCoreVersion + "-arm-linux-gnueabihf.tar.gz"
+	CDFPIVXFileArm64          = "pivx-" + CPIVXCoreVersion + "-aarch64-linux-gnu.tar.gz"
 	CDFPIVXFileLinux          = "pivx-" + CPIVXCoreVersion + "-x86_64-linux-gnu.tar.gz"
 	CDFPIVXFilemacOS          = "pivx-" + CPIVXCoreVersion + "-osx64.tar.gz"
 	CDFPIVXFileWindows        = "pivx-" + CPIVXCoreVersion + "-win64.zip"
