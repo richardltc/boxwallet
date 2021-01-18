@@ -43,7 +43,7 @@ var displayaddressCmd = &cobra.Command{
 			log.Fatal("Unable to GetAppFileCLIName " + err.Error())
 		}
 
-		wRunning, err := confirmWalletReady()
+		wRunning, _, err := confirmWalletReady()
 		if err != nil {
 			log.Fatal("Unable to determine if wallet is ready: " + err.Error())
 		}
