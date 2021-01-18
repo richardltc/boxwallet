@@ -109,9 +109,9 @@ var dashCmd = &cobra.Command{
 			log.Fatal("Unable to GetAppFileCLIName " + err.Error())
 		}
 
-		wRunning, err := confirmWalletReady()
+		wRunning, s, err := confirmWalletReady()
 		if err != nil {
-			log.Fatalf("Unable to determine if wallet is ready: %v", err)
+			log.Fatalf("Unable to determine if wallet is ready: %v,%v", s, err)
 		}
 
 		coind, err := be.GetCoinDaemonFilename(be.APPTCLI)
@@ -163,7 +163,7 @@ var dashCmd = &cobra.Command{
 				sCoreVersion = strconv.Itoa(gi.Result.Version)
 			}
 		case be.PTPIVX:
-			gi, err := be.GetInfoPIVX(&cliConf)
+			gi, _, err := be.GetInfoPIVX(&cliConf)
 			if err != nil {
 				sCoreVersion = "Unknown"
 			} else {
@@ -1277,19 +1277,20 @@ var dashCmd = &cobra.Command{
 					niGRS, _ := be.GetNetworkInfoGRS(&cliConf)
 					gConnections = niGRS.Result.Connections
 				case be.PTPhore:
-					// todo do for Phore
+					// todo Implement DiffGood and DiffWarning do for Phore
 					giPHR, _ := be.GetInfoPhore(&cliConf)
 					gConnections = giPHR.Result.Connections
 				case be.PTPIVX:
 					gDiffGood, gDiffWarning, _ = getNetworkDifficultyInfo(be.PTPIVX)
-					giPIVX, _ := be.GetInfoPIVX(&cliConf)
+					giPIVX, _, _ := be.GetInfoPIVX(&cliConf)
 					gConnections = giPIVX.Result.Connections
 				case be.PTReddCoin:
+					// todo Implement DiffGood and DiffWarning do for Phore
 					//gDiffGood, gDiffWarning, _ = getNetworkDifficultyInfo(be.PTReddCoin)
 					niRDD, _ := be.GetNetworkInfoRDD(&cliConf)
 					gConnections = niRDD.Result.Connections
 				case be.PTTrezarcoin:
-					// todo do for Trezarcoin
+					// todo Implement DiffGood and DiffWarning do for TZC
 					giTZC, _ := be.GetInfoTrezarcoin(&cliConf)
 					gConnections = giTZC.Result.Connections
 				case be.PTVertcoin:
@@ -1372,10 +1373,10 @@ func checkHealth(bci *be.DiviBlockchainInfoRespStruct) error {
 	return nil
 }
 
-func confirmWalletReady() (bool, error) {
+func confirmWalletReady() (bool, string, error) {
 	cliConf, err := be.GetConfigStruct("", true)
 	if err != nil {
-		return false, fmt.Errorf("unable to determine coin type. Please run "+be.CAppFilename+" coin: %v", err.Error())
+		return false, "", fmt.Errorf("unable to determine coin type. Please run "+be.CAppFilename+" coin: %v", err.Error())
 	}
 	sCoinName, err := be.GetCoinName(be.APPTCLI)
 
@@ -1392,7 +1393,7 @@ func confirmWalletReady() (bool, error) {
 
 	spinner, err := yacspin.New(cfg)
 	if err != nil {
-		return false, fmt.Errorf("unable to initialise spinner - %v", err)
+		return false, "", fmt.Errorf("unable to initialise spinner - %v", err)
 	}
 
 	if err := spinner.Start(); err != nil {
@@ -1409,107 +1410,107 @@ func confirmWalletReady() (bool, error) {
 		if err != nil {
 			if err := spinner.Stop(); err != nil {
 			}
-			return false, fmt.Errorf("Unable to communicate with the " + coind + " server.")
+			return false, "", fmt.Errorf("Unable to communicate with the " + coind + " server.")
 		}
 		if gi.Result.Version == 0 {
-			return false, fmt.Errorf("unable to call getinfo %s\n", err)
+			return false, gi.Result.Errors, fmt.Errorf("unable to call getinfo %s\n", err)
 		}
 	case be.PTDivi:
 		gi, err := be.GetInfoDivi(&cliConf)
 		if err != nil {
 			if err := spinner.Stop(); err != nil {
 			}
-			return false, fmt.Errorf("Unable to communicate with the " + coind + " server.")
+			return false, "", fmt.Errorf("Unable to communicate with the " + coind + " server.")
 		}
 		if gi.Result.Version == "" {
-			return false, fmt.Errorf("unable to call getinfo %s\n", err)
+			return false, gi.Result.Errors, fmt.Errorf("unable to call getinfo %s\n", err)
 		}
 	case be.PTFeathercoin:
 		gi, err := be.GetNetworkInfoFeathercoin(&cliConf)
 		if err != nil {
 			if err := spinner.Stop(); err != nil {
 			}
-			return false, fmt.Errorf("Unable to communicate with the " + coind + " server.")
+			return false, "", fmt.Errorf("Unable to communicate with the " + coind + " server.")
 		}
 		if gi.Result.Version == 0 {
-			return false, fmt.Errorf("unable to call getinfo %s\n", err)
+			return false, gi.Result.Warnings, fmt.Errorf("unable to call getinfo %s\n", err)
 		}
 	case be.PTGroestlcoin:
 		gi, err := be.GetNetworkInfoGRS(&cliConf)
 		if err != nil {
 			if err := spinner.Stop(); err != nil {
 			}
-			return false, fmt.Errorf("Unable to communicate with the " + coind + " server.")
+			return false, "", fmt.Errorf("Unable to communicate with the " + coind + " server.")
 		}
 		if gi.Result.Version == 0 {
-			return false, fmt.Errorf("unable to call getinfo %s\n", err)
+			return false, gi.Result.Warnings, fmt.Errorf("unable to call getinfo %s\n", err)
 		}
 	case be.PTPhore:
 		gi, err := be.GetInfoPhore(&cliConf)
 		if err != nil {
 			if err := spinner.Stop(); err != nil {
 			}
-			return false, fmt.Errorf("Unable to communicate with the " + coind + " server.")
+			return false, "", fmt.Errorf("Unable to communicate with the " + coind + " server.")
 		}
 		if gi.Result.Version == 0 {
-			return false, fmt.Errorf("unable to call getinfo %s\n", err)
+			return false, gi.Result.Errors, fmt.Errorf("unable to call getinfo %s\n", err)
 		}
 	case be.PTPIVX:
-		gi, err := be.GetInfoPIVX(&cliConf)
+		gi, s, err := be.GetInfoPIVX(&cliConf)
 		if err != nil {
 			if err := spinner.Stop(); err != nil {
 			}
-			return false, fmt.Errorf("Unable to communicate with the " + coind + " server.")
+			return false, s, fmt.Errorf("Unable to communicate with the " + coind + " server.")
 		}
 		if gi.Result.Version == 0 {
-			return false, fmt.Errorf("unable to call getinfo %s\n", err)
+			return false, s, fmt.Errorf("unable to call getinfo %s\n", err)
 		}
 	case be.PTRapids:
 		gi, err := be.GetInfoRapids(&cliConf)
 		if err != nil {
 			if err := spinner.Stop(); err != nil {
 			}
-			return false, fmt.Errorf("Unable to communicate with the " + coind + " server.")
+			return false, "", fmt.Errorf("Unable to communicate with the " + coind + " server.")
 		}
 		if gi.Result.Version == 0 {
-			return false, fmt.Errorf("unable to call getinfo %s\n", err)
+			return false, gi.Result.Errors, fmt.Errorf("unable to call getinfo %s\n", err)
 		}
 	case be.PTReddCoin:
-		gi, err := be.GetNetworkInfoRDD(&cliConf)
+		gi, err := be.GetInfoRDD(&cliConf)
 		if err != nil {
 			if err := spinner.Stop(); err != nil {
 			}
-			return false, fmt.Errorf("Unable to communicate with the " + coind + " server.")
+			return false, "", fmt.Errorf("Unable to communicate with the " + coind + " server.")
 		}
 		if gi.Result.Version == 0 {
-			return false, fmt.Errorf("unable to call getinfo %s\n", err)
+			return false, gi.Result.Errors, fmt.Errorf("unable to call getinfo %s\n", err)
 		}
 	case be.PTTrezarcoin:
 		gi, err := be.GetInfoTrezarcoin(&cliConf)
 		if err != nil {
 			if err := spinner.Stop(); err != nil {
 			}
-			return false, fmt.Errorf("Unable to communicate with the " + coind + " server.")
+			return false, "", fmt.Errorf("Unable to communicate with the " + coind + " server.")
 		}
 		if gi.Result.Version == 0 {
-			return false, fmt.Errorf("unable to call getinfo %s\n", err)
+			return false, gi.Result.Errors, fmt.Errorf("unable to call getinfo %s\n", err)
 		}
 	case be.PTVertcoin:
 		gi, err := be.GetNetworkInfoVTC(&cliConf)
 		if err != nil {
 			if err := spinner.Stop(); err != nil {
 			}
-			return false, fmt.Errorf("Unable to communicate with the " + coind + " server.")
+			return false, "", fmt.Errorf("Unable to communicate with the " + coind + " server.")
 		}
 		if gi.Result.Version == 0 {
-			return false, fmt.Errorf("unable to call getinfo %s\n", err)
+			return false, "", fmt.Errorf("unable to call getinfo %s\n", err)
 		}
 	default:
-		return false, fmt.Errorf("unable to determine project type")
+		return false, "", fmt.Errorf("unable to determine project type")
 	}
 	spinner.Stop()
 
-	return true, nil
+	return true, "", nil
 }
 
 func encryptWallet(cliConf *be.ConfStruct, pw string) (be.GenericRespStruct, error) {
