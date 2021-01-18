@@ -263,8 +263,11 @@ func doRequiredFiles() error {
 			filePath = abf + be.CDFPIVXFileWindows
 			fileURL = be.CDownloadURLPIVX + be.CDFPIVXFileWindows
 		} else if runtime.GOARCH == "arm" {
-			filePath = abf + be.CDFPIVXFileRPi
-			fileURL = be.CDownloadURLPIVX + be.CDFPIVXFileRPi
+			filePath = abf + be.CDFPIVXFileArm32
+			fileURL = be.CDownloadURLPIVX + be.CDFPIVXFileArm32
+		} else if runtime.GOARCH == "arm64" {
+			filePath = abf + be.CDFPIVXFileArm64
+			fileURL = be.CDownloadURLPIVX + be.CDFPIVXFileArm64
 		} else {
 			filePath = abf + be.CDFPIVXFileLinux
 			fileURL = be.CDownloadURLPIVX + be.CDFPIVXFileLinux
@@ -473,6 +476,12 @@ func doRequiredFiles() error {
 			defer os.RemoveAll(abf)
 		} else if runtime.GOARCH == "arm" {
 			//err = be.ExtractTarGz(r)
+			err = archiver.Unarchive(filePath, abf)
+			if err != nil {
+				return fmt.Errorf("unable to extractTarGz file: %v - %v", r, err)
+			}
+			defer os.RemoveAll(abf + be.CPIVXExtractedDirArm)
+		} else if runtime.GOARCH == "arm64" {
 			err = archiver.Unarchive(filePath, abf)
 			if err != nil {
 				return fmt.Errorf("unable to extractTarGz file: %v - %v", r, err)
@@ -809,7 +818,7 @@ func doRequiredFiles() error {
 			//srcFileBWCLI = be.CAppFilenameWin
 		case "linux":
 			switch runtime.GOARCH {
-			case "arm":
+			case "arm", "arm64":
 				if err := be.AddToLog(lf, "linux arm detected.", false); err != nil {
 					return fmt.Errorf("unable to add to log file: %v", err)
 				}
