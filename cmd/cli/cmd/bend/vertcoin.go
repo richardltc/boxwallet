@@ -171,6 +171,7 @@ func GetBlockchainInfoVTC(cliConf *ConfStruct) (VTCBlockchainInfoRespStruct, err
 func GetNetworkInfoVTC(cliConf *ConfStruct) (VTCNetworkInfoRespStruct, error) {
 	var respStruct VTCNetworkInfoRespStruct
 
+	//lf := "/home/pi/.boxwallet/boxwallet.log"
 	for i := 1; i < 50; i++ {
 		body := strings.NewReader("{\"jsonrpc\":\"1.0\",\"id\":\"curltext\",\"method\":\"getnetworkinfo\",\"params\":[]}")
 
@@ -190,6 +191,10 @@ func GetNetworkInfoVTC(cliConf *ConfStruct) (VTCNetworkInfoRespStruct, error) {
 		if err != nil {
 			return respStruct, err
 		}
+
+		// todo remove the below after bug fixed.
+		//s := string(bodyResp)
+		//AddToLog(lf, s, false)
 
 		// Check to make sure we are not loading the wallet
 		if bytes.Contains(bodyResp, []byte("Loading")) ||
