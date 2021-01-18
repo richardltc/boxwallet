@@ -288,7 +288,7 @@ func GetBlockchainSyncTxtPIVX(synced bool, bci *PIVXBlockchainInfoRespStruct) st
 	}
 }
 
-func GetInfoPIVX(cliConf *ConfStruct) (PIVXGetInfoRespStruct, error) {
+func GetInfoPIVX(cliConf *ConfStruct) (PIVXGetInfoRespStruct, string, error) {
 	//attempts := 5
 	//waitingStr := "Checking server..."
 
@@ -300,19 +300,20 @@ func GetInfoPIVX(cliConf *ConfStruct) (PIVXGetInfoRespStruct, error) {
 		body := strings.NewReader("{\"jsonrpc\":\"1.0\",\"id\":\"curltext\",\"method\":\"getinfo\",\"params\":[]}")
 		req, err := http.NewRequest("POST", "http://"+cliConf.ServerIP+":"+cliConf.Port, body)
 		if err != nil {
-			return respStruct, err
+			return respStruct, "", err
 		}
 		req.SetBasicAuth(cliConf.RPCuser, cliConf.RPCpassword)
 		req.Header.Set("Content-Type", "text/plain;")
 
+		// todo need to loop this for few seconds as the daemon might still be loading...
 		resp, err := http.DefaultClient.Do(req)
 		if err != nil {
-			return respStruct, err
+			return respStruct, "", err
 		}
 		defer resp.Body.Close()
 		bodyResp, err := ioutil.ReadAll(resp.Body)
 		if err != nil {
-			return respStruct, err
+			return respStruct, "", err
 		}
 
 		// todo remove the below after bug fixed.
@@ -327,17 +328,17 @@ func GetInfoPIVX(cliConf *ConfStruct) (PIVXGetInfoRespStruct, error) {
 			var errStruct GenericRespStruct
 			err = json.Unmarshal(bodyResp, &errStruct)
 			if err != nil {
-				return respStruct, err
+				return respStruct, "", err
 			}
 			//fmt.Println("Waiting for wallet to load...")
 			time.Sleep(5 * time.Second)
 		} else {
 
 			_ = json.Unmarshal(bodyResp, &respStruct)
-			return respStruct, err
+			return respStruct, string(bodyResp), err
 		}
 	}
-	return respStruct, nil
+	return respStruct, "", nil
 }
 
 func GetMNSyncStatusPIVX(cliConf *ConfStruct) (PIVXMNSyncStatusRespStruct, error) {
