@@ -277,8 +277,7 @@ func doRequiredFiles() error {
 			filePath = abf + be.CDFRapidsFileWindows
 			fileURL = be.CDownloadURLRapids + be.CDFRapidsFileWindows
 		} else if runtime.GOARCH == "arm" {
-			filePath = abf + be.CDFRapidsFileRPi
-			fileURL = be.CDownloadURLRapids + be.CDFRapidsFileRPi
+			return fmt.Errorf("ARM is not currently supported by Rapids at present: %v ", err)
 		} else {
 			filePath = abf + be.CDFRapidsFileLinux
 			//filePath2 = abf + be.CDFRapidsFileLinuxDaemon
