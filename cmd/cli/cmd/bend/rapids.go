@@ -16,7 +16,7 @@ const (
 
 	CRapidsCoreVersion string = "3.4.1"
 
-	CDFRapidsFileRPi   string = "rapids-" + CRapidsCoreVersion + "-arm64.tar.gz"
+	//CDFRapidsFileRPi   string = "rapids-" + CRapidsCoreVersion + "-arm64.tar.gz"
 	CDFRapidsFileLinux string = "rapids-" + CRapidsCoreVersion + "-lin64.tgz"
 	//CDFRapidsFileLinuxDaemon string = "rapids-" + CRapidsCoreVersion + "-daemon-ubuntu1804.tar.gz"
 	CDFRapidsFileWindows string = "rapids-" + CRapidsCoreVersion + "-win64.zip"
