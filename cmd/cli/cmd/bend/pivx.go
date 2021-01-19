@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"github.com/dustin/go-humanize"
+	"github.com/theckman/yacspin"
 	"io/ioutil"
 	"net/http"
 	"strconv"
@@ -288,16 +289,64 @@ func GetBlockchainSyncTxtPIVX(synced bool, bci *PIVXBlockchainInfoRespStruct) st
 	}
 }
 
-func GetInfoPIVX(cliConf *ConfStruct) (PIVXGetInfoRespStruct, string, error) {
-	//attempts := 5
-	//waitingStr := "Checking server..."
+//func GetInfoPIVXOld(cliConf *ConfStruct) (PIVXGetInfoRespStruct, string, error) {
+//	//attempts := 5
+//	//waitingStr := "Checking server..."
+//
+//	var respStruct PIVXGetInfoRespStruct
+//
+//	//lf := "/home/richard/.boxwallet/boxwallet.log"
+//	for i := 1; i < 50; i++ {
+//		//fmt.Printf("\r"+waitingStr+" %d/"+strconv.Itoa(attempts), i)
+//		body := strings.NewReader("{\"jsonrpc\":\"1.0\",\"id\":\"curltext\",\"method\":\"getinfo\",\"params\":[]}")
+//		req, err := http.NewRequest("POST", "http://"+cliConf.ServerIP+":"+cliConf.Port, body)
+//		if err != nil {
+//			return respStruct, "", err
+//		}
+//		req.SetBasicAuth(cliConf.RPCuser, cliConf.RPCpassword)
+//		req.Header.Set("Content-Type", "text/plain;")
+//
+//		// todo need to loop this for few seconds as the daemon might still be loading...
+//		resp, err := http.DefaultClient.Do(req)
+//		if err != nil {
+//			return respStruct, "", err
+//		}
+//		defer resp.Body.Close()
+//		bodyResp, err := ioutil.ReadAll(resp.Body)
+//		if err != nil {
+//			return respStruct, "", err
+//		}
+//
+//		// todo remove the below after bug fixed.
+//		//s := string(bodyResp)
+//		//AddToLog(lf, s, false)
+//
+//		// Check to make sure we are not loading the wallet
+//		if bytes.Contains(bodyResp, []byte("Loading")) ||
+//			bytes.Contains(bodyResp, []byte("Rewinding")) ||
+//			bytes.Contains(bodyResp, []byte("Verifying")) {
+//			// The wallet is still loading, so print message, and sleep for 3 seconds and try again..
+//			var errStruct GenericRespStruct
+//			err = json.Unmarshal(bodyResp, &errStruct)
+//			if err != nil {
+//				return respStruct, "", err
+//			}
+//			//fmt.Println("Waiting for wallet to load...")
+//			time.Sleep(5 * time.Second)
+//		} else {
+//
+//			_ = json.Unmarshal(bodyResp, &respStruct)
+//			return respStruct, string(bodyResp), err
+//		}
+//	}
+//	return respStruct, "", nil
+//}
 
+func GetInfoPIVX(cliConf *ConfStruct) (PIVXGetInfoRespStruct, string, error) {
 	var respStruct PIVXGetInfoRespStruct
 
-	//lf := "/home/richard/.boxwallet/boxwallet.log"
-	for i := 1; i < 50; i++ {
-		//fmt.Printf("\r"+waitingStr+" %d/"+strconv.Itoa(attempts), i)
-		body := strings.NewReader("{\"jsonrpc\":\"1.0\",\"id\":\"curltext\",\"method\":\"getinfo\",\"params\":[]}")
+	for i := 1; i < 300; i++ {
+		body := strings.NewReader("{\"jsonrpc\":\"1.0\",\"id\":\"boxwallet\",\"method\":\"" + cCommandGetInfo + "\",\"params\":[]}")
 		req, err := http.NewRequest("POST", "http://"+cliConf.ServerIP+":"+cliConf.Port, body)
 		if err != nil {
 			return respStruct, "", err
@@ -305,37 +354,94 @@ func GetInfoPIVX(cliConf *ConfStruct) (PIVXGetInfoRespStruct, string, error) {
 		req.SetBasicAuth(cliConf.RPCuser, cliConf.RPCpassword)
 		req.Header.Set("Content-Type", "text/plain;")
 
-		// todo need to loop this for few seconds as the daemon might still be loading...
-		resp, err := http.DefaultClient.Do(req)
-		if err != nil {
-			return respStruct, "", err
-		}
-		defer resp.Body.Close()
-		bodyResp, err := ioutil.ReadAll(resp.Body)
-		if err != nil {
-			return respStruct, "", err
-		}
-
-		// todo remove the below after bug fixed.
-		//s := string(bodyResp)
-		//AddToLog(lf, s, false)
-
-		// Check to make sure we are not loading the wallet
-		if bytes.Contains(bodyResp, []byte("Loading")) ||
-			bytes.Contains(bodyResp, []byte("Rewinding")) ||
-			bytes.Contains(bodyResp, []byte("Verifying")) {
-			// The wallet is still loading, so print message, and sleep for 3 seconds and try again..
-			var errStruct GenericRespStruct
-			err = json.Unmarshal(bodyResp, &errStruct)
+		for j := 1; j < 50; j++ {
+			resp, err := http.DefaultClient.Do(req)
+			if err != nil {
+				time.Sleep(1 * time.Second)
+				continue
+			}
+			defer resp.Body.Close()
+			bodyResp, err := ioutil.ReadAll(resp.Body)
 			if err != nil {
 				return respStruct, "", err
 			}
-			//fmt.Println("Waiting for wallet to load...")
-			time.Sleep(5 * time.Second)
-		} else {
 
-			_ = json.Unmarshal(bodyResp, &respStruct)
-			return respStruct, string(bodyResp), err
+			// Check to make sure we are not loading the wallet
+			if bytes.Contains(bodyResp, []byte("Loading")) ||
+				bytes.Contains(bodyResp, []byte("Rescanning")) ||
+				bytes.Contains(bodyResp, []byte("Rewinding")) ||
+				bytes.Contains(bodyResp, []byte("Verifying")) {
+				// The wallet is still loading, so print message, and sleep for 3 seconds and try again..
+				var errStruct GenericRespStruct
+				err = json.Unmarshal(bodyResp, &errStruct)
+				if err != nil {
+					return respStruct, "", err
+				}
+				time.Sleep(1 * time.Second)
+			} else {
+
+				_ = json.Unmarshal(bodyResp, &respStruct)
+				return respStruct, string(bodyResp), err
+			}
+		}
+	}
+	return respStruct, "", nil
+}
+
+func GetInfoPIVXUI(cliConf *ConfStruct, spin *yacspin.Spinner) (PIVXGetInfoRespStruct, string, error) {
+	var respStruct PIVXGetInfoRespStruct
+
+	for i := 1; i < 600; i++ {
+		body := strings.NewReader("{\"jsonrpc\":\"1.0\",\"id\":\"boxwallet\",\"method\":\"" + cCommandGetInfo + "\",\"params\":[]}")
+		req, err := http.NewRequest("POST", "http://"+cliConf.ServerIP+":"+cliConf.Port, body)
+		if err != nil {
+			return respStruct, "", err
+		}
+		req.SetBasicAuth(cliConf.RPCuser, cliConf.RPCpassword)
+		req.Header.Set("Content-Type", "text/plain;")
+
+		for j := 1; j < 60; j++ {
+			resp, err := http.DefaultClient.Do(req)
+			if err != nil {
+				spin.Message(" waiting for your " + CCoinNamePIVX + " wallet to respond, this could take several minutes...")
+				time.Sleep(1 * time.Second)
+				continue
+			}
+			defer resp.Body.Close()
+			bodyResp, err := ioutil.ReadAll(resp.Body)
+			if err != nil {
+				return respStruct, "", err
+			}
+
+			// Check to make sure we are not loading the wallet
+			if bytes.Contains(bodyResp, []byte("Loading")) ||
+				bytes.Contains(bodyResp, []byte("Rescanning")) ||
+				bytes.Contains(bodyResp, []byte("Rewinding")) ||
+				bytes.Contains(bodyResp, []byte("RPC in warm-up: Calculating money supply")) ||
+				bytes.Contains(bodyResp, []byte("Verifying")) {
+				// The wallet is still loading, so print message, and sleep for 1 second and try again..
+				var errStruct GenericRespStruct
+				err = json.Unmarshal(bodyResp, &errStruct)
+				if err != nil {
+					return respStruct, "", err
+				}
+
+				if bytes.Contains(bodyResp, []byte("Loading")) {
+					spin.Message(" Your " + CCoinNamePIVX + " wallet is currently Loading, this could take several minutes...")
+				} else if bytes.Contains(bodyResp, []byte("Rescanning")) {
+					spin.Message(" Your " + CCoinNamePIVX + " wallet is currently Rescanning, this could take several minutes...")
+				} else if bytes.Contains(bodyResp, []byte("Rewinding")) {
+					spin.Message(" Your " + CCoinNamePIVX + " wallet is currently Rewinding, this could take several minutes...")
+				} else if bytes.Contains(bodyResp, []byte("Verifying")) {
+					spin.Message(" Your " + CCoinNamePIVX + " wallet is currently Verifying, this could take several minutes...")
+				} else if bytes.Contains(bodyResp, []byte("Calculating money supply")) {
+					spin.Message(" Your " + CCoinNamePIVX + " wallet is currently Calculating money supply, this could take several minutes...")
+				}
+				time.Sleep(1 * time.Second)
+			} else {
+				_ = json.Unmarshal(bodyResp, &respStruct)
+				return respStruct, string(bodyResp), err
+			}
 		}
 	}
 	return respStruct, "", nil
