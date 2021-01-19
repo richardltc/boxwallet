@@ -6,15 +6,12 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"richardmace.co.uk/boxwallet/pkg/models/op"
 	"time"
-
-	//_ "github.com/go-sql-driver/mysql"
-	//_ "github.com/lib/pq"
 
 	"github.com/golangcollege/sessions"
 	gwc "github.com/richardltc/gwcommon"
-	"richardmace.co.uk/godivi/cmd/web/bend"
-	"richardmace.co.uk/godivi/pkg/models/op"
+	"richardmace.co.uk/boxwallet/cmd/web/bend"
 )
 
 type application struct {
