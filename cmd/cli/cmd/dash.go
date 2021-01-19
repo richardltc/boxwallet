@@ -471,9 +471,23 @@ var dashCmd = &cobra.Command{
 				}
 				fmt.Println(r.Result)
 				fmt.Println("Restarting wallet after encryption...")
-				time.Sleep(3 * 1000)
 				if err := be.StartCoinDaemon(false); err != nil {
 					log.Fatalf("failed to run "+coind+": %v", err)
+				}
+				// todo I think we need a wallet is ready code here again...
+				wRunning, s, err := confirmWalletReady()
+				if err != nil {
+					log.Fatalf("Unable to determine if wallet is ready: %v,%v", s, err)
+				}
+
+				coind, err := be.GetCoinDaemonFilename(be.APPTCLI)
+				if err != nil {
+					log.Fatalf("Unable to GetCoinDaemonFilename - %v", err)
+				}
+				if !wRunning {
+					fmt.Println("")
+					log.Fatal("Unable to communicate with the " + coind + " server. Please make sure the " + coind + " server is running, by running:\n\n" +
+						"./" + sAppFileCLIName + " start\n\n")
 				}
 			}
 		}
