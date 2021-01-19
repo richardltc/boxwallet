@@ -11,9 +11,9 @@ import (
 	be "richardmace.co.uk/boxwallet/cmd/cli/cmd/bend"
 	"runtime"
 
-	"github.com/mitchellh/go-ps"
+	//"github.com/mitchellh/go-ps"
 	gwc "github.com/richardltc/gwcommon"
-	m "richardmace.co.uk/godivi/pkg/models"
+	m "richardmace.co.uk/boxwallet/pkg/models"
 )
 
 const (
