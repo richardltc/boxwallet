@@ -1416,14 +1416,14 @@ func confirmWalletReady() (bool, string, error) {
 			return false, gi.Result.Errors, fmt.Errorf("unable to call getinfo %s\n", err)
 		}
 	case be.PTDivi:
-		gi, err := be.GetInfoDivi(&cliConf)
+		gi, s, err := be.GetInfoDIVIUI(&cliConf, spinner)
 		if err != nil {
 			if err := spinner.Stop(); err != nil {
 			}
-			return false, "", fmt.Errorf("Unable to communicate with the " + coind + " server.")
+			return false, s, fmt.Errorf("Unable to communicate with the " + coind + " server.")
 		}
 		if gi.Result.Version == "" {
-			return false, gi.Result.Errors, fmt.Errorf("unable to call getinfo %s\n", err)
+			return false, s, fmt.Errorf("unable to call getinfo %s\n", err)
 		}
 	case be.PTFeathercoin:
 		gi, err := be.GetNetworkInfoFeathercoin(&cliConf)
@@ -1456,7 +1456,7 @@ func confirmWalletReady() (bool, string, error) {
 			return false, gi.Result.Errors, fmt.Errorf("unable to call getinfo %s\n", err)
 		}
 	case be.PTPIVX:
-		gi, s, err := be.GetInfoPIVX(&cliConf)
+		gi, s, err := be.GetInfoPIVXUI(&cliConf, spinner)
 		if err != nil {
 			if err := spinner.Stop(); err != nil {
 			}
