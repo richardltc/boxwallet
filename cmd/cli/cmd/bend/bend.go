@@ -24,7 +24,7 @@ import (
 
 const (
 	CAppName        string = "BoxWallet"
-	CBWAppVersion   string = "0.35.9"
+	CBWAppVersion   string = "0.35.10"
 	CAppFilename    string = "boxwallet"
 	CAppFilenameWin string = "boxwallet.exe"
 	CAppLogfile     string = "boxwallet.log"
@@ -372,7 +372,7 @@ func AddAddNodesIfRequired() error {
 	return nil
 }
 
-// ConvertBCVerification - Convert Blockchain verification progress
+// ConvertBCVerification - Convert Blockchain verification progress...
 func ConvertBCVerification(verificationPG float64) string {
 	var sProg string
 	var fProg float64
