@@ -58,18 +58,16 @@ var stopCmd = &cobra.Command{
 			if err != nil {
 				log.Fatal("Unable to StopDaemon " + err.Error())
 			}
-			for i := 0; i < 50; i++ {
+			for i := 0; i < 600; i++ {
 				bStillRunning, _, _ := be.IsCoinDaemonRunning()
 				if bStillRunning {
-					fmt.Printf("\r" + "Waiting for " + sCoinDaemonName + " to stop... " + strconv.Itoa(i+1) + "/50")
-					//fmt.Println("Waiting for Daemon to stop... " + strconv.Itoa(i + 1) + "/50")
+					fmt.Printf("\r" + "Waiting for " + sCoinDaemonName + " to stop. This could take a long time on slower devices... " + strconv.Itoa(i+1) + "/600")
 					time.Sleep(1 * time.Second)
 				} else {
 					fmt.Println("\n" + sCoinDaemonName + " server stopped.")
 					break
 				}
 			}
-			//fmt.Println(resp.Result)
 		}
 
 		// sAppCLIName, err := gwc.GetAppCLIName() // e.g. GoDivi CLI
