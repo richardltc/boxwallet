@@ -17,12 +17,12 @@ builds:
       - amd64
       - arm64
       - arm
-      #- 386
+      - 386
     ignore:
-      #- goos: darwin
-      #  goarch: 386
-      #- goos: windows
-      #  goarch: 386
+      - goos: darwin
+        goarch: 386
+      - goos: windows
+        goarch: 386
       #- goos: linux
       #  goarch: 386
 
@@ -38,7 +38,7 @@ archives:
       darwin: macOS
       linux: Linux
       windows: Windows
-      #386: 32bit
+      386: 32bit
       amd64: 64bit
       arm: arm32bit
     files:
@@ -53,3 +53,8 @@ changelog:
     exclude:
       - '^docs:'
       - '^test:'
+#snapcraft:
+#  summary: BoxWallet
+#  publish: false # <- this line
+#  description: |
+#    BoxWallet multi-coin CLI tool
