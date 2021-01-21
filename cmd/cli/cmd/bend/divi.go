@@ -384,7 +384,7 @@ func GetInfoDIVIUI(cliConf *ConfStruct, spin *yacspin.Spinner) (diviGetInfoRespS
 		for j := 1; j < 60; j++ {
 			resp, err := http.DefaultClient.Do(req)
 			if err != nil {
-				spin.Message(" waiting for your " + CCoinNamePIVX + " wallet to respond, this could take several minutes...")
+				spin.Message(" waiting for your " + CCoinNameDivi + " wallet to respond, this could take several minutes (ctrl-c to cancel)...")
 				time.Sleep(1 * time.Second)
 				continue
 			}
