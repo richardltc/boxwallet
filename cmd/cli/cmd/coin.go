@@ -311,8 +311,8 @@ func doRequiredFiles() error {
 			filePath = abf + be.CDFReddCoinRPi
 			fileURL = be.CDownloadURLReddCoinArm
 		} else {
-			filePath = abf + be.CDFReddCoinLinux
-			fileURL = be.CDownloadURLReddCoinGen + be.CDFReddCoinLinux
+			filePath = abf + be.CDFReddCoinLinux64
+			fileURL = be.CDownloadURLReddCoinGen + be.CDFReddCoinLinux64
 		}
 	case be.PTScala:
 		if runtime.GOOS == "windows" {
