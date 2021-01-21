@@ -44,6 +44,7 @@ var coinCmd = &cobra.Command{
 			Message: "Please choose your preferred coin:",
 			Options: []string{be.CCoinNameDivi,
 				be.CCoinNameDeVault,
+				//be.CCoinNameDigiByte,
 				be.CCoinNameFeathercoin,
 				be.CCoinNameGroestlcoin,
 				be.CCoinNamePhore,
@@ -63,6 +64,10 @@ var coinCmd = &cobra.Command{
 			be.AddToLog(lf, be.CCoinNameDeVault+" selected", false)
 			cliConf.ProjectType = be.PTDeVault
 			cliConf.Port = be.CDeVaultRPCPort
+		case be.CCoinNameDigiByte:
+			be.AddToLog(lf, be.CCoinNameDigiByte+" selected", false)
+			cliConf.ProjectType = be.PTDigiByte
+			cliConf.Port = be.CDigiByteRPCPort
 		case be.CCoinNameDivi:
 			be.AddToLog(lf, be.CCoinNameDivi+" selected", false)
 			cliConf.ProjectType = be.PTDivi
@@ -215,6 +220,19 @@ func doRequiredFiles() error {
 			filePath = abf + be.CDFDeVaultLinux
 			fileURL = be.CDownloadURLDeVault + be.CDFDeVaultLinux
 		}
+	case be.PTDigiByte:
+		if runtime.GOOS == "windows" {
+			filePath = abf + be.CDFDigiByteWindows
+			fileURL = be.CDownloadURLDigiByte + be.CDFDigiByteWindows
+		} else if runtime.GOARCH == "arm" {
+			return fmt.Errorf("ARM32 is not currently supported by DigiByte: %v ", err)
+		} else if runtime.GOARCH == "arm64" {
+			filePath = abf + be.CDFDigiByteArm64
+			fileURL = be.CDownloadURLDigiByte + be.CDFDigiByteArm64
+		} else {
+			filePath = abf + be.CDFDigiByteLinux
+			fileURL = be.CDownloadURLDigiByte + be.CDFDigiByteLinux
+		}
 	case be.PTDivi:
 		if runtime.GOOS == "windows" {
 			filePath = abf + be.CDFDiviWindows
@@ -226,6 +244,7 @@ func doRequiredFiles() error {
 			filePath = abf + be.CDFDiviLinux
 			fileURL = be.CDownloadURLDivi + be.CDFDiviLinux
 		}
+
 	case be.PTFeathercoin:
 		if runtime.GOOS == "windows" {
 			filePath = abf + be.CDFFeathercoinWindows
