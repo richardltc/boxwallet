@@ -17,7 +17,8 @@ const (
 	CReddCoinCoreVersion string = "3.10.3"
 
 	CDFReddCoinRPi     string = "reddcoin-" + CReddCoinCoreVersion + "-armhf.zip"
-	CDFReddCoinLinux   string = "reddcoin-" + CReddCoinCoreVersion + "-linux64.tar.gz"
+	CDFReddCoinLinux32 string = "reddcoin-" + CReddCoinCoreVersion + "-linux32.tar.gz"
+	CDFReddCoinLinux64 string = "reddcoin-" + CReddCoinCoreVersion + "-linux64.tar.gz"
 	CDFReddCoinWindows string = "reddcoin-" + CReddCoinCoreVersion + "-win64.zip"
 
 	CReddCoinExtractedDirLinux = "reddcoin-" + CReddCoinCoreVersion + "/"
@@ -82,7 +83,7 @@ type RDDGetInfoRespStruct struct {
 	ID    string      `json:"id"`
 }
 
-// Might need a live update
+// Might need a live update.
 type RDDListReceivedByAddressRespStruct struct {
 	Result []struct {
 		Address       string        `json:"address"`
