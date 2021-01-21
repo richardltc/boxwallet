@@ -103,7 +103,7 @@ const (
 	APPTCLI APPType = iota
 	// APPTCLICompiled - e.g. cli
 	APPTCLICompiled
-	// APPTInstaller e.g. godivi-installer
+	// APPTInstaller e.g. boxwallet-installer
 	//APPTInstaller
 	// APPTUpdater e.g. update-godivi
 	APPTUpdater
@@ -130,6 +130,7 @@ const (
 	PTDeVault
 	PTReddCoin
 	PTRapids
+	PTDigiByte
 )
 
 // OSType - either ostArm, ostLinux or ostWindows
