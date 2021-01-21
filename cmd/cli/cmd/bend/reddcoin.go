@@ -12,7 +12,7 @@ import (
 )
 
 const (
-	CCoinNameReddCoin string = "reddcoin"
+	CCoinNameReddCoin string = "ReddCoin"
 
 	CReddCoinCoreVersion string = "3.10.3"
 
