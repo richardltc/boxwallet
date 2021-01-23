@@ -929,6 +929,12 @@ func IsCoinDaemonRunning() (bool, int, error) {
 		return false, pid, err
 	}
 	switch bwconf.ProjectType {
+	case PTDigiByte:
+		if runtime.GOOS == "windows" {
+			pid, _, err = findProcess(CDigiByteDFileWin)
+		} else {
+			pid, _, err = findProcess(CDigiByteDFile)
+		}
 	case PTDivi:
 		if runtime.GOOS == "windows" {
 			pid, _, err = findProcess(CDiviDFileWin)
