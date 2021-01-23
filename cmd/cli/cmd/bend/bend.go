@@ -3463,6 +3463,46 @@ func StartCoinDaemon(displayOutput bool) error {
 			}
 			fmt.Println("DeVault server starting")
 		}
+	case PTDigiByte:
+		if runtime.GOOS == "windows" {
+			fp := abf + CDigiByteDFileWin
+			cmd := exec.Command("cmd.exe", "/C", "start", "/b", fp)
+			if err := cmd.Run(); err != nil {
+				return err
+			}
+		} else {
+			if displayOutput {
+				fmt.Println("Attempting to run the digibyted daemon...")
+			}
+
+			cmdRun := exec.Command(abf + CDigiByteDFile)
+			stdout, err := cmdRun.StdoutPipe()
+			if err != nil {
+				return err
+			}
+			err = cmdRun.Start()
+			if err != nil {
+				return err
+			}
+
+			buf := bufio.NewReader(stdout)
+			num := 1
+			for {
+				line, _, _ := buf.ReadLine()
+				if num > 3 {
+					os.Exit(0)
+				}
+				num++
+				if string(line) == "DigiByte server starting" {
+					if displayOutput {
+						fmt.Println("DigiByte server starting")
+					}
+					return nil
+				} else {
+					return errors.New("unable to start DigiByte server: " + string(line))
+				}
+			}
+		}
 	case PTDivi:
 		if runtime.GOOS == "windows" {
 			//_ = exec.Command(GetAppsBinFolder() + cDiviDFileWin)
