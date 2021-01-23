@@ -44,7 +44,7 @@ var coinCmd = &cobra.Command{
 			Message: "Please choose your preferred coin:",
 			Options: []string{be.CCoinNameDivi,
 				be.CCoinNameDeVault,
-				//be.CCoinNameDigiByte,
+				be.CCoinNameDigiByte,
 				be.CCoinNameFeathercoin,
 				be.CCoinNameGroestlcoin,
 				be.CCoinNamePhore,
@@ -165,6 +165,8 @@ var coinCmd = &cobra.Command{
 		switch cliConf.ProjectType {
 		case be.PTDeVault:
 			fmt.Println("\nDVT: devault:qp7w4pnm774c0uwch8ty6tj7sw86hze9ps4sqrwcue")
+		case be.PTDigiByte:
+			fmt.Println("\nDGB: dgb1qdw7qhh5crt3rhfau909pmc9r0esnnzqf48un6g")
 		case be.PTDivi:
 			fmt.Println("\nDIVI: DGvhjUXznuDyALk9zX4Y3ko4QQTmRhF7jZ")
 		case be.PTFeathercoin:
