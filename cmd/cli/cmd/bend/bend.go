@@ -611,6 +611,8 @@ func GetCoinHomeFolder(at APPType) (string, error) {
 		switch pt {
 		case PTDeVault:
 			s = AddTrailingSlash(hd) + "appdata\\roaming\\" + AddTrailingSlash(CDeVaultHomeDirWin)
+		case PTDigiByte:
+			s = AddTrailingSlash(hd) + "appdata\\roaming\\" + AddTrailingSlash(CDigiByteHomeDirWin)
 		case PTDivi:
 			s = AddTrailingSlash(hd) + "appdata\\roaming\\" + AddTrailingSlash(CDiviHomeDirWin)
 		case PTFeathercoin:
@@ -639,6 +641,8 @@ func GetCoinHomeFolder(at APPType) (string, error) {
 		switch pt {
 		case PTDeVault:
 			s = AddTrailingSlash(hd) + AddTrailingSlash(CDeVaultHomeDir)
+		case PTDigiByte:
+			s = AddTrailingSlash(hd) + AddTrailingSlash(CDigiByteHomeDir)
 		case PTDivi:
 			s = AddTrailingSlash(hd) + AddTrailingSlash(CDiviHomeDir)
 		case PTFeathercoin:
