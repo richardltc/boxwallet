@@ -507,6 +507,8 @@ func GetCoinDaemonFilename(at APPType) (string, error) {
 	switch pt {
 	case PTDeVault:
 		return CDeVaultDFile, nil
+	case PTDigiByte:
+		return CDigiByteDFile, nil
 	case PTDivi:
 		return CDiviDFile, nil
 	case PTFeathercoin:
