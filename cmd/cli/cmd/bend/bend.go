@@ -555,6 +555,8 @@ func GetCoinName(at APPType) (string, error) {
 	switch pt {
 	case PTDeVault:
 		return CCoinNameDeVault, nil
+	case PTDigiByte:
+		return CCoinNameDigiByte, nil
 	case PTDivi:
 		return CCoinNameDivi, nil
 	case PTFeathercoin:
