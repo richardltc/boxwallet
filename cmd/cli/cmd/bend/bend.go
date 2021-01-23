@@ -3914,6 +3914,26 @@ func StopCoinDaemon(displayOutput bool) error {
 				time.Sleep(3 * time.Second)
 			}
 		}
+	case PTDigiByte:
+		if runtime.GOOS == "windows" {
+			// TODO Complete for Windows
+		} else {
+			for i := 0; i < 50; i++ {
+				cRun := exec.Command(abf+CDigiByteCliFile, "stop")
+				_ = cRun.Run()
+
+				sr, _, _ := IsCoinDaemonRunning() //DigiByteDRunning()
+				if !sr {
+					// Lets wait a little longer before returning
+					time.Sleep(3 * time.Second)
+					return nil
+				}
+				if displayOutput {
+					fmt.Printf("\rWaiting for DigiByte server to stop %d/"+strconv.Itoa(50), i+1)
+				}
+				time.Sleep(3 * time.Second)
+			}
+		}
 	case PTFeathercoin:
 		if runtime.GOOS == "windows" {
 			// TODO Complete for Windows
