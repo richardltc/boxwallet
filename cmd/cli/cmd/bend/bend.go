@@ -2945,6 +2945,28 @@ func AllProjectBinaryFilesExists() (bool, error) {
 				return false, nil
 			}
 		}
+	case PTDigiByte:
+		if runtime.GOOS == "windows" {
+			if !FileExists(abf + CDigiByteCliFileWin) {
+				return false, nil
+			}
+			if !FileExists(abf + CDigiByteDFileWin) {
+				return false, nil
+			}
+			if !FileExists(abf + CDigiByteTxFileWin) {
+				return false, nil
+			}
+		} else {
+			if !FileExists(abf + CDigiByteCliFile) {
+				return false, nil
+			}
+			if !FileExists(abf + CDigiByteDFile) {
+				return false, nil
+			}
+			if !FileExists(abf + CDigiByteTxFile) {
+				return false, nil
+			}
+		}
 	case PTDivi:
 		if runtime.GOOS == "windows" {
 			if !FileExists(abf + CDiviCliFileWin) {
