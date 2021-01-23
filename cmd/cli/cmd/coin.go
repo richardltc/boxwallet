@@ -304,16 +304,35 @@ func doRequiredFiles() error {
 			//fileURL2 = be.CDownloadURLRapids + be.CDFRapidsFileLinuxDaemon
 		}
 	case be.PTReddCoin:
-		if runtime.GOOS == "windows" {
+		switch runtime.GOOS {
+		case "windows":
 			filePath = abf + be.CDFReddCoinWindows
 			fileURL = be.CDownloadURLReddCoinGen + be.CDFReddCoinWindows
-		} else if runtime.GOARCH == "arm" {
-			filePath = abf + be.CDFReddCoinRPi
-			fileURL = be.CDownloadURLReddCoinArm
-		} else {
-			filePath = abf + be.CDFReddCoinLinux64
-			fileURL = be.CDownloadURLReddCoinGen + be.CDFReddCoinLinux64
+		case "linux":
+			switch runtime.GOARCH {
+			case "arm":
+				filePath = abf + be.CDFReddCoinRPi
+				fileURL = be.CDownloadURLReddCoinArm
+			case "arm64":
+				return fmt.Errorf("ARM64 is not currently supported by ReddCoin: %v ", err)
+			case "386":
+				filePath = abf + be.CDFReddCoinLinux32
+				fileURL = be.CDownloadURLReddCoinGen + be.CDFReddCoinLinux32
+			case "amd64":
+				filePath = abf + be.CDFReddCoinLinux64
+				fileURL = be.CDownloadURLReddCoinGen + be.CDFReddCoinLinux64
+			}
 		}
+		//if runtime.GOOS == "windows" {
+		//	filePath = abf + be.CDFReddCoinWindows
+		//	fileURL = be.CDownloadURLReddCoinGen + be.CDFReddCoinWindows
+		//} else if runtime.GOARCH == "arm" {
+		//	filePath = abf + be.CDFReddCoinRPi
+		//	fileURL = be.CDownloadURLReddCoinArm
+		//} else {
+		//	filePath = abf + be.CDFReddCoinLinux64
+		//	fileURL = be.CDownloadURLReddCoinGen + be.CDFReddCoinLinux64
+		//}
 	case be.PTScala:
 		if runtime.GOOS == "windows" {
 			filePath = abf + be.CDFScalaWindows
@@ -536,27 +555,57 @@ func doRequiredFiles() error {
 			defer os.RemoveAll(abf + be.CRapidsExtractedDirLinux)
 		}
 	case be.PTReddCoin:
-		if runtime.GOOS == "windows" {
-			//_, err = be.UnZip(filePath, "tmp")
+		switch runtime.GOOS {
+		case "windows":
 			_, err = be.UnZip(filePath, abf)
 			if err != nil {
 				return fmt.Errorf("unable to unzip file: %v - %v", filePath, err)
 			}
 			defer os.RemoveAll(abf)
-		} else if runtime.GOARCH == "arm" {
-			//err = be.ExtractTarGz(r)
-			err = archiver.Unarchive(filePath, abf)
-			if err != nil {
-				return fmt.Errorf("unable to unarchive file: %v - %v", r, err)
+		case "linux":
+			switch runtime.GOARCH {
+			case "arm":
+				err = archiver.Unarchive(filePath, abf)
+				if err != nil {
+					return fmt.Errorf("unable to unarchive file: %v - %v", r, err)
+				}
+				defer os.RemoveAll(abf + be.CReddCoinExtractedDirLinux)
+			case "386":
+				err = archiver.Unarchive(filePath, abf)
+				if err != nil {
+					return fmt.Errorf("unable to extractTarGz file: %v - %v", r, err)
+				}
+				defer os.RemoveAll(abf + be.CReddCoinExtractedDirLinux)
+			case "amd64":
+				err = archiver.Unarchive(filePath, abf)
+				if err != nil {
+					return fmt.Errorf("unable to extractTarGz file: %v - %v", r, err)
+				}
+				defer os.RemoveAll(abf + be.CReddCoinExtractedDirLinux)
 			}
-			defer os.RemoveAll(abf + be.CReddCoinExtractedDirLinux)
-		} else {
-			err = archiver.Unarchive(filePath, abf)
-			if err != nil {
-				return fmt.Errorf("unable to extractTarGz file: %v - %v", r, err)
-			}
-			defer os.RemoveAll(abf + be.CReddCoinExtractedDirLinux)
 		}
+
+		//if runtime.GOOS == "windows" {
+		//	//_, err = be.UnZip(filePath, "tmp")
+		//	_, err = be.UnZip(filePath, abf)
+		//	if err != nil {
+		//		return fmt.Errorf("unable to unzip file: %v - %v", filePath, err)
+		//	}
+		//	defer os.RemoveAll(abf)
+		//} else if runtime.GOARCH == "arm" {
+		//	//err = be.ExtractTarGz(r)
+		//	err = archiver.Unarchive(filePath, abf)
+		//	if err != nil {
+		//		return fmt.Errorf("unable to unarchive file: %v - %v", r, err)
+		//	}
+		//	defer os.RemoveAll(abf + be.CReddCoinExtractedDirLinux)
+		//} else {
+		//	err = archiver.Unarchive(filePath, abf)
+		//	if err != nil {
+		//		return fmt.Errorf("unable to extractTarGz file: %v - %v", r, err)
+		//	}
+		//	defer os.RemoveAll(abf + be.CReddCoinExtractedDirLinux)
+		//}
 	case be.PTScala:
 		if runtime.GOOS == "windows" {
 			_, err = be.UnZip(filePath, abf)
@@ -922,6 +971,15 @@ func doRequiredFiles() error {
 				srcFileD = be.CReddCoinDFile
 				srcFileTX = be.CReddCoinTxFile
 			//srcFileBWCLI = be.CAppFilename
+			case "386":
+				if err := be.AddToLog(lf, "linux 386 detected.", false); err != nil {
+					return fmt.Errorf("unable to add to log file: %v", err)
+				}
+				srcPath = abf + be.CReddCoinExtractedDirLinux + "bin/"
+				srcFileCLI = be.CReddCoinCliFile
+				srcFileD = be.CReddCoinDFile
+				srcFileTX = be.CReddCoinTxFile
+			//srcFileBWCLI = be.CAppFilename
 			case "amd64":
 				if err := be.AddToLog(lf, "linux amd64 detected.", false); err != nil {
 					return fmt.Errorf("unable to add to log file: %v", err)
@@ -1048,10 +1106,18 @@ func doRequiredFiles() error {
 		return fmt.Errorf("error: - %v", err)
 	}
 
-	be.AddToLog(lf, "srcPath="+srcPath, false)
-	be.AddToLog(lf, "srcFileCLI="+srcFileCLI, false)
-	be.AddToLog(lf, "srcFileD="+srcFileD, false)
-	be.AddToLog(lf, "srcFileTX="+srcFileTX, false)
+	if err := be.AddToLog(lf, "srcPath="+srcPath, false); err != nil {
+		return fmt.Errorf("unable to add to log file: %v", err)
+	}
+	if err := be.AddToLog(lf, "srcFileCLI="+srcFileCLI, false); err != nil {
+		return fmt.Errorf("unable to add to log file: %v", err)
+	}
+	if err := be.AddToLog(lf, "srcFileD="+srcFileD, false); err != nil {
+		return fmt.Errorf("unable to add to log file: %v", err)
+	}
+	if err := be.AddToLog(lf, "srcFileTX="+srcFileTX, false); err != nil {
+		return fmt.Errorf("unable to add to log file: %v", err)
+	}
 
 	// If it's PIVX, see if we need to copy the sapling files
 	if bwconf.ProjectType == be.PTPIVX {
