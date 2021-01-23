@@ -223,17 +223,24 @@ func doRequiredFiles() error {
 			fileURL = be.CDownloadURLDeVault + be.CDFDeVaultLinux
 		}
 	case be.PTDigiByte:
-		if runtime.GOOS == "windows" {
+		switch runtime.GOOS {
+		case "windows":
 			filePath = abf + be.CDFDigiByteWindows
 			fileURL = be.CDownloadURLDigiByte + be.CDFDigiByteWindows
-		} else if runtime.GOARCH == "arm" {
-			return fmt.Errorf("ARM32 is not currently supported by DigiByte: %v ", err)
-		} else if runtime.GOARCH == "arm64" {
-			filePath = abf + be.CDFDigiByteArm64
-			fileURL = be.CDownloadURLDigiByte + be.CDFDigiByteArm64
-		} else {
-			filePath = abf + be.CDFDigiByteLinux
-			fileURL = be.CDownloadURLDigiByte + be.CDFDigiByteLinux
+		case "linux":
+			switch runtime.GOARCH {
+			case "arm":
+				return fmt.Errorf("ARM32 is not currently supported by DigiByte: %v ", err)
+			case "arm64":
+				filePath = abf + be.CDFDigiByteArm64
+				fileURL = be.CDownloadURLDigiByte + be.CDFDigiByteArm64
+			case "386":
+				filePath = abf + be.CDFDigiByteLinux
+				fileURL = be.CDownloadURLDigiByte + be.CDFDigiByteLinux
+			case "amd64":
+				filePath = abf + be.CDFDigiByteLinux
+				fileURL = be.CDownloadURLDigiByte + be.CDFDigiByteLinux
+			}
 		}
 	case be.PTDivi:
 		if runtime.GOOS == "windows" {
@@ -246,7 +253,6 @@ func doRequiredFiles() error {
 			filePath = abf + be.CDFDiviLinux
 			fileURL = be.CDownloadURLDivi + be.CDFDiviLinux
 		}
-
 	case be.PTFeathercoin:
 		if runtime.GOOS == "windows" {
 			filePath = abf + be.CDFFeathercoinWindows
@@ -418,6 +424,36 @@ func doRequiredFiles() error {
 			}
 			defer os.RemoveAll(abf + be.CDeVaultExtractedDirLinux)
 		}
+	case be.PTDigiByte:
+		switch runtime.GOOS {
+		case "windows":
+			_, err = be.UnZip(filePath, abf)
+			if err != nil {
+				return fmt.Errorf("unable to unzip file: %v - %v", filePath, err)
+			}
+			defer os.RemoveAll(abf + be.CDigiByteExtractedDirWindows)
+		case "linux":
+			switch runtime.GOARCH {
+			case "arm":
+				err = archiver.Unarchive(filePath, abf)
+				if err != nil {
+					return fmt.Errorf("unable to unarchive file: %v - %v", r, err)
+				}
+				defer os.RemoveAll(abf + be.CDigiByteExtractedDirLinux)
+			case "386":
+				err = archiver.Unarchive(filePath, abf)
+				if err != nil {
+					return fmt.Errorf("unable to extractTarGz file: %v - %v", r, err)
+				}
+				defer os.RemoveAll(abf + be.CDigiByteExtractedDirLinux)
+			case "amd64":
+				err = archiver.Unarchive(filePath, abf)
+				if err != nil {
+					return fmt.Errorf("unable to extractTarGz file: %v - %v", r, err)
+				}
+				defer os.RemoveAll(abf + be.CDigiByteExtractedDirLinux)
+			}
+		}
 	case be.PTDivi:
 		if runtime.GOOS == "windows" {
 			_, err = be.UnZip(filePath, abf)
@@ -584,6 +620,8 @@ func doRequiredFiles() error {
 					return fmt.Errorf("unable to extractTarGz file: %v - %v", r, err)
 				}
 				defer os.RemoveAll(abf + be.CReddCoinExtractedDirLinux)
+			default:
+				err = errors.New("unable to determine runtime.GOARCH " + runtime.GOARCH)
 			}
 		}
 
@@ -716,6 +754,52 @@ func doRequiredFiles() error {
 				srcFileCLI = be.CDeVaultCliFile
 				srcFileD = be.CDeVaultDFile
 				srcFileTX = be.CDeVaultTxFile
+			//srcFileBWCLI = be.CAppFilename
+			default:
+				err = errors.New("unable to determine runtime.GOARCH " + runtime.GOARCH)
+			}
+		default:
+			err = errors.New("unable to determine runtime.GOOS")
+		}
+	case be.PTDigiByte:
+		if err := be.AddToLog(lf, "DigiByte detected...", false); err != nil {
+			return fmt.Errorf("unable to add to log file: %v", err)
+		}
+		switch runtime.GOOS {
+		case "windows":
+			srcPath = abf + be.CDigiByteExtractedDirWindows + "bin\\"
+			srcFileCLI = be.CDigiByteCliFileWin
+			srcFileD = be.CDigiByteDFileWin
+			srcFileTX = be.CDigiByteTxFileWin
+			//srcFileBWCLI = be.CAppFilenameWin
+		case "linux":
+			switch runtime.GOARCH {
+			case "arm":
+				if err := be.AddToLog(lf, "linux arm detected.", false); err != nil {
+					return fmt.Errorf("unable to add to log file: %v", err)
+				}
+				srcPath = abf
+				srcFileCLI = be.CDigiByteCliFile
+				srcFileD = be.CDigiByteDFile
+				srcFileTX = be.CDigiByteTxFile
+			//srcFileBWCLI = be.CAppFilename
+			case "386":
+				if err := be.AddToLog(lf, "linux 386 detected.", false); err != nil {
+					return fmt.Errorf("unable to add to log file: %v", err)
+				}
+				srcPath = abf + be.CDigiByteExtractedDirLinux + "bin/"
+				srcFileCLI = be.CDigiByteCliFile
+				srcFileD = be.CDigiByteDFile
+				srcFileTX = be.CDigiByteTxFile
+			//srcFileBWCLI = be.CAppFilename
+			case "amd64":
+				if err := be.AddToLog(lf, "linux amd64 detected.", false); err != nil {
+					return fmt.Errorf("unable to add to log file: %v", err)
+				}
+				srcPath = abf + be.CDigiByteExtractedDirLinux + "bin/"
+				srcFileCLI = be.CDigiByteCliFile
+				srcFileD = be.CDigiByteDFile
+				srcFileTX = be.CDigiByteTxFile
 			//srcFileBWCLI = be.CAppFilename
 			default:
 				err = errors.New("unable to determine runtime.GOARCH " + runtime.GOARCH)
