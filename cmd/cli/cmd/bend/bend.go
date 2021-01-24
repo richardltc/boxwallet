@@ -490,8 +490,8 @@ func GetAppFileName() (string, error) {
 //}
 
 // GetCoinDaemonFilename - Return the coin daemon file name e.g. divid
-func GetCoinDaemonFilename(at APPType) (string, error) {
-	var pt ProjectType
+func GetCoinDaemonFilename(at APPType, pt ProjectType) (string, error) {
+	//var pt ProjectType
 	switch at {
 	case APPTCLI:
 		conf, err := GetConfigStruct("", false)
@@ -922,13 +922,15 @@ func getWalletResponse(sOut string) walletResponseType {
 }
 
 // IsCoinDaemonRunning - Works out whether the coin Daemon is running e.g. divid
-func IsCoinDaemonRunning() (bool, int, error) {
+func IsCoinDaemonRunning(ct ProjectType) (bool, int, error) {
 	var pid int
-	bwconf, err := GetConfigStruct("", false)
-	if err != nil {
-		return false, pid, err
-	}
-	switch bwconf.ProjectType {
+	//bwconf, err := GetConfigStruct("", false)
+	//if err != nil {
+	//	return false, pid, err
+	//}
+	//switch bwconf.ProjectType {
+	var err error
+	switch ct {
 	case PTDigiByte:
 		if runtime.GOOS == "windows" {
 			pid, _, err = findProcess(CDigiByteDFileWin)
@@ -3245,15 +3247,16 @@ func WalletFix(wft WalletFixType) error {
 	//}
 	//abf := AddTrailingSlash(filepath.Dir(ex))
 
-	coind, err := GetCoinDaemonFilename(APPTCLI)
-	if err != nil {
-		return fmt.Errorf("unable to GetCoinDaemonFilename - %v", err)
-	}
-
 	bwconf, err := GetConfigStruct("", false)
 	if err != nil {
 		return err
 	}
+
+	coind, err := GetCoinDaemonFilename(APPTCLI, bwconf.ProjectType)
+	if err != nil {
+		return fmt.Errorf("unable to GetCoinDaemonFilename - %v", err)
+	}
+
 	switch bwconf.ProjectType {
 	case PTDivi:
 		if runtime.GOOS == "windows" {
@@ -3419,16 +3422,17 @@ func runDCCommandWithValue(cmdBaseStr, cmdStr, valueStr, waitingStr string, atte
 
 // StartCoinDaemon - Run the coins Daemon e.g. Run divid
 func StartCoinDaemon(displayOutput bool) error {
-	idr, _, _ := IsCoinDaemonRunning()
+	bwconf, err := GetConfigStruct("", false)
+	if err != nil {
+		return err
+	}
+
+	idr, _, _ := IsCoinDaemonRunning(bwconf.ProjectType)
 	if idr == true {
 		// Already running...
 		return nil
 	}
 
-	bwconf, err := GetConfigStruct("", false)
-	if err != nil {
-		return err
-	}
 	abf, _ := GetAppWorkingFolder()
 
 	//ex, err := os.Executable()
@@ -3870,7 +3874,12 @@ func StartCoinDaemon(displayOutput bool) error {
 
 // stopCoinDaemon - Stops the coin daemon (e.g. divid) from running
 func StopCoinDaemon(displayOutput bool) error {
-	idr, _, _ := IsCoinDaemonRunning() //DiviDRunning()
+	bwconf, err := GetConfigStruct("", false)
+	if err != nil {
+		return err
+	}
+
+	idr, _, _ := IsCoinDaemonRunning(bwconf.ProjectType) //DiviDRunning()
 	if idr != true {
 		// Not running anyway ...
 		return nil
@@ -3884,15 +3893,11 @@ func StopCoinDaemon(displayOutput bool) error {
 	//}
 	//abf := AddTrailingSlash(filepath.Dir(ex))
 
-	coind, err := GetCoinDaemonFilename(APPTCLI)
+	coind, err := GetCoinDaemonFilename(APPTCLI, bwconf.ProjectType)
 	if err != nil {
 		return fmt.Errorf("unable to GetCoinDaemonFilename - %v", err)
 	}
 
-	bwconf, err := GetConfigStruct("", false)
-	if err != nil {
-		return err
-	}
 	switch bwconf.ProjectType {
 	case PTDivi:
 		if runtime.GOOS == "windows" {
@@ -3902,7 +3907,7 @@ func StopCoinDaemon(displayOutput bool) error {
 				cRun := exec.Command(abf+CDiviCliFile, "stop")
 				_ = cRun.Run()
 
-				sr, _, _ := IsCoinDaemonRunning() //DiviDRunning()
+				sr, _, _ := IsCoinDaemonRunning(PTDivi) //DiviDRunning()
 				if !sr {
 					// Lets wait a little longer before returning
 					time.Sleep(3 * time.Second)
@@ -3922,7 +3927,7 @@ func StopCoinDaemon(displayOutput bool) error {
 				cRun := exec.Command(abf+CDigiByteCliFile, "stop")
 				_ = cRun.Run()
 
-				sr, _, _ := IsCoinDaemonRunning() //DigiByteDRunning()
+				sr, _, _ := IsCoinDaemonRunning(PTDigiByte) //DigiByteDRunning()
 				if !sr {
 					// Lets wait a little longer before returning
 					time.Sleep(3 * time.Second)
@@ -3942,7 +3947,7 @@ func StopCoinDaemon(displayOutput bool) error {
 				cRun := exec.Command(abf+CFeathercoinCliFile, "stop")
 				_ = cRun.Run()
 
-				sr, _, _ := IsCoinDaemonRunning()
+				sr, _, _ := IsCoinDaemonRunning(PTFeathercoin)
 				if !sr {
 					// Lets wait a little longer before returning
 					time.Sleep(3 * time.Second)
@@ -3962,7 +3967,7 @@ func StopCoinDaemon(displayOutput bool) error {
 				cRun := exec.Command(abf+CGroestlcoinCliFile, "stop")
 				_ = cRun.Run()
 
-				sr, _, _ := IsCoinDaemonRunning()
+				sr, _, _ := IsCoinDaemonRunning(PTGroestlcoin)
 				if !sr {
 					// Lets wait a little longer before returning
 					time.Sleep(3 * time.Second)
@@ -3982,7 +3987,7 @@ func StopCoinDaemon(displayOutput bool) error {
 				cRun := exec.Command(abf+CPhoreCliFile, "stop")
 				_ = cRun.Run()
 
-				sr, _, _ := IsCoinDaemonRunning()
+				sr, _, _ := IsCoinDaemonRunning(PTPhore)
 				if !sr {
 					// Lets wait a little longer before returning
 					time.Sleep(3 * time.Second)
@@ -4004,7 +4009,7 @@ func StopCoinDaemon(displayOutput bool) error {
 			}
 
 			for i := 0; i < 50; i++ {
-				sr, _, _ := IsCoinDaemonRunning()
+				sr, _, _ := IsCoinDaemonRunning(PTPIVX)
 				if !sr {
 					return nil
 				}
@@ -4023,7 +4028,7 @@ func StopCoinDaemon(displayOutput bool) error {
 				cRun := exec.Command(abf+CScalaCliFile, "stop")
 				_ = cRun.Run()
 
-				sr, _, _ := IsCoinDaemonRunning()
+				sr, _, _ := IsCoinDaemonRunning(PTScala)
 				if !sr {
 					// Lets wait a little longer before returning
 					time.Sleep(3 * time.Second)
@@ -4045,7 +4050,7 @@ func StopCoinDaemon(displayOutput bool) error {
 			}
 
 			for i := 0; i < 50; i++ {
-				sr, _, _ := IsCoinDaemonRunning() //DiviDRunning()
+				sr, _, _ := IsCoinDaemonRunning(PTTrezarcoin) //DiviDRunning()
 				if !sr {
 					return nil
 				}
@@ -4064,7 +4069,7 @@ func StopCoinDaemon(displayOutput bool) error {
 				cRun := exec.Command(abf+CVertcoinCliFile, "stop")
 				_ = cRun.Run()
 
-				sr, _, _ := IsCoinDaemonRunning()
+				sr, _, _ := IsCoinDaemonRunning(PTVertcoin)
 				if !sr {
 					// Lets wait a little longer before returning
 					time.Sleep(3 * time.Second)
@@ -4091,15 +4096,16 @@ func RunInitialDaemon() (rpcuser, rpcpassword string, err error) {
 	}
 	abf := AddTrailingSlash(filepath.Dir(ex))
 
-	coind, err := GetCoinDaemonFilename(APPTCLI)
-	if err != nil {
-		return "", "", fmt.Errorf("unable to GetCoinDaemonFilename - %v", err)
-	}
-
 	bwconf, err := GetConfigStruct("", false)
 	if err != nil {
 		return "", "", fmt.Errorf("unable to GetConfigStruct - %v", err)
 	}
+
+	coind, err := GetCoinDaemonFilename(APPTCLI, bwconf.ProjectType)
+	if err != nil {
+		return "", "", fmt.Errorf("unable to GetCoinDaemonFilename - %v", err)
+	}
+
 	switch bwconf.ProjectType {
 	case PTDivi:
 		//Run divid for the first time, so that we can get the outputted info to build the conf file
@@ -4231,10 +4237,10 @@ func StopDaemonMonero(cliConf *ConfStruct) (XLAStopDaemonRespStruct, error) {
 	return respStruct, nil
 }
 
-func WalletBackup(ct ProjectType) error {
+func WalletBackup(pt ProjectType) error {
 	var wl string
 	// First, work out what the coin type is
-	switch ct {
+	switch pt {
 	case PTDeVault:
 		wl, err := GetCoinHomeFolder(APPTCLI)
 		if err != nil {
@@ -4242,8 +4248,18 @@ func WalletBackup(ct ProjectType) error {
 		}
 	}
 
-	r, err := IsCoinDaemonRunning()
 	// Make sure the coin daemon is not running
+	isRunning, _, err := IsCoinDaemonRunning(pt)
+	if err != nil {
+		return fmt.Errorf("unablle to run IsCoinDaemonRunning: %v", err)
+	}
+	if isRunning {
+		cdn, err := GetCoinDaemonFilename(APPTCLI, pt)
+		if err != nil {
+			return fmt.Errorf("unablle to run GetCoinDaemonFilename: %v", err)
+		}
+		return fmt.Errorf("please stop the " + cdn + " daemon first")
+	}
 
 	// Copy the wallet.dat file to the same directory that's running BoxWallet
 }
