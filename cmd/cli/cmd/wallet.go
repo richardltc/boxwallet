@@ -28,7 +28,7 @@ var walletCmd = &cobra.Command{
 	Short: "Various commands for managing your wallet.",
 	Long:  ``,
 	Run: func(cmd *cobra.Command, args []string) {
-		fmt.Println("Please use " + " wallet encrypt")
+		fmt.Println("Please use " + " boxwallet wallet -h to list commands.")
 	},
 }
 
