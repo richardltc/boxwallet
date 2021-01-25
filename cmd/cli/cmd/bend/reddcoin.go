@@ -12,7 +12,8 @@ import (
 )
 
 const (
-	CCoinNameReddCoin string = "ReddCoin"
+	CCoinNameReddCoin   string = "ReddCoin"
+	cCoinAbbrevReddCoin string = "RDD"
 
 	CReddCoinCoreVersion string = "3.10.3"
 
@@ -78,6 +79,18 @@ type RDDGetInfoRespStruct struct {
 		Paytxfee        float64 `json:"paytxfee"`
 		Relayfee        float64 `json:"relayfee"`
 		Errors          string  `json:"errors"`
+	} `json:"result"`
+	Error interface{} `json:"error"`
+	ID    string      `json:"id"`
+}
+
+type RDDGetNewAddressStruct struct {
+	Result []struct {
+		Address       string        `json:"address"`
+		Account       string        `json:"account"`
+		Amount        float64       `json:"amount"`
+		Confirmations int           `json:"confirmations"`
+		Txids         []interface{} `json:"txids"`
 	} `json:"result"`
 	Error interface{} `json:"error"`
 	ID    string      `json:"id"`
@@ -309,6 +322,35 @@ func GetNetworkInfoRDD(cliConf *ConfStruct) (RDDNetworkInfoRespStruct, error) {
 			return respStruct, err
 		}
 	}
+	return respStruct, nil
+}
+
+func GetNewAddressRDD(cliConf *ConfStruct) (RDDGetNewAddressStruct, error) {
+	var respStruct RDDGetNewAddressStruct
+
+	body := strings.NewReader("{\"jsonrpc\":\"1.0\",\"id\":\"curltext\",\"method\":\"getnewaddress\",\"params\":[]}")
+	req, err := http.NewRequest("POST", "http://"+cliConf.ServerIP+":"+cliConf.Port, body)
+	if err != nil {
+		return respStruct, err
+	}
+	req.SetBasicAuth(cliConf.RPCuser, cliConf.RPCpassword)
+	req.Header.Set("Content-Type", "text/plain;")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return respStruct, err
+	}
+	defer resp.Body.Close()
+	bodyResp, err := ioutil.ReadAll(resp.Body)
+	if err != nil {
+		return respStruct, err
+	}
+
+	err = json.Unmarshal(bodyResp, &respStruct)
+	if err != nil {
+		return respStruct, err
+	}
+
 	return respStruct, nil
 }
 
