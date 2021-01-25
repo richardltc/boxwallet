@@ -105,7 +105,7 @@ func ClearScreen() {
 }
 
 // BackupFile - Copy file from srcFile to destFile, and display output if requested
-func BackupFile(srcFolder, srcFile, prefixStr string, failOnNoSrc bool) error {
+func BackupFile(srcFolder, srcFile, dstFolder, prefixStr string, failOnNoSrc bool) error {
 	dt := time.Now()
 	dtStr := dt.Format("2006-01-02")
 
@@ -124,8 +124,11 @@ func BackupFile(srcFolder, srcFile, prefixStr string, failOnNoSrc bool) error {
 	}
 	defer originalFile.Close()
 
-	// Create new file
-	newFile, err := os.Create(srcFolder + prefixStr + dtStr + srcFile)
+	// Create new file.
+	if dstFolder == "" {
+		dstFolder = srcFolder
+	}
+	newFile, err := os.Create(dstFolder + prefixStr + "-" + dtStr + "-" + srcFile)
 	if err != nil {
 		return err
 	}
