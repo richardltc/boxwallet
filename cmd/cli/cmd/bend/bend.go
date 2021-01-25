@@ -282,13 +282,14 @@ var gPricePerCoinGBP usd2GBPRespStruct
 var gTicker DiviTickerStruct
 
 func AddNodesAlreadyExist() (bool, error) {
-	chd, _ := GetCoinHomeFolder(APPTCLI)
-	var exists bool
-
 	bwconf, err := GetConfigStruct("", false) //GetCLIConfStruct()
 	if err != nil {
 		return false, fmt.Errorf("unable to GetConfigStruct - %v", err)
 	}
+
+	chd, _ := GetCoinHomeFolder(APPTCLI, bwconf.ProjectType)
+	var exists bool
+
 	switch bwconf.ProjectType {
 	case PTDivi:
 		exists, err = StringExistsInFile("addnode=", chd+CDiviConfFile)
@@ -320,7 +321,7 @@ func AddAddNodesIfRequired() error {
 		if err != nil {
 			return fmt.Errorf("unable to GetConfigStruct - %v", err)
 		}
-		chd, _ := GetCoinHomeFolder(APPTCLI)
+		chd, _ := GetCoinHomeFolder(APPTCLI, bwconf.ProjectType)
 		if err := os.MkdirAll(chd, os.ModePerm); err != nil {
 			return fmt.Errorf("unable to make directory - %v", err)
 		}
@@ -586,15 +587,15 @@ func GetCoinName(at APPType) (string, error) {
 }
 
 // GetCoinHomeFolder - Returns the home folder for the coin e.g. .divi
-func GetCoinHomeFolder(at APPType) (string, error) {
-	var pt ProjectType
+func GetCoinHomeFolder(at APPType, pt ProjectType) (string, error) {
+	//var pt ProjectType
 	switch at {
 	case APPTCLI:
-		conf, err := GetConfigStruct("", false)
-		if err != nil {
-			return "", err
-		}
-		pt = conf.ProjectType
+		//conf, err := GetConfigStruct("", false)
+		//if err != nil {
+		//	return "", err
+		//}
+	//	pt = conf.ProjectType
 	default:
 		err := errors.New("unable to determine AppType")
 		return "", err
@@ -1021,7 +1022,7 @@ func PopulateDaemonConfFile() (rpcuser, rpcpassword string, err error) {
 	}
 
 	// Create the coins home folder if required...
-	chd, _ := GetCoinHomeFolder(APPTCLI)
+	chd, _ := GetCoinHomeFolder(APPTCLI, bwconf.ProjectType)
 	if err := os.MkdirAll(chd, os.ModePerm); err != nil {
 		return "", "", fmt.Errorf("unable to make directory - %v", err)
 	}
@@ -4136,7 +4137,7 @@ func RunInitialDaemon() (rpcuser, rpcpassword string, err error) {
 			}
 		}
 
-		chd, _ := GetCoinHomeFolder(APPTCLI)
+		chd, _ := GetCoinHomeFolder(APPTCLI, bwconf.ProjectType)
 
 		if err := WriteTextToFile(chd+CDiviConfFile, cRPCUserStr+"="+rpcuser); err != nil {
 			log.Fatal(err)
@@ -4255,13 +4256,13 @@ func WalletBackup(pt ProjectType) error {
 	switch pt {
 	case PTDeVault:
 		abbrev = strings.ToLower(cCoinAbbrevDeVault)
-		wl, err = GetCoinHomeFolder(APPTCLI)
+		wl, err = GetCoinHomeFolder(APPTCLI, pt)
 		if err != nil {
 			return fmt.Errorf("unable to get coin home folder: %v", err)
 		}
 	case PTReddCoin:
 		abbrev = strings.ToLower(cCoinAbbrevReddCoin)
-		wl, err = GetCoinHomeFolder(APPTCLI)
+		wl, err = GetCoinHomeFolder(APPTCLI, pt)
 		if err != nil {
 			return fmt.Errorf("unable to get coin home folder: %v", err)
 		}
