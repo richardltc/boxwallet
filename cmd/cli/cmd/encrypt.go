@@ -21,7 +21,6 @@ import (
 	"log"
 	be "richardmace.co.uk/boxwallet/cmd/cli/cmd/bend"
 
-	// gwc "github.com/richardltc/gwcommon"
 	"github.com/spf13/cobra"
 )
 
@@ -37,7 +36,7 @@ var encryptCmd = &cobra.Command{
 			log.Fatal("Unable to determine coin type. Please run " + be.CAppFilename + " coin" + err.Error())
 		}
 
-		sCoinDaemonName, err := be.GetCoinDaemonFilename(be.APPTCLI)
+		sCoinDaemonName, err := be.GetCoinDaemonFilename(be.APPTCLI, cliConf.ProjectType)
 		if err != nil {
 			log.Fatal("Unable to GetCoinDaemonFilename " + err.Error())
 		}
