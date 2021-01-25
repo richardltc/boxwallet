@@ -16,7 +16,8 @@ import (
 const (
 	cDiviAddNodeURL string = "https://api.diviproject.org/v1/addnode"
 
-	CCoinNameDivi string = "DIVI"
+	CCoinNameDivi   string = "DIVI"
+	cCoinAbbrevDivi string = "DIVI"
 
 	CDiviHomeDir    string = ".divi"
 	CDiviHomeDirWin string = "DIVI"
