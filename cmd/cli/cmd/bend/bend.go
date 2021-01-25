@@ -973,6 +973,12 @@ func IsCoinDaemonRunning(ct ProjectType) (bool, int, error) {
 		} else {
 			pid, _, err = findProcess(CRapidsDFile)
 		}
+	case PTReddCoin:
+		if runtime.GOOS == "windows" {
+			pid, _, err = findProcess(CReddCoinDFileWin)
+		} else {
+			pid, _, err = findProcess(CReddCoinDFile)
+		}
 	case PTScala:
 		if runtime.GOOS == "windows" {
 			pid, _, err = findProcess(CScalaDFileWin)
@@ -998,7 +1004,11 @@ func IsCoinDaemonRunning(ct ProjectType) (bool, int, error) {
 	if err == nil {
 		return true, pid, nil //fmt.Printf ("Pid:%d, Pname:%s\n", pid, s)
 	}
-	return false, 0, err
+	if err.Error() == "not found" {
+		return false, pid, nil //fmt.Printf ("Pid:%d, Pname:%s\n", pid, s)
+	} else {
+		return false, 0, err
+	}
 }
 
 // PopulateDaemonConfFile - Populates the divi.conf file
@@ -1035,7 +1045,7 @@ func PopulateDaemonConfFile() (rpcuser, rpcpassword string, err error) {
 				// String not found
 				if !bFileHasBeenBU {
 					bFileHasBeenBU = true
-					if err := BackupFile(chd, CDeVaultConfFile, "", false); err != nil {
+					if err := BackupFile(chd, CDeVaultConfFile, "", "", false); err != nil {
 						return "", "", fmt.Errorf("unable to backup file - %v", err)
 					}
 				}
@@ -1068,7 +1078,7 @@ func PopulateDaemonConfFile() (rpcuser, rpcpassword string, err error) {
 				// String not found
 				if !bFileHasBeenBU {
 					bFileHasBeenBU = true
-					if err := BackupFile(chd, CDeVaultConfFile, "", false); err != nil {
+					if err := BackupFile(chd, CDeVaultConfFile, "", "", false); err != nil {
 						return "", "", fmt.Errorf("unable to backup file - %v", err)
 					}
 				}
@@ -1101,7 +1111,7 @@ func PopulateDaemonConfFile() (rpcuser, rpcpassword string, err error) {
 				// String not found
 				if !bFileHasBeenBU {
 					bFileHasBeenBU = true
-					if err := BackupFile(chd, CDeVaultConfFile, "", false); err != nil {
+					if err := BackupFile(chd, CDeVaultConfFile, "", "", false); err != nil {
 						return "", "", fmt.Errorf("unable to backup file - %v", err)
 					}
 				}
@@ -1129,7 +1139,7 @@ func PopulateDaemonConfFile() (rpcuser, rpcpassword string, err error) {
 				// String not found
 				if !bFileHasBeenBU {
 					bFileHasBeenBU = true
-					if err := BackupFile(chd, CDeVaultConfFile, "", false); err != nil {
+					if err := BackupFile(chd, CDeVaultConfFile, "", "", false); err != nil {
 						return "", "", fmt.Errorf("unable to backup file - %v", err)
 					}
 				}
@@ -1154,7 +1164,7 @@ func PopulateDaemonConfFile() (rpcuser, rpcpassword string, err error) {
 				// String not found
 				if !bFileHasBeenBU {
 					bFileHasBeenBU = true
-					if err := BackupFile(chd, CDeVaultConfFile, "", false); err != nil {
+					if err := BackupFile(chd, CDeVaultConfFile, "", "", false); err != nil {
 						return "", "", fmt.Errorf("unable to backup file - %v", err)
 					}
 				}
@@ -1179,7 +1189,7 @@ func PopulateDaemonConfFile() (rpcuser, rpcpassword string, err error) {
 				// String not found
 				if !bFileHasBeenBU {
 					bFileHasBeenBU = true
-					if err := BackupFile(chd, CDeVaultConfFile, "", false); err != nil {
+					if err := BackupFile(chd, CDeVaultConfFile, "", "", false); err != nil {
 						return "", "", fmt.Errorf("unable to backup file - %v", err)
 					}
 				}
@@ -1208,7 +1218,7 @@ func PopulateDaemonConfFile() (rpcuser, rpcpassword string, err error) {
 				// String not found
 				if !bFileHasBeenBU {
 					bFileHasBeenBU = true
-					if err := BackupFile(chd, CDigiByteConfFile, "", false); err != nil {
+					if err := BackupFile(chd, CDigiByteConfFile, "", "", false); err != nil {
 						return "", "", fmt.Errorf("unable to backup file - %v", err)
 					}
 				}
@@ -1241,7 +1251,7 @@ func PopulateDaemonConfFile() (rpcuser, rpcpassword string, err error) {
 				// String not found
 				if !bFileHasBeenBU {
 					bFileHasBeenBU = true
-					if err := BackupFile(chd, CDigiByteConfFile, "", false); err != nil {
+					if err := BackupFile(chd, CDigiByteConfFile, "", "", false); err != nil {
 						return "", "", fmt.Errorf("unable to backup file - %v", err)
 					}
 				}
@@ -1274,7 +1284,7 @@ func PopulateDaemonConfFile() (rpcuser, rpcpassword string, err error) {
 				// String not found
 				if !bFileHasBeenBU {
 					bFileHasBeenBU = true
-					if err := BackupFile(chd, CDigiByteConfFile, "", false); err != nil {
+					if err := BackupFile(chd, CDigiByteConfFile, "", "", false); err != nil {
 						return "", "", fmt.Errorf("unable to backup file - %v", err)
 					}
 				}
@@ -1302,7 +1312,7 @@ func PopulateDaemonConfFile() (rpcuser, rpcpassword string, err error) {
 				// String not found
 				if !bFileHasBeenBU {
 					bFileHasBeenBU = true
-					if err := BackupFile(chd, CDigiByteConfFile, "", false); err != nil {
+					if err := BackupFile(chd, CDigiByteConfFile, "", "", false); err != nil {
 						return "", "", fmt.Errorf("unable to backup file - %v", err)
 					}
 				}
@@ -1327,7 +1337,7 @@ func PopulateDaemonConfFile() (rpcuser, rpcpassword string, err error) {
 				// String not found
 				if !bFileHasBeenBU {
 					bFileHasBeenBU = true
-					if err := BackupFile(chd, CDigiByteConfFile, "", false); err != nil {
+					if err := BackupFile(chd, CDigiByteConfFile, "", "", false); err != nil {
 						return "", "", fmt.Errorf("unable to backup file - %v", err)
 					}
 				}
@@ -1352,7 +1362,7 @@ func PopulateDaemonConfFile() (rpcuser, rpcpassword string, err error) {
 				// String not found
 				if !bFileHasBeenBU {
 					bFileHasBeenBU = true
-					if err := BackupFile(chd, CDigiByteConfFile, "", false); err != nil {
+					if err := BackupFile(chd, CDigiByteConfFile, "", "", false); err != nil {
 						return "", "", fmt.Errorf("unable to backup file - %v", err)
 					}
 				}
@@ -1381,7 +1391,7 @@ func PopulateDaemonConfFile() (rpcuser, rpcpassword string, err error) {
 				// String not found
 				if !bFileHasBeenBU {
 					bFileHasBeenBU = true
-					if err := BackupFile(chd, CDiviConfFile, "", false); err != nil {
+					if err := BackupFile(chd, CDiviConfFile, "", "", false); err != nil {
 						return "", "", fmt.Errorf("unable to backup file - %v", err)
 					}
 				}
@@ -1414,7 +1424,7 @@ func PopulateDaemonConfFile() (rpcuser, rpcpassword string, err error) {
 				// String not found
 				if !bFileHasBeenBU {
 					bFileHasBeenBU = true
-					if err := BackupFile(chd, CDiviConfFile, "", false); err != nil {
+					if err := BackupFile(chd, CDiviConfFile, "", "", false); err != nil {
 						return "", "", fmt.Errorf("unable to backup file - %v", err)
 					}
 				}
@@ -1447,7 +1457,7 @@ func PopulateDaemonConfFile() (rpcuser, rpcpassword string, err error) {
 				// String not found
 				if !bFileHasBeenBU {
 					bFileHasBeenBU = true
-					if err := BackupFile(chd, CDiviConfFile, "", false); err != nil {
+					if err := BackupFile(chd, CDiviConfFile, "", "", false); err != nil {
 						return "", "", fmt.Errorf("unable to backup file - %v", err)
 					}
 				}
@@ -1475,7 +1485,7 @@ func PopulateDaemonConfFile() (rpcuser, rpcpassword string, err error) {
 				// String not found
 				if !bFileHasBeenBU {
 					bFileHasBeenBU = true
-					if err := BackupFile(chd, CDiviConfFile, "", false); err != nil {
+					if err := BackupFile(chd, CDiviConfFile, "", "", false); err != nil {
 						return "", "", fmt.Errorf("unable to backup file - %v", err)
 					}
 				}
@@ -1500,7 +1510,7 @@ func PopulateDaemonConfFile() (rpcuser, rpcpassword string, err error) {
 				// String not found
 				if !bFileHasBeenBU {
 					bFileHasBeenBU = true
-					if err := BackupFile(chd, CDiviConfFile, "", false); err != nil {
+					if err := BackupFile(chd, CDiviConfFile, "", "", false); err != nil {
 						return "", "", fmt.Errorf("unable to backup file - %v", err)
 					}
 				}
@@ -1525,7 +1535,7 @@ func PopulateDaemonConfFile() (rpcuser, rpcpassword string, err error) {
 				// String not found
 				if !bFileHasBeenBU {
 					bFileHasBeenBU = true
-					if err := BackupFile(chd, CDiviConfFile, "", false); err != nil {
+					if err := BackupFile(chd, CDiviConfFile, "", "", false); err != nil {
 						return "", "", fmt.Errorf("unable to backup file - %v", err)
 					}
 				}
@@ -1554,7 +1564,7 @@ func PopulateDaemonConfFile() (rpcuser, rpcpassword string, err error) {
 				// String not found
 				if !bFileHasBeenBU {
 					bFileHasBeenBU = true
-					if err := BackupFile(chd, CFeathercoinConfFile, "", false); err != nil {
+					if err := BackupFile(chd, CFeathercoinConfFile, "", "", false); err != nil {
 						return "", "", fmt.Errorf("unable to backup file - %v", err)
 					}
 				}
@@ -1587,7 +1597,7 @@ func PopulateDaemonConfFile() (rpcuser, rpcpassword string, err error) {
 				// String not found
 				if !bFileHasBeenBU {
 					bFileHasBeenBU = true
-					if err := BackupFile(chd, CFeathercoinConfFile, "", false); err != nil {
+					if err := BackupFile(chd, CFeathercoinConfFile, "", "", false); err != nil {
 						return "", "", fmt.Errorf("unable to backup file - %v", err)
 					}
 				}
@@ -1620,7 +1630,7 @@ func PopulateDaemonConfFile() (rpcuser, rpcpassword string, err error) {
 				// String not found
 				if !bFileHasBeenBU {
 					bFileHasBeenBU = true
-					if err := BackupFile(chd, CFeathercoinConfFile, "", false); err != nil {
+					if err := BackupFile(chd, CFeathercoinConfFile, "", "", false); err != nil {
 						return "", "", fmt.Errorf("unable to backup file - %v", err)
 					}
 				}
@@ -1648,7 +1658,7 @@ func PopulateDaemonConfFile() (rpcuser, rpcpassword string, err error) {
 				// String not found
 				if !bFileHasBeenBU {
 					bFileHasBeenBU = true
-					if err := BackupFile(chd, CFeathercoinConfFile, "", false); err != nil {
+					if err := BackupFile(chd, CFeathercoinConfFile, "", "", false); err != nil {
 						return "", "", fmt.Errorf("unable to backup file - %v", err)
 					}
 				}
@@ -1673,7 +1683,7 @@ func PopulateDaemonConfFile() (rpcuser, rpcpassword string, err error) {
 				// String not found
 				if !bFileHasBeenBU {
 					bFileHasBeenBU = true
-					if err := BackupFile(chd, CFeathercoinConfFile, "", false); err != nil {
+					if err := BackupFile(chd, CFeathercoinConfFile, "", "", false); err != nil {
 						return "", "", fmt.Errorf("unable to backup file - %v", err)
 					}
 				}
@@ -1698,7 +1708,7 @@ func PopulateDaemonConfFile() (rpcuser, rpcpassword string, err error) {
 				// String not found
 				if !bFileHasBeenBU {
 					bFileHasBeenBU = true
-					if err := BackupFile(chd, CFeathercoinConfFile, "", false); err != nil {
+					if err := BackupFile(chd, CFeathercoinConfFile, "", "", false); err != nil {
 						return "", "", fmt.Errorf("unable to backup file - %v", err)
 					}
 				}
@@ -1727,7 +1737,7 @@ func PopulateDaemonConfFile() (rpcuser, rpcpassword string, err error) {
 				// String not found
 				if !bFileHasBeenBU {
 					bFileHasBeenBU = true
-					if err := BackupFile(chd, CGroestlcoinConfFile, "", false); err != nil {
+					if err := BackupFile(chd, CGroestlcoinConfFile, "", "", false); err != nil {
 						return "", "", fmt.Errorf("unable to backup file - %v", err)
 					}
 				}
@@ -1760,7 +1770,7 @@ func PopulateDaemonConfFile() (rpcuser, rpcpassword string, err error) {
 				// String not found
 				if !bFileHasBeenBU {
 					bFileHasBeenBU = true
-					if err := BackupFile(chd, CGroestlcoinConfFile, "", false); err != nil {
+					if err := BackupFile(chd, CGroestlcoinConfFile, "", "", false); err != nil {
 						return "", "", fmt.Errorf("unable to backup file - %v", err)
 					}
 				}
@@ -1793,7 +1803,7 @@ func PopulateDaemonConfFile() (rpcuser, rpcpassword string, err error) {
 				// String not found
 				if !bFileHasBeenBU {
 					bFileHasBeenBU = true
-					if err := BackupFile(chd, CGroestlcoinConfFile, "", false); err != nil {
+					if err := BackupFile(chd, CGroestlcoinConfFile, "", "", false); err != nil {
 						return "", "", fmt.Errorf("unable to backup file - %v", err)
 					}
 				}
@@ -1821,7 +1831,7 @@ func PopulateDaemonConfFile() (rpcuser, rpcpassword string, err error) {
 				// String not found
 				if !bFileHasBeenBU {
 					bFileHasBeenBU = true
-					if err := BackupFile(chd, CGroestlcoinConfFile, "", false); err != nil {
+					if err := BackupFile(chd, CGroestlcoinConfFile, "", "", false); err != nil {
 						return "", "", fmt.Errorf("unable to backup file - %v", err)
 					}
 				}
@@ -1846,7 +1856,7 @@ func PopulateDaemonConfFile() (rpcuser, rpcpassword string, err error) {
 				// String not found
 				if !bFileHasBeenBU {
 					bFileHasBeenBU = true
-					if err := BackupFile(chd, CGroestlcoinConfFile, "", false); err != nil {
+					if err := BackupFile(chd, CGroestlcoinConfFile, "", "", false); err != nil {
 						return "", "", fmt.Errorf("unable to backup file - %v", err)
 					}
 				}
@@ -1871,7 +1881,7 @@ func PopulateDaemonConfFile() (rpcuser, rpcpassword string, err error) {
 				// String not found
 				if !bFileHasBeenBU {
 					bFileHasBeenBU = true
-					if err := BackupFile(chd, CGroestlcoinConfFile, "", false); err != nil {
+					if err := BackupFile(chd, CGroestlcoinConfFile, "", "", false); err != nil {
 						return "", "", fmt.Errorf("unable to backup file - %v", err)
 					}
 				}
@@ -1897,7 +1907,7 @@ func PopulateDaemonConfFile() (rpcuser, rpcpassword string, err error) {
 		if !b {
 			if !bFileHasBeenBU {
 				bFileHasBeenBU = true
-				if err := BackupFile(chd, CPhoreConfFile, "", false); err != nil {
+				if err := BackupFile(chd, CPhoreConfFile, "", "", false); err != nil {
 					return "", "", fmt.Errorf("unable to backup file - %v", err)
 				}
 			}
@@ -1920,7 +1930,7 @@ func PopulateDaemonConfFile() (rpcuser, rpcpassword string, err error) {
 		if !b {
 			if !bFileHasBeenBU {
 				bFileHasBeenBU = true
-				if err := BackupFile(chd, CPhoreConfFile, "", false); err != nil {
+				if err := BackupFile(chd, CPhoreConfFile, "", "", false); err != nil {
 					return "", "", fmt.Errorf("unable to backup file - %v", err)
 				}
 			}
@@ -1946,7 +1956,7 @@ func PopulateDaemonConfFile() (rpcuser, rpcpassword string, err error) {
 		if !b {
 			if !bFileHasBeenBU {
 				bFileHasBeenBU = true
-				if err := BackupFile(chd, CPhoreConfFile, "", false); err != nil {
+				if err := BackupFile(chd, CPhoreConfFile, "", "", false); err != nil {
 					return "", "", fmt.Errorf("unable to backup file - %v", err)
 				}
 			}
@@ -1966,7 +1976,7 @@ func PopulateDaemonConfFile() (rpcuser, rpcpassword string, err error) {
 		if !b {
 			if !bFileHasBeenBU {
 				bFileHasBeenBU = true
-				if err := BackupFile(chd, CPhoreConfFile, "", false); err != nil {
+				if err := BackupFile(chd, CPhoreConfFile, "", "", false); err != nil {
 					return "", "", fmt.Errorf("unable to backup file - %v", err)
 				}
 			}
@@ -1982,7 +1992,7 @@ func PopulateDaemonConfFile() (rpcuser, rpcpassword string, err error) {
 		if !b {
 			if !bFileHasBeenBU {
 				bFileHasBeenBU = true
-				if err := BackupFile(chd, CPhoreConfFile, "", false); err != nil {
+				if err := BackupFile(chd, CPhoreConfFile, "", "", false); err != nil {
 					return "", "", fmt.Errorf("unable to backup file - %v", err)
 				}
 			}
@@ -1998,7 +2008,7 @@ func PopulateDaemonConfFile() (rpcuser, rpcpassword string, err error) {
 		if !b {
 			if !bFileHasBeenBU {
 				bFileHasBeenBU = true
-				if err := BackupFile(chd, CPhoreConfFile, "", false); err != nil {
+				if err := BackupFile(chd, CPhoreConfFile, "", "", false); err != nil {
 					return "", "", fmt.Errorf("unable to backup file - %v", err)
 				}
 			}
@@ -2021,7 +2031,7 @@ func PopulateDaemonConfFile() (rpcuser, rpcpassword string, err error) {
 				// String not found
 				if !bFileHasBeenBU {
 					bFileHasBeenBU = true
-					if err := BackupFile(chd, CPIVXConfFile, "", false); err != nil {
+					if err := BackupFile(chd, CPIVXConfFile, "", "", false); err != nil {
 						return "", "", fmt.Errorf("unable to backup file - %v", err)
 					}
 				}
@@ -2054,7 +2064,7 @@ func PopulateDaemonConfFile() (rpcuser, rpcpassword string, err error) {
 				// String not found
 				if !bFileHasBeenBU {
 					bFileHasBeenBU = true
-					if err := BackupFile(chd, CPIVXConfFile, "", false); err != nil {
+					if err := BackupFile(chd, CPIVXConfFile, "", "", false); err != nil {
 						return "", "", fmt.Errorf("unable to backup file - %v", err)
 					}
 				}
@@ -2087,7 +2097,7 @@ func PopulateDaemonConfFile() (rpcuser, rpcpassword string, err error) {
 				// String not found
 				if !bFileHasBeenBU {
 					bFileHasBeenBU = true
-					if err := BackupFile(chd, CPIVXConfFile, "", false); err != nil {
+					if err := BackupFile(chd, CPIVXConfFile, "", "", false); err != nil {
 						return "", "", fmt.Errorf("unable to backup file - %v", err)
 					}
 				}
@@ -2115,7 +2125,7 @@ func PopulateDaemonConfFile() (rpcuser, rpcpassword string, err error) {
 				// String not found
 				if !bFileHasBeenBU {
 					bFileHasBeenBU = true
-					if err := BackupFile(chd, CPIVXConfFile, "", false); err != nil {
+					if err := BackupFile(chd, CPIVXConfFile, "", "", false); err != nil {
 						return "", "", fmt.Errorf("unable to backup file - %v", err)
 					}
 				}
@@ -2140,7 +2150,7 @@ func PopulateDaemonConfFile() (rpcuser, rpcpassword string, err error) {
 				// String not found
 				if !bFileHasBeenBU {
 					bFileHasBeenBU = true
-					if err := BackupFile(chd, CPIVXConfFile, "", false); err != nil {
+					if err := BackupFile(chd, CPIVXConfFile, "", "", false); err != nil {
 						return "", "", fmt.Errorf("unable to backup file - %v", err)
 					}
 				}
@@ -2165,7 +2175,7 @@ func PopulateDaemonConfFile() (rpcuser, rpcpassword string, err error) {
 				// String not found
 				if !bFileHasBeenBU {
 					bFileHasBeenBU = true
-					if err := BackupFile(chd, CPIVXConfFile, "", false); err != nil {
+					if err := BackupFile(chd, CPIVXConfFile, "", "", false); err != nil {
 						return "", "", fmt.Errorf("unable to backup file - %v", err)
 					}
 				}
@@ -2194,7 +2204,7 @@ func PopulateDaemonConfFile() (rpcuser, rpcpassword string, err error) {
 				// String not found
 				if !bFileHasBeenBU {
 					bFileHasBeenBU = true
-					if err := BackupFile(chd, CRapidsConfFile, "", false); err != nil {
+					if err := BackupFile(chd, CRapidsConfFile, "", "", false); err != nil {
 						return "", "", fmt.Errorf("unable to backup file - %v", err)
 					}
 				}
@@ -2227,7 +2237,7 @@ func PopulateDaemonConfFile() (rpcuser, rpcpassword string, err error) {
 				// String not found
 				if !bFileHasBeenBU {
 					bFileHasBeenBU = true
-					if err := BackupFile(chd, CRapidsConfFile, "", false); err != nil {
+					if err := BackupFile(chd, CRapidsConfFile, "", "", false); err != nil {
 						return "", "", fmt.Errorf("unable to backup file - %v", err)
 					}
 				}
@@ -2260,7 +2270,7 @@ func PopulateDaemonConfFile() (rpcuser, rpcpassword string, err error) {
 				// String not found
 				if !bFileHasBeenBU {
 					bFileHasBeenBU = true
-					if err := BackupFile(chd, CRapidsConfFile, "", false); err != nil {
+					if err := BackupFile(chd, CRapidsConfFile, "", "", false); err != nil {
 						return "", "", fmt.Errorf("unable to backup file - %v", err)
 					}
 				}
@@ -2288,7 +2298,7 @@ func PopulateDaemonConfFile() (rpcuser, rpcpassword string, err error) {
 				// String not found
 				if !bFileHasBeenBU {
 					bFileHasBeenBU = true
-					if err := BackupFile(chd, CRapidsConfFile, "", false); err != nil {
+					if err := BackupFile(chd, CRapidsConfFile, "", "", false); err != nil {
 						return "", "", fmt.Errorf("unable to backup file - %v", err)
 					}
 				}
@@ -2313,7 +2323,7 @@ func PopulateDaemonConfFile() (rpcuser, rpcpassword string, err error) {
 				// String not found
 				if !bFileHasBeenBU {
 					bFileHasBeenBU = true
-					if err := BackupFile(chd, CRapidsConfFile, "", false); err != nil {
+					if err := BackupFile(chd, CRapidsConfFile, "", "", false); err != nil {
 						return "", "", fmt.Errorf("unable to backup file - %v", err)
 					}
 				}
@@ -2338,7 +2348,7 @@ func PopulateDaemonConfFile() (rpcuser, rpcpassword string, err error) {
 				// String not found
 				if !bFileHasBeenBU {
 					bFileHasBeenBU = true
-					if err := BackupFile(chd, CRapidsConfFile, "", false); err != nil {
+					if err := BackupFile(chd, CRapidsConfFile, "", "", false); err != nil {
 						return "", "", fmt.Errorf("unable to backup file - %v", err)
 					}
 				}
@@ -2363,7 +2373,7 @@ func PopulateDaemonConfFile() (rpcuser, rpcpassword string, err error) {
 				// String not found
 				if !bFileHasBeenBU {
 					bFileHasBeenBU = true
-					if err := BackupFile(chd, CRapidsConfFile, "", false); err != nil {
+					if err := BackupFile(chd, CRapidsConfFile, "", "", false); err != nil {
 						return "", "", fmt.Errorf("unable to backup file - %v", err)
 					}
 				}
@@ -2392,7 +2402,7 @@ func PopulateDaemonConfFile() (rpcuser, rpcpassword string, err error) {
 				// String not found
 				if !bFileHasBeenBU {
 					bFileHasBeenBU = true
-					if err := BackupFile(chd, CReddCoinConfFile, "", false); err != nil {
+					if err := BackupFile(chd, CReddCoinConfFile, "", "", false); err != nil {
 						return "", "", fmt.Errorf("unable to backup file - %v", err)
 					}
 				}
@@ -2425,7 +2435,7 @@ func PopulateDaemonConfFile() (rpcuser, rpcpassword string, err error) {
 				// String not found
 				if !bFileHasBeenBU {
 					bFileHasBeenBU = true
-					if err := BackupFile(chd, CReddCoinConfFile, "", false); err != nil {
+					if err := BackupFile(chd, CReddCoinConfFile, "", "", false); err != nil {
 						return "", "", fmt.Errorf("unable to backup file - %v", err)
 					}
 				}
@@ -2458,7 +2468,7 @@ func PopulateDaemonConfFile() (rpcuser, rpcpassword string, err error) {
 				// String not found
 				if !bFileHasBeenBU {
 					bFileHasBeenBU = true
-					if err := BackupFile(chd, CReddCoinConfFile, "", false); err != nil {
+					if err := BackupFile(chd, CReddCoinConfFile, "", "", false); err != nil {
 						return "", "", fmt.Errorf("unable to backup file - %v", err)
 					}
 				}
@@ -2486,7 +2496,7 @@ func PopulateDaemonConfFile() (rpcuser, rpcpassword string, err error) {
 				// String not found
 				if !bFileHasBeenBU {
 					bFileHasBeenBU = true
-					if err := BackupFile(chd, CReddCoinConfFile, "", false); err != nil {
+					if err := BackupFile(chd, CReddCoinConfFile, "", "", false); err != nil {
 						return "", "", fmt.Errorf("unable to backup file - %v", err)
 					}
 				}
@@ -2511,7 +2521,7 @@ func PopulateDaemonConfFile() (rpcuser, rpcpassword string, err error) {
 				// String not found
 				if !bFileHasBeenBU {
 					bFileHasBeenBU = true
-					if err := BackupFile(chd, CReddCoinConfFile, "", false); err != nil {
+					if err := BackupFile(chd, CReddCoinConfFile, "", "", false); err != nil {
 						return "", "", fmt.Errorf("unable to backup file - %v", err)
 					}
 				}
@@ -2536,7 +2546,7 @@ func PopulateDaemonConfFile() (rpcuser, rpcpassword string, err error) {
 				// String not found
 				if !bFileHasBeenBU {
 					bFileHasBeenBU = true
-					if err := BackupFile(chd, CReddCoinConfFile, "", false); err != nil {
+					if err := BackupFile(chd, CReddCoinConfFile, "", "", false); err != nil {
 						return "", "", fmt.Errorf("unable to backup file - %v", err)
 					}
 				}
@@ -2570,7 +2580,7 @@ func PopulateDaemonConfFile() (rpcuser, rpcpassword string, err error) {
 				// String not found
 				if !bFileHasBeenBU {
 					bFileHasBeenBU = true
-					if err := BackupFile(chd, CTrezarcoinConfFile, "", false); err != nil {
+					if err := BackupFile(chd, CTrezarcoinConfFile, "", "", false); err != nil {
 						return "", "", fmt.Errorf("unable to backup file - %v", err)
 					}
 				}
@@ -2603,7 +2613,7 @@ func PopulateDaemonConfFile() (rpcuser, rpcpassword string, err error) {
 				// String not found
 				if !bFileHasBeenBU {
 					bFileHasBeenBU = true
-					if err := BackupFile(chd, CTrezarcoinConfFile, "", false); err != nil {
+					if err := BackupFile(chd, CTrezarcoinConfFile, "", "", false); err != nil {
 						return "", "", fmt.Errorf("unable to backup file - %v", err)
 					}
 				}
@@ -2636,7 +2646,7 @@ func PopulateDaemonConfFile() (rpcuser, rpcpassword string, err error) {
 				// String not found
 				if !bFileHasBeenBU {
 					bFileHasBeenBU = true
-					if err := BackupFile(chd, CTrezarcoinConfFile, "", false); err != nil {
+					if err := BackupFile(chd, CTrezarcoinConfFile, "", "", false); err != nil {
 						return "", "", fmt.Errorf("unable to backup file - %v", err)
 					}
 				}
@@ -2664,7 +2674,7 @@ func PopulateDaemonConfFile() (rpcuser, rpcpassword string, err error) {
 				// String not found
 				if !bFileHasBeenBU {
 					bFileHasBeenBU = true
-					if err := BackupFile(chd, CTrezarcoinConfFile, "", false); err != nil {
+					if err := BackupFile(chd, CTrezarcoinConfFile, "", "", false); err != nil {
 						return "", "", fmt.Errorf("unable to backup file - %v", err)
 					}
 				}
@@ -2689,7 +2699,7 @@ func PopulateDaemonConfFile() (rpcuser, rpcpassword string, err error) {
 				// String not found
 				if !bFileHasBeenBU {
 					bFileHasBeenBU = true
-					if err := BackupFile(chd, CTrezarcoinConfFile, "", false); err != nil {
+					if err := BackupFile(chd, CTrezarcoinConfFile, "", "", false); err != nil {
 						return "", "", fmt.Errorf("unable to backup file - %v", err)
 					}
 				}
@@ -2714,7 +2724,7 @@ func PopulateDaemonConfFile() (rpcuser, rpcpassword string, err error) {
 				// String not found
 				if !bFileHasBeenBU {
 					bFileHasBeenBU = true
-					if err := BackupFile(chd, CTrezarcoinConfFile, "", false); err != nil {
+					if err := BackupFile(chd, CTrezarcoinConfFile, "", "", false); err != nil {
 						return "", "", fmt.Errorf("unable to backup file - %v", err)
 					}
 				}
@@ -2743,7 +2753,7 @@ func PopulateDaemonConfFile() (rpcuser, rpcpassword string, err error) {
 				// String not found
 				if !bFileHasBeenBU {
 					bFileHasBeenBU = true
-					if err := BackupFile(chd, CVertcoinConfFile, "", false); err != nil {
+					if err := BackupFile(chd, CVertcoinConfFile, "", "", false); err != nil {
 						return "", "", fmt.Errorf("unable to backup file - %v", err)
 					}
 				}
@@ -2776,7 +2786,7 @@ func PopulateDaemonConfFile() (rpcuser, rpcpassword string, err error) {
 				// String not found
 				if !bFileHasBeenBU {
 					bFileHasBeenBU = true
-					if err := BackupFile(chd, CVertcoinConfFile, "", false); err != nil {
+					if err := BackupFile(chd, CVertcoinConfFile, "", "", false); err != nil {
 						return "", "", fmt.Errorf("unable to backup file - %v", err)
 					}
 				}
@@ -2809,7 +2819,7 @@ func PopulateDaemonConfFile() (rpcuser, rpcpassword string, err error) {
 				// String not found
 				if !bFileHasBeenBU {
 					bFileHasBeenBU = true
-					if err := BackupFile(chd, CVertcoinConfFile, "", false); err != nil {
+					if err := BackupFile(chd, CVertcoinConfFile, "", "", false); err != nil {
 						return "", "", fmt.Errorf("unable to backup file - %v", err)
 					}
 				}
@@ -2837,7 +2847,7 @@ func PopulateDaemonConfFile() (rpcuser, rpcpassword string, err error) {
 				// String not found
 				if !bFileHasBeenBU {
 					bFileHasBeenBU = true
-					if err := BackupFile(chd, CVertcoinConfFile, "", false); err != nil {
+					if err := BackupFile(chd, CVertcoinConfFile, "", "", false); err != nil {
 						return "", "", fmt.Errorf("unable to backup file - %v", err)
 					}
 				}
@@ -2862,7 +2872,7 @@ func PopulateDaemonConfFile() (rpcuser, rpcpassword string, err error) {
 				// String not found
 				if !bFileHasBeenBU {
 					bFileHasBeenBU = true
-					if err := BackupFile(chd, CVertcoinConfFile, "", false); err != nil {
+					if err := BackupFile(chd, CVertcoinConfFile, "", "", false); err != nil {
 						return "", "", fmt.Errorf("unable to backup file - %v", err)
 					}
 				}
@@ -2887,7 +2897,7 @@ func PopulateDaemonConfFile() (rpcuser, rpcpassword string, err error) {
 				// String not found
 				if !bFileHasBeenBU {
 					bFileHasBeenBU = true
-					if err := BackupFile(chd, CVertcoinConfFile, "", false); err != nil {
+					if err := BackupFile(chd, CVertcoinConfFile, "", "", false); err != nil {
 						return "", "", fmt.Errorf("unable to backup file - %v", err)
 					}
 				}
@@ -4218,7 +4228,7 @@ func StopDaemonMonero(cliConf *ConfStruct) (XLAStopDaemonRespStruct, error) {
 	if err != nil {
 		return respStruct, err
 	}
-	//req.SetBasicAuth(cliConf.RPCuser, cliConf.RPCpassword)
+	//req.SetBasicAuth(cliConf.RPCuser, cliConf.RPCpassword) //
 	req.Header.Set("Content-Type", "application/json;")
 
 	resp, err := http.DefaultClient.Do(req)
@@ -4238,14 +4248,25 @@ func StopDaemonMonero(cliConf *ConfStruct) (XLAStopDaemonRespStruct, error) {
 }
 
 func WalletBackup(pt ProjectType) error {
-	var wl string
+	var abbrev, wl, destFolder string
+
 	// First, work out what the coin type is
+	var err error
 	switch pt {
 	case PTDeVault:
-		wl, err := GetCoinHomeFolder(APPTCLI)
+		abbrev = strings.ToLower(cCoinAbbrevDeVault)
+		wl, err = GetCoinHomeFolder(APPTCLI)
 		if err != nil {
-			return fmt.Errorf("unablle to get coin home folder: %v", err)
+			return fmt.Errorf("unable to get coin home folder: %v", err)
 		}
+	case PTReddCoin:
+		abbrev = strings.ToLower(cCoinAbbrevReddCoin)
+		wl, err = GetCoinHomeFolder(APPTCLI)
+		if err != nil {
+			return fmt.Errorf("unable to get coin home folder: %v", err)
+		}
+	default:
+		return fmt.Errorf("unable to determine ProjectType - WalletBackup: %v", err)
 	}
 
 	// Make sure the coin daemon is not running
@@ -4261,7 +4282,18 @@ func WalletBackup(pt ProjectType) error {
 		return fmt.Errorf("please stop the " + cdn + " daemon first")
 	}
 
+	ex, err := os.Executable()
+	if err != nil {
+		return fmt.Errorf("Unable to retrieve running binary: %v ", err)
+	}
+	destFolder = AddTrailingSlash(filepath.Dir(ex))
+
 	// Copy the wallet.dat file to the same directory that's running BoxWallet
+	if err := BackupFile(wl, "wallet.dat", destFolder, abbrev, true); err != nil {
+		return fmt.Errorf("Unable to perform backup of wallet.dat: %v ", err)
+	}
+
+	return nil
 }
 
 // UnlockWallet - Used by the server to unlock the wallet
