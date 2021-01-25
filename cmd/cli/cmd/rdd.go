@@ -29,7 +29,7 @@ var rddCmd = &cobra.Command{
 	Short: "Makes a backup copy of your " + be.CCoinNameReddCoin + " wallet.dat file, into the current folder",
 	Long:  ``,
 	Run: func(cmd *cobra.Command, args []string) {
-		fmt.Println("Attempting to backup your " + be.CCoinNameReddCoin + "wallet.dat file")
+		fmt.Println("Attempting to backup your " + be.CCoinNameReddCoin + " wallet.dat file")
 		if err := be.WalletBackup(be.PTReddCoin); err != nil {
 			log.Fatal("Unable to backup the " + be.CCoinNameReddCoin + " wallet.dat file: " + err.Error())
 		}
