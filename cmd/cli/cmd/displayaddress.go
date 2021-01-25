@@ -22,9 +22,7 @@ import (
 
 	be "richardmace.co.uk/boxwallet/cmd/cli/cmd/bend"
 
-	// gwc "github.com/richardltc/gwcommon"
 	"github.com/spf13/cobra"
-	//gdc "richardmace.co.uk/boxwallet/gdcommon"
 )
 
 // displayaddressCmd represents the displayaddress command
@@ -48,7 +46,7 @@ var displayaddressCmd = &cobra.Command{
 			log.Fatal("Unable to determine if wallet is ready: " + err.Error())
 		}
 
-		coind, err := be.GetCoinDaemonFilename(be.APPTCLI)
+		coind, err := be.GetCoinDaemonFilename(be.APPTCLI, cliConf.ProjectType)
 		if err != nil {
 			log.Fatalf("Unable to GetCoinDaemonFilename - %v", err)
 		}
@@ -97,6 +95,17 @@ var displayaddressCmd = &cobra.Command{
 			addresses, _ := be.ListReceivedByAddressPhore(&cliConf, true)
 			if len(addresses.Result) > 0 {
 				sAddress = addresses.Result[0].Address
+			}
+		case be.PTReddCoin:
+			addresses, _ := be.ListReceivedByAddressRDD(&cliConf, true)
+			if len(addresses.Result) > 0 {
+				sAddress = addresses.Result[0].Address
+			} else {
+				r, err := be.GetNewAddressRDD(&cliConf)
+				if err != nil {
+					log.Fatalf("Unable to call GetNewAddressRDD")
+				}
+				sAddress = r.Result[0].Address
 			}
 		case be.PTTrezarcoin:
 			addresses, _ := be.ListReceivedByAddressTrezarcoin(&cliConf, true)
