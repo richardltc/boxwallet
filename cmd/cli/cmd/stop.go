@@ -39,7 +39,7 @@ var stopCmd = &cobra.Command{
 			log.Fatal("Unable to GetCLIConfStruct " + err.Error())
 		}
 
-		sCoinDaemonName, err := be.GetCoinDaemonFilename(be.APPTCLI)
+		sCoinDaemonName, err := be.GetCoinDaemonFilename(be.APPTCLI, cliConf.ProjectType)
 		if err != nil {
 			log.Fatal("Unable to GetCoinDaemonFilename " + err.Error())
 		}
@@ -59,7 +59,7 @@ var stopCmd = &cobra.Command{
 				log.Fatal("Unable to StopDaemon " + err.Error())
 			}
 			for i := 0; i < 600; i++ {
-				bStillRunning, _, _ := be.IsCoinDaemonRunning()
+				bStillRunning, _, _ := be.IsCoinDaemonRunning(cliConf.ProjectType)
 				if bStillRunning {
 					fmt.Printf("\r" + "Waiting for " + sCoinDaemonName + " to stop. This could take a long time on slower devices... " + strconv.Itoa(i+1) + "/600")
 					time.Sleep(1 * time.Second)
