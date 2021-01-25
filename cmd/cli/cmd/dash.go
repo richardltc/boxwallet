@@ -114,7 +114,7 @@ var dashCmd = &cobra.Command{
 			log.Fatalf("Unable to determine if wallet is ready: %v,%v", s, err)
 		}
 
-		coind, err := be.GetCoinDaemonFilename(be.APPTCLI)
+		coind, err := be.GetCoinDaemonFilename(be.APPTCLI, cliConf.ProjectType)
 		if err != nil {
 			log.Fatalf("Unable to GetCoinDaemonFilename - %v", err)
 		}
@@ -480,7 +480,7 @@ var dashCmd = &cobra.Command{
 					log.Fatalf("Unable to determine if wallet is ready: %v,%v", s, err)
 				}
 
-				coind, err := be.GetCoinDaemonFilename(be.APPTCLI)
+				coind, err := be.GetCoinDaemonFilename(be.APPTCLI, cliConf.ProjectType)
 				if err != nil {
 					log.Fatalf("Unable to GetCoinDaemonFilename - %v", err)
 				}
@@ -492,7 +492,7 @@ var dashCmd = &cobra.Command{
 			}
 		}
 
-		// Init display...
+		// Init display....
 
 		if err := ui.Init(); err != nil {
 			log.Fatalf("failed to initialize termui: %v", err)
@@ -1414,7 +1414,7 @@ func confirmWalletReady() (bool, string, error) {
 		log.Fatalf("Unable to start spinner - %v", err)
 	}
 
-	coind, err := be.GetCoinDaemonFilename(be.APPTCLI)
+	coind, err := be.GetCoinDaemonFilename(be.APPTCLI, cliConf.ProjectType)
 	if err != nil {
 		log.Fatalf("Unable to GetCoinDaemonFilename - %v", err)
 	}
