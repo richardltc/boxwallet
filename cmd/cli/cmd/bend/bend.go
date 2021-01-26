@@ -804,7 +804,6 @@ func GetWalletAddress(cliConf *ConfStruct) (GetAddressesByAccountRespStruct, err
 
 // 		time.Sleep(1 * time.Second)
 // 	}
-
 // 	return wi, wrtUnknown, errors.New("Unable to retrieve wallet info")
 // }
 
@@ -814,13 +813,13 @@ func GetPasswordToEncryptWallet() string {
 		prompt := &survey.Password{
 			Message: "Please enter a password to encrypt your wallet",
 		}
-		survey.AskOne(prompt, &epw1)
+		_ = survey.AskOne(prompt, &epw1)
 
 		epw2 := ""
 		prompt2 := &survey.Password{
 			Message: "Now please re-enter your password",
 		}
-		survey.AskOne(prompt2, &epw2)
+		_ = survey.AskOne(prompt2, &epw2)
 		if epw1 != epw2 {
 			fmt.Print("\nThe passwords don't match, please try again...\n")
 		} else {
@@ -828,6 +827,37 @@ func GetPasswordToEncryptWallet() string {
 		}
 	}
 	return ""
+}
+
+func GetTipAddress(pt ProjectType) string {
+	switch pt {
+	case PTDeVault:
+		return "devault:qp7w4pnm774c0uwch8ty6tj7sw86hze9ps4sqrwcue"
+	case PTDigiByte:
+		return "dgb1qdw7qhh5crt3rhfau909pmc9r0esnnzqf48un6g"
+	case PTDivi:
+		return "DGvhjUXznuDyALk9zX4Y3ko4QQTmRhF7jZ"
+	case PTFeathercoin:
+		return "6yWAnPUcgWGXnXAM9u4faDVmfJwxKphcLf"
+	case PTGroestlcoin:
+		return "3HBqpZ1JH125FmW52GYjoBpNEAwyxjL9t9"
+	case PTPhore:
+		return "PKFcy7UTEWegnAq7Wci8Aj76bQyHMottF8"
+	case PTPIVX:
+		return "DFHmj4dExVC24eWoRKmQJDx57r4svGVs3J"
+	case PTRapids:
+		return "RvxCvM2VWVKq2iSLNoAmzdqH4eF9bhvn6k"
+	case PTReddCoin:
+		return "RtH6nZvmnstUsy5w5cmdwTrarbTPm6zyrC"
+	case PTScala:
+		return "Svkhh1KJ7qSPEtoAzAuriLUzVSseezcs2GS21bAL5rWEYD2iBykLvHUaMaQEcrF1pPfTkfEbWGsXz4zfXJWmQvat2Q2EHhS1e"
+	case PTTrezarcoin:
+		return "TnkHScr6iTcfK11GDPFjNgJ7V3GZtHEy9V"
+	case PTVertcoin:
+		return "vtc1q72j7fre83q8a7feppj28qkzfdt5vkcjr7xd74p"
+	default:
+		return "DGvhjUXznuDyALk9zX4Y3ko4QQTmRhF7jZ"
+	}
 }
 
 func GetWalletEncryptionPassword() string {
@@ -4255,7 +4285,7 @@ func WalletBackup(pt ProjectType) error {
 	var err error
 	switch pt {
 	case PTDeVault:
-		abbrev = strings.ToLower(cCoinAbbrevDeVault)
+		abbrev = strings.ToLower(CCoinAbbrevDeVault)
 		wl, err = GetCoinHomeFolder(APPTCLI, pt)
 		if err != nil {
 			return fmt.Errorf("unable to get coin home folder: %v", err)
