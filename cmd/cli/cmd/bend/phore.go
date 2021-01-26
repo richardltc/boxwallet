@@ -13,7 +13,7 @@ import (
 
 const (
 	CCoinNamePhore   string = "Phore"
-	cCoinAbbrevPhore string = "PHR"
+	CCoinAbbrevPhore string = "PHR"
 
 	CPhoreCoreVersion string = "1.6.5"
 	CDFPhoreRPi              = "phore-" + CPhoreCoreVersion + "-arm-linux-gnueabihf.tar.gz"

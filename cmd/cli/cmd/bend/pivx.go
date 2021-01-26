@@ -14,7 +14,7 @@ import (
 
 const (
 	CCoinNamePIVX   string = "PIVX"
-	cCoinAbbrevPIVX string = "PIVX"
+	CCoinAbbrevPIVX string = "PIVX"
 
 	CPIVXCoreVersion   string = "5.0.1"
 	CDFPIVXFileArm32          = "pivx-" + CPIVXCoreVersion + "-arm-linux-gnueabihf.tar.gz"

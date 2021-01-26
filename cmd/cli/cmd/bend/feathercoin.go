@@ -13,7 +13,7 @@ import (
 
 const (
 	CCoinNameFeathercoin   string = "Feathercoin"
-	cCoinAbbrevFeathercoin string = "FTC"
+	CCoinAbbrevFeathercoin string = "FTC"
 
 	CFeathercoinCoreVersion string = "0.19.1"
 	//CDFFeathercoinRPi       string = "Feathercoin-" + CFeathercoinCoreVersion + "-rPI.zip"

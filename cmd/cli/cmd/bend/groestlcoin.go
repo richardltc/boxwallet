@@ -13,7 +13,7 @@ import (
 
 const (
 	CCoinNameGroestlcoin   string = "Groestlcoin"
-	cCoinAbbrevGroestlcoin string = "GRS"
+	CCoinAbbrevGroestlcoin string = "GRS"
 
 	CGroestlcoinCoreVersion string = "2.21.0"
 	CDFGroestlcoinRPi       string = "groestlcoin-" + CGroestlcoinCoreVersion + "-arm-linux-gnueabihf.tar.gz"
