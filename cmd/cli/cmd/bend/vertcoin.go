@@ -13,7 +13,7 @@ import (
 
 const (
 	CCoinNameVertcoin   string = "Vertcoin"
-	cCoinAbbrevVertcoin string = "VTC"
+	CCoinAbbrevVertcoin string = "VTC"
 
 	CVertcoinCoreVersion string = "0.17.1"
 	CDFVertcoinRPi       string = "vertcoind-v" + CVertcoinCoreVersion + "-arm-linux-gnueabihf.zip"

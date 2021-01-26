@@ -13,7 +13,7 @@ import (
 
 const (
 	CCoinNameRapids   string = "Rapids"
-	cCoinAbbrevRapids string = "RPD"
+	CCoinAbbrevRapids string = "RPD"
 
 	CRapidsCoreVersion string = "3.4.1"
 
