@@ -13,7 +13,7 @@ import (
 
 const (
 	CCoinNameDeVault   string = "DeVault"
-	cCoinAbbrevDeVault string = "DVT"
+	CCoinAbbrevDeVault string = "DVT" // was private
 
 	CDeVaultCoreVersion string = "1.2.1"
 
