@@ -4290,14 +4290,20 @@ func WalletBackup(pt ProjectType) error {
 		if err != nil {
 			return fmt.Errorf("unable to get coin home folder: %v", err)
 		}
+	case PTDigiByte:
+		abbrev = strings.ToLower(CCoinAbbrevDigiByte)
+		wl, err = GetCoinHomeFolder(APPTCLI, pt)
+		if err != nil {
+			return fmt.Errorf("unable to get coin home folder: %v", err)
+		}
 	case PTDivi:
-		abbrev = strings.ToLower(cCoinAbbrevDivi)
+		abbrev = strings.ToLower(CCoinAbbrevDivi)
 		wl, err = GetCoinHomeFolder(APPTCLI, pt)
 		if err != nil {
 			return fmt.Errorf("unable to get coin home folder: %v", err)
 		}
 	case PTReddCoin:
-		abbrev = strings.ToLower(cCoinAbbrevReddCoin)
+		abbrev = strings.ToLower(CCoinAbbrevReddCoin)
 		wl, err = GetCoinHomeFolder(APPTCLI, pt)
 		if err != nil {
 			return fmt.Errorf("unable to get coin home folder: %v", err)
