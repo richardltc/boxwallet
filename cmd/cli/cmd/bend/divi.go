@@ -17,7 +17,7 @@ const (
 	cDiviAddNodeURL string = "https://api.diviproject.org/v1/addnode"
 
 	CCoinNameDivi   string = "DIVI"
-	cCoinAbbrevDivi string = "DIVI"
+	CCoinAbbrevDivi string = "DIVI"
 
 	CDiviHomeDir    string = ".divi"
 	CDiviHomeDirWin string = "DIVI"
