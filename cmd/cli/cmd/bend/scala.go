@@ -8,7 +8,8 @@ import (
 )
 
 const (
-	CCoinNameScala string = "Scala"
+	CCoinNameScala   string = "Scala"
+	cCoinAbbrevScala string = "XLA"
 
 	CScalaCoreVersion string = "4.1.0"
 	CDFScalaRPi       string = "arm-" + CScalaCoreVersion + "-rPI.zip"
