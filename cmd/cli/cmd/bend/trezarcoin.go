@@ -12,7 +12,8 @@ import (
 )
 
 const (
-	CCoinNameTrezarcoin string = "Trezarcoin"
+	CCoinNameTrezarcoin   string = "Trezarcoin"
+	cCoinAbbrevTrezarcoin string = "TZC"
 
 	CTrezarcoinCoreVersion string = "2.1.3"
 	CDFTrezarcoinRPi       string = CTrezarcoinCoreVersion + "-rpi.zip"
