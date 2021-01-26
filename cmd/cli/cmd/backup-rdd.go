@@ -34,6 +34,11 @@ var rddCmd = &cobra.Command{
 			log.Fatal("Unable to backup the " + be.CCoinNameReddCoin + " wallet.dat file: " + err.Error())
 		}
 		fmt.Println("Backup completed. Please store your backup wallet.dat file somewhere safe.")
+		fmt.Println("\n\nThank you for using " + be.CAppName)
+		fmt.Println(be.CAppName + " is FREE to use, and if you'd like to send a tip, please feel free to at the following " + be.CCoinNameReddCoin + " address below:")
+		s := be.GetTipAddress(be.PTReddCoin)
+		fmt.Println("\n" + be.CCoinAbbrevReddCoin + ": " + s)
+
 	},
 }
 
