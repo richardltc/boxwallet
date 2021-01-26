@@ -169,29 +169,41 @@ var coinCmd = &cobra.Command{
 			s = be.GetTipAddress(be.PTDeVault)
 			fmt.Println("\n" + be.CCoinAbbrevDeVault + ": " + s)
 		case be.PTDigiByte:
-			fmt.Println("\nDGB: dgb1qdw7qhh5crt3rhfau909pmc9r0esnnzqf48un6g")
+			s = be.GetTipAddress(be.PTDigiByte)
+			fmt.Println("\n" + be.CCoinAbbrevDigiByte + ": " + s)
 		case be.PTDivi:
-			fmt.Println("\nDIVI: DGvhjUXznuDyALk9zX4Y3ko4QQTmRhF7jZ")
+			s = be.GetTipAddress(be.PTDivi)
+			fmt.Println("\n" + be.CCoinAbbrevDivi + ": " + s)
 		case be.PTFeathercoin:
-			fmt.Println("\nFTC: 6yWAnPUcgWGXnXAM9u4faDVmfJwxKphcLf")
+			s = be.GetTipAddress(be.PTFeathercoin)
+			fmt.Println("\n" + be.CCoinAbbrevFeathercoin + ": " + s)
 		case be.PTGroestlcoin:
-			fmt.Println("\nGRS: 3HBqpZ1JH125FmW52GYjoBpNEAwyxjL9t9")
+			s = be.GetTipAddress(be.PTGroestlcoin)
+			fmt.Println("\n" + be.CCoinAbbrevGroestlcoin + ": " + s)
 		case be.PTPhore:
-			fmt.Println("\nPHR: PKFcy7UTEWegnAq7Wci8Aj76bQyHMottF8")
+			s = be.GetTipAddress(be.PTPhore)
+			fmt.Println("\n" + be.CCoinAbbrevPhore + ": " + s)
 		case be.PTPIVX:
-			fmt.Println("\nPIVX: DFHmj4dExVC24eWoRKmQJDx57r4svGVs3J")
+			s = be.GetTipAddress(be.PTPIVX)
+			fmt.Println("\n" + be.CCoinAbbrevPIVX + ": " + s)
 		case be.PTRapids:
-			fmt.Println("\nRPD: RvxCvM2VWVKq2iSLNoAmzdqH4eF9bhvn6k")
+			s = be.GetTipAddress(be.PTRapids)
+			fmt.Println("\n" + be.CCoinAbbrevRapids + ": " + s)
 		case be.PTReddCoin:
-			fmt.Println("\nRDD: RtH6nZvmnstUsy5w5cmdwTrarbTPm6zyrC")
+			s = be.GetTipAddress(be.PTReddCoin)
+			fmt.Println("\n" + be.CCoinAbbrevReddCoin + ": " + s)
 		case be.PTScala:
-			fmt.Println("\nXLA: Svkhh1KJ7qSPEtoAzAuriLUzVSseezcs2GS21bAL5rWEYD2iBykLvHUaMaQEcrF1pPfTkfEbWGsXz4zfXJWmQvat2Q2EHhS1e")
+			s = be.GetTipAddress(be.PTScala)
+			fmt.Println("\n" + be.CCoinAbbrevScala + ": " + s)
 		case be.PTTrezarcoin:
-			fmt.Println("\nTZC: TnkHScr6iTcfK11GDPFjNgJ7V3GZtHEy9V")
+			s = be.GetTipAddress(be.PTTrezarcoin)
+			fmt.Println("\n" + be.CCoinAbbrevTrezarcoin + ": " + s)
 		case be.PTVertcoin:
-			fmt.Println("\nVTC: vtc1q72j7fre83q8a7feppj28qkzfdt5vkcjr7xd74p")
+			s = be.GetTipAddress(be.PTVertcoin)
+			fmt.Println("\n" + be.CCoinAbbrevVertcoin + ": " + s)
 		default:
-			fmt.Println("\nDIVI: DGvhjUXznuDyALk9zX4Y3ko4QQTmRhF7jZ")
+			s = be.GetTipAddress(be.PTDivi)
+			fmt.Println("\n" + be.CCoinAbbrevDivi + ": " + s)
 		}
 	},
 }
