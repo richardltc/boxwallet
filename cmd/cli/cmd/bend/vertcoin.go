@@ -12,7 +12,8 @@ import (
 )
 
 const (
-	CCoinNameVertcoin string = "Vertcoin"
+	CCoinNameVertcoin   string = "Vertcoin"
+	cCoinAbbrevVertcoin string = "VTC"
 
 	CVertcoinCoreVersion string = "0.17.1"
 	CDFVertcoinRPi       string = "vertcoind-v" + CVertcoinCoreVersion + "-arm-linux-gnueabihf.zip"
@@ -144,7 +145,7 @@ type VTCWalletInfoRespStruct struct {
 func GetBlockchainInfoVTC(cliConf *ConfStruct) (VTCBlockchainInfoRespStruct, error) {
 	var respStruct VTCBlockchainInfoRespStruct
 
-	body := strings.NewReader("{\"jsonrpc\":\"1.0\",\"id\":\"curltext\",\"method\":\"getblockchaininfo\",\"params\":[]}")
+	body := strings.NewReader("{\"jsonrpc\":\"1.0\",\"id\":\"boxwallet\",\"method\":\"getblockchaininfo\",\"params\":[]}")
 	req, err := http.NewRequest("POST", "http://"+cliConf.ServerIP+":"+cliConf.Port, body)
 	if err != nil {
 		return respStruct, err
@@ -173,7 +174,7 @@ func GetNetworkInfoVTC(cliConf *ConfStruct) (VTCNetworkInfoRespStruct, error) {
 
 	//lf := "/home/pi/.boxwallet/boxwallet.log"
 	for i := 1; i < 50; i++ {
-		body := strings.NewReader("{\"jsonrpc\":\"1.0\",\"id\":\"curltext\",\"method\":\"getnetworkinfo\",\"params\":[]}")
+		body := strings.NewReader("{\"jsonrpc\":\"1.0\",\"id\":\"boxwallet\",\"method\":\"getnetworkinfo\",\"params\":[]}")
 
 		req, err := http.NewRequest("POST", "http://"+cliConf.ServerIP+":"+cliConf.Port, body)
 		if err != nil {
