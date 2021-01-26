@@ -1,7 +1,8 @@
 package bend
 
 const (
-	CCoinNameDigiByte string = "DigiByte"
+	CCoinNameDigiByte   string = "DigiByte"
+	cCoinAbbrevDigiByte string = "DGB"
 
 	CDigiByteCoreVersion string = "7.17.2"
 	CDFDigiByteArm64     string = "digibyte-" + CDigiByteCoreVersion + "-aarch64-linux-gnu.tar.gz"
