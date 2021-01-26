@@ -12,6 +12,9 @@ import (
 )
 
 const (
+	CCoinNamePhore   string = "Phore"
+	cCoinAbbrevPhore string = "PHR"
+
 	CPhoreCoreVersion string = "1.6.5"
 	CDFPhoreRPi              = "phore-" + CPhoreCoreVersion + "-arm-linux-gnueabihf.tar.gz"
 	CDFPhoreLinux            = "phore-" + CPhoreCoreVersion + "-x86_64-linux-gnu.tar.gz"
@@ -21,8 +24,6 @@ const (
 	CPhoreExtractedDirWindows = "phore-" + CPhoreCoreVersion + "\\"
 
 	CDownloadURLPhore = "https://github.com/phoreproject/Phore/releases/download/v" + CPhoreCoreVersion + "/"
-
-	CCoinNamePhore string = "Phore"
 
 	// Phore Wallet Constants
 	CPhoreHomeDir    string = ".phore"
