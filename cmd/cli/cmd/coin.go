@@ -134,6 +134,7 @@ var coinCmd = &cobra.Command{
 		// ...because it's possible that the conf file for this coin has already been created, we need to store the
 		// returned user and password so, effectively, will either be storing the existing info, or
 		// the freshly generated info.
+
 		cliConf.RPCuser = rpcu
 		cliConf.RPCpassword = rpcpw
 		err = be.SetConfigStruct("", cliConf)
@@ -162,9 +163,11 @@ var coinCmd = &cobra.Command{
 		fmt.Println(be.CAppName + " is FREE to use, and if you'd like to send a tip, please feel free to at the following " + sCoinName + " address below:")
 
 		// Display tip message.
+		var s string
 		switch cliConf.ProjectType {
 		case be.PTDeVault:
-			fmt.Println("\nDVT: devault:qp7w4pnm774c0uwch8ty6tj7sw86hze9ps4sqrwcue")
+			s = be.GetTipAddress(be.PTDeVault)
+			fmt.Println("\n" + be.CCoinAbbrevDeVault + ": " + s)
 		case be.PTDigiByte:
 			fmt.Println("\nDGB: dgb1qdw7qhh5crt3rhfau909pmc9r0esnnzqf48un6g")
 		case be.PTDivi:
