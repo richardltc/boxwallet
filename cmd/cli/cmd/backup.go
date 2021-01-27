@@ -55,8 +55,36 @@ var backupCmd = &cobra.Command{
 			if err := be.WalletBackup(be.PTFeathercoin); err != nil {
 				log.Fatal("Unable to backup the " + sCoinName + " wallet.dat file: " + err.Error())
 			}
+		case be.PTGroestlcoin:
+			if err := be.WalletBackup(be.PTGroestlcoin); err != nil {
+				log.Fatal("Unable to backup the " + sCoinName + " wallet.dat file: " + err.Error())
+			}
+		case be.PTPhore:
+			if err := be.WalletBackup(be.PTPhore); err != nil {
+				log.Fatal("Unable to backup the " + sCoinName + " wallet.dat file: " + err.Error())
+			}
+		case be.PTPIVX:
+			if err := be.WalletBackup(be.PTPIVX); err != nil {
+				log.Fatal("Unable to backup the " + sCoinName + " wallet.dat file: " + err.Error())
+			}
+		case be.PTRapids:
+			if err := be.WalletBackup(be.PTRapids); err != nil {
+				log.Fatal("Unable to backup the " + sCoinName + " wallet.dat file: " + err.Error())
+			}
 		case be.PTReddCoin:
 			if err := be.WalletBackup(be.PTReddCoin); err != nil {
+				log.Fatal("Unable to backup the " + sCoinName + " wallet.dat file: " + err.Error())
+			}
+		case be.PTScala:
+			if err := be.WalletBackup(be.PTScala); err != nil {
+				log.Fatal("Unable to backup the " + sCoinName + " wallet.dat file: " + err.Error())
+			}
+		case be.PTTrezarcoin:
+			if err := be.WalletBackup(be.PTTrezarcoin); err != nil {
+				log.Fatal("Unable to backup the " + sCoinName + " wallet.dat file: " + err.Error())
+			}
+		case be.PTVertcoin:
+			if err := be.WalletBackup(be.PTVertcoin); err != nil {
 				log.Fatal("Unable to backup the " + sCoinName + " wallet.dat file: " + err.Error())
 			}
 		default:
