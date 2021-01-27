@@ -43,8 +43,16 @@ var backupCmd = &cobra.Command{
 			if err := be.WalletBackup(be.PTDeVault); err != nil {
 				log.Fatal("Unable to backup the " + sCoinName + " wallet.dat file: " + err.Error())
 			}
+		case be.PTDigiByte:
+			if err := be.WalletBackup(be.PTDigiByte); err != nil {
+				log.Fatal("Unable to backup the " + sCoinName + " wallet.dat file: " + err.Error())
+			}
 		case be.PTDivi:
 			if err := be.WalletBackup(be.PTDivi); err != nil {
+				log.Fatal("Unable to backup the " + sCoinName + " wallet.dat file: " + err.Error())
+			}
+		case be.PTFeathercoin:
+			if err := be.WalletBackup(be.PTFeathercoin); err != nil {
 				log.Fatal("Unable to backup the " + sCoinName + " wallet.dat file: " + err.Error())
 			}
 		case be.PTReddCoin:
