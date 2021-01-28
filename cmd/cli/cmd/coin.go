@@ -998,10 +998,7 @@ func doRequiredFiles() error {
 				srcFileSap1 = be.CPIVXSapling1
 				srcFileSap2 = be.CPIVXSapling2
 			//srcFileBWCLI = be.CAppFilename
-			case "amd64":
-				if err := be.AddToLog(lf, "linux amd64 detected.", false); err != nil {
-					return fmt.Errorf("unable to add to log file: %v", err)
-				}
+			case "386", "amd64":
 				srcPath = abf + be.CPIVXExtractedDirLinux + "bin/"
 				srcPathSap = abf + be.CPIVXExtractedDirLinux + "share/pivx/"
 				srcFileCLI = be.CPIVXCliFile
