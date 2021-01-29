@@ -44,7 +44,7 @@ const (
 	cDiviRPCUser string = "divirpc"
 	CDiviRPCPort string = "51473"
 
-	// Wallet encryption status
+	// Wallet encryption status.
 	CWalletESUnlockedForStaking = "unlocked-for-staking"
 	CWalletESLocked             = "locked"
 	CWalletESUnlocked           = "unlocked"
@@ -572,7 +572,7 @@ func GetStakingStatusDivi(cliConf *ConfStruct) (DiviStakingStatusRespStruct, err
 func GetWalletInfoDivi(cliConf *ConfStruct) (DiviWalletInfoRespStruct, error) {
 	var respStruct DiviWalletInfoRespStruct
 
-	body := strings.NewReader("{\"jsonrpc\":\"1.0\",\"id\":\"curltext\",\"method\":\"getwalletinfo\",\"params\":[]}")
+	body := strings.NewReader("{\"jsonrpc\":\"1.0\",\"id\":\"boxwallet\",\"method\":\"" + cCommandGetWInfo + "\",\"params\":[]}")
 	req, err := http.NewRequest("POST", "http://"+cliConf.ServerIP+":"+cliConf.Port, body)
 	if err != nil {
 		return respStruct, err
