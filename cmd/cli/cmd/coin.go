@@ -112,7 +112,7 @@ var coinCmd = &cobra.Command{
 			log.Fatal("Unable to determine coin choice")
 		}
 
-		// Create the App Working folder if required...
+		// Create the App Working folder if required..
 		awf, _ := be.GetAppWorkingFolder()
 		if err := os.MkdirAll(awf, os.ModePerm); err != nil {
 			be.AddToLog(lf, "unable to make directory: "+err.Error(), false)
@@ -761,7 +761,7 @@ func doRequiredFiles() error {
 				srcFileD = be.CDeVaultDFile
 				srcFileTX = be.CDeVaultTxFile
 			//srcFileBWCLI = be.CAppFilename
-			case "amd64":
+			case "386", "amd64":
 				if err := be.AddToLog(lf, "linux amd64 detected.", false); err != nil {
 					return fmt.Errorf("unable to add to log file: %v", err)
 				}
@@ -844,7 +844,7 @@ func doRequiredFiles() error {
 				srcFileD = be.CDiviDFile
 				srcFileTX = be.CDiviTxFile
 			//srcFileBWCLI = be.CAppFilename
-			case "amd64":
+			case "386", "amd64":
 				if err := be.AddToLog(lf, "linux amd64 detected.", false); err != nil {
 					return fmt.Errorf("unable to add to log file: %v", err)
 				}
@@ -881,7 +881,7 @@ func doRequiredFiles() error {
 				srcFileD = be.CFeathercoinDFile
 				srcFileTX = be.CFeathercoinTxFile
 			//srcFileBWCLI = be.CAppFilename
-			case "amd64":
+			case "386", "amd64":
 				if err := be.AddToLog(lf, "linux amd64 detected.", false); err != nil {
 					return fmt.Errorf("unable to add to log file: %v", err)
 				}
@@ -918,7 +918,7 @@ func doRequiredFiles() error {
 				srcFileD = be.CGroestlcoinDFile
 				srcFileTX = be.CGroestlcoinTxFile
 			//srcFileBWCLI = be.CAppFilename
-			case "amd64":
+			case "386", "amd64":
 				if err := be.AddToLog(lf, "linux amd64 detected.", false); err != nil {
 					return fmt.Errorf("unable to add to log file: %v", err)
 				}
@@ -955,7 +955,7 @@ func doRequiredFiles() error {
 				srcFileD = be.CPhoreDFile
 				srcFileTX = be.CPhoreTxFile
 			//srcFileBWCLI = be.CAppFilename
-			case "amd64":
+			case "386", "amd64":
 				if err := be.AddToLog(lf, "linux amd64 detected.", false); err != nil {
 					return fmt.Errorf("unable to add to log file: %v", err)
 				}
@@ -1033,7 +1033,7 @@ func doRequiredFiles() error {
 				srcFileCLI = be.CRapidsCliFile
 				srcFileD = be.CRapidsDFile
 				srcFileTX = be.CRapidsTxFile
-			case "amd64":
+			case "386", "amd64":
 				if err := be.AddToLog(lf, "linux amd64 detected.", false); err != nil {
 					return fmt.Errorf("unable to add to log file: %v", err)
 				}
@@ -1115,7 +1115,7 @@ func doRequiredFiles() error {
 				srcFileD = be.CScalaDFile
 				srcFileTX = be.CScalaTxFile
 			//srcFileBWCLI = be.CAppFilename
-			case "amd64":
+			case "386", "amd64":
 				if err := be.AddToLog(lf, "linux amd64 detected.", false); err != nil {
 					return fmt.Errorf("unable to add to log file: %v", err)
 				}
@@ -1147,7 +1147,7 @@ func doRequiredFiles() error {
 				srcFileCLI = be.CTrezarcoinCliFile
 				srcFileD = be.CTrezarcoinDFile
 				srcFileTX = be.CTrezarcoinTxFile
-			case "amd64":
+			case "386", "amd64":
 				if err := be.AddToLog(lf, "linux amd64 detected.", false); err != nil {
 					return fmt.Errorf("unable to add to log file: %v", err)
 				}
@@ -1183,7 +1183,7 @@ func doRequiredFiles() error {
 				srcFileCLI = be.CVertcoinCliFile
 				srcFileD = be.CVertcoinDFile
 				srcFileTX = be.CVertcoinTxFile
-			case "amd64":
+			case "386", "amd64":
 				if err := be.AddToLog(lf, "linux amd64 detected.", false); err != nil {
 					return fmt.Errorf("unable to add to log file: %v", err)
 				}
