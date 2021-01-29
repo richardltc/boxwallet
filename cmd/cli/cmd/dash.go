@@ -111,7 +111,7 @@ var dashCmd = &cobra.Command{
 
 		wRunning, s, err := confirmWalletReady()
 		if err != nil {
-			log.Fatalf("Unable to determine if wallet is ready: %v,%v", s, err)
+			log.Fatalf("\nUnable to determine if wallet is ready: %v,%v", s, err)
 		}
 
 		coind, err := be.GetCoinDaemonFilename(be.APPTCLI, cliConf.ProjectType)
@@ -471,10 +471,11 @@ var dashCmd = &cobra.Command{
 				}
 				fmt.Println(r.Result)
 				fmt.Println("Restarting wallet after encryption...")
+				time.Sleep(5 * time.Second)
 				if err := be.StartCoinDaemon(false); err != nil {
 					log.Fatalf("failed to run "+coind+": %v", err)
 				}
-				// todo I think we need a wallet is ready code here again...
+				// todo I think we need a wallet is ready code here again..
 				wRunning, s, err := confirmWalletReady()
 				if err != nil {
 					log.Fatalf("Unable to determine if wallet is ready: %v,%v", s, err)
@@ -1374,7 +1375,7 @@ func checkHealth(bci *be.DiviBlockchainInfoRespStruct) error {
 	if bci.Result.Blocks == 100 {
 		// 20 * 3 = 3 minutes
 		if gBCSyncStuckCount > 20*3 {
-			if err := be.WalletFix(be.WFTReSync); err != nil {
+			if err := be.WalletFix(be.WFTReSync, be.PTDivi); err != nil {
 				return fmt.Errorf("unable to perform wallet resync: %v", err)
 			}
 			return nil
