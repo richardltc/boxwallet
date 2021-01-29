@@ -96,7 +96,7 @@ type RDDGetNewAddressStruct struct {
 	ID    string      `json:"id"`
 }
 
-// Might need a live update.
+// Might need a live update
 type RDDListReceivedByAddressRespStruct struct {
 	Result []struct {
 		Address       string        `json:"address"`
@@ -357,7 +357,7 @@ func GetNewAddressRDD(cliConf *ConfStruct) (RDDGetNewAddressStruct, error) {
 func GetWalletInfoRDD(cliConf *ConfStruct) (RDDWalletInfoRespStruct, error) {
 	var respStruct RDDWalletInfoRespStruct
 
-	body := strings.NewReader("{\"jsonrpc\":\"1.0\",\"id\":\"curltext\",\"method\":\" getwalletinfo\",\"params\":[]}")
+	body := strings.NewReader("{\"jsonrpc\":\"1.0\",\"id\":\"boxwallet\",\"method\":\"" + cCommandGetWInfo + "\",\"params\":[]}")
 	req, err := http.NewRequest("POST", "http://"+cliConf.ServerIP+":"+cliConf.Port, body)
 	if err != nil {
 		return respStruct, err
