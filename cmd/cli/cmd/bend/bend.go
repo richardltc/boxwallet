@@ -24,7 +24,7 @@ import (
 
 const (
 	CAppName        string = "BoxWallet"
-	CBWAppVersion   string = "0.36.0"
+	CBWAppVersion   string = "0.36.1"
 	CAppFilename    string = "boxwallet"
 	CAppFilenameWin string = "boxwallet.exe"
 	CAppLogfile     string = "boxwallet.log"
@@ -39,7 +39,7 @@ const (
 	cCommandMNSyncStatus1 string = "mnsync"
 	cCommandMNSyncStatus2 string = "status"
 
-	// Divi-cli wallet commands
+	// divi-cli wallet commands
 	cCommandDisplayWalletAddress string = "getaddressesbyaccount" // ./divi-cli getaddressesbyaccount ""
 	cCommandDumpHDInfo           string = "dumphdinfo"            // ./divi-cli dumphdinfo
 	// CCommandEncryptWallet - Needed by dash command
@@ -3274,10 +3274,15 @@ func UpdateGBPPriceInfo() error {
 	return errors.New("unable to updateGBPPriceInfo")
 }
 
-func WalletFix(wft WalletFixType) error {
-	// Stop divid if it's running
+func WalletFix(wft WalletFixType, pt ProjectType) error {
+	cn, err := GetCoinName(APPTCLI)
+	if err != nil {
+		return fmt.Errorf("unable to retrieve coin name")
+	}
+
+	// Stop the coin daemon if it's running
 	if err := StopCoinDaemon(false); err != nil {
-		return fmt.Errorf("unable to StopDiviD: %v", err)
+		return fmt.Errorf("unable to stop the "+cn+" coin daemon: %v", err)
 	}
 
 	abf, _ := GetAppWorkingFolder()
@@ -3288,139 +3293,29 @@ func WalletFix(wft WalletFixType) error {
 	//}
 	//abf := AddTrailingSlash(filepath.Dir(ex))
 
-	bwconf, err := GetConfigStruct("", false)
-	if err != nil {
-		return err
-	}
+	//bwconf, err := GetConfigStruct("", false)
+	//if err != nil {
+	//	return err
+	//}
 
-	coind, err := GetCoinDaemonFilename(APPTCLI, bwconf.ProjectType)
+	coind, err := GetCoinDaemonFilename(APPTCLI, pt)
 	if err != nil {
 		return fmt.Errorf("unable to GetCoinDaemonFilename - %v", err)
 	}
 
-	switch bwconf.ProjectType {
-	case PTDivi:
-		if runtime.GOOS == "windows" {
-			// TODO Complete for Windows
-		} else {
-			var arg1 string
-			switch wft {
-			case WFTReIndex:
-				arg1 = "-reindex"
-			case WFTReSync:
-				arg1 = "-resync"
-			}
-
-			cRun := exec.Command(abf+coind, arg1)
-			if err := cRun.Run(); err != nil {
-				return fmt.Errorf("unable to run divid -reindex: %v", err)
-			}
-		}
-	case PTFeathercoin:
-		if runtime.GOOS == "windows" {
-			// TODO Complete for Windows
-		} else {
-			var arg1 string
-			switch wft {
-			case WFTReIndex:
-				arg1 = "-reindex"
-			case WFTReSync:
-				arg1 = "-resync"
-			}
-
-			cRun := exec.Command(abf+coind, arg1)
-			if err := cRun.Run(); err != nil {
-				return fmt.Errorf("unable to run divid -reindex: %v", err)
-			}
-		}
-	case PTGroestlcoin:
-		if runtime.GOOS == "windows" {
-			// TODO Complete for Windows
-		} else {
-			var arg1 string
-			switch wft {
-			case WFTReIndex:
-				arg1 = "-reindex"
-			case WFTReSync:
-				arg1 = "-resync"
-			}
-
-			cRun := exec.Command(abf+coind, arg1)
-			if err := cRun.Run(); err != nil {
-				return fmt.Errorf("unable to run divid -reindex: %v", err)
-			}
-		}
-	case PTPIVX:
-		if runtime.GOOS == "windows" {
-			// TODO Complete for Windows
-		} else {
-			cRun := exec.Command(abf+coind, "-reindex")
-			if err := cRun.Run(); err != nil {
-				return fmt.Errorf("unable to run pivxd -reindex: %v", err)
-			}
-		}
-	case PTRapids:
-		if runtime.GOOS == "windows" {
-			// TODO Complete for Windows
-		} else {
-			var arg1 string
-			switch wft {
-			case WFTReIndex:
-				arg1 = "-reindex"
-			case WFTReSync:
-				arg1 = "-resync"
-			}
-
-			cRun := exec.Command(abf+coind, arg1)
-			if err := cRun.Run(); err != nil {
-				return fmt.Errorf("unable to run divid -reindex: %v", err)
-			}
-		}
-	case PTScala:
-		if runtime.GOOS == "windows" {
-			// TODO Complete for Windows
-		} else {
-			var arg1 string
-			switch wft {
-			case WFTReIndex:
-				arg1 = "-reindex"
-			case WFTReSync:
-				arg1 = "-resync"
-			}
-
-			cRun := exec.Command(abf+coind, arg1)
-			if err := cRun.Run(); err != nil {
-				return fmt.Errorf("unable to run divid -reindex: %v", err)
-			}
-		}
-	case PTTrezarcoin:
-		if runtime.GOOS == "windows" {
-			// TODO Complete for Windows
-		} else {
-			cRun := exec.Command(abf+coind, "-reindex")
-			if err := cRun.Run(); err != nil {
-				return fmt.Errorf("unable to run trezardcoind -reindex: %v", err)
-			}
-		}
-	case PTVertcoin:
-		if runtime.GOOS == "windows" {
-			// TODO Complete for Windows
-		} else {
-			var arg1 string
-			switch wft {
-			case WFTReIndex:
-				arg1 = "-reindex"
-			case WFTReSync:
-				arg1 = "-resync"
-			}
-
-			cRun := exec.Command(abf+coind, arg1)
-			if err := cRun.Run(); err != nil {
-				return fmt.Errorf("unable to run divid -reindex: %v", err)
-			}
-		}
+	var arg1 string
+	switch wft {
+	case WFTReIndex:
+		arg1 = "-reindex"
+	case WFTReSync:
+		arg1 = "-resync"
 	default:
-		err = errors.New("unable to determine ProjectType")
+		return fmt.Errorf("unable to determine WalletFixType - [WalletFix-" + cn + "]")
+	}
+
+	cRun := exec.Command(abf+coind, arg1)
+	if err := cRun.Run(); err != nil {
+		return fmt.Errorf("unable to run "+coind+" "+arg1+": %v", err)
 	}
 
 	return nil
