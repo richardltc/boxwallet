@@ -116,7 +116,12 @@ var displayaddressCmd = &cobra.Command{
 			log.Fatalf("Unable to determine project type")
 		}
 
-		fmt.Println("Your address is: \n\n" + sAddress + "\n")
+		cn, err := be.GetCoinName(be.APPTCLI)
+		if err != nil {
+			log.Fatalf("Unable to call GetCoinName")
+		}
+
+		fmt.Println("Your " + cn + " address is: \n\n" + sAddress + "\n")
 
 		// sAppCLIName, err := gwc.GetAppCLIName() // e.g. GoDivi CLI
 		// if err != nil {
