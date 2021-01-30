@@ -1643,11 +1643,23 @@ func getBalanceInFeathercoinTxt(wi *be.FeathercoinWalletInfoRespStruct) string {
 }
 
 func getBalanceInGRSTxt(wi *be.GRSWalletInfoRespStruct) string {
-	tBalance := wi.Result.Balance
+	tBalance := wi.Result.ImmatureBalance + wi.Result.UnconfirmedBalance + wi.Result.Balance
 	tBalanceStr := humanize.FormatFloat("#,###.####", tBalance)
 
 	// Work out balance
-	return "  Balance:          [" + tBalanceStr + "](fg:green)"
+	if wi.Result.ImmatureBalance > 0 {
+		return "  Incoming....... [" + tBalanceStr + "](fg:cyan)"
+	} else if wi.Result.UnconfirmedBalance > 0 {
+		return "  Confirming....... [" + tBalanceStr + "](fg:yellow)"
+	} else {
+		return "  Balance:          [" + tBalanceStr + "](fg:green)"
+	}
+
+	//tBalance := wi.Result.Balance
+	//tBalanceStr := humanize.FormatFloat("#,###.####", tBalance)
+	//
+	//// Work out balance
+	//return "  Balance:          [" + tBalanceStr + "](fg:green)"
 }
 
 func getBalanceInPhoreTxt(wi *be.PhoreWalletInfoRespStruct) string {
