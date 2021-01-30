@@ -37,6 +37,7 @@ const (
 	CDeVaultTxFile     string = "devault-tx"
 	CDeVaultTxFileWin  string = "devault-tx.exe"
 
+	cDeVaultRPCUser string = "devaultrpc"
 	CDeVaultRPCPort string = "3339"
 )
 

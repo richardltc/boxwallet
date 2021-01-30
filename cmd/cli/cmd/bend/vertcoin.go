@@ -36,6 +36,7 @@ const (
 	CVertcoinTxFile     string = "vertcoin-tx"
 	CVertcoinTxFileWin  string = "vertcoin-tx.exe"
 
+	cVertcoinRPCUser string = "vertcoinrpc"
 	CVertcoinRPCPort string = "5888"
 )
 
