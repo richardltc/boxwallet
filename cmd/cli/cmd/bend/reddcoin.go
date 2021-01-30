@@ -357,7 +357,7 @@ func GetNewAddressRDD(cliConf *ConfStruct) (RDDGetNewAddressStruct, error) {
 func GetWalletInfoRDD(cliConf *ConfStruct) (RDDWalletInfoRespStruct, error) {
 	var respStruct RDDWalletInfoRespStruct
 
-	body := strings.NewReader("{\"jsonrpc\":\"1.0\",\"id\":\"boxwallet\",\"method\":\"" + cCommandGetWInfo + "\",\"params\":[]}")
+	body := strings.NewReader("{\"jsonrpc\":\"1.0\",\"id\":\"boxwallet\",\"method\":\"" + cCommandGetWalletInfo + "\",\"params\":[]}")
 	req, err := http.NewRequest("POST", "http://"+cliConf.ServerIP+":"+cliConf.Port, body)
 	if err != nil {
 		return respStruct, err
