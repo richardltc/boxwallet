@@ -1092,7 +1092,7 @@ func PopulateDaemonConfFile() (rpcuser, rpcpassword string, err error) {
 			bFileHasBeenBU = true
 		}
 		if bNeedToWriteStr {
-			rpcu = "devaultrpc"
+			rpcu = cDeVaultRPCUser
 			if err := WriteTextToFile(chd+CDeVaultConfFile, cRPCUserStr+"="+rpcu); err != nil {
 				log.Fatal(err)
 			}
@@ -1265,7 +1265,7 @@ func PopulateDaemonConfFile() (rpcuser, rpcpassword string, err error) {
 			bFileHasBeenBU = true
 		}
 		if bNeedToWriteStr {
-			rpcu = "digibyterpc"
+			rpcu = cDigiByteRPCUser
 			if err := WriteTextToFile(chd+CDigiByteConfFile, cRPCUserStr+"="+rpcu); err != nil {
 				log.Fatal(err)
 			}
@@ -1611,7 +1611,7 @@ func PopulateDaemonConfFile() (rpcuser, rpcpassword string, err error) {
 			bFileHasBeenBU = true
 		}
 		if bNeedToWriteStr {
-			rpcu = "feathercoinrpc"
+			rpcu = cFeathercoinRPCUser
 			if err := WriteTextToFile(chd+CFeathercoinConfFile, cRPCUserStr+"="+rpcu); err != nil {
 				log.Fatal(err)
 			}
@@ -1784,7 +1784,7 @@ func PopulateDaemonConfFile() (rpcuser, rpcpassword string, err error) {
 			bFileHasBeenBU = true
 		}
 		if bNeedToWriteStr {
-			rpcu = "groestlcoinrpc"
+			rpcu = cGroestlcoinRPCUser
 			if err := WriteTextToFile(chd+CGroestlcoinConfFile, cRPCUserStr+"="+rpcu); err != nil {
 				log.Fatal(err)
 			}
@@ -1942,7 +1942,7 @@ func PopulateDaemonConfFile() (rpcuser, rpcpassword string, err error) {
 					return "", "", fmt.Errorf("unable to backup file - %v", err)
 				}
 			}
-			rpcu = "phorerpc"
+			rpcu = cPhoreRPCUser
 			if err := WriteTextToFile(chd+CPhoreConfFile, cRPCUserStr+"="+rpcu); err != nil {
 				log.Fatal(err)
 			}
@@ -2800,7 +2800,7 @@ func PopulateDaemonConfFile() (rpcuser, rpcpassword string, err error) {
 			bFileHasBeenBU = true
 		}
 		if bNeedToWriteStr {
-			rpcu = "vertcoinrpc"
+			rpcu = cVertcoinRPCUser
 			if err := WriteTextToFile(chd+CVertcoinConfFile, cRPCUserStr+"="+rpcu); err != nil {
 				log.Fatal(err)
 			}
