@@ -14,7 +14,8 @@ const (
 )
 
 type ConfStruct struct {
-	BinFolder             string      // The folder that contains the coin binary files
+	//BinFolder             string      // The folder that contains the coin binary files
+	BlockchainSynced      bool        // If no, don't ask to encrypt wallet within dash command
 	Currency              string      // USD, GBP
 	FirstTimeRun          bool        // Is this the first time the server has run? If so, we need to store the BinFolder
 	ProjectType           ProjectType // The project type
@@ -108,7 +109,8 @@ func GetConfigStruct(confDir string, refreshFields bool) (ConfStruct, error) {
 
 func newConfStruct() ConfStruct {
 	cnf := ConfStruct{}
-	cnf.BinFolder = ""
+	//cnf.BinFolder = ""
+	cnf.BlockchainSynced = false
 	cnf.Currency = "USD"
 	cnf.FirstTimeRun = true
 	cnf.ProjectType = 0
