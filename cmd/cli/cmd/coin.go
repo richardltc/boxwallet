@@ -112,7 +112,7 @@ var coinCmd = &cobra.Command{
 			log.Fatal("Unable to determine coin choice")
 		}
 
-		// Create the App Working folder if required..
+		// Create the App Working folder if required.
 		awf, _ := be.GetAppWorkingFolder()
 		if err := os.MkdirAll(awf, os.ModePerm); err != nil {
 			be.AddToLog(lf, "unable to make directory: "+err.Error(), false)
