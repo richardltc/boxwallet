@@ -460,7 +460,7 @@ var dashCmd = &cobra.Command{
 			log.Fatalf("Unable to determine project type")
 		}
 
-		if bWalletNeedsEncrypting {
+		if bWalletNeedsEncrypting && cliConf.BlockchainSynced == true {
 			be.ClearScreen()
 			resp := be.GetWalletEncryptionResp()
 			if resp == true {
@@ -471,7 +471,7 @@ var dashCmd = &cobra.Command{
 				}
 				fmt.Println(r.Result)
 				fmt.Println("Restarting wallet after encryption...")
-				time.Sleep(5 * time.Second)
+				time.Sleep(10 * time.Second)
 				if err := be.StartCoinDaemon(false); err != nil {
 					log.Fatalf("failed to run "+coind+": %v", err)
 				}
@@ -645,6 +645,7 @@ var dashCmd = &cobra.Command{
 				"  Blockchain:  [checking...](fg:yellow)\n" +
 				"  Masternodes: [checking...](fg:yellow)" +
 				"  Peers:  [checking...](fg:yellow)\n"
+
 		case be.PTRapids:
 			pNetwork.Text = "  Blocks:      [checking...](fg:yellow)\n" +
 				"  Difficulty:  [checking...](fg:yellow)\n" +
@@ -1809,7 +1810,7 @@ func getWalletSecurityStatusTxtRDD(wi *be.RDDWalletInfoRespStruct) string {
 	} else if wi.Result.UnlockedUntil == -1 {
 		return "Security:         [UNENCRYPTED](fg:red)"
 	} else if wi.Result.UnlockedUntil > 0 {
-		return "Security:         [Locked](fg:green)"
+		return "Security:         [Locked and Staking](fg:green)"
 	} else {
 		return "Security:         [checking...](fg:yellow)"
 	}
