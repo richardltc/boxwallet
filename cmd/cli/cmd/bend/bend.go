@@ -1265,7 +1265,7 @@ func PopulateDaemonConfFile() (rpcuser, rpcpassword string, err error) {
 			bFileHasBeenBU = true
 		}
 		if bNeedToWriteStr {
-			rpcu = "devaultrpc"
+			rpcu = "digibyterpc"
 			if err := WriteTextToFile(chd+CDigiByteConfFile, cRPCUserStr+"="+rpcu); err != nil {
 				log.Fatal(err)
 			}
@@ -3433,7 +3433,7 @@ func StartCoinDaemon(displayOutput bool) error {
 					os.Exit(0)
 				}
 				num++
-				if string(line) == "DigiByte server starting" {
+				if string(line) == "" { //"DigiByte server starting" {
 					if displayOutput {
 						fmt.Println("DigiByte server starting")
 					}
