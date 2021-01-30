@@ -38,6 +38,7 @@ const (
 	CPhoreTxFileWin  string = "phore-tx.exe"
 
 	// phore.conf file constants
+	cPhoreRPCUser string = "phorerpc"
 	CPhoreRPCPort string = "11772"
 )
 

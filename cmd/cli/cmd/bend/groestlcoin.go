@@ -38,6 +38,7 @@ const (
 	CGroestlcoinTxFileWin  string = "groestlcoin-tx.exe"
 
 	// Networking
+	cGroestlcoinRPCUser string = "groestlcoinrpc"
 	CGroestlcoinRPCPort string = "1441"
 )
 

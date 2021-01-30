@@ -36,6 +36,7 @@ const (
 	CFeathercoinTxFileWin  string = "feathercoin-tx.exe"
 
 	// feathercoin.conf file constants
+	cFeathercoinRPCUser string = "feathercoinrpc"
 	CFeathercoinRPCPort string = "18332"
 )
 

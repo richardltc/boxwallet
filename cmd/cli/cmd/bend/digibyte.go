@@ -25,5 +25,6 @@ const (
 	CDigiByteTxFile     string = "digibyte-tx"
 	CDigiByteTxFileWin  string = "digibyte-tx.exe"
 
+	cDigiByteRPCUser string = "digibyterpc"
 	CDigiByteRPCPort string = "14022"
 )
