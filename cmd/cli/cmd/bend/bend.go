@@ -35,7 +35,7 @@ const (
 	// General CLI command constants
 	cCommandGetBCInfo     string = "getblockchaininfo"
 	cCommandGetInfo       string = "getinfo"
-	cCommandGetWInfo      string = "getwalletinfo"
+	cCommandGetWalletInfo string = "getwalletinfo"
 	cCommandMNSyncStatus1 string = "mnsync"
 	cCommandMNSyncStatus2 string = "status"
 
@@ -780,7 +780,7 @@ func GetWalletAddress(cliConf *ConfStruct) (GetAddressesByAccountRespStruct, err
 // 	}
 
 // 	for i := 0; i <= 4; i++ {
-// 		cmd := exec.Command(dbf+gwc.CDiviCliFile, cCommandGetWInfo)
+// 		cmd := exec.Command(dbf+gwc.CDiviCliFile, cCommandGetWalletInfo)
 // 		var stdout bytes.Buffer
 // 		cmd.Stdout = &stdout
 // 		cmd.Run()
@@ -791,7 +791,7 @@ func GetWalletAddress(cliConf *ConfStruct) (GetAddressesByAccountRespStruct, err
 // 		outStr := string(stdout.Bytes())
 // 		wr := getWalletResponse(outStr)
 
-// 		// cmd := exec.Command(dbf+gwc.CDiviCliFile, cCommandGetWInfo)
+// 		// cmd := exec.Command(dbf+gwc.CDiviCliFile, cCommandGetWalletInfo)
 // 		// out, err := cmd.CombinedOutput()
 // 		// sOut := string(out)
 // 		//wr := getWalletResponse(sOut)
