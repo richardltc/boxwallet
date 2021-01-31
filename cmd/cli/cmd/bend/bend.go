@@ -33,11 +33,14 @@ const (
 	cAppWorkingDirWin string = "BoxWallet"
 
 	// General CLI command constants
-	cCommandGetBCInfo     string = "getblockchaininfo"
-	cCommandGetInfo       string = "getinfo"
-	cCommandGetWalletInfo string = "getwalletinfo"
-	cCommandMNSyncStatus1 string = "mnsync"
-	cCommandMNSyncStatus2 string = "status"
+	cCommandGetBCInfo             string = "getblockchaininfo"
+	cCommandGetInfo               string = "getinfo"
+	cCommandListReceivedByAddress string = "listreceivedbyaddress"
+	cCommandGetNetworkInfo        string = "getnetworkinfo"
+	cCommandGetNewAddress         string = "getnewaddress"
+	cCommandGetWalletInfo         string = "getwalletinfo"
+	cCommandMNSyncStatus1         string = "mnsync"
+	cCommandMNSyncStatus2         string = "status"
 
 	// divi-cli wallet commands
 	cCommandDisplayWalletAddress string = "getaddressesbyaccount" // ./divi-cli getaddressesbyaccount ""
