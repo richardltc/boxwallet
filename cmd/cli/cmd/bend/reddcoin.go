@@ -292,7 +292,7 @@ func GetNetworkInfoRDD(cliConf *ConfStruct) (RDDNetworkInfoRespStruct, error) {
 	var respStruct RDDNetworkInfoRespStruct
 
 	for i := 1; i < 50; i++ {
-		body := strings.NewReader("{\"jsonrpc\":\"1.0\",\"id\":\"curltext\",\"method\":\"getnetworkinfo\",\"params\":[]}")
+		body := strings.NewReader("{\"jsonrpc\":\"1.0\",\"id\":\"boxwallet\",\"method\":\"" + cCommandGetNetworkInfo + "\",\"params\":[]}")
 
 		req, err := http.NewRequest("POST", "http://"+cliConf.ServerIP+":"+cliConf.Port, body)
 		if err != nil {
@@ -328,7 +328,7 @@ func GetNetworkInfoRDD(cliConf *ConfStruct) (RDDNetworkInfoRespStruct, error) {
 func GetNewAddressRDD(cliConf *ConfStruct) (RDDGetNewAddressStruct, error) {
 	var respStruct RDDGetNewAddressStruct
 
-	body := strings.NewReader("{\"jsonrpc\":\"1.0\",\"id\":\"curltext\",\"method\":\"getnewaddress\",\"params\":[]}")
+	body := strings.NewReader("{\"jsonrpc\":\"1.0\",\"id\":\"boxwallet\",\"method\":\"" + cCommandGetNewAddress + "\",\"params\":[]}")
 	req, err := http.NewRequest("POST", "http://"+cliConf.ServerIP+":"+cliConf.Port, body)
 	if err != nil {
 		return respStruct, err
