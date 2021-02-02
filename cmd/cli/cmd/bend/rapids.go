@@ -22,7 +22,7 @@ const (
 	//CDFRapidsFileLinuxDaemon string = "rapids-" + CRapidsCoreVersion + "-daemon-ubuntu1804.tar.gz"
 	CDFRapidsFileWindows string = "rapids-" + CRapidsCoreVersion + "-win64.zip"
 
-	CRapidsExtractedDirLinux = "rapids-" + CRapidsCoreVersion + "-lin64" + "/"
+	CRapidsExtractedDirLinux = "rapids-lin64" + "/"
 	//CRapidsExtractedDirDaemon  = "Rapids-" + CRapidsCoreVersion + "-daemon-ubuntu1804" + "/"
 	CRapidsExtractedDirWindows = "rapids-3.4.1-win64" + "\\"
 
