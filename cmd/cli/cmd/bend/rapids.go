@@ -26,7 +26,8 @@ const (
 	//CRapidsExtractedDirDaemon  = "Rapids-" + CRapidsCoreVersion + "-daemon-ubuntu1804" + "/"
 	CRapidsExtractedDirWindows = "rapids-3.4.1-win64" + "\\"
 
-	CDownloadURLRapids string = "https://github.com/RapidsOfficial/Rapids/releases/download/aa4e5a8/" + CRapidsCoreVersion + "/"
+	//https://github.com/RapidsOfficial/Rapids/releases/download/aa4e5a8/rapids-3.4.1-lin64.tgz
+	CDownloadURLRapids string = "https://github.com/RapidsOfficial/Rapids/releases/download/aa4e5a8/"
 
 	cRapidsHomeDir    string = ".rapids"
 	cRapidsHomeDirWin string = "RAPIDS"
