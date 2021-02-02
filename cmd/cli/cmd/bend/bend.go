@@ -24,6 +24,7 @@ import (
 
 const (
 	CAppName        string = "BoxWallet"
+	CUpdaterAppName string = "bwupdater" // bwupdater
 	CBWAppVersion   string = "0.36.2"
 	CAppFilename    string = "boxwallet"
 	CAppFilenameWin string = "boxwallet.exe"
@@ -388,7 +389,7 @@ func ConvertBCVerification(verificationPG float64) string {
 	return sProg
 }
 
-func findProcess(key string) (int, string, error) {
+func FindProcess(key string) (int, string, error) {
 	pname := ""
 	pid := 0
 	err := errors.New("not found")
@@ -967,69 +968,69 @@ func IsCoinDaemonRunning(ct ProjectType) (bool, int, error) {
 	switch ct {
 	case PTDigiByte:
 		if runtime.GOOS == "windows" {
-			pid, _, err = findProcess(CDigiByteDFileWin)
+			pid, _, err = FindProcess(CDigiByteDFileWin)
 		} else {
-			pid, _, err = findProcess(CDigiByteDFile)
+			pid, _, err = FindProcess(CDigiByteDFile)
 		}
 	case PTDivi:
 		if runtime.GOOS == "windows" {
-			pid, _, err = findProcess(CDiviDFileWin)
+			pid, _, err = FindProcess(CDiviDFileWin)
 		} else {
-			pid, _, err = findProcess(CDiviDFile)
+			pid, _, err = FindProcess(CDiviDFile)
 		}
 	case PTFeathercoin:
 		if runtime.GOOS == "windows" {
-			pid, _, err = findProcess(CFeathercoinDFileWin)
+			pid, _, err = FindProcess(CFeathercoinDFileWin)
 		} else {
-			pid, _, err = findProcess(CFeathercoinDFile)
+			pid, _, err = FindProcess(CFeathercoinDFile)
 		}
 	case PTGroestlcoin:
 		if runtime.GOOS == "windows" {
-			pid, _, err = findProcess(CGroestlcoinDFileWin)
+			pid, _, err = FindProcess(CGroestlcoinDFileWin)
 		} else {
-			pid, _, err = findProcess(CGroestlcoinDFile)
+			pid, _, err = FindProcess(CGroestlcoinDFile)
 		}
 	case PTPhore:
 		if runtime.GOOS == "windows" {
-			pid, _, err = findProcess(CPhoreDFileWin)
+			pid, _, err = FindProcess(CPhoreDFileWin)
 		} else {
-			pid, _, err = findProcess(CPhoreDFile)
+			pid, _, err = FindProcess(CPhoreDFile)
 		}
 	case PTPIVX:
 		if runtime.GOOS == "windows" {
-			pid, _, err = findProcess(CPIVXDFileWin)
+			pid, _, err = FindProcess(CPIVXDFileWin)
 		} else {
-			pid, _, err = findProcess(CPIVXDFile)
+			pid, _, err = FindProcess(CPIVXDFile)
 		}
 	case PTRapids:
 		if runtime.GOOS == "windows" {
-			pid, _, err = findProcess(CRapidsDFileWin)
+			pid, _, err = FindProcess(CRapidsDFileWin)
 		} else {
-			pid, _, err = findProcess(CRapidsDFile)
+			pid, _, err = FindProcess(CRapidsDFile)
 		}
 	case PTReddCoin:
 		if runtime.GOOS == "windows" {
-			pid, _, err = findProcess(CReddCoinDFileWin)
+			pid, _, err = FindProcess(CReddCoinDFileWin)
 		} else {
-			pid, _, err = findProcess(CReddCoinDFile)
+			pid, _, err = FindProcess(CReddCoinDFile)
 		}
 	case PTScala:
 		if runtime.GOOS == "windows" {
-			pid, _, err = findProcess(CScalaDFileWin)
+			pid, _, err = FindProcess(CScalaDFileWin)
 		} else {
-			pid, _, err = findProcess(CScalaDFile)
+			pid, _, err = FindProcess(CScalaDFile)
 		}
 	case PTTrezarcoin:
 		if runtime.GOOS == "windows" {
-			pid, _, err = findProcess(CTrezarcoinDFileWin)
+			pid, _, err = FindProcess(CTrezarcoinDFileWin)
 		} else {
-			pid, _, err = findProcess(CTrezarcoinDFile)
+			pid, _, err = FindProcess(CTrezarcoinDFile)
 		}
 	case PTVertcoin:
 		if runtime.GOOS == "windows" {
-			pid, _, err = findProcess(CVertcoinDFileWin)
+			pid, _, err = FindProcess(CVertcoinDFileWin)
 		} else {
-			pid, _, err = findProcess(CVertcoinDFile)
+			pid, _, err = FindProcess(CVertcoinDFile)
 		}
 	default:
 		err = errors.New("unable to determine ProjectType")
