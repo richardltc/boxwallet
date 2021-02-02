@@ -117,7 +117,7 @@ func BackupFile(srcFolder, srcFile, dstFolder, prefixStr string, failOnNoSrc boo
 		}
 	}
 
-	// Open original file
+	// Open original file.
 	originalFile, err := os.Open(srcFolder + srcFile)
 	if err != nil {
 		return err
@@ -128,7 +128,13 @@ func BackupFile(srcFolder, srcFile, dstFolder, prefixStr string, failOnNoSrc boo
 	if dstFolder == "" {
 		dstFolder = srcFolder
 	}
-	newFile, err := os.Create(dstFolder + prefixStr + "-" + dtStr + "-" + srcFile)
+
+	var s string
+	if prefixStr != "" {
+		s = prefixStr + "-"
+	}
+
+	newFile, err := os.Create(dstFolder + s + dtStr + "-" + srcFile)
 	if err != nil {
 		return err
 	}
