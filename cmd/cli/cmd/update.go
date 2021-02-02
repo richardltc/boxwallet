@@ -20,8 +20,8 @@ package cmd
 import (
 	be "richardmace.co.uk/boxwallet/cmd/cli/cmd/bend"
 
-	// gwc "github.com/richardltc/gwcommon"
 	"github.com/spf13/cobra"
+	"log"
 )
 
 // updateCmd represents the update command
@@ -30,16 +30,8 @@ var updateCmd = &cobra.Command{
 	Short: "You can update " + be.CAppName + " to the latest version by running ",
 	Long:  ``,
 	Run: func(cmd *cobra.Command, args []string) {
-		//sAppName, err := be.GetAppName(gwc.APPTCLI)
-		//if err != nil {
-		//	log.Fatal("Unable to GetAppName " + err.Error())
-		//}
-		//abf, err := gwc.GetAppsBinFolder(gwc.APPTCLI)
-		//if err != nil {
-		//	log.Fatal("Unable to GetAppsBinFolder " + err.Error())
-		//}
-		//
-		//log.Fatal(sAppName + ` can be updated to the latest version by running "./` + sAppUpdaterFile + `" from within the ` + abf + " folder.")
+		log.Fatal(be.CAppName + ` can be updated to the latest version by running: ./` + be.CUpdaterAppName)
+
 	},
 }
 
