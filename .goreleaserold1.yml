@@ -9,48 +9,24 @@ before:
 builds:
   - env:
       - CGO_ENABLED=0
+    goos:
+      - linux
+      - windows
+      - darwin
+    goarch:
+      - amd64
+      - arm64
+      - arm
+      - 386
+    ignore:
+      - goos: darwin
+        goarch: 386
+      - goos: windows
+        goarch: 386
+      #- goos: linux
+      #  goarch: 386
 
-    id: "boxwallet"
     main: ./cmd/cli/main.go
-
-    goos:
-      - linux
-      - windows
-      - darwin
-    goarch:
-      - amd64
-      - arm64
-      - arm
-      - 386
-    ignore:
-      - goos: darwin
-        goarch: 386
-      - goos: windows
-        goarch: 386
-      #- goos: linux
-      #  goarch: 386
-
-  - id: "bwupdater"
-    main: ./cmd/updater/main.go
-    binary: "bwupdater"
-
-    goos:
-      - linux
-      - windows
-      - darwin
-    goarch:
-      - amd64
-      - arm64
-      - arm
-      - 386
-    ignore:
-      - goos: darwin
-        goarch: 386
-      - goos: windows
-        goarch: 386
-      #- goos: linux
-      #  goarch: 386
-
 archives:
   -
     format: tar.gz
