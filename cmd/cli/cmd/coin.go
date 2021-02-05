@@ -36,9 +36,17 @@ var coinCmd = &cobra.Command{
 	Long:  ``,
 	Run: func(cmd *cobra.Command, args []string) {
 		fmt.Println("  ____          __          __   _ _      _   \n |  _ \\         \\ \\        / /  | | |    | |  \n | |_) | _____  _\\ \\  /\\  / /_ _| | | ___| |_ \n |  _ < / _ \\ \\/ /\\ \\/  \\/ / _` | | |/ _ \\ __|\n | |_) | (_) >  <  \\  /\\  / (_| | | |  __/ |_ \n |____/ \\___/_/\\_\\  \\/  \\/ \\__,_|_|_|\\___|\\__| v" + be.CBWAppVersion + "\n                                              \n                                               ")
+
 		coin := ""
 		lf, _ := be.GetAppWorkingFolder()
 		lf = lf + be.CAppLogfile
+
+		// Create the App Working folder if required.
+		awf, _ := be.GetAppWorkingFolder()
+		if err := os.MkdirAll(awf, os.ModePerm); err != nil {
+			log.Fatal("unable to make directory: ", err)
+		}
+
 		be.AddToLog(lf, "coin command invoked", false)
 		prompt := &survey.Select{
 			Message: "Please choose your preferred coin:",
@@ -110,13 +118,6 @@ var coinCmd = &cobra.Command{
 			cliConf.Port = be.CVertcoinRPCPort
 		default:
 			log.Fatal("Unable to determine coin choice")
-		}
-
-		// Create the App Working folder if required.
-		awf, _ := be.GetAppWorkingFolder()
-		if err := os.MkdirAll(awf, os.ModePerm); err != nil {
-			be.AddToLog(lf, "unable to make directory: "+err.Error(), false)
-			log.Fatal("unable to make directory: ", err)
 		}
 
 		if err := be.SetConfigStruct("", cliConf); err != nil {
@@ -587,11 +588,15 @@ func doRequiredFiles() error {
 		}
 	case be.PTRapids:
 		if runtime.GOOS == "windows" {
-			_, err = be.UnZip(filePath, abf)
-			if err != nil {
-				return fmt.Errorf("unable to unzip file: %v - %v", filePath, err)
+			//_, err = be.UnZip(filePath, abf)
+			//if err != nil {
+			//	return fmt.Errorf("unable to unzip file: %v - %v", filePath, err)
+			//}
+			//defer os.RemoveAll(abf)
+			if err := archiver.Unarchive(filePath, abf); err != nil {
+				return fmt.Errorf("unable to unarchive file: %v - %v", r, err)
 			}
-			defer os.RemoveAll(abf)
+			defer os.RemoveAll(abf + be.CRapidsExtractedDirWindows)
 		} else if runtime.GOARCH == "arm" {
 			//err = be.ExtractTarGz(r)
 			err = archiver.Unarchive(filePath, abf)
@@ -610,11 +615,15 @@ func doRequiredFiles() error {
 	case be.PTReddCoin:
 		switch runtime.GOOS {
 		case "windows":
-			_, err = be.UnZip(filePath, abf)
-			if err != nil {
-				return fmt.Errorf("unable to unzip file: %v - %v", filePath, err)
+			//_, err = be.UnZip(filePath, abf)
+			//if err != nil {
+			//	return fmt.Errorf("unable to unzip file: %v - %v", filePath, err)
+			//}
+			if err := archiver.Unarchive(filePath, abf); err != nil {
+				return fmt.Errorf("unable to unarchive file: %v - %v", r, err)
 			}
-			defer os.RemoveAll(abf)
+
+			defer os.RemoveAll(abf + be.CReddCoinExtractedDirWin)
 		case "linux":
 			switch runtime.GOARCH {
 			case "arm":
