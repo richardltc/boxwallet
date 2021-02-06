@@ -25,7 +25,7 @@ import (
 const (
 	CAppName        string = "BoxWallet"
 	CUpdaterAppName string = "bwupdater" // bwupdater
-	CBWAppVersion   string = "0.36.5"
+	CBWAppVersion   string = "0.37.0"
 	CAppFilename    string = "boxwallet"
 	CAppFilenameWin string = "boxwallet.exe"
 	CAppLogfile     string = "boxwallet.log"
@@ -3656,17 +3656,28 @@ func StartCoinDaemon(displayOutput bool) error {
 				return err
 			}
 
+			// Wait a few seconds before reading the output...
+			time.Sleep(3 * time.Second)
 			buf := bufio.NewReader(stdout)
 			num := 1
+			//bStarting := false
+			//sIssue := ""
 			for {
 				line, _, _ := buf.ReadLine()
-				if num > 3 {
+				if num > 10 {
 					os.Exit(0)
 				}
 				num++
-				if string(line) == "Rapids server starting" {
+				//if string(line) == "RPD server starting" {
+				//	bStarting = true
+				//	}
+				//if string(line) == "RPD server starting" {
+				//	bStarting = true
+				//}
+
+				if string(line) == "RPD server starting" {
 					if displayOutput {
-						fmt.Println("Rapids server starting")
+						fmt.Println("Rapids server is starting...")
 					}
 					return nil
 				} else {
