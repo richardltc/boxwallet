@@ -15,7 +15,7 @@ const (
 	CCoinNamePhore   string = "Phore"
 	CCoinAbbrevPhore string = "PHR"
 
-	CPhoreCoreVersion string = "1.6.5"
+	CPhoreCoreVersion string = "1.7.0"
 	CDFPhoreRPi              = "phore-" + CPhoreCoreVersion + "-arm-linux-gnueabihf.tar.gz"
 	CDFPhoreLinux            = "phore-" + CPhoreCoreVersion + "-x86_64-linux-gnu.tar.gz"
 	CDFPhoreWindows          = "phore-" + CPhoreCoreVersion + "-win64.zip"
@@ -25,7 +25,7 @@ const (
 
 	CDownloadURLPhore = "https://github.com/phoreproject/Phore/releases/download/v" + CPhoreCoreVersion + "/"
 
-	// Phore Wallet Constants
+	// Phore Wallet Constants.
 	CPhoreHomeDir    string = ".phore"
 	CPhoreHomeDirWin string = "PHORE"
 
