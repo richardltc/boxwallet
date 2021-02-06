@@ -41,7 +41,7 @@ var coinCmd = &cobra.Command{
 		lf, _ := be.GetAppWorkingFolder()
 		lf = lf + be.CAppLogfile
 
-		// Create the App Working folder if required.
+		// Create the App Working folder if required
 		awf, _ := be.GetAppWorkingFolder()
 		if err := os.MkdirAll(awf, os.ModePerm); err != nil {
 			log.Fatal("unable to make directory: ", err)
@@ -420,12 +420,10 @@ func doRequiredFiles() error {
 	switch bwconf.ProjectType {
 	case be.PTDeVault:
 		if runtime.GOOS == "windows" {
-			//_, err = be.UnZip(filePath, "tmp")
-			_, err = be.UnZip(filePath, abf)
-			if err != nil {
-				return fmt.Errorf("unable to unzip file: %v - %v", filePath, err)
+			if err := archiver.Unarchive(filePath, abf); err != nil {
+				return fmt.Errorf("unable to unarchive file: %v - %v", r, err)
 			}
-			defer os.RemoveAll(abf)
+			defer os.RemoveAll(abf + be.CDeVaultExtractedDirWin)
 		} else if runtime.GOARCH == "arm" {
 			//err = be.ExtractTarGz(r)
 			err = archiver.Unarchive(filePath, abf)
@@ -443,9 +441,8 @@ func doRequiredFiles() error {
 	case be.PTDigiByte:
 		switch runtime.GOOS {
 		case "windows":
-			_, err = be.UnZip(filePath, abf)
-			if err != nil {
-				return fmt.Errorf("unable to unzip file: %v - %v", filePath, err)
+			if err := archiver.Unarchive(filePath, abf); err != nil {
+				return fmt.Errorf("unable to unarchive file: %v - %v", r, err)
 			}
 			defer os.RemoveAll(abf + be.CDigiByteExtractedDirWindows)
 		case "linux":
@@ -472,11 +469,10 @@ func doRequiredFiles() error {
 		}
 	case be.PTDivi:
 		if runtime.GOOS == "windows" {
-			_, err = be.UnZip(filePath, abf)
-			if err != nil {
-				return fmt.Errorf("unable to unzip file: %v - %v", filePath, err)
+			if err := archiver.Unarchive(filePath, abf); err != nil {
+				return fmt.Errorf("unable to unarchive file: %v - %v", r, err)
 			}
-			defer os.RemoveAll(abf)
+			defer os.RemoveAll(abf + be.CDiviExtractedDirWindows)
 		} else if runtime.GOARCH == "arm" {
 			//err = be.ExtractTarGz(r)
 			err = archiver.Unarchive(filePath, abf)
@@ -494,11 +490,7 @@ func doRequiredFiles() error {
 		}
 	case be.PTFeathercoin:
 		if runtime.GOOS == "windows" {
-			_, err = be.UnZip(filePath, abf)
-			if err != nil {
-				return fmt.Errorf("unable to unzip file: %v - %v", filePath, err)
-			}
-			defer os.RemoveAll(abf)
+			return fmt.Errorf("feathercoin is not supported on Windows at this point")
 		} else if runtime.GOARCH == "arm" {
 			//err = be.ExtractTarGz(r)
 			err = archiver.Unarchive(filePath, abf)
@@ -516,11 +508,10 @@ func doRequiredFiles() error {
 		}
 	case be.PTGroestlcoin:
 		if runtime.GOOS == "windows" {
-			_, err = be.UnZip(filePath, abf)
-			if err != nil {
-				return fmt.Errorf("unable to unzip file: %v - %v", filePath, err)
+			if err := archiver.Unarchive(filePath, abf); err != nil {
+				return fmt.Errorf("unable to unarchive file: %v - %v", r, err)
 			}
-			defer os.RemoveAll(abf)
+			defer os.RemoveAll(abf + be.CGroestlcoinExtractedDirWindows)
 		} else if runtime.GOARCH == "arm" {
 			//err = be.ExtractTarGz(r)
 			err = archiver.Unarchive(filePath, abf)
@@ -538,11 +529,10 @@ func doRequiredFiles() error {
 		}
 	case be.PTPhore:
 		if runtime.GOOS == "windows" {
-			_, err = be.UnZip(filePath, abf)
-			if err != nil {
-				return fmt.Errorf("unable to unzip file: %v - %v", filePath, err)
+			if err := archiver.Unarchive(filePath, abf); err != nil {
+				return fmt.Errorf("unable to unarchive file: %v - %v", r, err)
 			}
-			defer os.RemoveAll(abf)
+			defer os.RemoveAll(abf + be.CPhoreExtractedDirWindows)
 		} else if runtime.GOARCH == "arm" {
 			//err = be.ExtractTarGz(r)
 			err = archiver.Unarchive(filePath, abf)
@@ -560,11 +550,10 @@ func doRequiredFiles() error {
 		}
 	case be.PTPIVX:
 		if runtime.GOOS == "windows" {
-			_, err = be.UnZip(filePath, abf)
-			if err != nil {
-				return fmt.Errorf("unable to unzip file: %v - %v", filePath, err)
+			if err := archiver.Unarchive(filePath, abf); err != nil {
+				return fmt.Errorf("unable to unarchive file: %v - %v", r, err)
 			}
-			defer os.RemoveAll(abf)
+			defer os.RemoveAll(abf + be.CPIVXExtractedDirWindows)
 		} else if runtime.GOARCH == "arm" {
 			//err = be.ExtractTarGz(r)
 			err = archiver.Unarchive(filePath, abf)
@@ -588,11 +577,6 @@ func doRequiredFiles() error {
 		}
 	case be.PTRapids:
 		if runtime.GOOS == "windows" {
-			//_, err = be.UnZip(filePath, abf)
-			//if err != nil {
-			//	return fmt.Errorf("unable to unzip file: %v - %v", filePath, err)
-			//}
-			//defer os.RemoveAll(abf)
 			if err := archiver.Unarchive(filePath, abf); err != nil {
 				return fmt.Errorf("unable to unarchive file: %v - %v", r, err)
 			}
@@ -648,35 +632,14 @@ func doRequiredFiles() error {
 				err = errors.New("unable to determine runtime.GOARCH " + runtime.GOARCH)
 			}
 		}
-
-		//if runtime.GOOS == "windows" {
-		//	//_, err = be.UnZip(filePath, "tmp")
-		//	_, err = be.UnZip(filePath, abf)
-		//	if err != nil {
-		//		return fmt.Errorf("unable to unzip file: %v - %v", filePath, err)
-		//	}
-		//	defer os.RemoveAll(abf)
-		//} else if runtime.GOARCH == "arm" {
-		//	//err = be.ExtractTarGz(r)
-		//	err = archiver.Unarchive(filePath, abf)
-		//	if err != nil {
-		//		return fmt.Errorf("unable to unarchive file: %v - %v", r, err)
-		//	}
-		//	defer os.RemoveAll(abf + be.CReddCoinExtractedDirLinux)
-		//} else {
-		//	err = archiver.Unarchive(filePath, abf)
-		//	if err != nil {
-		//		return fmt.Errorf("unable to extractTarGz file: %v - %v", r, err)
-		//	}
-		//	defer os.RemoveAll(abf + be.CReddCoinExtractedDirLinux)
-		//}
 	case be.PTScala:
 		if runtime.GOOS == "windows" {
-			_, err = be.UnZip(filePath, abf)
-			if err != nil {
-				return fmt.Errorf("unable to unzip file: %v - %v", filePath, err)
+			if err := archiver.Unarchive(filePath, abf); err != nil {
+				return fmt.Errorf("unable to unarchive file: %v - %v", r, err)
 			}
-			defer os.RemoveAll(abf)
+
+			// todo Correctly remove the Windows extracted dir below.
+			//defer os.RemoveAll(abf + be.CScalaExtractedDirLinux)
 		} else if runtime.GOARCH == "arm" {
 			//err = be.ExtractTarGz(r)
 			err = archiver.Unarchive(filePath, abf)
@@ -694,11 +657,7 @@ func doRequiredFiles() error {
 		}
 	case be.PTTrezarcoin:
 		if runtime.GOOS == "windows" {
-			_, err = be.UnZip(filePath, abf)
-			if err != nil {
-				return fmt.Errorf("unable to unzip file: %v - %v", filePath, err)
-			}
-			defer os.RemoveAll(abf)
+			return fmt.Errorf("trezarcoin is not supported on Windows at this point")
 		} else if runtime.GOARCH == "arm" {
 			//err = be.ExtractTarGz(r)
 			err = archiver.Unarchive(filePath, abf)
@@ -716,11 +675,10 @@ func doRequiredFiles() error {
 		}
 	case be.PTVertcoin:
 		if runtime.GOOS == "windows" {
-			_, err = be.UnZip(filePath, abf)
-			if err != nil {
-				return fmt.Errorf("unable to unzip file: %v - %v", filePath, err)
+			if err := archiver.Unarchive(filePath, abf); err != nil {
+				return fmt.Errorf("unable to unarchive file: %v - %v", r, err)
 			}
-			defer os.RemoveAll(abf)
+			defer os.RemoveAll(abf + be.CVertcoinExtractedDirWindows)
 		} else if runtime.GOARCH == "arm" {
 			//err = be.ExtractTarGz(r)
 			err = archiver.Unarchive(filePath, abf)
