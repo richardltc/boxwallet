@@ -89,7 +89,18 @@ var dashCmd = &cobra.Command{
 	* Balance info`,
 	Run: func(cmd *cobra.Command, args []string) {
 		fmt.Println("  ____          __          __   _ _      _   \n |  _ \\         \\ \\        / /  | | |    | |  \n | |_) | _____  _\\ \\  /\\  / /_ _| | | ___| |_ \n |  _ < / _ \\ \\/ /\\ \\/  \\/ / _` | | |/ _ \\ __|\n | |_) | (_) >  <  \\  /\\  / (_| | | |  __/ |_ \n |____/ \\___/_/\\_\\  \\/  \\/ \\__,_|_|_|\\___|\\__| v" + be.CBWAppVersion + "\n                                              \n                                               ")
-		// Lets load our config file first, to see if the user has made their coin choice...
+
+		apw, err := be.GetAppWorkingFolder()
+		if err != nil {
+			log.Fatal("Unable to GetAppWorkingFolder: " + err.Error())
+		}
+
+		// Make sure the config file exists, and if not, force user to use "coin" command first.
+		if _, err := os.Stat(apw + be.CConfFile + be.CConfFileExt); os.IsNotExist(err) {
+			log.Fatal("Unable to determine coin type. Please run " + be.CAppFilename + " coin  first")
+		}
+
+		// Now load our config file to see what coin choice the user made...
 		cliConf, err := be.GetConfigStruct("", true)
 		if err != nil {
 			log.Fatal("Unable to determine coin type. Please run " + be.CAppFilename + " coin: " + err.Error())
@@ -109,15 +120,29 @@ var dashCmd = &cobra.Command{
 			log.Fatal("Unable to GetAppFileCLIName " + err.Error())
 		}
 
+		coind, err := be.GetCoinDaemonFilename(be.APPTCLI, cliConf.ProjectType)
+		if err != nil {
+			log.Fatalf("Unable to GetCoinDaemonFilename - %v", err)
+		}
+
+		// Check to see if we are running the coin daemon locally, and if we are, make sure it's actually running
+		// before attempting to connect to it.
+		if cliConf.ServerIP == "127.0.0.1" {
+			bCDRunning, _, err := be.IsCoinDaemonRunning(cliConf.ProjectType)
+			if err != nil {
+				log.Fatal("Unable to determine if coin daemon is running: " + err.Error())
+			}
+			if !bCDRunning {
+				log.Fatal("Unable to communicate with the " + coind + " server. Please make sure the " + coind + " server is running, by running:\n\n" +
+					"./" + sAppFileCLIName + " start\n\n")
+			}
+		}
+
 		wRunning, s, err := confirmWalletReady()
 		if err != nil {
 			log.Fatalf("\nUnable to determine if wallet is ready: %v,%v", s, err)
 		}
 
-		coind, err := be.GetCoinDaemonFilename(be.APPTCLI, cliConf.ProjectType)
-		if err != nil {
-			log.Fatalf("Unable to GetCoinDaemonFilename - %v", err)
-		}
 		if !wRunning {
 			fmt.Println("")
 			log.Fatal("Unable to communicate with the " + coind + " server. Please make sure the " + coind + " server is running, by running:\n\n" +
@@ -133,6 +158,13 @@ var dashCmd = &cobra.Command{
 				sCoreVersion = "Unknown"
 			} else {
 				sCoreVersion = strconv.Itoa(gi.Result.Version)
+			}
+		case be.PTDigiByte:
+			gi, err := be.GetWalletInfoDGB(&cliConf)
+			if err != nil {
+				sCoreVersion = "Unknown"
+			} else {
+				sCoreVersion = strconv.Itoa(gi.Result.Walletversion)
 			}
 		case be.PTDivi:
 			gi, err := be.GetInfoDivi(&cliConf)
@@ -209,6 +241,11 @@ var dashCmd = &cobra.Command{
 			if len(addresses.Result) > 0 {
 				bWalletExists = true
 			}
+		case be.PTDigiByte:
+			addresses, _ := be.ListReceivedByAddressDGB(&cliConf, false)
+			if len(addresses.Result) > 0 {
+				bWalletExists = true
+			}
 		case be.PTDivi:
 			addresses, _ := be.ListReceivedByAddressDivi(&cliConf, false)
 			if len(addresses.Result) > 0 {
@@ -272,6 +309,19 @@ var dashCmd = &cobra.Command{
 					pw = be.GetWalletEncryptionPassword()
 				}
 				bConfirmedBU, err := HandleWalletBUDVT(pw)
+				cliConf.UserConfirmedWalletBU = bConfirmedBU
+				if err := be.SetConfigStruct("", cliConf); err != nil {
+					log.Fatalf("Unable to SetCLIConfStruct(): failed with %s\n", err)
+				}
+			case be.PTDigiByte:
+				wet, err := be.GetWalletEncryptionStatus()
+				if err != nil {
+					log.Fatalf("Unable to determine wallet encryption status")
+				}
+				if wet == be.WETLocked {
+					pw = be.GetWalletEncryptionPassword()
+				}
+				bConfirmedBU, err := HandleWalletBUDGB(pw)
 				cliConf.UserConfirmedWalletBU = bConfirmedBU
 				if err := be.SetConfigStruct("", cliConf); err != nil {
 					log.Fatalf("Unable to SetCLIConfStruct(): failed with %s\n", err)
@@ -370,6 +420,15 @@ var dashCmd = &cobra.Command{
 			wi, err := be.GetWalletInfoDVT(&cliConf)
 			if err != nil {
 				log.Fatal("Unable to perform GetWalletInfoDVT " + err.Error())
+			}
+
+			if wi.Result.UnlockedUntil < 0 {
+				bWalletNeedsEncrypting = true
+			}
+		case be.PTDigiByte:
+			wi, err := be.GetWalletInfoDGB(&cliConf)
+			if err != nil {
+				log.Fatal("Unable to perform GetWalletInfoDGB " + err.Error())
 			}
 
 			if wi.Result.UnlockedUntil < 0 {
@@ -509,6 +568,9 @@ var dashCmd = &cobra.Command{
 		case be.PTDeVault:
 			pAbout.Text = "  [" + be.CAppName + "    v" + be.CBWAppVersion + "](fg:white)\n" +
 				"  [" + sCoinName + " Core v" + sCoreVersion + "](fg:white)\n\n"
+		case be.PTDigiByte:
+			pAbout.Text = "  [" + be.CAppName + "     v" + be.CBWAppVersion + "](fg:white)\n" +
+				"  [" + sCoinName + " Core v" + sCoreVersion + "](fg:white)\n\n"
 		case be.PTDivi:
 			pAbout.Text = "  [" + be.CAppName + "    v" + be.CBWAppVersion + "](fg:white)\n" +
 				"  [" + sCoinName + " Core    v" + sCoreVersion + "](fg:white)\n\n"
@@ -547,6 +609,9 @@ var dashCmd = &cobra.Command{
 		pWallet.BorderStyle.Fg = ui.ColorYellow
 		switch cliConf.ProjectType {
 		case be.PTDeVault:
+			pWallet.Text = "  Balance:          [waiting...](fg:yellow)\n" +
+				"  Security:         [waiting...](fg:yellow)\n"
+		case be.PTDigiByte:
 			pWallet.Text = "  Balance:          [waiting...](fg:yellow)\n" +
 				"  Security:         [waiting...](fg:yellow)\n"
 		case be.PTDivi:
@@ -607,6 +672,12 @@ var dashCmd = &cobra.Command{
 
 		switch cliConf.ProjectType {
 		case be.PTDeVault:
+			pNetwork.Text = "  Headers:     [checking...](fg:yellow)\n" +
+				"  Blocks:      [checking...](fg:yellow)\n" +
+				"  Difficulty:  [checking...](fg:yellow)\n" +
+				"  Blockchain:  [checking...](fg:yellow)\n" +
+				"  Peers:  [checking...](fg:yellow)\n"
+		case be.PTDigiByte:
 			pNetwork.Text = "  Headers:     [checking...](fg:yellow)\n" +
 				"  Blocks:      [checking...](fg:yellow)\n" +
 				"  Difficulty:  [checking...](fg:yellow)\n" +
@@ -693,6 +764,7 @@ var dashCmd = &cobra.Command{
 		// var numSeconds int = -1
 		updateDisplay := func(count int) {
 			var bciDeVault be.DVTBlockchainInfoRespStruct
+			var bciDigiByte be.DGBBlockchainInfoRespStruct
 			var bciDivi be.DiviBlockchainInfoRespStruct
 			var bciFeathercoin be.FeathercoinBlockchainInfoRespStruct
 			var bciGroestlcoin be.GRSBlockchainInfoRespStruct
@@ -708,6 +780,7 @@ var dashCmd = &cobra.Command{
 			var mnssPIVX be.PIVXMNSyncStatusRespStruct
 			var mnssRapids be.RapidsMNSyncStatusRespStruct
 			//var niDeVault be.DVTNetworkInfoRespStruct
+			bDGBBlockchainIsSynced := false
 			bDVTBlockchainIsSynced := false
 			bFTCBlockchainIsSynced := false
 			bGRSBlockchainIsSynced := false
@@ -720,6 +793,7 @@ var dashCmd = &cobra.Command{
 			var ssRapids be.RapidsStakingStatusRespStruct
 			var ssTrezarcoin be.TrezarcoinStakingInfoRespStruct
 			var wiDeVault be.DVTWalletInfoRespStruct
+			var wiDigiByte be.DGBWalletInfoRespStruct
 			var wiDivi be.DiviWalletInfoRespStruct
 			var wiFeathercoin be.FeathercoinWalletInfoRespStruct
 			var wiGroestlcoin be.GRSWalletInfoRespStruct
@@ -738,6 +812,11 @@ var dashCmd = &cobra.Command{
 					bciDeVault, _ = be.GetBlockchainInfoDVT(&cliConf)
 					if bciDeVault.Result.Verificationprogress > 0.99999 {
 						bDVTBlockchainIsSynced = true
+					}
+				case be.PTDigiByte:
+					bciDigiByte, _ = be.GetBlockchainInfoDGB(&cliConf)
+					if bciDigiByte.Result.Verificationprogress > 0.99999 {
+						bDGBBlockchainIsSynced = true
 					}
 				case be.PTDivi:
 					bciDivi, _ = be.GetBlockchainInfoDivi(&cliConf)
@@ -790,6 +869,10 @@ var dashCmd = &cobra.Command{
 			case be.PTDeVault:
 				if bDVTBlockchainIsSynced {
 					wiDeVault, _ = be.GetWalletInfoDVT(&cliConf)
+				}
+			case be.PTDigiByte:
+				if bDGBBlockchainIsSynced {
+					wiDigiByte, _ = be.GetWalletInfoDGB(&cliConf)
 				}
 			case be.PTDivi:
 				if bciDivi.Result.Verificationprogress > 0.999 {
@@ -844,6 +927,12 @@ var dashCmd = &cobra.Command{
 			switch cliConf.ProjectType {
 			case be.PTDeVault:
 				if bDVTBlockchainIsSynced {
+					pNetwork.BorderStyle.Fg = ui.ColorGreen
+				} else {
+					pNetwork.BorderStyle.Fg = ui.ColorYellow
+				}
+			case be.PTDigiByte:
+				if bDGBBlockchainIsSynced {
 					pNetwork.BorderStyle.Fg = ui.ColorGreen
 				} else {
 					pNetwork.BorderStyle.Fg = ui.ColorYellow
@@ -920,6 +1009,12 @@ var dashCmd = &cobra.Command{
 				sDiff = be.GetNetworkDifficultyTxtDVT(bciDeVault.Result.Difficulty, gDiffGood, gDiffWarning)
 				sBlockchainSync = be.GetBlockchainSyncTxtDVT(bDVTBlockchainIsSynced, &bciDeVault)
 				sPeers = be.GetNetworkConnectionsTxtDVT(gConnections)
+			case be.PTDigiByte:
+				sHeaders = be.GetNetworkHeadersTxtDGB(&bciDigiByte)
+				sBlocks = be.GetNetworkBlocksTxtDGB(&bciDigiByte)
+				sDiff = be.GetNetworkDifficultyTxtDGB(bciDigiByte.Result.Difficulties.Scrypt, gDiffGood, gDiffWarning)
+				sBlockchainSync = be.GetBlockchainSyncTxtDGB(bDGBBlockchainIsSynced, &bciDigiByte)
+				sPeers = be.GetNetworkConnectionsTxtDGB(gConnections)
 			case be.PTDivi:
 				sBlocks = be.GetNetworkBlocksTxtDivi(&bciDivi)
 				sDiff = be.GetNetworkDifficultyTxtDivi(bciDivi.Result.Difficulty, gDiffGood, gDiffWarning)
@@ -979,6 +1074,12 @@ var dashCmd = &cobra.Command{
 
 			switch cliConf.ProjectType {
 			case be.PTDeVault:
+				pNetwork.Text = "  " + sHeaders + "\n" +
+					"  " + sBlocks + "\n" +
+					"  " + sDiff + "\n" +
+					"  " + sBlockchainSync + "\n" +
+					"  " + sPeers
+			case be.PTDigiByte:
 				pNetwork.Text = "  " + sHeaders + "\n" +
 					"  " + sBlocks + "\n" +
 					"  " + sDiff + "\n" +
@@ -1053,6 +1154,20 @@ var dashCmd = &cobra.Command{
 			switch cliConf.ProjectType {
 			case be.PTDeVault:
 				wet := be.GetWalletSecurityStateDVT(&wiDeVault)
+				switch wet {
+				case be.WETLocked:
+					pWallet.BorderStyle.Fg = ui.ColorYellow
+				case be.WETUnlocked:
+					pWallet.BorderStyle.Fg = ui.ColorRed
+				case be.WETUnlockedForStaking:
+					pWallet.BorderStyle.Fg = ui.ColorGreen
+				case be.WETUnencrypted:
+					pWallet.BorderStyle.Fg = ui.ColorRed
+				default:
+					pWallet.BorderStyle.Fg = ui.ColorYellow
+				}
+			case be.PTDigiByte:
+				wet := be.GetWalletSecurityStateDGB(&wiDigiByte)
 				switch wet {
 				case be.WETLocked:
 					pWallet.BorderStyle.Fg = ui.ColorYellow
@@ -1202,6 +1317,11 @@ var dashCmd = &cobra.Command{
 					pWallet.Text = "" + getBalanceInDVTTxt(&wiDeVault) + "\n" +
 						"  " + getWalletSecurityStatusTxtDVT(&wiDeVault) + "\n"
 				}
+			case be.PTDigiByte:
+				if bciDigiByte.Result.Verificationprogress > 0.9999 {
+					pWallet.Text = "" + getBalanceInDGBTxt(&wiDigiByte) + "\n" +
+						"  " + getWalletSecurityStatusTxtDGB(&wiDigiByte) + "\n"
+				}
 			case be.PTDivi:
 				if bciDivi.Result.Verificationprogress > 0.9999 {
 					pWallet.Text = "" + getBalanceInDiviTxt(&wiDivi) + "\n" +
@@ -1271,6 +1391,11 @@ var dashCmd = &cobra.Command{
 					// update the Network Info details
 					niDeVault, _ := be.GetNetworkInfoDVT(&cliConf)
 					gConnections = niDeVault.Result.Connections
+				case be.PTDigiByte:
+					gDiffGood, gDiffWarning, _ = getNetworkDifficultyInfo(be.PTDigiByte)
+					// update the Network Info details
+					niDigiByte, _ := be.GetNetworkInfoDGB(&cliConf)
+					gConnections = niDigiByte.Result.Connections
 				case be.PTDivi:
 					_ = be.UpdateTickerInfoDivi()
 					// Now check to see which currency the user is interested in...
@@ -1431,6 +1556,16 @@ func confirmWalletReady() (bool, string, error) {
 		if gi.Result.Version == 0 {
 			return false, gi.Result.Errors, fmt.Errorf("unable to call getinfo %s\n", err)
 		}
+	case be.PTDigiByte:
+		gi, s, err := be.GetNetworkInfoDGBUI(&cliConf, spinner)
+		if err != nil {
+			if err := spinner.Stop(); err != nil {
+			}
+			return false, s, fmt.Errorf("Unable to communicate with the " + coind + " server.")
+		}
+		if gi.Result.Version == 0 {
+			return false, s, fmt.Errorf("unable to call getinfo %s\n", err)
+		}
 	case be.PTDivi:
 		gi, s, err := be.GetInfoDIVIUI(&cliConf, spinner)
 		if err != nil {
@@ -1482,14 +1617,14 @@ func confirmWalletReady() (bool, string, error) {
 			return false, s, fmt.Errorf("unable to call getinfo %s\n", err)
 		}
 	case be.PTRapids:
-		gi, err := be.GetInfoRapids(&cliConf)
+		gi, s, err := be.GetInfoRPDUI(&cliConf, spinner)
 		if err != nil {
 			if err := spinner.Stop(); err != nil {
 			}
-			return false, "", fmt.Errorf("Unable to communicate with the " + coind + " server.")
+			return false, s, fmt.Errorf("Unable to communicate with the " + coind + " server.")
 		}
 		if gi.Result.Version == 0 {
-			return false, gi.Result.Errors, fmt.Errorf("unable to call getinfo %s\n", err)
+			return false, s, fmt.Errorf("unable to call getinfo %s\n", err)
 		}
 	case be.PTReddCoin:
 		gi, err := be.GetInfoRDD(&cliConf)
@@ -1620,6 +1755,20 @@ func getBalanceInDVTTxt(wi *be.DVTWalletInfoRespStruct) string {
 	return "  Balance:          [" + tBalanceStr + "](fg:green)"
 }
 
+func getBalanceInDGBTxt(wi *be.DGBWalletInfoRespStruct) string {
+	tBalance := wi.Result.ImmatureBalance + wi.Result.UnconfirmedBalance + wi.Result.Balance
+	tBalanceStr := humanize.FormatFloat("#,###.####", tBalance)
+
+	// Work out balance
+	if wi.Result.ImmatureBalance > 0 {
+		return "  Incoming....... [" + tBalanceStr + "](fg:cyan)"
+	} else if wi.Result.UnconfirmedBalance > 0 {
+		return "  Confirming....... [" + tBalanceStr + "](fg:yellow)"
+	} else {
+		return "  Balance:          [" + tBalanceStr + "](fg:green)"
+	}
+}
+
 func getBalanceInDiviTxt(wi *be.DiviWalletInfoRespStruct) string {
 	tBalance := wi.Result.ImmatureBalance + wi.Result.UnconfirmedBalance + wi.Result.Balance
 	tBalanceStr := humanize.FormatFloat("#,###.####", tBalance)
@@ -1727,6 +1876,18 @@ func getWalletStakingTxt(wi *be.DiviWalletInfoRespStruct) string {
 		return "Staking %:        [" + fPercentStr + "](fg:green)"
 	}
 
+}
+
+func getWalletSecurityStatusTxtDGB(wi *be.DGBWalletInfoRespStruct) string {
+	if wi.Result.UnlockedUntil == 0 {
+		return "Security:         [Locked](fg:green)"
+	} else if wi.Result.UnlockedUntil == -1 {
+		return "Security:         [UNENCRYPTED](fg:red)"
+	} else if wi.Result.UnlockedUntil > 0 {
+		return "Security:         [Locked](fg:green)"
+	} else {
+		return "Security:         [checking...](fg:yellow)"
+	}
 }
 
 func getWalletSecurityStatusTxtDVT(wi *be.DVTWalletInfoRespStruct) string {
@@ -1877,6 +2038,8 @@ func getNetworkDifficultyInfo(pt be.ProjectType) (float64, float64, error) {
 	// https://chainz.cryptoid.info/ftc/api.dws?q=getdifficulty
 
 	switch pt {
+	case be.PTDigiByte:
+		coin = "dgb"
 	case be.PTDivi:
 		coin = "divi"
 	case be.PTFeathercoin:
