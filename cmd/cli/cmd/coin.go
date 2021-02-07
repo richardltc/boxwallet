@@ -447,7 +447,7 @@ func doRequiredFiles() error {
 			defer os.RemoveAll(abf + be.CDigiByteExtractedDirWindows)
 		case "linux":
 			switch runtime.GOARCH {
-			case "arm":
+			case "arm64":
 				err = archiver.Unarchive(filePath, abf)
 				if err != nil {
 					return fmt.Errorf("unable to unarchive file: %v - %v", r, err)
