@@ -163,7 +163,7 @@ func main() {
 		compressedFN = "boxwallet_" + sTag + "_macOS_64bit.tar.gz"
 		bwFile = be.CAppFilename
 	case "windows":
-		compressedFN = "boxwallet_" + sTag + "_Windows_64bit.tar.gz"
+		compressedFN = "boxwallet_" + sTag + "_Windows_64bit.zip"
 		bwFile = be.CAppFilenameWin
 	case "linux":
 		bwFile = be.CAppFilename
