@@ -11,6 +11,7 @@ boxwallet `dash` - displays a dashboard with the coins Blockchain and wallet inf
 ## What are some of BoxWallet's features? ##
 
 * Install and run a CLI node or wallet simply, by using two commands: `coin`, to choose your coin and `start` to start the syncing.
+* Easily keep up-to-date with the latest version of BoxWallet by using the separate `bwupdater` app.
 * Setting up multiple nodes/staking wallets on a single machine, and easily switch between them using the `coin` command.
 * Viewing your wallet/node that might be running on a Pi, from another computer such as Linux, Mac or Windows.
 * Displaying the staking status of your wallet. 
@@ -20,13 +21,30 @@ boxwallet `dash` - displays a dashboard with the coins Blockchain and wallet inf
 * Auto fixing common wallet issues, which can be common after power failures.
 * Balance in your coin, USD, AUD and GBP (more coming soon...)
 
+## What coins does BoxWallet support?
+
+DeVault
+DigiByte
+Divi
+Groestlcoin
+Feathercoin
+Phore
+PIVX
+Rapids
+ReddCoin
+Scala (coming soon)
+Trezarcoin
+Vertcoin
+
 ### How do I run? ###
 
-Download BoxWallet, for your platform of choice, extract the files to a location of your choosing and then choose your preferred coin by running `./boxwallet coin`.
+Download BoxWallet, for your platform of choice, from the releases page, extract the files to a location of your choosing and then run `./boxwallet coin`.
  
-This will download the official binaries from the coin's project website, and install them in the same folder that you're running `boxwallet` from.
+This will download the official binaries from the coin's project website, and install them automatically for you.
 
-Then run `./boxwallet start`, to start the coin's damon server and then you can run  `./boxwallet dash`, where you will be greeted with an initial wizard to get you going, followed by a dashboard.
+Then run `./boxwallet start`, to start the coin's daemon server. 
+
+Then  `./boxwallet dash`, where you will be greeted with an initial wizard to get you going, followed by a dashboard.
 
 ### OK, but what else can BoxWallet do? ###
 
@@ -38,9 +56,16 @@ Then run `./boxwallet start`, to start the coin's damon server and then you can 
 
 * `boxwallet dash` - Displays blockchain, syncing, staking and coin balance and AUD/USD/GBP (Divi only) balance info.
 
+* `boxwallet wallet backup` - Creates a backup of your `wallet.dat` file, and names it based on the days date.
+
 * `boxwallet wallet encrypt/unlock/unlockfs` - Allows the encryption and unlocking of the wallet for safe staking.
 
 * `boxwallet wallet displayaddress` - Displays your public coin address.
+
+* `boxwallet wallet reindex` - re-indexes your local copy of the Blockchain
+
+* `boxwallet wallet resync` - Performs a complete, from scratch, resync of the Blockchain.
+
 
 * Allows you to "web enable" your existing wallet.
 
