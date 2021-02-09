@@ -61,7 +61,7 @@ var stopCmd = &cobra.Command{
 			for i := 0; i < 600; i++ {
 				bStillRunning, _, _ := be.IsCoinDaemonRunning(cliConf.ProjectType)
 				if bStillRunning {
-					fmt.Printf("\r" + "Waiting for " + sCoinDaemonName + " to stop. This could take a long time on slower devices... " + strconv.Itoa(i+1) + "/600")
+					fmt.Printf("\r" + "Waiting for " + sCoinDaemonName + " to stop. This could take a long time on slower devices... " + strconv.Itoa(i+1))
 					time.Sleep(1 * time.Second)
 				} else {
 					fmt.Println("\n" + sCoinDaemonName + " server stopped.")
