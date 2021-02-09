@@ -3832,7 +3832,7 @@ func StopCoinDaemon(displayOutput bool) error {
 
 	idr, _, _ := IsCoinDaemonRunning(bwconf.ProjectType) //DiviDRunning()
 	if idr != true {
-		// Not running anyway ...
+		// Not running anyway ..
 		return nil
 	}
 
@@ -4214,6 +4214,12 @@ func WalletBackup(pt ProjectType) error {
 		}
 	case PTPhore:
 		abbrev = strings.ToLower(CCoinAbbrevPhore)
+		wl, err = GetCoinHomeFolder(APPTCLI, pt)
+		if err != nil {
+			return fmt.Errorf("unable to get coin home folder: %v", err)
+		}
+	case PTPIVX:
+		abbrev = strings.ToLower(CCoinAbbrevPIVX)
 		wl, err = GetCoinHomeFolder(APPTCLI, pt)
 		if err != nil {
 			return fmt.Errorf("unable to get coin home folder: %v", err)
