@@ -16,6 +16,7 @@ limitations under the License.
 package cmd
 
 import (
+	"fmt"
 	"github.com/spf13/cobra"
 	"log"
 	be "richardmace.co.uk/boxwallet/cmd/cli/cmd/bend"
@@ -90,6 +91,11 @@ var backupCmd = &cobra.Command{
 		default:
 			log.Fatal("Unable to determine project type")
 		}
+
+		fmt.Println("Backup completed. Please store your backup wallet.dat file somewhere safe.")
+		// Now display tip message.
+		sTipInfo := be.GetTipInfo(bwConf.ProjectType)
+		fmt.Println("\n\n" + sTipInfo + "\n")
 	},
 }
 
