@@ -149,6 +149,10 @@ var dashCmd = &cobra.Command{
 				"./" + sAppFileCLIName + " start\n\n")
 		}
 
+		// Let's display the tip message so the user sees it when they exit the dash command.
+		sTipInfo := be.GetTipInfo(cliConf.ProjectType)
+		fmt.Println("\n\n" + sTipInfo + "\n")
+
 		// The first thing we need to do is to store the coin core version for the About display...
 		sCoreVersion := ""
 		switch cliConf.ProjectType {
@@ -1747,14 +1751,6 @@ func getActivelyStakingTxtTrezarcoin(ss *be.TrezarcoinStakingInfoRespStruct) str
 	}
 }
 
-func getBalanceInDVTTxt(wi *be.DVTWalletInfoRespStruct) string {
-	tBalance := wi.Result.Balance
-	tBalanceStr := humanize.FormatFloat("#,###.####", tBalance)
-
-	// Work out balance.
-	return "  Balance:          [" + tBalanceStr + "](fg:green)"
-}
-
 func getBalanceInDGBTxt(wi *be.DGBWalletInfoRespStruct) string {
 	tBalance := wi.Result.ImmatureBalance + wi.Result.UnconfirmedBalance + wi.Result.Balance
 	tBalanceStr := humanize.FormatFloat("#,###.####", tBalance)
@@ -1783,12 +1779,32 @@ func getBalanceInDiviTxt(wi *be.DiviWalletInfoRespStruct) string {
 	}
 }
 
-func getBalanceInFeathercoinTxt(wi *be.FeathercoinWalletInfoRespStruct) string {
-	tBalance := wi.Result.Balance
+func getBalanceInDVTTxt(wi *be.DVTWalletInfoRespStruct) string {
+	tBalance := wi.Result.ImmatureBalance + wi.Result.UnconfirmedBalance + wi.Result.Balance
 	tBalanceStr := humanize.FormatFloat("#,###.####", tBalance)
 
 	// Work out balance
-	return "  Balance:          [" + tBalanceStr + "](fg:green)"
+	if wi.Result.ImmatureBalance > 0 {
+		return "  Incoming....... [" + tBalanceStr + "](fg:cyan)"
+	} else if wi.Result.UnconfirmedBalance > 0 {
+		return "  Confirming....... [" + tBalanceStr + "](fg:yellow)"
+	} else {
+		return "  Balance:          [" + tBalanceStr + "](fg:green)"
+	}
+}
+
+func getBalanceInFeathercoinTxt(wi *be.FeathercoinWalletInfoRespStruct) string {
+	tBalance := wi.Result.ImmatureBalance + wi.Result.UnconfirmedBalance + wi.Result.Balance
+	tBalanceStr := humanize.FormatFloat("#,###.##", tBalance)
+
+	// Work out balance
+	if wi.Result.ImmatureBalance > 0 {
+		return "  Incoming....... [" + tBalanceStr + "](fg:cyan)"
+	} else if wi.Result.UnconfirmedBalance > 0 {
+		return "  Confirming....... [" + tBalanceStr + "](fg:yellow)"
+	} else {
+		return "  Balance:          [" + tBalanceStr + "](fg:green)"
+	}
 }
 
 func getBalanceInGRSTxt(wi *be.GRSWalletInfoRespStruct) string {
@@ -1820,16 +1836,34 @@ func getBalanceInPhoreTxt(wi *be.PhoreWalletInfoRespStruct) string {
 }
 
 func getBalanceInPIVXTxt(wi *be.PIVXWalletInfoRespStruct) string {
-	tBalance := wi.Result.Balance
-	tBalanceStr := humanize.FormatFloat("#,###.####", tBalance)
+	tBalance := wi.Result.ImmatureBalance + wi.Result.UnconfirmedBalance + wi.Result.Balance
+	tBalanceStr := humanize.FormatFloat("#,###.##", tBalance)
+
+	// Work out balance
+	if wi.Result.ImmatureBalance > 0 {
+		return "  Incoming....... [" + tBalanceStr + "](fg:cyan)"
+	} else if wi.Result.UnconfirmedBalance > 0 {
+		return "  Confirming....... [" + tBalanceStr + "](fg:yellow)"
+	} else {
+		return "  Balance:          [" + tBalanceStr + "](fg:green)"
+	}
 
 	// Work out balance
 	return "  Balance:          [" + tBalanceStr + "](fg:green)"
 }
 
 func getBalanceInRapidsTxt(wi *be.RapidsWalletInfoRespStruct) string {
-	tBalance := wi.Result.Balance
-	tBalanceStr := humanize.FormatFloat("#,###.####", tBalance)
+	tBalance := wi.Result.ImmatureBalance + wi.Result.UnconfirmedBalance + wi.Result.Balance
+	tBalanceStr := humanize.FormatFloat("#,###.##", tBalance)
+
+	// Work out balance
+	if wi.Result.ImmatureBalance > 0 {
+		return "  Incoming....... [" + tBalanceStr + "](fg:cyan)"
+	} else if wi.Result.UnconfirmedBalance > 0 {
+		return "  Confirming....... [" + tBalanceStr + "](fg:yellow)"
+	} else {
+		return "  Balance:          [" + tBalanceStr + "](fg:green)"
+	}
 
 	// Work out balance
 	return "  Balance:          [" + tBalanceStr + "](fg:green)"
@@ -1844,19 +1878,31 @@ func getBalanceInRDDTxt(wi *be.RDDWalletInfoRespStruct) string {
 }
 
 func getBalanceInTrezarcoinTxt(wi *be.TrezarcoinWalletInfoRespStruct) string {
-	tBalance := wi.Result.Balance
-	tBalanceStr := humanize.FormatFloat("#,###.####", tBalance)
+	tBalance := wi.Result.ImmatureBalance + wi.Result.UnconfirmedBalance + wi.Result.Balance
+	tBalanceStr := humanize.FormatFloat("#,###.##", tBalance)
 
 	// Work out balance
-	return "  Balance:          [" + tBalanceStr + "](fg:green)"
+	if wi.Result.ImmatureBalance > 0 {
+		return "  Incoming....... [" + tBalanceStr + "](fg:cyan)"
+	} else if wi.Result.UnconfirmedBalance > 0 {
+		return "  Confirming....... [" + tBalanceStr + "](fg:yellow)"
+	} else {
+		return "  Balance:          [" + tBalanceStr + "](fg:green)"
+	}
 }
 
 func getBalanceInVTCTxt(wi *be.VTCWalletInfoRespStruct) string {
-	tBalance := wi.Result.Balance
-	tBalanceStr := humanize.FormatFloat("#,###.####", tBalance)
+	tBalance := wi.Result.ImmatureBalance + wi.Result.UnconfirmedBalance + wi.Result.Balance
+	tBalanceStr := humanize.FormatFloat("#,###.##", tBalance)
 
 	// Work out balance
-	return "  Balance:          [" + tBalanceStr + "](fg:green)"
+	if wi.Result.ImmatureBalance > 0 {
+		return "  Incoming....... [" + tBalanceStr + "](fg:cyan)"
+	} else if wi.Result.UnconfirmedBalance > 0 {
+		return "  Confirming....... [" + tBalanceStr + "](fg:yellow)"
+	} else {
+		return "  Balance:          [" + tBalanceStr + "](fg:green)"
+	}
 }
 
 func getWalletStakingTxt(wi *be.DiviWalletInfoRespStruct) string {
