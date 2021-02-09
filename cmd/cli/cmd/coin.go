@@ -134,7 +134,7 @@ var coinCmd = &cobra.Command{
 		}
 		// ...because it's possible that the conf file for this coin has already been created, we need to store the
 		// returned user and password so, effectively, will either be storing the existing info, or
-		// the freshly generated info.
+		// the freshly generated info
 
 		cliConf.RPCuser = rpcu
 		cliConf.RPCpassword = rpcpw
@@ -160,52 +160,9 @@ var coinCmd = &cobra.Command{
 		}
 		fmt.Println("\nAll done!")
 		fmt.Println("\nYou can now run './boxwallet start' and then './boxwallet dash' to view your " + sCoinName + " Dashboard")
-		fmt.Println("\n\nThank you for using " + be.CAppName + " to run your " + sCoinName + " wallet/node.")
-		fmt.Println(be.CAppName + " is FREE to use, and if you'd like to send a tip, please feel free to at the following " + sCoinName + " address below:")
 
-		// Display tip message.
-		var s string
-		switch cliConf.ProjectType {
-		case be.PTDeVault:
-			s = be.GetTipAddress(be.PTDeVault)
-			fmt.Println("\n" + be.CCoinAbbrevDeVault + ": " + s)
-		case be.PTDigiByte:
-			s = be.GetTipAddress(be.PTDigiByte)
-			fmt.Println("\n" + be.CCoinAbbrevDigiByte + ": " + s)
-		case be.PTDivi:
-			s = be.GetTipAddress(be.PTDivi)
-			fmt.Println("\n" + be.CCoinAbbrevDivi + ": " + s)
-		case be.PTFeathercoin:
-			s = be.GetTipAddress(be.PTFeathercoin)
-			fmt.Println("\n" + be.CCoinAbbrevFeathercoin + ": " + s)
-		case be.PTGroestlcoin:
-			s = be.GetTipAddress(be.PTGroestlcoin)
-			fmt.Println("\n" + be.CCoinAbbrevGroestlcoin + ": " + s)
-		case be.PTPhore:
-			s = be.GetTipAddress(be.PTPhore)
-			fmt.Println("\n" + be.CCoinAbbrevPhore + ": " + s)
-		case be.PTPIVX:
-			s = be.GetTipAddress(be.PTPIVX)
-			fmt.Println("\n" + be.CCoinAbbrevPIVX + ": " + s)
-		case be.PTRapids:
-			s = be.GetTipAddress(be.PTRapids)
-			fmt.Println("\n" + be.CCoinAbbrevRapids + ": " + s)
-		case be.PTReddCoin:
-			s = be.GetTipAddress(be.PTReddCoin)
-			fmt.Println("\n" + be.CCoinAbbrevReddCoin + ": " + s)
-		case be.PTScala:
-			s = be.GetTipAddress(be.PTScala)
-			fmt.Println("\n" + be.CCoinAbbrevScala + ": " + s)
-		case be.PTTrezarcoin:
-			s = be.GetTipAddress(be.PTTrezarcoin)
-			fmt.Println("\n" + be.CCoinAbbrevTrezarcoin + ": " + s)
-		case be.PTVertcoin:
-			s = be.GetTipAddress(be.PTVertcoin)
-			fmt.Println("\n" + be.CCoinAbbrevVertcoin + ": " + s)
-		default:
-			s = be.GetTipAddress(be.PTDivi)
-			fmt.Println("\n" + be.CCoinAbbrevDivi + ": " + s)
-		}
+		sTipInfo := be.GetTipInfo(cliConf.ProjectType)
+		fmt.Println("\n\n" + sTipInfo)
 	},
 }
 
