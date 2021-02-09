@@ -864,6 +864,50 @@ func GetTipAddress(pt ProjectType) string {
 	}
 }
 
+func GetTipInfo(pt ProjectType) string {
+
+	// Get tip address part.
+	var s string
+	switch pt {
+	case PTDeVault:
+		s = CCoinAbbrevDeVault + ": " + GetTipAddress(PTDeVault)
+	case PTDigiByte:
+		s = CCoinAbbrevDigiByte + ": " + GetTipAddress(PTDigiByte)
+	case PTDivi:
+		s = CCoinAbbrevDivi + ": " + GetTipAddress(PTDivi)
+	case PTFeathercoin:
+		s = CCoinAbbrevFeathercoin + ": " + GetTipAddress(PTFeathercoin)
+	case PTGroestlcoin:
+		s = CCoinAbbrevGroestlcoin + ": " + GetTipAddress(PTGroestlcoin)
+	case PTPhore:
+		s = CCoinAbbrevPhore + ": " + GetTipAddress(PTPhore)
+	case PTPIVX:
+		s = CCoinAbbrevPIVX + ": " + GetTipAddress(PTPIVX)
+	case PTRapids:
+		s = CCoinAbbrevRapids + ": " + GetTipAddress(PTRapids)
+	case PTReddCoin:
+		s = CCoinAbbrevReddCoin + ": " + GetTipAddress(PTReddCoin)
+	case PTScala:
+		s = CCoinAbbrevScala + ": " + GetTipAddress(PTScala)
+	case PTTrezarcoin:
+		s = CCoinAbbrevTrezarcoin + ": " + GetTipAddress(PTTrezarcoin)
+	case PTVertcoin:
+		s = CCoinAbbrevVertcoin + ": " + GetTipAddress(PTVertcoin)
+	default:
+		s = CCoinAbbrevDivi + ": " + GetTipAddress(PTDivi)
+	}
+	sCoinName, err := GetCoinName(APPTCLI)
+	if err != nil {
+		log.Fatal("Unable to GetCoinName " + err.Error())
+	}
+
+	sInfo := "Thank you for using " + CAppName + " to run your " + sCoinName + " wallet/node." + "\n\n" +
+		CAppName + " is FREE to use, however, all donations are most welcome at the " + sCoinName + " address below:" + "\n\n" +
+		s
+
+	return sInfo
+}
+
 func GetWalletEncryptionPassword() string {
 	pw := ""
 	prompt := &survey.Password{
@@ -959,6 +1003,7 @@ func getWalletResponse(sOut string) walletResponseType {
 // IsCoinDaemonRunning - Works out whether the coin Daemon is running e.g. divid
 func IsCoinDaemonRunning(ct ProjectType) (bool, int, error) {
 	var pid int
+
 	//bwconf, err := GetConfigStruct("", false)
 	//if err != nil {
 	//	return false, pid, err
