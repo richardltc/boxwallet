@@ -404,7 +404,7 @@ func GetInfoPIVXUI(cliConf *ConfStruct, spin *yacspin.Spinner) (PIVXGetInfoRespS
 		for j := 1; j < 60; j++ {
 			resp, err := http.DefaultClient.Do(req)
 			if err != nil {
-				spin.Message(" waiting for your " + CCoinNamePIVX + " wallet to respond, this could take several minutes...")
+				spin.Message(" waiting for your " + CCoinNamePIVX + " wallet to respond, this could take several minutes (ctrl-c to cancel)...")
 				time.Sleep(1 * time.Second)
 				continue
 			}
@@ -418,7 +418,7 @@ func GetInfoPIVXUI(cliConf *ConfStruct, spin *yacspin.Spinner) (PIVXGetInfoRespS
 			if bytes.Contains(bodyResp, []byte("Loading")) ||
 				bytes.Contains(bodyResp, []byte("Rescanning")) ||
 				bytes.Contains(bodyResp, []byte("Rewinding")) ||
-				bytes.Contains(bodyResp, []byte("RPC in warm-up: Calculating money supply")) ||
+				bytes.Contains(bodyResp, []byte("RPC in warm-up")) ||
 				bytes.Contains(bodyResp, []byte("Verifying")) {
 				// The wallet is still loading, so print message, and sleep for 1 second and try again..
 				var errStruct GenericRespStruct
@@ -435,8 +435,8 @@ func GetInfoPIVXUI(cliConf *ConfStruct, spin *yacspin.Spinner) (PIVXGetInfoRespS
 					spin.Message(" Your " + CCoinNamePIVX + " wallet is currently Rewinding, this could take several minutes...")
 				} else if bytes.Contains(bodyResp, []byte("Verifying")) {
 					spin.Message(" Your " + CCoinNamePIVX + " wallet is currently Verifying, this could take several minutes...")
-				} else if bytes.Contains(bodyResp, []byte("Calculating money supply")) {
-					spin.Message(" Your " + CCoinNamePIVX + " wallet is currently Calculating money supply, this could take several minutes...")
+				} else if bytes.Contains(bodyResp, []byte("RPC in warm-up")) {
+					spin.Message(" Your " + CCoinNamePIVX + " wallet is currently preparing RPC interface, this could take several minutes...")
 				}
 				time.Sleep(1 * time.Second)
 			} else {
