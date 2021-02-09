@@ -96,6 +96,22 @@ var displayaddressCmd = &cobra.Command{
 			if len(addresses.Result) > 0 {
 				sAddress = addresses.Result[0].Address
 			}
+		case be.PTPIVX:
+			addresses, _ := be.ListReceivedByAddressPIVX(&cliConf, true)
+			if len(addresses.Result) > 0 {
+				sAddress = addresses.Result[0].Address
+			} else {
+				r, err := be.GetNewAddressPIVX(&cliConf)
+				if err != nil {
+					log.Fatalf("Unable to GetNewAddressPIVX")
+				}
+				sAddress = r.Result
+			}
+		case be.PTRapids:
+			addresses, _ := be.ListReceivedByAddressRapids(&cliConf, true)
+			if len(addresses.Result) > 0 {
+				sAddress = addresses.Result[0].Address
+			}
 		case be.PTReddCoin:
 			addresses, _ := be.ListReceivedByAddressRDD(&cliConf, true)
 			if len(addresses.Result) > 0 {
