@@ -2,11 +2,11 @@
 
 BoxWallet is a single binary multi-coin CLI tool, that gets your coin-of-choice wallet/node set-up ***fast*** with just a few commands:
 
-boxwallet `coin` - allows you to choose your coin of choice, which then downloads the projects core files from their official website and installs them automatically.
+`./boxwallet coin` - allows you to choose your coin of choice, which then downloads the projects core files from their official website and installs them automatically.
 
-boxwallet `start` - starts the coin's daemon, which syncs the Blockchain.
+`./boxwallet start` - starts the coin's daemon, which syncs the Blockchain.
 
-boxwallet `dash` - displays a dashboard with the coins Blockchain and wallet info.
+`./boxwallet dash` - displays a dashboard with the coins Blockchain and wallet info.
 
 ## What are some of BoxWallet's features? ##
 
@@ -21,20 +21,20 @@ boxwallet `dash` - displays a dashboard with the coins Blockchain and wallet inf
 * Auto fixing common wallet issues, which can be common after power failures.
 * Balance in your coin, USD, AUD and GBP (more coming soon...)
 
-## What coins does BoxWallet support?
+## What coins does BoxWallet currently support?
 
-DeVault
-DigiByte
-Divi
-Groestlcoin
-Feathercoin
-Phore
-PIVX
-Rapids
-ReddCoin
-Scala (coming soon)
-Trezarcoin
-Vertcoin
+* DeVault
+* DigiByte
+* Divi
+* Groestlcoin
+* Feathercoin
+* Phore
+* PIVX
+* Rapids
+* ReddCoin
+* Scala (coming soon)
+* Trezarcoin
+* Vertcoin
 
 ### How do I run? ###
 
