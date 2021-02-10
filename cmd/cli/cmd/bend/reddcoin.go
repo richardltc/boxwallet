@@ -21,12 +21,14 @@ const (
 	CDFReddCoinLinux32 string = "reddcoin-" + CReddCoinCoreVersion + "-linux32.tar.gz"
 	CDFReddCoinLinux64 string = "reddcoin-" + CReddCoinCoreVersion + "-linux64.tar.gz"
 	CDFReddCoinWindows string = "reddcoin-" + CReddCoinCoreVersion + "-win64.zip"
+	CDFReddCoinBS      string = "blockchain-Nov-26-2020.zip"
 
 	CReddCoinExtractedDirLinux = "reddcoin-" + CReddCoinCoreVersion + "/"
 	CReddCoinExtractedDirWin   = "reddcoin-" + CReddCoinCoreVersion + "\\"
 
 	CDownloadURLReddCoinGen string = "https://download.reddcoin.com/bin/reddcoin-core-" + CReddCoinCoreVersion + "/"
 	CDownloadURLReddCoinArm string = "https://sourceforge.net/projects/reddpi/files/update/reddcoin-" + CReddCoinCoreVersion + "-armhf.zip/download"
+	CDownloadURLReddCoinBS  string = "https://download.reddcoin.com/bin/bootstrap/"
 
 	CReddCoinHomeDir    string = ".reddcoin"
 	CReddCoinHomeDirWin string = "REDDCOIN"
