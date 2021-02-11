@@ -12,6 +12,7 @@ require (
 	github.com/fsnotify/fsnotify v1.4.9 // indirect
 	github.com/gizak/termui/v3 v3.1.0
 	github.com/golangcollege/sessions v1.2.0
+	github.com/gookit/color v1.3.7
 	github.com/inconshreveable/go-update v0.0.0-20160112193335-8152e7eb6ccf // indirect
 	github.com/justinas/alice v1.2.0
 	github.com/magiconair/properties v1.8.2 // indirect
