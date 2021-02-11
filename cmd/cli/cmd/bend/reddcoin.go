@@ -3,9 +3,12 @@ package bend
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"github.com/dustin/go-humanize"
 	"io/ioutil"
 	"net/http"
+	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -145,6 +148,26 @@ type RDDWalletInfoRespStruct struct {
 	ID    string      `json:"id"`
 }
 
+func BlockchainDataExistsRDD() (bool, error) {
+	cd, err := GetCoinHomeFolder(APPTCLI, PTReddCoin)
+	if err != nil {
+		return false, fmt.Errorf("unable to GetCoinHomeFolder - DownloadBlockchain: %v", err)
+	}
+
+	// If the "blocks" directory already exists, return.
+	if _, err := os.Stat(cd + "blocks"); !os.IsNotExist(err) {
+		err := errors.New("The directory: " + cd + "blocks already exists")
+		return true, err
+	}
+
+	// If the "chainstate" directory already exists, return.
+	if _, err := os.Stat(cd + "chainstate"); !os.IsNotExist(err) {
+		err := errors.New("The directory: " + cd + "chainstate already exists")
+		return true, err
+	}
+	return false, nil
+}
+
 func GetBlockchainInfoRDD(cliConf *ConfStruct) (RDDBlockchainInfoRespStruct, error) {
 	var respStruct RDDBlockchainInfoRespStruct
 
@@ -195,7 +218,7 @@ func GetBlockchainSyncTxtRDD(synced bool, bci *RDDBlockchainInfoRespStruct) stri
 
 func GetInfoRDD(cliConf *ConfStruct) (RDDGetInfoRespStruct, error) {
 	//attempts := 5
-	//waitingStr := "Checking server..."
+	//waitingStr := "Checking server.."
 
 	var respStruct RDDGetInfoRespStruct
 
