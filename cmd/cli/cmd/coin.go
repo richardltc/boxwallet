@@ -158,6 +158,28 @@ var coinCmd = &cobra.Command{
 		} else {
 			be.AddToLog(lf, "The "+sCoinName+" CLI bin files have already been installed.", true)
 		}
+
+		// I think here, is the best place to check whether the user would like to download the blockchain snapshot..
+		switch cliConf.ProjectType {
+		case be.PTReddCoin:
+			bcdExists, _ := be.BlockchainDataExistsRDD()
+			if !bcdExists {
+				ans := true
+				prompt := &survey.Confirm{
+					Message: "\nIt looks like this is a fresh install of " + be.CCoinNameReddCoin +
+						"\n\nWould you like download the Blockchain snapshot " + be.CDFReddCoinBS + " ?:",
+					Default: true,
+				}
+				survey.AskOne(prompt, &ans)
+				if ans {
+					if err := be.DownloadBlockchain(be.PTReddCoin); err != nil {
+						log.Fatal("Unable to download blockchain data: " + err.Error())
+					}
+				}
+
+			}
+		}
+
 		fmt.Println("\nAll done!")
 		fmt.Println("\nYou can now run './boxwallet start' and then './boxwallet dash' to view your " + sCoinName + " Dashboard")
 
