@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"github.com/AlecAivazis/survey/v2"
+	"github.com/mholt/archiver/v3"
 	"io/ioutil"
 	"log"
 	"net/http"
@@ -25,7 +26,7 @@ import (
 const (
 	CAppName        string = "BoxWallet"
 	CUpdaterAppName string = "bwupdater" // bwupdater
-	CBWAppVersion   string = "0.37.3"
+	CBWAppVersion   string = "0.37.3a"
 	CAppFilename    string = "boxwallet"
 	CAppFilenameWin string = "boxwallet.exe"
 	CAppLogfile     string = "boxwallet.log"
@@ -387,6 +388,43 @@ func ConvertBCVerification(verificationPG float64) string {
 	sProg = fmt.Sprintf("%.2f", fProg)
 
 	return sProg
+}
+
+func DownloadBlockchain(pt ProjectType) error {
+	var cd string
+	var err error
+
+	// First, check to make sure that both the blockchain folders don't already exist. (blocks, chainstate)
+	cd, err = GetCoinHomeFolder(APPTCLI, PTReddCoin)
+	if err != nil {
+		return fmt.Errorf("unable to GetCoinHomeFolder - DownloadBlockchain: %v", err)
+	}
+	switch pt {
+	case PTReddCoin:
+		chdExists, err := BlockchainDataExistsRDD()
+		if err != nil {
+			return fmt.Errorf("unable to determine if BlockchainDataExistsRDD: %v", err)
+		}
+		if chdExists {
+			err := errors.New("blockchain data already exists")
+			return err
+		}
+
+		// Then download the file.
+		if err := DownloadFile(cd, CDownloadURLReddCoinBS+CDFReddCoinBS); err != nil {
+			return fmt.Errorf("unable to download file: %v - %v", CDownloadURLReddCoinBS, err)
+		}
+
+		// Then, extract it straight into the ~/.reddcoin folder
+		if err := archiver.Unarchive(cd+CDFReddCoinBS, cd); err != nil {
+			return fmt.Errorf("unable to unarchive file: %v - %v", cd+CDFReddCoinBS, err)
+		}
+		defer os.RemoveAll(cd + CDFReddCoinBS)
+	default:
+		err := errors.New("unable to determine ProjectType - DownloadBlockchain")
+		return err
+	}
+	return nil
 }
 
 func FindProcess(key string) (int, string, error) {
@@ -944,6 +982,13 @@ func GetWalletEncryptionStatus() (WEType, error) {
 		}
 		wet := GetWalletSecurityStateDVT(&wi)
 		return wet, nil
+	case PTDigiByte:
+		wi, err := GetWalletInfoDGB(&conf)
+		if err != nil {
+			return WETUnknown, fmt.Errorf("unable to GetWalletInfoDigiByte %v", err)
+		}
+		wet := GetWalletSecurityStateDGB(&wi)
+		return wet, nil
 	case PTDivi:
 		wi, err := GetWalletInfoDivi(&conf)
 		if err != nil {
@@ -952,7 +997,12 @@ func GetWalletEncryptionStatus() (WEType, error) {
 		wet := GetWalletSecurityStateDivi(&wi)
 		return wet, nil
 	case PTFeathercoin:
-		// todo Complete for Feathercoin
+		wi, err := GetWalletInfoFeathercoin(&conf)
+		if err != nil {
+			return WETUnknown, fmt.Errorf("unable to GetWalletInfoFeathercoin %v", err)
+		}
+		wet := GetWalletSecurityStateFeathercoin(&wi)
+		return wet, nil
 	case PTGroestlcoin:
 		wi, err := GetWalletInfoGRS(&conf)
 		if err != nil {
@@ -961,7 +1011,12 @@ func GetWalletEncryptionStatus() (WEType, error) {
 		wet := GetWalletSecurityStateGRS(&wi)
 		return wet, nil
 	case PTPhore:
-		// todo Do for Phore
+		wi, err := GetWalletInfoPhore(&conf)
+		if err != nil {
+			return WETUnknown, fmt.Errorf("unable to GetWalletInfoPhore %v", err)
+		}
+		wet := GetWalletSecurityStatePhore(&wi)
+		return wet, nil
 	case PTPIVX:
 		wi, err := GetWalletInfoPIVX(&conf)
 		if err != nil {
@@ -976,8 +1031,27 @@ func GetWalletEncryptionStatus() (WEType, error) {
 		}
 		wet := GetWalletSecurityStateRapids(&wi)
 		return wet, nil
+	case PTReddCoin:
+		wi, err := GetWalletInfoRDD(&conf)
+		if err != nil {
+			return WETUnknown, fmt.Errorf("unable to GetWalletInfoRDD %v", err)
+		}
+		wet := GetWalletSecurityStateRDD(&wi)
+		return wet, nil
 	case PTTrezarcoin:
-		// todo Do for TZC
+		wi, err := GetWalletInfoTrezarcoin(&conf)
+		if err != nil {
+			return WETUnknown, fmt.Errorf("unable to GetWalletInfoTrezarcoin %v", err)
+		}
+		wet := GetWalletSecurityStateTrezarcoin(&wi)
+		return wet, nil
+	case PTVertcoin:
+		wi, err := GetWalletInfoVTC(&conf)
+		if err != nil {
+			return WETUnknown, fmt.Errorf("unable to GetWalletInfoVertcoin %v", err)
+		}
+		wet := GetWalletSecurityStateVTC(&wi)
+		return wet, nil
 	default:
 		err = errors.New("unable to determine ProjectType")
 	}
@@ -1009,6 +1083,7 @@ func IsCoinDaemonRunning(ct ProjectType) (bool, int, error) {
 	//	return false, pid, err
 	//}
 	//switch bwconf.ProjectType {
+
 	var err error
 	switch ct {
 	case PTDigiByte:
@@ -4257,6 +4332,18 @@ func WalletBackup(pt ProjectType) error {
 		if err != nil {
 			return fmt.Errorf("unable to get coin home folder: %v", err)
 		}
+	case PTFeathercoin:
+		abbrev = strings.ToLower(CCoinAbbrevFeathercoin)
+		wl, err = GetCoinHomeFolder(APPTCLI, pt)
+		if err != nil {
+			return fmt.Errorf("unable to get coin home folder: %v", err)
+		}
+	case PTGroestlcoin:
+		abbrev = strings.ToLower(CCoinAbbrevGroestlcoin)
+		wl, err = GetCoinHomeFolder(APPTCLI, pt)
+		if err != nil {
+			return fmt.Errorf("unable to get coin home folder: %v", err)
+		}
 	case PTPhore:
 		abbrev = strings.ToLower(CCoinAbbrevPhore)
 		wl, err = GetCoinHomeFolder(APPTCLI, pt)
@@ -4269,8 +4356,26 @@ func WalletBackup(pt ProjectType) error {
 		if err != nil {
 			return fmt.Errorf("unable to get coin home folder: %v", err)
 		}
+	case PTRapids:
+		abbrev = strings.ToLower(CCoinAbbrevRapids)
+		wl, err = GetCoinHomeFolder(APPTCLI, pt)
+		if err != nil {
+			return fmt.Errorf("unable to get coin home folder: %v", err)
+		}
 	case PTReddCoin:
 		abbrev = strings.ToLower(CCoinAbbrevReddCoin)
+		wl, err = GetCoinHomeFolder(APPTCLI, pt)
+		if err != nil {
+			return fmt.Errorf("unable to get coin home folder: %v", err)
+		}
+	case PTTrezarcoin:
+		abbrev = strings.ToLower(CCoinAbbrevTrezarcoin)
+		wl, err = GetCoinHomeFolder(APPTCLI, pt)
+		if err != nil {
+			return fmt.Errorf("unable to get coin home folder: %v", err)
+		}
+	case PTVertcoin:
+		abbrev = strings.ToLower(CCoinAbbrevVertcoin)
 		wl, err = GetCoinHomeFolder(APPTCLI, pt)
 		if err != nil {
 			return fmt.Errorf("unable to get coin home folder: %v", err)
