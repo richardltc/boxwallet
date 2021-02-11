@@ -40,6 +40,7 @@ import (
 	"github.com/gizak/termui/v3/widgets"
 	be "richardmace.co.uk/boxwallet/cmd/cli/cmd/bend"
 	//m "richardmace.co.uk/boxwallet/pkg/models"
+	"github.com/gookit/color"
 )
 
 const (
@@ -372,6 +373,7 @@ var dashCmd = &cobra.Command{
 				//if err := be.SetConfigStruct("", cliConf); err != nil {
 				//	log.Fatalf("Unable to SetCLIConfStruct(): failed with %s\n", err)
 				//}
+
 			case be.PTRapids:
 				wet, err := be.GetWalletEncryptionStatus()
 				if err != nil {
@@ -523,6 +525,12 @@ var dashCmd = &cobra.Command{
 			log.Fatalf("Unable to determine project type")
 		}
 
+		// Display warning message (visible when the users stops dash) if they haven't encrypted their wallet
+		if bWalletNeedsEncrypting {
+			color.Danger.Println("*** WARNING: Your wallet is NOT encrypted! ***")
+			fmt.Println("\nPlease encrypt it NOW with the command:\n\n" +
+				"./boxwallet wallet encrypt\n")
+		}
 		if bWalletNeedsEncrypting && cliConf.BlockchainSynced == true {
 			be.ClearScreen()
 			resp := be.GetWalletEncryptionResp()
