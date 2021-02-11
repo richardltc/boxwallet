@@ -30,7 +30,7 @@ var encryptCmd = &cobra.Command{
 	Short: "Encrypts your wallet",
 	Long:  ``,
 	Run: func(cmd *cobra.Command, args []string) {
-		// Lets load our config file first, to see if the user has made their coin choice...
+		// Lets load our config file first, to see if the user has made their coin choice..
 		cliConf, err := be.GetConfigStruct("", true)
 		if err != nil {
 			log.Fatal("Unable to determine coin type. Please run " + be.CAppFilename + " coin" + err.Error())
@@ -42,27 +42,96 @@ var encryptCmd = &cobra.Command{
 		}
 
 		switch cliConf.ProjectType {
-		case be.PTDivi:
-			// Check wallet encryption status
-			wi, err := be.GetWalletInfoDivi(&cliConf)
+		case be.PTDeVault:
+			wet, err := be.GetWalletEncryptionStatus()
 			if err != nil {
-				log.Fatal("Unable to getWalletInfo " + err.Error())
+				log.Fatalf("Unable to determine wallet encryption status")
 			}
-
-			if (wi.Result.EncryptionStatus != "unencrypted") && (wi.Result.EncryptionStatus != "") {
+			if wet != be.WETUnencrypted {
 				log.Fatal("Wallet is already encrypted")
 			}
-		case be.PTPIVX:
-			// todo Put the below code back in again when we have a reliable way of detecting.
-			// Check wallet encryption status
-			//wi, err := be.GetWalletInfoPIVX(&cliConf)
+		case be.PTDigiByte:
+			wet, err := be.GetWalletEncryptionStatus()
+			if err != nil {
+				log.Fatalf("Unable to determine wallet encryption status")
+			}
+			if wet != be.WETUnencrypted {
+				log.Fatal("Wallet is already encrypted")
+			}
+		case be.PTDivi:
+			wet, err := be.GetWalletEncryptionStatus()
+			if err != nil {
+				log.Fatalf("Unable to determine wallet encryption status")
+			}
+			if wet != be.WETUnencrypted {
+				log.Fatal("Wallet is already encrypted")
+			}
+
+			//// Check wallet encryption status
+			//wi, err := be.GetWalletInfoDivi(&cliConf)
 			//if err != nil {
 			//	log.Fatal("Unable to getWalletInfo " + err.Error())
 			//}
 			//
-			//if (wi.Result.unEncryptionStatus != "unencrypted") && (wi.Result.EncryptionStatus != "") {
+			//if (wi.Result.EncryptionStatus != "unencrypted") && (wi.Result.EncryptionStatus != "") {
 			//	log.Fatal("Wallet is already encrypted")
 			//}
+		case be.PTFeathercoin:
+			wet, err := be.GetWalletEncryptionStatus()
+			if err != nil {
+				log.Fatalf("Unable to determine wallet encryption status")
+			}
+			if wet != be.WETUnencrypted {
+				log.Fatal("Wallet is already encrypted")
+			}
+		case be.PTGroestlcoin:
+			wet, err := be.GetWalletEncryptionStatus()
+			if err != nil {
+				log.Fatalf("Unable to determine wallet encryption status")
+			}
+			if wet != be.WETUnencrypted {
+				log.Fatal("Wallet is already encrypted")
+			}
+		case be.PTPhore:
+			wet, err := be.GetWalletEncryptionStatus()
+			if err != nil {
+				log.Fatalf("Unable to determine wallet encryption status")
+			}
+			if wet != be.WETUnencrypted {
+				log.Fatal("Wallet is already encrypted")
+			}
+		case be.PTPIVX:
+			wet, err := be.GetWalletEncryptionStatus()
+			if err != nil {
+				log.Fatalf("Unable to determine wallet encryption status")
+			}
+			if wet != be.WETUnencrypted {
+				log.Fatal("Wallet is already encrypted")
+			}
+		case be.PTReddCoin:
+			wet, err := be.GetWalletEncryptionStatus()
+			if err != nil {
+				log.Fatalf("Unable to determine wallet encryption status")
+			}
+			if wet != be.WETUnencrypted {
+				log.Fatal("Wallet is already encrypted")
+			}
+		case be.PTTrezarcoin:
+			wet, err := be.GetWalletEncryptionStatus()
+			if err != nil {
+				log.Fatalf("Unable to determine wallet encryption status")
+			}
+			if wet != be.WETUnencrypted {
+				log.Fatal("Wallet is already encrypted")
+			}
+		case be.PTVertcoin:
+			wet, err := be.GetWalletEncryptionStatus()
+			if err != nil {
+				log.Fatalf("Unable to determine wallet encryption status")
+			}
+			if wet != be.WETUnencrypted {
+				log.Fatal("Wallet is already encrypted")
+			}
 		default:
 			log.Fatal("Unable to determine project type ")
 		}
