@@ -38,6 +38,7 @@ const (
 	cCommandGetBCInfo             string = "getblockchaininfo"
 	cCommandGetInfo               string = "getinfo"
 	cCommandListReceivedByAddress string = "listreceivedbyaddress"
+	cCommandListTransactions      string = "listtransactions"
 	cCommandGetNetworkInfo        string = "getnetworkinfo"
 	cCommandGetNewAddress         string = "getnewaddress"
 	cCommandGetWalletInfo         string = "getwalletinfo"
