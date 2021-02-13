@@ -416,6 +416,7 @@ func DownloadBlockchain(pt ProjectType) error {
 		}
 
 		// Then, extract it straight into the ~/.reddcoin folder
+		fmt.Println("Download complete. Decompressing...")
 		if err := archiver.Unarchive(cd+CDFReddCoinBS, cd); err != nil {
 			return fmt.Errorf("unable to unarchive file: %v - %v", cd+CDFReddCoinBS, err)
 		}
