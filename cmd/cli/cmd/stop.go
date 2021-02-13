@@ -44,6 +44,14 @@ var stopCmd = &cobra.Command{
 			log.Fatal("Unable to GetCoinDaemonFilename " + err.Error())
 		}
 
+		// If we're running locally and the coin daemon is not currently running, inform the user.
+		if cliConf.ServerIP != "127.0.0.1" {
+			bIsRunning, _, _ := be.IsCoinDaemonRunning(cliConf.ProjectType)
+			if !bIsRunning {
+				log.Fatal("The coin server " + sCoinDaemonName + " is not currently running.")
+			}
+		}
+
 		switch cliConf.ProjectType {
 		case be.PTScala:
 			resp, err := be.StopDaemonMonero(&cliConf)
