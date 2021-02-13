@@ -114,6 +114,27 @@ type RDDListReceivedByAddressRespStruct struct {
 	ID    string      `json:"id"`
 }
 
+type RDDListTransactions struct {
+	Result []struct {
+		Account         string        `json:"account"`
+		Address         string        `json:"address"`
+		Category        string        `json:"category"`
+		Amount          float64       `json:"amount"`
+		Vout            int           `json:"vout,omitempty"`
+		Confirmations   int           `json:"confirmations"`
+		Blockhash       string        `json:"blockhash"`
+		Blockindex      int           `json:"blockindex"`
+		Blocktime       int           `json:"blocktime"`
+		Txid            string        `json:"txid"`
+		Walletconflicts []interface{} `json:"walletconflicts"`
+		Time            int           `json:"time"`
+		Timereceived    int           `json:"timereceived"`
+		Generated       bool          `json:"generated,omitempty"`
+	} `json:"result"`
+	Error interface{} `json:"error"`
+	ID    string      `json:"id"`
+}
+
 type RDDNetworkInfoRespStruct struct {
 	Result struct {
 		Version         int    `json:"version"`
@@ -436,6 +457,35 @@ func ListReceivedByAddressRDD(cliConf *ConfStruct, includeZero bool) (RDDListRec
 		s = "{\"jsonrpc\":\"1.0\",\"id\":\"curltext\",\"method\":\"listreceivedbyaddress\",\"params\":[1, false]}"
 	}
 	body := strings.NewReader(s)
+	req, err := http.NewRequest("POST", "http://"+cliConf.ServerIP+":"+cliConf.Port, body)
+	if err != nil {
+		return respStruct, err
+	}
+	req.SetBasicAuth(cliConf.RPCuser, cliConf.RPCpassword)
+	req.Header.Set("Content-Type", "text/plain;")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return respStruct, err
+	}
+	defer resp.Body.Close()
+	bodyResp, err := ioutil.ReadAll(resp.Body)
+	if err != nil {
+		return respStruct, err
+	}
+
+	err = json.Unmarshal(bodyResp, &respStruct)
+	if err != nil {
+		return respStruct, err
+	}
+
+	return respStruct, nil
+}
+
+func ListTransactionsRDD(cliConf *ConfStruct) (RDDListTransactions, error) {
+	var respStruct RDDListTransactions
+
+	body := strings.NewReader("{\"jsonrpc\":\"1.0\",\"id\":\"boxwallet\",\"method\":\"" + cCommandListTransactions + "\",\"params\":[]}")
 	req, err := http.NewRequest("POST", "http://"+cliConf.ServerIP+":"+cliConf.Port, body)
 	if err != nil {
 		return respStruct, err
