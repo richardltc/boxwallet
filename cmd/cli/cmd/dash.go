@@ -44,9 +44,9 @@ import (
 )
 
 const (
-	cStakeReceived   = "\u02764"
-	cPaymentReceived = "\u0293D"
-	cPaymentSent     = "\u0293C"
+	cStakeReceived   string = "\u2618" // "\u2605" //"\u0276"
+	cPaymentReceived string = "\u2770" //"\u261A" //"\u0293"
+	cPaymentSent     string = "\u2771"
 )
 
 type hdinfoRespStruct struct {
@@ -762,10 +762,8 @@ var dashCmd = &cobra.Command{
 
 		pTransactions := widgets.NewTable()
 		pTransactions.Rows = [][]string{
-			[]string{"header1", "header2", "header3"},
-			[]string{"AAA", "BBB", "CCC"},
-			[]string{"DDD", "EEE", "FFF"},
-			[]string{"GGG", "HHH", "III"},
+			[]string{"Date", "Category", "Amount", "Confirmations"},
+			[]string{"----", "--------", "------", "-------------"},
 		}
 		pTransactions.Title = "Transactions"
 		pTransactions.RowSeparator = true
@@ -804,6 +802,8 @@ var dashCmd = &cobra.Command{
 			var ssPIVX be.PIVXStakingStatusRespStruct
 			var ssRapids be.RapidsStakingStatusRespStruct
 			var ssTrezarcoin be.TrezarcoinStakingInfoRespStruct
+			var transDivi be.DiviListTransactions
+			var transRDD be.RDDListTransactions
 			var wiDeVault be.DVTWalletInfoRespStruct
 			var wiDigiByte be.DGBWalletInfoRespStruct
 			var wiDivi be.DiviWalletInfoRespStruct
@@ -890,6 +890,7 @@ var dashCmd = &cobra.Command{
 				if bciDivi.Result.Verificationprogress > 0.999 {
 					mnssDivi, _ = be.GetMNSyncStatusDivi(&cliConf)
 					ssDivi, _ = be.GetStakingStatusDivi(&cliConf)
+					transDivi, _ = be.ListTransactionsDivi(&cliConf)
 					wiDivi, _ = be.GetWalletInfoDivi(&cliConf)
 				}
 			case be.PTFeathercoin:
@@ -920,6 +921,7 @@ var dashCmd = &cobra.Command{
 				}
 			case be.PTReddCoin:
 				if bRDDBlockchainIsSynced {
+					transRDD, _ = be.ListTransactionsRDD(&cliConf)
 					wiReddCoin, _ = be.GetWalletInfoRDD(&cliConf)
 				}
 			case be.PTTrezarcoin:
@@ -1392,6 +1394,62 @@ var dashCmd = &cobra.Command{
 				err = errors.New("unable to determine ProjectType")
 			}
 
+			// Update the transactions display, if we're all synced up
+			switch cliConf.ProjectType {
+			case be.PTDivi:
+				if bciDivi.Result.Verificationprogress > 0.9999 {
+					pTransactions.Rows = [][]string{
+						[]string{" Date", " Category", " Amount", " Confirmations"},
+					}
+					for i, trans := range transDivi.Result {
+						pTransactions.Rows = append(pTransactions.Rows, []string{trans.Category})
+						//pTransactions.Rows = append(pTransactions.Rows,[]string{transDivi.Result[i].Category})
+						if i > 5 {
+							break
+						}
+					}
+				}
+			case be.PTReddCoin:
+				if bciReddCoin.Result.Verificationprogress > 0.9999 {
+					pTransactions.Rows = [][]string{
+						[]string{" Date", " Category", " Amount", " Confirmations"},
+					}
+					// Record whether any of the transactions have 0 conf (so that we can display the boarder as yellow)
+					bYellowBoarder := false
+					//for i := len(s)-1; i >= 0; i--
+					//for i, trans := range transRDD.Result {
+					for i := len(transRDD.Result) - 1; i >= 0; i-- {
+						if transRDD.Result[i].Confirmations < 1 {
+							bYellowBoarder = true
+						}
+						iTime, err := strconv.ParseInt(strconv.Itoa(transRDD.Result[i].Timereceived), 10, 64)
+						if err != nil {
+							panic(err)
+						}
+						tm := time.Unix(iTime, 0)
+						sCat := getCategoryTXT(transRDD.Result[i].Category)
+						tAmountStr := humanize.FormatFloat("#,###.##", transRDD.Result[i].Amount)
+						sColour := getCategoryColour(transRDD.Result[i].Category)
+						pTransactions.Rows = append(pTransactions.Rows, []string{
+							" [" + tm.Format("2006-01-02 15:04"+"](fg:"+sColour+")"),
+							" [" + sCat + "](fg:" + sColour + ")",
+							" [" + tAmountStr + "](fg:" + sColour + ")",
+							" [" + strconv.Itoa(transRDD.Result[i].Confirmations) + "](fg:" + sColour + ")"})
+						//pTransactions.Rows = append(pTransactions.Rows,[]string{transDivi.Result[i].Category})
+						if i > 10 {
+							break
+						}
+					}
+					if bYellowBoarder {
+						pTransactions.BorderStyle.Fg = ui.ColorYellow
+					} else {
+						pTransactions.BorderStyle.Fg = ui.ColorGreen
+					}
+				}
+			default:
+				err = errors.New("unable to determine ProjectType")
+			}
+
 			// Update ticker info every 30 seconds...
 			if gTickerCounter == 0 || gTickerCounter > 30 {
 				if gTickerCounter > 30 {
@@ -1460,7 +1518,7 @@ var dashCmd = &cobra.Command{
 		}
 
 		draw := func(count int) {
-			ui.Render(pAbout, pWallet, pNetwork)
+			ui.Render(pAbout, pWallet, pNetwork, pTransactions)
 		}
 
 		tickerCount := 1
@@ -1911,6 +1969,30 @@ func getBalanceInVTCTxt(wi *be.VTCWalletInfoRespStruct) string {
 	} else {
 		return "  Balance:          [" + tBalanceStr + "](fg:green)"
 	}
+}
+
+func getCategoryTXT(s string) string {
+	switch s {
+	case "receive":
+		return cPaymentReceived //cPaymentReceived
+	case "sent":
+		return cPaymentSent
+	case "stake":
+		return cStakeReceived
+	}
+	return s
+}
+
+func getCategoryColour(s string) string {
+	switch s {
+	case "receive":
+		return "green"
+	case "sent":
+		return "red"
+	case "stake":
+		return "green"
+	}
+	return s
 }
 
 func getWalletStakingTxt(wi *be.DiviWalletInfoRespStruct) string {
