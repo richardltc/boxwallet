@@ -735,15 +735,14 @@ func doRequiredFiles() error {
 			//srcFileBWCLI = be.CAppFilenameWin
 		case "linux":
 			switch runtime.GOARCH {
-			case "arm":
+			case "arm", "arm64":
 				if err := be.AddToLog(lf, "linux arm detected.", false); err != nil {
 					return fmt.Errorf("unable to add to log file: %v", err)
 				}
-				srcPath = abf
+				srcPath = abf + be.CDigiByteExtractedDirLinux + "bin/"
 				srcFileCLI = be.CDigiByteCliFile
 				srcFileD = be.CDigiByteDFile
 				srcFileTX = be.CDigiByteTxFile
-			//srcFileBWCLI = be.CAppFilename
 			case "386":
 				if err := be.AddToLog(lf, "linux 386 detected.", false); err != nil {
 					return fmt.Errorf("unable to add to log file: %v", err)
