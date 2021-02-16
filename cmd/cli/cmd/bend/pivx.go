@@ -175,6 +175,27 @@ type PIVXListReceivedByAddressRespStruct struct {
 	ID    string      `json:"id"`
 }
 
+type PIVXListTransactions struct {
+	Result []struct {
+		Address         string        `json:"address"`
+		Category        string        `json:"category"`
+		Amount          float64       `json:"amount"`
+		Label           string        `json:"label"`
+		Vout            int           `json:"vout"`
+		Confirmations   int           `json:"confirmations"`
+		Bcconfirmations int           `json:"bcconfirmations"`
+		Blockhash       string        `json:"blockhash"`
+		Blockindex      int           `json:"blockindex"`
+		Blocktime       int           `json:"blocktime"`
+		Txid            string        `json:"txid"`
+		Walletconflicts []interface{} `json:"walletconflicts"`
+		Time            int           `json:"time"`
+		Timereceived    int           `json:"timereceived"`
+	} `json:"result"`
+	Error interface{} `json:"error"`
+	ID    string      `json:"id"`
+}
+
 type PIVXMNSyncStatusRespStruct struct {
 	Result struct {
 		IsBlockchainSynced         bool `json:"IsBlockchainSynced"`
@@ -341,6 +362,7 @@ func GetBlockchainSyncTxtPIVX(synced bool, bci *PIVXBlockchainInfoRespStruct) st
 //		}
 //	}
 //	return respStruct, "", nil
+
 //}
 
 func GetInfoPIVX(cliConf *ConfStruct) (PIVXGetInfoRespStruct, string, error) {
