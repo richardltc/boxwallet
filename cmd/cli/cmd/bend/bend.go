@@ -1088,6 +1088,12 @@ func IsCoinDaemonRunning(ct ProjectType) (bool, int, error) {
 
 	var err error
 	switch ct {
+	case PTDeVault:
+		if runtime.GOOS == "windows" {
+			pid, _, err = FindProcess(CDeVaultDFileWin)
+		} else {
+			pid, _, err = FindProcess(CDeVaultDFile)
+		}
 	case PTDigiByte:
 		if runtime.GOOS == "windows" {
 			pid, _, err = FindProcess(CDigiByteDFileWin)
