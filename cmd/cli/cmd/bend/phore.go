@@ -37,7 +37,7 @@ const (
 	CPhoreTxFile     string = "phore-tx"
 	CPhoreTxFileWin  string = "phore-tx.exe"
 
-	// phore.conf file constants
+	// phore.conf file constants.
 	cPhoreRPCUser string = "phorerpc"
 	CPhoreRPCPort string = "11772"
 )
@@ -104,6 +104,30 @@ type PhoreListReceivedByAddressRespStruct struct {
 	Error interface{} `json:"error"`
 	ID    string      `json:"id"`
 }
+
+type PhoreListTransactions struct {
+	Result []struct {
+		Account         string   `json:"account"`
+		Address         string   `json:"address,omitempty"`
+		Category        string   `json:"category"`
+		Amount          float64  `json:"amount"`
+		Vout            int      `json:"vout"`
+		Fee             float64  `json:"fee"`
+		Confirmations   int      `json:"confirmations"`
+		Bcconfirmations int      `json:"bcconfirmations"`
+		Generated       bool     `json:"generated"`
+		Blockhash       string   `json:"blockhash"`
+		Blockindex      int      `json:"blockindex"`
+		Blocktime       int      `json:"blocktime"`
+		Txid            string   `json:"txid"`
+		Walletconflicts []string `json:"walletconflicts"`
+		Time            int      `json:"time"`
+		Timereceived    int      `json:"timereceived"`
+	} `json:"result"`
+	Error interface{} `json:"error"`
+	ID    string      `json:"id"`
+}
+
 type PhoreStakingStatusRespStruct struct {
 	Result struct {
 		Validtime       bool `json:"validtime"`
