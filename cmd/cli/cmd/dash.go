@@ -1416,7 +1416,6 @@ var dashCmd = &cobra.Command{
 					}
 					// Record whether any of the transactions have 0 conf (so that we can display the boarder as yellow)
 					bYellowBoarder := false
-					//for i := len(s)-1; i >= 0; i--
 					//for i, trans := range transRDD.Result {
 					for i := len(transRDD.Result) - 1; i >= 0; i-- {
 						if transRDD.Result[i].Confirmations < 1 {
