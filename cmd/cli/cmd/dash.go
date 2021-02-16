@@ -74,7 +74,7 @@ var gCheckWalletHealthCounter int = 0
 var NextLotteryStored string = ""
 var NextLotteryCounter int = 0
 
-// Network globals
+// Network globals.
 var gConnections int = 0
 
 // dashCmd represents the dash command
@@ -762,8 +762,8 @@ var dashCmd = &cobra.Command{
 
 		pTransactions := widgets.NewTable()
 		pTransactions.Rows = [][]string{
-			[]string{"Date", "Category", "Amount", "Confirmations"},
-			[]string{"----", "--------", "------", "-------------"},
+			[]string{" Date", " Category", " Amount", " Confirmations"},
+			[]string{" ----", " --------", " ------", " -------------"},
 		}
 		pTransactions.Title = "Transactions"
 		pTransactions.RowSeparator = true
@@ -1327,17 +1327,17 @@ var dashCmd = &cobra.Command{
 			// Update the wallet display, if we're all synced up
 			switch cliConf.ProjectType {
 			case be.PTDeVault:
-				if bciDeVault.Result.Verificationprogress > 0.9999 {
+				if bciDeVault.Result.Verificationprogress > 0.999 {
 					pWallet.Text = "" + getBalanceInDVTTxt(&wiDeVault) + "\n" +
 						"  " + getWalletSecurityStatusTxtDVT(&wiDeVault) + "\n"
 				}
 			case be.PTDigiByte:
-				if bciDigiByte.Result.Verificationprogress > 0.9999 {
+				if bciDigiByte.Result.Verificationprogress > 0.999 {
 					pWallet.Text = "" + getBalanceInDGBTxt(&wiDigiByte) + "\n" +
 						"  " + getWalletSecurityStatusTxtDGB(&wiDigiByte) + "\n"
 				}
 			case be.PTDivi:
-				if bciDivi.Result.Verificationprogress > 0.9999 {
+				if bciDivi.Result.Verificationprogress > 0.999 {
 					pWallet.Text = "" + getBalanceInDiviTxt(&wiDivi) + "\n" +
 						"  " + be.GetBalanceInCurrencyTxtDivi(&cliConf, &wiDivi) + "\n" +
 						"  " + getWalletSecurityStatusTxtDivi(&wiDivi) + "\n" +
@@ -1347,46 +1347,46 @@ var dashCmd = &cobra.Command{
 						"  " + "Lottery tickets:  0"
 				}
 			case be.PTFeathercoin:
-				if bciFeathercoin.Result.Verificationprogress > 0.9999 {
+				if bciFeathercoin.Result.Verificationprogress > 0.999 {
 					pWallet.Text = "" + getBalanceInFeathercoinTxt(&wiFeathercoin) + "\n" +
 						"  " + getWalletSecurityStatusTxtFeathercoin(&wiFeathercoin) + "\n"
 				}
 			case be.PTGroestlcoin:
-				if bciGroestlcoin.Result.Verificationprogress > 0.9999 {
+				if bciGroestlcoin.Result.Verificationprogress > 0.999 {
 					pWallet.Text = "" + getBalanceInGRSTxt(&wiGroestlcoin) + "\n" +
 						"  " + getWalletSecurityStatusTxtGRS(&wiGroestlcoin) + "\n"
 				}
 			case be.PTPhore:
-				if bciPhore.Result.Verificationprogress > 0.9999 {
+				if bciPhore.Result.Verificationprogress > 0.999 {
 					pWallet.Text = "" + getBalanceInPhoreTxt(&wiPhore) + "\n" +
 						"  " + getWalletSecurityStatusTxtPhore(&wiPhore) + "\n" +
 						"  " + getActivelyStakingTxtPhore(&ssPhore) + "\n" //e.g. "15%" or "staking"
 				}
 			case be.PTPIVX:
-				if bciPIVX.Result.Verificationprogress > 0.9999 {
+				if bciPIVX.Result.Verificationprogress > 0.999 {
 					pWallet.Text = "" + getBalanceInPIVXTxt(&wiPIVX) + "\n" +
 						"  " + getWalletSecurityStatusTxtPIVX(&wiPIVX) + "\n" +
 						"  " + getActivelyStakingTxtPIVX(&ssPIVX) + "\n" //e.g. "15%" or "staking"
 				}
 			case be.PTRapids:
-				if bciRapids.Result.Verificationprogress > 0.9999 {
+				if bciRapids.Result.Verificationprogress > 0.999 {
 					pWallet.Text = "" + getBalanceInRapidsTxt(&wiRapids) + "\n" +
 						"  " + getWalletSecurityStatusTxtRapids(&wiRapids) + "\n" +
 						"  " + getActivelyStakingTxtRapids(&ssRapids) + "\n" //e.g. "15%" or "staking"
 				}
 			case be.PTReddCoin:
-				if bciReddCoin.Result.Verificationprogress > 0.9999 {
+				if bciReddCoin.Result.Verificationprogress > 0.999 {
 					pWallet.Text = "" + getBalanceInRDDTxt(&wiReddCoin) + "\n" +
 						"  " + getWalletSecurityStatusTxtRDD(&wiReddCoin) + "\n"
 				}
 			case be.PTTrezarcoin:
-				if bciTrezarcoin.Result.Verificationprogress > 0.9999 {
+				if bciTrezarcoin.Result.Verificationprogress > 0.999 {
 					pWallet.Text = "" + getBalanceInTrezarcoinTxt(&wiTrezarcoin) + "\n" +
 						"  " + getWalletSecurityStatusTxtTrezarcoin(&wiTrezarcoin) + "\n" +
 						"  " + getActivelyStakingTxtTrezarcoin(&ssTrezarcoin) + "\n" //e.g. "15%" or "staking"
 				}
 			case be.PTVertcoin:
-				if bciVertcoin.Result.Verificationprogress > 0.9999 {
+				if bciVertcoin.Result.Verificationprogress > 0.999 {
 					pWallet.Text = "" + getBalanceInVTCTxt(&wiVertcoin) + "\n" +
 						"  " + getWalletSecurityStatusTxtVTC(&wiVertcoin) + "\n"
 				}
@@ -1397,56 +1397,15 @@ var dashCmd = &cobra.Command{
 			// Update the transactions display, if we're all synced up
 			switch cliConf.ProjectType {
 			case be.PTDivi:
-				if bciDivi.Result.Verificationprogress > 0.9999 {
-					pTransactions.Rows = [][]string{
-						[]string{" Date", " Category", " Amount", " Confirmations"},
-					}
-					for i, trans := range transDivi.Result {
-						pTransactions.Rows = append(pTransactions.Rows, []string{trans.Category})
-						//pTransactions.Rows = append(pTransactions.Rows,[]string{transDivi.Result[i].Category})
-						if i > 5 {
-							break
-						}
-					}
+				if bciDivi.Result.Verificationprogress > 0.999 {
+					updateTransactionsDIVI(&transDivi, pTransactions)
 				}
 			case be.PTReddCoin:
-				if bciReddCoin.Result.Verificationprogress > 0.9999 {
-					pTransactions.Rows = [][]string{
-						[]string{" Date", " Category", " Amount", " Confirmations"},
-					}
-					// Record whether any of the transactions have 0 conf (so that we can display the boarder as yellow)
-					bYellowBoarder := false
-					//for i, trans := range transRDD.Result {
-					for i := len(transRDD.Result) - 1; i >= 0; i-- {
-						if transRDD.Result[i].Confirmations < 1 {
-							bYellowBoarder = true
-						}
-						iTime, err := strconv.ParseInt(strconv.Itoa(transRDD.Result[i].Timereceived), 10, 64)
-						if err != nil {
-							panic(err)
-						}
-						tm := time.Unix(iTime, 0)
-						sCat := getCategoryTXT(transRDD.Result[i].Category)
-						tAmountStr := humanize.FormatFloat("#,###.##", transRDD.Result[i].Amount)
-						sColour := getCategoryColour(transRDD.Result[i].Category)
-						pTransactions.Rows = append(pTransactions.Rows, []string{
-							" [" + tm.Format("2006-01-02 15:04"+"](fg:"+sColour+")"),
-							" [" + sCat + "](fg:" + sColour + ")",
-							" [" + tAmountStr + "](fg:" + sColour + ")",
-							" [" + strconv.Itoa(transRDD.Result[i].Confirmations) + "](fg:" + sColour + ")"})
-						//pTransactions.Rows = append(pTransactions.Rows,[]string{transDivi.Result[i].Category})
-						if i > 10 {
-							break
-						}
-					}
-					if bYellowBoarder {
-						pTransactions.BorderStyle.Fg = ui.ColorYellow
-					} else {
-						pTransactions.BorderStyle.Fg = ui.ColorGreen
-					}
+				if bciReddCoin.Result.Verificationprogress > 0.999 {
+					updateTransactionsRDD(&transRDD, pTransactions)
 				}
-			default:
-				err = errors.New("unable to determine ProjectType")
+				//default:
+				//	err = errors.New("unable to determine ProjectType")
 			}
 
 			// Update ticker info every 30 seconds...
@@ -2276,6 +2235,80 @@ func getWalletSeedRecoveryConfirmationResp() bool {
 	}
 
 	return false
+}
+
+func updateTransactionsDIVI(trans *be.DiviListTransactions, pt *widgets.Table) {
+	pt.Rows = [][]string{
+		[]string{" Date", " Category", " Amount", " Confirmations"},
+	}
+
+	// Record whether any of the transactions have 0 conf (so that we can display the boarder as yellow)
+	bYellowBoarder := false
+
+	for i := len(trans.Result) - 1; i >= 0; i-- {
+		if trans.Result[i].Confirmations < 1 {
+			bYellowBoarder = true
+		}
+		iTime, err := strconv.ParseInt(strconv.Itoa(trans.Result[i].Timereceived), 10, 64)
+		if err != nil {
+			panic(err)
+		}
+		tm := time.Unix(iTime, 0)
+		sCat := getCategoryTXT(trans.Result[i].Category)
+		tAmountStr := humanize.FormatFloat("#,###.##", trans.Result[i].Amount)
+		sColour := getCategoryColour(trans.Result[i].Category)
+		pt.Rows = append(pt.Rows, []string{
+			" [" + tm.Format("2006-01-02 15:04"+"](fg:"+sColour+")"),
+			" [" + sCat + "](fg:" + sColour + ")",
+			" [" + tAmountStr + "](fg:" + sColour + ")",
+			" [" + strconv.Itoa(trans.Result[i].Confirmations) + "](fg:" + sColour + ")"})
+
+		if i > 10 {
+			break
+		}
+	}
+	if bYellowBoarder {
+		pt.BorderStyle.Fg = ui.ColorYellow
+	} else {
+		pt.BorderStyle.Fg = ui.ColorGreen
+	}
+}
+
+func updateTransactionsRDD(trans *be.RDDListTransactions, pt *widgets.Table) {
+	pt.Rows = [][]string{
+		[]string{" Date", " Category", " Amount", " Confirmations"},
+	}
+
+	// Record whether any of the transactions have 0 conf (so that we can display the boarder as yellow)
+	bYellowBoarder := false
+
+	for i := len(trans.Result) - 1; i >= 0; i-- {
+		if trans.Result[i].Confirmations < 1 {
+			bYellowBoarder = true
+		}
+		iTime, err := strconv.ParseInt(strconv.Itoa(trans.Result[i].Timereceived), 10, 64)
+		if err != nil {
+			panic(err)
+		}
+		tm := time.Unix(iTime, 0)
+		sCat := getCategoryTXT(trans.Result[i].Category)
+		tAmountStr := humanize.FormatFloat("#,###.##", trans.Result[i].Amount)
+		sColour := getCategoryColour(trans.Result[i].Category)
+		pt.Rows = append(pt.Rows, []string{
+			" [" + tm.Format("2006-01-02 15:04"+"](fg:"+sColour+")"),
+			" [" + sCat + "](fg:" + sColour + ")",
+			" [" + tAmountStr + "](fg:" + sColour + ")",
+			" [" + strconv.Itoa(trans.Result[i].Confirmations) + "](fg:" + sColour + ")"})
+
+		if i > 10 {
+			break
+		}
+	}
+	if bYellowBoarder {
+		pt.BorderStyle.Fg = ui.ColorYellow
+	} else {
+		pt.BorderStyle.Fg = ui.ColorGreen
+	}
 }
 
 // func getWalletStatusStruct(token string) (m.WalletStatusStruct, error) {
