@@ -119,6 +119,26 @@ type DGBListReceivedByAddressRespStruct struct {
 	Error interface{} `json:"error"`
 	ID    string      `json:"id"`
 }
+
+type DGBListTransactions struct {
+	Result []struct {
+		Address         string        `json:"address"`
+		Amount          float64       `json:"amount"`
+		Vout            int           `json:"vout"`
+		Category        string        `json:"category"`
+		Confirmations   int           `json:"confirmations"`
+		Txid            string        `json:"txid"`
+		Walletconflicts []interface{} `json:"walletconflicts"`
+		Time            int           `json:"time"`
+		Timereceived    int           `json:"timereceived"`
+		Blockhash       string        `json:"blockhash,omitempty"`
+		Blockindex      int           `json:"blockindex,omitempty"`
+		Blocktime       int           `json:"blocktime,omitempty"`
+	} `json:"result"`
+	Error interface{} `json:"error"`
+	ID    string      `json:"id"`
+}
+
 type DGBNetworkInfoRespStruct struct {
 	Result struct {
 		Version         int    `json:"version"`
@@ -292,7 +312,7 @@ func GetNetworkInfoDGB(cliConf *ConfStruct) (DGBNetworkInfoRespStruct, error) {
 			bytes.Contains(bodyResp, []byte("Rescanning")) ||
 			bytes.Contains(bodyResp, []byte("Rewinding")) ||
 			bytes.Contains(bodyResp, []byte("Verifying")) {
-			// The wallet is still loading, so print message, and sleep for 3 seconds and try again..
+			// The wallet is still loading, so print message, and sleep for 3 seconds and try again.
 			time.Sleep(5 * time.Second)
 		} else {
 			_ = json.Unmarshal(bodyResp, &respStruct)
