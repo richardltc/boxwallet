@@ -96,7 +96,7 @@ var dashCmd = &cobra.Command{
 			log.Fatal("Unable to GetAppWorkingFolder: " + err.Error())
 		}
 
-		// Make sure the config file exists, and if not, force user to use "coin" command first.
+		// Make sure the config file exists, and if not, force user to use "coin" command first..
 		if _, err := os.Stat(apw + be.CConfFile + be.CConfFileExt); os.IsNotExist(err) {
 			log.Fatal("Unable to determine coin type. Please run " + be.CAppFilename + " coin  first")
 		}
@@ -621,47 +621,47 @@ var dashCmd = &cobra.Command{
 		pWallet.BorderStyle.Fg = ui.ColorYellow
 		switch cliConf.ProjectType {
 		case be.PTDeVault:
-			pWallet.Text = "  Balance:          [waiting...](fg:yellow)\n" +
-				"  Security:         [waiting...](fg:yellow)\n"
+			pWallet.Text = "  Balance:          [waiting for sync...](fg:yellow)\n" +
+				"  Security:         [waiting for sync...](fg:yellow)\n"
 		case be.PTDigiByte:
-			pWallet.Text = "  Balance:          [waiting...](fg:yellow)\n" +
-				"  Security:         [waiting...](fg:yellow)\n"
+			pWallet.Text = "  Balance:          [waiting for sync...](fg:yellow)\n" +
+				"  Security:         [waiting for sync...](fg:yellow)\n"
 		case be.PTDivi:
-			pWallet.Text = "  Balance:          [waiting...](fg:yellow)\n" +
-				"  Currency:         [waiting...](fg:yellow)\n" +
-				"  Security:         [waiting...](fg:yellow)\n" +
-				"  Staking %:	        [waiting...](fg:yellow)\n" +
-				"  Actively Staking: [waiting...](fg:yellow)\n" +
-				"  Next Lottery:     [waiting...](fg:yellow)\n" +
-				"  Lottery tickets:	  [waiting...](fg:yellow)"
+			pWallet.Text = "  Balance:          [waiting for sync...](fg:yellow)\n" +
+				"  Currency:         [waiting for sync...](fg:yellow)\n" +
+				"  Security:         [waiting for sync...](fg:yellow)\n" +
+				"  Staking %:	        [waiting for sync...](fg:yellow)\n" +
+				"  Actively Staking: [waiting for sync...](fg:yellow)\n" +
+				"  Next Lottery:     [waiting for sync...](fg:yellow)\n" +
+				"  Lottery tickets:	  [waiting for sync...](fg:yellow)"
 		case be.PTFeathercoin:
-			pWallet.Text = "  Balance:          [waiting...](fg:yellow)\n" +
-				"  Security:         [waiting...](fg:yellow)\n"
+			pWallet.Text = "  Balance:          [waiting for sync...](fg:yellow)\n" +
+				"  Security:         [waiting for sync...](fg:yellow)\n"
 		case be.PTGroestlcoin:
-			pWallet.Text = "  Balance:          [waiting...](fg:yellow)\n" +
-				"  Security:         [waiting...](fg:yellow)\n"
+			pWallet.Text = "  Balance:          [waiting for sync...](fg:yellow)\n" +
+				"  Security:         [waiting for sync...](fg:yellow)\n"
 		case be.PTPhore:
-			pWallet.Text = "  Balance:          [waiting...](fg:yellow)\n" +
-				"  Security:         [waiting...](fg:yellow)\n" +
-				"  Actively Staking: [waiting...](fg:yellow)\n"
+			pWallet.Text = "  Balance:          [waiting for sync...](fg:yellow)\n" +
+				"  Security:         [waiting for sync...](fg:yellow)\n" +
+				"  Actively Staking: [waiting for sync...](fg:yellow)\n"
 		case be.PTPIVX:
-			pWallet.Text = "  Balance:          [waiting...](fg:yellow)\n" +
-				"  Security:         [waiting...](fg:yellow)\n" +
-				"  Actively Staking: [waiting...](fg:yellow)\n"
+			pWallet.Text = "  Balance:          [waiting for sync...](fg:yellow)\n" +
+				"  Security:         [waiting for sync...](fg:yellow)\n" +
+				"  Actively Staking: [waiting for sync...](fg:yellow)\n"
 		case be.PTRapids:
-			pWallet.Text = "  Balance:          [waiting...](fg:yellow)\n" +
-				"  Security:         [waiting...](fg:yellow)\n" +
-				"  Actively Staking: [waiting...](fg:yellow)\n"
+			pWallet.Text = "  Balance:          [waiting for sync...](fg:yellow)\n" +
+				"  Security:         [waiting for sync...](fg:yellow)\n" +
+				"  Actively Staking: [waiting for sync...](fg:yellow)\n"
 		case be.PTReddCoin:
-			pWallet.Text = "  Balance:          [waiting...](fg:yellow)\n" +
-				"  Security:         [waiting...](fg:yellow)\n"
+			pWallet.Text = "  Balance:          [waiting for sync...](fg:yellow)\n" +
+				"  Security:         [waiting for sync...](fg:yellow)\n"
 		case be.PTTrezarcoin:
-			pWallet.Text = "  Balance:          [waiting...](fg:yellow)\n" +
-				"  Security:         [waiting...](fg:yellow)\n" +
-				"  Actively Staking: [waiting...](fg:yellow)\n"
+			pWallet.Text = "  Balance:          [waiting for sync...](fg:yellow)\n" +
+				"  Security:         [waiting for sync...](fg:yellow)\n" +
+				"  Actively Staking: [waiting for sync...](fg:yellow)\n"
 		case be.PTVertcoin:
-			pWallet.Text = "  Balance:          [waiting...](fg:yellow)\n" +
-				"  Security:         [waiting...](fg:yellow)\n"
+			pWallet.Text = "  Balance:          [waiting for sync...](fg:yellow)\n" +
+				"  Security:         [waiting for sync...](fg:yellow)\n"
 		default:
 			err = errors.New("unable to determine ProjectType")
 		}
@@ -763,7 +763,6 @@ var dashCmd = &cobra.Command{
 		pTransactions := widgets.NewTable()
 		pTransactions.Rows = [][]string{
 			[]string{" Date", " Category", " Amount", " Confirmations"},
-			[]string{" ----", " --------", " ------", " -------------"},
 		}
 		pTransactions.Title = "Transactions"
 		pTransactions.RowSeparator = true
@@ -1655,14 +1654,14 @@ func confirmWalletReady() (bool, string, error) {
 			return false, s, fmt.Errorf("unable to call getinfo %s\n", err)
 		}
 	case be.PTReddCoin:
-		gi, err := be.GetInfoRDD(&cliConf)
+		gi, s, err := be.GetInfoRDDUI(&cliConf, spinner)
 		if err != nil {
 			if err := spinner.Stop(); err != nil {
 			}
 			return false, "", fmt.Errorf("Unable to communicate with the " + coind + " server.")
 		}
 		if gi.Result.Version == 0 {
-			return false, gi.Result.Errors, fmt.Errorf("unable to call getinfo %s\n", err)
+			return false, s, fmt.Errorf("unable to call getinfo %s\n", err)
 		}
 	case be.PTTrezarcoin:
 		gi, err := be.GetInfoTrezarcoin(&cliConf)
@@ -1929,13 +1928,13 @@ func getBalanceInVTCTxt(wi *be.VTCWalletInfoRespStruct) string {
 	}
 }
 
-func getCategoryTXT(s string) string {
+func getCategorySymbol(s string) string {
 	switch s {
 	case "receive":
 		return cPaymentReceived //cPaymentReceived
 	case "sent":
 		return cPaymentSent
-	case "stake":
+	case "stake", "stake_reward":
 		return cStakeReceived
 	}
 	return s
@@ -1947,10 +1946,10 @@ func getCategoryColour(s string) string {
 		return "green"
 	case "sent":
 		return "red"
-	case "stake":
+	case "stake", "stake_reward":
 		return "green"
 	}
-	return s
+	return "white"
 }
 
 func getWalletStakingTxt(wi *be.DiviWalletInfoRespStruct) string {
@@ -2254,7 +2253,7 @@ func updateTransactionsDIVI(trans *be.DiviListTransactions, pt *widgets.Table) {
 			panic(err)
 		}
 		tm := time.Unix(iTime, 0)
-		sCat := getCategoryTXT(trans.Result[i].Category)
+		sCat := getCategorySymbol(trans.Result[i].Category)
 		tAmountStr := humanize.FormatFloat("#,###.##", trans.Result[i].Amount)
 		sColour := getCategoryColour(trans.Result[i].Category)
 		pt.Rows = append(pt.Rows, []string{
@@ -2291,7 +2290,7 @@ func updateTransactionsRDD(trans *be.RDDListTransactions, pt *widgets.Table) {
 			panic(err)
 		}
 		tm := time.Unix(iTime, 0)
-		sCat := getCategoryTXT(trans.Result[i].Category)
+		sCat := getCategorySymbol(trans.Result[i].Category)
 		tAmountStr := humanize.FormatFloat("#,###.##", trans.Result[i].Amount)
 		sColour := getCategoryColour(trans.Result[i].Category)
 		pt.Rows = append(pt.Rows, []string{
