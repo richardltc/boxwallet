@@ -26,7 +26,7 @@ import (
 const (
 	CAppName        string = "BoxWallet"
 	CUpdaterAppName string = "bwupdater" // bwupdater
-	CBWAppVersion   string = "0.38.1"
+	CBWAppVersion   string = "0.38.1b"
 	CAppFilename    string = "boxwallet"
 	CAppFilenameWin string = "boxwallet.exe"
 	CAppLogfile     string = "boxwallet.log"
@@ -380,6 +380,27 @@ func AddAddNodesIfRequired() error {
 	return nil
 }
 
+// BlockchainDataExists - Returns true if the Blockchain data exists for the specified coin.
+func BlockchainDataExists(pt ProjectType) (bool, error) {
+	cd, err := GetCoinHomeFolder(APPTCLI, pt)
+	if err != nil {
+		return false, fmt.Errorf("unable to GetCoinHomeFolder - DownloadBlockchain: %v", err)
+	}
+
+	// If the "blocks" directory already exists, return.
+	if _, err := os.Stat(cd + "blocks"); !os.IsNotExist(err) {
+		err := errors.New("The directory: " + cd + "blocks already exists")
+		return true, err
+	}
+
+	// If the "chainstate" directory already exists, return
+	if _, err := os.Stat(cd + "chainstate"); !os.IsNotExist(err) {
+		err := errors.New("The directory: " + cd + "chainstate already exists")
+		return true, err
+	}
+	return false, nil
+}
+
 // ConvertBCVerification - Convert Blockchain verification progress...
 func ConvertBCVerification(verificationPG float64) string {
 	var sProg string
@@ -396,32 +417,75 @@ func DownloadBlockchain(pt ProjectType) error {
 	var err error
 
 	// First, check to make sure that both the blockchain folders don't already exist. (blocks, chainstate)
-	cd, err = GetCoinHomeFolder(APPTCLI, PTReddCoin)
+	cd, err = GetCoinHomeFolder(APPTCLI, pt)
 	if err != nil {
 		return fmt.Errorf("unable to GetCoinHomeFolder - DownloadBlockchain: %v", err)
 	}
 	switch pt {
+	case PTDivi:
+		bcsFileExists := FileExists(cd + CDFDiviBS)
+		if !bcsFileExists {
+			// Then download the file.
+			if err := DownloadFile(cd, CDownloadURLDiviBS+CDFDiviBS); err != nil {
+				return fmt.Errorf("unable to download file: %v - %v", CDownloadURLDiviBS, err)
+			}
+		}
 	case PTReddCoin:
-		chdExists, err := BlockchainDataExistsRDD()
-		if err != nil {
-			return fmt.Errorf("unable to determine if BlockchainDataExistsRDD: %v", err)
+		bcsFileExists := FileExists(cd + CDFReddCoinBS)
+		if !bcsFileExists {
+			// Then download the file.
+			if err := DownloadFile(cd, CDownloadURLReddCoinBS+CDFReddCoinBS); err != nil {
+				return fmt.Errorf("unable to download file: %v - %v", CDownloadURLReddCoinBS, err)
+			}
 		}
-		if chdExists {
-			err := errors.New("blockchain data already exists")
-			return err
+	default:
+		err := errors.New("unable to determine ProjectType - DownloadBlockchain")
+		return err
+	}
+	return nil
+}
+
+func UnarchiveBlockchainSnapshot(pt ProjectType) error {
+	var cd string
+	var err error
+
+	// First, check to make sure that both the blockchain folders don't already exist. (blocks, chainstate)
+	cd, err = GetCoinHomeFolder(APPTCLI, pt)
+	if err != nil {
+		return fmt.Errorf("unable to GetCoinHomeFolder - UnarchiveBlockchainSnapshot: %v", err)
+	}
+
+	chdExists, err := BlockchainDataExists(pt)
+	if err != nil {
+		return fmt.Errorf("unable to determine if BlockchainDataExists: %v", err)
+	}
+	if chdExists {
+		err := errors.New("blockchain data already exists")
+		return err
+	}
+	switch pt {
+	case PTDivi:
+		bcsFileExists := FileExists(cd + CDFDiviBS)
+		if !bcsFileExists {
+			return fmt.Errorf("unable to find the snapshot file: %v", cd+CDFDiviBS)
 		}
 
-		// Then download the file.
-		if err := DownloadFile(cd, CDownloadURLReddCoinBS+CDFReddCoinBS); err != nil {
-			return fmt.Errorf("unable to download file: %v - %v", CDownloadURLReddCoinBS, err)
+		// Now extract it straight into the ~/.divi folder
+		fmt.Println("Decompressing to " + cd + "...")
+		if err := archiver.Unarchive(cd+CDFDiviBS, cd); err != nil {
+			return fmt.Errorf("unable to unarchive file: %v - %v", cd+CDFDiviBS, err)
+		}
+	case PTReddCoin:
+		bcsFileExists := FileExists(cd + CDFReddCoinBS)
+		if !bcsFileExists {
+			return fmt.Errorf("unable to find the snapshot file: %v", cd+CDFReddCoinBS)
 		}
 
-		// Then, extract it straight into the ~/.reddcoin folder
-		fmt.Println("Download complete. Decompressing...")
+		// Now extract it straight into the ~/.reddcoin folder
+		fmt.Println("Decompressing to " + cd + "...")
 		if err := archiver.Unarchive(cd+CDFReddCoinBS, cd); err != nil {
 			return fmt.Errorf("unable to unarchive file: %v - %v", cd+CDFReddCoinBS, err)
 		}
-		defer os.RemoveAll(cd + CDFReddCoinBS)
 	default:
 		err := errors.New("unable to determine ProjectType - DownloadBlockchain")
 		return err
