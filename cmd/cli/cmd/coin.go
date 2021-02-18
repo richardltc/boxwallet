@@ -41,7 +41,7 @@ var coinCmd = &cobra.Command{
 		lf, _ := be.GetAppWorkingFolder()
 		lf = lf + be.CAppLogfile
 
-		// Create the App Working folder if required
+		// Create the App Working folder if required.
 		awf, _ := be.GetAppWorkingFolder()
 		if err := os.MkdirAll(awf, os.ModePerm); err != nil {
 			log.Fatal("unable to make directory: ", err)
@@ -161,19 +161,46 @@ var coinCmd = &cobra.Command{
 
 		// I think here, is the best place to check whether the user would like to download the blockchain snapshot..
 		switch cliConf.ProjectType {
-		case be.PTReddCoin:
-			bcdExists, _ := be.BlockchainDataExistsRDD()
+		case be.PTDivi:
+			bcdExists, _ := be.BlockchainDataExists(be.PTDivi)
 			if !bcdExists {
 				ans := true
 				prompt := &survey.Confirm{
-					Message: "\nIt looks like this is a fresh install of " + be.CCoinNameReddCoin +
-						"\n\nWould you like download the Blockchain snapshot " + be.CDFReddCoinBS + " ?:",
+					Message: "\nIt looks like this is a fresh install of " + be.CCoinNameDivi +
+						"\n\nWould you like to download the Blockchain snapshot " + be.CDFDiviBS + " ?:",
 					Default: true,
 				}
 				survey.AskOne(prompt, &ans)
 				if ans {
+					fmt.Println("Downloading blockchain snapshot...")
+					if err := be.DownloadBlockchain(be.PTDivi); err != nil {
+						log.Fatal("Unable to download blockchain snapshot: " + err.Error())
+					}
+					fmt.Println("Unarchiving blockchain snapshot...")
+					if err := be.UnarchiveBlockchainSnapshot(be.PTDivi); err != nil {
+						log.Fatal("Unable to unarchive blockchain snapshot: " + err.Error())
+					}
+				}
+
+			}
+		case be.PTReddCoin:
+			bcdExists, _ := be.BlockchainDataExists(be.PTReddCoin)
+			if !bcdExists {
+				ans := true
+				prompt := &survey.Confirm{
+					Message: "\nIt looks like this is a fresh install of " + be.CCoinNameReddCoin +
+						"\n\nWould you like to download the Blockchain snapshot " + be.CDFReddCoinBS + " ?:",
+					Default: true,
+				}
+				survey.AskOne(prompt, &ans)
+				if ans {
+					fmt.Println("Downloading blockchain snapshot...")
 					if err := be.DownloadBlockchain(be.PTReddCoin); err != nil {
-						log.Fatal("Unable to download blockchain data: " + err.Error())
+						log.Fatal("Unable to download blockchain snapshot: " + err.Error())
+					}
+					fmt.Println("Unarchiving blockchain snapshot...")
+					if err := be.UnarchiveBlockchainSnapshot(be.PTReddCoin); err != nil {
+						log.Fatal("Unable to unarchive blockchain snapshot: " + err.Error())
 					}
 				}
 
