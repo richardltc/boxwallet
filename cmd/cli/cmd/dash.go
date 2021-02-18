@@ -2245,6 +2245,11 @@ func updateTransactionsDIVI(trans *be.DiviListTransactions, pt *widgets.Table) {
 	bYellowBoarder := false
 
 	for i := len(trans.Result) - 1; i >= 0; i-- {
+		// Check to make sure the confirmations count is higher than -1
+		if trans.Result[i].Confirmations < 0 {
+			continue
+		}
+
 		if trans.Result[i].Confirmations < 1 {
 			bYellowBoarder = true
 		}
