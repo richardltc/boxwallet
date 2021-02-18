@@ -26,11 +26,13 @@ const (
 	CDFDiviRPi              = "divi-" + CDiviCoreVersion + "-RPi2.tar.gz"
 	CDFDiviLinux            = "divi-" + CDiviCoreVersion + "-x86_64-linux.tar.gz"
 	CDFDiviWindows          = "divi-" + CDiviCoreVersion + "-win64.zip"
+	CDFDiviBS        string = "DIVI-snapshot.zip"
 
 	CDiviExtractedDirLinux   = "divi-" + CDiviCoreVersion + "/"
 	CDiviExtractedDirWindows = "divi-" + CDiviCoreVersion + "\\"
 
-	CDownloadURLDivi = "https://github.com/DiviProject/Divi/releases/download/v" + CDiviCoreVersion + "/"
+	CDownloadURLDivi          = "https://github.com/DiviProject/Divi/releases/download/v" + CDiviCoreVersion + "/"
+	CDownloadURLDiviBS string = "https://snapshots.diviproject.org/dist/"
 
 	CDiviConfFile   string = "divi.conf"
 	CDiviCliFile    string = "divi-cli"
@@ -40,7 +42,7 @@ const (
 	CDiviTxFile     string = "divi-tx"
 	CDiviTxFileWin  string = "divi-tx.exe"
 
-	// divi.conf file constants
+	// divi.conf file constants.
 	cDiviRPCUser string = "divirpc"
 	CDiviRPCPort string = "51473"
 
@@ -393,7 +395,7 @@ func GetInfoDivi(cliConf *ConfStruct) (diviGetInfoRespStruct, error) {
 	return respStruct, nil
 }
 
-func GetInfoDIVIUI(cliConf *ConfStruct, spin *yacspin.Spinner) (diviGetInfoRespStruct, string, error) {
+func GetInfoDIVIUIOld(cliConf *ConfStruct, spin *yacspin.Spinner) (diviGetInfoRespStruct, string, error) {
 	var respStruct diviGetInfoRespStruct
 
 	for i := 1; i < 600; i++ {
@@ -410,7 +412,7 @@ func GetInfoDIVIUI(cliConf *ConfStruct, spin *yacspin.Spinner) (diviGetInfoRespS
 			if err != nil {
 				spin.Message(" waiting for your " + CCoinNameDivi + " wallet to respond, this could take several minutes (ctrl-c to cancel)...")
 				time.Sleep(1 * time.Second)
-				continue
+				break
 			}
 			defer resp.Body.Close()
 			bodyResp, err := ioutil.ReadAll(resp.Body)
@@ -432,15 +434,72 @@ func GetInfoDIVIUI(cliConf *ConfStruct, spin *yacspin.Spinner) (diviGetInfoRespS
 				}
 
 				if bytes.Contains(bodyResp, []byte("Loading")) {
-					spin.Message(" Your " + CCoinNameDivi + " wallet is currently Loading, this could take several minutes...")
+					spin.Message(" Your " + CCoinNameDivi + " wallet is *Loading*, this could take a while...")
 				} else if bytes.Contains(bodyResp, []byte("Rescanning")) {
-					spin.Message(" Your " + CCoinNameDivi + " wallet is currently Rescanning, this could take several minutes...")
+					spin.Message(" Your " + CCoinNameDivi + " wallet is *Rescanning*, this could take a while...")
 				} else if bytes.Contains(bodyResp, []byte("Rewinding")) {
-					spin.Message(" Your " + CCoinNameDivi + " wallet is currently Rewinding, this could take several minutes...")
+					spin.Message(" Your " + CCoinNameDivi + " wallet is *Rewinding*, this could take a while...")
 				} else if bytes.Contains(bodyResp, []byte("Verifying")) {
-					spin.Message(" Your " + CCoinNameDivi + " wallet is currently Verifying, this could take several minutes...")
+					spin.Message(" Your " + CCoinNameDivi + " wallet is *Verifying*, this could take a while...")
 				} else if bytes.Contains(bodyResp, []byte("Calculating money supply")) {
-					spin.Message(" Your " + CCoinNameDivi + " wallet is currently Calculating money supply, this could take several minutes...")
+					spin.Message(" Your " + CCoinNameDivi + " wallet is *Calculating money supply*, this could take a while...")
+				}
+				time.Sleep(1 * time.Second)
+			} else {
+				_ = json.Unmarshal(bodyResp, &respStruct)
+				return respStruct, string(bodyResp), err
+			}
+		}
+	}
+	return respStruct, "", nil
+}
+
+func GetInfoDIVIUI(cliConf *ConfStruct, spin *yacspin.Spinner) (diviGetInfoRespStruct, string, error) {
+	var respStruct diviGetInfoRespStruct
+
+	for i := 1; i < 600; i++ {
+		body := strings.NewReader("{\"jsonrpc\":\"1.0\",\"id\":\"boxwallet\",\"method\":\"" + cCommandGetInfo + "\",\"params\":[]}")
+		req, err := http.NewRequest("POST", "http://"+cliConf.ServerIP+":"+cliConf.Port, body)
+		if err != nil {
+			return respStruct, "", err
+		}
+		req.SetBasicAuth(cliConf.RPCuser, cliConf.RPCpassword)
+		req.Header.Set("Content-Type", "text/plain;")
+
+		resp, err := http.DefaultClient.Do(req)
+		defer resp.Body.Close()
+		if err != nil {
+			spin.Message(" waiting for your " + CCoinNameDivi + " wallet to respond, this could take several minutes (ctrl-c to cancel)...")
+			time.Sleep(1 * time.Second)
+		} else {
+			bodyResp, err := ioutil.ReadAll(resp.Body)
+			if err != nil {
+				return respStruct, "", err
+			}
+
+			// Check to make sure we are not loading the wallet
+			if bytes.Contains(bodyResp, []byte("Loading")) ||
+				bytes.Contains(bodyResp, []byte("Rescanning")) ||
+				bytes.Contains(bodyResp, []byte("Rewinding")) ||
+				bytes.Contains(bodyResp, []byte("RPC in warm-up: Calculating money supply")) ||
+				bytes.Contains(bodyResp, []byte("Verifying")) {
+				// The wallet is still loading, so print message, and sleep for 1 second and try again..
+				var errStruct GenericRespStruct
+				err = json.Unmarshal(bodyResp, &errStruct)
+				if err != nil {
+					return respStruct, "", err
+				}
+
+				if bytes.Contains(bodyResp, []byte("Loading")) {
+					spin.Message(" Your " + CCoinNameDivi + " wallet is *Loading*, this could take a while...")
+				} else if bytes.Contains(bodyResp, []byte("Rescanning")) {
+					spin.Message(" Your " + CCoinNameDivi + " wallet is *Rescanning*, this could take a while...")
+				} else if bytes.Contains(bodyResp, []byte("Rewinding")) {
+					spin.Message(" Your " + CCoinNameDivi + " wallet is *Rewinding*, this could take a while...")
+				} else if bytes.Contains(bodyResp, []byte("Verifying")) {
+					spin.Message(" Your " + CCoinNameDivi + " wallet is *Verifying*, this could take a while...")
+				} else if bytes.Contains(bodyResp, []byte("Calculating money supply")) {
+					spin.Message(" Your " + CCoinNameDivi + " wallet is *Calculating money supply*, this could take a while...")
 				}
 				time.Sleep(1 * time.Second)
 			} else {
