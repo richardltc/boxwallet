@@ -2249,48 +2249,6 @@ func updateTransactionsDGB(trans *be.DGBListTransactions, pt *widgets.Table) {
 		[]string{" Date", " Category", " Amount", " Confirmations"},
 	}
 
-	// Record whether any of the transactions have 0 conf (so that we can display the boarder as yellow).
-	bYellowBoarder := false
-
-	for i := len(trans.Result) - 1; i >= 0; i-- {
-		// Check to make sure the confirmations count is higher than -1
-		if trans.Result[i].Confirmations < 0 {
-			continue
-		}
-
-		if trans.Result[i].Confirmations < 1 {
-			bYellowBoarder = true
-		}
-		iTime, err := strconv.ParseInt(strconv.Itoa(trans.Result[i].Timereceived), 10, 64)
-		if err != nil {
-			panic(err)
-		}
-		tm := time.Unix(iTime, 0)
-		sCat := getCategorySymbol(trans.Result[i].Category)
-		tAmountStr := humanize.FormatFloat("#,###.##", trans.Result[i].Amount)
-		sColour := getCategoryColour(trans.Result[i].Category)
-		pt.Rows = append(pt.Rows, []string{
-			" [" + tm.Format("2006-01-02 15:04"+"](fg:"+sColour+")"),
-			" [" + sCat + "](fg:" + sColour + ")",
-			" [" + tAmountStr + "](fg:" + sColour + ")",
-			" [" + strconv.Itoa(trans.Result[i].Confirmations) + "](fg:" + sColour + ")"})
-
-		if i > 10 {
-			break
-		}
-	}
-	if bYellowBoarder {
-		pt.BorderStyle.Fg = ui.ColorYellow
-	} else {
-		pt.BorderStyle.Fg = ui.ColorGreen
-	}
-}
-
-func updateTransactionsDGB(trans *be.DGBListTransactions, pt *widgets.Table) {
-	pt.Rows = [][]string{
-		[]string{" Date", " Category", " Amount", " Confirmations"},
-	}
-
 	// Record whether any of the transactions have 0 conf (so that we can display the boarder as yellow)
 	bYellowBoarder := false
 
