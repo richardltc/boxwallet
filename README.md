@@ -36,6 +36,46 @@ BoxWallet is a single binary multi-coin CLI tool, that gets your coin-of-choice 
 * Trezarcoin
 * Vertcoin
 
+## How can I install BoxWallet?
+
+### Windows
+
+Download the file `boxwallet_XXX_Windows_64bit.zip` where `XXX` represents the latest version number.
+Extract the files, open a command prompt, then run `boxwallet coin`
+
+### Linux
+
+I'm going to assume that you've got a basic CLI Linux installation, and have SSH access.
+
+Go to the page: `https://github.com/richardltc/boxwallet/releases/latest` and find the correct Linux file for your platform.
+If you are running normal Linux, you'll almost certainly want the file ending in `Linux_64bit.tar.gz`
+However, if you're running on a Raspberry Pi, you'll probably want the file ending in `Linux_arm32bit.tar.gz` unless you're running a 64bit OS, in which case, you'll need the file ending in `Linux_arm64.tar.gz
+`
+
+
+In your browser, right click on the correct file you need and choose "copy link", then, in your Linux terminal, type `wget ` then paste the link after it.
+
+If the version of BoxWallet was `0.38.1` you should now have a line of text that looks like the following:
+
+`wget https://github.com/richardltc/boxwallet/releases/download/0.38.1/boxwallet_0.38.1_Linux_64bit.tar.gz`
+
+Press return, and the command `wget` should now download that file to you current directory.
+
+Next, enter the command:
+
+`tar -xf ./boxwallet` then, without a space, press the tab key to auto-complte the command line.
+You should then have a line that says:
+
+`tar -xf ./boxwallet_0.38.1_Linux_64bit.tar.gz`
+
+Press return, and you should then have the following files:
+
+`boxwallet` - The BoxWallet application
+
+`bwupdater` - The tool that you can run, to keep BoxWallet up-to-date
+
+`README.md` - This file
+
 ### How do I run? ###
 
 Download BoxWallet, for your platform of choice, from the releases page, extract the files to a location of your choosing and then run `./boxwallet coin`.
