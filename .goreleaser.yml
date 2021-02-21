@@ -83,7 +83,7 @@ snapcrafts:
     grade: stable
     base: core18
     summary: BoxWallet is a single binary multi-coin CLI tool, that gets your coin-of-choice wallet/node set-up fast with just a few commands
-    publish: false # <- this line.
+    publish: true # <- this line.
     description: |
       BoxWallet is a single binary multi-coin CLI tool, that gets your coin-of-choice wallet/node set-up fast with just a few commands:
 
