@@ -52,15 +52,29 @@ var displayaddressCmd = &cobra.Command{
 			log.Fatal("Unable to GetAppFileCLIName " + err.Error())
 		}
 
+		coind, err := be.GetCoinDaemonFilename(be.APPTCLI, cliConf.ProjectType)
+		if err != nil {
+			log.Fatalf("Unable to GetCoinDaemonFilename - %v", err)
+		}
+
+		// Check to see if we are running the coin daemon locally, and if we are, make sure it's actually running
+		// before attempting to connect to it.
+		if cliConf.ServerIP == "127.0.0.1" {
+			bCDRunning, _, err := be.IsCoinDaemonRunning(cliConf.ProjectType)
+			if err != nil {
+				log.Fatal("Unable to determine if coin daemon is running: " + err.Error())
+			}
+			if !bCDRunning {
+				log.Fatal("Unable to communicate with the " + coind + " server. Please make sure the " + coind + " server is running, by running:\n\n" +
+					"./" + sAppFileCLIName + " start\n\n")
+			}
+		}
+
 		wRunning, _, err := confirmWalletReady()
 		if err != nil {
 			log.Fatal("Unable to determine if wallet is ready: " + err.Error())
 		}
 
-		coind, err := be.GetCoinDaemonFilename(be.APPTCLI, cliConf.ProjectType)
-		if err != nil {
-			log.Fatalf("Unable to GetCoinDaemonFilename - %v", err)
-		}
 		if !wRunning {
 			fmt.Println("")
 			log.Fatal("Unable to communicate with the " + coind + " server. Please make sure the " + coind + " server is running, by running:\n\n" +
