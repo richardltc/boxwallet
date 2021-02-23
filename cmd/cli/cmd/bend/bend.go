@@ -137,6 +137,7 @@ const (
 	PTReddCoin
 	PTRapids
 	PTDigiByte
+	PTDenarius
 )
 
 // OSType - either ostArm, ostLinux or ostWindows
@@ -614,6 +615,8 @@ func GetCoinDaemonFilename(at APPType, pt ProjectType) (string, error) {
 	}
 
 	switch pt {
+	case PTDenarius:
+		return CDenariusDFile, nil
 	case PTDeVault:
 		return CDeVaultDFile, nil
 	case PTDigiByte:
@@ -662,6 +665,8 @@ func GetCoinName(at APPType) (string, error) {
 	}
 
 	switch pt {
+	case PTDenarius:
+		return CCoinNameDenarius, nil
 	case PTDeVault:
 		return CCoinNameDeVault, nil
 	case PTDigiByte:
@@ -718,6 +723,8 @@ func GetCoinHomeFolder(at APPType, pt ProjectType) (string, error) {
 	if runtime.GOOS == "windows" {
 		// add the "appdata\roaming" part.
 		switch pt {
+		case PTDenarius:
+			s = AddTrailingSlash(hd) + "appdata\\roaming\\" + AddTrailingSlash(CDenariusHomeDirWin)
 		case PTDeVault:
 			s = AddTrailingSlash(hd) + "appdata\\roaming\\" + AddTrailingSlash(CDeVaultHomeDirWin)
 		case PTDigiByte:
@@ -748,6 +755,8 @@ func GetCoinHomeFolder(at APPType, pt ProjectType) (string, error) {
 		}
 	} else {
 		switch pt {
+		case PTDenarius:
+			s = AddTrailingSlash(hd) + AddTrailingSlash(CDenariusHomeDir)
 		case PTDeVault:
 			s = AddTrailingSlash(hd) + AddTrailingSlash(CDeVaultHomeDir)
 		case PTDigiByte:
@@ -939,6 +948,7 @@ func GetPasswordToEncryptWallet() string {
 
 func GetTipAddress(pt ProjectType) string {
 	switch pt {
+	// Todo for Denarius
 	case PTDeVault:
 		return "devault:qp7w4pnm774c0uwch8ty6tj7sw86hze9ps4sqrwcue"
 	case PTDigiByte:
@@ -973,6 +983,7 @@ func GetTipInfo(pt ProjectType) string {
 	// Get tip address part.
 	var s string
 	switch pt {
+	// Todo for Denarius
 	case PTDeVault:
 		s = CCoinAbbrevDeVault + ": " + GetTipAddress(PTDeVault)
 	case PTDigiByte:
@@ -1041,6 +1052,13 @@ func GetWalletEncryptionStatus() (WEType, error) {
 	}
 	pt := conf.ProjectType
 	switch pt {
+	case PTDenarius:
+		wi, err := GetWalletInfoDenarius(&conf)
+		if err != nil {
+			return WETUnknown, fmt.Errorf("unable to GetWalletInfoDenarius %v", err)
+		}
+		wet := GetWalletSecurityStateDenarius(&wi)
+		return wet, nil
 	case PTDeVault:
 		wi, err := GetWalletInfoDVT(&conf)
 		if err != nil {
@@ -1152,6 +1170,12 @@ func IsCoinDaemonRunning(ct ProjectType) (bool, int, error) {
 
 	var err error
 	switch ct {
+	case PTDenarius:
+		if runtime.GOOS == "windows" {
+			pid, _, err = FindProcess(CDenariusDFileWin)
+		} else {
+			pid, _, err = FindProcess(CDenariusDFile)
+		}
 	case PTDeVault:
 		if runtime.GOOS == "windows" {
 			pid, _, err = FindProcess(CDeVaultDFileWin)
@@ -1258,6 +1282,179 @@ func PopulateDaemonConfFile() (rpcuser, rpcpassword string, err error) {
 	var rpcpw string
 
 	switch bwconf.ProjectType {
+	case PTDenarius:
+		fmt.Println("Populating " + CDenariusConfFile + " for initial setup...")
+
+		// Add rpcuser info if required, or retrieve the existing one
+		bNeedToWriteStr := true
+		if FileExists(chd + CDenariusConfFile) {
+			bStrFound, err := StringExistsInFile(cRPCUserStr+"=", chd+CDenariusConfFile)
+			if err != nil {
+				return "", "", fmt.Errorf("unable to search for text in file - %v", err)
+			}
+			if !bStrFound {
+				// String not found
+				if !bFileHasBeenBU {
+					bFileHasBeenBU = true
+					if err := BackupFile(chd, CDenariusConfFile, "", "", false); err != nil {
+						return "", "", fmt.Errorf("unable to backup file - %v", err)
+					}
+				}
+			} else {
+				bNeedToWriteStr = false
+				rpcu, err = GetStringAfterStrFromFile(cRPCUserStr+"=", chd+CDenariusConfFile)
+				if err != nil {
+					return "", "", fmt.Errorf("unable to search for text in file - %v", err)
+				}
+			}
+		} else {
+			// Set this to true, because the file has just been freshly created and we don't want to back it up
+			bFileHasBeenBU = true
+		}
+		if bNeedToWriteStr {
+			rpcu = cDenariusRPCUser
+			if err := WriteTextToFile(chd+CDenariusConfFile, cRPCUserStr+"="+rpcu); err != nil {
+				log.Fatal(err)
+			}
+		}
+
+		// Add rpcpassword info if required, or retrieve the existing one
+		bNeedToWriteStr = true
+		if FileExists(chd + CDenariusConfFile) {
+			bStrFound, err := StringExistsInFile(cRPCPasswordStr+"=", chd+CDenariusConfFile)
+			if err != nil {
+				return "", "", fmt.Errorf("unable to search for text in file - %v", err)
+			}
+			if !bStrFound {
+				// String not found
+				if !bFileHasBeenBU {
+					bFileHasBeenBU = true
+					if err := BackupFile(chd, CDenariusConfFile, "", "", false); err != nil {
+						return "", "", fmt.Errorf("unable to backup file - %v", err)
+					}
+				}
+			} else {
+				bNeedToWriteStr = false
+				rpcpw, err = GetStringAfterStrFromFile(cRPCPasswordStr+"=", chd+CDenariusConfFile)
+				if err != nil {
+					return "", "", fmt.Errorf("unable to search for text in file - %v", err)
+				}
+			}
+		}
+		if bNeedToWriteStr {
+			rpcpw = rand.String(20)
+			if err := WriteTextToFile(chd+CDenariusConfFile, cRPCPasswordStr+"="+rpcpw); err != nil {
+				log.Fatal(err)
+			}
+			if err := WriteTextToFile(chd+CDenariusConfFile, ""); err != nil {
+				log.Fatal(err)
+			}
+		}
+
+		// Add daemon=1 info if required
+		bNeedToWriteStr = true
+		if FileExists(chd + CDenariusConfFile) {
+			bStrFound, err := StringExistsInFile("daemon=1", chd+CDenariusConfFile)
+			if err != nil {
+				return "", "", fmt.Errorf("unable to search for text in file - %v", err)
+			}
+			if !bStrFound {
+				// String not found
+				if !bFileHasBeenBU {
+					bFileHasBeenBU = true
+					if err := BackupFile(chd, CDenariusConfFile, "", "", false); err != nil {
+						return "", "", fmt.Errorf("unable to backup file - %v", err)
+					}
+				}
+			} else {
+				bNeedToWriteStr = false
+			}
+		}
+		if bNeedToWriteStr {
+			if err := WriteTextToFile(chd+CDenariusConfFile, "daemon=1"); err != nil {
+				log.Fatal(err)
+			}
+			if err := WriteTextToFile(chd+CDenariusConfFile, ""); err != nil {
+				log.Fatal(err)
+			}
+		}
+
+		// Add server=1 info if required
+		bNeedToWriteStr = true
+		if FileExists(chd + CDenariusConfFile) {
+			bStrFound, err := StringExistsInFile("server=1", chd+CDenariusConfFile)
+			if err != nil {
+				return "", "", fmt.Errorf("unable to search for text in file - %v", err)
+			}
+			if !bStrFound {
+				// String not found
+				if !bFileHasBeenBU {
+					bFileHasBeenBU = true
+					if err := BackupFile(chd, CDenariusConfFile, "", "", false); err != nil {
+						return "", "", fmt.Errorf("unable to backup file - %v", err)
+					}
+				}
+			} else {
+				bNeedToWriteStr = false
+			}
+		}
+		if bNeedToWriteStr {
+			if err := WriteTextToFile(chd+CDenariusConfFile, "server=1"); err != nil {
+				log.Fatal(err)
+			}
+		}
+
+		// Add rpcallowip= info if required
+		bNeedToWriteStr = true
+		if FileExists(chd + CDenariusConfFile) {
+			bStrFound, err := StringExistsInFile("rpcallowip=", chd+CDenariusConfFile)
+			if err != nil {
+				return "", "", fmt.Errorf("unable to search for text in file - %v", err)
+			}
+			if !bStrFound {
+				// String not found
+				if !bFileHasBeenBU {
+					bFileHasBeenBU = true
+					if err := BackupFile(chd, CDenariusConfFile, "", "", false); err != nil {
+						return "", "", fmt.Errorf("unable to backup file - %v", err)
+					}
+				}
+			} else {
+				bNeedToWriteStr = false
+			}
+		}
+		if bNeedToWriteStr {
+			if err := WriteTextToFile(chd+CDenariusConfFile, "rpcallowip=192.168.1.0/255.255.255.0"); err != nil {
+				log.Fatal(err)
+			}
+		}
+
+		// Add rpcport= info if required
+		bNeedToWriteStr = true
+		if FileExists(chd + CDenariusConfFile) {
+			bStrFound, err := StringExistsInFile("rpcport=", chd+CDenariusConfFile)
+			if err != nil {
+				return "", "", fmt.Errorf("unable to search for text in file - %v", err)
+			}
+			if !bStrFound {
+				// String not found
+				if !bFileHasBeenBU {
+					bFileHasBeenBU = true
+					if err := BackupFile(chd, CDenariusConfFile, "", "", false); err != nil {
+						return "", "", fmt.Errorf("unable to backup file - %v", err)
+					}
+				}
+			} else {
+				bNeedToWriteStr = false
+			}
+		}
+		if bNeedToWriteStr {
+			if err := WriteTextToFile(chd+CDenariusConfFile, "rpcport="+CDenariusRPCPort); err != nil {
+				log.Fatal(err)
+			}
+		}
+
+		return rpcu, rpcpw, nil
 	case PTDeVault:
 		fmt.Println("Populating " + CDeVaultConfFile + " for initial setup...")
 
@@ -3162,6 +3359,22 @@ func AllProjectBinaryFilesExists() (bool, error) {
 		return false, fmt.Errorf("unable to GetConfigStruct - %v", err)
 	}
 	switch bwconf.ProjectType {
+	case PTDenarius:
+		if runtime.GOOS == "windows" {
+			if !FileExists(abf + CDenariusCliFileWin) {
+				return false, nil
+			}
+			if !FileExists(abf + CDenariusDFileWin) {
+				return false, nil
+			}
+		} else {
+			if !FileExists(CDenariusBinDirLinux + CDeVaultCliFile) {
+				return false, nil
+			}
+			if !FileExists(CDenariusBinDirLinux + CDeVaultDFile) {
+				return false, nil
+			}
+		}
 	case PTDeVault:
 		if runtime.GOOS == "windows" {
 			if !FileExists(abf + CDeVaultCliFileWin) {
@@ -3571,9 +3784,49 @@ func StartCoinDaemon(displayOutput bool) error {
 	//if err != nil {
 	//	return fmt.Errorf("Unable to retrieve running binary: %v ", err)
 	//}
-	//abf := AddTrailingSlash(filepath.Dir(ex))
+	//abf := AddTrailingSlash(filepath.Dir(ex)).
 
 	switch bwconf.ProjectType {
+	case PTDenarius:
+		if runtime.GOOS == "windows" {
+			fp := abf + CDenariusDFileWin
+			cmd := exec.Command("cmd.exe", "/C", "start", "/b", fp)
+			if err := cmd.Run(); err != nil {
+				return err
+			}
+		} else {
+			if displayOutput {
+				fmt.Println("Attempting to run the denariusd daemon...")
+			}
+
+			cmdRun := exec.Command(abf + CDenariusDFile)
+			stdout, err := cmdRun.StdoutPipe()
+			if err != nil {
+				return err
+			}
+			err = cmdRun.Start()
+			if err != nil {
+				return err
+			}
+
+			buf := bufio.NewReader(stdout)
+			num := 1
+			for {
+				line, _, _ := buf.ReadLine()
+				if num > 3 {
+					os.Exit(0)
+				}
+				num++
+				if string(line) == "Denarius server starting" {
+					if displayOutput {
+						fmt.Println("Denarius server starting")
+					}
+					return nil
+				} else {
+					return errors.New("unable to start Denarius server: " + string(line))
+				}
+			}
+		}
 	case PTDeVault:
 		if runtime.GOOS == "windows" {
 			//_ = exec.Command(GetAppsBinFolder() + cDiviDFileWin)
@@ -4042,6 +4295,27 @@ func StopCoinDaemon(displayOutput bool) error {
 	}
 
 	switch bwconf.ProjectType {
+	case PTDenarius:
+		if runtime.GOOS == "windows" {
+			// TODO Complete for Windows
+		} else {
+			cRun := exec.Command(abf+CDenariusCliFile, "stop")
+			if err := cRun.Run(); err != nil {
+				return fmt.Errorf("unable to StopPIVXD:%v", err)
+			}
+
+			for i := 0; i < 50; i++ {
+				sr, _, _ := IsCoinDaemonRunning(PTDenarius)
+				if !sr {
+					return nil
+				}
+				if displayOutput {
+					fmt.Printf("\rWaiting for denariusd server to stop %d/"+strconv.Itoa(50), i+1)
+				}
+				time.Sleep(3 * time.Second)
+
+			}
+		}
 	case PTDivi:
 		if runtime.GOOS == "windows" {
 			// TODO Complete for Windows
