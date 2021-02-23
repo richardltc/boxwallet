@@ -61,10 +61,11 @@ var startCmd = &cobra.Command{
 		}
 
 		switch cliConf.ProjectType {
+		case be.PTDenarius:
 		case be.PTDeVault:
 		case be.PTDigiByte:
 		case be.PTDivi:
-			// Add the addnodes if required...
+			// Add the addnodes if required..
 			log.Println("Checking for addnodes...")
 			exist, err := be.AddNodesAlreadyExist()
 			if err != nil {
