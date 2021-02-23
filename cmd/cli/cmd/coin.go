@@ -41,7 +41,7 @@ var coinCmd = &cobra.Command{
 		lf, _ := be.GetAppWorkingFolder()
 		lf = lf + be.CAppLogfile
 
-		// Create the App Working folder if required.
+		// Create the App Working folder if required
 		awf, _ := be.GetAppWorkingFolder()
 		if err := os.MkdirAll(awf, os.ModePerm); err != nil {
 			log.Fatal("unable to make directory: ", err)
@@ -68,6 +68,10 @@ var coinCmd = &cobra.Command{
 		cliConf.ServerIP = "127.0.0.1"
 
 		switch coin {
+		case be.CCoinNameDenarius:
+			be.AddToLog(lf, be.CCoinNameDenarius+" selected", false)
+			cliConf.ProjectType = be.PTDenarius
+			cliConf.Port = be.CDenariusRPCPort
 		case be.CCoinNameDeVault:
 			be.AddToLog(lf, be.CCoinNameDeVault+" selected", false)
 			cliConf.ProjectType = be.PTDeVault
@@ -150,6 +154,7 @@ var coinCmd = &cobra.Command{
 			log.Fatal(err)
 		}
 		if !b {
+			// All or some of the project files do not exist.
 			be.AddToLog(lf, "The "+sCoinName+" CLI bin files haven't been installed yet. So installing them now...", true)
 			if err := doRequiredFiles(); err != nil {
 				be.AddToLog(lf, "unable to complete func doRequiredFiles: "+err.Error(), false)
