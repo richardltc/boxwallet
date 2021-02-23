@@ -26,12 +26,12 @@ const (
 	CDownloadURLDenarius string = "https://github.com/carsenk/denarius/releases/download/v" + CDenariusCoreVersion + "/"
 
 	CDenariusBinDirLinux string = "/snap/bin/"
-	CDenariusHomeDir     string = ".denarius"
+	CDenariusHomeDir     string = "snap/denarius/common/.denarius"
 	CDenariusHomeDirWin  string = "denarius"
 
 	// Files
 	CDenariusConfFile   string = "denarius.conf"
-	CDenariusCliFile    string = "denarius-cli"
+	CDenariusCliFile    string = "denarius"
 	CDenariusCliFileWin string = "denarius-cli.exe"
 	CDenariusDFile      string = "denarius.daemon"
 	CDenariusDFileWin   string = "denarius.daemon.exe"
@@ -84,6 +84,50 @@ type DenariusBlockchainInfoRespStruct struct {
 			} `json:"segwit"`
 		} `json:"softforks"`
 		Warnings string `json:"warnings"`
+	} `json:"result"`
+	Error interface{} `json:"error"`
+	ID    string      `json:"id"`
+}
+
+type DenariusGetInfoRespStruct struct {
+	Result struct {
+		Version         string  `json:"version"`
+		Protocolversion int     `json:"protocolversion"`
+		Walletversion   int     `json:"walletversion"`
+		Balance         float64 `json:"balance"`
+		Anonbalance     float64 `json:"anonbalance"`
+		Reserve         float64 `json:"reserve"`
+		Newmint         float64 `json:"newmint"`
+		Stake           float64 `json:"stake"`
+		Unconfirmed     float64 `json:"unconfirmed"`
+		Immature        float64 `json:"immature"`
+		Blocks          int     `json:"blocks"`
+		Timeoffset      int     `json:"timeoffset"`
+		Moneysupply     float64 `json:"moneysupply"`
+		Connections     int     `json:"connections"`
+		Datareceived    string  `json:"datareceived"`
+		Datasent        string  `json:"datasent"`
+		Proxy           string  `json:"proxy"`
+		IP              string  `json:"ip"`
+		Difficulty      struct {
+			ProofOfWork  float64 `json:"proof-of-work"`
+			ProofOfStake float64 `json:"proof-of-stake"`
+		} `json:"difficulty"`
+		Netmhashps           float64 `json:"netmhashps"`
+		Netstakeweight       float64 `json:"netstakeweight"`
+		Weight               int     `json:"weight"`
+		Testnet              bool    `json:"testnet"`
+		Fortunastake         bool    `json:"fortunastake"`
+		Fslock               bool    `json:"fslock"`
+		Nativetor            bool    `json:"nativetor"`
+		Keypoololdest        int     `json:"keypoololdest"`
+		Keypoolsize          int     `json:"keypoolsize"`
+		Paytxfee             float64 `json:"paytxfee"`
+		Mininput             float64 `json:"mininput"`
+		Datadir              string  `json:"datadir"`
+		Initialblockdownload bool    `json:"initialblockdownload"`
+		WalletStatus         string  `json:"wallet_status"`
+		Errors               string  `json:"errors"`
 	} `json:"result"`
 	Error interface{} `json:"error"`
 	ID    string      `json:"id"`
@@ -179,6 +223,53 @@ func GetBlockchainInfoDenarius(cliConf *ConfStruct) (DenariusBlockchainInfoRespS
 	err = json.Unmarshal(bodyResp, &respStruct)
 	if err != nil {
 		return respStruct, err
+	}
+	return respStruct, nil
+}
+
+func GetInfoDenarius(cliConf *ConfStruct) (DenariusGetInfoRespStruct, error) {
+	//attempts := 5
+	//waitingStr := "Checking server.."
+
+	var respStruct DenariusGetInfoRespStruct
+
+	for i := 1; i < 50; i++ {
+		//fmt.Printf("\r"+waitingStr+" %d/"+strconv.Itoa(attempts), i)
+		body := strings.NewReader("{\"jsonrpc\":\"1.0\",\"id\":\"boxwallet\",\"method\":\"" + cCommandGetInfo + "\",\"params\":[]}")
+		req, err := http.NewRequest("POST", "http://"+cliConf.ServerIP+":"+cliConf.Port, body)
+		if err != nil {
+			return respStruct, err
+		}
+		req.SetBasicAuth(cliConf.RPCuser, cliConf.RPCpassword)
+		req.Header.Set("Content-Type", "text/plain;")
+
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			return respStruct, err
+		}
+		defer resp.Body.Close()
+		bodyResp, err := ioutil.ReadAll(resp.Body)
+		if err != nil {
+			return respStruct, err
+		}
+
+		// Check to make sure we are not loading the wallet
+		if bytes.Contains(bodyResp, []byte("Loading")) ||
+			bytes.Contains(bodyResp, []byte("Rewinding")) ||
+			bytes.Contains(bodyResp, []byte("Verifying")) {
+			// The wallet is still loading, so print message, and sleep for 3 seconds and try again..
+			var errStruct GenericRespStruct
+			err = json.Unmarshal(bodyResp, &errStruct)
+			if err != nil {
+				return respStruct, err
+			}
+			//fmt.Println("Waiting for wallet to load...")
+			time.Sleep(5 * time.Second)
+		} else {
+
+			_ = json.Unmarshal(bodyResp, &respStruct)
+			return respStruct, err
+		}
 	}
 	return respStruct, nil
 }
