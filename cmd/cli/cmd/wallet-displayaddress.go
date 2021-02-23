@@ -19,6 +19,7 @@ package cmd
 import (
 	"fmt"
 	"log"
+	"os"
 
 	be "richardmace.co.uk/boxwallet/cmd/cli/cmd/bend"
 
@@ -31,6 +32,16 @@ var displayaddressCmd = &cobra.Command{
 	Short: "Displays your wallet address",
 	Long:  ``,
 	Run: func(cmd *cobra.Command, args []string) {
+		apw, err := be.GetAppWorkingFolder()
+		if err != nil {
+			log.Fatal("Unable to GetAppWorkingFolder: " + err.Error())
+		}
+
+		// Make sure the config file exists, and if not, force user to use "coin" command first.
+		if _, err := os.Stat(apw + be.CConfFile + be.CConfFileExt); os.IsNotExist(err) {
+			log.Fatal("Unable to determine coin type. Please run " + be.CAppFilename + " coin first")
+		}
+
 		cliConf, err := be.GetConfigStruct("", true)
 		if err != nil {
 			log.Fatal("Unable to GetCLIConfStruct " + err.Error())
