@@ -126,13 +126,22 @@ var displayprivseedCmd = &cobra.Command{
 				"./" + sAppFileCLIName + " start\n\n")
 		}
 
-		wi, err := be.GetWalletInfoDivi(&cliConf)
+		cn, err := be.GetCoinName(be.APPTCLI)
 		if err != nil {
-			log.Fatalf("error getting wallet info: %v", err)
+			log.Fatal("Unable to GetCoinName: " + err.Error())
 		}
 
-		if wi.Result.EncryptionStatus != be.CWalletESUnlocked {
-			log.Fatal("\n\nYour wallet is not currently unlocked.\n\nPlease use the command: boxwallet wallet unlock\n\nAnd then re-run this command again.")
+		switch cliConf.ProjectType {
+		case be.PTDivi:
+			wi, err := be.GetWalletInfoDivi(&cliConf)
+			if err != nil {
+				log.Fatalf("error getting wallet info: %v", err)
+			}
+			if wi.Result.EncryptionStatus != be.CWalletESUnlocked {
+				log.Fatal("\n\nYour wallet is not currently unlocked.\n\nPlease use the command: boxwallet wallet unlock\n\nAnd then re-run this command again.")
+			}
+		default:
+			log.Fatalf("It looks like " + cn + " is currently supported.")
 		}
 
 		// Display instructions for displaying seed recovery
