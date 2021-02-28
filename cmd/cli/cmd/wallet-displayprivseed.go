@@ -18,15 +18,18 @@ package cmd
 
 import (
 	"fmt"
+	"log"
+	"os"
+	be "richardmace.co.uk/boxwallet/cmd/cli/cmd/bend"
 
 	"github.com/spf13/cobra"
 )
 
 const (
 	cWalletDisplaySeedWarning string = `
-	A recovery seed can be used to recover your wallet, should anything happen to this computer.
+A recovery seed can be used to recover your wallet, should anything happen to this computer.
 						
-	It's a good idea to have more than one and keep each in a safe place, other than your computer.`
+It's a good idea to have more than one and keep each in a safe place, other than your computer.`
 )
 
 // displayprivseedCmd represents the displayprivseed command
@@ -74,6 +77,64 @@ var displayprivseedCmd = &cobra.Command{
 		// 	}
 		// }
 
+		apw, err := be.GetAppWorkingFolder()
+		if err != nil {
+			log.Fatal("Unable to GetAppWorkingFolder: " + err.Error())
+		}
+
+		// Make sure the config file exists, and if not, force user to use "coin" command first.
+		if _, err := os.Stat(apw + be.CConfFile + be.CConfFileExt); os.IsNotExist(err) {
+			log.Fatal("Unable to determine coin type. Please run " + be.CAppFilename + " coin first")
+		}
+
+		cliConf, err := be.GetConfigStruct("", true)
+		if err != nil {
+			log.Fatal("Unable to GetCLIConfStruct " + err.Error())
+		}
+
+		sAppFileCLIName, err := be.GetAppFileName()
+		if err != nil {
+			log.Fatal("Unable to GetAppFileCLIName " + err.Error())
+		}
+
+		coind, err := be.GetCoinDaemonFilename(be.APPTCLI, cliConf.ProjectType)
+		if err != nil {
+			log.Fatalf("Unable to GetCoinDaemonFilename - %v", err)
+		}
+
+		// Check to see if we are running the coin daemon locally, and if we are, make sure it's actually running
+		// before attempting to connect to it.
+		if cliConf.ServerIP == "127.0.0.1" {
+			bCDRunning, _, err := be.IsCoinDaemonRunning(cliConf.ProjectType)
+			if err != nil {
+				log.Fatal("Unable to determine if coin daemon is running: " + err.Error())
+			}
+			if !bCDRunning {
+				log.Fatal("Unable to communicate with the " + coind + " server. Please make sure the " + coind + " server is running, by running:\n\n" +
+					"./" + sAppFileCLIName + " start\n\n")
+			}
+		}
+
+		wRunning, _, err := confirmWalletReady()
+		if err != nil {
+			log.Fatal("Unable to determine if wallet is ready: " + err.Error())
+		}
+
+		if !wRunning {
+			fmt.Println("")
+			log.Fatal("Unable to communicate with the " + coind + " server. Please make sure the " + coind + " server is running, by running:\n\n" +
+				"./" + sAppFileCLIName + " start\n\n")
+		}
+
+		wi, err := be.GetWalletInfoDivi(&cliConf)
+		if err != nil {
+			log.Fatalf("error getting wallet info: %v", err)
+		}
+
+		if wi.Result.EncryptionStatus != be.CWalletESUnlocked {
+			log.Fatal("\n\nYour wallet is not currently unlocked.\n\nPlease use the command: boxwallet wallet unlock\n\nAnd then re-run this command again.")
+		}
+
 		// Display instructions for displaying seed recovery
 
 		sWarning := cWalletDisplaySeedWarning
@@ -81,14 +142,14 @@ var displayprivseedCmd = &cobra.Command{
 		fmt.Println("")
 		fmt.Println("\nRequesting private seed...")
 
-		// err = gwc.DoPrivKeyDisplay()
-		// if err != nil {
-		// 	log.Fatalf("doPrivKeyDisplay() failed with %s\n", err)
-		// }
+		hdInfo, err := be.GetDumpHDInfoDivi(&cliConf)
+		if err != nil {
+			log.Fatalf("error calling hddumpinfo info: %v", err)
+		}
+
 		fmt.Println("\nPrivate seed received...")
 		fmt.Println("")
-		// println(s)
-
+		println(hdInfo.Result.Mnemonic)
 	},
 }
 
