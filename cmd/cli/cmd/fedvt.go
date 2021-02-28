@@ -46,7 +46,7 @@ func HandleWalletBUDVT(pw string) (confirmedBU bool, err error) {
 
 	// If the wallet is locked, and we have a password, let's unlock it.
 	if wet == be.WETLocked {
-		if err := be.UnlockWalletVTC(&cliConf, pw); err != nil {
+		if err := be.UnlockWalletDVT(&cliConf, pw); err != nil {
 			return false, fmt.Errorf("unable to unlock wallet: %v", err)
 		}
 	}
