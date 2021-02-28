@@ -67,6 +67,16 @@ type DiviBlockchainInfoRespStruct struct {
 	ID    string      `json:"id"`
 }
 
+type DiviDumpHDInfoRespStruct struct {
+	Result struct {
+		Hdseed             string `json:"hdseed"`
+		Mnemonic           string `json:"mnemonic"`
+		Mnemonicpassphrase string `json:"mnemonicpassphrase"`
+	} `json:"result"`
+	Error interface{} `json:"error"`
+	ID    string      `json:"id"`
+}
+
 type diviGetInfoRespStruct struct {
 	Result struct {
 		Version         string  `json:"version"`
@@ -346,6 +356,33 @@ func getDiviAddNodes() ([]byte, error) {
 	}
 
 	return body, nil
+}
+
+func GetDumpHDInfoDivi(cliConf *ConfStruct) (DiviDumpHDInfoRespStruct, error) {
+	var respStruct DiviDumpHDInfoRespStruct
+
+	body := strings.NewReader("{\"jsonrpc\":\"1.0\",\"id\":\"boxwallet\",\"method\":\"" + cCommandDumpHDInfo + "\",\"params\":[]}")
+	req, err := http.NewRequest("POST", "http://"+cliConf.ServerIP+":"+cliConf.Port, body)
+	if err != nil {
+		return respStruct, err
+	}
+	req.SetBasicAuth(cliConf.RPCuser, cliConf.RPCpassword)
+	req.Header.Set("Content-Type", "text/plain;")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return respStruct, err
+	}
+	defer resp.Body.Close()
+	bodyResp, err := ioutil.ReadAll(resp.Body)
+	if err != nil {
+		return respStruct, err
+	}
+	err = json.Unmarshal(bodyResp, &respStruct)
+	if err != nil {
+		return respStruct, err
+	}
+	return respStruct, nil
 }
 
 func GetInfoDivi(cliConf *ConfStruct) (diviGetInfoRespStruct, error) {
