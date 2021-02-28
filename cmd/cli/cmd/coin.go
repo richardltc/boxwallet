@@ -51,6 +51,7 @@ var coinCmd = &cobra.Command{
 		prompt := &survey.Select{
 			Message: "Please choose your preferred coin:",
 			Options: []string{be.CCoinNameDivi,
+				be.CCoinNameDenarius,
 				be.CCoinNameDeVault,
 				be.CCoinNameDigiByte,
 				be.CCoinNameFeathercoin,
@@ -154,6 +155,12 @@ var coinCmd = &cobra.Command{
 			log.Fatal(err)
 		}
 		if !b {
+			// Need check if the project is Denarius now, as that's only installable via snap
+			if cliConf.ProjectType == be.PTDenarius {
+				log.Fatal(be.CCoinNameDenarius + " needs to be manually installed, via the following command:" +
+					"\n\n snap install denarius" + "\n\n Then run " + be.CAppFilename + " coin again")
+			}
+
 			// All or some of the project files do not exist.
 			be.AddToLog(lf, "The "+sCoinName+" CLI bin files haven't been installed yet. So installing them now...", true)
 			if err := doRequiredFiles(); err != nil {
