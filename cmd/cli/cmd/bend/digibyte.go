@@ -213,27 +213,6 @@ func GetBlockchainInfoDGB(cliConf *ConfStruct) (DGBBlockchainInfoRespStruct, err
 	return respStruct, nil
 }
 
-func GetBlockchainSyncTxtDGB(synced bool, bci *DGBBlockchainInfoRespStruct) string {
-	s := ConvertBCVerification(bci.Result.Verificationprogress)
-	if s == "0.0" {
-		s = ""
-	} else {
-		s = s + "%"
-	}
-
-	if !synced {
-		if bci.Result.Verificationprogress > gLastBCSyncPos {
-			gLastBCSyncPos = bci.Result.Verificationprogress
-			return "Blockchain:  [syncing " + s + " ](fg:yellow)"
-		} else {
-			gLastBCSyncPos = bci.Result.Verificationprogress
-			return "Blockchain:  [waiting " + s + " ](fg:yellow)"
-		}
-	} else {
-		return "Blockchain:  [synced " + CUtfTickBold + "](fg:green)"
-	}
-}
-
 func GetNetworkBlocksTxtDGB(bci *DGBBlockchainInfoRespStruct) string {
 	blocksStr := humanize.Comma(int64(bci.Result.Blocks))
 
@@ -312,7 +291,7 @@ func GetNetworkInfoDGB(cliConf *ConfStruct) (DGBNetworkInfoRespStruct, error) {
 			bytes.Contains(bodyResp, []byte("Rescanning")) ||
 			bytes.Contains(bodyResp, []byte("Rewinding")) ||
 			bytes.Contains(bodyResp, []byte("Verifying")) {
-			// The wallet is still loading, so print message, and sleep for 3 seconds and try again.
+			// The wallet is still loading, so print message, and sleep for 3 seconds and try again
 			time.Sleep(5 * time.Second)
 		} else {
 			_ = json.Unmarshal(bodyResp, &respStruct)
