@@ -454,14 +454,6 @@ func GetBlockchainSyncTxtRapids(synced bool, bci *RapidsBlockchainInfoRespStruct
 	}
 }
 
-func GetMNSyncStatusTxtRapids(mnss *RapidsMNSyncStatusRespStruct) string {
-	if mnss.Result.RequestedMasternodeAssets == 999 {
-		return "Masternodes: [synced " + CUtfTickBold + "](fg:green)"
-	} else {
-		return "Masternodes: [syncing " + getNextProgMNIndicator(gLastMNSyncStatus) + "](fg:yellow)"
-	}
-}
-
 func GetStakingStatusRapids(cliConf *ConfStruct) (RapidsStakingStatusRespStruct, error) {
 	var respStruct RapidsStakingStatusRespStruct
 
