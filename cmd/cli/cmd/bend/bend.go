@@ -26,7 +26,7 @@ import (
 const (
 	CAppName        string = "BoxWallet"
 	CUpdaterAppName string = "bwupdater" // bwupdater
-	CBWAppVersion   string = "0.38.3"
+	CBWAppVersion   string = "0.40.0"
 	CAppFilename    string = "boxwallet"
 	CAppFilenameWin string = "boxwallet.exe"
 	CAppLogfile     string = "boxwallet.log"
@@ -42,6 +42,7 @@ const (
 	cCommandGetNetworkInfo        string = "getnetworkinfo"
 	cCommandGetNewAddress         string = "getnewaddress"
 	cCommandGetWalletInfo         string = "getwalletinfo"
+	cCommandSendToAddress         string = "sendtoaddress"
 	cCommandMNSyncStatus1         string = "mnsync"
 	cCommandMNSyncStatus2         string = "status"
 
@@ -121,7 +122,7 @@ const (
 	//APPTServerCompiled
 )
 
-// ProjectType - To allow external to determine what kind of wallet we are working with
+// ProjectType - To allow external to determine what kind of wallet we are working with.
 type ProjectType int
 
 const (
@@ -805,37 +806,6 @@ func GetAppWorkingFolder() (string, error) {
 	return s, nil
 }
 
-func getNextProgMNIndicator(LIndicator string) string {
-	if LIndicator == cProg1 {
-		gLastMNSyncStatus = cProg2
-		return cProg2
-	} else if LIndicator == cProg2 {
-		gLastMNSyncStatus = cProg3
-		return cProg3
-	} else if LIndicator == cProg3 {
-		gLastMNSyncStatus = cProg4
-		return cProg4
-	} else if LIndicator == cProg4 {
-		gLastMNSyncStatus = cProg5
-		return cProg5
-	} else if LIndicator == cProg5 {
-		gLastMNSyncStatus = cProg6
-		return cProg6
-	} else if LIndicator == cProg6 {
-		gLastMNSyncStatus = cProg7
-		return cProg7
-	} else if LIndicator == cProg7 {
-		gLastMNSyncStatus = cProg8
-		return cProg8
-	} else if LIndicator == cProg8 || LIndicator == "" {
-		gLastMNSyncStatus = cProg1
-		return cProg1
-	} else {
-		gLastMNSyncStatus = cProg1
-		return cProg1
-	}
-}
-
 func GetPIVXSaplingDir() (string, error) {
 	var s string
 	u, err := user.Current()
@@ -948,7 +918,8 @@ func GetPasswordToEncryptWallet() string {
 
 func GetTipAddress(pt ProjectType) string {
 	switch pt {
-	// Todo for Denarius
+	case PTDenarius:
+		return "DNxQWmq3JocvccZNcEGPpztB87GMEd3XVi"
 	case PTDeVault:
 		return "devault:qp7w4pnm774c0uwch8ty6tj7sw86hze9ps4sqrwcue"
 	case PTDigiByte:
@@ -983,7 +954,8 @@ func GetTipInfo(pt ProjectType) string {
 	// Get tip address part.
 	var s string
 	switch pt {
-	// Todo for Denarius
+	case PTDenarius:
+		s = CCoinAbbrevDenarius + ": " + GetTipAddress(PTDenarius)
 	case PTDeVault:
 		s = CCoinAbbrevDeVault + ": " + GetTipAddress(PTDeVault)
 	case PTDigiByte:
@@ -1053,11 +1025,12 @@ func GetWalletEncryptionStatus() (WEType, error) {
 	pt := conf.ProjectType
 	switch pt {
 	case PTDenarius:
-		wi, err := GetWalletInfoDenarius(&conf)
+		// Denarius doesn't have WalletInfo, but you can get the same info from GetInfo
+		gi, err := GetInfoDenarius(&conf)
 		if err != nil {
 			return WETUnknown, fmt.Errorf("unable to GetWalletInfoDenarius %v", err)
 		}
-		wet := GetWalletSecurityStateDenarius(&wi)
+		wet := GetWalletSecurityStateDenarius(&gi)
 		return wet, nil
 	case PTDeVault:
 		wi, err := GetWalletInfoDVT(&conf)
@@ -1174,7 +1147,7 @@ func IsCoinDaemonRunning(ct ProjectType) (bool, int, error) {
 		if runtime.GOOS == "windows" {
 			pid, _, err = FindProcess(CDenariusDFileWin)
 		} else {
-			pid, _, err = FindProcess(CDenariusDFile)
+			pid, _, err = FindProcess(CDenariusDMem)
 		}
 	case PTDeVault:
 		if runtime.GOOS == "windows" {
@@ -3343,7 +3316,13 @@ func PopulateDaemonConfFile() (rpcuser, rpcpassword string, err error) {
 }
 
 func AllProjectBinaryFilesExists() (bool, error) {
-	abf, err := GetAppWorkingFolder()
+	bwconf, err := GetConfigStruct("", false)
+	if err != nil {
+		return false, fmt.Errorf("unable to GetConfigStruct - %v", err)
+	}
+
+	var abf string
+	abf, err = GetAppWorkingFolder()
 	if err != nil {
 		return false, fmt.Errorf("Unable to GetAppsBinFolder - %v ", err)
 	}
@@ -3354,10 +3333,6 @@ func AllProjectBinaryFilesExists() (bool, error) {
 	//}
 	//abf := AddTrailingSlash(filepath.Dir(ex))
 
-	bwconf, err := GetConfigStruct("", false)
-	if err != nil {
-		return false, fmt.Errorf("unable to GetConfigStruct - %v", err)
-	}
 	switch bwconf.ProjectType {
 	case PTDenarius:
 		if runtime.GOOS == "windows" {
@@ -3368,10 +3343,10 @@ func AllProjectBinaryFilesExists() (bool, error) {
 				return false, nil
 			}
 		} else {
-			if !FileExists(CDenariusBinDirLinux + CDeVaultCliFile) {
+			if !FileExists(CDenariusBinDirLinux + CDenariusCliFile) {
 				return false, nil
 			}
-			if !FileExists(CDenariusBinDirLinux + CDeVaultDFile) {
+			if !FileExists(CDenariusBinDirLinux + CDenariusDFile) {
 				return false, nil
 			}
 		}
@@ -3799,8 +3774,8 @@ func StartCoinDaemon(displayOutput bool) error {
 				fmt.Println("Attempting to run the denariusd daemon...")
 			}
 
-			cmdRun := exec.Command(abf + CDenariusDFile)
-			stdout, err := cmdRun.StdoutPipe()
+			cmdRun := exec.Command(CDenariusBinDirLinux + CDenariusDFile)
+			//stdout, err := cmdRun.StdoutPipe()
 			if err != nil {
 				return err
 			}
@@ -3808,24 +3783,10 @@ func StartCoinDaemon(displayOutput bool) error {
 			if err != nil {
 				return err
 			}
-
-			buf := bufio.NewReader(stdout)
-			num := 1
-			for {
-				line, _, _ := buf.ReadLine()
-				if num > 3 {
-					os.Exit(0)
-				}
-				num++
-				if string(line) == "Denarius server starting" {
-					if displayOutput {
-						fmt.Println("Denarius server starting")
-					}
-					return nil
-				} else {
-					return errors.New("unable to start Denarius server: " + string(line))
-				}
+			if displayOutput {
+				fmt.Println("Denarius server starting")
 			}
+
 		}
 	case PTDeVault:
 		if runtime.GOOS == "windows" {
@@ -4660,6 +4621,12 @@ func WalletBackup(pt ProjectType) error {
 	// First, work out what the coin type is
 	var err error
 	switch pt {
+	case PTDenarius:
+		abbrev = strings.ToLower(CCoinAbbrevDenarius)
+		wl, err = GetCoinHomeFolder(APPTCLI, pt)
+		if err != nil {
+			return fmt.Errorf("unable to get coin home folder: %v", err)
+		}
 	case PTDeVault:
 		abbrev = strings.ToLower(CCoinAbbrevDeVault)
 		wl, err = GetCoinHomeFolder(APPTCLI, pt)
