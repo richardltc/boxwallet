@@ -273,17 +273,18 @@ func GetInfoDenariusUI(cliConf *ConfStruct, spin *yacspin.Spinner) (DenariusGetI
 		req.Header.Set("Content-Type", "text/plain;")
 
 		resp, err := http.DefaultClient.Do(req)
-		defer resp.Body.Close()
+		//defer resp.Body.Close()
 		if err != nil {
 			spin.Message(" waiting for your " + CCoinNameDenarius + " wallet to respond, this could take several minutes (ctrl-c to cancel)...")
 			time.Sleep(1 * time.Second)
 		} else {
+			defer resp.Body.Close()
 			bodyResp, err := ioutil.ReadAll(resp.Body)
 			if err != nil {
 				return respStruct, "", err
 			}
 
-			// Check to make sure we are not loading the wallet
+			// Check to make sure we are not loading the wallet.
 			if bytes.Contains(bodyResp, []byte("Loading")) ||
 				bytes.Contains(bodyResp, []byte("Rescanning")) ||
 				bytes.Contains(bodyResp, []byte("Rewinding")) ||
@@ -313,6 +314,7 @@ func GetInfoDenariusUI(cliConf *ConfStruct, spin *yacspin.Spinner) (DenariusGetI
 				return respStruct, string(bodyResp), err
 			}
 		}
+		//resp.Body.Close()
 	}
 	return respStruct, "", nil
 }
@@ -388,24 +390,14 @@ func GetNewAddressDenarius(cliConf *ConfStruct) (DenariusNewAddressStruct, error
 //	return respStruct, nil
 //}
 
-func GetNetworkBlocksTxtDenarius(bci *DenariusBlockchainInfoRespStruct) string {
-	blocksStr := humanize.Comma(int64(bci.Result.Blocks))
-
-	if blocksStr == "0" {
-		return "Blocks:      [waiting...](fg:white)"
-	}
-
-	return "Blocks:      [" + blocksStr + "](fg:green)"
-}
-
-//func GetNetworkHeadersTxtDenarius(bci *DenariusBlockchainInfoRespStruct) string {
-//	headersStr := humanize.Comma(int64(bci.Result.Headers))
+//func GetNetworkBlocksTxtDenarius(bci *DenariusBlockchainInfoRespStruct) string {
+//	blocksStr := humanize.Comma(int64(bci.Result.Blocks))
 //
-//	if bci.Result.Headers > 1 {
-//		return "Headers:     [" + headersStr + "](fg:green)"
-//	} else {
-//		return "[Headers:     " + headersStr + "](fg:red)"
+//	if blocksStr == "0" {
+//		return "Blocks:      [waiting...](fg:white)"
 //	}
+//
+//	return "Blocks:      [" + blocksStr + "](fg:green)"
 //}
 
 //func GetBlockchainSyncTxtDenarius(synced bool, bci *DenariusBlockchainInfoRespStruct) string {
@@ -450,43 +442,6 @@ func GetNetworkDifficultyTxtDenarius(difficulty, good, warn float64) string {
 		return "Difficulty:  [" + s + "](fg:red)"
 	}
 }
-
-//func GetNetworkInfoDenarius(cliConf *ConfStruct) (DenariusNetworkInfoRespStruct, error) {
-//	var respStruct DenariusNetworkInfoRespStruct
-//
-//	for i := 1; i < 50; i++ {
-//		body := strings.NewReader("{\"jsonrpc\":\"1.0\",\"id\":\"curltext\",\"method\":\"getnetworkinfo\",\"params\":[]}")
-//
-//		req, err := http.NewRequest("POST", "http://"+cliConf.ServerIP+":"+cliConf.Port, body)
-//		if err != nil {
-//			return respStruct, err
-//		}
-//		req.SetBasicAuth(cliConf.RPCuser, cliConf.RPCpassword)
-//		req.Header.Set("Content-Type", "text/plain;")
-//
-//		resp, err := http.DefaultClient.Do(req)
-//		if err != nil {
-//			return respStruct, err
-//		}
-//		defer resp.Body.Close()
-//		bodyResp, err := ioutil.ReadAll(resp.Body)
-//		if err != nil {
-//			return respStruct, err
-//		}
-//
-//		// Check to make sure we are not loading the wallet
-//		if bytes.Contains(bodyResp, []byte("Loading")) ||
-//			bytes.Contains(bodyResp, []byte("Rewinding")) ||
-//			bytes.Contains(bodyResp, []byte("Verifying")) {
-//			// The wallet is still loading, so print message, and sleep for 3 seconds and try again..
-//			time.Sleep(5 * time.Second)
-//		} else {
-//			_ = json.Unmarshal(bodyResp, &respStruct)
-//			return respStruct, err
-//		}
-//	}
-//	return respStruct, nil
-//}
 
 func GetWalletSecurityStateDenarius(gi *DenariusGetInfoRespStruct) WEType {
 	if gi.Result.UnlockedUntil == 0 {
