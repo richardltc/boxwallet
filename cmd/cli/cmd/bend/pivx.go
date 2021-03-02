@@ -23,7 +23,7 @@ const (
 	CDFPIVXFilemacOS          = "pivx-" + CPIVXCoreVersion + "-osx64.tar.gz"
 	CDFPIVXFileWindows        = "pivx-" + CPIVXCoreVersion + "-win64.zip"
 
-	// Directory const
+	// Directory const.
 	CPIVXExtractedDirArm     string = "pivx-" + CPIVXCoreVersion + "/"
 	CPIVXExtractedDirLinux   string = "pivx-" + CPIVXCoreVersion + "/"
 	CPIVXExtractedDirWindows string = "pivx-" + CPIVXCoreVersion + "\\"
@@ -290,81 +290,6 @@ func GetBlockchainInfoPIVX(cliConf *ConfStruct) (PIVXBlockchainInfoRespStruct, e
 	return respStruct, nil
 }
 
-func GetBlockchainSyncTxtPIVX(synced bool, bci *PIVXBlockchainInfoRespStruct) string {
-	s := ConvertBCVerification(bci.Result.Verificationprogress)
-	if s == "0.0" {
-		s = ""
-	} else {
-		s = s + "%"
-	}
-
-	if !synced {
-		if bci.Result.Verificationprogress > gLastBCSyncPos {
-			gLastBCSyncPos = bci.Result.Verificationprogress
-			return "Blockchain:  [syncing " + s + " ](fg:yellow)"
-		} else {
-			gLastBCSyncPos = bci.Result.Verificationprogress
-			return "Blockchain:  [waiting " + s + " ](fg:yellow)"
-		}
-	} else {
-		return "Blockchain:  [synced " + CUtfTickBold + "](fg:green)"
-	}
-}
-
-//func GetInfoPIVXOld(cliConf *ConfStruct) (PIVXGetInfoRespStruct, string, error) {
-//	//attempts := 5
-//	//waitingStr := "Checking server..."
-//
-//	var respStruct PIVXGetInfoRespStruct
-//
-//	//lf := "/home/richard/.boxwallet/boxwallet.log"
-//	for i := 1; i < 50; i++ {
-//		//fmt.Printf("\r"+waitingStr+" %d/"+strconv.Itoa(attempts), i)
-//		body := strings.NewReader("{\"jsonrpc\":\"1.0\",\"id\":\"curltext\",\"method\":\"getinfo\",\"params\":[]}")
-//		req, err := http.NewRequest("POST", "http://"+cliConf.ServerIP+":"+cliConf.Port, body)
-//		if err != nil {
-//			return respStruct, "", err
-//		}
-//		req.SetBasicAuth(cliConf.RPCuser, cliConf.RPCpassword)
-//		req.Header.Set("Content-Type", "text/plain;")
-//
-//		// todo need to loop this for few seconds as the daemon might still be loading...
-//		resp, err := http.DefaultClient.Do(req)
-//		if err != nil {
-//			return respStruct, "", err
-//		}
-//		defer resp.Body.Close()
-//		bodyResp, err := ioutil.ReadAll(resp.Body)
-//		if err != nil {
-//			return respStruct, "", err
-//		}
-//
-//		// todo remove the below after bug fixed.
-//		//s := string(bodyResp)
-//		//AddToLog(lf, s, false)
-//
-//		// Check to make sure we are not loading the wallet
-//		if bytes.Contains(bodyResp, []byte("Loading")) ||
-//			bytes.Contains(bodyResp, []byte("Rewinding")) ||
-//			bytes.Contains(bodyResp, []byte("Verifying")) {
-//			// The wallet is still loading, so print message, and sleep for 3 seconds and try again..
-//			var errStruct GenericRespStruct
-//			err = json.Unmarshal(bodyResp, &errStruct)
-//			if err != nil {
-//				return respStruct, "", err
-//			}
-//			//fmt.Println("Waiting for wallet to load...")
-//			time.Sleep(5 * time.Second)
-//		} else {
-//
-//			_ = json.Unmarshal(bodyResp, &respStruct)
-//			return respStruct, string(bodyResp), err
-//		}
-//	}
-//	return respStruct, "", nil
-
-//}
-
 func GetInfoPIVX(cliConf *ConfStruct) (PIVXGetInfoRespStruct, string, error) {
 	var respStruct PIVXGetInfoRespStruct
 
@@ -424,11 +349,12 @@ func GetInfoPIVXUI(cliConf *ConfStruct, spin *yacspin.Spinner) (PIVXGetInfoRespS
 		req.Header.Set("Content-Type", "text/plain;")
 
 		resp, err := http.DefaultClient.Do(req)
-		defer resp.Body.Close()
+		//defer resp.Body.Close()
 		if err != nil {
 			spin.Message(" waiting for your " + CCoinNamePIVX + " wallet to respond, this could take several minutes (ctrl-c to cancel)...")
 			time.Sleep(1 * time.Second)
 		} else {
+			defer resp.Body.Close()
 			bodyResp, err := ioutil.ReadAll(resp.Body)
 			if err != nil {
 				return respStruct, "", err
@@ -493,14 +419,6 @@ func GetMNSyncStatusPIVX(cliConf *ConfStruct) (PIVXMNSyncStatusRespStruct, error
 		return respStruct, err
 	}
 	return respStruct, nil
-}
-
-func GetMNSyncStatusTxtPIVX(mnss *PIVXMNSyncStatusRespStruct) string {
-	if mnss.Result.RequestedMasternodeAssets == 999 {
-		return "Masternodes: [synced " + CUtfTickBold + "](fg:green)"
-	} else {
-		return "Masternodes: [syncing " + getNextProgMNIndicator(gLastMNSyncStatus) + "](fg:yellow)"
-	}
 }
 
 func GetNetworkBlocksTxtPIVX(bci *PIVXBlockchainInfoRespStruct) string {
