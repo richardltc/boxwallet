@@ -83,6 +83,17 @@ var displayaddressCmd = &cobra.Command{
 
 		var sAddress string
 		switch cliConf.ProjectType {
+		case be.PTDenarius:
+			addresses, _ := be.ListReceivedByAddressDenarius(&cliConf, true)
+			if len(addresses.Result) > 0 {
+				sAddress = addresses.Result[0].Address
+			} else {
+				r, err := be.GetNewAddressDenarius(&cliConf)
+				if err != nil {
+					log.Fatalf("Unable to GetNewAddressDivi")
+				}
+				sAddress = r.Result
+			}
 		case be.PTDivi:
 			addresses, _ := be.ListReceivedByAddressDivi(&cliConf, true)
 			if len(addresses.Result) > 0 {
