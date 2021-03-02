@@ -81,10 +81,16 @@ snapcrafts:
   -
     id: "boxwallet"
     grade: stable
-    confinement: classic
-    base: core18
+    confinement: strict
+    base: bare
     summary: BoxWallet is a single binary multi-coin CLI tool, that gets your coin-of-choice wallet/node set-up fast with just a few commands
-    publish: false # <- this line.
+    plugs:
+      personal-files:
+        read:
+          - $HOME/.divi
+        write:
+          - $HOME/.divi
+    publish: true # <- this line for publish
     description: |
       BoxWallet is a single binary multi-coin CLI tool, that gets your coin-of-choice wallet/node set-up fast with just a few commands:
 
