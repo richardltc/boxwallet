@@ -176,30 +176,7 @@ func GetBlockchainInfoDVT(cliConf *ConfStruct) (DVTBlockchainInfoRespStruct, err
 	return respStruct, nil
 }
 
-func GetBlockchainSyncTxtDVT(synced bool, bci *DVTBlockchainInfoRespStruct) string {
-	s := ConvertBCVerification(bci.Result.Verificationprogress)
-	if s == "0.0" {
-		s = ""
-	} else {
-		s = s + "%"
-	}
-
-	if !synced {
-		if bci.Result.Verificationprogress > gLastBCSyncPos {
-			gLastBCSyncPos = bci.Result.Verificationprogress
-			return "Blockchain:  [syncing " + s + " ](fg:yellow)"
-		} else {
-			gLastBCSyncPos = bci.Result.Verificationprogress
-			return "Blockchain:  [waiting " + s + " ](fg:yellow)"
-		}
-	} else {
-		return "Blockchain:  [synced " + CUtfTickBold + "](fg:green)"
-	}
-}
-
 func GetInfoDVT(cliConf *ConfStruct) (DeVaultGetInfoRespStruct, error) {
-	//attempts := 5
-	//waitingStr := "Checking server..."
 
 	var respStruct DeVaultGetInfoRespStruct
 
@@ -252,7 +229,6 @@ func GetNetworkBlocksTxtDVT(bci *DVTBlockchainInfoRespStruct) string {
 	}
 
 	return "Blocks:      [" + blocksStr + "](fg:green)"
-
 }
 
 func GetNetworkConnectionsTxtDVT(connections int) string {
