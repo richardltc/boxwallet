@@ -8,6 +8,7 @@ require (
 	github.com/bmizerany/pat v0.0.0-20170815010413-6226ea591a40
 	github.com/cavaliercoder/grab v2.0.0+incompatible
 	github.com/codeclysm/extract/v3 v3.0.2 // indirect
+	github.com/dariubs/percent v0.0.0-20200128140941-b7801cf1c7e2 // indirect
 	github.com/dustin/go-humanize v1.0.0
 	github.com/fsnotify/fsnotify v1.4.9 // indirect
 	github.com/gizak/termui/v3 v3.1.0
