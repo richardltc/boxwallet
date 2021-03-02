@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"github.com/dustin/go-humanize"
 	"github.com/theckman/yacspin"
 	"io/ioutil"
@@ -312,26 +313,27 @@ func GetBlockchainInfoDivi(cliConf *ConfStruct) (DiviBlockchainInfoRespStruct, e
 	return respStruct, nil
 }
 
-func GetBlockchainSyncTxtDivi(synced bool, bci *DiviBlockchainInfoRespStruct) string {
-	s := ConvertBCVerification(bci.Result.Verificationprogress)
-	if s == "0.0" {
-		s = ""
-	} else {
-		s = s + "%"
-	}
-
-	if !synced {
-		if bci.Result.Verificationprogress > gLastBCSyncPos {
-			gLastBCSyncPos = bci.Result.Verificationprogress
-			return "Blockchain:  [syncing " + s + " ](fg:yellow)"
-		} else {
-			gLastBCSyncPos = bci.Result.Verificationprogress
-			return "Blockchain:  [waiting " + s + " ](fg:yellow)"
-		}
-	} else {
-		return "Blockchain:  [synced " + CUtfTickBold + "](fg:green)"
-	}
-}
+//func GetBlockchainSyncTxtDivi(synced bool, bci *DiviBlockchainInfoRespStruct) string {
+//	s := ConvertBCVerification(bci.Result.Verificationprogress)
+//	if s == "0.0" {
+//		s = ""
+//	} else {
+//		s = s + "%"
+//	}
+//
+//	if !synced {
+//		return "Blockchain: [" + getNextProgBCIndicator(gLastBCSyncStatus) + "syncing " + sProg + " ](fg:yellow)"
+//		if bci.Result.Verificationprogress > gLastBCSyncPos {
+//			gLastBCSyncPos = bci.Result.Verificationprogress
+//			return "Blockchain:  [syncing " + s + " ](fg:yellow)"
+//		} else {
+//			gLastBCSyncPos = bci.Result.Verificationprogress
+//			return "Blockchain:  [waiting " + s + " ](fg:yellow)"
+//		}
+//	} else {
+//		return "Blockchain:  [synced " + CUtfTickBold + "](fg:green)"
+//	}
+//}
 
 func getDiviAddNodes() ([]byte, error) {
 	addNodesClient := http.Client{
@@ -432,65 +434,6 @@ func GetInfoDivi(cliConf *ConfStruct) (diviGetInfoRespStruct, error) {
 	return respStruct, nil
 }
 
-func GetInfoDIVIUIOld(cliConf *ConfStruct, spin *yacspin.Spinner) (diviGetInfoRespStruct, string, error) {
-	var respStruct diviGetInfoRespStruct
-
-	for i := 1; i < 600; i++ {
-		body := strings.NewReader("{\"jsonrpc\":\"1.0\",\"id\":\"boxwallet\",\"method\":\"" + cCommandGetInfo + "\",\"params\":[]}")
-		req, err := http.NewRequest("POST", "http://"+cliConf.ServerIP+":"+cliConf.Port, body)
-		if err != nil {
-			return respStruct, "", err
-		}
-		req.SetBasicAuth(cliConf.RPCuser, cliConf.RPCpassword)
-		req.Header.Set("Content-Type", "text/plain;")
-
-		for j := 1; j < 60; j++ {
-			resp, err := http.DefaultClient.Do(req)
-			if err != nil {
-				spin.Message(" waiting for your " + CCoinNameDivi + " wallet to respond, this could take several minutes (ctrl-c to cancel)...")
-				time.Sleep(1 * time.Second)
-				break
-			}
-			defer resp.Body.Close()
-			bodyResp, err := ioutil.ReadAll(resp.Body)
-			if err != nil {
-				return respStruct, "", err
-			}
-
-			// Check to make sure we are not loading the wallet
-			if bytes.Contains(bodyResp, []byte("Loading")) ||
-				bytes.Contains(bodyResp, []byte("Rescanning")) ||
-				bytes.Contains(bodyResp, []byte("Rewinding")) ||
-				bytes.Contains(bodyResp, []byte("RPC in warm-up: Calculating money supply")) ||
-				bytes.Contains(bodyResp, []byte("Verifying")) {
-				// The wallet is still loading, so print message, and sleep for 1 second and try again..
-				var errStruct GenericRespStruct
-				err = json.Unmarshal(bodyResp, &errStruct)
-				if err != nil {
-					return respStruct, "", err
-				}
-
-				if bytes.Contains(bodyResp, []byte("Loading")) {
-					spin.Message(" Your " + CCoinNameDivi + " wallet is *Loading*, this could take a while...")
-				} else if bytes.Contains(bodyResp, []byte("Rescanning")) {
-					spin.Message(" Your " + CCoinNameDivi + " wallet is *Rescanning*, this could take a while...")
-				} else if bytes.Contains(bodyResp, []byte("Rewinding")) {
-					spin.Message(" Your " + CCoinNameDivi + " wallet is *Rewinding*, this could take a while...")
-				} else if bytes.Contains(bodyResp, []byte("Verifying")) {
-					spin.Message(" Your " + CCoinNameDivi + " wallet is *Verifying*, this could take a while...")
-				} else if bytes.Contains(bodyResp, []byte("Calculating money supply")) {
-					spin.Message(" Your " + CCoinNameDivi + " wallet is *Calculating money supply*, this could take a while...")
-				}
-				time.Sleep(1 * time.Second)
-			} else {
-				_ = json.Unmarshal(bodyResp, &respStruct)
-				return respStruct, string(bodyResp), err
-			}
-		}
-	}
-	return respStruct, "", nil
-}
-
 func GetInfoDIVIUI(cliConf *ConfStruct, spin *yacspin.Spinner) (diviGetInfoRespStruct, string, error) {
 	var respStruct diviGetInfoRespStruct
 
@@ -504,11 +447,11 @@ func GetInfoDIVIUI(cliConf *ConfStruct, spin *yacspin.Spinner) (diviGetInfoRespS
 		req.Header.Set("Content-Type", "text/plain;")
 
 		resp, err := http.DefaultClient.Do(req)
-		defer resp.Body.Close()
 		if err != nil {
 			spin.Message(" waiting for your " + CCoinNameDivi + " wallet to respond, this could take several minutes (ctrl-c to cancel)...")
 			time.Sleep(1 * time.Second)
 		} else {
+			defer resp.Body.Close()
 			bodyResp, err := ioutil.ReadAll(resp.Body)
 			if err != nil {
 				return respStruct, "", err
@@ -573,14 +516,6 @@ func GetMNSyncStatusDivi(cliConf *ConfStruct) (DiviMNSyncStatusRespStruct, error
 		return respStruct, err
 	}
 	return respStruct, nil
-}
-
-func GetMNSyncStatusTxtDivi(mnss *DiviMNSyncStatusRespStruct) string {
-	if mnss.Result.RequestedMasternodeAssets == 999 {
-		return "Masternodes: [synced " + CUtfTickBold + "](fg:green)"
-	} else {
-		return "Masternodes: [syncing " + getNextProgMNIndicator(gLastMNSyncStatus) + "](fg:yellow)"
-	}
 }
 
 func GetNetworkBlocksTxtDivi(bci *DiviBlockchainInfoRespStruct) string {
@@ -791,6 +726,35 @@ func ListTransactionsDivi(cliConf *ConfStruct) (DiviListTransactions, error) {
 	}
 
 	return respStruct, nil
+}
+
+func SendToAddressDivi(cliConf *ConfStruct, address string, amount float32) error {
+	var respStruct GenericRespStruct
+
+	sAmount := fmt.Sprintf("%f", amount) // sAmount == "123.456000"
+
+	body := strings.NewReader("{\"jsonrpc\":\"1.0\",\"id\":\"boxwallet\",\"method\":\"" + cCommandSendToAddress + "\",\"params\":[\"" + address + "\"," + sAmount + "]}")
+	req, err := http.NewRequest("POST", "http://"+cliConf.ServerIP+":"+cliConf.Port, body)
+	if err != nil {
+		return err
+	}
+	req.SetBasicAuth(cliConf.RPCuser, cliConf.RPCpassword)
+	req.Header.Set("Content-Type", "text/plain;")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	bodyResp, err := ioutil.ReadAll(resp.Body)
+	if err != nil {
+		return err
+	}
+	err = json.Unmarshal(bodyResp, &respStruct)
+	if err != nil {
+		return err
+	}
+	return nil
 }
 
 func UnlockWalletDivi(cliConf *ConfStruct, pw string) error {
