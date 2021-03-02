@@ -225,6 +225,7 @@ func GetNetworkBlocksTxtVTC(bci *VTCBlockchainInfoRespStruct) string {
 	//} else {
 	//	return "[Blocks:      " + blocksStr + "](fg:red)"
 	//}
+
 }
 
 func GetNetworkHeadersTxtVTC(bci *VTCBlockchainInfoRespStruct) string {
@@ -234,27 +235,6 @@ func GetNetworkHeadersTxtVTC(bci *VTCBlockchainInfoRespStruct) string {
 		return "Headers:     [" + headersStr + "](fg:green)"
 	} else {
 		return "[Headers:     " + headersStr + "](fg:red)"
-	}
-}
-
-func GetBlockchainSyncTxtVTC(synced bool, bci *VTCBlockchainInfoRespStruct) string {
-	s := ConvertBCVerification(bci.Result.Verificationprogress)
-	if s == "0.0" {
-		s = ""
-	} else {
-		s = s + "%"
-	}
-
-	if !synced {
-		if bci.Result.Verificationprogress > gLastBCSyncPos {
-			gLastBCSyncPos = bci.Result.Verificationprogress
-			return "Blockchain:  [syncing " + s + " ](fg:yellow)"
-		} else {
-			gLastBCSyncPos = bci.Result.Verificationprogress
-			return "Blockchain:  [waiting " + s + " ](fg:yellow)"
-		}
-	} else {
-		return "Blockchain:  [synced " + CUtfTickBold + "](fg:green)"
 	}
 }
 
