@@ -204,31 +204,7 @@ func GetBlockchainInfoPhore(cliConf *ConfStruct) (PhoreBlockchainInfoRespStruct,
 	return respStruct, nil
 }
 
-func GetBlockchainSyncTxtPhore(synced bool, bci *PhoreBlockchainInfoRespStruct) string {
-	s := ConvertBCVerification(bci.Result.Verificationprogress)
-	if s == "0.0" {
-		s = ""
-	} else {
-		s = s + "%"
-	}
-
-	if !synced {
-		if bci.Result.Verificationprogress > gLastBCSyncPos {
-			gLastBCSyncPos = bci.Result.Verificationprogress
-			return "Blockchain:  [syncing " + s + " ](fg:yellow)"
-		} else {
-			gLastBCSyncPos = bci.Result.Verificationprogress
-			return "Blockchain:  [waiting " + s + " ](fg:yellow)"
-		}
-	} else {
-		return "Blockchain:  [synced " + CUtfTickBold + "](fg:green)"
-	}
-}
-
 func GetInfoPhore(cliConf *ConfStruct) (phoreInfoRespStruct, error) {
-	//attempts := 5
-	//waitingStr := "Checking server..."
-
 	var respStruct phoreInfoRespStruct
 
 	//lf := "/home/pi/.boxwallet/boxwallet.log"
@@ -277,13 +253,13 @@ func GetInfoPhore(cliConf *ConfStruct) (phoreInfoRespStruct, error) {
 	return respStruct, nil
 }
 
-func GetMNSyncStatusTxtPhore(mnss *PhoreMNSyncStatusRespStruct) string {
-	if mnss.Result.RequestedMasternodeAssets == 999 {
-		return "Masternodes: [synced " + CUtfTickBold + "](fg:green)"
-	} else {
-		return "Masternodes: [syncing " + getNextProgMNIndicator(gLastMNSyncStatus) + "](fg:yellow)"
-	}
-}
+//func GetMNSyncStatusTxtPhore(mnss *PhoreMNSyncStatusRespStruct) string {
+//	if mnss.Result.RequestedMasternodeAssets == 999 {
+//		return "Masternodes: [synced " + CUtfTickBold + "](fg:green)"
+//	} else {
+//		return "Masternodes: [syncing " + getNextProgMNIndicator(gLastMNSyncStatus) + "](fg:yellow)"
+//	}
+//}
 
 func GetNetworkBlocksTxtPhore(bci *PhoreBlockchainInfoRespStruct) string {
 	blocksStr := humanize.Comma(int64(bci.Result.Blocks))
