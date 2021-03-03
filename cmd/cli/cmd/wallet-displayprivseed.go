@@ -141,7 +141,7 @@ var displayprivseedCmd = &cobra.Command{
 				log.Fatal("\n\nYour wallet is not currently unlocked.\n\nPlease use the command: boxwallet wallet unlock\n\nAnd then re-run this command again.")
 			}
 		default:
-			log.Fatalf("It looks like " + cn + " is currently supported.")
+			log.Fatalf("It looks like " + cn + " does not currently support this command.")
 		}
 
 		// Display instructions for displaying seed recovery
