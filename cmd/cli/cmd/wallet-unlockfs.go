@@ -39,6 +39,7 @@ var unlockfsCmd = &cobra.Command{
 			log.Fatal("Unable to GetCLIConfStruct " + err.Error())
 		}
 
+		var wiDenarius be.DenariusGetInfoRespStruct
 		var wiDivi be.DiviWalletInfoRespStruct
 		var wiPhore be.PhoreWalletInfoRespStruct
 		var wiPIVX be.PIVXWalletInfoRespStruct
@@ -46,6 +47,12 @@ var unlockfsCmd = &cobra.Command{
 		var wiRDD be.RDDWalletInfoRespStruct
 		var wiTrezarcoin be.TrezarcoinWalletInfoRespStruct
 		switch cliConf.ProjectType {
+		case be.PTDenarius:
+			wiDenarius, err = be.GetInfoDenarius(&cliConf)
+			wet := be.GetWalletSecurityStateDenarius(&wiDenarius)
+			if wet == be.WETUnencrypted {
+				log.Fatal("Wallet is not encrypted")
+			}
 		case be.PTDivi:
 			wiDivi, err = be.GetWalletInfoDivi(&cliConf)
 			wet := be.GetWalletSecurityStateDivi(&wiDivi)
@@ -136,7 +143,7 @@ func unlockWalletFS(cliConf *be.ConfStruct, pw string) (be.GenericRespStruct, er
 	var body *strings.Reader
 
 	switch cliConf.ProjectType {
-	case be.PTTrezarcoin, be.PTRapids, be.PTReddCoin, be.PTPIVX:
+	case be.PTDenarius, be.PTTrezarcoin, be.PTRapids, be.PTReddCoin, be.PTPIVX:
 		// Trezarcoin requires some 9's to be passed to unlock a wallet for staking
 		body = strings.NewReader("{\"jsonrpc\":\"1.0\",\"id\":\"boxwallet\",\"method\":\"walletpassphrase\",\"params\":[\"" + pw + "\",9999999,true]}")
 	default:
