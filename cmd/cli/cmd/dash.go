@@ -1988,7 +1988,7 @@ func getBalanceInDenariusTxt(gi *be.DenariusGetInfoRespStruct) string {
 
 	// Work out balance
 	if gi.Result.Immature > 0 {
-		return "  Incoming....... [" + tBalanceStr + "](fg:cyan)"
+		return "  Incoming.......   [" + tBalanceStr + "](fg:cyan)"
 	} else if gi.Result.Unconfirmed > 0 {
 		return "  Confirming....... [" + tBalanceStr + "](fg:yellow)"
 	} else {
