@@ -20,11 +20,14 @@ const (
 	//CDFDenariusRPi       string = "Denarius-" + CDenariusCoreVersion + "-arm-linux-gnueabihf.tar.gz"
 	//CDFDenariusLinux     string = "Denarius-" + CDenariusCoreVersion + "-x86_64-linux-gnu.tar.gz"
 	CDFDenariusWindows string = "Denarius-" + CDenariusCoreVersion + "-Win64.zip"
+	CDFDenariusBS      string = "chaindata.zip"
+	CDFDenariusBSARM   string = "pichaindata.zip"
 
-	//CDenariusExtractedDirLinux   = "groestlcoin-" + CGroestlcoinCoreVersion + "/"
+	//CDenariusExtractedDirLinux   = "Denarius-" + CDenariusCoreVersion + "/"
 	CDenariusExtractedDirWindows = "Denarius-" + CDenariusCoreVersion + "\\"
 
-	CDownloadURLDenarius string = "https://github.com/carsenk/denarius/releases/download/v" + CDenariusCoreVersion + "/"
+	CDownloadURLDenarius   string = "https://github.com/carsenk/denarius/releases/download/v" + CDenariusCoreVersion + "/"
+	CDownloadURLDenariusBS string = "https://denarii.cloud/"
 
 	CDenariusBinDirLinux string = "/snap/bin/"
 	CDenariusHomeDir     string = "snap/denarius/common/.denarius"
