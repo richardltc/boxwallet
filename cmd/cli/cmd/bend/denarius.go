@@ -122,22 +122,22 @@ type DenariusListReceivedByAddressRespStruct struct {
 
 type DenariusListTransactions struct {
 	Result []struct {
-		InvolvesWatchonly int           `json:"involvesWatchonly"`
-		Address           string        `json:"address"`
-		Amount            float64       `json:"amount"`
-		Vout              int           `json:"vout"`
-		Category          string        `json:"category"`
-		Account           string        `json:"account"`
-		Confirmations     int           `json:"confirmations"`
-		Bcconfirmations   int           `json:"bcconfirmations"`
-		Generated         bool          `json:"generated"`
-		Txid              string        `json:"txid"`
-		Walletconflicts   []interface{} `json:"walletconflicts"`
-		Time              int           `json:"time"`
-		Timereceived      int           `json:"timereceived"`
-		Blockhash         string        `json:"blockhash,omitempty"`
-		Blockindex        int           `json:"blockindex,omitempty"`
-		Blocktime         int           `json:"blocktime,omitempty"`
+		Account       string  `json:"account"`
+		Address       string  `json:"address"`
+		Category      string  `json:"category"`
+		Amount        float64 `json:"amount,omitempty"`
+		Vout          int     `json:"vout"`
+		Label         string  `json:"label"`
+		Version       int     `json:"version"`
+		Confirmations int     `json:"confirmations"`
+		Blockhash     string  `json:"blockhash"`
+		Blockindex    int     `json:"blockindex"`
+		Blocktime     int     `json:"blocktime"`
+		Txid          string  `json:"txid"`
+		Time          int     `json:"time"`
+		Timereceived  int     `json:"timereceived"`
+		Reward        float64 `json:"reward,omitempty"`
+		Generated     bool    `json:"generated,omitempty"`
 	} `json:"result"`
 	Error interface{} `json:"error"`
 	ID    string      `json:"id"`
