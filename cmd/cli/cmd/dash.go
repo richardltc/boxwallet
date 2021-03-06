@@ -2390,7 +2390,7 @@ func getCategorySymbol(s string) string {
 		return cPaymentReceived //cPaymentReceived
 	case "sent":
 		return cPaymentSent
-	case "stake", "stake_reward":
+	case "stake", "stake_reward", "generate":
 		return cStakeReceived
 	}
 	return s
@@ -2402,7 +2402,7 @@ func getCategoryColour(s string) string {
 		return "green"
 	case "sent":
 		return "red"
-	case "stake", "stake_reward":
+	case "stake", "stake_reward", "generate":
 		return "green"
 	}
 	return "white"
@@ -2849,7 +2849,13 @@ func updateTransactionsDenarius(trans *be.DenariusListTransactions, pt *widgets.
 		}
 		tm := time.Unix(iTime, 0)
 		sCat := getCategorySymbol(trans.Result[i].Category)
-		tAmountStr := humanize.FormatFloat("#,###.##", trans.Result[i].Amount)
+
+		tAmountStr := ""
+		if trans.Result[i].Category == "generate" {
+			tAmountStr = humanize.FormatFloat("#,###.##", trans.Result[i].Reward)
+		} else {
+			tAmountStr = humanize.FormatFloat("#,###.##", trans.Result[i].Amount)
+		}
 		sColour := getCategoryColour(trans.Result[i].Category)
 		pt.Rows = append(pt.Rows, []string{
 			" [" + tm.Format("2006-01-02 15:04"+"](fg:"+sColour+")"),
