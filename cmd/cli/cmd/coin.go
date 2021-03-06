@@ -171,8 +171,30 @@ var coinCmd = &cobra.Command{
 			be.AddToLog(lf, "The "+sCoinName+" CLI bin files have already been installed.", true)
 		}
 
-		// I think here, is the best place to check whether the user would like to download the blockchain snapshot..
+		// I think here is the best place to check whether the user would like to download the blockchain snapshot..
 		switch cliConf.ProjectType {
+		case be.PTDenarius:
+			bcdExists, _ := be.BlockchainDataExists(be.PTDenarius)
+			if !bcdExists {
+				ans := true
+				prompt := &survey.Confirm{
+					Message: "\nIt looks like this is a fresh install of " + be.CCoinNameDenarius +
+						"\n\nWould you like to download the Blockchain snapshot " + be.CDFDenariusBS + " ?:",
+					Default: true,
+				}
+				survey.AskOne(prompt, &ans)
+				if ans {
+					fmt.Println("Downloading blockchain snapshot...")
+					if err := be.DownloadBlockchain(be.PTDenarius); err != nil {
+						log.Fatal("Unable to download blockchain snapshot: " + err.Error())
+					}
+					fmt.Println("Unarchiving blockchain snapshot...")
+					if err := be.UnarchiveBlockchainSnapshot(be.PTDenarius); err != nil {
+						log.Fatal("Unable to unarchive blockchain snapshot: " + err.Error())
+					}
+				}
+
+			}
 		case be.PTDivi:
 			bcdExists, _ := be.BlockchainDataExists(be.PTDivi)
 			if !bcdExists {
