@@ -988,6 +988,7 @@ var dashCmd = &cobra.Command{
 			case be.PTDenarius:
 				if bDenariusBlockchainIsSynced {
 					giDenarius, _ = be.GetInfoDenarius(&cliConf)
+					transDenarius, _ = be.ListTransactionsDenarius(&cliConf)
 				}
 			case be.PTDeVault:
 				if bDVTBlockchainIsSynced {
