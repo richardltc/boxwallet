@@ -2388,7 +2388,7 @@ func getCategorySymbol(s string) string {
 	switch s {
 	case "receive":
 		return cPaymentReceived //cPaymentReceived
-	case "sent":
+	case "send":
 		return cPaymentSent
 	case "stake", "stake_reward", "generate":
 		return cStakeReceived
@@ -2400,7 +2400,7 @@ func getCategoryColour(s string) string {
 	switch s {
 	case "receive":
 		return "green"
-	case "sent":
+	case "send":
 		return "red"
 	case "stake", "stake_reward", "generate":
 		return "green"
