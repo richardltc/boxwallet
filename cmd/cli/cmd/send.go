@@ -111,7 +111,7 @@ to quickly create a Cobra application.`,
 		}
 
 		// Then ask for the amount they want to send
-		amount := 0.0
+		var amount float32
 		promptAmount := &survey.Input{
 			Message: "How much would you like to send?",
 		}
@@ -124,6 +124,22 @@ to quickly create a Cobra application.`,
 		}
 		survey.AskOne(promptAddress, &address)
 
+		// Validate address as best we can...
+		// DIVI, length is 34 and starts with a D
+		av := false
+		switch cliConf.ProjectType {
+		case be.PTDivi:
+			if av, err = be.ValidateAddress(be.PTDivi, address); err != nil {
+				log.Fatalf("Unable to vailadte address: %v", err)
+			}
+		default:
+			log.Fatalf("Unable to determine coin type for validation.")
+		}
+		if !av {
+			log.Fatalf("It looks like the address that you are sending to is not a " + cn + " address?\n\n" +
+				"Please check and try again.")
+		}
+
 		// Then ask for confirmation
 		send := false
 		promptConfirm := &survey.Confirm{
@@ -133,7 +149,11 @@ to quickly create a Cobra application.`,
 
 		// Then send
 		if send {
-			log.Fatal("I'm going to send")
+			if r, err := be.SendToAddressDivi(&cliConf, address, amount); err != nil {
+				log.Fatalf("unable to send: %v", err)
+			} else {
+				fmt.Println(r.Result)
+			}
 		}
 	},
 }
