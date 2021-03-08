@@ -26,7 +26,7 @@ import (
 const (
 	CAppName        string = "BoxWallet"
 	CUpdaterAppName string = "bwupdater" // bwupdater
-	CBWAppVersion   string = "0.40.0"
+	CBWAppVersion   string = "0.40.1"
 	CAppFilename    string = "boxwallet"
 	CAppFilenameWin string = "boxwallet.exe"
 	CAppLogfile     string = "boxwallet.log"
@@ -424,6 +424,25 @@ func DownloadBlockchain(pt ProjectType) error {
 		return fmt.Errorf("unable to GetCoinHomeFolder - DownloadBlockchain: %v", err)
 	}
 	switch pt {
+	case PTDenarius:
+		switch runtime.GOARCH {
+		case "arm", "arm64":
+			bcsFileExists := FileExists(cd + CDFDenariusBSARM)
+			if !bcsFileExists {
+				// Then download the file.
+				if err := DownloadFile(cd, CDownloadURLDenariusBS+CDFDenariusBSARM); err != nil {
+					return fmt.Errorf("unable to download file: %v - %v", CDFDenariusBSARM, err)
+				}
+			}
+		default:
+			bcsFileExists := FileExists(cd + CDFDenariusBS)
+			if !bcsFileExists {
+				// Then download the file.
+				if err := DownloadFile(cd, CDownloadURLDenariusBS+CDFDenariusBS); err != nil {
+					return fmt.Errorf("unable to download file: %v - %v", CDFDenariusBS, err)
+				}
+			}
+		}
 	case PTDivi:
 		bcsFileExists := FileExists(cd + CDFDiviBS)
 		if !bcsFileExists {
@@ -466,6 +485,31 @@ func UnarchiveBlockchainSnapshot(pt ProjectType) error {
 		return err
 	}
 	switch pt {
+	case PTDenarius:
+		switch runtime.GOARCH {
+		case "arm", "arm64":
+			bcsFileExists := FileExists(cd + CDFDenariusBSARM)
+			if !bcsFileExists {
+				return fmt.Errorf("unable to find the snapshot file: %v", cd+CDFDenariusBSARM)
+			}
+
+			// Now extract it straight into the ~/.divi folder
+			fmt.Println("Decompressing to " + cd + "...")
+			if err := archiver.Unarchive(cd+CDFDenariusBSARM, cd); err != nil {
+				return fmt.Errorf("unable to unarchive file: %v - %v", cd+CDFDenariusBSARM, err)
+			}
+		default:
+			bcsFileExists := FileExists(cd + CDFDenariusBS)
+			if !bcsFileExists {
+				return fmt.Errorf("unable to find the snapshot file: %v", cd+CDFDenariusBS)
+			}
+
+			// Now extract it straight into the ~/.divi folder
+			fmt.Println("Decompressing to " + cd + "...")
+			if err := archiver.Unarchive(cd+CDFDenariusBS, cd); err != nil {
+				return fmt.Errorf("unable to unarchive file: %v - %v", cd+CDFDenariusBS, err)
+			}
+		}
 	case PTDivi:
 		bcsFileExists := FileExists(cd + CDFDiviBS)
 		if !bcsFileExists {
@@ -4613,6 +4657,27 @@ func StopDaemonMonero(cliConf *ConfStruct) (XLAStopDaemonRespStruct, error) {
 		return respStruct, err
 	}
 	return respStruct, nil
+}
+
+func ValidateAddress(pt ProjectType, ad string) (bool, error) {
+	// First, work out what the coin type is
+	var err error
+	switch pt {
+	case PTDivi:
+		// If the length of the address is not exactly 34 characters...
+		if len(ad) != 34 {
+			return false, nil
+		}
+		sFirst := ad[0]
+
+		// 68 = UTF for D
+		if sFirst != 68 {
+			return false, nil
+		}
+	default:
+		return false, fmt.Errorf("unable to determine ProjectType - ValidateAddress: %v", err)
+	}
+	return true, nil
 }
 
 func WalletBackup(pt ProjectType) error {
