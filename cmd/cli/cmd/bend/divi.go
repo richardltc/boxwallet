@@ -47,7 +47,7 @@ const (
 	cDiviRPCUser string = "divirpc"
 	CDiviRPCPort string = "51473"
 
-	// Wallet encryption status.
+	// Wallet encryption status
 	CWalletESUnlockedForStaking = "unlocked-for-staking"
 	CWalletESLocked             = "locked"
 	CWalletESUnlocked           = "unlocked"
@@ -728,7 +728,7 @@ func ListTransactionsDivi(cliConf *ConfStruct) (DiviListTransactions, error) {
 	return respStruct, nil
 }
 
-func SendToAddressDivi(cliConf *ConfStruct, address string, amount float32) error {
+func SendToAddressDivi(cliConf *ConfStruct, address string, amount float32) (returnResp GenericRespStruct, err error) {
 	var respStruct GenericRespStruct
 
 	sAmount := fmt.Sprintf("%f", amount) // sAmount == "123.456000"
@@ -736,25 +736,25 @@ func SendToAddressDivi(cliConf *ConfStruct, address string, amount float32) erro
 	body := strings.NewReader("{\"jsonrpc\":\"1.0\",\"id\":\"boxwallet\",\"method\":\"" + cCommandSendToAddress + "\",\"params\":[\"" + address + "\"," + sAmount + "]}")
 	req, err := http.NewRequest("POST", "http://"+cliConf.ServerIP+":"+cliConf.Port, body)
 	if err != nil {
-		return err
+		return respStruct, err
 	}
 	req.SetBasicAuth(cliConf.RPCuser, cliConf.RPCpassword)
 	req.Header.Set("Content-Type", "text/plain;")
 
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
-		return err
+		return respStruct, err
 	}
 	defer resp.Body.Close()
 	bodyResp, err := ioutil.ReadAll(resp.Body)
 	if err != nil {
-		return err
+		return respStruct, err
 	}
 	err = json.Unmarshal(bodyResp, &respStruct)
 	if err != nil {
-		return err
+		return respStruct, err
 	}
-	return nil
+	return respStruct, nil
 }
 
 func UnlockWalletDivi(cliConf *ConfStruct, pw string) error {
