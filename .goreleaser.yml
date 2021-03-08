@@ -85,7 +85,7 @@ snapcrafts:
     base: bare
     apps:
       boxwallet:
-        plugs: "personal-files"
+        plugs: ["personal-files"]
     summary: BoxWallet is a single binary multi-coin CLI tool, that gets your coin-of-choice wallet/node running fast, with just a few commands.
     plugs:
       dot-divi:
