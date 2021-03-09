@@ -100,7 +100,7 @@ snapcrafts:
 #          - $HOME/.divi
 #        write:
 #          - $HOME/.divi
-    publish: true # <- this line for publish
+    publish: false # <- this line for publish
     description: |
       BoxWallet is a single binary multi-coin CLI tool, that gets your coin-of-choice wallet/node set-up fast with just a few commands:
 
