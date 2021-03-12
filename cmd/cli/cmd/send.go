@@ -95,21 +95,6 @@ to quickly create a Cobra application.`,
 			log.Fatal("Unable to GetCoinName: " + err.Error())
 		}
 
-		// First check that their wallet is unlocked
-
-		switch cliConf.ProjectType {
-		case be.PTDivi:
-			wi, err := be.GetWalletInfoDivi(&cliConf)
-			if err != nil {
-				log.Fatalf("error getting wallet info: %v", err)
-			}
-			if wi.Result.EncryptionStatus != be.CWalletESUnlocked {
-				log.Fatal("\n\nYour wallet is not currently unlocked.\n\nPlease use the command: boxwallet wallet unlock\n\nAnd then re-run this command again.")
-			}
-		default:
-			log.Fatalf("It looks like " + cn + " does not currently support this command.")
-		}
-
 		// Then ask for the amount they want to send
 		var amount float32
 		promptAmount := &survey.Input{
@@ -127,13 +112,8 @@ to quickly create a Cobra application.`,
 		// Validate address as best we can...
 		// DIVI, length is 34 and starts with a D
 		av := false
-		switch cliConf.ProjectType {
-		case be.PTDivi:
-			if av, err = be.ValidateAddress(be.PTDivi, address); err != nil {
-				log.Fatalf("Unable to vailadte address: %v", err)
-			}
-		default:
-			log.Fatalf("Unable to determine coin type for validation.")
+		if av, err = be.ValidateAddress(be.PTDivi, address); err != nil {
+			log.Fatalf("Unable to validate address: %v", err)
 		}
 		if !av {
 			log.Fatalf("It looks like the address that you are sending to is not a " + cn + " address?\n\n" +
@@ -147,11 +127,45 @@ to quickly create a Cobra application.`,
 		}
 		survey.AskOne(promptConfirm, &send)
 
-		// Then send
+		// Check that their wallet is unlocked
+
+		switch cliConf.ProjectType {
+		case be.PTDivi:
+			wi, err := be.GetWalletInfoDivi(&cliConf)
+			if err != nil {
+				log.Fatalf("error getting wallet info: %v", err)
+			}
+			wet := be.GetWalletSecurityStateDivi(&wi)
+			if wet != be.WETUnlocked {
+				wep := be.GetWalletEncryptionPassword()
+				r, err := unlockWallet(&cliConf, wep)
+				if err != nil || r.Error != nil {
+					log.Fatalf("failed to unlock wallet %s\n", err)
+				}
+			}
+		case be.PTReddCoin:
+			wi, err := be.GetWalletInfoRDD(&cliConf)
+			if err != nil {
+				log.Fatalf("error getting wallet info: %v", err)
+			}
+			wet := be.GetWalletSecurityStateRDD(&wi)
+			if wet != be.WETUnlocked {
+				wep := be.GetWalletEncryptionPassword()
+				r, err := unlockWallet(&cliConf, wep)
+				if err != nil || r.Error != nil {
+					log.Fatalf("failed to unlock wallet %s\n", err)
+				}
+			}
+		default:
+			log.Fatalf("It looks like " + cn + " does not currently support this command.")
+		}
+
+		// Then send...
 		if send {
 			if r, err := be.SendToAddressDivi(&cliConf, address, amount); err != nil {
 				log.Fatalf("unable to send: %v", err)
 			} else {
+				fmt.Printf("Payment sent\n\n")
 				fmt.Println(r.Result)
 			}
 		}
