@@ -1,4 +1,6 @@
 name: boxwallet
+architectures:
+  - build-on: [ amd64, armhf, arm64, i386 ]
 summary: BoxWallet is a multi-coin CLI tool, that gets your wallet/node running fast!
 description: |
   BoxWallet is a single binary multi-coin CLI tool, that gets your coin-of-choice wallet/node set-up fast with just a few commands:
@@ -9,7 +11,7 @@ description: |
 
   boxwallet dash - displays a dashboard with the coins Blockchain and wallet info.
 base: core18
-version: "0.40.4"
+version: "0.40.5"
 
 parts:
   boxwallet:
@@ -18,6 +20,16 @@ parts:
 
 apps:
   boxwallet:
-    command: boxwallet
+    command: cli
+    plugs: [ "personal-files" ]
 
 confinement: strict
+
+plugs:
+  dot-divi:
+    interface: personal-files
+    read:
+      - $HOME/.divi
+    write:
+      - $HOME/.divi
+
