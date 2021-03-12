@@ -45,9 +45,9 @@ import (
 )
 
 const (
-	cStakeReceived   string = "\u2618" // "\u2605" //"\u0276"
-	cPaymentReceived string = "\u2770" //"\u261A" //"\u0293"
-	cPaymentSent     string = "\u2771"
+	cStakeReceived   string = "\u2618"
+	cPaymentReceived string = "<--" //"\u2770"
+	cPaymentSent     string = "-->" //"\u2771"
 
 	cProg1 string = "|"
 	cProg2 string = "/"
