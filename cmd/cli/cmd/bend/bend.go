@@ -26,7 +26,7 @@ import (
 const (
 	CAppName        string = "BoxWallet"
 	CUpdaterAppName string = "bwupdater" // bwupdater
-	CBWAppVersion   string = "0.40.5"
+	CBWAppVersion   string = "0.40.5a"
 	CAppFilename    string = "boxwallet"
 	CAppFilenameWin string = "boxwallet.exe"
 	CAppLogfile     string = "boxwallet.log"
@@ -37,6 +37,7 @@ const (
 	// General CLI command constants
 	cCommandGetBCInfo             string = "getblockchaininfo"
 	cCommandGetInfo               string = "getinfo"
+	cCommandGetStakingInfo        string = "getstakinginfo"
 	cCommandListReceivedByAddress string = "listreceivedbyaddress"
 	cCommandListTransactions      string = "listtransactions"
 	cCommandGetNetworkInfo        string = "getnetworkinfo"
@@ -389,16 +390,31 @@ func BlockchainDataExists(pt ProjectType) (bool, error) {
 		return false, fmt.Errorf("unable to GetCoinHomeFolder - DownloadBlockchain: %v", err)
 	}
 
-	// If the "blocks" directory already exists, return.
-	if _, err := os.Stat(cd + "blocks"); !os.IsNotExist(err) {
-		err := errors.New("The directory: " + cd + "blocks already exists")
-		return true, err
-	}
+	switch pt {
+	case PTDenarius:
+		// If the "blk0001.dat" file already exists, return.
+		if _, err := os.Stat(cd + "blk0001.dat"); !os.IsNotExist(err) {
+			err := errors.New("The file: " + cd + "blk0001.dat already exists")
+			return true, err
+		}
 
-	// If the "chainstate" directory already exists, return
-	if _, err := os.Stat(cd + "chainstate"); !os.IsNotExist(err) {
-		err := errors.New("The directory: " + cd + "chainstate already exists")
-		return true, err
+		// If the "blk0002.dat" file already exists, return
+		if _, err := os.Stat(cd + "blk0002.dat"); !os.IsNotExist(err) {
+			err := errors.New("The file: " + cd + "blk0002.dat already exists")
+			return true, err
+		}
+	default:
+		// If the "blocks" directory already exists, return.
+		if _, err := os.Stat(cd + "blocks"); !os.IsNotExist(err) {
+			err := errors.New("The directory: " + cd + "blocks already exists")
+			return true, err
+		}
+
+		// If the "chainstate" directory already exists, return
+		if _, err := os.Stat(cd + "chainstate"); !os.IsNotExist(err) {
+			err := errors.New("The directory: " + cd + "chainstate already exists")
+			return true, err
+		}
 	}
 	return false, nil
 }
@@ -1042,7 +1058,7 @@ func GetTipInfo(pt ProjectType) string {
 func GetWalletEncryptionPassword() string {
 	pw := ""
 	prompt := &survey.Password{
-		Message: "Please enter your encrypted wallet password",
+		Message: "Please enter your wallet password",
 	}
 	survey.AskOne(prompt, &pw)
 	return pw
@@ -4663,6 +4679,39 @@ func ValidateAddress(pt ProjectType, ad string) (bool, error) {
 	// First, work out what the coin type is
 	var err error
 	switch pt {
+	case PTDenarius:
+		// If the length of the address is not exactly 34 characters...
+		if len(ad) != 34 {
+			return false, nil
+		}
+		sFirst := ad[0]
+
+		// 68 = UTF for D
+		if sFirst != 68 {
+			return false, nil
+		}
+	case PTDeVault:
+		// If the length of the address is not exactly 50 characters...
+		if len(ad) != 50 {
+			return false, nil
+		}
+		sFirst := ad[0]
+
+		// 100 = UTF for d
+		if sFirst != 100 {
+			return false, nil
+		}
+	case PTDigiByte:
+		// If the length of the address is not exactly 34 characters...
+		//if len(ad) != 34 {
+		//	return false, nil
+		//}
+		sFirst := ad[0]
+
+		// 68 = UTF for D, 100 = UTF d
+		if sFirst == 68 || sFirst == 100 {
+			return true, nil
+		}
 	case PTDivi:
 		// If the length of the address is not exactly 34 characters...
 		if len(ad) != 34 {
@@ -4674,6 +4723,70 @@ func ValidateAddress(pt ProjectType, ad string) (bool, error) {
 		if sFirst != 68 {
 			return false, nil
 		}
+	case PTFeathercoin:
+		// It's un-clear what the address format is at present...
+		return true, nil
+	case PTGroestlcoin:
+		// It's un-clear what the address format is at present...
+		return true, nil
+	case PTPhore:
+		// If the length of the address is not exactly 34 characters...
+		if len(ad) != 34 {
+			return false, nil
+		}
+		sFirst := ad[0]
+
+		// 80 = UTF for P
+		if sFirst != 80 {
+			return false, nil
+		}
+	case PTPIVX:
+		// If the length of the address is not exactly 34 characters...
+		if len(ad) != 34 {
+			return false, nil
+		}
+		sFirst := ad[0]
+
+		// 68 = UTF for D
+		if sFirst != 68 {
+			return false, nil
+		}
+	case PTRapids:
+		// If the length of the address is not exactly 34 characters...
+		if len(ad) != 34 {
+			return false, nil
+		}
+		sFirst := ad[0]
+
+		// 82 = UTF for R
+		if sFirst != 82 {
+			return false, nil
+		}
+	case PTReddCoin:
+		// If the length of the address is not exactly 34 characters...
+		if len(ad) != 34 {
+			return false, nil
+		}
+		sFirst := ad[0]
+
+		// 82 = UTF for R
+		if sFirst != 82 {
+			return false, nil
+		}
+	case PTTrezarcoin:
+		// If the length of the address is not exactly 34 characters...
+		if len(ad) != 34 {
+			return false, nil
+		}
+		sFirst := ad[0]
+
+		// 84 = UTF for T
+		if sFirst != 84 {
+			return false, nil
+		}
+	case PTVertcoin:
+		// It's un-clear what the address format is at present...
+		return true, nil
 	default:
 		return false, fmt.Errorf("unable to determine ProjectType - ValidateAddress: %v", err)
 	}
