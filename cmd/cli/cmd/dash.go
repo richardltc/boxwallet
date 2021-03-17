@@ -988,6 +988,7 @@ var dashCmd = &cobra.Command{
 			case be.PTDenarius:
 				if bDenariusBlockchainIsSynced {
 					giDenarius, _ = be.GetInfoDenarius(&cliConf)
+					ssDenarius, _ = be.GetStakingInfoDenarius(&cliConf)
 					transDenarius, _ = be.ListTransactionsDenarius(&cliConf)
 				}
 			case be.PTDeVault:
@@ -2835,7 +2836,7 @@ func updateTransactionsDenarius(trans *be.DenariusListTransactions, pt *widgets.
 	bYellowBoarder := false
 
 	for i := len(trans.Result) - 1; i >= 0; i-- {
-		// Check to make sure the confirmations count is higher than -1
+		// Check to make sure the confirmations count is higher than -1.
 		if trans.Result[i].Confirmations < 0 {
 			continue
 		}
@@ -2852,9 +2853,9 @@ func updateTransactionsDenarius(trans *be.DenariusListTransactions, pt *widgets.
 
 		tAmountStr := ""
 		if trans.Result[i].Category == "generate" {
-			tAmountStr = humanize.FormatFloat("#,###.##", trans.Result[i].Reward)
+			tAmountStr = humanize.FormatFloat("#,###.####", trans.Result[i].Reward)
 		} else {
-			tAmountStr = humanize.FormatFloat("#,###.##", trans.Result[i].Amount)
+			tAmountStr = humanize.FormatFloat("#,###.####", trans.Result[i].Amount)
 		}
 		sColour := getCategoryColour(trans.Result[i].Category)
 		pt.Rows = append(pt.Rows, []string{
