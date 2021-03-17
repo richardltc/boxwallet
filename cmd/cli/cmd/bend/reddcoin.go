@@ -22,7 +22,7 @@ const (
 	CDFReddCoinLinux32 string = "reddcoin-" + CReddCoinCoreVersion + "-linux32.tar.gz"
 	CDFReddCoinLinux64 string = "reddcoin-" + CReddCoinCoreVersion + "-linux64.tar.gz"
 	CDFReddCoinWindows string = "reddcoin-" + CReddCoinCoreVersion + "-win64.zip"
-	CDFReddCoinBS      string = "blockchain-Nov-26-2020.zip"
+	CDFReddCoinBS      string = "blockchain-Mar-15-2021.zip"
 
 	CReddCoinExtractedDirLinux = "reddcoin-" + CReddCoinCoreVersion + "/"
 	CReddCoinExtractedDirWin   = "reddcoin-" + CReddCoinCoreVersion + "\\"
