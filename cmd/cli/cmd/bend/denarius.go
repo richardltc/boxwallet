@@ -108,6 +108,25 @@ type DenariusGetInfoRespStruct struct {
 	Error interface{} `json:"error"`
 	ID    string      `json:"id"`
 }
+
+type DenariusGetStakingInfoRespStruct struct {
+	Result struct {
+		Enabled          bool    `json:"enabled"`
+		Staking          bool    `json:"staking"`
+		Errors           string  `json:"errors"`
+		Currentblocksize int     `json:"currentblocksize"`
+		Currentblocktx   int     `json:"currentblocktx"`
+		Pooledtx         int     `json:"pooledtx"`
+		Difficulty       float64 `json:"difficulty"`
+		SearchInterval   int     `json:"search-interval"`
+		Weight           int     `json:"weight"`
+		Netstakeweight   int     `json:"netstakeweight"`
+		Expectedtime     int     `json:"expectedtime"`
+	} `json:"result"`
+	Error interface{} `json:"error"`
+	ID    string      `json:"id"`
+}
+
 type DenariusListReceivedByAddressRespStruct struct {
 	Result []struct {
 		Address       string        `json:"address"`
@@ -217,9 +236,6 @@ func GetBlockchainInfoDenarius(cliConf *ConfStruct) (DenariusBlockchainInfoRespS
 }
 
 func GetInfoDenarius(cliConf *ConfStruct) (DenariusGetInfoRespStruct, error) {
-	//attempts := 5
-	//waitingStr := "Checking server.."
-
 	var respStruct DenariusGetInfoRespStruct
 
 	for i := 1; i < 50; i++ {
@@ -259,6 +275,33 @@ func GetInfoDenarius(cliConf *ConfStruct) (DenariusGetInfoRespStruct, error) {
 			_ = json.Unmarshal(bodyResp, &respStruct)
 			return respStruct, err
 		}
+	}
+	return respStruct, nil
+}
+
+func GetStakingInfoDenarius(cliConf *ConfStruct) (DenariusStakingInfoStruct, error) {
+	var respStruct DenariusStakingInfoStruct
+
+	body := strings.NewReader("{\"jsonrpc\":\"1.0\",\"id\":\"boxwallet\",\"method\":\"" + cCommandGetStakingInfo + "\",\"params\":[]}")
+	req, err := http.NewRequest("POST", "http://"+cliConf.ServerIP+":"+cliConf.Port, body)
+	if err != nil {
+		return respStruct, err
+	}
+	req.SetBasicAuth(cliConf.RPCuser, cliConf.RPCpassword)
+	req.Header.Set("Content-Type", "text/plain;")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return respStruct, err
+	}
+	defer resp.Body.Close()
+	bodyResp, err := ioutil.ReadAll(resp.Body)
+	if err != nil {
+		return respStruct, err
+	}
+	err = json.Unmarshal(bodyResp, &respStruct)
+	if err != nil {
+		return respStruct, err
 	}
 	return respStruct, nil
 }
