@@ -112,7 +112,7 @@ to quickly create a Cobra application.`,
 		// Validate address as best we can...
 		// DIVI, length is 34 and starts with a D
 		av := false
-		if av, err = be.ValidateAddress(be.PTDivi, address); err != nil {
+		if av, err = be.ValidateAddress(cliConf.ProjectType, address); err != nil {
 			log.Fatalf("Unable to validate address: %v", err)
 		}
 		if !av {
@@ -130,12 +130,116 @@ to quickly create a Cobra application.`,
 		// Check that their wallet is unlocked
 
 		switch cliConf.ProjectType {
+		case be.PTDenarius:
+			wi, err := be.GetInfoDenarius(&cliConf)
+			if err != nil {
+				log.Fatalf("error getting wallet info: %v", err)
+			}
+			wet := be.GetWalletSecurityStateDenarius(&wi)
+			if wet != be.WETUnlocked {
+				wep := be.GetWalletEncryptionPassword()
+				r, err := unlockWallet(&cliConf, wep)
+				if err != nil || r.Error != nil {
+					log.Fatalf("failed to unlock wallet %s\n", err)
+				}
+			}
+		case be.PTDeVault:
+			wi, err := be.GetWalletInfoDVT(&cliConf)
+			if err != nil {
+				log.Fatalf("error getting wallet info: %v", err)
+			}
+			wet := be.GetWalletSecurityStateDVT(&wi)
+			if wet != be.WETUnlocked {
+				wep := be.GetWalletEncryptionPassword()
+				r, err := unlockWallet(&cliConf, wep)
+				if err != nil || r.Error != nil {
+					log.Fatalf("failed to unlock wallet %s\n", err)
+				}
+			}
+		case be.PTDigiByte:
+			wi, err := be.GetWalletInfoDGB(&cliConf)
+			if err != nil {
+				log.Fatalf("error getting wallet info: %v", err)
+			}
+			wet := be.GetWalletSecurityStateDGB(&wi)
+			if wet != be.WETUnlocked {
+				wep := be.GetWalletEncryptionPassword()
+				r, err := unlockWallet(&cliConf, wep)
+				if err != nil || r.Error != nil {
+					log.Fatalf("failed to unlock wallet %s\n", err)
+				}
+			}
 		case be.PTDivi:
 			wi, err := be.GetWalletInfoDivi(&cliConf)
 			if err != nil {
 				log.Fatalf("error getting wallet info: %v", err)
 			}
 			wet := be.GetWalletSecurityStateDivi(&wi)
+			if wet != be.WETUnlocked {
+				wep := be.GetWalletEncryptionPassword()
+				r, err := unlockWallet(&cliConf, wep)
+				if err != nil || r.Error != nil {
+					log.Fatalf("failed to unlock wallet %s\n", err)
+				}
+			}
+		case be.PTFeathercoin:
+			wi, err := be.GetWalletInfoFeathercoin(&cliConf)
+			if err != nil {
+				log.Fatalf("error getting wallet info: %v", err)
+			}
+			wet := be.GetWalletSecurityStateFeathercoin(&wi)
+			if wet != be.WETUnlocked {
+				wep := be.GetWalletEncryptionPassword()
+				r, err := unlockWallet(&cliConf, wep)
+				if err != nil || r.Error != nil {
+					log.Fatalf("failed to unlock wallet %s\n", err)
+				}
+			}
+		case be.PTGroestlcoin:
+			wi, err := be.GetWalletInfoGRS(&cliConf)
+			if err != nil {
+				log.Fatalf("error getting wallet info: %v", err)
+			}
+			wet := be.GetWalletSecurityStateGRS(&wi)
+			if wet != be.WETUnlocked {
+				wep := be.GetWalletEncryptionPassword()
+				r, err := unlockWallet(&cliConf, wep)
+				if err != nil || r.Error != nil {
+					log.Fatalf("failed to unlock wallet %s\n", err)
+				}
+			}
+		case be.PTPhore:
+			wi, err := be.GetWalletInfoPhore(&cliConf)
+			if err != nil {
+				log.Fatalf("error getting wallet info: %v", err)
+			}
+			wet := be.GetWalletSecurityStatePhore(&wi)
+			if wet != be.WETUnlocked {
+				wep := be.GetWalletEncryptionPassword()
+				r, err := unlockWallet(&cliConf, wep)
+				if err != nil || r.Error != nil {
+					log.Fatalf("failed to unlock wallet %s\n", err)
+				}
+			}
+		case be.PTPIVX:
+			wi, err := be.GetWalletInfoPIVX(&cliConf)
+			if err != nil {
+				log.Fatalf("error getting wallet info: %v", err)
+			}
+			wet := be.GetWalletSecurityStatePIVX(&wi)
+			if wet != be.WETUnlocked {
+				wep := be.GetWalletEncryptionPassword()
+				r, err := unlockWallet(&cliConf, wep)
+				if err != nil || r.Error != nil {
+					log.Fatalf("failed to unlock wallet %s\n", err)
+				}
+			}
+		case be.PTRapids:
+			wi, err := be.GetWalletInfoRapids(&cliConf)
+			if err != nil {
+				log.Fatalf("error getting wallet info: %v", err)
+			}
+			wet := be.GetWalletSecurityStateRapids(&wi)
 			if wet != be.WETUnlocked {
 				wep := be.GetWalletEncryptionPassword()
 				r, err := unlockWallet(&cliConf, wep)
@@ -156,11 +260,37 @@ to quickly create a Cobra application.`,
 					log.Fatalf("failed to unlock wallet %s\n", err)
 				}
 			}
+		case be.PTTrezarcoin:
+			wi, err := be.GetWalletInfoTrezarcoin(&cliConf)
+			if err != nil {
+				log.Fatalf("error getting wallet info: %v", err)
+			}
+			wet := be.GetWalletSecurityStateTrezarcoin(&wi)
+			if wet != be.WETUnlocked {
+				wep := be.GetWalletEncryptionPassword()
+				r, err := unlockWallet(&cliConf, wep)
+				if err != nil || r.Error != nil {
+					log.Fatalf("failed to unlock wallet %s\n", err)
+				}
+			}
+		case be.PTVertcoin:
+			wi, err := be.GetWalletInfoVTC(&cliConf)
+			if err != nil {
+				log.Fatalf("error getting wallet info: %v", err)
+			}
+			wet := be.GetWalletSecurityStateVTC(&wi)
+			if wet != be.WETUnlocked {
+				wep := be.GetWalletEncryptionPassword()
+				r, err := unlockWallet(&cliConf, wep)
+				if err != nil || r.Error != nil {
+					log.Fatalf("failed to unlock wallet %s\n", err)
+				}
+			}
 		default:
 			log.Fatalf("It looks like " + cn + " does not currently support this command.")
 		}
 
-		// Then send...
+		// Then send..
 		if send {
 			if r, err := be.SendToAddressDivi(&cliConf, address, amount); err != nil {
 				log.Fatalf("unable to send: %v", err)
