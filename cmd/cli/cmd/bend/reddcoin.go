@@ -22,7 +22,7 @@ const (
 	CDFReddCoinLinux32 string = "reddcoin-" + CReddCoinCoreVersion + "-linux32.tar.gz"
 	CDFReddCoinLinux64 string = "reddcoin-" + CReddCoinCoreVersion + "-linux64.tar.gz"
 	CDFReddCoinWindows string = "reddcoin-" + CReddCoinCoreVersion + "-win64.zip"
-	CDFReddCoinBS      string = "blockchain-Mar-15-2021.zip"
+	CDFReddCoinBS      string = "blockchain-Nov-26-2020.zip"
 
 	CReddCoinExtractedDirLinux = "reddcoin-" + CReddCoinCoreVersion + "/"
 	CReddCoinExtractedDirWin   = "reddcoin-" + CReddCoinCoreVersion + "\\"
@@ -392,7 +392,7 @@ func GetNetworkInfoRDD(cliConf *ConfStruct) (RDDNetworkInfoRespStruct, error) {
 			return respStruct, err
 		}
 
-		// Check to make sure we are not loading the wallet
+		// Check to make sure we are not loading the wallet.
 		if bytes.Contains(bodyResp, []byte("Loading")) ||
 			bytes.Contains(bodyResp, []byte("Rewinding")) ||
 			bytes.Contains(bodyResp, []byte("Verifying")) {
