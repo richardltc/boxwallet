@@ -1933,7 +1933,7 @@ func encryptWallet(cliConf *be.ConfStruct, pw string) (be.GenericRespStruct, err
 func getNextLotteryTxtDIVI(conf *be.ConfStruct) string {
 	if NextLotteryCounter > (60*30) || NextLotteryStored == "" {
 		NextLotteryCounter = 0
-		lrs, _ := getLotteryInfo(conf)
+		lrs, _ := getDiviLotteryInfo(conf)
 		if lrs.Lottery.Countdown.Humanized != "" {
 			return "Next Lottery:     [" + lrs.Lottery.Countdown.Humanized + "](fg:white)"
 		} else {
@@ -2705,7 +2705,7 @@ func getWalletSecurityStatusTxtVTC(wi *be.VTCWalletInfoRespStruct) string {
 	}
 }
 
-func getLotteryInfo(cliConf *be.ConfStruct) (be.LotteryDiviRespStruct, error) {
+func getDiviLotteryInfo(cliConf *be.ConfStruct) (be.LotteryDiviRespStruct, error) {
 	var respStruct be.LotteryDiviRespStruct
 
 	resp, err := http.Get("https://statbot.neist.io/api/v1/statbot")
@@ -2722,7 +2722,7 @@ func getLotteryInfo(cliConf *be.ConfStruct) (be.LotteryDiviRespStruct, error) {
 	if err != nil {
 		return respStruct, err
 	}
-	return respStruct, errors.New("unable to getLotteryInfo")
+	return respStruct, errors.New("unable to getDiviLotteryInfo")
 }
 
 func getNetworkDifficultyInfo(pt be.ProjectType) (float64, float64, error) {
@@ -2854,7 +2854,7 @@ func updateTransactionsDenarius(trans *be.DenariusListTransactions, pt *widgets.
 		if trans.Result[i].Confirmations < 1 {
 			bYellowBoarder = true
 		}
-		iTime, err := strconv.ParseInt(strconv.Itoa(trans.Result[i].Timereceived), 10, 64)
+		iTime, err := strconv.ParseInt(strconv.Itoa(trans.Result[i].Blocktime), 10, 64)
 		if err != nil {
 			panic(err)
 		}
@@ -2902,7 +2902,7 @@ func updateTransactionsDGB(trans *be.DGBListTransactions, pt *widgets.Table) {
 		if trans.Result[i].Confirmations < 1 {
 			bYellowBoarder = true
 		}
-		iTime, err := strconv.ParseInt(strconv.Itoa(trans.Result[i].Timereceived), 10, 64)
+		iTime, err := strconv.ParseInt(strconv.Itoa(trans.Result[i].Blocktime), 10, 64)
 		if err != nil {
 			panic(err)
 		}
@@ -2986,7 +2986,7 @@ func updateTransactionsFTC(trans *be.FTCListTransactions, pt *widgets.Table) {
 		if trans.Result[i].Confirmations < 1 {
 			bYellowBoarder = true
 		}
-		iTime, err := strconv.ParseInt(strconv.Itoa(trans.Result[i].Timereceived), 10, 64)
+		iTime, err := strconv.ParseInt(strconv.Itoa(trans.Result[i].Blocktime), 10, 64)
 		if err != nil {
 			panic(err)
 		}
@@ -3028,7 +3028,7 @@ func updateTransactionsPHR(trans *be.PhoreListTransactions, pt *widgets.Table) {
 		if trans.Result[i].Confirmations < 1 {
 			bYellowBoarder = true
 		}
-		iTime, err := strconv.ParseInt(strconv.Itoa(trans.Result[i].Timereceived), 10, 64)
+		iTime, err := strconv.ParseInt(strconv.Itoa(trans.Result[i].Blocktime), 10, 64)
 		if err != nil {
 			panic(err)
 		}
@@ -3065,7 +3065,7 @@ func updateTransactionsRDD(trans *be.RDDListTransactions, pt *widgets.Table) {
 		if trans.Result[i].Confirmations < 1 {
 			bYellowBoarder = true
 		}
-		iTime, err := strconv.ParseInt(strconv.Itoa(trans.Result[i].Timereceived), 10, 64)
+		iTime, err := strconv.ParseInt(strconv.Itoa(trans.Result[i].Blocktime), 10, 64)
 		if err != nil {
 			panic(err)
 		}
@@ -3107,7 +3107,7 @@ func updateTransactionsTZC(trans *be.TZCListTransactionsRespStruct, pt *widgets.
 		if trans.Result[i].Confirmations < 1 {
 			bYellowBoarder = true
 		}
-		iTime, err := strconv.ParseInt(strconv.Itoa(trans.Result[i].Timereceived), 10, 64)
+		iTime, err := strconv.ParseInt(strconv.Itoa(trans.Result[i].Blocktime), 10, 64)
 		if err != nil {
 			panic(err)
 		}
