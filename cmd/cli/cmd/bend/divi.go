@@ -20,8 +20,8 @@ const (
 	CCoinNameDivi   string = "DIVI"
 	CCoinAbbrevDivi string = "DIVI"
 
-	CDiviHomeDir    string = ".divi"
-	CDiviHomeDirWin string = "DIVI"
+	cDiviHomeDir    string = ".divi"
+	cDiviHomeDirWin string = "DIVI"
 
 	CDiviCoreVersion string = "2.0.1"
 	CDFDiviRPi              = "divi-" + CDiviCoreVersion + "-RPi2.tar.gz"
