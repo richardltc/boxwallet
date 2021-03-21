@@ -26,8 +26,8 @@ const (
 	CDownloadURLPhore = "https://github.com/phoreproject/Phore/releases/download/v" + CPhoreCoreVersion + "/"
 
 	// Phore Wallet Constants.
-	CPhoreHomeDir    string = ".phore"
-	CPhoreHomeDirWin string = "PHORE"
+	cPhoreHomeDir    string = ".phore"
+	cPhoreHomeDirWin string = "PHORE"
 
 	CPhoreConfFile   string = "phore.conf"
 	CPhoreCliFile    string = "phore-cli"
