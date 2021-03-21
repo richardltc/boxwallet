@@ -31,8 +31,8 @@ const (
 	CDownloadURLReddCoinArm string = "https://sourceforge.net/projects/reddpi/files/update/reddcoin-" + CReddCoinCoreVersion + "-armhf.zip/download"
 	CDownloadURLReddCoinBS  string = "https://download.reddcoin.com/bin/bootstrap/"
 
-	CReddCoinHomeDir    string = ".reddcoin"
-	CReddCoinHomeDirWin string = "REDDCOIN"
+	cReddCoinHomeDir    string = ".reddcoin"
+	cReddCoinHomeDirWin string = "REDDCOIN"
 
 	CReddCoinConfFile   string = "reddcoin.conf"
 	CReddCoinCliFile    string = "reddcoin-cli"
