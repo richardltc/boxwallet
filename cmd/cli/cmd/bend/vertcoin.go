@@ -25,8 +25,8 @@ const (
 
 	CDownloadURLVertcoin string = "https://github.com/vertcoin-project/vertcoin-core/releases/download/" + CVertcoinCoreVersion + "/"
 
-	CVertcoinHomeDir    string = ".vertcoin"
-	CVertcoinHomeDirWin string = "VERTCOIN"
+	cVertcoinHomeDir    string = ".vertcoin"
+	cVertcoinHomeDirWin string = "VERTCOIN"
 
 	CVertcoinConfFile   string = "vertcoin.conf"
 	CVertcoinCliFile    string = "vertcoin-cli"
