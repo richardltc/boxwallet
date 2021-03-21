@@ -30,8 +30,8 @@ const (
 	CDownloadURLDenariusBS string = "https://denarii.cloud/"
 
 	CDenariusBinDirLinux string = "/snap/bin/"
-	CDenariusHomeDir     string = "snap/denarius/common/.denarius"
-	CDenariusHomeDirWin  string = "denarius"
+	cDenariusHomeDir     string = "snap/denarius/common/.denarius"
+	cDenariusHomeDirWin  string = "denarius"
 
 	// Files
 	CDenariusConfFile   string = "denarius.conf"
