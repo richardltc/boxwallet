@@ -26,8 +26,8 @@ const (
 
 	CDownloadURLDigiByte string = "https://github.com/digibyte/digibyte/releases/download/v" + CDigiByteCoreVersion + "/"
 
-	CDigiByteHomeDir    string = ".digibyte"
-	CDigiByteHomeDirWin string = "DIGIBYTE"
+	cDigiByteHomeDir    string = ".digibyte"
+	cDigiByteHomeDirWin string = "DIGIBYTE"
 
 	CDigiByteConfFile   string = "digibyte.conf"
 	CDigiByteCliFile    string = "digibyte-cli"
