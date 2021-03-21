@@ -20,8 +20,8 @@ const (
 
 	CDownloadURLScala string = "https://github.com/scala-network/Scala/releases/download/v" + CScalaCoreVersion + "/"
 
-	CScalaHomeDir    string = ".scala"
-	CScalaHomeDirWin string = "SCALA"
+	cScalaHomeDir    string = ".scala"
+	cScalaHomeDirWin string = "SCALA"
 
 	CScalaConfFile   string = "scala.conf"
 	CScalaCliFile    string = "scala-wallet-cli"
