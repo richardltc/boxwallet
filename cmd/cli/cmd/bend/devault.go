@@ -26,8 +26,8 @@ const (
 
 	CDownloadURLDeVault string = "https://github.com/devaultcrypto/devault/releases/download/v" + CDeVaultCoreVersion + "/"
 
-	CDeVaultHomeDir    string = ".devault"
-	CDeVaultHomeDirWin string = "DEVAULT"
+	cDeVaultHomeDir    string = ".devault"
+	cDeVaultHomeDirWin string = "DEVAULT"
 
 	CDeVaultConfFile   string = "devault.conf"
 	CDeVaultCliFile    string = "devault-cli"
