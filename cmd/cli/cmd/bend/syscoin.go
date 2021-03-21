@@ -32,6 +32,6 @@ const (
 	CSyscoinTxFileWin  string = "syscoin-tx.exe"
 
 	// pivx.conf file constants
-	cSyscoinRPCUser string = "syscoinrpc"
+	CSyscoinRPCUser string = "syscoinrpc"
 	CSyscoinRPCPort string = "8370"
 )
