@@ -25,8 +25,8 @@ const (
 
 	CDownloadURLGroestlcoin string = "https://github.com/Groestlcoin/groestlcoin/releases/download/v" + CGroestlcoinCoreVersion + "/"
 
-	CGroestlcoinHomeDir    string = ".groestlcoin"
-	CGroestlcoinHomeDirWin string = "GROESTLCOIN"
+	cGroestlcoinHomeDir    string = ".groestlcoin"
+	cGroestlcoinHomeDirWin string = "GROESTLCOIN"
 
 	// Files
 	CGroestlcoinConfFile   string = "groestlcoin.conf"
