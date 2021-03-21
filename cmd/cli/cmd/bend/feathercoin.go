@@ -24,8 +24,8 @@ const (
 
 	CDownloadURLFeathercoin string = "https://github.com/FeatherCoin/FeatherCoin/releases/download/v" + CFeathercoinCoreVersion + "/"
 
-	CFeathercoinHomeDir    string = ".feathercoin"
-	CFeathercoinHomeDirWin string = "FEATHERCOIN"
+	cFeathercoinHomeDir    string = ".feathercoin"
+	cFeathercoinHomeDirWin string = "FEATHERCOIN"
 
 	CFeathercoinConfFile   string = "feathercoin.conf"
 	CFeathercoinCliFile    string = "feathercoin-cli"
