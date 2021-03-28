@@ -25,10 +25,10 @@ const (
 
 	CDownloadURLTC string = "https://github.com/TrezarCoin/TrezarCoin/releases/download/v" + CTrezarcoinCoreVersion + ".0/"
 
-	CTrezarcoinHomeDir    string = ".trezarcoin"
-	CTrezarcoinHomeDirWin string = "TREZARCOIN"
+	cTrezarcoinHomeDir    string = ".trezarcoin"
+	cTrezarcoinHomeDirWin string = "TREZARCOIN"
 
-	CTrezarcoinConfFile   string = "trezarcoin.conf"
+	cTrezarcoinConfFile   string = "trezarcoin.conf"
 	CTrezarcoinCliFile    string = "trezarcoin-cli"
 	CTrezarcoinCliFileWin string = "trezarcoin-cli.exe"
 	CTrezarcoinDFile      string = "trezarcoind"
@@ -36,7 +36,7 @@ const (
 	CTrezarcoinTxFile     string = "trezarcoin-tx"
 	CTrezarcoinTxFileWin  string = "trezarcoin-tx.exe"
 
-	// trezarcoin.conf file constants
+	// trezarcoin.conf file constants.
 	cTrezarcoinRPCUser string = "trezarcoinrpc"
 	CTrezarcoinRPCPort string = "17299"
 )
