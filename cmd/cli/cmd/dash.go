@@ -1660,9 +1660,15 @@ var dashCmd = &cobra.Command{
 					err = errors.New("unable to determine ProjectType")
 				}
 
+				// Let's see if we need to perform a health check
+				if b, err := be.ShouldWeRunHealthCheck(); err != nil {
+					if b {
+
+					}
+				}
+
 			}
 			g30SecTickerCounter++
-
 		}
 
 		draw := func(count int) {
@@ -2819,7 +2825,7 @@ func getWalletSeedRecoveryResp() string {
 	fmt.Println("\n\n*** WARNING ***" + "\n\n" +
 		"You haven't provided confirmation that you've backed up your recovery seed!\n\n" +
 		"This is *extremely* important as it's the only way of recovering your wallet in the future\n\n" +
-		"To (d)isplay your reovery seed now press: d, to (c)onfirm that you've backed it up press: c, or to (m)ove on, press: m\n\n" +
+		"To (d)isplay your recovery seed now press: d, to (c)onfirm that you've backed it up press: c, or to (m)ove on, press: m\n\n" +
 		"Please enter: [d/c/m]")
 	resp, _ := reader.ReadString('\n')
 	resp = strings.ReplaceAll(resp, "\n", "")
