@@ -113,6 +113,10 @@ var coinCmd = &cobra.Command{
 			be.AddToLog(lf, be.CCoinNameScala+" selected", false)
 			cliConf.ProjectType = be.PTScala
 			cliConf.Port = be.CScalaRPCPort
+		case be.CCoinNameSyscoin:
+			be.AddToLog(lf, be.CCoinNameSyscoin+" selected", false)
+			cliConf.ProjectType = be.PTSyscoin
+			cliConf.Port = be.CSyscoinRPCPort
 		case be.CCoinNameTrezarcoin:
 			be.AddToLog(lf, be.CCoinNameTrezarcoin+" selected", false)
 			cliConf.ProjectType = be.PTTrezarcoin
@@ -131,6 +135,15 @@ var coinCmd = &cobra.Command{
 		sCoinName, err := be.GetCoinName(be.APPTCLI)
 		if err != nil {
 			log.Fatal("Unable to GetCoinName " + err.Error())
+		}
+
+		// Now add the coin to the coin database
+		cd := be.CoinDetails{}
+		cd.CoinType = cliConf.ProjectType
+		cd.CoinName = sCoinName
+
+		if err := be.AddCoin("", cd); err != nil {
+			log.Fatal(err)
 		}
 
 		rpcu, rpcpw, err := be.PopulateDaemonConfFile()
@@ -407,6 +420,26 @@ func doRequiredFiles() error {
 		} else {
 			filePath = abf + be.CDFScalaLinux
 			fileURL = be.CDownloadURLScala + be.CDFScalaLinux
+		}
+	case be.PTSyscoin:
+		switch runtime.GOOS {
+		case "windows":
+			filePath = abf + be.CDFSyscoinFileWindows
+			fileURL = be.CDownloadURLSyscoin + be.CDFSyscoinFileWindows
+		case "linux":
+			switch runtime.GOARCH {
+			case "arm":
+				return fmt.Errorf("ARM32 is not currently supported by DigiByte: %v ", err)
+			case "arm64":
+				filePath = abf + be.CDFSyscoinFileArm64
+				fileURL = be.CDownloadURLSyscoin + be.CDFSyscoinFileArm64
+			case "386":
+				filePath = abf + be.CDFSyscoinFileLinux
+				fileURL = be.CDownloadURLSyscoin + be.CDFSyscoinFileLinux
+			case "amd64":
+				filePath = abf + be.CDFSyscoinFileLinux
+				fileURL = be.CDownloadURLDigiByte + be.CDFSyscoinFileLinux
+			}
 		}
 	case be.PTTrezarcoin:
 		be.AddToLog(lf, "TZC detected...", false)
@@ -694,6 +727,35 @@ func doRequiredFiles() error {
 				return fmt.Errorf("unable to unzip file: %v - %v", filePath, err)
 			}
 			defer os.RemoveAll("tmp")
+		}
+	case be.PTSyscoin:
+		switch runtime.GOOS {
+		case "windows":
+			if err := archiver.Unarchive(filePath, abf); err != nil {
+				return fmt.Errorf("unable to unarchive file: %v - %v", r, err)
+			}
+			defer os.RemoveAll(abf + be.CSyscoinExtractedDirWindows)
+		case "linux":
+			switch runtime.GOARCH {
+			case "arm64":
+				err = archiver.Unarchive(filePath, abf)
+				if err != nil {
+					return fmt.Errorf("unable to unarchive file: %v - %v", r, err)
+				}
+				defer os.RemoveAll(abf + be.CSyscoinExtractedDirLinux)
+			case "386":
+				err = archiver.Unarchive(filePath, abf)
+				if err != nil {
+					return fmt.Errorf("unable to extractTarGz file: %v - %v", r, err)
+				}
+				defer os.RemoveAll(abf + be.CSyscoinExtractedDirLinux)
+			case "amd64":
+				err = archiver.Unarchive(filePath, abf)
+				if err != nil {
+					return fmt.Errorf("unable to extractTarGz file: %v - %v", r, err)
+				}
+				defer os.RemoveAll(abf + be.CSyscoinExtractedDirLinux)
+			}
 		}
 	case be.PTTrezarcoin:
 		if runtime.GOOS == "windows" {
@@ -1129,6 +1191,51 @@ func doRequiredFiles() error {
 				srcFileCLI = be.CScalaCliFile
 				srcFileD = be.CScalaDFile
 				srcFileTX = be.CScalaTxFile
+			//srcFileBWCLI = be.CAppFilename
+			default:
+				err = errors.New("unable to determine runtime.GOARCH " + runtime.GOARCH)
+			}
+		default:
+			err = errors.New("unable to determine runtime.GOOS")
+		}
+	case be.PTSyscoin:
+		if err := be.AddToLog(lf, "Syscoin detected...", false); err != nil {
+			return fmt.Errorf("unable to add to log file: %v", err)
+		}
+		switch runtime.GOOS {
+		case "windows":
+			srcPath = abf + be.CSyscoinExtractedDirWindows + "bin\\"
+			srcFileCLI = be.CSyscoinCliFileWin
+			srcFileD = be.CSyscoinDFileWin
+			srcFileTX = be.CSyscoinTxFileWin
+			//srcFileBWCLI = be.CAppFilenameWin
+		case "linux":
+			switch runtime.GOARCH {
+			case "arm", "arm64":
+				if err := be.AddToLog(lf, "linux arm detected.", false); err != nil {
+					return fmt.Errorf("unable to add to log file: %v", err)
+				}
+				srcPath = abf + be.CSyscoinExtractedDirLinux + "bin/"
+				srcFileCLI = be.CSyscoinCliFile
+				srcFileD = be.CSyscoinDFile
+				srcFileTX = be.CSyscoinTxFile
+			case "386":
+				if err := be.AddToLog(lf, "linux 386 detected.", false); err != nil {
+					return fmt.Errorf("unable to add to log file: %v", err)
+				}
+				srcPath = abf + be.CSyscoinExtractedDirLinux + "bin/"
+				srcFileCLI = be.CSyscoinCliFile
+				srcFileD = be.CSyscoinDFile
+				srcFileTX = be.CSyscoinTxFile
+			//srcFileBWCLI = be.CAppFilename
+			case "amd64":
+				if err := be.AddToLog(lf, "linux amd64 detected.", false); err != nil {
+					return fmt.Errorf("unable to add to log file: %v", err)
+				}
+				srcPath = abf + be.CSyscoinExtractedDirLinux + "bin/"
+				srcFileCLI = be.CSyscoinCliFile
+				srcFileD = be.CSyscoinDFile
+				srcFileTX = be.CSyscoinTxFile
 			//srcFileBWCLI = be.CAppFilename
 			default:
 				err = errors.New("unable to determine runtime.GOARCH " + runtime.GOARCH)
