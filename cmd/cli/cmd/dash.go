@@ -94,6 +94,7 @@ var g30SecTickerCounter int = 0
 var gCheckWalletHealthCounter int = 0
 
 //var lastRMNAssets int = 0
+var gDiviLottery be.DiviLotteryRespStruct
 var NextLotteryStored string = ""
 var NextLotteryCounter int = 0
 
@@ -1498,7 +1499,7 @@ var dashCmd = &cobra.Command{
 						"  " + getWalletSecurityStatusTxtDivi(&wiDivi) + "\n" +
 						"  " + getWalletStakingTxt(&wiDivi) + "\n" + //e.g. "15%" or "staking"
 						"  " + getActivelyStakingTxtDivi(&ssDivi, &wiDivi) + "\n" + //e.g. "15%" or "staking"
-						"  " + getNextLotteryTxtDIVI(&cliConf) + "\n" +
+						"  " + getNextLotteryTxtDIVI() + "\n" +
 						"  " + "Lottery tickets:  0"
 				}
 			case be.PTFeathercoin:
@@ -1627,6 +1628,7 @@ var dashCmd = &cobra.Command{
 					gDiffGood, gDiffWarning, _ = getNetworkDifficultyInfo(be.PTDivi)
 					giDivi, _ := be.GetInfoDivi(&cliConf)
 					gConnections = giDivi.Result.Connections
+					gDiviLottery, _ = getDiviLotteryInfo(&cliConf)
 				case be.PTFeathercoin:
 					gDiffGood, gDiffWarning, _ = getNetworkDifficultyInfo(be.PTFeathercoin)
 					niFTC, _ := be.GetNetworkInfoFeathercoin(&cliConf)
@@ -1936,12 +1938,12 @@ func encryptWallet(cliConf *be.ConfStruct, pw string) (be.GenericRespStruct, err
 	return respStruct, nil
 }
 
-func getNextLotteryTxtDIVI(conf *be.ConfStruct) string {
+func getNextLotteryTxtDIVI() string {
 	if NextLotteryCounter > (60*30) || NextLotteryStored == "" {
 		NextLotteryCounter = 0
-		lrs, _ := getDiviLotteryInfo(conf)
-		if lrs.Lottery.Countdown.Humanized != "" {
-			return "Next Lottery:     [" + lrs.Lottery.Countdown.Humanized + "](fg:white)"
+		//lrs, _ := getDiviLotteryInfo(conf)
+		if gDiviLottery.Lottery.Countdown.Humanized != "" {
+			return "Next Lottery:     [" + gDiviLottery.Lottery.Countdown.Humanized + "](fg:white)"
 		} else {
 			return "Next Lottery:     [" + NextLotteryStored + "](fg:white)"
 		}
@@ -2711,8 +2713,8 @@ func getWalletSecurityStatusTxtVTC(wi *be.VTCWalletInfoRespStruct) string {
 	}
 }
 
-func getDiviLotteryInfo(cliConf *be.ConfStruct) (be.LotteryDiviRespStruct, error) {
-	var respStruct be.LotteryDiviRespStruct
+func getDiviLotteryInfo(cliConf *be.ConfStruct) (be.DiviLotteryRespStruct, error) {
+	var respStruct be.DiviLotteryRespStruct
 
 	resp, err := http.Get("https://statbot.neist.io/api/v1/statbot")
 	if err != nil {
