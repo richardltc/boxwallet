@@ -144,7 +144,7 @@ type DiviListTransactions struct {
 	ID    string      `json:"id"`
 }
 
-type LotteryDiviRespStruct struct {
+type DiviLotteryRespStruct struct {
 	Lottery struct {
 		AverageBlockTime float64 `json:"averageBlockTime"`
 		CurrentBlock     int     `json:"currentBlock"`
