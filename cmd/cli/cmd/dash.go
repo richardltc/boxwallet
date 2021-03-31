@@ -1500,7 +1500,7 @@ var dashCmd = &cobra.Command{
 						"  " + getWalletStakingTxt(&wiDivi) + "\n" + //e.g. "15%" or "staking"
 						"  " + getActivelyStakingTxtDivi(&ssDivi, &wiDivi) + "\n" + //e.g. "15%" or "staking"
 						"  " + getNextLotteryTxtDIVI() + "\n" +
-						"  " + "Lottery tickets:  0"
+						"  " + getLotteryTicketsTxtDIVI(&transDivi) //"Lottery tickets:  0"
 				}
 			case be.PTFeathercoin:
 				if bciFeathercoin.Result.Verificationprogress > 0.999 {
@@ -1950,6 +1950,32 @@ func getNextLotteryTxtDIVI() string {
 	} else {
 		return "Next Lottery:     [" + NextLotteryStored + "](fg:white)"
 	}
+}
+
+func getLotteryTicketsTxtDIVI(trans *be.DiviListTransactions) string {
+	iTotalTickets := 0
+
+	for i := len(trans.Result) - 1; i >= 0; i-- {
+		// If this transaction is not a stake, we're not interested in it.
+		if trans.Result[i].Category != "stake" {
+			continue
+		}
+
+		// Check to make sure the confirmations count is higher than -1
+		if trans.Result[i].Confirmations < 0 {
+			continue
+		}
+
+		// If the stake block is less than the next lottery block - 10080 then it's not in this weeks lottery
+		if trans.Result[i].Blockindex < (gDiviLottery.Lottery.NextLotteryBlock - 10080) {
+			continue
+		}
+
+		// We've got here, so count the stake...
+		iTotalTickets = iTotalTickets + 1
+	}
+
+	return "Lottery tickets:  " + strconv.Itoa(iTotalTickets)
 }
 
 func getActivelyStakingTxtDenarius(ss *be.DenariusStakingInfoStruct) string {
