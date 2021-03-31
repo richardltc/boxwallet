@@ -9,13 +9,13 @@ const (
 	//CDFBitcoinPlusFileArm64          = "bitcoinplus-" + CCoreVersionBitcoinPlus + "-aarch64-linux-gnu.tar.gz"
 	CDFFileLinux32BitcoinPlus = "bitcoinplus-" + CCoreVersionBitcoinPlus + "-linux32.tar.gz"
 	CDFFileLinux64BitcoinPlus = "bitcoinplus-" + CCoreVersionBitcoinPlus + "-linux64.tar.gz"
-	//CDFBitcoinPlusFilemacOS          = "bitcoinplus-" + CCoreVersionBitcoinPlus + "-osx64.tar.gz"
-	//CDFBitcoinPlusFileWindows        = "bitcoinplus-" + CCoreVersionBitcoinPlus + "-win64.zip"
+	//CDFFilemacOSBitcoinPlus          = "bitcoinplus-" + CCoreVersionBitcoinPlus + "-osx64.tar.gz"
+	//CDFFileWindowsBitcoinPlus        = "bitcoinplus-" + CCoreVersionBitcoinPlus + "-win64.zip"
 
 	// Directory const
 	CExtractedDirArmBitcoinPlus     string = "bitcoinplus-" + CCoreVersionBitcoinPlus + "/"
-	CExtractedDirLinuxBitcoinPlus   string = "bitcoinplus-" + CCoreVersionBitcoinPlus + "/"
-	CExtractedDirWindowsBitcoinPlus string = "bitcoinplus-" + CCoreVersionBitcoinPlus + "\\"
+	CExtractedDirLinuxBitcoinPlus   string = "" //"bitcoinplus-" + CCoreVersionBitcoinPlus + "/"
+	CExtractedDirWindowsBitcoinPlus string = "" //"bitcoinplus-" + CCoreVersionBitcoinPlus + "\\"
 
 	CDownloadURLBitcoinPlus string = "https://github.com/bitcoinplusorg/xbcwalletsource/releases/download/v" + CCoreVersionBitcoinPlus + "/"
 
