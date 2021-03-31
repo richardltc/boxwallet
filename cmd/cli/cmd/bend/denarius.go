@@ -16,28 +16,28 @@ const (
 	CCoinNameDenarius   string = "Denarius"
 	CCoinAbbrevDenarius string = "D"
 
-	CDenariusCoreVersion string = "3.3.9.11"
-	//CDFDenariusRPi       string = "Denarius-" + CDenariusCoreVersion + "-arm-linux-gnueabihf.tar.gz"
-	//CDFDenariusLinux     string = "Denarius-" + CDenariusCoreVersion + "-x86_64-linux-gnu.tar.gz"
-	CDFDenariusWindows string = "Denarius-" + CDenariusCoreVersion + "-Win64.zip"
+	CCoreVersionDenarius string = "3.3.9.11"
+	//CDFRPiDenarius       string = "Denarius-" + CDenariusCoreVersion + "-arm-linux-gnueabihf.tar.gz"
+	//CDFLinuxDenarius     string = "Denarius-" + CDenariusCoreVersion + "-x86_64-linux-gnu.tar.gz"
+	CDFDenariusWindows string = "Denarius-" + CCoreVersionDenarius + "-Win64.zip"
 	CDFDenariusBS      string = "chaindata.zip"
 	CDFDenariusBSARM   string = "pichaindata.zip"
 
 	//CDenariusExtractedDirLinux   = "Denarius-" + CDenariusCoreVersion + "/"
-	CDenariusExtractedDirWindows = "Denarius-" + CDenariusCoreVersion + "\\"
+	CDenariusExtractedDirWindows = "Denarius-" + CCoreVersionDenarius + "\\"
 
-	CDownloadURLDenarius   string = "https://github.com/carsenk/denarius/releases/download/v" + CDenariusCoreVersion + "/"
+	CDownloadURLDenarius   string = "https://github.com/carsenk/denarius/releases/download/v" + CCoreVersionDenarius + "/"
 	CDownloadURLDenariusBS string = "https://denarii.cloud/"
 
 	CDenariusBinDirLinux string = "/snap/bin/"
-	cDenariusHomeDir     string = "snap/denarius/common/.denarius"
-	cDenariusHomeDirWin  string = "denarius"
+	cHomeDirLinDenarius  string = "snap/denarius/common/.denarius"
+	cHomeDirWinDenarius  string = "denarius"
 
 	// Files
 	CDenariusConfFile   string = "denarius.conf"
 	CDenariusCliFile    string = "denarius"
 	CDenariusCliFileWin string = "denarius-cli.exe"
-	CDenariusDFile      string = "denarius.daemon"
+	CDFileDenarius      string = "denarius.daemon"
 	CDenariusDMem       string = "denariusd"
 	CDenariusDFileWin   string = "denarius.daemon.exe"
 	CDenariusTxFile     string = "denarius-tx"
