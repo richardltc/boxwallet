@@ -16,29 +16,29 @@ const (
 	CCoinNameDigiByte   string = "DigiByte"
 	CCoinAbbrevDigiByte string = "DGB"
 
-	CDigiByteCoreVersion string = "7.17.2"
-	CDFDigiByteArm64     string = "digibyte-" + CDigiByteCoreVersion + "-aarch64-linux-gnu.tar.gz"
-	CDFDigiByteLinux     string = "digibyte-" + CDigiByteCoreVersion + "-x86_64-linux-gnu.tar.gz"
-	CDFDigiByteWindows   string = "digibyte-" + CDigiByteCoreVersion + "-win64.zip"
+	CCoreVersionDigiByte string = "7.17.2"
+	CDFArm64DigiByte     string = "digibyte-" + CCoreVersionDigiByte + "-aarch64-linux-gnu.tar.gz"
+	CDFLinuxDigiByte     string = "digibyte-" + CCoreVersionDigiByte + "-x86_64-linux-gnu.tar.gz"
+	CDFWindowsDigiByte   string = "digibyte-" + CCoreVersionDigiByte + "-win64.zip"
 
-	CDigiByteExtractedDirLinux   = "digibyte-" + CDigiByteCoreVersion + "/"
-	CDigiByteExtractedDirWindows = "digibyte-" + CDigiByteCoreVersion + "\\"
+	CExtractedDirLinuxDigiByte   = "digibyte-" + CCoreVersionDigiByte + "/"
+	CExtractedDirWindowsDigiByte = "digibyte-" + CCoreVersionDigiByte + "\\"
 
-	CDownloadURLDigiByte string = "https://github.com/digibyte/digibyte/releases/download/v" + CDigiByteCoreVersion + "/"
+	CDownloadURLDigiByte string = "https://github.com/digibyte/digibyte/releases/download/v" + CCoreVersionDigiByte + "/"
 
-	cDigiByteHomeDir    string = ".digibyte"
-	cDigiByteHomeDirWin string = "DIGIBYTE"
+	cHomeDirLinDigiByte string = ".digibyte"
+	cHomeDirWinDigiByte string = "DIGIBYTE"
 
-	CDigiByteConfFile   string = "digibyte.conf"
-	CDigiByteCliFile    string = "digibyte-cli"
-	CDigiByteCliFileWin string = "digibyte-cli.exe"
-	CDigiByteDFile      string = "digibyted"
-	CDigiByteDFileWin   string = "digibyted.exe"
-	CDigiByteTxFile     string = "digibyte-tx"
-	CDigiByteTxFileWin  string = "digibyte-tx.exe"
+	CConfFileDigiByte   string = "digibyte.conf"
+	CCliFileDigiByte    string = "digibyte-cli"
+	CCliFileWinDigiByte string = "digibyte-cli.exe"
+	CDFileDigiByte      string = "digibyted"
+	CDFileWinDigiByte   string = "digibyted.exe"
+	CTxFileDigiByte     string = "digibyte-tx"
+	CTxFileWinDigiByte  string = "digibyte-tx.exe"
 
-	cDigiByteRPCUser string = "digibyterpc"
-	CDigiByteRPCPort string = "14022"
+	cRPCUserDigiByte string = "digibyterpc"
+	CRPCPortDigiByte string = "14022"
 )
 
 // No GetInfo in DigiByte
