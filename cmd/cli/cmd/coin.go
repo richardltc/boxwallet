@@ -534,13 +534,13 @@ func doRequiredFiles() error {
 				if err != nil {
 					return fmt.Errorf("unable to extractTarGz file: %v - %v", r, err)
 				}
-				defer os.RemoveAll(abf + be.CExtractedDirLinuxBitcoinPlus)
+				//defer os.RemoveAll(abf + be.CExtractedDirLinuxBitcoinPlus)
 			case "amd64":
 				err = archiver.Unarchive(filePath, abf)
 				if err != nil {
 					return fmt.Errorf("unable to extractTarGz file: %v - %v", r, err)
 				}
-				defer os.RemoveAll(abf + be.CExtractedDirLinuxBitcoinPlus)
+				//defer os.RemoveAll(abf + be.CExtractedDirLinuxBitcoinPlus)
 			}
 		}
 	case be.PTDeVault:
