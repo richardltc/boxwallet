@@ -15,19 +15,19 @@ const (
 	CCoinNameDeVault   string = "DeVault"
 	CCoinAbbrevDeVault string = "DVT" // was private
 
-	CDeVaultCoreVersion string = "1.2.1"
+	CCoreVersionDeVault string = "1.2.1"
 
-	CDFDeVaultRPi     string = "devault-" + CDeVaultCoreVersion + "-arm64-linuxgnuaarch.tar.gz"
-	CDFDeVaultLinux   string = "devault-" + CDeVaultCoreVersion + "-x86_64-linux-gnu.tar.gz"
-	CDFDeVaultWindows string = "devault-" + CDeVaultCoreVersion + "-win64.zip"
+	CDFDeVaultRPi     string = "devault-" + CCoreVersionDeVault + "-arm64-linuxgnuaarch.tar.gz"
+	CDFDeVaultLinux   string = "devault-" + CCoreVersionDeVault + "-x86_64-linux-gnu.tar.gz"
+	CDFDeVaultWindows string = "devault-" + CCoreVersionDeVault + "-win64.zip"
 
-	CDeVaultExtractedDirLinux = "devault-" + CDeVaultCoreVersion + "-x86_64-linux-gnu/"
-	CDeVaultExtractedDirWin   = "devault-" + CDeVaultCoreVersion + "-x86_64-w64-mingw32\\"
+	CDeVaultExtractedDirLinux = "devault-" + CCoreVersionDeVault + "-x86_64-linux-gnu/"
+	CDeVaultExtractedDirWin   = "devault-" + CCoreVersionDeVault + "-x86_64-w64-mingw32\\"
 
-	CDownloadURLDeVault string = "https://github.com/devaultcrypto/devault/releases/download/v" + CDeVaultCoreVersion + "/"
+	CDownloadURLDeVault string = "https://github.com/devaultcrypto/devault/releases/download/v" + CCoreVersionDeVault + "/"
 
-	cDeVaultHomeDir    string = ".devault"
-	cDeVaultHomeDirWin string = "DEVAULT"
+	cHomeDirLinDeVault string = ".devault"
+	cHomeDirWinDeVault string = "DEVAULT"
 
 	CDeVaultConfFile   string = "devault.conf"
 	CDeVaultCliFile    string = "devault-cli"
