@@ -15,13 +15,13 @@ import (
 )
 
 const (
-	cDiviAddNodeURL string = "https://api.diviproject.org/v1/addnode"
+	cAddNodeURLDivi string = "https://api.diviproject.org/v1/addnode"
 
 	CCoinNameDivi   string = "DIVI"
 	CCoinAbbrevDivi string = "DIVI"
 
-	cDiviHomeDir    string = ".divi"
-	cDiviHomeDirWin string = "DIVI"
+	cHomeDirDivi    string = ".divi"
+	cHomeDirWinDivi string = "DIVI"
 
 	CDiviCoreVersion string = "2.0.1"
 	CDFDiviRPi              = "divi-" + CDiviCoreVersion + "-RPi2.tar.gz"
@@ -340,7 +340,7 @@ func getDiviAddNodes() ([]byte, error) {
 		Timeout: time.Second * 3, // Maximum of 3 secs.
 	}
 
-	req, err := http.NewRequest(http.MethodGet, cDiviAddNodeURL, nil)
+	req, err := http.NewRequest(http.MethodGet, cAddNodeURLDivi, nil)
 	if err != nil {
 		return nil, err
 	}
