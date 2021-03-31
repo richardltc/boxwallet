@@ -31,7 +31,7 @@ const (
 	CAppFilenameWin string = "boxwallet.exe"
 	CAppLogfile     string = "boxwallet.log"
 
-	cAppWorkingDir    string = ".boxwallet"
+	cAppWorkingDirLin string = ".boxwallet"
 	cAppWorkingDirWin string = "BoxWallet"
 
 	// General CLI command constants
@@ -141,6 +141,7 @@ const (
 	PTDigiByte
 	PTDenarius
 	PTSyscoin
+	PTBitcoinPlus
 )
 
 // OSType - either ostArm, ostLinux or ostWindows
@@ -644,12 +645,14 @@ func GetCoinDaemonFilename(at APPType, pt ProjectType) (string, error) {
 	}
 
 	switch pt {
+	case PTBitcoinPlus:
+		return CDFileBitcoinPlus, nil
 	case PTDenarius:
-		return CDenariusDFile, nil
+		return CDFileDenarius, nil
 	case PTDeVault:
 		return CDeVaultDFile, nil
 	case PTDigiByte:
-		return CDigiByteDFile, nil
+		return CDFileDigiByte, nil
 	case PTDivi:
 		return CDiviDFile, nil
 	case PTFeathercoin:
@@ -696,6 +699,8 @@ func GetCoinName(at APPType) (string, error) {
 	}
 
 	switch pt {
+	case PTBitcoinPlus:
+		return CCoinNameBitcoinPlus, nil
 	case PTDenarius:
 		return CCoinNameDenarius, nil
 	case PTDeVault:
@@ -756,12 +761,14 @@ func GetCoinHomeFolder(at APPType, pt ProjectType) (string, error) {
 	if runtime.GOOS == "windows" {
 		// add the "appdata\roaming" part.
 		switch pt {
+		case PTBitcoinPlus:
+			s = AddTrailingSlash(hd) + "appdata\\roaming\\" + AddTrailingSlash(cHomeDirWinBitcoinPlus)
 		case PTDenarius:
-			s = AddTrailingSlash(hd) + "appdata\\roaming\\" + AddTrailingSlash(cDenariusHomeDirWin)
+			s = AddTrailingSlash(hd) + "appdata\\roaming\\" + AddTrailingSlash(cHomeDirWinDenarius)
 		case PTDeVault:
-			s = AddTrailingSlash(hd) + "appdata\\roaming\\" + AddTrailingSlash(cDeVaultHomeDirWin)
+			s = AddTrailingSlash(hd) + "appdata\\roaming\\" + AddTrailingSlash(cHomeDirWinDeVault)
 		case PTDigiByte:
-			s = AddTrailingSlash(hd) + "appdata\\roaming\\" + AddTrailingSlash(cDigiByteHomeDirWin)
+			s = AddTrailingSlash(hd) + "appdata\\roaming\\" + AddTrailingSlash(cHomeDirWinDigiByte)
 		case PTDivi:
 			s = AddTrailingSlash(hd) + "appdata\\roaming\\" + AddTrailingSlash(cDiviHomeDirWin)
 		case PTFeathercoin:
@@ -790,12 +797,14 @@ func GetCoinHomeFolder(at APPType, pt ProjectType) (string, error) {
 		}
 	} else {
 		switch pt {
+		case PTBitcoinPlus:
+			s = AddTrailingSlash(hd) + AddTrailingSlash(cHomeDirLinBitcoinPlus)
 		case PTDenarius:
-			s = AddTrailingSlash(hd) + AddTrailingSlash(cDenariusHomeDir)
+			s = AddTrailingSlash(hd) + AddTrailingSlash(cHomeDirLinDenarius)
 		case PTDeVault:
-			s = AddTrailingSlash(hd) + AddTrailingSlash(cDeVaultHomeDir)
+			s = AddTrailingSlash(hd) + AddTrailingSlash(cHomeDirLinDeVault)
 		case PTDigiByte:
-			s = AddTrailingSlash(hd) + AddTrailingSlash(cDigiByteHomeDir)
+			s = AddTrailingSlash(hd) + AddTrailingSlash(cHomeDirLinDigiByte)
 		case PTDivi:
 			s = AddTrailingSlash(hd) + AddTrailingSlash(cDiviHomeDir)
 		case PTFeathercoin:
@@ -837,7 +846,7 @@ func GetAppWorkingFolder() (string, error) {
 		// add the "appdata\roaming" part.
 		s = addTrailingSlash(hd) + "appdata\\roaming\\" + addTrailingSlash(cAppWorkingDirWin)
 	} else {
-		s = AddTrailingSlash(hd) + AddTrailingSlash(cAppWorkingDir)
+		s = AddTrailingSlash(hd) + AddTrailingSlash(cAppWorkingDirLin)
 	}
 	return s, nil
 }
@@ -924,6 +933,8 @@ func GetPasswordToEncryptWallet() string {
 
 func GetTipAddress(pt ProjectType) string {
 	switch pt {
+	case PTBitcoinPlus:
+		return "BButzXzJj9KqhfEbF7rLxqN9jC7mT4MX15"
 	case PTDenarius:
 		return "DNxQWmq3JocvccZNcEGPpztB87GMEd3XVi"
 	case PTDeVault:
@@ -962,6 +973,8 @@ func GetTipInfo(pt ProjectType) string {
 	// Get tip address part.
 	var s string
 	switch pt {
+	case PTBitcoinPlus:
+		s = CCoinAbbrevBitcoinPlus + ": " + GetTipAddress(PTBitcoinPlus)
 	case PTDenarius:
 		s = CCoinAbbrevDenarius + ": " + GetTipAddress(PTDenarius)
 	case PTDeVault:
@@ -1167,9 +1180,9 @@ func IsCoinDaemonRunning(ct ProjectType) (bool, int, error) {
 		}
 	case PTDigiByte:
 		if runtime.GOOS == "windows" {
-			pid, _, err = FindProcess(CDigiByteDFileWin)
+			pid, _, err = FindProcess(CDFileWinDigiByte)
 		} else {
-			pid, _, err = FindProcess(CDigiByteDFile)
+			pid, _, err = FindProcess(CDFileDigiByte)
 		}
 	case PTDivi:
 		if runtime.GOOS == "windows" {
@@ -1271,6 +1284,179 @@ func PopulateDaemonConfFile() (rpcuser, rpcpassword string, err error) {
 	var rpcpw string
 
 	switch bwconf.ProjectType {
+	case PTBitcoinPlus:
+		fmt.Println("Populating " + cConfFileBitcoinPlus + " for initial setup...")
+
+		// Add rpcuser info if required, or retrieve the existing one
+		bNeedToWriteStr := true
+		if FileExists(chd + cConfFileBitcoinPlus) {
+			bStrFound, err := StringExistsInFile(cRPCUserStr+"=", chd+cConfFileBitcoinPlus)
+			if err != nil {
+				return "", "", fmt.Errorf("unable to search for text in file - %v", err)
+			}
+			if !bStrFound {
+				// String not found
+				if !bFileHasBeenBU {
+					bFileHasBeenBU = true
+					if err := BackupFile(chd, cConfFileBitcoinPlus, "", "", false); err != nil {
+						return "", "", fmt.Errorf("unable to backup file - %v", err)
+					}
+				}
+			} else {
+				bNeedToWriteStr = false
+				rpcu, err = GetStringAfterStrFromFile(cRPCUserStr+"=", chd+cConfFileBitcoinPlus)
+				if err != nil {
+					return "", "", fmt.Errorf("unable to search for text in file - %v", err)
+				}
+			}
+		} else {
+			// Set this to true, because the file has just been freshly created and we don't want to back it up
+			bFileHasBeenBU = true
+		}
+		if bNeedToWriteStr {
+			rpcu = CRPCUserBitcoinPlus
+			if err := WriteTextToFile(chd+cConfFileBitcoinPlus, cRPCUserStr+"="+rpcu); err != nil {
+				log.Fatal(err)
+			}
+		}
+
+		// Add rpcpassword info if required, or retrieve the existing one
+		bNeedToWriteStr = true
+		if FileExists(chd + cConfFileBitcoinPlus) {
+			bStrFound, err := StringExistsInFile(cRPCPasswordStr+"=", chd+cConfFileBitcoinPlus)
+			if err != nil {
+				return "", "", fmt.Errorf("unable to search for text in file - %v", err)
+			}
+			if !bStrFound {
+				// String not found
+				if !bFileHasBeenBU {
+					bFileHasBeenBU = true
+					if err := BackupFile(chd, cConfFileBitcoinPlus, "", "", false); err != nil {
+						return "", "", fmt.Errorf("unable to backup file - %v", err)
+					}
+				}
+			} else {
+				bNeedToWriteStr = false
+				rpcpw, err = GetStringAfterStrFromFile(cRPCPasswordStr+"=", chd+cConfFileBitcoinPlus)
+				if err != nil {
+					return "", "", fmt.Errorf("unable to search for text in file - %v", err)
+				}
+			}
+		}
+		if bNeedToWriteStr {
+			rpcpw = rand.String(20)
+			if err := WriteTextToFile(chd+cConfFileBitcoinPlus, cRPCPasswordStr+"="+rpcpw); err != nil {
+				log.Fatal(err)
+			}
+			if err := WriteTextToFile(chd+cConfFileBitcoinPlus, ""); err != nil {
+				log.Fatal(err)
+			}
+		}
+
+		// Add daemon=1 info if required
+		bNeedToWriteStr = true
+		if FileExists(chd + cConfFileBitcoinPlus) {
+			bStrFound, err := StringExistsInFile("daemon=1", chd+cConfFileBitcoinPlus)
+			if err != nil {
+				return "", "", fmt.Errorf("unable to search for text in file - %v", err)
+			}
+			if !bStrFound {
+				// String not found
+				if !bFileHasBeenBU {
+					bFileHasBeenBU = true
+					if err := BackupFile(chd, cConfFileBitcoinPlus, "", "", false); err != nil {
+						return "", "", fmt.Errorf("unable to backup file - %v", err)
+					}
+				}
+			} else {
+				bNeedToWriteStr = false
+			}
+		}
+		if bNeedToWriteStr {
+			if err := WriteTextToFile(chd+cConfFileBitcoinPlus, "daemon=1"); err != nil {
+				log.Fatal(err)
+			}
+			if err := WriteTextToFile(chd+cConfFileBitcoinPlus, ""); err != nil {
+				log.Fatal(err)
+			}
+		}
+
+		// Add server=1 info if required
+		bNeedToWriteStr = true
+		if FileExists(chd + cConfFileBitcoinPlus) {
+			bStrFound, err := StringExistsInFile("server=1", chd+cConfFileBitcoinPlus)
+			if err != nil {
+				return "", "", fmt.Errorf("unable to search for text in file - %v", err)
+			}
+			if !bStrFound {
+				// String not found
+				if !bFileHasBeenBU {
+					bFileHasBeenBU = true
+					if err := BackupFile(chd, cConfFileBitcoinPlus, "", "", false); err != nil {
+						return "", "", fmt.Errorf("unable to backup file - %v", err)
+					}
+				}
+			} else {
+				bNeedToWriteStr = false
+			}
+		}
+		if bNeedToWriteStr {
+			if err := WriteTextToFile(chd+cConfFileBitcoinPlus, "server=1"); err != nil {
+				log.Fatal(err)
+			}
+		}
+
+		// Add rpcallowip= info if required
+		bNeedToWriteStr = true
+		if FileExists(chd + cConfFileBitcoinPlus) {
+			bStrFound, err := StringExistsInFile("rpcallowip=", chd+cConfFileBitcoinPlus)
+			if err != nil {
+				return "", "", fmt.Errorf("unable to search for text in file - %v", err)
+			}
+			if !bStrFound {
+				// String not found
+				if !bFileHasBeenBU {
+					bFileHasBeenBU = true
+					if err := BackupFile(chd, cConfFileBitcoinPlus, "", "", false); err != nil {
+						return "", "", fmt.Errorf("unable to backup file - %v", err)
+					}
+				}
+			} else {
+				bNeedToWriteStr = false
+			}
+		}
+		if bNeedToWriteStr {
+			if err := WriteTextToFile(chd+cConfFileBitcoinPlus, "rpcallowip=192.168.1.0/255.255.255.0"); err != nil {
+				log.Fatal(err)
+			}
+		}
+
+		// Add rpcport= info if required
+		bNeedToWriteStr = true
+		if FileExists(chd + cConfFileBitcoinPlus) {
+			bStrFound, err := StringExistsInFile("rpcport=", chd+cConfFileBitcoinPlus)
+			if err != nil {
+				return "", "", fmt.Errorf("unable to search for text in file - %v", err)
+			}
+			if !bStrFound {
+				// String not found
+				if !bFileHasBeenBU {
+					bFileHasBeenBU = true
+					if err := BackupFile(chd, cConfFileBitcoinPlus, "", "", false); err != nil {
+						return "", "", fmt.Errorf("unable to backup file - %v", err)
+					}
+				}
+			} else {
+				bNeedToWriteStr = false
+			}
+		}
+		if bNeedToWriteStr {
+			if err := WriteTextToFile(chd+cConfFileBitcoinPlus, "rpcport="+CRPCPortBitcoinPlus); err != nil {
+				log.Fatal(err)
+			}
+		}
+
+		return rpcu, rpcpw, nil
 	case PTDenarius:
 		fmt.Println("Populating " + CDenariusConfFile + " for initial setup...")
 
@@ -1307,7 +1493,7 @@ func PopulateDaemonConfFile() (rpcuser, rpcpassword string, err error) {
 			}
 		}
 
-		// Add rpcpassword info if required, or retrieve the existing one
+		// Add rpcpassword info if required, or retrieve the existing one.
 		bNeedToWriteStr = true
 		if FileExists(chd + CDenariusConfFile) {
 			bStrFound, err := StringExistsInFile(cRPCPasswordStr+"=", chd+CDenariusConfFile)
@@ -1618,12 +1804,12 @@ func PopulateDaemonConfFile() (rpcuser, rpcpassword string, err error) {
 
 		return rpcu, rpcpw, nil
 	case PTDigiByte:
-		fmt.Println("Populating " + CDigiByteConfFile + " for initial setup...")
+		fmt.Println("Populating " + CConfFileDigiByte + " for initial setup...")
 
 		// Add rpcuser info if required, or retrieve the existing one
 		bNeedToWriteStr := true
-		if FileExists(chd + CDigiByteConfFile) {
-			bStrFound, err := StringExistsInFile(cRPCUserStr+"=", chd+CDigiByteConfFile)
+		if FileExists(chd + CConfFileDigiByte) {
+			bStrFound, err := StringExistsInFile(cRPCUserStr+"=", chd+CConfFileDigiByte)
 			if err != nil {
 				return "", "", fmt.Errorf("unable to search for text in file - %v", err)
 			}
@@ -1631,13 +1817,13 @@ func PopulateDaemonConfFile() (rpcuser, rpcpassword string, err error) {
 				// String not found
 				if !bFileHasBeenBU {
 					bFileHasBeenBU = true
-					if err := BackupFile(chd, CDigiByteConfFile, "", "", false); err != nil {
+					if err := BackupFile(chd, CConfFileDigiByte, "", "", false); err != nil {
 						return "", "", fmt.Errorf("unable to backup file - %v", err)
 					}
 				}
 			} else {
 				bNeedToWriteStr = false
-				rpcu, err = GetStringAfterStrFromFile(cRPCUserStr+"=", chd+CDigiByteConfFile)
+				rpcu, err = GetStringAfterStrFromFile(cRPCUserStr+"=", chd+CConfFileDigiByte)
 				if err != nil {
 					return "", "", fmt.Errorf("unable to search for text in file - %v", err)
 				}
@@ -1647,16 +1833,16 @@ func PopulateDaemonConfFile() (rpcuser, rpcpassword string, err error) {
 			bFileHasBeenBU = true
 		}
 		if bNeedToWriteStr {
-			rpcu = cDigiByteRPCUser
-			if err := WriteTextToFile(chd+CDigiByteConfFile, cRPCUserStr+"="+rpcu); err != nil {
+			rpcu = cRPCUserDigiByte
+			if err := WriteTextToFile(chd+CConfFileDigiByte, cRPCUserStr+"="+rpcu); err != nil {
 				log.Fatal(err)
 			}
 		}
 
 		// Add rpcpassword info if required, or retrieve the existing one
 		bNeedToWriteStr = true
-		if FileExists(chd + CDigiByteConfFile) {
-			bStrFound, err := StringExistsInFile(cRPCPasswordStr+"=", chd+CDigiByteConfFile)
+		if FileExists(chd + CConfFileDigiByte) {
+			bStrFound, err := StringExistsInFile(cRPCPasswordStr+"=", chd+CConfFileDigiByte)
 			if err != nil {
 				return "", "", fmt.Errorf("unable to search for text in file - %v", err)
 			}
@@ -1664,13 +1850,13 @@ func PopulateDaemonConfFile() (rpcuser, rpcpassword string, err error) {
 				// String not found
 				if !bFileHasBeenBU {
 					bFileHasBeenBU = true
-					if err := BackupFile(chd, CDigiByteConfFile, "", "", false); err != nil {
+					if err := BackupFile(chd, CConfFileDigiByte, "", "", false); err != nil {
 						return "", "", fmt.Errorf("unable to backup file - %v", err)
 					}
 				}
 			} else {
 				bNeedToWriteStr = false
-				rpcpw, err = GetStringAfterStrFromFile(cRPCPasswordStr+"=", chd+CDigiByteConfFile)
+				rpcpw, err = GetStringAfterStrFromFile(cRPCPasswordStr+"=", chd+CConfFileDigiByte)
 				if err != nil {
 					return "", "", fmt.Errorf("unable to search for text in file - %v", err)
 				}
@@ -1678,18 +1864,18 @@ func PopulateDaemonConfFile() (rpcuser, rpcpassword string, err error) {
 		}
 		if bNeedToWriteStr {
 			rpcpw = rand.String(20)
-			if err := WriteTextToFile(chd+CDigiByteConfFile, cRPCPasswordStr+"="+rpcpw); err != nil {
+			if err := WriteTextToFile(chd+CConfFileDigiByte, cRPCPasswordStr+"="+rpcpw); err != nil {
 				log.Fatal(err)
 			}
-			if err := WriteTextToFile(chd+CDigiByteConfFile, ""); err != nil {
+			if err := WriteTextToFile(chd+CConfFileDigiByte, ""); err != nil {
 				log.Fatal(err)
 			}
 		}
 
 		// Add daemon=1 info if required
 		bNeedToWriteStr = true
-		if FileExists(chd + CDigiByteConfFile) {
-			bStrFound, err := StringExistsInFile("daemon=1", chd+CDigiByteConfFile)
+		if FileExists(chd + CConfFileDigiByte) {
+			bStrFound, err := StringExistsInFile("daemon=1", chd+CConfFileDigiByte)
 			if err != nil {
 				return "", "", fmt.Errorf("unable to search for text in file - %v", err)
 			}
@@ -1697,7 +1883,7 @@ func PopulateDaemonConfFile() (rpcuser, rpcpassword string, err error) {
 				// String not found
 				if !bFileHasBeenBU {
 					bFileHasBeenBU = true
-					if err := BackupFile(chd, CDigiByteConfFile, "", "", false); err != nil {
+					if err := BackupFile(chd, CConfFileDigiByte, "", "", false); err != nil {
 						return "", "", fmt.Errorf("unable to backup file - %v", err)
 					}
 				}
@@ -1706,18 +1892,18 @@ func PopulateDaemonConfFile() (rpcuser, rpcpassword string, err error) {
 			}
 		}
 		if bNeedToWriteStr {
-			if err := WriteTextToFile(chd+CDigiByteConfFile, "daemon=1"); err != nil {
+			if err := WriteTextToFile(chd+CConfFileDigiByte, "daemon=1"); err != nil {
 				log.Fatal(err)
 			}
-			if err := WriteTextToFile(chd+CDigiByteConfFile, ""); err != nil {
+			if err := WriteTextToFile(chd+CConfFileDigiByte, ""); err != nil {
 				log.Fatal(err)
 			}
 		}
 
 		// Add server=1 info if required
 		bNeedToWriteStr = true
-		if FileExists(chd + CDigiByteConfFile) {
-			bStrFound, err := StringExistsInFile("server=1", chd+CDigiByteConfFile)
+		if FileExists(chd + CConfFileDigiByte) {
+			bStrFound, err := StringExistsInFile("server=1", chd+CConfFileDigiByte)
 			if err != nil {
 				return "", "", fmt.Errorf("unable to search for text in file - %v", err)
 			}
@@ -1725,7 +1911,7 @@ func PopulateDaemonConfFile() (rpcuser, rpcpassword string, err error) {
 				// String not found
 				if !bFileHasBeenBU {
 					bFileHasBeenBU = true
-					if err := BackupFile(chd, CDigiByteConfFile, "", "", false); err != nil {
+					if err := BackupFile(chd, CConfFileDigiByte, "", "", false); err != nil {
 						return "", "", fmt.Errorf("unable to backup file - %v", err)
 					}
 				}
@@ -1734,15 +1920,15 @@ func PopulateDaemonConfFile() (rpcuser, rpcpassword string, err error) {
 			}
 		}
 		if bNeedToWriteStr {
-			if err := WriteTextToFile(chd+CDigiByteConfFile, "server=1"); err != nil {
+			if err := WriteTextToFile(chd+CConfFileDigiByte, "server=1"); err != nil {
 				log.Fatal(err)
 			}
 		}
 
 		// Add rpcallowip= info if required
 		bNeedToWriteStr = true
-		if FileExists(chd + CDigiByteConfFile) {
-			bStrFound, err := StringExistsInFile("rpcallowip=", chd+CDigiByteConfFile)
+		if FileExists(chd + CConfFileDigiByte) {
+			bStrFound, err := StringExistsInFile("rpcallowip=", chd+CConfFileDigiByte)
 			if err != nil {
 				return "", "", fmt.Errorf("unable to search for text in file - %v", err)
 			}
@@ -1750,7 +1936,7 @@ func PopulateDaemonConfFile() (rpcuser, rpcpassword string, err error) {
 				// String not found
 				if !bFileHasBeenBU {
 					bFileHasBeenBU = true
-					if err := BackupFile(chd, CDigiByteConfFile, "", "", false); err != nil {
+					if err := BackupFile(chd, CConfFileDigiByte, "", "", false); err != nil {
 						return "", "", fmt.Errorf("unable to backup file - %v", err)
 					}
 				}
@@ -1759,15 +1945,15 @@ func PopulateDaemonConfFile() (rpcuser, rpcpassword string, err error) {
 			}
 		}
 		if bNeedToWriteStr {
-			if err := WriteTextToFile(chd+CDigiByteConfFile, "rpcallowip=192.168.1.0/255.255.255.0"); err != nil {
+			if err := WriteTextToFile(chd+CConfFileDigiByte, "rpcallowip=192.168.1.0/255.255.255.0"); err != nil {
 				log.Fatal(err)
 			}
 		}
 
 		// Add rpcport= info if required
 		bNeedToWriteStr = true
-		if FileExists(chd + CDigiByteConfFile) {
-			bStrFound, err := StringExistsInFile("rpcport=", chd+CDigiByteConfFile)
+		if FileExists(chd + CConfFileDigiByte) {
+			bStrFound, err := StringExistsInFile("rpcport=", chd+CConfFileDigiByte)
 			if err != nil {
 				return "", "", fmt.Errorf("unable to search for text in file - %v", err)
 			}
@@ -1775,7 +1961,7 @@ func PopulateDaemonConfFile() (rpcuser, rpcpassword string, err error) {
 				// String not found
 				if !bFileHasBeenBU {
 					bFileHasBeenBU = true
-					if err := BackupFile(chd, CDigiByteConfFile, "", "", false); err != nil {
+					if err := BackupFile(chd, CConfFileDigiByte, "", "", false); err != nil {
 						return "", "", fmt.Errorf("unable to backup file - %v", err)
 					}
 				}
@@ -1784,7 +1970,7 @@ func PopulateDaemonConfFile() (rpcuser, rpcpassword string, err error) {
 			}
 		}
 		if bNeedToWriteStr {
-			if err := WriteTextToFile(chd+CDigiByteConfFile, "rpcport="+CDigiByteRPCPort); err != nil {
+			if err := WriteTextToFile(chd+CConfFileDigiByte, "rpcport="+CRPCPortDigiByte); err != nil {
 				log.Fatal(err)
 			}
 		}
@@ -3535,7 +3721,7 @@ func AllProjectBinaryFilesExists() (bool, error) {
 			if !FileExists(CDenariusBinDirLinux + CDenariusCliFile) {
 				return false, nil
 			}
-			if !FileExists(CDenariusBinDirLinux + CDenariusDFile) {
+			if !FileExists(CDenariusBinDirLinux + CDFileDenarius) {
 				return false, nil
 			}
 		}
@@ -3563,23 +3749,23 @@ func AllProjectBinaryFilesExists() (bool, error) {
 		}
 	case PTDigiByte:
 		if runtime.GOOS == "windows" {
-			if !FileExists(abf + CDigiByteCliFileWin) {
+			if !FileExists(abf + CCliFileWinDigiByte) {
 				return false, nil
 			}
-			if !FileExists(abf + CDigiByteDFileWin) {
+			if !FileExists(abf + CDFileWinDigiByte) {
 				return false, nil
 			}
-			if !FileExists(abf + CDigiByteTxFileWin) {
+			if !FileExists(abf + CTxFileWinDigiByte) {
 				return false, nil
 			}
 		} else {
-			if !FileExists(abf + CDigiByteCliFile) {
+			if !FileExists(abf + CCliFileDigiByte) {
 				return false, nil
 			}
-			if !FileExists(abf + CDigiByteDFile) {
+			if !FileExists(abf + CDFileDigiByte) {
 				return false, nil
 			}
-			if !FileExists(abf + CDigiByteTxFile) {
+			if !FileExists(abf + CTxFileDigiByte) {
 				return false, nil
 			}
 		}
@@ -4012,7 +4198,7 @@ func StartCoinDaemon(displayOutput bool) error {
 				fmt.Println("Attempting to run the denariusd daemon...")
 			}
 
-			cmdRun := exec.Command(CDenariusBinDirLinux + CDenariusDFile)
+			cmdRun := exec.Command(CDenariusBinDirLinux + CDFileDenarius)
 			//stdout, err := cmdRun.StdoutPipe()
 			if err != nil {
 				return err
@@ -4053,7 +4239,7 @@ func StartCoinDaemon(displayOutput bool) error {
 		}
 	case PTDigiByte:
 		if runtime.GOOS == "windows" {
-			fp := abf + CDigiByteDFileWin
+			fp := abf + CDFileWinDigiByte
 			cmd := exec.Command("cmd.exe", "/C", "start", "/b", fp)
 			if err := cmd.Run(); err != nil {
 				return err
@@ -4063,7 +4249,7 @@ func StartCoinDaemon(displayOutput bool) error {
 				fmt.Println("Attempting to run the digibyted daemon...")
 			}
 
-			cmdRun := exec.Command(abf + CDigiByteDFile)
+			cmdRun := exec.Command(abf + CDFileDigiByte)
 			stdout, err := cmdRun.StdoutPipe()
 			if err != nil {
 				return err
@@ -4566,7 +4752,7 @@ func StopCoinDaemon(displayOutput bool) error {
 			// TODO Complete for Windows
 		} else {
 			for i := 0; i < 50; i++ {
-				cRun := exec.Command(abf+CDigiByteCliFile, "stop")
+				cRun := exec.Command(abf+CCliFileDigiByte, "stop")
 				_ = cRun.Run()
 
 				sr, _, _ := IsCoinDaemonRunning(PTDigiByte) //DigiByteDRunning()
