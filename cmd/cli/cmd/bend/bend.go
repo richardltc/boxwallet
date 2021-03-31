@@ -770,7 +770,7 @@ func GetCoinHomeFolder(at APPType, pt ProjectType) (string, error) {
 		case PTDigiByte:
 			s = AddTrailingSlash(hd) + "appdata\\roaming\\" + AddTrailingSlash(cHomeDirWinDigiByte)
 		case PTDivi:
-			s = AddTrailingSlash(hd) + "appdata\\roaming\\" + AddTrailingSlash(cDiviHomeDirWin)
+			s = AddTrailingSlash(hd) + "appdata\\roaming\\" + AddTrailingSlash(cHomeDirWinDivi)
 		case PTFeathercoin:
 			s = AddTrailingSlash(hd) + "appdata\\roaming\\" + AddTrailingSlash(cFeathercoinHomeDirWin)
 		case PTGroestlcoin:
@@ -806,7 +806,7 @@ func GetCoinHomeFolder(at APPType, pt ProjectType) (string, error) {
 		case PTDigiByte:
 			s = AddTrailingSlash(hd) + AddTrailingSlash(cHomeDirLinDigiByte)
 		case PTDivi:
-			s = AddTrailingSlash(hd) + AddTrailingSlash(cDiviHomeDir)
+			s = AddTrailingSlash(hd) + AddTrailingSlash(cHomeDirDivi)
 		case PTFeathercoin:
 			s = AddTrailingSlash(hd) + AddTrailingSlash(cFeathercoinHomeDir)
 		case PTGroestlcoin:
@@ -3709,6 +3709,28 @@ func AllProjectBinaryFilesExists() (bool, error) {
 	//abf := AddTrailingSlash(filepath.Dir(ex))
 
 	switch bwconf.ProjectType {
+	case PTBitcoinPlus:
+		if runtime.GOOS == "windows" {
+			if !FileExists(abf + CCliFileWinBitcoinPlus) {
+				return false, nil
+			}
+			if !FileExists(abf + CDFileWinBitcoinPlus) {
+				return false, nil
+			}
+			if !FileExists(abf + CTxFileWinBitcoinPlus) {
+				return false, nil
+			}
+		} else {
+			if !FileExists(abf + CCliFileBitcoinPlus) {
+				return false, nil
+			}
+			if !FileExists(abf + CDFileBitcoinPlus) {
+				return false, nil
+			}
+			if !FileExists(abf + CTxFileBitcoinPlus) {
+				return false, nil
+			}
+		}
 	case PTDenarius:
 		if runtime.GOOS == "windows" {
 			if !FileExists(abf + CDenariusCliFileWin) {
