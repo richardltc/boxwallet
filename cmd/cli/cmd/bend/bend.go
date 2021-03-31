@@ -1166,6 +1166,12 @@ func IsCoinDaemonRunning(ct ProjectType) (bool, int, error) {
 
 	var err error
 	switch ct {
+	case PTBitcoinPlus:
+		if runtime.GOOS == "windows" {
+			pid, _, err = FindProcess(CDFileWinBitcoinPlus)
+		} else {
+			pid, _, err = FindProcess(CDFileBitcoinPlus)
+		}
 	case PTDenarius:
 		if runtime.GOOS == "windows" {
 			pid, _, err = FindProcess(CDenariusDFileWin)
