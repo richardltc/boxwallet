@@ -25,8 +25,8 @@ import (
 
 const (
 	CAppName        string = "BoxWallet"
-	CUpdaterAppName string = "bwupdater" // bwupdater
-	CBWAppVersion   string = "0.40.6a"
+	CUpdaterAppName string = "bwupdater"
+	CBWAppVersion   string = "0.40.6e"
 	CAppFilename    string = "boxwallet"
 	CAppFilenameWin string = "boxwallet.exe"
 	CAppLogfile     string = "boxwallet.log"
@@ -4214,6 +4214,47 @@ func StartCoinDaemon(displayOutput bool) error {
 	//abf := AddTrailingSlash(filepath.Dir(ex)).
 
 	switch bwconf.ProjectType {
+	case PTBitcoinPlus:
+		if runtime.GOOS == "windows" {
+			//_ = exec.Command(GetAppsBinFolder() + cDiviDFileWin)
+			fp := abf + CDiviDFileWin
+			cmd := exec.Command("cmd.exe", "/C", "start", "/b", fp)
+			if err := cmd.Run(); err != nil {
+				return err
+			}
+		} else {
+			if displayOutput {
+				fmt.Println("Attempting to run the bitcoinplusd daemon...")
+			}
+
+			cmdRun := exec.Command(abf + CDFileBitcoinPlus)
+			stdout, err := cmdRun.StdoutPipe()
+			if err != nil {
+				return err
+			}
+			err = cmdRun.Start()
+			if err != nil {
+				return err
+			}
+
+			buf := bufio.NewReader(stdout)
+			num := 1
+			for {
+				line, _, _ := buf.ReadLine()
+				if num > 3 {
+					os.Exit(0)
+				}
+				num++
+				if string(line) == "BitcoinPlus server starting" {
+					if displayOutput {
+						fmt.Println("BitcoinPlus server starting")
+					}
+					return nil
+				} else {
+					return errors.New("unable to start BitcoinPlus server: " + string(line))
+				}
+			}
+		}
 	case PTDenarius:
 		if runtime.GOOS == "windows" {
 			fp := abf + CDenariusDFileWin
