@@ -61,6 +61,7 @@ var startCmd = &cobra.Command{
 		}
 
 		switch cliConf.ProjectType {
+		case be.PTBitcoinPlus:
 		case be.PTDenarius:
 		case be.PTDeVault:
 		case be.PTDigiByte:
@@ -108,7 +109,7 @@ var startCmd = &cobra.Command{
 			log.Fatal("unable to determine ProjectType")
 		}
 
-		// Start the coin daemon server if required...
+		// Start the coin daemon server if required..
 		if err := be.StartCoinDaemon(true); err != nil {
 			log.Fatalf("failed to run "+sCoinDaemonName+": %v", err)
 		}
