@@ -42,6 +42,14 @@ var encryptCmd = &cobra.Command{
 		}
 
 		switch cliConf.ProjectType {
+		case be.PTBitcoinPlus:
+			wet, err := be.GetWalletEncryptionStatus()
+			if err != nil {
+				log.Fatalf("Unable to determine wallet encryption status")
+			}
+			if wet != be.WETUnencrypted {
+				log.Fatal("Wallet is already encrypted")
+			}
 		case be.PTDenarius:
 			wet, err := be.GetWalletEncryptionStatus()
 			if err != nil {

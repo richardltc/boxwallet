@@ -1047,6 +1047,13 @@ func GetWalletEncryptionStatus() (WEType, error) {
 	}
 	pt := conf.ProjectType
 	switch pt {
+	case PTBitcoinPlus:
+		wi, err := GetWalletInfoXBC(&conf)
+		if err != nil {
+			return WETUnknown, fmt.Errorf("unable to GetWalletInfoDigiByte %v", err)
+		}
+		wet := GetWalletSecurityStateXBC(&wi)
+		return wet, nil
 	case PTDenarius:
 		// Denarius doesn't have WalletInfo, but you can get the same info from GetInfo
 		gi, err := GetInfoDenarius(&conf)
