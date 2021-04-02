@@ -181,6 +181,13 @@ var dashCmd = &cobra.Command{
 		// The first thing we need to do is to store the coin core version for the About display...
 		sCoreVersion := ""
 		switch cliConf.ProjectType {
+		case be.PTBitcoinPlus:
+			gi, _, err := be.GetInfoXBC(&cliConf)
+			if err != nil {
+				sCoreVersion = "Unknown"
+			} else {
+				sCoreVersion = strconv.Itoa(gi.Result.Version)
+			}
 		case be.PTDenarius:
 			gi, err := be.GetInfoDenarius(&cliConf)
 			if err != nil {
@@ -272,6 +279,11 @@ var dashCmd = &cobra.Command{
 		// The next thing we need to check is to see if the wallet currently has any addresses
 		bWalletExists := false
 		switch cliConf.ProjectType {
+		case be.PTBitcoinPlus:
+			addresses, _ := be.ListReceivedByAddressXBC(&cliConf, false)
+			if len(addresses.Result) > 0 {
+				bWalletExists = true
+			}
 		case be.PTDenarius:
 			addresses, _ := be.ListReceivedByAddressDenarius(&cliConf, false)
 			if len(addresses.Result) > 0 {
@@ -341,6 +353,7 @@ var dashCmd = &cobra.Command{
 		if !cliConf.UserConfirmedWalletBU && bWalletExists {
 			// We need to work out what coin we are, to see what options we have.
 			switch cliConf.ProjectType {
+			case be.PTBitcoinPlus:
 			case be.PTDenarius:
 				wet, err := be.GetWalletEncryptionStatus()
 				if err != nil {
@@ -471,6 +484,15 @@ var dashCmd = &cobra.Command{
 		// Check wallet encryption status
 		bWalletNeedsEncrypting := false
 		switch cliConf.ProjectType {
+		case be.PTBitcoinPlus:
+			gi, err := be.GetWalletInfoXBC(&cliConf)
+			if err != nil {
+				log.Fatal("Unable to perform GetWalletInfoBitcoinPlus " + err.Error())
+			}
+
+			if gi.Result.UnlockedUntil < 0 {
+				bWalletNeedsEncrypting = true
+			}
 		case be.PTDenarius:
 			gi, err := be.GetInfoDenarius(&cliConf)
 			if err != nil {
@@ -639,6 +661,9 @@ var dashCmd = &cobra.Command{
 		pAbout.TextStyle.Fg = ui.ColorWhite
 		pAbout.BorderStyle.Fg = ui.ColorGreen
 		switch cliConf.ProjectType {
+		case be.PTBitcoinPlus:
+			pAbout.Text = "  [" + be.CAppName + "     v" + be.CBWAppVersion + "](fg:white)\n" +
+				"  [" + sCoinName + " Core " + sCoreVersion + "](fg:white)\n\n"
 		case be.PTDenarius:
 			pAbout.Text = "  [" + be.CAppName + "     v" + be.CBWAppVersion + "](fg:white)\n" +
 				"  [" + sCoinName + " Core " + sCoreVersion + "](fg:white)\n\n"
@@ -689,6 +714,10 @@ var dashCmd = &cobra.Command{
 		pWallet.TextStyle.Fg = ui.ColorWhite
 		pWallet.BorderStyle.Fg = ui.ColorYellow
 		switch cliConf.ProjectType {
+		case be.PTBitcoinPlus:
+			pWallet.Text = "  Balance:          [waiting for sync...](fg:yellow)\n" +
+				"  Security:         [waiting for sync...](fg:yellow)\n" +
+				"  Actively Staking: [waiting for sync...](fg:yellow)\n"
 		case be.PTDenarius:
 			pWallet.Text = "  Balance:          [waiting for sync...](fg:yellow)\n" +
 				"  Security:         [waiting for sync...](fg:yellow)\n" +
@@ -764,6 +793,12 @@ var dashCmd = &cobra.Command{
 		pNetwork.BorderStyle.Fg = ui.ColorWhite
 
 		switch cliConf.ProjectType {
+		case be.PTBitcoinPlus:
+			pNetwork.Text = "  Headers:     [checking...](fg:yellow)\n" +
+				"  Blocks:      [checking...](fg:yellow)\n" +
+				"  Difficulty:  [checking...](fg:yellow)\n" +
+				"  Blockchain:  [checking...](fg:yellow)\n" +
+				"  Peers:  [checking...](fg:yellow)\n"
 		case be.PTDenarius:
 			pNetwork.Text = "  Blocks:      [checking...](fg:yellow)\n" +
 				"  Difficulty:  [checking...](fg:yellow)\n" +
@@ -860,6 +895,7 @@ var dashCmd = &cobra.Command{
 		pTransactions.BorderStyle.Fg = ui.ColorWhite
 
 		// var numSeconds int = -1
+		var bciXBC be.XBCBlockchainInfoRespStruct
 		var bciDenarius be.DenariusBlockchainInfoRespStruct
 		var bciDeVault be.DVTBlockchainInfoRespStruct
 		var bciDigiByte be.DGBBlockchainInfoRespStruct
@@ -879,6 +915,7 @@ var dashCmd = &cobra.Command{
 		var mnssPIVX be.PIVXMNSyncStatusRespStruct
 		var mnssRapids be.RapidsMNSyncStatusRespStruct
 		//var niDeVault be.DVTNetworkInfoRespStruct
+		bXBCBlockchainIsSynced := false
 		bDenariusBlockchainIsSynced := false
 		bDGBBlockchainIsSynced := false
 		bDVTBlockchainIsSynced := false
@@ -893,6 +930,7 @@ var dashCmd = &cobra.Command{
 		var ssPIVX be.PIVXStakingStatusRespStruct
 		var ssRapids be.RapidsStakingStatusRespStruct
 		var ssTrezarcoin be.TrezarcoinStakingInfoRespStruct
+		var ssXBC be.XBCStakingInfoRespStruct
 		var transDenarius be.DenariusListTransactions
 		var transDGB be.DGBListTransactions
 		var transDivi be.DiviListTransactions
@@ -900,6 +938,7 @@ var dashCmd = &cobra.Command{
 		var transPHR be.PhoreListTransactions
 		var transRDD be.RDDListTransactions
 		var transTZC be.TZCListTransactionsRespStruct
+		var transXBC be.XBCListTransactions
 		var giDenarius be.DenariusGetInfoRespStruct
 		var wiDeVault be.DVTWalletInfoRespStruct
 		var wiDigiByte be.DGBWalletInfoRespStruct
@@ -912,6 +951,7 @@ var dashCmd = &cobra.Command{
 		var wiReddCoin be.RDDWalletInfoRespStruct
 		var wiTrezarcoin be.TrezarcoinWalletInfoRespStruct
 		var wiVertcoin be.VTCWalletInfoRespStruct
+		var wiXBC be.XBCWalletInfoRespStruct
 
 		updateDisplay := func(count int) {
 			// Make sure that the GetBlockchainInfo RPC call, only happens once every 10 seconds
@@ -922,6 +962,11 @@ var dashCmd = &cobra.Command{
 					gGetBCInfoCount++
 				}
 				switch cliConf.ProjectType {
+				case be.PTBitcoinPlus:
+					bciXBC, _ = be.GetBlockchainInfoXBC(&cliConf)
+					if bciXBC.Result.Verificationprogress > 0.99999 {
+						bXBCBlockchainIsSynced = true
+					}
 				case be.PTDenarius:
 					bciDenarius, _ = be.GetBlockchainInfoDenarius(&cliConf)
 					if gDenariusBlockHeight > 0 {
@@ -988,6 +1033,12 @@ var dashCmd = &cobra.Command{
 			// Now, we only want to get this other stuff, when the blockchain has synced.
 			// This is checked every 1x second. Too often? Maybe should be once every 3 seconds?
 			switch cliConf.ProjectType {
+			case be.PTBitcoinPlus:
+				if bciXBC.Result.Verificationprogress > 0.999 {
+					ssXBC, _ = be.GetStakingStatusXBC(&cliConf)
+					transXBC, _ = be.ListTransactionsXBC(&cliConf)
+					wiXBC, _ = be.GetWalletInfoXBC(&cliConf)
+				}
 			case be.PTDenarius:
 				if bDenariusBlockchainIsSynced {
 					giDenarius, _ = be.GetInfoDenarius(&cliConf)
@@ -1056,6 +1107,12 @@ var dashCmd = &cobra.Command{
 
 			// Decide what colour the network panel border should be...
 			switch cliConf.ProjectType {
+			case be.PTBitcoinPlus:
+				if bXBCBlockchainIsSynced {
+					pNetwork.BorderStyle.Fg = ui.ColorGreen
+				} else {
+					pNetwork.BorderStyle.Fg = ui.ColorYellow
+				}
 			case be.PTDenarius:
 				if bDenariusBlockchainIsSynced {
 					pNetwork.BorderStyle.Fg = ui.ColorGreen
@@ -1143,6 +1200,12 @@ var dashCmd = &cobra.Command{
 			var sMNSync string
 			var sPeers string
 			switch cliConf.ProjectType {
+			case be.PTBitcoinPlus:
+				sHeaders = getNetworkHeadersTxtXBC(&bciXBC)
+				sBlocks = getNetworkBlocksTxtXBC(&bciXBC)
+				sDiff = be.GetNetworkDifficultyTxtXBC(bciXBC.Result.Difficulty, gDiffGood, gDiffWarning)
+				sBlockchainSync = getBlockchainSyncTxtXBC(bXBCBlockchainIsSynced, &bciXBC)
+				sPeers = be.GetNetworkConnectionsTxtXBC(gConnections)
 			case be.PTDenarius:
 				sBlocks = getNetworkBlocksTxtDenarius(&bciDenarius)
 				sDiff = be.GetNetworkDifficultyTxtDenarius(bciDenarius.Result.Difficulty.ProofOfWork, gDiffGood, gDiffWarning)
@@ -1218,6 +1281,12 @@ var dashCmd = &cobra.Command{
 			}
 
 			switch cliConf.ProjectType {
+			case be.PTBitcoinPlus:
+				pNetwork.Text = "  " + sHeaders + "\n" +
+					"  " + sBlocks + "\n" +
+					"  " + sDiff + "\n" +
+					"  " + sBlockchainSync + "\n" +
+					"  " + sPeers
 			case be.PTDenarius:
 				pNetwork.Text = "  " + sBlocks + "\n" +
 					"  " + sDiff + "\n" +
@@ -1302,6 +1371,20 @@ var dashCmd = &cobra.Command{
 			// Decide what colour the wallet panel border should be...
 
 			switch cliConf.ProjectType {
+			case be.PTBitcoinPlus:
+				wet := be.GetWalletSecurityStateXBC(&wiXBC)
+				switch wet {
+				case be.WETLocked:
+					pWallet.BorderStyle.Fg = ui.ColorYellow
+				case be.WETUnlocked:
+					pWallet.BorderStyle.Fg = ui.ColorRed
+				case be.WETUnlockedForStaking:
+					pWallet.BorderStyle.Fg = ui.ColorGreen
+				case be.WETUnencrypted:
+					pWallet.BorderStyle.Fg = ui.ColorRed
+				default:
+					pWallet.BorderStyle.Fg = ui.ColorYellow
+				}
 			case be.PTDenarius:
 				wet := be.GetWalletSecurityStateDenarius(&giDenarius)
 				switch wet {
@@ -1476,6 +1559,12 @@ var dashCmd = &cobra.Command{
 
 			// Update the wallet display, if we're all synced up
 			switch cliConf.ProjectType {
+			case be.PTBitcoinPlus:
+				if bciXBC.Result.Verificationprogress > 0.999 {
+					pWallet.Text = "" + getBalanceInXBCTxt(&wiXBC) + "\n" +
+						"  " + getWalletSecurityStatusTxtXBC(&wiXBC) + "\n" +
+						"  " + getActivelyStakingTxtXBC(&ssXBC) + "\n" //e.g. "15%" or "staking"
+				}
 			case be.PTDenarius:
 				if bciDenarius.Result.Blocks >= gDenariusBlockHeight {
 					pWallet.Text = "" + getBalanceInDenariusTxt(&giDenarius) + "\n" +
@@ -1555,6 +1644,10 @@ var dashCmd = &cobra.Command{
 			// *******************************************************
 
 			switch cliConf.ProjectType {
+			case be.PTBitcoinPlus:
+				if bciXBC.Result.Verificationprogress > 0.999 {
+					updateTransactionsXBC(&transXBC, pTransactions)
+				}
 			case be.PTDenarius:
 				if bciDenarius.Result.Blocks >= gDenariusBlockHeight {
 					updateTransactionsDenarius(&transDenarius, pTransactions)
@@ -1598,6 +1691,11 @@ var dashCmd = &cobra.Command{
 					g30SecTickerCounter++
 				}
 				switch cliConf.ProjectType {
+				case be.PTBitcoinPlus:
+					gDiffGood, gDiffWarning, _ = getNetworkDifficultyInfo(be.PTBitcoinPlus)
+					// update the Network Info details
+					niXBC, _ := be.GetNetworkInfoXBC(&cliConf)
+					gConnections = niXBC.Result.Connections
 				case be.PTDenarius:
 					// We need to get the difficulty and the Block height for Denarius so we can work the verification progress.
 					// I think the difficulty routine should be in a separate 60 seconds timer, to reduce the amount of api calls to the service
@@ -1772,6 +1870,16 @@ func confirmWalletReady() (bool, string, error) {
 		log.Fatalf("Unable to GetCoinDaemonFilename - %v", err)
 	}
 	switch cliConf.ProjectType {
+	case be.PTBitcoinPlus:
+		gi, s, err := be.GetInfoXBCUI(&cliConf, spinner)
+		if err != nil {
+			if err := spinner.Stop(); err != nil {
+			}
+			return false, s, fmt.Errorf("Unable to communicate with the " + coind + " server.")
+		}
+		if gi.Result.Version == 0 {
+			return false, s, fmt.Errorf("unable to call getinfo %s\n", err)
+		}
 	case be.PTDenarius:
 		gi, s, err := be.GetInfoDenariusUI(&cliConf, spinner)
 		if err != nil {
@@ -1966,8 +2074,11 @@ func getLotteryTicketsTxtDIVI(trans *be.DiviListTransactions) string {
 			continue
 		}
 
+		prevBlock := gDiviLottery.Lottery.NextLotteryBlock - 10080
+		numBlocksSpread := gDiviLottery.Lottery.CurrentBlock - prevBlock
+
 		// If the stake block is less than the next lottery block - 10080 then it's not in this weeks lottery
-		if trans.Result[i].Blockindex < (gDiviLottery.Lottery.NextLotteryBlock - 10080) {
+		if trans.Result[i].Confirmations > numBlocksSpread {
 			continue
 		}
 
@@ -1976,6 +2087,14 @@ func getLotteryTicketsTxtDIVI(trans *be.DiviListTransactions) string {
 	}
 
 	return "Lottery tickets:  " + strconv.Itoa(iTotalTickets)
+}
+
+func getActivelyStakingTxtXBC(ss *be.XBCStakingInfoRespStruct) string {
+	if ss.Result.Staking == true {
+		return "Actively Staking: [Yes](fg:green)"
+	} else {
+		return "Actively Staking: [No](fg:yellow)"
+	}
 }
 
 func getActivelyStakingTxtDenarius(ss *be.DenariusStakingInfoStruct) string {
@@ -2025,6 +2144,20 @@ func getActivelyStakingTxtTrezarcoin(ss *be.TrezarcoinStakingInfoRespStruct) str
 		return "Actively Staking: [Yes](fg:green)"
 	} else {
 		return "Actively Staking: [No](fg:yellow)"
+	}
+}
+
+func getBalanceInXBCTxt(wi *be.XBCWalletInfoRespStruct) string {
+	tBalance := wi.Result.ImmatureBalance + wi.Result.UnconfirmedBalance + wi.Result.Balance
+	tBalanceStr := humanize.FormatFloat("#,###.####", tBalance)
+
+	// Work out balance
+	if wi.Result.ImmatureBalance > 0 {
+		return "  Incoming....... [" + tBalanceStr + "](fg:cyan)"
+	} else if wi.Result.UnconfirmedBalance > 0 {
+		return "  Confirming....... [" + tBalanceStr + "](fg:yellow)"
+	} else {
+		return "  Balance:          [" + tBalanceStr + "](fg:green)"
 	}
 }
 
@@ -2254,6 +2387,21 @@ func getBlockchainSyncTxtDenarius(synced bool, bci *be.DenariusBlockchainInfoRes
 		//}
 	} else {
 		return "Blockchain:  [synced " + be.CUtfTickBold + "](fg:green)"
+	}
+}
+
+func getBlockchainSyncTxtXBC(synced bool, bci *be.XBCBlockchainInfoRespStruct) string {
+	s := convertBCVerification(bci.Result.Verificationprogress)
+	if s == "0.0" {
+		s = ""
+	} else {
+		s = s + "%"
+	}
+
+	if !synced {
+		return "Blockchain: [" + getNextProgBCIndicator(gLastBCSyncStatus) + "syncing " + s + " ](fg:yellow)"
+	} else {
+		return "Blockchain:  [synced " + cUtfTickBold + "](fg:green)"
 	}
 }
 
@@ -2511,6 +2659,26 @@ func getNetworkBlocksTxtDenarius(bci *be.DenariusBlockchainInfoRespStruct) strin
 	return "Blocks:      [" + blocksStr + "](fg:green)"
 }
 
+func getNetworkBlocksTxtXBC(bci *be.XBCBlockchainInfoRespStruct) string {
+	blocksStr := humanize.Comma(int64(bci.Result.Blocks))
+
+	if blocksStr == "0" {
+		return "Blocks:      [waiting...](fg:white)"
+	}
+
+	return "Blocks:      [" + blocksStr + "](fg:green)"
+}
+
+func getNetworkHeadersTxtXBC(bci *be.XBCBlockchainInfoRespStruct) string {
+	headersStr := humanize.Comma(int64(bci.Result.Headers))
+
+	if bci.Result.Headers > 1 {
+		return "Headers:     [" + headersStr + "](fg:green)"
+	} else {
+		return "[Headers:     " + headersStr + "](fg:red)"
+	}
+}
+
 func getNextProgBCIndicator(LIndicator string) string {
 	if LIndicator == cProg1 {
 		gLastBCSyncStatus = cProg2
@@ -2590,6 +2758,18 @@ func getWalletStakingTxt(wi *be.DiviWalletInfoRespStruct) string {
 		return "Staking %:        [" + fPercentStr + "](fg:green)"
 	}
 
+}
+
+func getWalletSecurityStatusTxtXBC(wi *be.XBCWalletInfoRespStruct) string {
+	if wi.Result.UnlockedUntil == 0 {
+		return "Security:         [Locked](fg:green)"
+	} else if wi.Result.UnlockedUntil == -1 {
+		return "Security:         [UNENCRYPTED](fg:red)"
+	} else if wi.Result.UnlockedUntil > 0 {
+		return "Security:         [Locked](fg:green)"
+	} else {
+		return "Security:         [checking...](fg:yellow)"
+	}
 }
 
 func getWalletSecurityStatusTxtDenarius(gi *be.DenariusGetInfoRespStruct) string {
@@ -2764,6 +2944,8 @@ func getNetworkDifficultyInfo(pt be.ProjectType) (float64, float64, error) {
 	// https://chainz.cryptoid.info/ftc/api.dws?q=getdifficulty
 
 	switch pt {
+	case be.PTBitcoinPlus:
+		coin = "xbc"
 	case be.PTDenarius:
 		coin = "d"
 	case be.PTDigiByte:
@@ -2869,6 +3051,48 @@ func getWalletSeedRecoveryConfirmationResp() bool {
 	}
 
 	return false
+}
+
+func updateTransactionsXBC(trans *be.XBCListTransactions, pt *widgets.Table) {
+	pt.Rows = [][]string{
+		[]string{" Date", " Category", " Amount", " Confirmations"},
+	}
+
+	// Record whether any of the transactions have 0 conf (so that we can display the boarder as yellow)
+	bYellowBoarder := false
+
+	for i := len(trans.Result) - 1; i >= 0; i-- {
+		// Check to make sure the confirmations count is higher than -1
+		if trans.Result[i].Confirmations < 0 {
+			continue
+		}
+
+		if trans.Result[i].Confirmations < 1 {
+			bYellowBoarder = true
+		}
+		iTime, err := strconv.ParseInt(strconv.Itoa(trans.Result[i].Blocktime), 10, 64)
+		if err != nil {
+			panic(err)
+		}
+		tm := time.Unix(iTime, 0)
+		sCat := getCategorySymbol(trans.Result[i].Category)
+		tAmountStr := humanize.FormatFloat("#,###.##", trans.Result[i].Amount)
+		sColour := getCategoryColour(trans.Result[i].Category)
+		pt.Rows = append(pt.Rows, []string{
+			" [" + tm.Format("2006-01-02 15:04"+"](fg:"+sColour+")"),
+			" [" + sCat + "](fg:" + sColour + ")",
+			" [" + tAmountStr + "](fg:" + sColour + ")",
+			" [" + strconv.Itoa(trans.Result[i].Confirmations) + "](fg:" + sColour + ")"})
+
+		if i > 10 {
+			break
+		}
+	}
+	if bYellowBoarder {
+		pt.BorderStyle.Fg = ui.ColorYellow
+	} else {
+		pt.BorderStyle.Fg = ui.ColorGreen
+	}
 }
 
 func updateTransactionsDenarius(trans *be.DenariusListTransactions, pt *widgets.Table) {
