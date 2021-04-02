@@ -662,7 +662,7 @@ var dashCmd = &cobra.Command{
 		pAbout.BorderStyle.Fg = ui.ColorGreen
 		switch cliConf.ProjectType {
 		case be.PTBitcoinPlus:
-			pAbout.Text = "  [" + be.CAppName + "     v" + be.CBWAppVersion + "](fg:white)\n" +
+			pAbout.Text = "  [" + be.CAppName + "        v" + be.CBWAppVersion + "](fg:white)\n" +
 				"  [" + sCoinName + " Core " + sCoreVersion + "](fg:white)\n\n"
 		case be.PTDenarius:
 			pAbout.Text = "  [" + be.CAppName + "     v" + be.CBWAppVersion + "](fg:white)\n" +
