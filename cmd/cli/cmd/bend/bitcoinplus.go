@@ -121,6 +121,12 @@ type xbcGetInfoRespStruct struct {
 	ID    string      `json:"id"`
 }
 
+type XBCGetNewAddressStruct struct {
+	Result string      `json:"result"`
+	Error  interface{} `json:"error"`
+	ID     string      `json:"id"`
+}
+
 type XBCListReceivedByAddressRespStruct struct {
 	Result []struct {
 		Address       string        `json:"address"`
@@ -408,6 +414,35 @@ func GetNetworkInfoXBC(cliConf *ConfStruct) (XBCNetworkInfoRespStruct, error) {
 			return respStruct, err
 		}
 	}
+	return respStruct, nil
+}
+
+func GetNewAddressXBC(cliConf *ConfStruct) (XBCGetNewAddressStruct, error) {
+	var respStruct DiviGetNewAddressStruct
+
+	body := strings.NewReader("{\"jsonrpc\":\"1.0\",\"id\":\"curltext\",\"method\":\"getnewaddress\",\"params\":[]}")
+	req, err := http.NewRequest("POST", "http://"+cliConf.ServerIP+":"+cliConf.Port, body)
+	if err != nil {
+		return respStruct, err
+	}
+	req.SetBasicAuth(cliConf.RPCuser, cliConf.RPCpassword)
+	req.Header.Set("Content-Type", "text/plain;")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return respStruct, err
+	}
+	defer resp.Body.Close()
+	bodyResp, err := ioutil.ReadAll(resp.Body)
+	if err != nil {
+		return respStruct, err
+	}
+
+	err = json.Unmarshal(bodyResp, &respStruct)
+	if err != nil {
+		return respStruct, err
+	}
+
 	return respStruct, nil
 }
 
