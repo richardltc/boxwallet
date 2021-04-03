@@ -418,7 +418,7 @@ func GetNetworkInfoXBC(cliConf *ConfStruct) (XBCNetworkInfoRespStruct, error) {
 }
 
 func GetNewAddressXBC(cliConf *ConfStruct) (XBCGetNewAddressStruct, error) {
-	var respStruct DiviGetNewAddressStruct
+	var respStruct XBCGetNewAddressStruct
 
 	body := strings.NewReader("{\"jsonrpc\":\"1.0\",\"id\":\"curltext\",\"method\":\"getnewaddress\",\"params\":[]}")
 	req, err := http.NewRequest("POST", "http://"+cliConf.ServerIP+":"+cliConf.Port, body)
