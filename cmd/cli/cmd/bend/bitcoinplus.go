@@ -366,9 +366,9 @@ func GetNetworkDifficultyTxtXBC(difficulty, good, warn float64) string {
 	}
 
 	// If Diff is less than 1, then we're not even calculating it properly yet...
-	if difficulty < 1 {
-		return "[Difficulty:  waiting...](fg:white)"
-	}
+	//if difficulty < 1 {
+	//	return "[Difficulty:  waiting...](fg:white)"
+	//}
 
 	if difficulty >= good {
 		return "Difficulty:  [" + s + "](fg:green)"
