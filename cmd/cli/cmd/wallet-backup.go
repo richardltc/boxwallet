@@ -38,10 +38,10 @@ var backupCmd = &cobra.Command{
 			log.Fatal("Unable to GetCoinName " + err.Error())
 		}
 
-		// Check that the current project is valid
+		// Check that the current project is valid.
 		switch bwConf.ProjectType {
 		case be.PTBitcoinPlus:
-			if err := be.WalletBackup(be.PTDenarius); err != nil {
+			if err := be.WalletBackup(be.PTBitcoinPlus); err != nil {
 				log.Fatal("Unable to backup the " + sCoinName + " wallet.dat file: " + err.Error())
 			}
 		case be.PTDenarius:
