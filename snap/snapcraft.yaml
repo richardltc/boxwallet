@@ -11,7 +11,7 @@ description: |
 
   boxwallet dash - displays a dashboard with the coins Blockchain and wallet info.
 base: core18
-version: "0.40.5"
+version: "0.41.1"
 
 parts:
   boxwallet:
@@ -26,10 +26,59 @@ apps:
 confinement: strict
 
 plugs:
+  dot-bitcoinplus:
+    interface: personal-files
+    write:
+      - $HOME/.bitcoinplus
+  dot-devault:
+    interface: personal-files
+    write:
+      - $HOME/.devault
+  dot-digibyte:
+    interface: personal-files
+    write:
+      - $HOME/.digibyte
   dot-divi:
     interface: personal-files
-    read:
-      - $HOME/.divi
     write:
       - $HOME/.divi
-
+  dot-feathercoin:
+    interface: personal-files
+    write:
+      - $HOME/.feathercoin
+  dot-groestlcoin:
+    interface: personal-files
+    write:
+      - $HOME/.groestlcoin
+  dot-phore:
+    interface: personal-files
+    write:
+      - $HOME/.phore
+  dot-pivx:
+    interface: personal-files
+    write:
+      - $HOME/.pivx
+  dot-rapids:
+    interface: personal-files
+    write:
+      - $HOME/.rapids
+  dot-reddcoin:
+    interface: personal-files
+    write:
+      - $HOME/.reddcoin
+  dot-scala:
+    interface: personal-files
+    write:
+      - $HOME/.scala
+  dot-syscoin:
+    interface: personal-files
+    write:
+      - $HOME/.sysycoin
+  dot-trezarcoin:
+    interface: personal-files
+    write:
+      - $HOME/.trezarcoin
+  dot-vertcoin:
+    interface: personal-files
+    write:
+      - $HOME/.vertcoin
