@@ -150,7 +150,12 @@ func unlockWalletFS(cliConf *be.ConfStruct, pw string) (be.GenericRespStruct, er
 	var body *strings.Reader
 
 	switch cliConf.ProjectType {
-	case be.PTBitcoinPlus, be.PTDenarius, be.PTTrezarcoin, be.PTRapids, be.PTReddCoin, be.PTPIVX:
+	case be.PTBitcoinPlus:
+		// BitcoinPlus, doesn't currently support the "true" parameter to unlock for staking, so we're just adding an "unlock" command here
+		// until Peter has fixed it...
+		// todo Fix this in the future so that it *only* unlocks for staking.
+		body = strings.NewReader("{\"jsonrpc\":\"1.0\",\"id\":\"boxwallet\",\"method\":\"walletpassphrase\",\"params\":[\"" + pw + "\",9999999]}")
+	case be.PTDenarius, be.PTTrezarcoin, be.PTRapids, be.PTReddCoin, be.PTPIVX:
 		// Trezarcoin requires some 9's to be passed to unlock a wallet for staking
 		body = strings.NewReader("{\"jsonrpc\":\"1.0\",\"id\":\"boxwallet\",\"method\":\"walletpassphrase\",\"params\":[\"" + pw + "\",9999999,true]}")
 	default:
