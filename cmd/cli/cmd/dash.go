@@ -1203,9 +1203,9 @@ var dashCmd = &cobra.Command{
 			case be.PTBitcoinPlus:
 				sHeaders = getNetworkHeadersTxtXBC(&bciXBC)
 				sBlocks = getNetworkBlocksTxtXBC(&bciXBC)
-				sDiff = be.GetNetworkDifficultyTxtXBC(bciXBC.Result.Difficulty, gDiffGood, gDiffWarning)
+				sDiff = getNetworkDifficultyTxtXBC(bciXBC.Result.Difficulty, gDiffGood, gDiffWarning)
 				sBlockchainSync = getBlockchainSyncTxtXBC(bXBCBlockchainIsSynced, &bciXBC)
-				sPeers = be.GetNetworkConnectionsTxtXBC(gConnections)
+				sPeers = getNetworkConnectionsTxtXBC(gConnections)
 			case be.PTDenarius:
 				sBlocks = getNetworkBlocksTxtDenarius(&bciDenarius)
 				sDiff = be.GetNetworkDifficultyTxtDenarius(bciDenarius.Result.Difficulty.ProofOfWork, gDiffGood, gDiffWarning)
@@ -1366,7 +1366,9 @@ var dashCmd = &cobra.Command{
 					"  " + sPeers
 			}
 
+			//**************************
 			// Populate the Wallet panel
+			//**************************
 
 			// Decide what colour the wallet panel border should be...
 
@@ -2065,7 +2067,7 @@ func getLotteryTicketsTxtDIVI(trans *be.DiviListTransactions) string {
 
 	for i := len(trans.Result) - 1; i >= 0; i-- {
 		// If this transaction is not a stake, we're not interested in it.
-		if trans.Result[i].Category != "stake" {
+		if trans.Result[i].Category != "stake_reward" {
 			continue
 		}
 
@@ -2669,6 +2671,13 @@ func getNetworkBlocksTxtXBC(bci *be.XBCBlockchainInfoRespStruct) string {
 	return "Blocks:      [" + blocksStr + "](fg:green)"
 }
 
+func getNetworkConnectionsTxtXBC(connections int) string {
+	if connections == 0 {
+		return "Peers:       [0](fg:red)"
+	}
+	return "Peers:       [" + strconv.Itoa(connections) + "](fg:green)"
+}
+
 func getNetworkHeadersTxtXBC(bci *be.XBCBlockchainInfoRespStruct) string {
 	headersStr := humanize.Comma(int64(bci.Result.Headers))
 
@@ -2766,7 +2775,7 @@ func getWalletSecurityStatusTxtXBC(wi *be.XBCWalletInfoRespStruct) string {
 	} else if wi.Result.UnlockedUntil == -1 {
 		return "Security:         [UNENCRYPTED](fg:red)"
 	} else if wi.Result.UnlockedUntil > 0 {
-		return "Security:         [Locked](fg:green)"
+		return "Security:         [Locked and Staking](fg:green)"
 	} else {
 		return "Security:         [checking...](fg:yellow)"
 	}
@@ -2983,6 +2992,28 @@ func getNetworkDifficultyInfo(pt be.ProjectType) (float64, float64, error) {
 		fWarning = fDiff * 0.50
 	}
 	return fGood, fWarning, nil
+}
+
+func getNetworkDifficultyTxtXBC(difficulty, good, warn float64) string {
+	var s string
+	if difficulty > 1000 {
+		s = humanize.FormatFloat("#.#", difficulty/1000) + "k"
+	} else {
+		s = humanize.Ftoa(difficulty)
+	}
+
+	// If Diff is less than 1, then we're not even calculating it properly yet...
+	//if difficulty < 1 {
+	//	return "[Difficulty:  waiting...](fg:white)"
+	//}
+
+	if difficulty >= good {
+		return "Difficulty:  [" + s + "](fg:green)"
+	} else if difficulty >= warn {
+		return "Difficulty:  [" + s + "](fg:yellow)"
+	} else {
+		return "Difficulty:  [" + s + "](fg:red)"
+	}
 }
 
 func getPrivateKeyNew(cliConf *be.ConfStruct) (hdinfoRespStruct, error) {
