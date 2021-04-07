@@ -4,6 +4,7 @@ BoxWallet is a single binary multi-coin CLI tool, that gets your coin-of-choice 
 
 `./boxwallet coin` - allows you to choose your coin of choice, which then downloads the projects core files from their official website and installs them automatically.
 ![alt text](img/coin.gif)
+
 `./boxwallet start` - starts the coin's daemon, which syncs the Blockchain.
 
 `./boxwallet dash` - displays a dashboard with the coins Blockchain and wallet info.
