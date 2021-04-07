@@ -33,7 +33,7 @@ const (
 	cHomeDirWinDenarius  string = "denarius"
 
 	// Files
-	CDenariusConfFile   string = "denarius.conf"
+	cConfFileDenarius   string = "denarius.conf"
 	CDenariusCliFile    string = "denarius"
 	CDenariusCliFileWin string = "denarius-cli.exe"
 	CDFileDenarius      string = "denarius.daemon"
