@@ -3,7 +3,7 @@
 BoxWallet is a single binary multi-coin CLI tool, that gets your coin-of-choice wallet/node set-up ***fast*** with just a few commands:
 
 `./boxwallet coin` - allows you to choose your coin of choice, which then downloads the projects core files from their official website and installs them automatically.
-
+![alt text](img/coin.gif)
 `./boxwallet start` - starts the coin's daemon, which syncs the Blockchain.
 
 `./boxwallet dash` - displays a dashboard with the coins Blockchain and wallet info.
@@ -97,6 +97,8 @@ Then  `./boxwallet dash`, where you will be greeted with an initial wizard to ge
 * `boxwallet coin` - Installs the official coin project CLI files, and creates a new wallet.
 
 * `boxwallet dash` - Displays blockchain, syncing, staking and coin balance and AUD/USD/GBP (Divi only) balance info.
+
+* `boxwallet send` - Send your crypto.
 
 * `boxwallet wallet backup` - Creates a backup of your `wallet.dat` file, and names it based on the days date.
 
