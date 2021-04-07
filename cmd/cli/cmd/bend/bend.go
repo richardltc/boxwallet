@@ -3753,7 +3753,7 @@ func AllProjectBinaryFilesExists() (bool, error) {
 				return false, nil
 			}
 		} else {
-			if !FileExists(CDenariusBinDirLinux + CDenariusCliFile) {
+			if !FileExists(CDenariusBinDirLinux + CCliFileDenarius) {
 				return false, nil
 			}
 			if !FileExists(CDenariusBinDirLinux + CDFileDenarius) {
@@ -4786,7 +4786,7 @@ func StopCoinDaemon(displayOutput bool) error {
 		if runtime.GOOS == "windows" {
 			// TODO Complete for Windows
 		} else {
-			cRun := exec.Command(abf+CDenariusCliFile, "stop")
+			cRun := exec.Command(abf+CCliFileDenarius, "stop")
 			if err := cRun.Run(); err != nil {
 				return fmt.Errorf("unable to StopPIVXD:%v", err)
 			}

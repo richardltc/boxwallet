@@ -34,7 +34,7 @@ const (
 
 	// Files
 	cConfFileDenarius   string = "denarius.conf"
-	CDenariusCliFile    string = "denarius"
+	CCliFileDenarius    string = "denarius"
 	CDenariusCliFileWin string = "denarius-cli.exe"
 	CDFileDenarius      string = "denarius.daemon"
 	CDenariusDMem       string = "denariusd"
