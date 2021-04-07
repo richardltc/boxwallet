@@ -26,7 +26,7 @@ import (
 const (
 	CAppName        string = "BoxWallet"
 	CUpdaterAppName string = "bwupdater"
-	CBWAppVersion   string = "0.41.1"
+	CBWAppVersion   string = "0.41.1a"
 	CAppFilename    string = "boxwallet"
 	CAppFilenameWin string = "boxwallet.exe"
 	CAppLogfile     string = "boxwallet.log"
@@ -1471,12 +1471,12 @@ func PopulateDaemonConfFile() (rpcuser, rpcpassword string, err error) {
 
 		return rpcu, rpcpw, nil
 	case PTDenarius:
-		fmt.Println("Populating " + CDenariusConfFile + " for initial setup...")
+		fmt.Println("Populating " + cConfFileDenarius + " for initial setup...")
 
 		// Add rpcuser info if required, or retrieve the existing one
 		bNeedToWriteStr := true
-		if FileExists(chd + CDenariusConfFile) {
-			bStrFound, err := StringExistsInFile(cRPCUserStr+"=", chd+CDenariusConfFile)
+		if FileExists(chd + cConfFileDenarius) {
+			bStrFound, err := StringExistsInFile(cRPCUserStr+"=", chd+cConfFileDenarius)
 			if err != nil {
 				return "", "", fmt.Errorf("unable to search for text in file - %v", err)
 			}
@@ -1484,13 +1484,13 @@ func PopulateDaemonConfFile() (rpcuser, rpcpassword string, err error) {
 				// String not found
 				if !bFileHasBeenBU {
 					bFileHasBeenBU = true
-					if err := BackupFile(chd, CDenariusConfFile, "", "", false); err != nil {
+					if err := BackupFile(chd, cConfFileDenarius, "", "", false); err != nil {
 						return "", "", fmt.Errorf("unable to backup file - %v", err)
 					}
 				}
 			} else {
 				bNeedToWriteStr = false
-				rpcu, err = GetStringAfterStrFromFile(cRPCUserStr+"=", chd+CDenariusConfFile)
+				rpcu, err = GetStringAfterStrFromFile(cRPCUserStr+"=", chd+cConfFileDenarius)
 				if err != nil {
 					return "", "", fmt.Errorf("unable to search for text in file - %v", err)
 				}
@@ -1501,15 +1501,15 @@ func PopulateDaemonConfFile() (rpcuser, rpcpassword string, err error) {
 		}
 		if bNeedToWriteStr {
 			rpcu = cDenariusRPCUser
-			if err := WriteTextToFile(chd+CDenariusConfFile, cRPCUserStr+"="+rpcu); err != nil {
+			if err := WriteTextToFile(chd+cConfFileDenarius, cRPCUserStr+"="+rpcu); err != nil {
 				log.Fatal(err)
 			}
 		}
 
 		// Add rpcpassword info if required, or retrieve the existing one.
 		bNeedToWriteStr = true
-		if FileExists(chd + CDenariusConfFile) {
-			bStrFound, err := StringExistsInFile(cRPCPasswordStr+"=", chd+CDenariusConfFile)
+		if FileExists(chd + cConfFileDenarius) {
+			bStrFound, err := StringExistsInFile(cRPCPasswordStr+"=", chd+cConfFileDenarius)
 			if err != nil {
 				return "", "", fmt.Errorf("unable to search for text in file - %v", err)
 			}
@@ -1517,13 +1517,13 @@ func PopulateDaemonConfFile() (rpcuser, rpcpassword string, err error) {
 				// String not found
 				if !bFileHasBeenBU {
 					bFileHasBeenBU = true
-					if err := BackupFile(chd, CDenariusConfFile, "", "", false); err != nil {
+					if err := BackupFile(chd, cConfFileDenarius, "", "", false); err != nil {
 						return "", "", fmt.Errorf("unable to backup file - %v", err)
 					}
 				}
 			} else {
 				bNeedToWriteStr = false
-				rpcpw, err = GetStringAfterStrFromFile(cRPCPasswordStr+"=", chd+CDenariusConfFile)
+				rpcpw, err = GetStringAfterStrFromFile(cRPCPasswordStr+"=", chd+cConfFileDenarius)
 				if err != nil {
 					return "", "", fmt.Errorf("unable to search for text in file - %v", err)
 				}
@@ -1531,18 +1531,18 @@ func PopulateDaemonConfFile() (rpcuser, rpcpassword string, err error) {
 		}
 		if bNeedToWriteStr {
 			rpcpw = rand.String(20)
-			if err := WriteTextToFile(chd+CDenariusConfFile, cRPCPasswordStr+"="+rpcpw); err != nil {
+			if err := WriteTextToFile(chd+cConfFileDenarius, cRPCPasswordStr+"="+rpcpw); err != nil {
 				log.Fatal(err)
 			}
-			if err := WriteTextToFile(chd+CDenariusConfFile, ""); err != nil {
+			if err := WriteTextToFile(chd+cConfFileDenarius, ""); err != nil {
 				log.Fatal(err)
 			}
 		}
 
 		// Add daemon=1 info if required
 		bNeedToWriteStr = true
-		if FileExists(chd + CDenariusConfFile) {
-			bStrFound, err := StringExistsInFile("daemon=1", chd+CDenariusConfFile)
+		if FileExists(chd + cConfFileDenarius) {
+			bStrFound, err := StringExistsInFile("daemon=1", chd+cConfFileDenarius)
 			if err != nil {
 				return "", "", fmt.Errorf("unable to search for text in file - %v", err)
 			}
@@ -1550,7 +1550,7 @@ func PopulateDaemonConfFile() (rpcuser, rpcpassword string, err error) {
 				// String not found
 				if !bFileHasBeenBU {
 					bFileHasBeenBU = true
-					if err := BackupFile(chd, CDenariusConfFile, "", "", false); err != nil {
+					if err := BackupFile(chd, cConfFileDenarius, "", "", false); err != nil {
 						return "", "", fmt.Errorf("unable to backup file - %v", err)
 					}
 				}
@@ -1559,18 +1559,18 @@ func PopulateDaemonConfFile() (rpcuser, rpcpassword string, err error) {
 			}
 		}
 		if bNeedToWriteStr {
-			if err := WriteTextToFile(chd+CDenariusConfFile, "daemon=1"); err != nil {
+			if err := WriteTextToFile(chd+cConfFileDenarius, "daemon=1"); err != nil {
 				log.Fatal(err)
 			}
-			if err := WriteTextToFile(chd+CDenariusConfFile, ""); err != nil {
+			if err := WriteTextToFile(chd+cConfFileDenarius, ""); err != nil {
 				log.Fatal(err)
 			}
 		}
 
 		// Add server=1 info if required
 		bNeedToWriteStr = true
-		if FileExists(chd + CDenariusConfFile) {
-			bStrFound, err := StringExistsInFile("server=1", chd+CDenariusConfFile)
+		if FileExists(chd + cConfFileDenarius) {
+			bStrFound, err := StringExistsInFile("server=1", chd+cConfFileDenarius)
 			if err != nil {
 				return "", "", fmt.Errorf("unable to search for text in file - %v", err)
 			}
@@ -1578,7 +1578,7 @@ func PopulateDaemonConfFile() (rpcuser, rpcpassword string, err error) {
 				// String not found
 				if !bFileHasBeenBU {
 					bFileHasBeenBU = true
-					if err := BackupFile(chd, CDenariusConfFile, "", "", false); err != nil {
+					if err := BackupFile(chd, cConfFileDenarius, "", "", false); err != nil {
 						return "", "", fmt.Errorf("unable to backup file - %v", err)
 					}
 				}
@@ -1587,15 +1587,15 @@ func PopulateDaemonConfFile() (rpcuser, rpcpassword string, err error) {
 			}
 		}
 		if bNeedToWriteStr {
-			if err := WriteTextToFile(chd+CDenariusConfFile, "server=1"); err != nil {
+			if err := WriteTextToFile(chd+cConfFileDenarius, "server=1"); err != nil {
 				log.Fatal(err)
 			}
 		}
 
 		// Add rpcallowip= info if required
 		bNeedToWriteStr = true
-		if FileExists(chd + CDenariusConfFile) {
-			bStrFound, err := StringExistsInFile("rpcallowip=", chd+CDenariusConfFile)
+		if FileExists(chd + cConfFileDenarius) {
+			bStrFound, err := StringExistsInFile("rpcallowip=", chd+cConfFileDenarius)
 			if err != nil {
 				return "", "", fmt.Errorf("unable to search for text in file - %v", err)
 			}
@@ -1603,7 +1603,7 @@ func PopulateDaemonConfFile() (rpcuser, rpcpassword string, err error) {
 				// String not found
 				if !bFileHasBeenBU {
 					bFileHasBeenBU = true
-					if err := BackupFile(chd, CDenariusConfFile, "", "", false); err != nil {
+					if err := BackupFile(chd, cConfFileDenarius, "", "", false); err != nil {
 						return "", "", fmt.Errorf("unable to backup file - %v", err)
 					}
 				}
@@ -1612,15 +1612,15 @@ func PopulateDaemonConfFile() (rpcuser, rpcpassword string, err error) {
 			}
 		}
 		if bNeedToWriteStr {
-			if err := WriteTextToFile(chd+CDenariusConfFile, "rpcallowip=192.168.1.0/255.255.255.0"); err != nil {
+			if err := WriteTextToFile(chd+cConfFileDenarius, "rpcallowip=192.168.1.0/255.255.255.0"); err != nil {
 				log.Fatal(err)
 			}
 		}
 
 		// Add rpcport= info if required
 		bNeedToWriteStr = true
-		if FileExists(chd + CDenariusConfFile) {
-			bStrFound, err := StringExistsInFile("rpcport=", chd+CDenariusConfFile)
+		if FileExists(chd + cConfFileDenarius) {
+			bStrFound, err := StringExistsInFile("rpcport=", chd+cConfFileDenarius)
 			if err != nil {
 				return "", "", fmt.Errorf("unable to search for text in file - %v", err)
 			}
@@ -1628,7 +1628,7 @@ func PopulateDaemonConfFile() (rpcuser, rpcpassword string, err error) {
 				// String not found
 				if !bFileHasBeenBU {
 					bFileHasBeenBU = true
-					if err := BackupFile(chd, CDenariusConfFile, "", "", false); err != nil {
+					if err := BackupFile(chd, cConfFileDenarius, "", "", false); err != nil {
 						return "", "", fmt.Errorf("unable to backup file - %v", err)
 					}
 				}
@@ -1637,7 +1637,7 @@ func PopulateDaemonConfFile() (rpcuser, rpcpassword string, err error) {
 			}
 		}
 		if bNeedToWriteStr {
-			if err := WriteTextToFile(chd+CDenariusConfFile, "rpcport="+CDenariusRPCPort); err != nil {
+			if err := WriteTextToFile(chd+cConfFileDenarius, "rpcport="+CDenariusRPCPort); err != nil {
 				log.Fatal(err)
 			}
 		}
