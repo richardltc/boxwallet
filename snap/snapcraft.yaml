@@ -21,7 +21,20 @@ parts:
 apps:
   boxwallet:
     command: cli
-    plugs: [ "personal-files" ]
+    plugs:
+    - dot-bitcoinplus
+    - dot-devault
+    - dot-digibyte
+    - dot-feathercoin
+    - dot-groestlcoin
+    - dot-phore
+    - dot-pivx
+    - dot-rapids
+    - dot-reddcoin
+    - dot-scala
+    - dot-syscoin
+    - dot-trezarcoin
+    - dot-vertcoin
 
 confinement: strict
 
@@ -73,7 +86,7 @@ plugs:
   dot-syscoin:
     interface: personal-files
     write:
-      - $HOME/.sysycoin
+      - $HOME/.syscoin
   dot-trezarcoin:
     interface: personal-files
     write:
