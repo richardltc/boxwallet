@@ -9,7 +9,6 @@ import (
 	"github.com/theckman/yacspin"
 	"io/ioutil"
 	"net/http"
-	"strconv"
 	"strings"
 	"time"
 )
@@ -35,7 +34,7 @@ const (
 	CDownloadURLDivi          = "https://github.com/DiviProject/Divi/releases/download/v" + CDiviCoreVersion + "/"
 	CDownloadURLDiviBS string = "https://snapshots.diviproject.org/dist/"
 
-	CDiviConfFile   string = "divi.conf"
+	cConfFileDivi   string = "divi.conf"
 	CDiviCliFile    string = "divi-cli"
 	CDiviCliFileWin string = "divi-cli.exe"
 	CDiviDFile      string = "divid"
@@ -526,13 +525,6 @@ func GetNetworkBlocksTxtDivi(bci *DiviBlockchainInfoRespStruct) string {
 	} else {
 		return "[Blocks:      " + blocksStr + "](fg:red)"
 	}
-}
-
-func GetNetworkConnectionsTxtDivi(connections int) string {
-	if connections == 0 {
-		return "Peers:       [0](fg:red)"
-	}
-	return "Peers:       [" + strconv.Itoa(connections) + "](fg:green)"
 }
 
 func GetNetworkDifficultyTxtDivi(difficulty, good, warn float64) string {
