@@ -7,7 +7,6 @@ import (
 	"github.com/theckman/yacspin"
 	"io/ioutil"
 	"net/http"
-	"strconv"
 	"strings"
 	"time"
 )
@@ -360,16 +359,8 @@ func GetInfoDenariusUI(cliConf *ConfStruct, spin *yacspin.Spinner) (DenariusGetI
 				return respStruct, string(bodyResp), err
 			}
 		}
-		//resp.Body.Close()
 	}
 	return respStruct, "", nil
-}
-
-func GetNetworkConnectionsTxtDenarius(connections int) string {
-	if connections == 0 {
-		return "Peers:       [0](fg:red)"
-	}
-	return "Peers:       [" + strconv.Itoa(connections) + "](fg:green)"
 }
 
 func GetNewAddressDenarius(cliConf *ConfStruct) (DenariusNewAddressStruct, error) {
@@ -400,72 +391,6 @@ func GetNewAddressDenarius(cliConf *ConfStruct) (DenariusNewAddressStruct, error
 
 	return respStruct, nil
 }
-
-//func GetWalletInfoDenarius(cliConf *ConfStruct) (DenariusWalletInfoRespStruct, error) {
-//	var respStruct DenariusWalletInfoRespStruct
-//
-//	body := strings.NewReader("{\"jsonrpc\":\"1.0\",\"id\":\"curltext\",\"method\":\"getwalletinfo\",\"params\":[]}")
-//	req, err := http.NewRequest("POST", "http://"+cliConf.ServerIP+":"+cliConf.Port, body)
-//	if err != nil {
-//		return respStruct, err
-//	}
-//	req.SetBasicAuth(cliConf.RPCuser, cliConf.RPCpassword)
-//	req.Header.Set("Content-Type", "text/plain;")
-//
-//	resp, err := http.DefaultClient.Do(req)
-//	if err != nil {
-//		return respStruct, err
-//	}
-//	defer resp.Body.Close()
-//	bodyResp, err := ioutil.ReadAll(resp.Body)
-//	if err != nil {
-//		return respStruct, err
-//	}
-//
-//	err = json.Unmarshal(bodyResp, &respStruct)
-//	if err != nil {
-//		return respStruct, err
-//	}
-//
-//	// Check to see if the json response contains "unlocked_until"
-//	s := string([]byte(bodyResp))
-//	if !strings.Contains(s, "unlocked_until") {
-//		respStruct.Result.UnlockedUntil = -1
-//	}
-//
-//	return respStruct, nil
-//}
-
-//func GetNetworkBlocksTxtDenarius(bci *DenariusBlockchainInfoRespStruct) string {
-//	blocksStr := humanize.Comma(int64(bci.Result.Blocks))
-//
-//	if blocksStr == "0" {
-//		return "Blocks:      [waiting...](fg:white)"
-//	}
-//
-//	return "Blocks:      [" + blocksStr + "](fg:green)"
-//}
-
-//func GetBlockchainSyncTxtDenarius(synced bool, bci *DenariusBlockchainInfoRespStruct) string {
-//	s := ConvertBCVerification(bci.Result.Verificationprogress)
-//	if s == "0.0" {
-//		s = ""
-//	} else {
-//		s = s + "%"
-//	}
-//
-//	if !synced {
-//		if bci.Result.Verificationprogress > gLastBCSyncPos {
-//			gLastBCSyncPos = bci.Result.Verificationprogress
-//			return "Blockchain:  [syncing " + s + " ](fg:yellow)"
-//		} else {
-//			gLastBCSyncPos = bci.Result.Verificationprogress
-//			return "Blockchain:  [waiting " + s + " ](fg:yellow)"
-//		}
-//	} else {
-//		return "Blockchain:  [synced " + CUtfTickBold + "](fg:green)"
-//	}
-//}
 
 func GetNetworkDifficultyTxtDenarius(difficulty, good, warn float64) string {
 	var s string
