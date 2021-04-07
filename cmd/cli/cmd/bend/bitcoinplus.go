@@ -42,7 +42,7 @@ const (
 	CTxFileBitcoinPlus     string = "bitcoinplus-tx"
 	CTxFileWinBitcoinPlus  string = "bitcoinplus-tx.exe"
 
-	// pivx.conf file constants
+	// pivx.conf file constants.
 	CRPCUserBitcoinPlus string = "bitcoinplusrpc"
 	CRPCPortBitcoinPlus string = "8885"
 )
@@ -415,10 +415,10 @@ func GetNewAddressXBC(cliConf *ConfStruct) (XBCGetNewAddressStruct, error) {
 	return respStruct, nil
 }
 
-func GetStakingStatusXBC(cliConf *ConfStruct) (XBCStakingInfoRespStruct, error) {
+func GetStakingInfoXBC(cliConf *ConfStruct) (XBCStakingInfoRespStruct, error) {
 	var respStruct XBCStakingInfoRespStruct
 
-	body := strings.NewReader("{\"jsonrpc\":\"1.0\",\"id\":\"curltext\",\"method\":\"getstakingstatus\",\"params\":[]}")
+	body := strings.NewReader("{\"jsonrpc\":\"1.0\",\"id\":\"boxwallet\",\"method\":\"" + cCommandGetStakingInfo + "\",\"params\":[]}")
 	req, err := http.NewRequest("POST", "http://"+cliConf.ServerIP+":"+cliConf.Port, body)
 	if err != nil {
 		return respStruct, err
