@@ -1025,7 +1025,7 @@ var dashCmd = &cobra.Command{
 			}
 			//gi, _ := diviGetInfo(&cliConf)
 
-			// Check the blockchain sync health
+			// Check the blockchain sync health.
 			if err := checkHealth(&bciDivi); err != nil {
 				log.Fatalf("Unable to check health: %v", err)
 			}
@@ -1035,7 +1035,7 @@ var dashCmd = &cobra.Command{
 			switch cliConf.ProjectType {
 			case be.PTBitcoinPlus:
 				if bciXBC.Result.Verificationprogress > 0.999 {
-					ssXBC, _ = be.GetStakingStatusXBC(&cliConf)
+					ssXBC, _ = be.GetStakingInfoXBC(&cliConf)
 					transXBC, _ = be.ListTransactionsXBC(&cliConf)
 					wiXBC, _ = be.GetWalletInfoXBC(&cliConf)
 				}
@@ -1210,7 +1210,7 @@ var dashCmd = &cobra.Command{
 				sBlocks = getNetworkBlocksTxtDenarius(&bciDenarius)
 				sDiff = be.GetNetworkDifficultyTxtDenarius(bciDenarius.Result.Difficulty.ProofOfWork, gDiffGood, gDiffWarning)
 				sBlockchainSync = getBlockchainSyncTxtDenarius(bDenariusBlockchainIsSynced, &bciDenarius)
-				sPeers = be.GetNetworkConnectionsTxtDenarius(gConnections)
+				sPeers = getNetworkConnectionsTxtDenarius(gConnections)
 			case be.PTDeVault:
 				sHeaders = be.GetNetworkHeadersTxtDVT(&bciDeVault)
 				sBlocks = be.GetNetworkBlocksTxtDVT(&bciDeVault)
@@ -1228,7 +1228,7 @@ var dashCmd = &cobra.Command{
 				sDiff = be.GetNetworkDifficultyTxtDivi(bciDivi.Result.Difficulty, gDiffGood, gDiffWarning)
 				sBlockchainSync = getBlockchainSyncTxtDivi(mnssDivi.Result.IsBlockchainSynced, &bciDivi)
 				sMNSync = getMNSyncStatusTxtDivi(mnssDivi.Result.IsBlockchainSynced, &mnssDivi)
-				sPeers = be.GetNetworkConnectionsTxtDivi(gConnections)
+				sPeers = getNetworkConnectionsTxtDivi(gConnections)
 			case be.PTFeathercoin:
 				sHeaders = be.GetNetworkHeadersTxtFeathercoin(&bciFeathercoin)
 				sBlocks = be.GetNetworkBlocksTxtFeathercoin(&bciFeathercoin)
@@ -2669,6 +2669,20 @@ func getNetworkBlocksTxtXBC(bci *be.XBCBlockchainInfoRespStruct) string {
 	}
 
 	return "Blocks:      [" + blocksStr + "](fg:green)"
+}
+
+func getNetworkConnectionsTxtDenarius(connections int) string {
+	if connections == 0 {
+		return "Peers:       [0](fg:red)"
+	}
+	return "Peers:       [" + strconv.Itoa(connections) + "](fg:green)"
+}
+
+func getNetworkConnectionsTxtDivi(connections int) string {
+	if connections == 0 {
+		return "Peers:       [0](fg:red)"
+	}
+	return "Peers:       [" + strconv.Itoa(connections) + "](fg:green)"
 }
 
 func getNetworkConnectionsTxtXBC(connections int) string {
