@@ -1212,11 +1212,11 @@ var dashCmd = &cobra.Command{
 				sBlockchainSync = getBlockchainSyncTxtDenarius(bDenariusBlockchainIsSynced, &bciDenarius)
 				sPeers = getNetworkConnectionsTxtDenarius(gConnections)
 			case be.PTDeVault:
-				sHeaders = be.GetNetworkHeadersTxtDVT(&bciDeVault)
-				sBlocks = be.GetNetworkBlocksTxtDVT(&bciDeVault)
-				sDiff = be.GetNetworkDifficultyTxtDVT(bciDeVault.Result.Difficulty, gDiffGood, gDiffWarning)
+				sHeaders = getNetworkHeadersTxtDVT(&bciDeVault)
+				sBlocks = getNetworkBlocksTxtDVT(&bciDeVault)
+				sDiff = getNetworkDifficultyTxtDVT(bciDeVault.Result.Difficulty, gDiffGood, gDiffWarning)
 				sBlockchainSync = getBlockchainSyncTxtDVT(bDVTBlockchainIsSynced, &bciDeVault)
-				sPeers = be.GetNetworkConnectionsTxtDVT(gConnections)
+				sPeers = getNetworkConnectionsTxtDVT(gConnections)
 			case be.PTDigiByte:
 				sHeaders = be.GetNetworkHeadersTxtDGB(&bciDigiByte)
 				sBlocks = be.GetNetworkBlocksTxtDGB(&bciDigiByte)
@@ -2661,6 +2661,16 @@ func getNetworkBlocksTxtDenarius(bci *be.DenariusBlockchainInfoRespStruct) strin
 	return "Blocks:      [" + blocksStr + "](fg:green)"
 }
 
+func getNetworkBlocksTxtDVT(bci *be.DVTBlockchainInfoRespStruct) string {
+	blocksStr := humanize.Comma(int64(bci.Result.Blocks))
+
+	if blocksStr == "0" {
+		return "Blocks:      [waiting...](fg:white)"
+	}
+
+	return "Blocks:      [" + blocksStr + "](fg:green)"
+}
+
 func getNetworkBlocksTxtXBC(bci *be.XBCBlockchainInfoRespStruct) string {
 	blocksStr := humanize.Comma(int64(bci.Result.Blocks))
 
@@ -2672,6 +2682,13 @@ func getNetworkBlocksTxtXBC(bci *be.XBCBlockchainInfoRespStruct) string {
 }
 
 func getNetworkConnectionsTxtDenarius(connections int) string {
+	if connections == 0 {
+		return "Peers:       [0](fg:red)"
+	}
+	return "Peers:       [" + strconv.Itoa(connections) + "](fg:green)"
+}
+
+func getNetworkConnectionsTxtDVT(connections int) string {
 	if connections == 0 {
 		return "Peers:       [0](fg:red)"
 	}
@@ -2690,6 +2707,16 @@ func getNetworkConnectionsTxtXBC(connections int) string {
 		return "Peers:       [0](fg:red)"
 	}
 	return "Peers:       [" + strconv.Itoa(connections) + "](fg:green)"
+}
+
+func getNetworkHeadersTxtDVT(bci *be.DVTBlockchainInfoRespStruct) string {
+	headersStr := humanize.Comma(int64(bci.Result.Headers))
+
+	if bci.Result.Headers > 1 {
+		return "Headers:     [" + headersStr + "](fg:green)"
+	} else {
+		return "[Headers:     " + headersStr + "](fg:red)"
+	}
 }
 
 func getNetworkHeadersTxtXBC(bci *be.XBCBlockchainInfoRespStruct) string {
@@ -3006,6 +3033,28 @@ func getNetworkDifficultyInfo(pt be.ProjectType) (float64, float64, error) {
 		fWarning = fDiff * 0.50
 	}
 	return fGood, fWarning, nil
+}
+
+func getNetworkDifficultyTxtDVT(difficulty, good, warn float64) string {
+	var s string
+	if difficulty > 1000 {
+		s = humanize.FormatFloat("#.#", difficulty/1000) + "k"
+	} else {
+		s = humanize.Ftoa(difficulty)
+	}
+
+	// If Diff is less than 1, then we're not even calculating it properly yet...
+	if difficulty < 1 {
+		return "[Difficulty:  waiting...](fg:white)"
+	}
+
+	if difficulty >= good {
+		return "Difficulty:  [" + s + "](fg:green)"
+	} else if difficulty >= warn {
+		return "Difficulty:  [" + s + "](fg:yellow)"
+	} else {
+		return "Difficulty:  [" + s + "](fg:red)"
+	}
 }
 
 func getNetworkDifficultyTxtXBC(difficulty, good, warn float64) string {
