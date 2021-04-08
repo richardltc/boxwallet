@@ -3,10 +3,8 @@ package bend
 import (
 	"bytes"
 	"encoding/json"
-	"github.com/dustin/go-humanize"
 	"io/ioutil"
 	"net/http"
-	"strconv"
 	"strings"
 	"time"
 )
@@ -219,55 +217,6 @@ func GetInfoDVT(cliConf *ConfStruct) (DeVaultGetInfoRespStruct, error) {
 		}
 	}
 	return respStruct, nil
-}
-
-func GetNetworkBlocksTxtDVT(bci *DVTBlockchainInfoRespStruct) string {
-	blocksStr := humanize.Comma(int64(bci.Result.Blocks))
-
-	if blocksStr == "0" {
-		return "Blocks:      [waiting...](fg:white)"
-	}
-
-	return "Blocks:      [" + blocksStr + "](fg:green)"
-}
-
-func GetNetworkConnectionsTxtDVT(connections int) string {
-	if connections == 0 {
-		return "Peers:       [0](fg:red)"
-	}
-	return "Peers:       [" + strconv.Itoa(connections) + "](fg:green)"
-}
-
-func GetNetworkDifficultyTxtDVT(difficulty, good, warn float64) string {
-	var s string
-	if difficulty > 1000 {
-		s = humanize.FormatFloat("#.#", difficulty/1000) + "k"
-	} else {
-		s = humanize.Ftoa(difficulty)
-	}
-
-	// If Diff is less than 1, then we're not even calculating it properly yet...
-	if difficulty < 1 {
-		return "[Difficulty:  waiting...](fg:white)"
-	}
-
-	if difficulty >= good {
-		return "Difficulty:  [" + s + "](fg:green)"
-	} else if difficulty >= warn {
-		return "Difficulty:  [" + s + "](fg:yellow)"
-	} else {
-		return "Difficulty:  [" + s + "](fg:red)"
-	}
-}
-
-func GetNetworkHeadersTxtDVT(bci *DVTBlockchainInfoRespStruct) string {
-	headersStr := humanize.Comma(int64(bci.Result.Headers))
-
-	if bci.Result.Headers > 1 {
-		return "Headers:     [" + headersStr + "](fg:green)"
-	} else {
-		return "[Headers:     " + headersStr + "](fg:red)"
-	}
 }
 
 func GetNetworkInfoDVT(cliConf *ConfStruct) (DVTNetworkInfoRespStruct, error) {
