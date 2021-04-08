@@ -11,7 +11,7 @@ description: |
 
   boxwallet dash - displays a dashboard with the coins Blockchain and wallet info.
 base: core18
-version: "0.41.1"
+version: "0.41.2"
 
 parts:
   boxwallet:
