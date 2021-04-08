@@ -77,7 +77,7 @@ var coinCmd = &cobra.Command{
 		case be.CCoinNameDenarius:
 			be.AddToLog(lf, be.CCoinNameDenarius+" selected", false)
 			cliConf.ProjectType = be.PTDenarius
-			cliConf.Port = be.CDenariusRPCPort
+			cliConf.Port = be.CRPCPortDenarius
 		case be.CCoinNameDeVault:
 			be.AddToLog(lf, be.CCoinNameDeVault+" selected", false)
 			cliConf.ProjectType = be.PTDeVault
@@ -197,7 +197,7 @@ var coinCmd = &cobra.Command{
 				ans := true
 				prompt := &survey.Confirm{
 					Message: "\nIt looks like this is a fresh install of " + be.CCoinNameDenarius +
-						"\n\nWould you like to download the Blockchain snapshot " + be.CDFDenariusBS + " ?:",
+						"\n\nWould you like to download the Blockchain snapshot " + be.CDFBSDenarius + " ?:",
 					Default: true,
 				}
 				survey.AskOne(prompt, &ans)

@@ -19,8 +19,8 @@ const (
 	//CDFRPiDenarius       string = "Denarius-" + CDenariusCoreVersion + "-arm-linux-gnueabihf.tar.gz"
 	//CDFLinuxDenarius     string = "Denarius-" + CDenariusCoreVersion + "-x86_64-linux-gnu.tar.gz"
 	CDFDenariusWindows string = "Denarius-" + CCoreVersionDenarius + "-Win64.zip"
-	CDFDenariusBS      string = "chaindata.zip"
-	CDFDenariusBSARM   string = "pichaindata.zip"
+	CDFBSDenarius      string = "chaindata.zip"
+	CDFBSARMDenarius   string = "pichaindata.zip"
 
 	//CDenariusExtractedDirLinux   = "Denarius-" + CDenariusCoreVersion + "/"
 	CDenariusExtractedDirWindows = "Denarius-" + CCoreVersionDenarius + "\\"
@@ -28,23 +28,23 @@ const (
 	CDownloadURLDenarius   string = "https://github.com/carsenk/denarius/releases/download/v" + CCoreVersionDenarius + "/"
 	CDownloadURLDenariusBS string = "https://denarii.cloud/"
 
-	CDenariusBinDirLinux string = "/snap/bin/"
+	CBinDirLinuxDenarius string = "/snap/bin/"
 	cHomeDirLinDenarius  string = "snap/denarius/common/.denarius"
 	cHomeDirWinDenarius  string = "denarius"
 
 	// Files
 	cConfFileDenarius   string = "denarius.conf"
 	CCliFileDenarius    string = "denarius"
-	CDenariusCliFileWin string = "denarius-cli.exe"
+	CCliFileWinDenarius string = "denarius-cli.exe"
 	CDFileDenarius      string = "denarius.daemon"
-	CDenariusDMem       string = "denariusd"
-	CDenariusDFileWin   string = "denarius.daemon.exe"
+	CDMemDenarius       string = "denariusd"
+	CDFileWinDenarius   string = "denarius.daemon.exe"
 	CDenariusTxFile     string = "denarius-tx"
 	CDenariusTxFileWin  string = "denarius-tx.exe"
 
 	// Networking
-	cDenariusRPCUser string = "denariusrpc"
-	CDenariusRPCPort string = "32369"
+	cRPCUserDenarius string = "denariusrpc"
+	CRPCPortDenarius string = "32369"
 )
 
 type DenariusBlockchainInfoRespStruct struct {
