@@ -412,19 +412,19 @@ func DownloadBlockchain(pt ProjectType) error {
 	case PTDenarius:
 		switch runtime.GOARCH {
 		case "arm", "arm64":
-			bcsFileExists := FileExists(cd + CDFDenariusBSARM)
+			bcsFileExists := FileExists(cd + CDFBSARMDenarius)
 			if !bcsFileExists {
 				// Then download the file.
-				if err := DownloadFile(cd, CDownloadURLDenariusBS+CDFDenariusBSARM); err != nil {
-					return fmt.Errorf("unable to download file: %v - %v", CDFDenariusBSARM, err)
+				if err := DownloadFile(cd, CDownloadURLDenariusBS+CDFBSARMDenarius); err != nil {
+					return fmt.Errorf("unable to download file: %v - %v", CDFBSARMDenarius, err)
 				}
 			}
 		default:
-			bcsFileExists := FileExists(cd + CDFDenariusBS)
+			bcsFileExists := FileExists(cd + CDFBSDenarius)
 			if !bcsFileExists {
 				// Then download the file.
-				if err := DownloadFile(cd, CDownloadURLDenariusBS+CDFDenariusBS); err != nil {
-					return fmt.Errorf("unable to download file: %v - %v", CDFDenariusBS, err)
+				if err := DownloadFile(cd, CDownloadURLDenariusBS+CDFBSDenarius); err != nil {
+					return fmt.Errorf("unable to download file: %v - %v", CDFBSDenarius, err)
 				}
 			}
 		}
@@ -473,26 +473,26 @@ func UnarchiveBlockchainSnapshot(pt ProjectType) error {
 	case PTDenarius:
 		switch runtime.GOARCH {
 		case "arm", "arm64":
-			bcsFileExists := FileExists(cd + CDFDenariusBSARM)
+			bcsFileExists := FileExists(cd + CDFBSARMDenarius)
 			if !bcsFileExists {
-				return fmt.Errorf("unable to find the snapshot file: %v", cd+CDFDenariusBSARM)
+				return fmt.Errorf("unable to find the snapshot file: %v", cd+CDFBSARMDenarius)
 			}
 
 			// Now extract it straight into the ~/.divi folder
 			fmt.Println("Decompressing to " + cd + "...")
-			if err := archiver.Unarchive(cd+CDFDenariusBSARM, cd); err != nil {
-				return fmt.Errorf("unable to unarchive file: %v - %v", cd+CDFDenariusBSARM, err)
+			if err := archiver.Unarchive(cd+CDFBSARMDenarius, cd); err != nil {
+				return fmt.Errorf("unable to unarchive file: %v - %v", cd+CDFBSARMDenarius, err)
 			}
 		default:
-			bcsFileExists := FileExists(cd + CDFDenariusBS)
+			bcsFileExists := FileExists(cd + CDFBSDenarius)
 			if !bcsFileExists {
-				return fmt.Errorf("unable to find the snapshot file: %v", cd+CDFDenariusBS)
+				return fmt.Errorf("unable to find the snapshot file: %v", cd+CDFBSDenarius)
 			}
 
 			// Now extract it straight into the ~/.divi folder
 			fmt.Println("Decompressing to " + cd + "...")
-			if err := archiver.Unarchive(cd+CDFDenariusBS, cd); err != nil {
-				return fmt.Errorf("unable to unarchive file: %v - %v", cd+CDFDenariusBS, err)
+			if err := archiver.Unarchive(cd+CDFBSDenarius, cd); err != nil {
+				return fmt.Errorf("unable to unarchive file: %v - %v", cd+CDFBSDenarius, err)
 			}
 		}
 	case PTDivi:
@@ -1181,9 +1181,9 @@ func IsCoinDaemonRunning(ct ProjectType) (bool, int, error) {
 		}
 	case PTDenarius:
 		if runtime.GOOS == "windows" {
-			pid, _, err = FindProcess(CDenariusDFileWin)
+			pid, _, err = FindProcess(CDFileWinDenarius)
 		} else {
-			pid, _, err = FindProcess(CDenariusDMem)
+			pid, _, err = FindProcess(CDMemDenarius)
 		}
 	case PTDeVault:
 		if runtime.GOOS == "windows" {
@@ -1500,7 +1500,7 @@ func PopulateDaemonConfFile() (rpcuser, rpcpassword string, err error) {
 			bFileHasBeenBU = true
 		}
 		if bNeedToWriteStr {
-			rpcu = cDenariusRPCUser
+			rpcu = cRPCUserDenarius
 			if err := WriteTextToFile(chd+cConfFileDenarius, cRPCUserStr+"="+rpcu); err != nil {
 				log.Fatal(err)
 			}
@@ -1637,7 +1637,7 @@ func PopulateDaemonConfFile() (rpcuser, rpcpassword string, err error) {
 			}
 		}
 		if bNeedToWriteStr {
-			if err := WriteTextToFile(chd+cConfFileDenarius, "rpcport="+CDenariusRPCPort); err != nil {
+			if err := WriteTextToFile(chd+cConfFileDenarius, "rpcport="+CRPCPortDenarius); err != nil {
 				log.Fatal(err)
 			}
 		}
@@ -3746,17 +3746,17 @@ func AllProjectBinaryFilesExists() (bool, error) {
 		}
 	case PTDenarius:
 		if runtime.GOOS == "windows" {
-			if !FileExists(abf + CDenariusCliFileWin) {
+			if !FileExists(abf + CCliFileWinDenarius) {
 				return false, nil
 			}
-			if !FileExists(abf + CDenariusDFileWin) {
+			if !FileExists(abf + CDFileWinDenarius) {
 				return false, nil
 			}
 		} else {
-			if !FileExists(CDenariusBinDirLinux + CCliFileDenarius) {
+			if !FileExists(CBinDirLinuxDenarius + CCliFileDenarius) {
 				return false, nil
 			}
-			if !FileExists(CDenariusBinDirLinux + CDFileDenarius) {
+			if !FileExists(CBinDirLinuxDenarius + CDFileDenarius) {
 				return false, nil
 			}
 		}
@@ -4264,7 +4264,7 @@ func StartCoinDaemon(displayOutput bool) error {
 		}
 	case PTDenarius:
 		if runtime.GOOS == "windows" {
-			fp := abf + CDenariusDFileWin
+			fp := abf + CDFileWinDenarius
 			cmd := exec.Command("cmd.exe", "/C", "start", "/b", fp)
 			if err := cmd.Run(); err != nil {
 				return err
@@ -4274,7 +4274,7 @@ func StartCoinDaemon(displayOutput bool) error {
 				fmt.Println("Attempting to run the denariusd daemon...")
 			}
 
-			cmdRun := exec.Command(CDenariusBinDirLinux + CDFileDenarius)
+			cmdRun := exec.Command(CBinDirLinuxDenarius + CDFileDenarius)
 			//stdout, err := cmdRun.StdoutPipe()
 			if err != nil {
 				return err
