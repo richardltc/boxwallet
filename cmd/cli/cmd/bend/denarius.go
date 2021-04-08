@@ -3,7 +3,6 @@ package bend
 import (
 	"bytes"
 	"encoding/json"
-	"github.com/dustin/go-humanize"
 	"github.com/theckman/yacspin"
 	"io/ioutil"
 	"net/http"
@@ -390,28 +389,6 @@ func GetNewAddressDenarius(cliConf *ConfStruct) (DenariusNewAddressStruct, error
 	}
 
 	return respStruct, nil
-}
-
-func GetNetworkDifficultyTxtDenarius(difficulty, good, warn float64) string {
-	var s string
-	if difficulty > 1000 {
-		s = humanize.FormatFloat("#.#", difficulty/1000) + "k"
-	} else {
-		s = humanize.Ftoa(difficulty)
-	}
-
-	// If Diff is less than 1, then we're not even calculating it properly yet...
-	if difficulty < 1 {
-		return "[Difficulty:  waiting...](fg:white)"
-	}
-
-	if difficulty >= good {
-		return "Difficulty:  [" + s + "](fg:green)"
-	} else if difficulty >= warn {
-		return "Difficulty:  [" + s + "](fg:yellow)"
-	} else {
-		return "Difficulty:  [" + s + "](fg:red)"
-	}
 }
 
 func GetWalletSecurityStateDenarius(gi *DenariusGetInfoRespStruct) WEType {

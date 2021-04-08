@@ -1208,7 +1208,7 @@ var dashCmd = &cobra.Command{
 				sPeers = getNetworkConnectionsTxtXBC(gConnections)
 			case be.PTDenarius:
 				sBlocks = getNetworkBlocksTxtDenarius(&bciDenarius)
-				sDiff = be.GetNetworkDifficultyTxtDenarius(bciDenarius.Result.Difficulty.ProofOfWork, gDiffGood, gDiffWarning)
+				sDiff = getNetworkDifficultyTxtDenarius(bciDenarius.Result.Difficulty.ProofOfWork, gDiffGood, gDiffWarning)
 				sBlockchainSync = getBlockchainSyncTxtDenarius(bDenariusBlockchainIsSynced, &bciDenarius)
 				sPeers = getNetworkConnectionsTxtDenarius(gConnections)
 			case be.PTDeVault:
@@ -2707,6 +2707,28 @@ func getNetworkConnectionsTxtXBC(connections int) string {
 		return "Peers:       [0](fg:red)"
 	}
 	return "Peers:       [" + strconv.Itoa(connections) + "](fg:green)"
+}
+
+func getNetworkDifficultyTxtDenarius(difficulty, good, warn float64) string {
+	var s string
+	if difficulty > 1000 {
+		s = humanize.FormatFloat("#.#", difficulty/1000) + "k"
+	} else {
+		s = humanize.Ftoa(difficulty)
+	}
+
+	// If Diff is less than 1, then we're not even calculating it properly yet...
+	if difficulty < 1 {
+		return "[Difficulty:  waiting...](fg:white)"
+	}
+
+	if difficulty >= good {
+		return "Difficulty:  [" + s + "](fg:green)"
+	} else if difficulty >= warn {
+		return "Difficulty:  [" + s + "](fg:yellow)"
+	} else {
+		return "Difficulty:  [" + s + "](fg:red)"
+	}
 }
 
 func getNetworkHeadersTxtDVT(bci *be.DVTBlockchainInfoRespStruct) string {
