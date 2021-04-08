@@ -26,7 +26,7 @@ import (
 const (
 	CAppName        string = "BoxWallet"
 	CUpdaterAppName string = "bwupdater"
-	CBWAppVersion   string = "0.41.1a"
+	CBWAppVersion   string = "0.41.2"
 	CAppFilename    string = "boxwallet"
 	CAppFilenameWin string = "boxwallet.exe"
 	CAppLogfile     string = "boxwallet.log"
