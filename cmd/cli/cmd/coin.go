@@ -81,7 +81,7 @@ var coinCmd = &cobra.Command{
 		case be.CCoinNameDeVault:
 			be.AddToLog(lf, be.CCoinNameDeVault+" selected", false)
 			cliConf.ProjectType = be.PTDeVault
-			cliConf.Port = be.CDeVaultRPCPort
+			cliConf.Port = be.CRPCPortDeVault
 		case be.CCoinNameDigiByte:
 			be.AddToLog(lf, be.CCoinNameDigiByte+" selected", false)
 			cliConf.ProjectType = be.PTDigiByte
@@ -305,14 +305,14 @@ func doRequiredFiles() error {
 		}
 	case be.PTDeVault:
 		if runtime.GOOS == "windows" {
-			filePath = abf + be.CDFDeVaultWindows
-			fileURL = be.CDownloadURLDeVault + be.CDFDeVaultWindows
+			filePath = abf + be.CDFWindowsDeVault
+			fileURL = be.CDownloadURLDeVault + be.CDFWindowsDeVault
 		} else if runtime.GOARCH == "arm" {
-			filePath = abf + be.CDFDeVaultRPi
-			fileURL = be.CDownloadURLDeVault + be.CDFDeVaultRPi
+			filePath = abf + be.CDFRPiDeVault
+			fileURL = be.CDownloadURLDeVault + be.CDFRPiDeVault
 		} else {
-			filePath = abf + be.CDFDeVaultLinux
-			fileURL = be.CDownloadURLDeVault + be.CDFDeVaultLinux
+			filePath = abf + be.CDFLinuxDeVault
+			fileURL = be.CDownloadURLDeVault + be.CDFLinuxDeVault
 		}
 	case be.PTDigiByte:
 		switch runtime.GOOS {
@@ -548,20 +548,20 @@ func doRequiredFiles() error {
 			if err := archiver.Unarchive(filePath, abf); err != nil {
 				return fmt.Errorf("unable to unarchive file: %v - %v", r, err)
 			}
-			defer os.RemoveAll(abf + be.CDeVaultExtractedDirWin)
+			defer os.RemoveAll(abf + be.CExtractedDirWinDeVault)
 		} else if runtime.GOARCH == "arm" {
 			//err = be.ExtractTarGz(r)
 			err = archiver.Unarchive(filePath, abf)
 			if err != nil {
 				return fmt.Errorf("unable to extractTarGz file: %v - %v", r, err)
 			}
-			defer os.RemoveAll(abf + be.CDeVaultExtractedDirLinux)
+			defer os.RemoveAll(abf + be.CExtractedDirLinuxDeVault)
 		} else {
 			err = archiver.Unarchive(filePath, abf)
 			if err != nil {
 				return fmt.Errorf("unable to extractTarGz file: %v - %v", r, err)
 			}
-			defer os.RemoveAll(abf + be.CDeVaultExtractedDirLinux)
+			defer os.RemoveAll(abf + be.CExtractedDirLinuxDeVault)
 		}
 	case be.PTDigiByte:
 		switch runtime.GOOS {
@@ -911,10 +911,10 @@ func doRequiredFiles() error {
 		}
 		switch runtime.GOOS {
 		case "windows":
-			srcPath = abf + be.CDeVaultExtractedDirWin + "bin\\"
-			srcFileCLI = be.CDeVaultCliFileWin
-			srcFileD = be.CDeVaultDFileWin
-			srcFileTX = be.CDeVaultTxFileWin
+			srcPath = abf + be.CExtractedDirWinDeVault + "bin\\"
+			srcFileCLI = be.CCliFileWinDeVault
+			srcFileD = be.CDFileWinDeVault
+			srcFileTX = be.CTxFileWinDeVault
 			//srcFileBWCLI = be.CAppFilenameWin
 		case "linux":
 			switch runtime.GOARCH {
@@ -922,19 +922,19 @@ func doRequiredFiles() error {
 				if err := be.AddToLog(lf, "linux arm detected.", false); err != nil {
 					return fmt.Errorf("unable to add to log file: %v", err)
 				}
-				srcPath = abf + be.CDeVaultExtractedDirLinux + "bin/"
-				srcFileCLI = be.CDeVaultCliFile
-				srcFileD = be.CDeVaultDFile
-				srcFileTX = be.CDeVaultTxFile
+				srcPath = abf + be.CExtractedDirLinuxDeVault + "bin/"
+				srcFileCLI = be.CCliFileDeVault
+				srcFileD = be.CDFileDeVault
+				srcFileTX = be.CTxFileDeVault
 			//srcFileBWCLI = be.CAppFilename
 			case "386", "amd64":
 				if err := be.AddToLog(lf, "linux amd64 detected.", false); err != nil {
 					return fmt.Errorf("unable to add to log file: %v", err)
 				}
-				srcPath = abf + be.CDeVaultExtractedDirLinux + "bin/"
-				srcFileCLI = be.CDeVaultCliFile
-				srcFileD = be.CDeVaultDFile
-				srcFileTX = be.CDeVaultTxFile
+				srcPath = abf + be.CExtractedDirLinuxDeVault + "bin/"
+				srcFileCLI = be.CCliFileDeVault
+				srcFileD = be.CDFileDeVault
+				srcFileTX = be.CTxFileDeVault
 			//srcFileBWCLI = be.CAppFilename
 			default:
 				err = errors.New("unable to determine runtime.GOARCH " + runtime.GOARCH)

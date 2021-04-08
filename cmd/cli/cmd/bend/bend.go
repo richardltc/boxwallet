@@ -650,7 +650,7 @@ func GetCoinDaemonFilename(at APPType, pt ProjectType) (string, error) {
 	case PTDenarius:
 		return CDFileDenarius, nil
 	case PTDeVault:
-		return CDeVaultDFile, nil
+		return CDFileDeVault, nil
 	case PTDigiByte:
 		return CDFileDigiByte, nil
 	case PTDivi:
@@ -1187,9 +1187,9 @@ func IsCoinDaemonRunning(ct ProjectType) (bool, int, error) {
 		}
 	case PTDeVault:
 		if runtime.GOOS == "windows" {
-			pid, _, err = FindProcess(CDeVaultDFileWin)
+			pid, _, err = FindProcess(CDFileWinDeVault)
 		} else {
-			pid, _, err = FindProcess(CDeVaultDFile)
+			pid, _, err = FindProcess(CDFileDeVault)
 		}
 	case PTDigiByte:
 		if runtime.GOOS == "windows" {
@@ -1644,12 +1644,12 @@ func PopulateDaemonConfFile() (rpcuser, rpcpassword string, err error) {
 
 		return rpcu, rpcpw, nil
 	case PTDeVault:
-		fmt.Println("Populating " + CDeVaultConfFile + " for initial setup...")
+		fmt.Println("Populating " + cConfFileDeVault + " for initial setup...")
 
 		// Add rpcuser info if required, or retrieve the existing one
 		bNeedToWriteStr := true
-		if FileExists(chd + CDeVaultConfFile) {
-			bStrFound, err := StringExistsInFile(cRPCUserStr+"=", chd+CDeVaultConfFile)
+		if FileExists(chd + cConfFileDeVault) {
+			bStrFound, err := StringExistsInFile(cRPCUserStr+"=", chd+cConfFileDeVault)
 			if err != nil {
 				return "", "", fmt.Errorf("unable to search for text in file - %v", err)
 			}
@@ -1657,13 +1657,13 @@ func PopulateDaemonConfFile() (rpcuser, rpcpassword string, err error) {
 				// String not found
 				if !bFileHasBeenBU {
 					bFileHasBeenBU = true
-					if err := BackupFile(chd, CDeVaultConfFile, "", "", false); err != nil {
+					if err := BackupFile(chd, cConfFileDeVault, "", "", false); err != nil {
 						return "", "", fmt.Errorf("unable to backup file - %v", err)
 					}
 				}
 			} else {
 				bNeedToWriteStr = false
-				rpcu, err = GetStringAfterStrFromFile(cRPCUserStr+"=", chd+CDeVaultConfFile)
+				rpcu, err = GetStringAfterStrFromFile(cRPCUserStr+"=", chd+cConfFileDeVault)
 				if err != nil {
 					return "", "", fmt.Errorf("unable to search for text in file - %v", err)
 				}
@@ -1673,16 +1673,16 @@ func PopulateDaemonConfFile() (rpcuser, rpcpassword string, err error) {
 			bFileHasBeenBU = true
 		}
 		if bNeedToWriteStr {
-			rpcu = cDeVaultRPCUser
-			if err := WriteTextToFile(chd+CDeVaultConfFile, cRPCUserStr+"="+rpcu); err != nil {
+			rpcu = cRPCUserDeVault
+			if err := WriteTextToFile(chd+cConfFileDeVault, cRPCUserStr+"="+rpcu); err != nil {
 				log.Fatal(err)
 			}
 		}
 
 		// Add rpcpassword info if required, or retrieve the existing one
 		bNeedToWriteStr = true
-		if FileExists(chd + CDeVaultConfFile) {
-			bStrFound, err := StringExistsInFile(cRPCPasswordStr+"=", chd+CDeVaultConfFile)
+		if FileExists(chd + cConfFileDeVault) {
+			bStrFound, err := StringExistsInFile(cRPCPasswordStr+"=", chd+cConfFileDeVault)
 			if err != nil {
 				return "", "", fmt.Errorf("unable to search for text in file - %v", err)
 			}
@@ -1690,13 +1690,13 @@ func PopulateDaemonConfFile() (rpcuser, rpcpassword string, err error) {
 				// String not found
 				if !bFileHasBeenBU {
 					bFileHasBeenBU = true
-					if err := BackupFile(chd, CDeVaultConfFile, "", "", false); err != nil {
+					if err := BackupFile(chd, cConfFileDeVault, "", "", false); err != nil {
 						return "", "", fmt.Errorf("unable to backup file - %v", err)
 					}
 				}
 			} else {
 				bNeedToWriteStr = false
-				rpcpw, err = GetStringAfterStrFromFile(cRPCPasswordStr+"=", chd+CDeVaultConfFile)
+				rpcpw, err = GetStringAfterStrFromFile(cRPCPasswordStr+"=", chd+cConfFileDeVault)
 				if err != nil {
 					return "", "", fmt.Errorf("unable to search for text in file - %v", err)
 				}
@@ -1704,18 +1704,18 @@ func PopulateDaemonConfFile() (rpcuser, rpcpassword string, err error) {
 		}
 		if bNeedToWriteStr {
 			rpcpw = rand.String(20)
-			if err := WriteTextToFile(chd+CDeVaultConfFile, cRPCPasswordStr+"="+rpcpw); err != nil {
+			if err := WriteTextToFile(chd+cConfFileDeVault, cRPCPasswordStr+"="+rpcpw); err != nil {
 				log.Fatal(err)
 			}
-			if err := WriteTextToFile(chd+CDeVaultConfFile, ""); err != nil {
+			if err := WriteTextToFile(chd+cConfFileDeVault, ""); err != nil {
 				log.Fatal(err)
 			}
 		}
 
 		// Add daemon=1 info if required
 		bNeedToWriteStr = true
-		if FileExists(chd + CDeVaultConfFile) {
-			bStrFound, err := StringExistsInFile("daemon=1", chd+CDeVaultConfFile)
+		if FileExists(chd + cConfFileDeVault) {
+			bStrFound, err := StringExistsInFile("daemon=1", chd+cConfFileDeVault)
 			if err != nil {
 				return "", "", fmt.Errorf("unable to search for text in file - %v", err)
 			}
@@ -1723,7 +1723,7 @@ func PopulateDaemonConfFile() (rpcuser, rpcpassword string, err error) {
 				// String not found
 				if !bFileHasBeenBU {
 					bFileHasBeenBU = true
-					if err := BackupFile(chd, CDeVaultConfFile, "", "", false); err != nil {
+					if err := BackupFile(chd, cConfFileDeVault, "", "", false); err != nil {
 						return "", "", fmt.Errorf("unable to backup file - %v", err)
 					}
 				}
@@ -1732,18 +1732,18 @@ func PopulateDaemonConfFile() (rpcuser, rpcpassword string, err error) {
 			}
 		}
 		if bNeedToWriteStr {
-			if err := WriteTextToFile(chd+CDeVaultConfFile, "daemon=1"); err != nil {
+			if err := WriteTextToFile(chd+cConfFileDeVault, "daemon=1"); err != nil {
 				log.Fatal(err)
 			}
-			if err := WriteTextToFile(chd+CDeVaultConfFile, ""); err != nil {
+			if err := WriteTextToFile(chd+cConfFileDeVault, ""); err != nil {
 				log.Fatal(err)
 			}
 		}
 
 		// Add server=1 info if required
 		bNeedToWriteStr = true
-		if FileExists(chd + CDeVaultConfFile) {
-			bStrFound, err := StringExistsInFile("server=1", chd+CDeVaultConfFile)
+		if FileExists(chd + cConfFileDeVault) {
+			bStrFound, err := StringExistsInFile("server=1", chd+cConfFileDeVault)
 			if err != nil {
 				return "", "", fmt.Errorf("unable to search for text in file - %v", err)
 			}
@@ -1751,7 +1751,7 @@ func PopulateDaemonConfFile() (rpcuser, rpcpassword string, err error) {
 				// String not found
 				if !bFileHasBeenBU {
 					bFileHasBeenBU = true
-					if err := BackupFile(chd, CDeVaultConfFile, "", "", false); err != nil {
+					if err := BackupFile(chd, cConfFileDeVault, "", "", false); err != nil {
 						return "", "", fmt.Errorf("unable to backup file - %v", err)
 					}
 				}
@@ -1760,15 +1760,15 @@ func PopulateDaemonConfFile() (rpcuser, rpcpassword string, err error) {
 			}
 		}
 		if bNeedToWriteStr {
-			if err := WriteTextToFile(chd+CDeVaultConfFile, "server=1"); err != nil {
+			if err := WriteTextToFile(chd+cConfFileDeVault, "server=1"); err != nil {
 				log.Fatal(err)
 			}
 		}
 
 		// Add rpcallowip= info if required
 		bNeedToWriteStr = true
-		if FileExists(chd + CDeVaultConfFile) {
-			bStrFound, err := StringExistsInFile("rpcallowip=", chd+CDeVaultConfFile)
+		if FileExists(chd + cConfFileDeVault) {
+			bStrFound, err := StringExistsInFile("rpcallowip=", chd+cConfFileDeVault)
 			if err != nil {
 				return "", "", fmt.Errorf("unable to search for text in file - %v", err)
 			}
@@ -1776,7 +1776,7 @@ func PopulateDaemonConfFile() (rpcuser, rpcpassword string, err error) {
 				// String not found
 				if !bFileHasBeenBU {
 					bFileHasBeenBU = true
-					if err := BackupFile(chd, CDeVaultConfFile, "", "", false); err != nil {
+					if err := BackupFile(chd, cConfFileDeVault, "", "", false); err != nil {
 						return "", "", fmt.Errorf("unable to backup file - %v", err)
 					}
 				}
@@ -1785,15 +1785,15 @@ func PopulateDaemonConfFile() (rpcuser, rpcpassword string, err error) {
 			}
 		}
 		if bNeedToWriteStr {
-			if err := WriteTextToFile(chd+CDeVaultConfFile, "rpcallowip=192.168.1.0/255.255.255.0"); err != nil {
+			if err := WriteTextToFile(chd+cConfFileDeVault, "rpcallowip=192.168.1.0/255.255.255.0"); err != nil {
 				log.Fatal(err)
 			}
 		}
 
 		// Add rpcport= info if required
 		bNeedToWriteStr = true
-		if FileExists(chd + CDeVaultConfFile) {
-			bStrFound, err := StringExistsInFile("rpcport=", chd+CDeVaultConfFile)
+		if FileExists(chd + cConfFileDeVault) {
+			bStrFound, err := StringExistsInFile("rpcport=", chd+cConfFileDeVault)
 			if err != nil {
 				return "", "", fmt.Errorf("unable to search for text in file - %v", err)
 			}
@@ -1801,7 +1801,7 @@ func PopulateDaemonConfFile() (rpcuser, rpcpassword string, err error) {
 				// String not found
 				if !bFileHasBeenBU {
 					bFileHasBeenBU = true
-					if err := BackupFile(chd, CDeVaultConfFile, "", "", false); err != nil {
+					if err := BackupFile(chd, cConfFileDeVault, "", "", false); err != nil {
 						return "", "", fmt.Errorf("unable to backup file - %v", err)
 					}
 				}
@@ -1810,7 +1810,7 @@ func PopulateDaemonConfFile() (rpcuser, rpcpassword string, err error) {
 			}
 		}
 		if bNeedToWriteStr {
-			if err := WriteTextToFile(chd+CDeVaultConfFile, "rpcport="+CDeVaultRPCPort); err != nil {
+			if err := WriteTextToFile(chd+cConfFileDeVault, "rpcport="+CRPCPortDeVault); err != nil {
 				log.Fatal(err)
 			}
 		}
@@ -3762,23 +3762,23 @@ func AllProjectBinaryFilesExists() (bool, error) {
 		}
 	case PTDeVault:
 		if runtime.GOOS == "windows" {
-			if !FileExists(abf + CDeVaultCliFileWin) {
+			if !FileExists(abf + CCliFileWinDeVault) {
 				return false, nil
 			}
-			if !FileExists(abf + CDeVaultDFileWin) {
+			if !FileExists(abf + CDFileWinDeVault) {
 				return false, nil
 			}
-			if !FileExists(abf + CDeVaultTxFileWin) {
+			if !FileExists(abf + CTxFileWinDeVault) {
 				return false, nil
 			}
 		} else {
-			if !FileExists(abf + CDeVaultCliFile) {
+			if !FileExists(abf + CCliFileDeVault) {
 				return false, nil
 			}
-			if !FileExists(abf + CDeVaultDFile) {
+			if !FileExists(abf + CDFileDeVault) {
 				return false, nil
 			}
-			if !FileExists(abf + CDeVaultTxFile) {
+			if !FileExists(abf + CTxFileDeVault) {
 				return false, nil
 			}
 		}
@@ -4291,7 +4291,7 @@ func StartCoinDaemon(displayOutput bool) error {
 	case PTDeVault:
 		if runtime.GOOS == "windows" {
 			//_ = exec.Command(GetAppsBinFolder() + cDiviDFileWin)
-			fp := abf + CDeVaultDFileWin
+			fp := abf + CDFileWinDeVault
 			cmd := exec.Command("cmd.exe", "/C", "start", "/b", fp)
 			if err := cmd.Run(); err != nil {
 				return err
@@ -4302,7 +4302,7 @@ func StartCoinDaemon(displayOutput bool) error {
 			}
 
 			args := []string{"-bypasspassword"}
-			cmdRun := exec.Command(abf+CDeVaultDFile, args...)
+			cmdRun := exec.Command(abf+CDFileDeVault, args...)
 			//stdout, err := cmdRun.StdoutPipe()
 			if err != nil {
 				return err

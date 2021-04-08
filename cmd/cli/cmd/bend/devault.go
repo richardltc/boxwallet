@@ -17,28 +17,28 @@ const (
 
 	CCoreVersionDeVault string = "1.2.1"
 
-	CDFDeVaultRPi     string = "devault-" + CCoreVersionDeVault + "-arm64-linuxgnuaarch.tar.gz"
-	CDFDeVaultLinux   string = "devault-" + CCoreVersionDeVault + "-x86_64-linux-gnu.tar.gz"
-	CDFDeVaultWindows string = "devault-" + CCoreVersionDeVault + "-win64.zip"
+	CDFRPiDeVault     string = "devault-" + CCoreVersionDeVault + "-arm64-linuxgnuaarch.tar.gz"
+	CDFLinuxDeVault   string = "devault-" + CCoreVersionDeVault + "-x86_64-linux-gnu.tar.gz"
+	CDFWindowsDeVault string = "devault-" + CCoreVersionDeVault + "-win64.zip"
 
-	CDeVaultExtractedDirLinux = "devault-" + CCoreVersionDeVault + "-x86_64-linux-gnu/"
-	CDeVaultExtractedDirWin   = "devault-" + CCoreVersionDeVault + "-x86_64-w64-mingw32\\"
+	CExtractedDirLinuxDeVault = "devault-" + CCoreVersionDeVault + "-x86_64-linux-gnu/"
+	CExtractedDirWinDeVault   = "devault-" + CCoreVersionDeVault + "-x86_64-w64-mingw32\\"
 
 	CDownloadURLDeVault string = "https://github.com/devaultcrypto/devault/releases/download/v" + CCoreVersionDeVault + "/"
 
 	cHomeDirLinDeVault string = ".devault"
 	cHomeDirWinDeVault string = "DEVAULT"
 
-	CDeVaultConfFile   string = "devault.conf"
-	CDeVaultCliFile    string = "devault-cli"
-	CDeVaultCliFileWin string = "devault-cli.exe"
-	CDeVaultDFile      string = "devaultd"
-	CDeVaultDFileWin   string = "devaultd.exe"
-	CDeVaultTxFile     string = "devault-tx"
-	CDeVaultTxFileWin  string = "devault-tx.exe"
+	cConfFileDeVault   string = "devault.conf"
+	CCliFileDeVault    string = "devault-cli"
+	CCliFileWinDeVault string = "devault-cli.exe"
+	CDFileDeVault      string = "devaultd"
+	CDFileWinDeVault   string = "devaultd.exe"
+	CTxFileDeVault     string = "devault-tx"
+	CTxFileWinDeVault  string = "devault-tx.exe"
 
-	cDeVaultRPCUser string = "devaultrpc"
-	CDeVaultRPCPort string = "3339"
+	cRPCUserDeVault string = "devaultrpc"
+	CRPCPortDeVault string = "3339"
 )
 
 type DVTBlockchainInfoRespStruct struct {
