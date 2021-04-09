@@ -3,10 +3,8 @@ package bend
 import (
 	"bytes"
 	"encoding/json"
-	"github.com/dustin/go-humanize"
 	"io/ioutil"
 	"net/http"
-	"strconv"
 	"strings"
 	"time"
 )
@@ -201,13 +199,6 @@ func GetBlockchainInfoFeathercoin(cliConf *ConfStruct) (FeathercoinBlockchainInf
 	return respStruct, nil
 }
 
-func GetNetworkConnectionsTxtFTC(connections int) string {
-	if connections == 0 {
-		return "Peers:       [0](fg:red)"
-	}
-	return "Peers:       [" + strconv.Itoa(connections) + "](fg:green)"
-}
-
 func GetNetworkInfoFeathercoin(cliConf *ConfStruct) (FeathercoinNetworkInfoRespStruct, error) {
 	var respStruct FeathercoinNetworkInfoRespStruct
 
@@ -245,31 +236,6 @@ func GetNetworkInfoFeathercoin(cliConf *ConfStruct) (FeathercoinNetworkInfoRespS
 	return respStruct, nil
 }
 
-func GetNetworkBlocksTxtFeathercoin(bci *FeathercoinBlockchainInfoRespStruct) string {
-	blocksStr := humanize.Comma(int64(bci.Result.Blocks))
-
-	if blocksStr == "0" {
-		return "Blocks:      [waiting...](fg:white)"
-	}
-
-	return "Blocks:      [" + blocksStr + "](fg:green)"
-	//if bci.Result.Blocks > 0 {
-	//	return "Blocks:      [" + blocksStr + "](fg:green)"
-	//} else {
-	//	return "[Blocks:      " + blocksStr + "](fg:red)"
-	//}
-}
-
-func GetNetworkHeadersTxtFeathercoin(bci *FeathercoinBlockchainInfoRespStruct) string {
-	headersStr := humanize.Comma(int64(bci.Result.Headers))
-
-	if bci.Result.Headers > 1 {
-		return "Headers:     [" + headersStr + "](fg:green)"
-	} else {
-		return "[Headers:     " + headersStr + "](fg:red)"
-	}
-}
-
 func GetBlockchainSyncTxtFeathercoin(synced bool, bci *FeathercoinBlockchainInfoRespStruct) string {
 	s := ConvertBCVerification(bci.Result.Verificationprogress)
 	if s == "0.0" {
@@ -288,28 +254,6 @@ func GetBlockchainSyncTxtFeathercoin(synced bool, bci *FeathercoinBlockchainInfo
 		}
 	} else {
 		return "Blockchain:  [synced " + CUtfTickBold + "](fg:green)"
-	}
-}
-
-func GetNetworkDifficultyTxtFeathercoin(difficulty, good, warn float64) string {
-	var s string
-	if difficulty > 1000 {
-		s = humanize.FormatFloat("#.#", difficulty/1000) + "k"
-	} else {
-		s = humanize.Ftoa(difficulty)
-	}
-
-	// If Diff is less than 1, then we're not even calculating it properly yet...
-	if difficulty < 1 {
-		return "[Difficulty:  waiting...](fg:white)"
-	}
-
-	if difficulty >= good {
-		return "Difficulty:  [" + s + "](fg:green)"
-	} else if difficulty >= warn {
-		return "Difficulty:  [" + s + "](fg:yellow)"
-	} else {
-		return "Difficulty:  [" + s + "](fg:red)"
 	}
 }
 
