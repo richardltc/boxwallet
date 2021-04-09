@@ -3,10 +3,8 @@ package bend
 import (
 	"bytes"
 	"encoding/json"
-	"github.com/dustin/go-humanize"
 	"io/ioutil"
 	"net/http"
-	"strconv"
 	"strings"
 	"time"
 )
@@ -182,13 +180,6 @@ func GetBlockchainInfoGRS(cliConf *ConfStruct) (GRSBlockchainInfoRespStruct, err
 	return respStruct, nil
 }
 
-func GetNetworkConnectionsTxtGRS(connections int) string {
-	if connections == 0 {
-		return "Peers:       [0](fg:red)"
-	}
-	return "Peers:       [" + strconv.Itoa(connections) + "](fg:green)"
-}
-
 func GetNewAddressGRS(cliConf *ConfStruct) (GRSNewAddressStruct, error) {
 	var respStruct GRSNewAddressStruct
 
@@ -253,68 +244,26 @@ func GetWalletInfoGRS(cliConf *ConfStruct) (GRSWalletInfoRespStruct, error) {
 	return respStruct, nil
 }
 
-func GetNetworkBlocksTxtGRS(bci *GRSBlockchainInfoRespStruct) string {
-	blocksStr := humanize.Comma(int64(bci.Result.Blocks))
-
-	if blocksStr == "0" {
-		return "Blocks:      [waiting...](fg:white)"
-	}
-
-	return "Blocks:      [" + blocksStr + "](fg:green)"
-}
-
-func GetNetworkHeadersTxtGRS(bci *GRSBlockchainInfoRespStruct) string {
-	headersStr := humanize.Comma(int64(bci.Result.Headers))
-
-	if bci.Result.Headers > 1 {
-		return "Headers:     [" + headersStr + "](fg:green)"
-	} else {
-		return "[Headers:     " + headersStr + "](fg:red)"
-	}
-}
-
-func GetBlockchainSyncTxtGRS(synced bool, bci *GRSBlockchainInfoRespStruct) string {
-	s := ConvertBCVerification(bci.Result.Verificationprogress)
-	if s == "0.0" {
-		s = ""
-	} else {
-		s = s + "%"
-	}
-
-	if !synced {
-		if bci.Result.Verificationprogress > gLastBCSyncPos {
-			gLastBCSyncPos = bci.Result.Verificationprogress
-			return "Blockchain:  [syncing " + s + " ](fg:yellow)"
-		} else {
-			gLastBCSyncPos = bci.Result.Verificationprogress
-			return "Blockchain:  [waiting " + s + " ](fg:yellow)"
-		}
-	} else {
-		return "Blockchain:  [synced " + CUtfTickBold + "](fg:green)"
-	}
-}
-
-func GetNetworkDifficultyTxtGRS(difficulty, good, warn float64) string {
-	var s string
-	if difficulty > 1000 {
-		s = humanize.FormatFloat("#.#", difficulty/1000) + "k"
-	} else {
-		s = humanize.Ftoa(difficulty)
-	}
-
-	// If Diff is less than 1, then we're not even calculating it properly yet...
-	if difficulty < 1 {
-		return "[Difficulty:  waiting...](fg:white)"
-	}
-
-	if difficulty >= good {
-		return "Difficulty:  [" + s + "](fg:green)"
-	} else if difficulty >= warn {
-		return "Difficulty:  [" + s + "](fg:yellow)"
-	} else {
-		return "Difficulty:  [" + s + "](fg:red)"
-	}
-}
+//func GetBlockchainSyncTxtGRS(synced bool, bci *GRSBlockchainInfoRespStruct) string {
+//	s := ConvertBCVerification(bci.Result.Verificationprogress)
+//	if s == "0.0" {
+//		s = ""
+//	} else {
+//		s = s + "%"
+//	}
+//
+//	if !synced {
+//		if bci.Result.Verificationprogress > gLastBCSyncPos {
+//			gLastBCSyncPos = bci.Result.Verificationprogress
+//			return "Blockchain:  [syncing " + s + " ](fg:yellow)"
+//		} else {
+//			gLastBCSyncPos = bci.Result.Verificationprogress
+//			return "Blockchain:  [waiting " + s + " ](fg:yellow)"
+//		}
+//	} else {
+//		return "Blockchain:  [synced " + CUtfTickBold + "](fg:green)"
+//	}
+//}
 
 func GetNetworkInfoGRS(cliConf *ConfStruct) (GRSNetworkInfoRespStruct, error) {
 	var respStruct GRSNetworkInfoRespStruct
