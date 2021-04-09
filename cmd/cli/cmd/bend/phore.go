@@ -3,10 +3,8 @@ package bend
 import (
 	"bytes"
 	"encoding/json"
-	"github.com/dustin/go-humanize"
 	"io/ioutil"
 	"net/http"
-	"strconv"
 	"strings"
 	"time"
 )
@@ -260,39 +258,6 @@ func GetInfoPhore(cliConf *ConfStruct) (phoreInfoRespStruct, error) {
 //		return "Masternodes: [syncing " + getNextProgMNIndicator(gLastMNSyncStatus) + "](fg:yellow)"
 //	}
 //}
-
-func GetNetworkBlocksTxtPhore(bci *PhoreBlockchainInfoRespStruct) string {
-	blocksStr := humanize.Comma(int64(bci.Result.Blocks))
-
-	if bci.Result.Blocks > 100 {
-		return "Blocks:      [" + blocksStr + "](fg:green)"
-	} else {
-		return "[Blocks:      " + blocksStr + "](fg:red)"
-	}
-}
-
-func GetNetworkConnectionsTxtPhore(connections int) string {
-	if connections == 0 {
-		return "Peers:       [0](fg:red)"
-	}
-	return "Peers:       [" + strconv.Itoa(connections) + "](fg:green)"
-}
-
-func GetNetworkDifficultyTxtPhore(difficulty, good, warn float64) string {
-	var s string
-	if difficulty > 1000 {
-		s = humanize.FormatFloat("#.#", difficulty/1000) + "k"
-	} else {
-		s = humanize.Ftoa(difficulty)
-	}
-	if difficulty >= good {
-		return "Difficulty:  [" + s + "](fg:green)"
-	} else if difficulty >= warn {
-		return "[Difficulty:  " + s + "](fg:yellow)"
-	} else {
-		return "[Difficulty:  " + s + "](fg:red)"
-	}
-}
 
 func GetStakingStatusPhore(cliConf *ConfStruct) (PhoreStakingStatusRespStruct, error) {
 	var respStruct PhoreStakingStatusRespStruct
