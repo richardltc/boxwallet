@@ -97,7 +97,7 @@ var coinCmd = &cobra.Command{
 		case be.CCoinNameGroestlcoin:
 			be.AddToLog(lf, be.CCoinNameGroestlcoin+" selected", false)
 			cliConf.ProjectType = be.PTGroestlcoin
-			cliConf.Port = be.CGroestlcoinRPCPort
+			cliConf.Port = be.CRPCPortGroestlcoin
 		case be.CCoinNamePhore:
 			be.AddToLog(lf, be.CCoinNamePhore+" selected", false)
 			cliConf.ProjectType = be.PTPhore
@@ -357,14 +357,14 @@ func doRequiredFiles() error {
 		}
 	case be.PTGroestlcoin:
 		if runtime.GOOS == "windows" {
-			filePath = abf + be.CDFGroestlcoinWindows
-			fileURL = be.CDownloadURLGroestlcoin + be.CDFGroestlcoinWindows
+			filePath = abf + be.CDFWindowsGroestlcoin
+			fileURL = be.CDownloadURLGroestlcoin + be.CDFWindowsGroestlcoin
 		} else if runtime.GOARCH == "arm" {
-			filePath = abf + be.CDFGroestlcoinRPi
-			fileURL = be.CDownloadURLGroestlcoin + be.CDFGroestlcoinRPi
+			filePath = abf + be.CDFRPiGroestlcoin
+			fileURL = be.CDownloadURLGroestlcoin + be.CDFRPiGroestlcoin
 		} else {
-			filePath = abf + be.CDFGroestlcoinLinux
-			fileURL = be.CDownloadURLGroestlcoin + be.CDFGroestlcoinLinux
+			filePath = abf + be.CDFLinuxGroestlcoin
+			fileURL = be.CDownloadURLGroestlcoin + be.CDFLinuxGroestlcoin
 		}
 	case be.PTPhore:
 		if runtime.GOOS == "windows" {
@@ -636,21 +636,21 @@ func doRequiredFiles() error {
 			if err := archiver.Unarchive(filePath, abf); err != nil {
 				return fmt.Errorf("unable to unarchive file: %v - %v", r, err)
 			}
-			defer os.RemoveAll(abf + be.CGroestlcoinExtractedDirWindows)
+			defer os.RemoveAll(abf + be.CExtractedDirWindowsGroestlcoin)
 		} else if runtime.GOARCH == "arm" {
 			//err = be.ExtractTarGz(r)
 			err = archiver.Unarchive(filePath, abf)
 			if err != nil {
 				return fmt.Errorf("unable to extractTarGz file: %v - %v", r, err)
 			}
-			defer os.RemoveAll(abf + be.CGroestlcoinExtractedDirLinux)
+			defer os.RemoveAll(abf + be.CExtractedDirLinuxGroestlcoin)
 		} else {
 			//err = be.ExtractTarGz(r)
 			err = archiver.Unarchive(filePath, abf)
 			if err != nil {
 				return fmt.Errorf("unable to extractTarGz file: %v - %v", r, err)
 			}
-			defer os.RemoveAll(abf + be.CGroestlcoinExtractedDirLinux)
+			defer os.RemoveAll(abf + be.CExtractedDirLinuxGroestlcoin)
 		}
 	case be.PTPhore:
 		if runtime.GOOS == "windows" {
@@ -1067,10 +1067,10 @@ func doRequiredFiles() error {
 		}
 		switch runtime.GOOS {
 		case "windows":
-			srcPath = abf + be.CGroestlcoinExtractedDirWindows + "bin\\"
-			srcFileCLI = be.CGroestlcoinCliFileWin
-			srcFileD = be.CGroestlcoinDFileWin
-			srcFileTX = be.CGroestlcoinTxFileWin
+			srcPath = abf + be.CExtractedDirWindowsGroestlcoin + "bin\\"
+			srcFileCLI = be.CCliFileWinGroestlcoin
+			srcFileD = be.CDFileWinGroestlcoin
+			srcFileTX = be.CTxFileWinGroestlcoin
 			//srcFileBWCLI = be.CAppFilenameWin
 		case "linux":
 			switch runtime.GOARCH {
@@ -1078,19 +1078,19 @@ func doRequiredFiles() error {
 				if err := be.AddToLog(lf, "linux arm detected.", false); err != nil {
 					return fmt.Errorf("unable to add to log file: %v", err)
 				}
-				srcPath = abf + be.CGroestlcoinExtractedDirLinux + "bin/"
-				srcFileCLI = be.CGroestlcoinCliFile
-				srcFileD = be.CGroestlcoinDFile
-				srcFileTX = be.CGroestlcoinTxFile
+				srcPath = abf + be.CExtractedDirLinuxGroestlcoin + "bin/"
+				srcFileCLI = be.CCliFileGroestlcoin
+				srcFileD = be.CDFileGroestlcoin
+				srcFileTX = be.CTxFileGroestlcoin
 			//srcFileBWCLI = be.CAppFilename
 			case "386", "amd64":
 				if err := be.AddToLog(lf, "linux amd64 detected.", false); err != nil {
 					return fmt.Errorf("unable to add to log file: %v", err)
 				}
-				srcPath = abf + be.CGroestlcoinExtractedDirLinux + "bin/"
-				srcFileCLI = be.CGroestlcoinCliFile
-				srcFileD = be.CGroestlcoinDFile
-				srcFileTX = be.CGroestlcoinTxFile
+				srcPath = abf + be.CExtractedDirLinuxGroestlcoin + "bin/"
+				srcFileCLI = be.CCliFileGroestlcoin
+				srcFileD = be.CDFileGroestlcoin
+				srcFileTX = be.CTxFileGroestlcoin
 			//srcFileBWCLI = be.CAppFilename
 			default:
 				err = errors.New("unable to determine runtime.GOARCH " + runtime.GOARCH)
