@@ -3,11 +3,9 @@ package bend
 import (
 	"bytes"
 	"encoding/json"
-	"github.com/dustin/go-humanize"
 	"github.com/theckman/yacspin"
 	"io/ioutil"
 	"net/http"
-	"strconv"
 	"strings"
 	"time"
 )
@@ -419,39 +417,6 @@ func GetMNSyncStatusPIVX(cliConf *ConfStruct) (PIVXMNSyncStatusRespStruct, error
 		return respStruct, err
 	}
 	return respStruct, nil
-}
-
-func GetNetworkBlocksTxtPIVX(bci *PIVXBlockchainInfoRespStruct) string {
-	blocksStr := humanize.Comma(int64(bci.Result.Blocks))
-
-	if bci.Result.Blocks > 100 {
-		return "Blocks:      [" + blocksStr + "](fg:green)"
-	} else {
-		return "[Blocks:      " + blocksStr + "](fg:red)"
-	}
-}
-
-func GetNetworkConnectionsTxtPIVX(connections int) string {
-	if connections == 0 {
-		return "Peers:       [0](fg:red)"
-	}
-	return "Peers:       [" + strconv.Itoa(connections) + "](fg:green)"
-}
-
-func GetNetworkDifficultyTxtPIVX(difficulty, good, warn float64) string {
-	var s string
-	if difficulty > 1000 {
-		s = humanize.FormatFloat("#.#", difficulty/1000) + "k"
-	} else {
-		s = humanize.Ftoa(difficulty)
-	}
-	if difficulty >= good {
-		return "Difficulty:  [" + s + "](fg:green)"
-	} else if difficulty >= warn {
-		return "Difficulty:  [" + s + "](fg:yellow)"
-	} else {
-		return "Difficulty:  [" + s + "](fg:red)"
-	}
 }
 
 func GetNewAddressPIVX(cliConf *ConfStruct) (PIVXGetNewAddressStruct, error) {
