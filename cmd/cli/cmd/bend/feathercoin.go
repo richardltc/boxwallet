@@ -15,29 +15,29 @@ const (
 	CCoinNameFeathercoin   string = "Feathercoin"
 	CCoinAbbrevFeathercoin string = "FTC"
 
-	CFeathercoinCoreVersion string = "0.19.1"
-	//CDFFeathercoinRPi       string = "Feathercoin-" + CFeathercoinCoreVersion + "-rPI.zip"
-	CDFFeathercoinLinux   string = "feathercoin-" + CFeathercoinCoreVersion + "-linux64.tar.gz"
-	CDFFeathercoinWindows string = "feathercoin-" + CFeathercoinCoreVersion + "-win64-setup.exe"
+	CCoreVersionFeathercoin string = "0.19.1"
+	//CDFFeathercoinRPi       string = "Feathercoin-" + CCoreVersionFeathercoin + "-rPI.zip"
+	CDFLinuxFeathercoin   string = "feathercoin-" + CCoreVersionFeathercoin + "-linux64.tar.gz"
+	CDFWindowsFeathercoin string = "feathercoin-" + CCoreVersionFeathercoin + "-win64-setup.exe"
 
-	CFeathercoinExtractedDirLinux = "feathercoin-" + CFeathercoinCoreVersion + "-linux64/"
+	CExtractedDirLinuxFeathercoin = "feathercoin-" + CCoreVersionFeathercoin + "-linux64/"
 
-	CDownloadURLFeathercoin string = "https://github.com/FeatherCoin/FeatherCoin/releases/download/v" + CFeathercoinCoreVersion + "/"
+	CDownloadURLFeathercoin string = "https://github.com/FeatherCoin/FeatherCoin/releases/download/v" + CCoreVersionFeathercoin + "/"
 
-	cFeathercoinHomeDir    string = ".feathercoin"
-	cFeathercoinHomeDirWin string = "FEATHERCOIN"
+	cHomeDirFeathercoin    string = ".feathercoin"
+	cHomeDirWinFeathercoin string = "FEATHERCOIN"
 
-	CFeathercoinConfFile   string = "feathercoin.conf"
-	CFeathercoinCliFile    string = "feathercoin-cli"
-	CFeathercoinCliFileWin string = "feathercoin-cli.exe"
-	CFeathercoinDFile      string = "feathercoind"
-	CFeathercoinDFileWin   string = "feathercoind.exe"
-	CFeathercoinTxFile     string = "feathercoin-tx"
-	CFeathercoinTxFileWin  string = "feathercoin-tx.exe"
+	cConfFileFeathercoin   string = "feathercoin.conf"
+	CCliFileFeathercoin    string = "feathercoin-cli"
+	CCliFileWinFeathercoin string = "feathercoin-cli.exe"
+	CDFileFeathercoin      string = "feathercoind"
+	CDFileWinFeathercoin   string = "feathercoind.exe"
+	CTxFileFeathercoin     string = "feathercoin-tx"
+	CTxFileWinFeathercoin  string = "feathercoin-tx.exe"
 
 	// feathercoin.conf file constants
-	cFeathercoinRPCUser string = "feathercoinrpc"
-	CFeathercoinRPCPort string = "18332"
+	cRPCUserFeathercoin string = "feathercoinrpc"
+	CRPCPortFeathercoin string = "18332"
 )
 
 type FeathercoinBlockchainInfoRespStruct struct {
