@@ -1248,11 +1248,11 @@ var dashCmd = &cobra.Command{
 				sMNSync = getMNSyncStatusTxtPhore(mnssPhore.Result.IsBlockchainSynced, &mnssPhore)
 				sPeers = getNetworkConnectionsTxtPhore(gConnections)
 			case be.PTPIVX:
-				sBlocks = be.GetNetworkBlocksTxtPIVX(&bciPIVX)
-				sDiff = be.GetNetworkDifficultyTxtPIVX(bciPIVX.Result.Difficulty, gDiffGood, gDiffWarning)
+				sBlocks = getNetworkBlocksTxtPIVX(&bciPIVX)
+				sDiff = getNetworkDifficultyTxtPIVX(bciPIVX.Result.Difficulty, gDiffGood, gDiffWarning)
 				sBlockchainSync = getBlockchainSyncTxtPIVX(mnssPIVX.Result.IsBlockchainSynced, &bciPIVX)
 				sMNSync = getMNSyncStatusTxtPIVX(mnssPIVX.Result.IsBlockchainSynced, &mnssPIVX)
-				sPeers = be.GetNetworkConnectionsTxtPIVX(gConnections)
+				sPeers = getNetworkConnectionsTxtPIVX(gConnections)
 			case be.PTRapids:
 				sBlocks = be.GetNetworkBlocksTxtRapids(&bciRapids)
 				sDiff = be.GetNetworkDifficultyTxtRapids(bciRapids.Result.Difficulty, gDiffGood, gDiffWarning)
@@ -2727,6 +2727,16 @@ func getNetworkBlocksTxtPhore(bci *be.PhoreBlockchainInfoRespStruct) string {
 	}
 }
 
+func getNetworkBlocksTxtPIVX(bci *be.PIVXBlockchainInfoRespStruct) string {
+	blocksStr := humanize.Comma(int64(bci.Result.Blocks))
+
+	if bci.Result.Blocks > 100 {
+		return "Blocks:      [" + blocksStr + "](fg:green)"
+	} else {
+		return "[Blocks:      " + blocksStr + "](fg:red)"
+	}
+}
+
 func getNetworkBlocksTxtXBC(bci *be.XBCBlockchainInfoRespStruct) string {
 	blocksStr := humanize.Comma(int64(bci.Result.Blocks))
 
@@ -2780,6 +2790,13 @@ func getNetworkConnectionsTxtGRS(connections int) string {
 }
 
 func getNetworkConnectionsTxtPhore(connections int) string {
+	if connections == 0 {
+		return "Peers:       [0](fg:red)"
+	}
+	return "Peers:       [" + strconv.Itoa(connections) + "](fg:green)"
+}
+
+func getNetworkConnectionsTxtPIVX(connections int) string {
 	if connections == 0 {
 		return "Peers:       [0](fg:red)"
 	}
@@ -3288,6 +3305,22 @@ func getNetworkDifficultyTxtPhore(difficulty, good, warn float64) string {
 		return "[Difficulty:  " + s + "](fg:yellow)"
 	} else {
 		return "[Difficulty:  " + s + "](fg:red)"
+	}
+}
+
+func getNetworkDifficultyTxtPIVX(difficulty, good, warn float64) string {
+	var s string
+	if difficulty > 1000 {
+		s = humanize.FormatFloat("#.#", difficulty/1000) + "k"
+	} else {
+		s = humanize.Ftoa(difficulty)
+	}
+	if difficulty >= good {
+		return "Difficulty:  [" + s + "](fg:green)"
+	} else if difficulty >= warn {
+		return "Difficulty:  [" + s + "](fg:yellow)"
+	} else {
+		return "Difficulty:  [" + s + "](fg:red)"
 	}
 }
 
