@@ -660,7 +660,7 @@ func GetCoinDaemonFilename(at APPType, pt ProjectType) (string, error) {
 	case PTGroestlcoin:
 		return CDFileGroestlcoin, nil
 	case PTPhore:
-		return CPhoreDFile, nil
+		return CDFilePhore, nil
 	case PTPIVX:
 		return CPIVXDFile, nil
 	case PTRapids:
@@ -776,7 +776,7 @@ func GetCoinHomeFolder(at APPType, pt ProjectType) (string, error) {
 		case PTGroestlcoin:
 			s = AddTrailingSlash(hd) + "appdata\\roaming\\" + AddTrailingSlash(cHomeDirWinGroestlcoin)
 		case PTPhore:
-			s = AddTrailingSlash(hd) + "appdata\\roaming\\" + AddTrailingSlash(cPhoreHomeDirWin)
+			s = AddTrailingSlash(hd) + "appdata\\roaming\\" + AddTrailingSlash(cHomeDirWinPhore)
 		case PTPIVX:
 			s = AddTrailingSlash(hd) + "appdata\\roaming\\" + AddTrailingSlash(cPIVXHomeDirWin)
 		case PTRapids:
@@ -812,7 +812,7 @@ func GetCoinHomeFolder(at APPType, pt ProjectType) (string, error) {
 		case PTGroestlcoin:
 			s = AddTrailingSlash(hd) + AddTrailingSlash(cHomeDirGroestlcoin)
 		case PTPhore:
-			s = AddTrailingSlash(hd) + AddTrailingSlash(cPhoreHomeDir)
+			s = AddTrailingSlash(hd) + AddTrailingSlash(cHomeDirPhore)
 		case PTPIVX:
 			s = AddTrailingSlash(hd) + AddTrailingSlash(cPIVXHomeDir)
 		case PTRapids:
@@ -1217,9 +1217,9 @@ func IsCoinDaemonRunning(ct ProjectType) (bool, int, error) {
 		}
 	case PTPhore:
 		if runtime.GOOS == "windows" {
-			pid, _, err = FindProcess(CPhoreDFileWin)
+			pid, _, err = FindProcess(CDFileWinPhore)
 		} else {
-			pid, _, err = FindProcess(CPhoreDFile)
+			pid, _, err = FindProcess(CDFilePhore)
 		}
 	case PTPIVX:
 		if runtime.GOOS == "windows" {
@@ -2509,122 +2509,122 @@ func PopulateDaemonConfFile() (rpcuser, rpcpassword string, err error) {
 
 		return rpcu, rpcpw, nil
 	case PTPhore:
-		fmt.Println("Populating " + CPhoreConfFile + " for initial setup...")
+		fmt.Println("Populating " + cConfFilePhore + " for initial setup...")
 
 		// Add rpcuser info if required
-		b, err := StringExistsInFile(cRPCUserStr+"=", chd+CPhoreConfFile)
+		b, err := StringExistsInFile(cRPCUserStr+"=", chd+cConfFilePhore)
 		if err != nil {
 			return "", "", fmt.Errorf("unable to search for text in file - %v", err)
 		}
 		if !b {
 			if !bFileHasBeenBU {
 				bFileHasBeenBU = true
-				if err := BackupFile(chd, CPhoreConfFile, "", "", false); err != nil {
+				if err := BackupFile(chd, cConfFilePhore, "", "", false); err != nil {
 					return "", "", fmt.Errorf("unable to backup file - %v", err)
 				}
 			}
-			rpcu = cPhoreRPCUser
-			if err := WriteTextToFile(chd+CPhoreConfFile, cRPCUserStr+"="+rpcu); err != nil {
+			rpcu = cRPCUserPhore
+			if err := WriteTextToFile(chd+cConfFilePhore, cRPCUserStr+"="+rpcu); err != nil {
 				log.Fatal(err)
 			}
 		} else {
-			rpcu, err = GetStringAfterStrFromFile(cRPCUserStr+"=", chd+CPhoreConfFile)
+			rpcu, err = GetStringAfterStrFromFile(cRPCUserStr+"=", chd+cConfFilePhore)
 			if err != nil {
 				return "", "", fmt.Errorf("unable to search for text in file - %v", err)
 			}
 		}
 
 		// Add rpcpassword info if required
-		b, err = StringExistsInFile(cRPCPasswordStr+"=", chd+CPhoreConfFile)
+		b, err = StringExistsInFile(cRPCPasswordStr+"=", chd+cConfFilePhore)
 		if err != nil {
 			return "", "", fmt.Errorf("unable to search for text in file - %v", err)
 		}
 		if !b {
 			if !bFileHasBeenBU {
 				bFileHasBeenBU = true
-				if err := BackupFile(chd, CPhoreConfFile, "", "", false); err != nil {
+				if err := BackupFile(chd, cConfFilePhore, "", "", false); err != nil {
 					return "", "", fmt.Errorf("unable to backup file - %v", err)
 				}
 			}
 			rpcpw = rand.String(20)
-			if err := WriteTextToFile(chd+CPhoreConfFile, cRPCPasswordStr+"="+rpcpw); err != nil {
+			if err := WriteTextToFile(chd+cConfFilePhore, cRPCPasswordStr+"="+rpcpw); err != nil {
 				log.Fatal(err)
 			}
-			if err := WriteTextToFile(chd+CPhoreConfFile, ""); err != nil {
+			if err := WriteTextToFile(chd+cConfFilePhore, ""); err != nil {
 				log.Fatal(err)
 			}
 		} else {
-			rpcpw, err = GetStringAfterStrFromFile(cRPCPasswordStr+"=", chd+CPhoreConfFile)
+			rpcpw, err = GetStringAfterStrFromFile(cRPCPasswordStr+"=", chd+cConfFilePhore)
 			if err != nil {
 				return "", "", fmt.Errorf("unable to search for text in file - %v", err)
 			}
 		}
 
 		// Add daemon=1 info if required
-		b, err = StringExistsInFile("daemon=1", chd+CPhoreConfFile)
+		b, err = StringExistsInFile("daemon=1", chd+cConfFilePhore)
 		if err != nil {
 			return "", "", fmt.Errorf("unable to search for text in file - %v", err)
 		}
 		if !b {
 			if !bFileHasBeenBU {
 				bFileHasBeenBU = true
-				if err := BackupFile(chd, CPhoreConfFile, "", "", false); err != nil {
+				if err := BackupFile(chd, cConfFilePhore, "", "", false); err != nil {
 					return "", "", fmt.Errorf("unable to backup file - %v", err)
 				}
 			}
-			if err := WriteTextToFile(chd+CPhoreConfFile, "daemon=1"); err != nil {
+			if err := WriteTextToFile(chd+cConfFilePhore, "daemon=1"); err != nil {
 				log.Fatal(err)
 			}
-			if err := WriteTextToFile(chd+CPhoreConfFile, ""); err != nil {
+			if err := WriteTextToFile(chd+cConfFilePhore, ""); err != nil {
 				log.Fatal(err)
 			}
 		}
 
 		// Add server=1 info if required
-		b, err = StringExistsInFile("server=1", chd+CPhoreConfFile)
+		b, err = StringExistsInFile("server=1", chd+cConfFilePhore)
 		if err != nil {
 			return "", "", fmt.Errorf("unable to search for text in file - %v", err)
 		}
 		if !b {
 			if !bFileHasBeenBU {
 				bFileHasBeenBU = true
-				if err := BackupFile(chd, CPhoreConfFile, "", "", false); err != nil {
+				if err := BackupFile(chd, cConfFilePhore, "", "", false); err != nil {
 					return "", "", fmt.Errorf("unable to backup file - %v", err)
 				}
 			}
-			if err := WriteTextToFile(chd+CPhoreConfFile, "server=1"); err != nil {
+			if err := WriteTextToFile(chd+cConfFilePhore, "server=1"); err != nil {
 				log.Fatal(err)
 			}
 		}
 		// Add rpcallowip= info if required
-		b, err = StringExistsInFile("rpcallowip=", chd+CPhoreConfFile)
+		b, err = StringExistsInFile("rpcallowip=", chd+cConfFilePhore)
 		if err != nil {
 			return "", "", fmt.Errorf("unable to search for text in file - %v", err)
 		}
 		if !b {
 			if !bFileHasBeenBU {
 				bFileHasBeenBU = true
-				if err := BackupFile(chd, CPhoreConfFile, "", "", false); err != nil {
+				if err := BackupFile(chd, cConfFilePhore, "", "", false); err != nil {
 					return "", "", fmt.Errorf("unable to backup file - %v", err)
 				}
 			}
-			if err := WriteTextToFile(chd+CPhoreConfFile, "rpcallowip=192.168.1.0/255.255.255.0"); err != nil {
+			if err := WriteTextToFile(chd+cConfFilePhore, "rpcallowip=192.168.1.0/255.255.255.0"); err != nil {
 				log.Fatal(err)
 			}
 		}
 		// Add rpcport= info if required
-		b, err = StringExistsInFile("rpcport=", chd+CPhoreConfFile)
+		b, err = StringExistsInFile("rpcport=", chd+cConfFilePhore)
 		if err != nil {
 			return "", "", fmt.Errorf("unable to search for text in file - %v", err)
 		}
 		if !b {
 			if !bFileHasBeenBU {
 				bFileHasBeenBU = true
-				if err := BackupFile(chd, CPhoreConfFile, "", "", false); err != nil {
+				if err := BackupFile(chd, cConfFilePhore, "", "", false); err != nil {
 					return "", "", fmt.Errorf("unable to backup file - %v", err)
 				}
 			}
-			if err := WriteTextToFile(chd+CPhoreConfFile, "rpcport=11772"); err != nil {
+			if err := WriteTextToFile(chd+cConfFilePhore, "rpcport=11772"); err != nil {
 				log.Fatal(err)
 			}
 		}
@@ -3872,23 +3872,23 @@ func AllProjectBinaryFilesExists() (bool, error) {
 		}
 	case PTPhore:
 		if runtime.GOOS == "windows" {
-			if !FileExists(abf + CPhoreCliFileWin) {
+			if !FileExists(abf + CCliFileWinPhore) {
 				return false, nil
 			}
-			if !FileExists(abf + CPhoreDFileWin) {
+			if !FileExists(abf + CDFileWinPhore) {
 				return false, nil
 			}
-			if !FileExists(abf + CPhoreTxFileWin) {
+			if !FileExists(abf + CTxFileWinPhore) {
 				return false, nil
 			}
 		} else {
-			if !FileExists(abf + CPhoreCliFile) {
+			if !FileExists(abf + CCliFilePhore) {
 				return false, nil
 			}
-			if !FileExists(abf + CPhoreDFile) {
+			if !FileExists(abf + CDFilePhore) {
 				return false, nil
 			}
-			if !FileExists(abf + CPhoreTxFile) {
+			if !FileExists(abf + CTxFilePhore) {
 				return false, nil
 			}
 		}
@@ -4472,7 +4472,7 @@ func StartCoinDaemon(displayOutput bool) error {
 				fmt.Println("Attempting to run the phored daemon...")
 			}
 
-			cmdRun := exec.Command(abf + CPhoreDFile)
+			cmdRun := exec.Command(abf + CDFilePhore)
 			stdout, err := cmdRun.StdoutPipe()
 			if err != nil {
 				return err
@@ -4888,7 +4888,7 @@ func StopCoinDaemon(displayOutput bool) error {
 			// TODO Complete for Windows
 		} else {
 			for i := 0; i < 50; i++ {
-				cRun := exec.Command(abf+CPhoreCliFile, "stop")
+				cRun := exec.Command(abf+CCliFilePhore, "stop")
 				_ = cRun.Run()
 
 				sr, _, _ := IsCoinDaemonRunning(PTPhore)

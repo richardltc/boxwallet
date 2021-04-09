@@ -101,7 +101,7 @@ var coinCmd = &cobra.Command{
 		case be.CCoinNamePhore:
 			be.AddToLog(lf, be.CCoinNamePhore+" selected", false)
 			cliConf.ProjectType = be.PTPhore
-			cliConf.Port = be.CPhoreRPCPort
+			cliConf.Port = be.CRPCPortPhore
 		case be.CCoinNamePIVX:
 			be.AddToLog(lf, be.CCoinNamePIVX+" selected", false)
 			cliConf.ProjectType = be.PTPIVX
@@ -368,14 +368,14 @@ func doRequiredFiles() error {
 		}
 	case be.PTPhore:
 		if runtime.GOOS == "windows" {
-			filePath = abf + be.CDFPhoreWindows
-			fileURL = be.CDownloadURLPhore + be.CDFPhoreWindows
+			filePath = abf + be.CDFWindowsPhore
+			fileURL = be.CDownloadURLPhore + be.CDFWindowsPhore
 		} else if runtime.GOARCH == "arm" {
-			filePath = abf + be.CDFPhoreRPi
-			fileURL = be.CDownloadURLPhore + be.CDFPhoreRPi
+			filePath = abf + be.CDFRPiPhore
+			fileURL = be.CDownloadURLPhore + be.CDFRPiPhore
 		} else {
-			filePath = abf + be.CDFPhoreLinux
-			fileURL = be.CDownloadURLPhore + be.CDFPhoreLinux
+			filePath = abf + be.CDFLinuxPhore
+			fileURL = be.CDownloadURLPhore + be.CDFLinuxPhore
 		}
 	case be.PTPIVX:
 		if runtime.GOOS == "windows" {
@@ -657,21 +657,21 @@ func doRequiredFiles() error {
 			if err := archiver.Unarchive(filePath, abf); err != nil {
 				return fmt.Errorf("unable to unarchive file: %v - %v", r, err)
 			}
-			defer os.RemoveAll(abf + be.CPhoreExtractedDirWindows)
+			defer os.RemoveAll(abf + be.CExtractedDirWindowsPhore)
 		} else if runtime.GOARCH == "arm" {
 			//err = be.ExtractTarGz(r)
 			err = archiver.Unarchive(filePath, abf)
 			if err != nil {
 				return fmt.Errorf("unable to extractTarGz file: %v - %v", r, err)
 			}
-			defer os.RemoveAll(abf + be.CPhoreExtractedDirLinux)
+			defer os.RemoveAll(abf + be.CExtractedDirLinuxPhore)
 		} else {
 			//err = be.ExtractTarGz(r)
 			err = archiver.Unarchive(filePath, abf)
 			if err != nil {
 				return fmt.Errorf("unable to extractTarGz file: %v - %v", r, err)
 			}
-			defer os.RemoveAll(abf + be.CPhoreExtractedDirLinux)
+			defer os.RemoveAll(abf + be.CExtractedDirLinuxPhore)
 		}
 	case be.PTPIVX:
 		if runtime.GOOS == "windows" {
@@ -1104,10 +1104,10 @@ func doRequiredFiles() error {
 		}
 		switch runtime.GOOS {
 		case "windows":
-			srcPath = abf + be.CPhoreExtractedDirLinux + "bin\\"
-			srcFileCLI = be.CPhoreCliFileWin
-			srcFileD = be.CPhoreDFileWin
-			srcFileTX = be.CPhoreTxFileWin
+			srcPath = abf + be.CExtractedDirLinuxPhore + "bin\\"
+			srcFileCLI = be.CCliFileWinPhore
+			srcFileD = be.CDFileWinPhore
+			srcFileTX = be.CTxFileWinPhore
 			//srcFileBWCLI = be.CAppFilenameWin
 		case "linux":
 			switch runtime.GOARCH {
@@ -1115,19 +1115,19 @@ func doRequiredFiles() error {
 				if err := be.AddToLog(lf, "linux arm detected.", false); err != nil {
 					return fmt.Errorf("unable to add to log file: %v", err)
 				}
-				srcPath = abf + be.CPhoreExtractedDirLinux + "bin/"
-				srcFileCLI = be.CPhoreCliFile
-				srcFileD = be.CPhoreDFile
-				srcFileTX = be.CPhoreTxFile
+				srcPath = abf + be.CExtractedDirLinuxPhore + "bin/"
+				srcFileCLI = be.CCliFilePhore
+				srcFileD = be.CDFilePhore
+				srcFileTX = be.CTxFilePhore
 			//srcFileBWCLI = be.CAppFilename
 			case "386", "amd64":
 				if err := be.AddToLog(lf, "linux amd64 detected.", false); err != nil {
 					return fmt.Errorf("unable to add to log file: %v", err)
 				}
-				srcPath = abf + be.CPhoreExtractedDirLinux + "bin/"
-				srcFileCLI = be.CPhoreCliFile
-				srcFileD = be.CPhoreDFile
-				srcFileTX = be.CPhoreTxFile
+				srcPath = abf + be.CExtractedDirLinuxPhore + "bin/"
+				srcFileCLI = be.CCliFilePhore
+				srcFileD = be.CDFilePhore
+				srcFileTX = be.CTxFilePhore
 			//srcFileBWCLI = be.CAppFilename
 			default:
 				err = errors.New("unable to determine runtime.GOARCH " + runtime.GOARCH)
