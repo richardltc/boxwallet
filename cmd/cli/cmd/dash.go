@@ -1224,8 +1224,8 @@ var dashCmd = &cobra.Command{
 				sBlockchainSync = getBlockchainSyncTxtDGB(bDGBBlockchainIsSynced, &bciDigiByte)
 				sPeers = getNetworkConnectionsTxtDGB(gConnections)
 			case be.PTDivi:
-				sBlocks = be.GetNetworkBlocksTxtDivi(&bciDivi)
-				sDiff = be.GetNetworkDifficultyTxtDivi(bciDivi.Result.Difficulty, gDiffGood, gDiffWarning)
+				sBlocks = getNetworkBlocksTxtDivi(&bciDivi)
+				sDiff = getNetworkDifficultyTxtDivi(bciDivi.Result.Difficulty, gDiffGood, gDiffWarning)
 				sBlockchainSync = getBlockchainSyncTxtDivi(mnssDivi.Result.IsBlockchainSynced, &bciDivi)
 				sMNSync = getMNSyncStatusTxtDivi(mnssDivi.Result.IsBlockchainSynced, &mnssDivi)
 				sPeers = getNetworkConnectionsTxtDivi(gConnections)
@@ -2672,6 +2672,16 @@ func getNetworkBlocksTxtDGB(bci *be.DGBBlockchainInfoRespStruct) string {
 
 }
 
+func getNetworkBlocksTxtDivi(bci *be.DiviBlockchainInfoRespStruct) string {
+	blocksStr := humanize.Comma(int64(bci.Result.Blocks))
+
+	if bci.Result.Blocks > 100 {
+		return "Blocks:      [" + blocksStr + "](fg:green)"
+	} else {
+		return "[Blocks:      " + blocksStr + "](fg:red)"
+	}
+}
+
 func getNetworkBlocksTxtDVT(bci *be.DVTBlockchainInfoRespStruct) string {
 	blocksStr := humanize.Comma(int64(bci.Result.Blocks))
 
@@ -3120,6 +3130,22 @@ func getNetworkDifficultyTxtDGB(difficulty, good, warn float64) string {
 		return "[Difficulty:  waiting...](fg:white)"
 	}
 
+	if difficulty >= good {
+		return "Difficulty:  [" + s + "](fg:green)"
+	} else if difficulty >= warn {
+		return "Difficulty:  [" + s + "](fg:yellow)"
+	} else {
+		return "Difficulty:  [" + s + "](fg:red)"
+	}
+}
+
+func getNetworkDifficultyTxtDivi(difficulty, good, warn float64) string {
+	var s string
+	if difficulty > 1000 {
+		s = humanize.FormatFloat("#.#", difficulty/1000) + "k"
+	} else {
+		s = humanize.Ftoa(difficulty)
+	}
 	if difficulty >= good {
 		return "Difficulty:  [" + s + "](fg:green)"
 	} else if difficulty >= warn {
