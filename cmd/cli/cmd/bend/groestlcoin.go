@@ -15,31 +15,31 @@ const (
 	CCoinNameGroestlcoin   string = "Groestlcoin"
 	CCoinAbbrevGroestlcoin string = "GRS"
 
-	CGroestlcoinCoreVersion string = "2.21.0"
-	CDFGroestlcoinRPi       string = "groestlcoin-" + CGroestlcoinCoreVersion + "-arm-linux-gnueabihf.tar.gz"
-	CDFGroestlcoinLinux     string = "groestlcoin-" + CGroestlcoinCoreVersion + "-x86_64-linux-gnu.tar.gz"
-	CDFGroestlcoinWindows   string = "groestlcoin-" + CGroestlcoinCoreVersion + "-win64.zip"
+	CCoreVersionGroestlcoin string = "2.21.0"
+	CDFRPiGroestlcoin       string = "groestlcoin-" + CCoreVersionGroestlcoin + "-arm-linux-gnueabihf.tar.gz"
+	CDFLinuxGroestlcoin     string = "groestlcoin-" + CCoreVersionGroestlcoin + "-x86_64-linux-gnu.tar.gz"
+	CDFWindowsGroestlcoin   string = "groestlcoin-" + CCoreVersionGroestlcoin + "-win64.zip"
 
-	CGroestlcoinExtractedDirLinux   = "groestlcoin-" + CGroestlcoinCoreVersion + "/"
-	CGroestlcoinExtractedDirWindows = "groestlcoin-" + CGroestlcoinCoreVersion + "\\"
+	CExtractedDirLinuxGroestlcoin   = "groestlcoin-" + CCoreVersionGroestlcoin + "/"
+	CExtractedDirWindowsGroestlcoin = "groestlcoin-" + CCoreVersionGroestlcoin + "\\"
 
-	CDownloadURLGroestlcoin string = "https://github.com/Groestlcoin/groestlcoin/releases/download/v" + CGroestlcoinCoreVersion + "/"
+	CDownloadURLGroestlcoin string = "https://github.com/Groestlcoin/groestlcoin/releases/download/v" + CCoreVersionGroestlcoin + "/"
 
-	cGroestlcoinHomeDir    string = ".groestlcoin"
-	cGroestlcoinHomeDirWin string = "GROESTLCOIN"
+	cHomeDirGroestlcoin    string = ".groestlcoin"
+	cHomeDirWinGroestlcoin string = "GROESTLCOIN"
 
 	// Files
-	CGroestlcoinConfFile   string = "groestlcoin.conf"
-	CGroestlcoinCliFile    string = "groestlcoin-cli"
-	CGroestlcoinCliFileWin string = "groestlcoin-cli.exe"
-	CGroestlcoinDFile      string = "groestlcoind"
-	CGroestlcoinDFileWin   string = "groestlcoind.exe"
-	CGroestlcoinTxFile     string = "groestlcoin-tx"
-	CGroestlcoinTxFileWin  string = "groestlcoin-tx.exe"
+	cConfFileGroestlcoin   string = "groestlcoin.conf"
+	CCliFileGroestlcoin    string = "groestlcoin-cli"
+	CCliFileWinGroestlcoin string = "groestlcoin-cli.exe"
+	CDFileGroestlcoin      string = "groestlcoind"
+	CDFileWinGroestlcoin   string = "groestlcoind.exe"
+	CTxFileGroestlcoin     string = "groestlcoin-tx"
+	CTxFileWinGroestlcoin  string = "groestlcoin-tx.exe"
 
 	// Networking
-	cGroestlcoinRPCUser string = "groestlcoinrpc"
-	CGroestlcoinRPCPort string = "1441"
+	cRPCUserGroestlcoin string = "groestlcoinrpc"
+	CRPCPortGroestlcoin string = "1441"
 )
 
 type GRSBlockchainInfoRespStruct struct {

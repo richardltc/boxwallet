@@ -658,7 +658,7 @@ func GetCoinDaemonFilename(at APPType, pt ProjectType) (string, error) {
 	case PTFeathercoin:
 		return CDFileFeathercoin, nil
 	case PTGroestlcoin:
-		return CGroestlcoinDFile, nil
+		return CDFileGroestlcoin, nil
 	case PTPhore:
 		return CPhoreDFile, nil
 	case PTPIVX:
@@ -774,7 +774,7 @@ func GetCoinHomeFolder(at APPType, pt ProjectType) (string, error) {
 		case PTFeathercoin:
 			s = AddTrailingSlash(hd) + "appdata\\roaming\\" + AddTrailingSlash(cHomeDirWinFeathercoin)
 		case PTGroestlcoin:
-			s = AddTrailingSlash(hd) + "appdata\\roaming\\" + AddTrailingSlash(cGroestlcoinHomeDirWin)
+			s = AddTrailingSlash(hd) + "appdata\\roaming\\" + AddTrailingSlash(cHomeDirWinGroestlcoin)
 		case PTPhore:
 			s = AddTrailingSlash(hd) + "appdata\\roaming\\" + AddTrailingSlash(cPhoreHomeDirWin)
 		case PTPIVX:
@@ -810,7 +810,7 @@ func GetCoinHomeFolder(at APPType, pt ProjectType) (string, error) {
 		case PTFeathercoin:
 			s = AddTrailingSlash(hd) + AddTrailingSlash(cHomeDirFeathercoin)
 		case PTGroestlcoin:
-			s = AddTrailingSlash(hd) + AddTrailingSlash(cGroestlcoinHomeDir)
+			s = AddTrailingSlash(hd) + AddTrailingSlash(cHomeDirGroestlcoin)
 		case PTPhore:
 			s = AddTrailingSlash(hd) + AddTrailingSlash(cPhoreHomeDir)
 		case PTPIVX:
@@ -1211,9 +1211,9 @@ func IsCoinDaemonRunning(ct ProjectType) (bool, int, error) {
 		}
 	case PTGroestlcoin:
 		if runtime.GOOS == "windows" {
-			pid, _, err = FindProcess(CGroestlcoinDFileWin)
+			pid, _, err = FindProcess(CDFileWinGroestlcoin)
 		} else {
-			pid, _, err = FindProcess(CGroestlcoinDFile)
+			pid, _, err = FindProcess(CDFileGroestlcoin)
 		}
 	case PTPhore:
 		if runtime.GOOS == "windows" {
@@ -2336,12 +2336,12 @@ func PopulateDaemonConfFile() (rpcuser, rpcpassword string, err error) {
 
 		return rpcu, rpcpw, nil
 	case PTGroestlcoin:
-		fmt.Println("Populating " + CGroestlcoinConfFile + " for initial setup...")
+		fmt.Println("Populating " + cConfFileGroestlcoin + " for initial setup...")
 
 		// Add rpcuser info if required, or retrieve the existing one
 		bNeedToWriteStr := true
-		if FileExists(chd + CGroestlcoinConfFile) {
-			bStrFound, err := StringExistsInFile(cRPCUserStr+"=", chd+CGroestlcoinConfFile)
+		if FileExists(chd + cConfFileGroestlcoin) {
+			bStrFound, err := StringExistsInFile(cRPCUserStr+"=", chd+cConfFileGroestlcoin)
 			if err != nil {
 				return "", "", fmt.Errorf("unable to search for text in file - %v", err)
 			}
@@ -2349,13 +2349,13 @@ func PopulateDaemonConfFile() (rpcuser, rpcpassword string, err error) {
 				// String not found
 				if !bFileHasBeenBU {
 					bFileHasBeenBU = true
-					if err := BackupFile(chd, CGroestlcoinConfFile, "", "", false); err != nil {
+					if err := BackupFile(chd, cConfFileGroestlcoin, "", "", false); err != nil {
 						return "", "", fmt.Errorf("unable to backup file - %v", err)
 					}
 				}
 			} else {
 				bNeedToWriteStr = false
-				rpcu, err = GetStringAfterStrFromFile(cRPCUserStr+"=", chd+CGroestlcoinConfFile)
+				rpcu, err = GetStringAfterStrFromFile(cRPCUserStr+"=", chd+cConfFileGroestlcoin)
 				if err != nil {
 					return "", "", fmt.Errorf("unable to search for text in file - %v", err)
 				}
@@ -2365,16 +2365,16 @@ func PopulateDaemonConfFile() (rpcuser, rpcpassword string, err error) {
 			bFileHasBeenBU = true
 		}
 		if bNeedToWriteStr {
-			rpcu = cGroestlcoinRPCUser
-			if err := WriteTextToFile(chd+CGroestlcoinConfFile, cRPCUserStr+"="+rpcu); err != nil {
+			rpcu = cRPCUserGroestlcoin
+			if err := WriteTextToFile(chd+cConfFileGroestlcoin, cRPCUserStr+"="+rpcu); err != nil {
 				log.Fatal(err)
 			}
 		}
 
 		// Add rpcpassword info if required, or retrieve the existing one
 		bNeedToWriteStr = true
-		if FileExists(chd + CGroestlcoinConfFile) {
-			bStrFound, err := StringExistsInFile(cRPCPasswordStr+"=", chd+CGroestlcoinConfFile)
+		if FileExists(chd + cConfFileGroestlcoin) {
+			bStrFound, err := StringExistsInFile(cRPCPasswordStr+"=", chd+cConfFileGroestlcoin)
 			if err != nil {
 				return "", "", fmt.Errorf("unable to search for text in file - %v", err)
 			}
@@ -2382,13 +2382,13 @@ func PopulateDaemonConfFile() (rpcuser, rpcpassword string, err error) {
 				// String not found
 				if !bFileHasBeenBU {
 					bFileHasBeenBU = true
-					if err := BackupFile(chd, CGroestlcoinConfFile, "", "", false); err != nil {
+					if err := BackupFile(chd, cConfFileGroestlcoin, "", "", false); err != nil {
 						return "", "", fmt.Errorf("unable to backup file - %v", err)
 					}
 				}
 			} else {
 				bNeedToWriteStr = false
-				rpcpw, err = GetStringAfterStrFromFile(cRPCPasswordStr+"=", chd+CGroestlcoinConfFile)
+				rpcpw, err = GetStringAfterStrFromFile(cRPCPasswordStr+"=", chd+cConfFileGroestlcoin)
 				if err != nil {
 					return "", "", fmt.Errorf("unable to search for text in file - %v", err)
 				}
@@ -2396,18 +2396,18 @@ func PopulateDaemonConfFile() (rpcuser, rpcpassword string, err error) {
 		}
 		if bNeedToWriteStr {
 			rpcpw = rand.String(20)
-			if err := WriteTextToFile(chd+CGroestlcoinConfFile, cRPCPasswordStr+"="+rpcpw); err != nil {
+			if err := WriteTextToFile(chd+cConfFileGroestlcoin, cRPCPasswordStr+"="+rpcpw); err != nil {
 				log.Fatal(err)
 			}
-			if err := WriteTextToFile(chd+CGroestlcoinConfFile, ""); err != nil {
+			if err := WriteTextToFile(chd+cConfFileGroestlcoin, ""); err != nil {
 				log.Fatal(err)
 			}
 		}
 
 		// Add daemon=1 info if required
 		bNeedToWriteStr = true
-		if FileExists(chd + CGroestlcoinConfFile) {
-			bStrFound, err := StringExistsInFile("daemon=1", chd+CGroestlcoinConfFile)
+		if FileExists(chd + cConfFileGroestlcoin) {
+			bStrFound, err := StringExistsInFile("daemon=1", chd+cConfFileGroestlcoin)
 			if err != nil {
 				return "", "", fmt.Errorf("unable to search for text in file - %v", err)
 			}
@@ -2415,7 +2415,7 @@ func PopulateDaemonConfFile() (rpcuser, rpcpassword string, err error) {
 				// String not found
 				if !bFileHasBeenBU {
 					bFileHasBeenBU = true
-					if err := BackupFile(chd, CGroestlcoinConfFile, "", "", false); err != nil {
+					if err := BackupFile(chd, cConfFileGroestlcoin, "", "", false); err != nil {
 						return "", "", fmt.Errorf("unable to backup file - %v", err)
 					}
 				}
@@ -2424,18 +2424,18 @@ func PopulateDaemonConfFile() (rpcuser, rpcpassword string, err error) {
 			}
 		}
 		if bNeedToWriteStr {
-			if err := WriteTextToFile(chd+CGroestlcoinConfFile, "daemon=1"); err != nil {
+			if err := WriteTextToFile(chd+cConfFileGroestlcoin, "daemon=1"); err != nil {
 				log.Fatal(err)
 			}
-			if err := WriteTextToFile(chd+CGroestlcoinConfFile, ""); err != nil {
+			if err := WriteTextToFile(chd+cConfFileGroestlcoin, ""); err != nil {
 				log.Fatal(err)
 			}
 		}
 
 		// Add server=1 info if required
 		bNeedToWriteStr = true
-		if FileExists(chd + CGroestlcoinConfFile) {
-			bStrFound, err := StringExistsInFile("server=1", chd+CGroestlcoinConfFile)
+		if FileExists(chd + cConfFileGroestlcoin) {
+			bStrFound, err := StringExistsInFile("server=1", chd+cConfFileGroestlcoin)
 			if err != nil {
 				return "", "", fmt.Errorf("unable to search for text in file - %v", err)
 			}
@@ -2443,7 +2443,7 @@ func PopulateDaemonConfFile() (rpcuser, rpcpassword string, err error) {
 				// String not found
 				if !bFileHasBeenBU {
 					bFileHasBeenBU = true
-					if err := BackupFile(chd, CGroestlcoinConfFile, "", "", false); err != nil {
+					if err := BackupFile(chd, cConfFileGroestlcoin, "", "", false); err != nil {
 						return "", "", fmt.Errorf("unable to backup file - %v", err)
 					}
 				}
@@ -2452,15 +2452,15 @@ func PopulateDaemonConfFile() (rpcuser, rpcpassword string, err error) {
 			}
 		}
 		if bNeedToWriteStr {
-			if err := WriteTextToFile(chd+CGroestlcoinConfFile, "server=1"); err != nil {
+			if err := WriteTextToFile(chd+cConfFileGroestlcoin, "server=1"); err != nil {
 				log.Fatal(err)
 			}
 		}
 
 		// Add rpcallowip= info if required
 		bNeedToWriteStr = true
-		if FileExists(chd + CGroestlcoinConfFile) {
-			bStrFound, err := StringExistsInFile("rpcallowip=", chd+CGroestlcoinConfFile)
+		if FileExists(chd + cConfFileGroestlcoin) {
+			bStrFound, err := StringExistsInFile("rpcallowip=", chd+cConfFileGroestlcoin)
 			if err != nil {
 				return "", "", fmt.Errorf("unable to search for text in file - %v", err)
 			}
@@ -2468,7 +2468,7 @@ func PopulateDaemonConfFile() (rpcuser, rpcpassword string, err error) {
 				// String not found
 				if !bFileHasBeenBU {
 					bFileHasBeenBU = true
-					if err := BackupFile(chd, CGroestlcoinConfFile, "", "", false); err != nil {
+					if err := BackupFile(chd, cConfFileGroestlcoin, "", "", false); err != nil {
 						return "", "", fmt.Errorf("unable to backup file - %v", err)
 					}
 				}
@@ -2477,15 +2477,15 @@ func PopulateDaemonConfFile() (rpcuser, rpcpassword string, err error) {
 			}
 		}
 		if bNeedToWriteStr {
-			if err := WriteTextToFile(chd+CGroestlcoinConfFile, "rpcallowip=192.168.1.0/255.255.255.0"); err != nil {
+			if err := WriteTextToFile(chd+cConfFileGroestlcoin, "rpcallowip=192.168.1.0/255.255.255.0"); err != nil {
 				log.Fatal(err)
 			}
 		}
 
 		// Add rpcport= info if required
 		bNeedToWriteStr = true
-		if FileExists(chd + CGroestlcoinConfFile) {
-			bStrFound, err := StringExistsInFile("rpcport=", chd+CGroestlcoinConfFile)
+		if FileExists(chd + cConfFileGroestlcoin) {
+			bStrFound, err := StringExistsInFile("rpcport=", chd+cConfFileGroestlcoin)
 			if err != nil {
 				return "", "", fmt.Errorf("unable to search for text in file - %v", err)
 			}
@@ -2493,7 +2493,7 @@ func PopulateDaemonConfFile() (rpcuser, rpcpassword string, err error) {
 				// String not found
 				if !bFileHasBeenBU {
 					bFileHasBeenBU = true
-					if err := BackupFile(chd, CGroestlcoinConfFile, "", "", false); err != nil {
+					if err := BackupFile(chd, cConfFileGroestlcoin, "", "", false); err != nil {
 						return "", "", fmt.Errorf("unable to backup file - %v", err)
 					}
 				}
@@ -2502,7 +2502,7 @@ func PopulateDaemonConfFile() (rpcuser, rpcpassword string, err error) {
 			}
 		}
 		if bNeedToWriteStr {
-			if err := WriteTextToFile(chd+CGroestlcoinConfFile, "rpcport="+CGroestlcoinRPCPort); err != nil {
+			if err := WriteTextToFile(chd+cConfFileGroestlcoin, "rpcport="+CRPCPortGroestlcoin); err != nil {
 				log.Fatal(err)
 			}
 		}
@@ -3850,23 +3850,23 @@ func AllProjectBinaryFilesExists() (bool, error) {
 		}
 	case PTGroestlcoin:
 		if runtime.GOOS == "windows" {
-			if !FileExists(abf + CGroestlcoinCliFileWin) {
+			if !FileExists(abf + CCliFileWinGroestlcoin) {
 				return false, nil
 			}
-			if !FileExists(abf + CGroestlcoinDFileWin) {
+			if !FileExists(abf + CDFileWinGroestlcoin) {
 				return false, nil
 			}
-			if !FileExists(abf + CGroestlcoinTxFileWin) {
+			if !FileExists(abf + CTxFileWinGroestlcoin) {
 				return false, nil
 			}
 		} else {
-			if !FileExists(abf + CGroestlcoinCliFile) {
+			if !FileExists(abf + CCliFileGroestlcoin) {
 				return false, nil
 			}
-			if !FileExists(abf + CGroestlcoinDFile) {
+			if !FileExists(abf + CDFileGroestlcoin) {
 				return false, nil
 			}
-			if !FileExists(abf + CGroestlcoinTxFile) {
+			if !FileExists(abf + CTxFileGroestlcoin) {
 				return false, nil
 			}
 		}
@@ -4439,7 +4439,7 @@ func StartCoinDaemon(displayOutput bool) error {
 	case PTGroestlcoin:
 		if runtime.GOOS == "windows" {
 			//_ = exec.Command(GetAppsBinFolder() + cDiviDFileWin)
-			fp := abf + CGroestlcoinDFileWin
+			fp := abf + CDFileWinGroestlcoin
 			cmd := exec.Command("cmd.exe", "/C", "start", "/b", fp)
 			if err := cmd.Run(); err != nil {
 				return err
@@ -4449,7 +4449,7 @@ func StartCoinDaemon(displayOutput bool) error {
 				fmt.Println("Attempting to run the groestlcoin daemon...")
 			}
 
-			cmdRun := exec.Command(abf + CGroestlcoinDFile)
+			cmdRun := exec.Command(abf + CDFileGroestlcoin)
 			//stdout, err := cmdRun.StdoutPipe()
 			if err != nil {
 				return err
@@ -4868,7 +4868,7 @@ func StopCoinDaemon(displayOutput bool) error {
 			// TODO Complete for Windows
 		} else {
 			for i := 0; i < 50; i++ {
-				cRun := exec.Command(abf+CGroestlcoinCliFile, "stop")
+				cRun := exec.Command(abf+CCliFileGroestlcoin, "stop")
 				_ = cRun.Run()
 
 				sr, _, _ := IsCoinDaemonRunning(PTGroestlcoin)
