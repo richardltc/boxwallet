@@ -15,31 +15,31 @@ const (
 	CCoinNamePhore   string = "Phore"
 	CCoinAbbrevPhore string = "PHR"
 
-	CPhoreCoreVersion string = "1.7.0"
-	CDFPhoreRPi              = "phore-" + CPhoreCoreVersion + "-arm-linux-gnueabihf.tar.gz"
-	CDFPhoreLinux            = "phore-" + CPhoreCoreVersion + "-x86_64-linux-gnu.tar.gz"
-	CDFPhoreWindows          = "phore-" + CPhoreCoreVersion + "-win64.zip"
+	CCoreVersionPhore string = "1.7.0"
+	CDFRPiPhore              = "phore-" + CCoreVersionPhore + "-arm-linux-gnueabihf.tar.gz"
+	CDFLinuxPhore            = "phore-" + CCoreVersionPhore + "-x86_64-linux-gnu.tar.gz"
+	CDFWindowsPhore          = "phore-" + CCoreVersionPhore + "-win64.zip"
 
-	CPhoreExtractedDirLinux   = "phore-" + CPhoreCoreVersion + "/"
-	CPhoreExtractedDirWindows = "phore-" + CPhoreCoreVersion + "\\"
+	CExtractedDirLinuxPhore   = "phore-" + CCoreVersionPhore + "/"
+	CExtractedDirWindowsPhore = "phore-" + CCoreVersionPhore + "\\"
 
-	CDownloadURLPhore = "https://github.com/phoreproject/Phore/releases/download/v" + CPhoreCoreVersion + "/"
+	CDownloadURLPhore = "https://github.com/phoreproject/Phore/releases/download/v" + CCoreVersionPhore + "/"
 
 	// Phore Wallet Constants.
-	cPhoreHomeDir    string = ".phore"
-	cPhoreHomeDirWin string = "PHORE"
+	cHomeDirPhore    string = ".phore"
+	cHomeDirWinPhore string = "PHORE"
 
-	CPhoreConfFile   string = "phore.conf"
-	CPhoreCliFile    string = "phore-cli"
-	CPhoreCliFileWin string = "phore-cli.exe"
-	CPhoreDFile      string = "phored"
-	CPhoreDFileWin   string = "phored.exe"
-	CPhoreTxFile     string = "phore-tx"
-	CPhoreTxFileWin  string = "phore-tx.exe"
+	cConfFilePhore   string = "phore.conf"
+	CCliFilePhore    string = "phore-cli"
+	CCliFileWinPhore string = "phore-cli.exe"
+	CDFilePhore      string = "phored"
+	CDFileWinPhore   string = "phored.exe"
+	CTxFilePhore     string = "phore-tx"
+	CTxFileWinPhore  string = "phore-tx.exe"
 
 	// phore.conf file constants.
-	cPhoreRPCUser string = "phorerpc"
-	CPhoreRPCPort string = "11772"
+	cRPCUserPhore string = "phorerpc"
+	CRPCPortPhore string = "11772"
 )
 
 type PhoreBlockchainInfoRespStruct struct {
