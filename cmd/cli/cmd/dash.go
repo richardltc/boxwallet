@@ -3242,7 +3242,7 @@ func updateTransactionsXBC(trans *be.XBCListTransactions, pt *widgets.Table) {
 		}
 		tm := time.Unix(iTime, 0)
 		sCat := getCategorySymbol(trans.Result[i].Category)
-		tAmountStr := humanize.FormatFloat("#,###.##", trans.Result[i].Amount)
+		tAmountStr := humanize.FormatFloat("#,###.####", trans.Result[i].Amount)
 		sColour := getCategoryColour(trans.Result[i].Category)
 		pt.Rows = append(pt.Rows, []string{
 			" [" + tm.Format("2006-01-02 15:04"+"](fg:"+sColour+")"),
