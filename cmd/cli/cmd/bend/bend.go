@@ -656,7 +656,7 @@ func GetCoinDaemonFilename(at APPType, pt ProjectType) (string, error) {
 	case PTDivi:
 		return CDiviDFile, nil
 	case PTFeathercoin:
-		return CFeathercoinDFile, nil
+		return CDFileFeathercoin, nil
 	case PTGroestlcoin:
 		return CGroestlcoinDFile, nil
 	case PTPhore:
@@ -772,7 +772,7 @@ func GetCoinHomeFolder(at APPType, pt ProjectType) (string, error) {
 		case PTDivi:
 			s = AddTrailingSlash(hd) + "appdata\\roaming\\" + AddTrailingSlash(cHomeDirWinDivi)
 		case PTFeathercoin:
-			s = AddTrailingSlash(hd) + "appdata\\roaming\\" + AddTrailingSlash(cFeathercoinHomeDirWin)
+			s = AddTrailingSlash(hd) + "appdata\\roaming\\" + AddTrailingSlash(cHomeDirWinFeathercoin)
 		case PTGroestlcoin:
 			s = AddTrailingSlash(hd) + "appdata\\roaming\\" + AddTrailingSlash(cGroestlcoinHomeDirWin)
 		case PTPhore:
@@ -808,7 +808,7 @@ func GetCoinHomeFolder(at APPType, pt ProjectType) (string, error) {
 		case PTDivi:
 			s = AddTrailingSlash(hd) + AddTrailingSlash(cHomeDirDivi)
 		case PTFeathercoin:
-			s = AddTrailingSlash(hd) + AddTrailingSlash(cFeathercoinHomeDir)
+			s = AddTrailingSlash(hd) + AddTrailingSlash(cHomeDirFeathercoin)
 		case PTGroestlcoin:
 			s = AddTrailingSlash(hd) + AddTrailingSlash(cGroestlcoinHomeDir)
 		case PTPhore:
@@ -1205,9 +1205,9 @@ func IsCoinDaemonRunning(ct ProjectType) (bool, int, error) {
 		}
 	case PTFeathercoin:
 		if runtime.GOOS == "windows" {
-			pid, _, err = FindProcess(CFeathercoinDFileWin)
+			pid, _, err = FindProcess(CDFileWinFeathercoin)
 		} else {
-			pid, _, err = FindProcess(CFeathercoinDFile)
+			pid, _, err = FindProcess(CDFileFeathercoin)
 		}
 	case PTGroestlcoin:
 		if runtime.GOOS == "windows" {
@@ -2163,12 +2163,12 @@ func PopulateDaemonConfFile() (rpcuser, rpcpassword string, err error) {
 
 		return rpcu, rpcpw, nil
 	case PTFeathercoin:
-		fmt.Println("Populating " + CFeathercoinConfFile + " for initial setup...")
+		fmt.Println("Populating " + cConfFileFeathercoin + " for initial setup...")
 
 		// Add rpcuser info if required, or retrieve the existing one
 		bNeedToWriteStr := true
-		if FileExists(chd + CFeathercoinConfFile) {
-			bStrFound, err := StringExistsInFile(cRPCUserStr+"=", chd+CFeathercoinConfFile)
+		if FileExists(chd + cConfFileFeathercoin) {
+			bStrFound, err := StringExistsInFile(cRPCUserStr+"=", chd+cConfFileFeathercoin)
 			if err != nil {
 				return "", "", fmt.Errorf("unable to search for text in file - %v", err)
 			}
@@ -2176,13 +2176,13 @@ func PopulateDaemonConfFile() (rpcuser, rpcpassword string, err error) {
 				// String not found
 				if !bFileHasBeenBU {
 					bFileHasBeenBU = true
-					if err := BackupFile(chd, CFeathercoinConfFile, "", "", false); err != nil {
+					if err := BackupFile(chd, cConfFileFeathercoin, "", "", false); err != nil {
 						return "", "", fmt.Errorf("unable to backup file - %v", err)
 					}
 				}
 			} else {
 				bNeedToWriteStr = false
-				rpcu, err = GetStringAfterStrFromFile(cRPCUserStr+"=", chd+CFeathercoinConfFile)
+				rpcu, err = GetStringAfterStrFromFile(cRPCUserStr+"=", chd+cConfFileFeathercoin)
 				if err != nil {
 					return "", "", fmt.Errorf("unable to search for text in file - %v", err)
 				}
@@ -2192,16 +2192,16 @@ func PopulateDaemonConfFile() (rpcuser, rpcpassword string, err error) {
 			bFileHasBeenBU = true
 		}
 		if bNeedToWriteStr {
-			rpcu = cFeathercoinRPCUser
-			if err := WriteTextToFile(chd+CFeathercoinConfFile, cRPCUserStr+"="+rpcu); err != nil {
+			rpcu = cRPCUserFeathercoin
+			if err := WriteTextToFile(chd+cConfFileFeathercoin, cRPCUserStr+"="+rpcu); err != nil {
 				log.Fatal(err)
 			}
 		}
 
 		// Add rpcpassword info if required, or retrieve the existing one
 		bNeedToWriteStr = true
-		if FileExists(chd + CFeathercoinConfFile) {
-			bStrFound, err := StringExistsInFile(cRPCPasswordStr+"=", chd+CFeathercoinConfFile)
+		if FileExists(chd + cConfFileFeathercoin) {
+			bStrFound, err := StringExistsInFile(cRPCPasswordStr+"=", chd+cConfFileFeathercoin)
 			if err != nil {
 				return "", "", fmt.Errorf("unable to search for text in file - %v", err)
 			}
@@ -2209,13 +2209,13 @@ func PopulateDaemonConfFile() (rpcuser, rpcpassword string, err error) {
 				// String not found
 				if !bFileHasBeenBU {
 					bFileHasBeenBU = true
-					if err := BackupFile(chd, CFeathercoinConfFile, "", "", false); err != nil {
+					if err := BackupFile(chd, cConfFileFeathercoin, "", "", false); err != nil {
 						return "", "", fmt.Errorf("unable to backup file - %v", err)
 					}
 				}
 			} else {
 				bNeedToWriteStr = false
-				rpcpw, err = GetStringAfterStrFromFile(cRPCPasswordStr+"=", chd+CFeathercoinConfFile)
+				rpcpw, err = GetStringAfterStrFromFile(cRPCPasswordStr+"=", chd+cConfFileFeathercoin)
 				if err != nil {
 					return "", "", fmt.Errorf("unable to search for text in file - %v", err)
 				}
@@ -2223,18 +2223,18 @@ func PopulateDaemonConfFile() (rpcuser, rpcpassword string, err error) {
 		}
 		if bNeedToWriteStr {
 			rpcpw = rand.String(20)
-			if err := WriteTextToFile(chd+CFeathercoinConfFile, cRPCPasswordStr+"="+rpcpw); err != nil {
+			if err := WriteTextToFile(chd+cConfFileFeathercoin, cRPCPasswordStr+"="+rpcpw); err != nil {
 				log.Fatal(err)
 			}
-			if err := WriteTextToFile(chd+CFeathercoinConfFile, ""); err != nil {
+			if err := WriteTextToFile(chd+cConfFileFeathercoin, ""); err != nil {
 				log.Fatal(err)
 			}
 		}
 
 		// Add daemon=1 info if required
 		bNeedToWriteStr = true
-		if FileExists(chd + CFeathercoinConfFile) {
-			bStrFound, err := StringExistsInFile("daemon=1", chd+CFeathercoinConfFile)
+		if FileExists(chd + cConfFileFeathercoin) {
+			bStrFound, err := StringExistsInFile("daemon=1", chd+cConfFileFeathercoin)
 			if err != nil {
 				return "", "", fmt.Errorf("unable to search for text in file - %v", err)
 			}
@@ -2242,7 +2242,7 @@ func PopulateDaemonConfFile() (rpcuser, rpcpassword string, err error) {
 				// String not found
 				if !bFileHasBeenBU {
 					bFileHasBeenBU = true
-					if err := BackupFile(chd, CFeathercoinConfFile, "", "", false); err != nil {
+					if err := BackupFile(chd, cConfFileFeathercoin, "", "", false); err != nil {
 						return "", "", fmt.Errorf("unable to backup file - %v", err)
 					}
 				}
@@ -2251,18 +2251,18 @@ func PopulateDaemonConfFile() (rpcuser, rpcpassword string, err error) {
 			}
 		}
 		if bNeedToWriteStr {
-			if err := WriteTextToFile(chd+CFeathercoinConfFile, "daemon=1"); err != nil {
+			if err := WriteTextToFile(chd+cConfFileFeathercoin, "daemon=1"); err != nil {
 				log.Fatal(err)
 			}
-			if err := WriteTextToFile(chd+CFeathercoinConfFile, ""); err != nil {
+			if err := WriteTextToFile(chd+cConfFileFeathercoin, ""); err != nil {
 				log.Fatal(err)
 			}
 		}
 
 		// Add server=1 info if required
 		bNeedToWriteStr = true
-		if FileExists(chd + CFeathercoinConfFile) {
-			bStrFound, err := StringExistsInFile("server=1", chd+CFeathercoinConfFile)
+		if FileExists(chd + cConfFileFeathercoin) {
+			bStrFound, err := StringExistsInFile("server=1", chd+cConfFileFeathercoin)
 			if err != nil {
 				return "", "", fmt.Errorf("unable to search for text in file - %v", err)
 			}
@@ -2270,7 +2270,7 @@ func PopulateDaemonConfFile() (rpcuser, rpcpassword string, err error) {
 				// String not found
 				if !bFileHasBeenBU {
 					bFileHasBeenBU = true
-					if err := BackupFile(chd, CFeathercoinConfFile, "", "", false); err != nil {
+					if err := BackupFile(chd, cConfFileFeathercoin, "", "", false); err != nil {
 						return "", "", fmt.Errorf("unable to backup file - %v", err)
 					}
 				}
@@ -2279,15 +2279,15 @@ func PopulateDaemonConfFile() (rpcuser, rpcpassword string, err error) {
 			}
 		}
 		if bNeedToWriteStr {
-			if err := WriteTextToFile(chd+CFeathercoinConfFile, "server=1"); err != nil {
+			if err := WriteTextToFile(chd+cConfFileFeathercoin, "server=1"); err != nil {
 				log.Fatal(err)
 			}
 		}
 
 		// Add rpcallowip= info if required
 		bNeedToWriteStr = true
-		if FileExists(chd + CFeathercoinConfFile) {
-			bStrFound, err := StringExistsInFile("rpcallowip=", chd+CFeathercoinConfFile)
+		if FileExists(chd + cConfFileFeathercoin) {
+			bStrFound, err := StringExistsInFile("rpcallowip=", chd+cConfFileFeathercoin)
 			if err != nil {
 				return "", "", fmt.Errorf("unable to search for text in file - %v", err)
 			}
@@ -2295,7 +2295,7 @@ func PopulateDaemonConfFile() (rpcuser, rpcpassword string, err error) {
 				// String not found
 				if !bFileHasBeenBU {
 					bFileHasBeenBU = true
-					if err := BackupFile(chd, CFeathercoinConfFile, "", "", false); err != nil {
+					if err := BackupFile(chd, cConfFileFeathercoin, "", "", false); err != nil {
 						return "", "", fmt.Errorf("unable to backup file - %v", err)
 					}
 				}
@@ -2304,15 +2304,15 @@ func PopulateDaemonConfFile() (rpcuser, rpcpassword string, err error) {
 			}
 		}
 		if bNeedToWriteStr {
-			if err := WriteTextToFile(chd+CFeathercoinConfFile, "rpcallowip=192.168.1.0/255.255.255.0"); err != nil {
+			if err := WriteTextToFile(chd+cConfFileFeathercoin, "rpcallowip=192.168.1.0/255.255.255.0"); err != nil {
 				log.Fatal(err)
 			}
 		}
 
 		// Add rpcport= info if required
 		bNeedToWriteStr = true
-		if FileExists(chd + CFeathercoinConfFile) {
-			bStrFound, err := StringExistsInFile("rpcport=", chd+CFeathercoinConfFile)
+		if FileExists(chd + cConfFileFeathercoin) {
+			bStrFound, err := StringExistsInFile("rpcport=", chd+cConfFileFeathercoin)
 			if err != nil {
 				return "", "", fmt.Errorf("unable to search for text in file - %v", err)
 			}
@@ -2320,7 +2320,7 @@ func PopulateDaemonConfFile() (rpcuser, rpcpassword string, err error) {
 				// String not found
 				if !bFileHasBeenBU {
 					bFileHasBeenBU = true
-					if err := BackupFile(chd, CFeathercoinConfFile, "", "", false); err != nil {
+					if err := BackupFile(chd, cConfFileFeathercoin, "", "", false); err != nil {
 						return "", "", fmt.Errorf("unable to backup file - %v", err)
 					}
 				}
@@ -2329,7 +2329,7 @@ func PopulateDaemonConfFile() (rpcuser, rpcpassword string, err error) {
 			}
 		}
 		if bNeedToWriteStr {
-			if err := WriteTextToFile(chd+CFeathercoinConfFile, "rpcport="+CFeathercoinRPCPort); err != nil {
+			if err := WriteTextToFile(chd+cConfFileFeathercoin, "rpcport="+CRPCPortFeathercoin); err != nil {
 				log.Fatal(err)
 			}
 		}
@@ -3828,23 +3828,23 @@ func AllProjectBinaryFilesExists() (bool, error) {
 		}
 	case PTFeathercoin:
 		if runtime.GOOS == "windows" {
-			if !FileExists(abf + CFeathercoinCliFileWin) {
+			if !FileExists(abf + CCliFileWinFeathercoin) {
 				return false, nil
 			}
-			if !FileExists(abf + CFeathercoinDFileWin) {
+			if !FileExists(abf + CDFileWinFeathercoin) {
 				return false, nil
 			}
-			if !FileExists(abf + CFeathercoinTxFileWin) {
+			if !FileExists(abf + CTxFileWinFeathercoin) {
 				return false, nil
 			}
 		} else {
-			if !FileExists(abf + CFeathercoinCliFile) {
+			if !FileExists(abf + CCliFileFeathercoin) {
 				return false, nil
 			}
-			if !FileExists(abf + CFeathercoinDFile) {
+			if !FileExists(abf + CDFileFeathercoin) {
 				return false, nil
 			}
-			if !FileExists(abf + CFeathercoinTxFile) {
+			if !FileExists(abf + CTxFileFeathercoin) {
 				return false, nil
 			}
 		}
@@ -4397,7 +4397,7 @@ func StartCoinDaemon(displayOutput bool) error {
 	case PTFeathercoin:
 		if runtime.GOOS == "windows" {
 			//_ = exec.Command(GetAppsBinFolder() + cDiviDFileWin)
-			fp := abf + CFeathercoinDFileWin
+			fp := abf + CDFileWinFeathercoin
 			cmd := exec.Command("cmd.exe", "/C", "start", "/b", fp)
 			if err := cmd.Run(); err != nil {
 				return err
@@ -4407,7 +4407,7 @@ func StartCoinDaemon(displayOutput bool) error {
 				fmt.Println("Attempting to run the feathercoind daemon...")
 			}
 
-			cmdRun := exec.Command(abf + CFeathercoinDFile)
+			cmdRun := exec.Command(abf + CDFileFeathercoin)
 			//stdout, err := cmdRun.StdoutPipe()
 			if err != nil {
 				return err
@@ -4848,7 +4848,7 @@ func StopCoinDaemon(displayOutput bool) error {
 			// TODO Complete for Windows
 		} else {
 			for i := 0; i < 50; i++ {
-				cRun := exec.Command(abf+CFeathercoinCliFile, "stop")
+				cRun := exec.Command(abf+CCliFileFeathercoin, "stop")
 				_ = cRun.Run()
 
 				sr, _, _ := IsCoinDaemonRunning(PTFeathercoin)

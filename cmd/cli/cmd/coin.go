@@ -93,7 +93,7 @@ var coinCmd = &cobra.Command{
 		case be.CCoinNameFeathercoin:
 			be.AddToLog(lf, be.CCoinNameFeathercoin+" selected", false)
 			cliConf.ProjectType = be.PTFeathercoin
-			cliConf.Port = be.CFeathercoinRPCPort
+			cliConf.Port = be.CRPCPortFeathercoin
 		case be.CCoinNameGroestlcoin:
 			be.AddToLog(lf, be.CCoinNameGroestlcoin+" selected", false)
 			cliConf.ProjectType = be.PTGroestlcoin
@@ -347,13 +347,13 @@ func doRequiredFiles() error {
 		}
 	case be.PTFeathercoin:
 		if runtime.GOOS == "windows" {
-			filePath = abf + be.CDFFeathercoinWindows
-			fileURL = be.CDownloadURLFeathercoin + be.CDFFeathercoinWindows
+			filePath = abf + be.CDFWindowsFeathercoin
+			fileURL = be.CDownloadURLFeathercoin + be.CDFWindowsFeathercoin
 		} else if runtime.GOARCH == "arm" {
 			return fmt.Errorf("ARM is not supported for this build: %v ", err)
 		} else {
-			filePath = abf + be.CDFFeathercoinLinux
-			fileURL = be.CDownloadURLFeathercoin + be.CDFFeathercoinLinux
+			filePath = abf + be.CDFLinuxFeathercoin
+			fileURL = be.CDownloadURLFeathercoin + be.CDFLinuxFeathercoin
 		}
 	case be.PTGroestlcoin:
 		if runtime.GOOS == "windows" {
@@ -622,14 +622,14 @@ func doRequiredFiles() error {
 			if err != nil {
 				return fmt.Errorf("unable to extractTarGz file: %v - %v", r, err)
 			}
-			defer os.RemoveAll(abf + be.CFeathercoinExtractedDirLinux)
+			defer os.RemoveAll(abf + be.CExtractedDirLinuxFeathercoin)
 		} else {
 			//err = be.ExtractTarGz(r)
 			err = archiver.Unarchive(filePath, abf)
 			if err != nil {
 				return fmt.Errorf("unable to extractTarGz file: %v - %v", r, err)
 			}
-			defer os.RemoveAll(abf + be.CFeathercoinExtractedDirLinux)
+			defer os.RemoveAll(abf + be.CExtractedDirLinuxFeathercoin)
 		}
 	case be.PTGroestlcoin:
 		if runtime.GOOS == "windows" {
@@ -1030,10 +1030,10 @@ func doRequiredFiles() error {
 		}
 		switch runtime.GOOS {
 		case "windows":
-			srcPath = abf + be.CFeathercoinExtractedDirLinux
-			srcFileCLI = be.CFeathercoinCliFileWin
-			srcFileD = be.CFeathercoinDFileWin
-			srcFileTX = be.CFeathercoinTxFileWin
+			srcPath = abf + be.CExtractedDirLinuxFeathercoin
+			srcFileCLI = be.CCliFileWinFeathercoin
+			srcFileD = be.CDFileWinFeathercoin
+			srcFileTX = be.CTxFileWinFeathercoin
 			//srcFileBWCLI = be.CAppFilenameWin
 		case "linux":
 			switch runtime.GOARCH {
@@ -1041,19 +1041,19 @@ func doRequiredFiles() error {
 				if err := be.AddToLog(lf, "linux arm detected.", false); err != nil {
 					return fmt.Errorf("unable to add to log file: %v", err)
 				}
-				srcPath = abf + be.CFeathercoinExtractedDirLinux
-				srcFileCLI = be.CFeathercoinCliFile
-				srcFileD = be.CFeathercoinDFile
-				srcFileTX = be.CFeathercoinTxFile
+				srcPath = abf + be.CExtractedDirLinuxFeathercoin
+				srcFileCLI = be.CCliFileFeathercoin
+				srcFileD = be.CDFileFeathercoin
+				srcFileTX = be.CTxFileFeathercoin
 			//srcFileBWCLI = be.CAppFilename
 			case "386", "amd64":
 				if err := be.AddToLog(lf, "linux amd64 detected.", false); err != nil {
 					return fmt.Errorf("unable to add to log file: %v", err)
 				}
-				srcPath = abf + be.CFeathercoinExtractedDirLinux
-				srcFileCLI = be.CFeathercoinCliFile
-				srcFileD = be.CFeathercoinDFile
-				srcFileTX = be.CFeathercoinTxFile
+				srcPath = abf + be.CExtractedDirLinuxFeathercoin
+				srcFileCLI = be.CCliFileFeathercoin
+				srcFileD = be.CDFileFeathercoin
+				srcFileTX = be.CTxFileFeathercoin
 			//srcFileBWCLI = be.CAppFilename
 			default:
 				err = errors.New("unable to determine runtime.GOARCH " + runtime.GOARCH)
