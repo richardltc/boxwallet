@@ -1236,11 +1236,11 @@ var dashCmd = &cobra.Command{
 				sBlockchainSync = getBlockchainSyncTxtFTC(bFTCBlockchainIsSynced, &bciFeathercoin)
 				sPeers = getNetworkConnectionsTxtFTC(gConnections)
 			case be.PTGroestlcoin:
-				sHeaders = be.GetNetworkHeadersTxtGRS(&bciGroestlcoin)
-				sBlocks = be.GetNetworkBlocksTxtGRS(&bciGroestlcoin)
-				sDiff = be.GetNetworkDifficultyTxtGRS(bciGroestlcoin.Result.Difficulty, gDiffGood, gDiffWarning)
+				sHeaders = getNetworkHeadersTxtGRS(&bciGroestlcoin)
+				sBlocks = getNetworkBlocksTxtGRS(&bciGroestlcoin)
+				sDiff = getNetworkDifficultyTxtGRS(bciGroestlcoin.Result.Difficulty, gDiffGood, gDiffWarning)
 				sBlockchainSync = getBlockchainSyncTxtGRS(bGRSBlockchainIsSynced, &bciGroestlcoin)
-				sPeers = be.GetNetworkConnectionsTxtGRS(gConnections)
+				sPeers = getNetworkConnectionsTxtGRS(gConnections)
 			case be.PTPhore:
 				sBlocks = be.GetNetworkBlocksTxtPhore(&bciPhore)
 				sDiff = be.GetNetworkDifficultyTxtPhore(bciPhore.Result.Difficulty, gDiffGood, gDiffWarning)
@@ -2707,6 +2707,16 @@ func getNetworkBlocksTxtDVT(bci *be.DVTBlockchainInfoRespStruct) string {
 	return "Blocks:      [" + blocksStr + "](fg:green)"
 }
 
+func getNetworkBlocksTxtGRS(bci *be.GRSBlockchainInfoRespStruct) string {
+	blocksStr := humanize.Comma(int64(bci.Result.Blocks))
+
+	if blocksStr == "0" {
+		return "Blocks:      [waiting...](fg:white)"
+	}
+
+	return "Blocks:      [" + blocksStr + "](fg:green)"
+}
+
 func getNetworkBlocksTxtXBC(bci *be.XBCBlockchainInfoRespStruct) string {
 	blocksStr := humanize.Comma(int64(bci.Result.Blocks))
 
@@ -2746,6 +2756,13 @@ func getNetworkConnectionsTxtDivi(connections int) string {
 }
 
 func getNetworkConnectionsTxtFTC(connections int) string {
+	if connections == 0 {
+		return "Peers:       [0](fg:red)"
+	}
+	return "Peers:       [" + strconv.Itoa(connections) + "](fg:green)"
+}
+
+func getNetworkConnectionsTxtGRS(connections int) string {
 	if connections == 0 {
 		return "Peers:       [0](fg:red)"
 	}
@@ -2802,6 +2819,16 @@ func getNetworkHeadersTxtDGB(bci *be.DGBBlockchainInfoRespStruct) string {
 }
 
 func getNetworkHeadersTxtFeathercoin(bci *be.FeathercoinBlockchainInfoRespStruct) string {
+	headersStr := humanize.Comma(int64(bci.Result.Headers))
+
+	if bci.Result.Headers > 1 {
+		return "Headers:     [" + headersStr + "](fg:green)"
+	} else {
+		return "[Headers:     " + headersStr + "](fg:red)"
+	}
+}
+
+func getNetworkHeadersTxtGRS(bci *be.GRSBlockchainInfoRespStruct) string {
 	headersStr := humanize.Comma(int64(bci.Result.Headers))
 
 	if bci.Result.Headers > 1 {
@@ -3188,6 +3215,28 @@ func getNetworkDifficultyTxtDivi(difficulty, good, warn float64) string {
 }
 
 func getNetworkDifficultyTxtFeathercoin(difficulty, good, warn float64) string {
+	var s string
+	if difficulty > 1000 {
+		s = humanize.FormatFloat("#.#", difficulty/1000) + "k"
+	} else {
+		s = humanize.Ftoa(difficulty)
+	}
+
+	// If Diff is less than 1, then we're not even calculating it properly yet...
+	if difficulty < 1 {
+		return "[Difficulty:  waiting...](fg:white)"
+	}
+
+	if difficulty >= good {
+		return "Difficulty:  [" + s + "](fg:green)"
+	} else if difficulty >= warn {
+		return "Difficulty:  [" + s + "](fg:yellow)"
+	} else {
+		return "Difficulty:  [" + s + "](fg:red)"
+	}
+}
+
+func getNetworkDifficultyTxtGRS(difficulty, good, warn float64) string {
 	var s string
 	if difficulty > 1000 {
 		s = humanize.FormatFloat("#.#", difficulty/1000) + "k"
