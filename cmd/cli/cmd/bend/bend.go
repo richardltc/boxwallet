@@ -950,7 +950,7 @@ func GetTipAddress(pt ProjectType) string {
 	case PTPhore:
 		return "PKFcy7UTEWegnAq7Wci8Aj76bQyHMottF8"
 	case PTPIVX:
-		return "DFHmj4dExVC24eWoRKmQJDx57r4svGVs3J"
+		return "D69t8ja9KZNcxdEwWVVBFKD7YjLnMuaUYr"
 	case PTRapids:
 		return "RvxCvM2VWVKq2iSLNoAmzdqH4eF9bhvn6k"
 	case PTReddCoin:
