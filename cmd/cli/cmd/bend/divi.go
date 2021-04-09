@@ -517,32 +517,6 @@ func GetMNSyncStatusDivi(cliConf *ConfStruct) (DiviMNSyncStatusRespStruct, error
 	return respStruct, nil
 }
 
-func GetNetworkBlocksTxtDivi(bci *DiviBlockchainInfoRespStruct) string {
-	blocksStr := humanize.Comma(int64(bci.Result.Blocks))
-
-	if bci.Result.Blocks > 100 {
-		return "Blocks:      [" + blocksStr + "](fg:green)"
-	} else {
-		return "[Blocks:      " + blocksStr + "](fg:red)"
-	}
-}
-
-func GetNetworkDifficultyTxtDivi(difficulty, good, warn float64) string {
-	var s string
-	if difficulty > 1000 {
-		s = humanize.FormatFloat("#.#", difficulty/1000) + "k"
-	} else {
-		s = humanize.Ftoa(difficulty)
-	}
-	if difficulty >= good {
-		return "Difficulty:  [" + s + "](fg:green)"
-	} else if difficulty >= warn {
-		return "Difficulty:  [" + s + "](fg:yellow)"
-	} else {
-		return "Difficulty:  [" + s + "](fg:red)"
-	}
-}
-
 func GetNewAddressDivi(cliConf *ConfStruct) (DiviGetNewAddressStruct, error) {
 	var respStruct DiviGetNewAddressStruct
 
