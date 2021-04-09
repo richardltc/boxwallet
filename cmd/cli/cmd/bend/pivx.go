@@ -16,42 +16,42 @@ const (
 	CCoinNamePIVX   string = "PIVX"
 	CCoinAbbrevPIVX string = "PIVX"
 
-	CPIVXCoreVersion   string = "5.0.1"
-	CDFPIVXFileArm32          = "pivx-" + CPIVXCoreVersion + "-arm-linux-gnueabihf.tar.gz"
-	CDFPIVXFileArm64          = "pivx-" + CPIVXCoreVersion + "-aarch64-linux-gnu.tar.gz"
-	CDFPIVXFileLinux          = "pivx-" + CPIVXCoreVersion + "-x86_64-linux-gnu.tar.gz"
-	CDFPIVXFilemacOS          = "pivx-" + CPIVXCoreVersion + "-osx64.tar.gz"
-	CDFPIVXFileWindows        = "pivx-" + CPIVXCoreVersion + "-win64.zip"
+	CCoreVersionPIVX   string = "5.0.1"
+	CDFFileArm32PIVX          = "pivx-" + CCoreVersionPIVX + "-arm-linux-gnueabihf.tar.gz"
+	CDFFileArm64PIVX          = "pivx-" + CCoreVersionPIVX + "-aarch64-linux-gnu.tar.gz"
+	CDFFileLinuxPIVX          = "pivx-" + CCoreVersionPIVX + "-x86_64-linux-gnu.tar.gz"
+	CDFPIVXFilemacOS          = "pivx-" + CCoreVersionPIVX + "-osx64.tar.gz"
+	CDFFileWindowsPIVX        = "pivx-" + CCoreVersionPIVX + "-win64.zip"
 
 	// Directory const.
-	CPIVXExtractedDirArm     string = "pivx-" + CPIVXCoreVersion + "/"
-	CPIVXExtractedDirLinux   string = "pivx-" + CPIVXCoreVersion + "/"
-	CPIVXExtractedDirWindows string = "pivx-" + CPIVXCoreVersion + "\\"
+	CExtractedDirArmPIVX     string = "pivx-" + CCoreVersionPIVX + "/"
+	CExtractedDirLinuxPIVX   string = "pivx-" + CCoreVersionPIVX + "/"
+	CExtractedDirWindowsPIVX string = "pivx-" + CCoreVersionPIVX + "\\"
 	CPIVXSaplingDirArm       string = ".pivx-params" + "/"
-	CPIVXSaplingDirLinux     string = ".pivx-params" + "/"
-	CPIVXSaplingDirWindows   string = "PIVXParams" + "\\"
+	CSaplingDirLinuxPIVX     string = ".pivx-params" + "/"
+	CSaplingDirWindowsPIVX   string = "PIVXParams" + "\\"
 
-	CDownloadURLPIVX string = "https://github.com/PIVX-Project/PIVX/releases/download/v" + CPIVXCoreVersion + "/"
+	CDownloadURLPIVX string = "https://github.com/PIVX-Project/PIVX/releases/download/v" + CCoreVersionPIVX + "/"
 
 	// PIVX Wallet Constants
-	cPIVXHomeDir    string = ".pivx"
-	cPIVXHomeDirWin string = "PIVX"
+	cHomeDirPIVX    string = ".pivx"
+	cHomeDirWinPIVX string = "PIVX"
 
 	// File constants
-	CPIVXConfFile   string = "pivx.conf"
-	CPIVXCliFile    string = "pivx-cli"
-	CPIVXCliFileWin string = "pivx-cli.exe"
-	CPIVXDFile      string = "pivxd"
-	CPIVXDFileWin   string = "pivxd.exe"
-	CPIVXTxFile     string = "pivx-tx"
-	CPIVXTxFileWin  string = "pivx-tx.exe"
+	CConfFilePIVX   string = "pivx.conf"
+	CCliFilePIVX    string = "pivx-cli"
+	CCliFileWinPIVX string = "pivx-cli.exe"
+	CDFilePIVX      string = "pivxd"
+	CDFileWinPIVX   string = "pivxd.exe"
+	CTxFilePIVX     string = "pivx-tx"
+	CTxFileWinPIVX  string = "pivx-tx.exe"
 
 	CPIVXSapling1 string = "sapling-output.params"
 	CPIVXSapling2 string = "sapling-spend.params"
 
 	// pivx.conf file constants
-	cPIVXRPCUser string = "pivxrpc"
-	CPIVXRPCPort string = "51473"
+	cRPCUserPIVX string = "pivxrpc"
+	CRPCPortPIVX string = "51473"
 )
 
 type PIVXBlockchainInfoRespStruct struct {

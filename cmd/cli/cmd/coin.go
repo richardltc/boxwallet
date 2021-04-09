@@ -105,7 +105,7 @@ var coinCmd = &cobra.Command{
 		case be.CCoinNamePIVX:
 			be.AddToLog(lf, be.CCoinNamePIVX+" selected", false)
 			cliConf.ProjectType = be.PTPIVX
-			cliConf.Port = be.CPIVXRPCPort
+			cliConf.Port = be.CRPCPortPIVX
 		case be.CCoinNameRapids:
 			be.AddToLog(lf, be.CCoinNameRapids+" selected", false)
 			cliConf.ProjectType = be.PTRapids
@@ -379,17 +379,17 @@ func doRequiredFiles() error {
 		}
 	case be.PTPIVX:
 		if runtime.GOOS == "windows" {
-			filePath = abf + be.CDFPIVXFileWindows
-			fileURL = be.CDownloadURLPIVX + be.CDFPIVXFileWindows
+			filePath = abf + be.CDFFileWindowsPIVX
+			fileURL = be.CDownloadURLPIVX + be.CDFFileWindowsPIVX
 		} else if runtime.GOARCH == "arm" {
-			filePath = abf + be.CDFPIVXFileArm32
-			fileURL = be.CDownloadURLPIVX + be.CDFPIVXFileArm32
+			filePath = abf + be.CDFFileArm32PIVX
+			fileURL = be.CDownloadURLPIVX + be.CDFFileArm32PIVX
 		} else if runtime.GOARCH == "arm64" {
-			filePath = abf + be.CDFPIVXFileArm64
-			fileURL = be.CDownloadURLPIVX + be.CDFPIVXFileArm64
+			filePath = abf + be.CDFFileArm64PIVX
+			fileURL = be.CDownloadURLPIVX + be.CDFFileArm64PIVX
 		} else {
-			filePath = abf + be.CDFPIVXFileLinux
-			fileURL = be.CDownloadURLPIVX + be.CDFPIVXFileLinux
+			filePath = abf + be.CDFFileLinuxPIVX
+			fileURL = be.CDownloadURLPIVX + be.CDFFileLinuxPIVX
 		}
 	case be.PTRapids:
 		if runtime.GOOS == "windows" {
@@ -678,27 +678,27 @@ func doRequiredFiles() error {
 			if err := archiver.Unarchive(filePath, abf); err != nil {
 				return fmt.Errorf("unable to unarchive file: %v - %v", r, err)
 			}
-			defer os.RemoveAll(abf + be.CPIVXExtractedDirWindows)
+			defer os.RemoveAll(abf + be.CExtractedDirWindowsPIVX)
 		} else if runtime.GOARCH == "arm" {
 			//err = be.ExtractTarGz(r)
 			err = archiver.Unarchive(filePath, abf)
 			if err != nil {
 				return fmt.Errorf("unable to extractTarGz file: %v - %v", r, err)
 			}
-			defer os.RemoveAll(abf + be.CPIVXExtractedDirArm)
+			defer os.RemoveAll(abf + be.CExtractedDirArmPIVX)
 		} else if runtime.GOARCH == "arm64" {
 			err = archiver.Unarchive(filePath, abf)
 			if err != nil {
 				return fmt.Errorf("unable to extractTarGz file: %v - %v", r, err)
 			}
-			defer os.RemoveAll(abf + be.CPIVXExtractedDirArm)
+			defer os.RemoveAll(abf + be.CExtractedDirArmPIVX)
 		} else {
 			//err = be.ExtractTarGz(r)
 			err = archiver.Unarchive(filePath, abf)
 			if err != nil {
 				return fmt.Errorf("unable to extractTarGz file: %v - %v", r, err)
 			}
-			defer os.RemoveAll(abf + be.CPIVXExtractedDirLinux)
+			defer os.RemoveAll(abf + be.CExtractedDirLinuxPIVX)
 		}
 	case be.PTRapids:
 		if runtime.GOOS == "windows" {
@@ -1141,11 +1141,11 @@ func doRequiredFiles() error {
 		}
 		switch runtime.GOOS {
 		case "windows":
-			srcPath = abf + be.CPIVXExtractedDirWindows + "bin\\"
-			srcPathSap = abf + be.CPIVXExtractedDirWindows + "share\\pivx\\"
-			srcFileCLI = be.CPIVXCliFileWin
-			srcFileD = be.CPIVXDFileWin
-			srcFileTX = be.CPIVXTxFileWin
+			srcPath = abf + be.CExtractedDirWindowsPIVX + "bin\\"
+			srcPathSap = abf + be.CExtractedDirWindowsPIVX + "share\\pivx\\"
+			srcFileCLI = be.CCliFileWinPIVX
+			srcFileD = be.CDFileWinPIVX
+			srcFileTX = be.CTxFileWinPIVX
 			srcFileSap1 = be.CPIVXSapling1
 			srcFileSap2 = be.CPIVXSapling2
 			//srcFileBWCLI = be.CAppFilenameWin
@@ -1155,20 +1155,20 @@ func doRequiredFiles() error {
 				if err := be.AddToLog(lf, "linux arm detected.", false); err != nil {
 					return fmt.Errorf("unable to add to log file: %v", err)
 				}
-				srcPath = abf + be.CPIVXExtractedDirArm + "bin/"
-				srcPathSap = abf + be.CPIVXExtractedDirArm + "share/pivx/"
-				srcFileCLI = be.CPIVXCliFile
-				srcFileD = be.CPIVXDFile
-				srcFileTX = be.CPIVXTxFile
+				srcPath = abf + be.CExtractedDirArmPIVX + "bin/"
+				srcPathSap = abf + be.CExtractedDirArmPIVX + "share/pivx/"
+				srcFileCLI = be.CCliFilePIVX
+				srcFileD = be.CDFilePIVX
+				srcFileTX = be.CTxFilePIVX
 				srcFileSap1 = be.CPIVXSapling1
 				srcFileSap2 = be.CPIVXSapling2
 			//srcFileBWCLI = be.CAppFilename
 			case "386", "amd64":
-				srcPath = abf + be.CPIVXExtractedDirLinux + "bin/"
-				srcPathSap = abf + be.CPIVXExtractedDirLinux + "share/pivx/"
-				srcFileCLI = be.CPIVXCliFile
-				srcFileD = be.CPIVXDFile
-				srcFileTX = be.CPIVXTxFile
+				srcPath = abf + be.CExtractedDirLinuxPIVX + "bin/"
+				srcPathSap = abf + be.CExtractedDirLinuxPIVX + "share/pivx/"
+				srcFileCLI = be.CCliFilePIVX
+				srcFileD = be.CDFilePIVX
+				srcFileTX = be.CTxFilePIVX
 				srcFileSap1 = be.CPIVXSapling1
 				srcFileSap2 = be.CPIVXSapling2
 			//srcFileBWCLI = be.CAppFilename

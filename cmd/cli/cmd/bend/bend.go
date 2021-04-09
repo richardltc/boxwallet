@@ -662,7 +662,7 @@ func GetCoinDaemonFilename(at APPType, pt ProjectType) (string, error) {
 	case PTPhore:
 		return CDFilePhore, nil
 	case PTPIVX:
-		return CPIVXDFile, nil
+		return CDFilePIVX, nil
 	case PTRapids:
 		return CRapidsDFile, nil
 	case PTReddCoin:
@@ -778,7 +778,7 @@ func GetCoinHomeFolder(at APPType, pt ProjectType) (string, error) {
 		case PTPhore:
 			s = AddTrailingSlash(hd) + "appdata\\roaming\\" + AddTrailingSlash(cHomeDirWinPhore)
 		case PTPIVX:
-			s = AddTrailingSlash(hd) + "appdata\\roaming\\" + AddTrailingSlash(cPIVXHomeDirWin)
+			s = AddTrailingSlash(hd) + "appdata\\roaming\\" + AddTrailingSlash(cHomeDirWinPIVX)
 		case PTRapids:
 			s = AddTrailingSlash(hd) + "appdata\\roaming\\" + AddTrailingSlash(cRapidsHomeDirWin)
 		case PTReddCoin:
@@ -814,7 +814,7 @@ func GetCoinHomeFolder(at APPType, pt ProjectType) (string, error) {
 		case PTPhore:
 			s = AddTrailingSlash(hd) + AddTrailingSlash(cHomeDirPhore)
 		case PTPIVX:
-			s = AddTrailingSlash(hd) + AddTrailingSlash(cPIVXHomeDir)
+			s = AddTrailingSlash(hd) + AddTrailingSlash(cHomeDirPIVX)
 		case PTRapids:
 			s = AddTrailingSlash(hd) + AddTrailingSlash(cRapidsHomeDir)
 		case PTReddCoin:
@@ -860,9 +860,9 @@ func GetPIVXSaplingDir() (string, error) {
 	hd := u.HomeDir
 	if runtime.GOOS == "windows" {
 		// add the "appdata\roaming" part.
-		s = addTrailingSlash(hd) + "appdata\\roaming\\" + addTrailingSlash(CPIVXSaplingDirWindows)
+		s = addTrailingSlash(hd) + "appdata\\roaming\\" + addTrailingSlash(CSaplingDirWindowsPIVX)
 	} else {
-		s = AddTrailingSlash(hd) + AddTrailingSlash(CPIVXSaplingDirLinux)
+		s = AddTrailingSlash(hd) + AddTrailingSlash(CSaplingDirLinuxPIVX)
 	}
 	return s, nil
 }
@@ -1223,9 +1223,9 @@ func IsCoinDaemonRunning(ct ProjectType) (bool, int, error) {
 		}
 	case PTPIVX:
 		if runtime.GOOS == "windows" {
-			pid, _, err = FindProcess(CPIVXDFileWin)
+			pid, _, err = FindProcess(CDFileWinPIVX)
 		} else {
-			pid, _, err = FindProcess(CPIVXDFile)
+			pid, _, err = FindProcess(CDFilePIVX)
 		}
 	case PTRapids:
 		if runtime.GOOS == "windows" {
@@ -2630,12 +2630,12 @@ func PopulateDaemonConfFile() (rpcuser, rpcpassword string, err error) {
 		}
 		return rpcu, rpcpw, nil
 	case PTPIVX:
-		fmt.Println("Populating " + CPIVXConfFile + " for initial setup...")
+		fmt.Println("Populating " + CConfFilePIVX + " for initial setup...")
 
 		// Add rpcuser info if required, or retrieve the existing one
 		bNeedToWriteStr := true
-		if FileExists(chd + CPIVXConfFile) {
-			bStrFound, err := StringExistsInFile(cRPCUserStr+"=", chd+CPIVXConfFile)
+		if FileExists(chd + CConfFilePIVX) {
+			bStrFound, err := StringExistsInFile(cRPCUserStr+"=", chd+CConfFilePIVX)
 			if err != nil {
 				return "", "", fmt.Errorf("unable to search for text in file - %v", err)
 			}
@@ -2643,13 +2643,13 @@ func PopulateDaemonConfFile() (rpcuser, rpcpassword string, err error) {
 				// String not found
 				if !bFileHasBeenBU {
 					bFileHasBeenBU = true
-					if err := BackupFile(chd, CPIVXConfFile, "", "", false); err != nil {
+					if err := BackupFile(chd, CConfFilePIVX, "", "", false); err != nil {
 						return "", "", fmt.Errorf("unable to backup file - %v", err)
 					}
 				}
 			} else {
 				bNeedToWriteStr = false
-				rpcu, err = GetStringAfterStrFromFile(cRPCUserStr+"=", chd+CPIVXConfFile)
+				rpcu, err = GetStringAfterStrFromFile(cRPCUserStr+"=", chd+CConfFilePIVX)
 				if err != nil {
 					return "", "", fmt.Errorf("unable to search for text in file - %v", err)
 				}
@@ -2659,16 +2659,16 @@ func PopulateDaemonConfFile() (rpcuser, rpcpassword string, err error) {
 			bFileHasBeenBU = true
 		}
 		if bNeedToWriteStr {
-			rpcu = cPIVXRPCUser
-			if err := WriteTextToFile(chd+CPIVXConfFile, cRPCUserStr+"="+rpcu); err != nil {
+			rpcu = cRPCUserPIVX
+			if err := WriteTextToFile(chd+CConfFilePIVX, cRPCUserStr+"="+rpcu); err != nil {
 				log.Fatal(err)
 			}
 		}
 
 		// Add rpcpassword info if required, or retrieve the existing one
 		bNeedToWriteStr = true
-		if FileExists(chd + CPIVXConfFile) {
-			bStrFound, err := StringExistsInFile(cRPCPasswordStr+"=", chd+CPIVXConfFile)
+		if FileExists(chd + CConfFilePIVX) {
+			bStrFound, err := StringExistsInFile(cRPCPasswordStr+"=", chd+CConfFilePIVX)
 			if err != nil {
 				return "", "", fmt.Errorf("unable to search for text in file - %v", err)
 			}
@@ -2676,13 +2676,13 @@ func PopulateDaemonConfFile() (rpcuser, rpcpassword string, err error) {
 				// String not found
 				if !bFileHasBeenBU {
 					bFileHasBeenBU = true
-					if err := BackupFile(chd, CPIVXConfFile, "", "", false); err != nil {
+					if err := BackupFile(chd, CConfFilePIVX, "", "", false); err != nil {
 						return "", "", fmt.Errorf("unable to backup file - %v", err)
 					}
 				}
 			} else {
 				bNeedToWriteStr = false
-				rpcpw, err = GetStringAfterStrFromFile(cRPCPasswordStr+"=", chd+CPIVXConfFile)
+				rpcpw, err = GetStringAfterStrFromFile(cRPCPasswordStr+"=", chd+CConfFilePIVX)
 				if err != nil {
 					return "", "", fmt.Errorf("unable to search for text in file - %v", err)
 				}
@@ -2690,18 +2690,18 @@ func PopulateDaemonConfFile() (rpcuser, rpcpassword string, err error) {
 		}
 		if bNeedToWriteStr {
 			rpcpw = rand.String(20)
-			if err := WriteTextToFile(chd+CPIVXConfFile, cRPCPasswordStr+"="+rpcpw); err != nil {
+			if err := WriteTextToFile(chd+CConfFilePIVX, cRPCPasswordStr+"="+rpcpw); err != nil {
 				log.Fatal(err)
 			}
-			if err := WriteTextToFile(chd+CPIVXConfFile, ""); err != nil {
+			if err := WriteTextToFile(chd+CConfFilePIVX, ""); err != nil {
 				log.Fatal(err)
 			}
 		}
 
 		// Add daemon=1 info if required
 		bNeedToWriteStr = true
-		if FileExists(chd + CPIVXConfFile) {
-			bStrFound, err := StringExistsInFile("daemon=1", chd+CPIVXConfFile)
+		if FileExists(chd + CConfFilePIVX) {
+			bStrFound, err := StringExistsInFile("daemon=1", chd+CConfFilePIVX)
 			if err != nil {
 				return "", "", fmt.Errorf("unable to search for text in file - %v", err)
 			}
@@ -2709,7 +2709,7 @@ func PopulateDaemonConfFile() (rpcuser, rpcpassword string, err error) {
 				// String not found
 				if !bFileHasBeenBU {
 					bFileHasBeenBU = true
-					if err := BackupFile(chd, CPIVXConfFile, "", "", false); err != nil {
+					if err := BackupFile(chd, CConfFilePIVX, "", "", false); err != nil {
 						return "", "", fmt.Errorf("unable to backup file - %v", err)
 					}
 				}
@@ -2718,18 +2718,18 @@ func PopulateDaemonConfFile() (rpcuser, rpcpassword string, err error) {
 			}
 		}
 		if bNeedToWriteStr {
-			if err := WriteTextToFile(chd+CPIVXConfFile, "daemon=1"); err != nil {
+			if err := WriteTextToFile(chd+CConfFilePIVX, "daemon=1"); err != nil {
 				log.Fatal(err)
 			}
-			if err := WriteTextToFile(chd+CPIVXConfFile, ""); err != nil {
+			if err := WriteTextToFile(chd+CConfFilePIVX, ""); err != nil {
 				log.Fatal(err)
 			}
 		}
 
 		// Add server=1 info if required
 		bNeedToWriteStr = true
-		if FileExists(chd + CPIVXConfFile) {
-			bStrFound, err := StringExistsInFile("server=1", chd+CPIVXConfFile)
+		if FileExists(chd + CConfFilePIVX) {
+			bStrFound, err := StringExistsInFile("server=1", chd+CConfFilePIVX)
 			if err != nil {
 				return "", "", fmt.Errorf("unable to search for text in file - %v", err)
 			}
@@ -2737,7 +2737,7 @@ func PopulateDaemonConfFile() (rpcuser, rpcpassword string, err error) {
 				// String not found
 				if !bFileHasBeenBU {
 					bFileHasBeenBU = true
-					if err := BackupFile(chd, CPIVXConfFile, "", "", false); err != nil {
+					if err := BackupFile(chd, CConfFilePIVX, "", "", false); err != nil {
 						return "", "", fmt.Errorf("unable to backup file - %v", err)
 					}
 				}
@@ -2746,15 +2746,15 @@ func PopulateDaemonConfFile() (rpcuser, rpcpassword string, err error) {
 			}
 		}
 		if bNeedToWriteStr {
-			if err := WriteTextToFile(chd+CPIVXConfFile, "server=1"); err != nil {
+			if err := WriteTextToFile(chd+CConfFilePIVX, "server=1"); err != nil {
 				log.Fatal(err)
 			}
 		}
 
 		// Add rpcallowip= info if required
 		bNeedToWriteStr = true
-		if FileExists(chd + CPIVXConfFile) {
-			bStrFound, err := StringExistsInFile("rpcallowip=", chd+CPIVXConfFile)
+		if FileExists(chd + CConfFilePIVX) {
+			bStrFound, err := StringExistsInFile("rpcallowip=", chd+CConfFilePIVX)
 			if err != nil {
 				return "", "", fmt.Errorf("unable to search for text in file - %v", err)
 			}
@@ -2762,7 +2762,7 @@ func PopulateDaemonConfFile() (rpcuser, rpcpassword string, err error) {
 				// String not found
 				if !bFileHasBeenBU {
 					bFileHasBeenBU = true
-					if err := BackupFile(chd, CPIVXConfFile, "", "", false); err != nil {
+					if err := BackupFile(chd, CConfFilePIVX, "", "", false); err != nil {
 						return "", "", fmt.Errorf("unable to backup file - %v", err)
 					}
 				}
@@ -2771,15 +2771,15 @@ func PopulateDaemonConfFile() (rpcuser, rpcpassword string, err error) {
 			}
 		}
 		if bNeedToWriteStr {
-			if err := WriteTextToFile(chd+CPIVXConfFile, "rpcallowip=192.168.1.0/255.255.255.0"); err != nil {
+			if err := WriteTextToFile(chd+CConfFilePIVX, "rpcallowip=192.168.1.0/255.255.255.0"); err != nil {
 				log.Fatal(err)
 			}
 		}
 
 		// Add rpcport= info if required
 		bNeedToWriteStr = true
-		if FileExists(chd + CPIVXConfFile) {
-			bStrFound, err := StringExistsInFile("rpcport=", chd+CPIVXConfFile)
+		if FileExists(chd + CConfFilePIVX) {
+			bStrFound, err := StringExistsInFile("rpcport=", chd+CConfFilePIVX)
 			if err != nil {
 				return "", "", fmt.Errorf("unable to search for text in file - %v", err)
 			}
@@ -2787,7 +2787,7 @@ func PopulateDaemonConfFile() (rpcuser, rpcpassword string, err error) {
 				// String not found
 				if !bFileHasBeenBU {
 					bFileHasBeenBU = true
-					if err := BackupFile(chd, CPIVXConfFile, "", "", false); err != nil {
+					if err := BackupFile(chd, CConfFilePIVX, "", "", false); err != nil {
 						return "", "", fmt.Errorf("unable to backup file - %v", err)
 					}
 				}
@@ -2796,7 +2796,7 @@ func PopulateDaemonConfFile() (rpcuser, rpcpassword string, err error) {
 			}
 		}
 		if bNeedToWriteStr {
-			if err := WriteTextToFile(chd+CPIVXConfFile, "rpcport="+CPIVXRPCPort); err != nil {
+			if err := WriteTextToFile(chd+CConfFilePIVX, "rpcport="+CRPCPortPIVX); err != nil {
 				log.Fatal(err)
 			}
 		}
@@ -3894,23 +3894,23 @@ func AllProjectBinaryFilesExists() (bool, error) {
 		}
 	case PTPIVX:
 		if runtime.GOOS == "windows" {
-			if !FileExists(abf + CPIVXCliFileWin) {
+			if !FileExists(abf + CCliFileWinPIVX) {
 				return false, nil
 			}
-			if !FileExists(abf + CPIVXDFileWin) {
+			if !FileExists(abf + CDFileWinPIVX) {
 				return false, nil
 			}
-			if !FileExists(abf + CPIVXTxFileWin) {
+			if !FileExists(abf + CTxFileWinPIVX) {
 				return false, nil
 			}
 		} else {
-			if !FileExists(abf + CPIVXCliFile) {
+			if !FileExists(abf + CCliFilePIVX) {
 				return false, nil
 			}
-			if !FileExists(abf + CPIVXDFile) {
+			if !FileExists(abf + CDFilePIVX) {
 				return false, nil
 			}
-			if !FileExists(abf + CPIVXTxFile) {
+			if !FileExists(abf + CTxFilePIVX) {
 				return false, nil
 			}
 		}
@@ -4502,7 +4502,7 @@ func StartCoinDaemon(displayOutput bool) error {
 		}
 	case PTPIVX:
 		if runtime.GOOS == "windows" {
-			fp := abf + CPIVXDFileWin
+			fp := abf + CDFileWinPIVX
 			cmd := exec.Command("cmd.exe", "/C", "start", "/b", fp)
 			if err := cmd.Run(); err != nil {
 				return err
@@ -4512,7 +4512,7 @@ func StartCoinDaemon(displayOutput bool) error {
 				fmt.Println("Attempting to run the pivxd daemon...")
 			}
 
-			cmdRun := exec.Command(abf + CPIVXDFile)
+			cmdRun := exec.Command(abf + CDFilePIVX)
 			stdout, err := cmdRun.StdoutPipe()
 			if err != nil {
 				return err
@@ -4907,7 +4907,7 @@ func StopCoinDaemon(displayOutput bool) error {
 		if runtime.GOOS == "windows" {
 			// TODO Complete for Windows
 		} else {
-			cRun := exec.Command(abf+CPIVXCliFile, "stop")
+			cRun := exec.Command(abf+CCliFilePIVX, "stop")
 			if err := cRun.Run(); err != nil {
 				return fmt.Errorf("unable to StopPIVXD:%v", err)
 			}
