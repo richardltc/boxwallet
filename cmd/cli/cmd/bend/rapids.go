@@ -16,18 +16,17 @@ const (
 	CCoinNameRapids   string = "Rapids"
 	CCoinAbbrevRapids string = "RPD"
 
-	CRapidsCoreVersion string = "3.4.1"
+	CRapidsCoreVersion string = "4.0"
 
 	//CDFRapidsFileRPi   string = "rapids-" + CRapidsCoreVersion + "-arm64.tar.gz"
 	CDFRapidsFileLinux   string = "rapids-" + CRapidsCoreVersion + "-lin64.tgz"
 	CDFRapidsFileWindows string = "rapids-" + CRapidsCoreVersion + "-win64.zip"
 
-	CRapidsExtractedDirLinux = "rapids-lin64" + "/"
+	CRapidsExtractedDirLinux = "Rapids-" + CRapidsCoreVersion + "-Linux/"
 	//CRapidsExtractedDirDaemon  = "Rapids-" + CRapidsCoreVersion + "-daemon-ubuntu1804" + "/"
 	CRapidsExtractedDirWindows = "rapids-3.4.1-win64" + "\\"
 
-	//https://github.com/RapidsOfficial/Rapids/releases/download/aa4e5a8/rapids-3.4.1-lin64.tgz
-	CDownloadURLRapids string = "https://github.com/RapidsOfficial/Rapids/releases/download/aa4e5a8/"
+	CDownloadURLRapids string = "https://github.com/RapidsOfficial/Rapids/releases/download/" + CRapidsCoreVersion + "/"
 
 	cRapidsHomeDir    string = ".rapids"
 	cRapidsHomeDirWin string = "RAPIDS"
