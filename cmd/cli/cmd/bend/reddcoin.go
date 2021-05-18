@@ -275,11 +275,11 @@ func GetInfoRDDUI(cliConf *ConfStruct, spin *yacspin.Spinner) (RDDGetInfoRespStr
 		req.Header.Set("Content-Type", "text/plain;")
 
 		resp, err := http.DefaultClient.Do(req)
-		defer resp.Body.Close()
 		if err != nil {
 			spin.Message(" waiting for your " + CCoinNameReddCoin + " wallet to respond, this could take several minutes (ctrl-c to cancel)...")
 			time.Sleep(1 * time.Second)
 		} else {
+			defer resp.Body.Close()
 			bodyResp, err := ioutil.ReadAll(resp.Body)
 			if err != nil {
 				return respStruct, "", err
