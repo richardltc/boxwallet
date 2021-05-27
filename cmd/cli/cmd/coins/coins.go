@@ -37,9 +37,10 @@ const (
 )
 
 type Coin interface {
-	AllBinaryFilesExist() (allExist bool, err error)
+	AllBinaryFilesExist(location string) (allExist bool, err error)
 	BootStrap(rpcUser, rpcPassword, ip, port string)
 	ConfFile() string
+	DownloadCoin(location string) error
 	HomeDirFullPath() (string, error)
 	TipAddress() string
 	Install(location string) error
