@@ -90,9 +90,9 @@ var coinCmd = &cobra.Command{
 		var cliConf models.Conf
 		var conf conf.Conf
 		conf.Bootstrap(appWorkingDir)
-		var rpcUser, rpcPassword, ipAdress string
+		var rpcUser, rpcPassword, ipAddress string
 		var err error
-		ipAdress = "127.0.0.1"
+		ipAddress = "127.0.0.1"
 
 		switch SelectedCoin {
 		case coins.CCoinNameBitcoinPlus:
@@ -155,7 +155,7 @@ var coinCmd = &cobra.Command{
 		cliConf.ProjectType = coinType
 		cliConf.RPCuser = rpcUser
 		cliConf.RPCpassword = rpcPassword
-		cliConf.ServerIP = ipAdress
+		cliConf.ServerIP = ipAddress
 		if err := conf.SetConfig(cliConf); err != nil {
 			log.Fatal("Unable to write to config file: ", err)
 		}
