@@ -193,7 +193,7 @@ func (d Denarius) DownloadCoin(location string) error {
 	return nil
 }
 
-func (d *Denarius) GetBlockchainInfo() (models.DenariusBlockchainInfo, error) {
+func (d *Denarius) BlockchainInfo() (models.DenariusBlockchainInfo, error) {
 	var respStruct models.DenariusBlockchainInfo
 
 	body := strings.NewReader("{\"jsonrpc\":\"1.0\",\"id\":\"curltext\",\"method\":\"getblockchaininfo\",\"params\":[]}")
@@ -410,6 +410,12 @@ func (d *Denarius) HomeDirFullPath() (string, error) {
 	} else {
 		return addTrailingSlash(hd) + addTrailingSlash(cHomeDirLin), nil
 	}
+}
+
+func (d Denarius) Install(location string) error {
+	// Just here to satisfy Interface.
+
+	return nil
 }
 
 func (d *Denarius) ListReceivedByAddress(includeZero bool) (models.DenariusListReceivedByAddress, error) {
