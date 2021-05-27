@@ -167,14 +167,14 @@ func (x XBC) DaemonRunning() (bool, error) {
 
 }
 
-// DownloadCoin - Downloads the Syscoin files into the spcified location.
+// DownloadCoin - Downloads the BitcoinPlus files into the specified location.
 // "location" should just be the AppBinaryFolder ~/.boxwallet
-func (x *XBC) DownloadCoin(location string) error {
+func (x XBC) DownloadCoin(location string) error {
 	var fullFilePath, fullFileDLURL string
 
 	switch runtime.GOOS {
 	case "windows":
-		return errors.New("Windows is not currently supported for :" + cCoinName)
+		return errors.New("windows is not currently supported for :" + cCoinName)
 	case "linux":
 		switch runtime.GOARCH {
 		case "arm":
@@ -425,58 +425,6 @@ func (x *XBC) StakingInfo() (models.XBCStakingInfo, error) {
 	return respStruct, nil
 }
 
-func (x *XBC) WalletInfo() (models.XBCWalletInfo, error) {
-	var respStruct models.XBCWalletInfo
-
-	body := strings.NewReader("{\"jsonrpc\":\"1.0\",\"id\":\"boxwallet\",\"method\":\"" + cCommandGetWalletInfo + "\",\"params\":[]}")
-	req, err := http.NewRequest("POST", "http://"+x.IPAddress+":"+x.Port, body)
-	if err != nil {
-		return respStruct, err
-	}
-	req.SetBasicAuth(x.RPCUser, x.RPCPassword)
-	req.Header.Set("Content-Type", "text/plain;")
-
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		return respStruct, err
-	}
-	defer resp.Body.Close()
-	bodyResp, err := ioutil.ReadAll(resp.Body)
-	if err != nil {
-		return respStruct, err
-	}
-
-	err = json.Unmarshal(bodyResp, &respStruct)
-	if err != nil {
-		return respStruct, err
-	}
-
-	// Check to see if the json response contains "unlocked_until"
-	s := string(bodyResp)
-	if !strings.Contains(s, "unlocked_until") {
-		respStruct.Result.UnlockedUntil = -1
-	}
-
-	return respStruct, nil
-}
-
-func (x *XBC) WalletSecurityState() (models.WEType, error) {
-	wi, err := x.WalletInfo()
-	if err != nil {
-		return models.WETUnknown, errors.New("Unable to GetWalletSecurityState: " + err.Error())
-	}
-
-	if wi.Result.UnlockedUntil == 0 {
-		return models.WETLocked, nil
-	} else if wi.Result.UnlockedUntil == -1 {
-		return models.WETUnencrypted, nil
-	} else if wi.Result.UnlockedUntil > 0 {
-		return models.WETUnlockedForStaking, nil
-	} else {
-		return models.WETUnknown, nil
-	}
-}
-
 func (x XBC) HomeDirFullPath() (string, error) {
 	u, err := user.Current()
 	if err != nil {
@@ -500,7 +448,7 @@ func (x XBC) Install(location string) error {
 
 	switch runtime.GOOS {
 	case "windows":
-		return errors.New("Windows is not currently supported for " + cCoinName)
+		return errors.New("windows is not currently supported for " + cCoinName)
 	case "linux":
 		switch runtime.GOARCH {
 		case "arm", "arm64":
@@ -551,7 +499,6 @@ func (x XBC) Install(location string) error {
 	}
 
 	return nil
-
 }
 
 func (x *XBC) ListReceivedByAddress(includeZero bool) (models.XBCListReceivedByAddress, error) {
@@ -695,6 +642,41 @@ func (x XBC) TipAddress() string {
 	return cTipAddress
 }
 
+func (x *XBC) WalletInfo() (models.XBCWalletInfo, error) {
+	var respStruct models.XBCWalletInfo
+
+	body := strings.NewReader("{\"jsonrpc\":\"1.0\",\"id\":\"boxwallet\",\"method\":\"" + cCommandGetWalletInfo + "\",\"params\":[]}")
+	req, err := http.NewRequest("POST", "http://"+x.IPAddress+":"+x.Port, body)
+	if err != nil {
+		return respStruct, err
+	}
+	req.SetBasicAuth(x.RPCUser, x.RPCPassword)
+	req.Header.Set("Content-Type", "text/plain;")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return respStruct, err
+	}
+	defer resp.Body.Close()
+	bodyResp, err := ioutil.ReadAll(resp.Body)
+	if err != nil {
+		return respStruct, err
+	}
+
+	err = json.Unmarshal(bodyResp, &respStruct)
+	if err != nil {
+		return respStruct, err
+	}
+
+	// Check to see if the json response contains "unlocked_until"
+	s := string(bodyResp)
+	if !strings.Contains(s, "unlocked_until") {
+		respStruct.Result.UnlockedUntil = -1
+	}
+
+	return respStruct, nil
+}
+
 func (x XBC) WalletReady() bool {
 	i, _, _ := x.Info()
 	if i.Result.Version != 0 {
@@ -727,13 +709,30 @@ func (x XBC) WalletResync() error {
 	return nil
 }
 
-func (x *XBC) unarchiveFile(fullFilePath, location string) error {
+func (x *XBC) WalletSecurityState() (models.WEType, error) {
+	wi, err := x.WalletInfo()
+	if err != nil {
+		return models.WETUnknown, errors.New("Unable to GetWalletSecurityState: " + err.Error())
+	}
+
+	if wi.Result.UnlockedUntil == 0 {
+		return models.WETLocked, nil
+	} else if wi.Result.UnlockedUntil == -1 {
+		return models.WETUnencrypted, nil
+	} else if wi.Result.UnlockedUntil > 0 {
+		return models.WETUnlockedForStaking, nil
+	} else {
+		return models.WETUnknown, nil
+	}
+}
+
+func (x XBC) unarchiveFile(fullFilePath, location string) error {
 	if err := archiver.Unarchive(fullFilePath, location); err != nil {
 		return fmt.Errorf("unable to unarchive file: %v - %v", fullFilePath, err)
 	}
 	switch runtime.GOOS {
 	case "windows":
-		return errors.New("Windows is not currently supported for :" + cCoinName)
+		return errors.New("windows is not currently supported for :" + cCoinName)
 	case "linux":
 		switch runtime.GOARCH {
 		case "arm":
