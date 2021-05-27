@@ -91,7 +91,7 @@ func (d *Denarius) AbbreviatedCoinName() string {
 	return cCoinNameAbbrev
 }
 
-func (d *Denarius) AllBinaryFilesExist(dir string) (bool, error) {
+func (d Denarius) AllBinaryFilesExist(dir string) (bool, error) {
 	if runtime.GOOS == "windows" {
 		if !fileExists(dir + cCliFileWin) {
 			return false, nil
@@ -137,7 +137,7 @@ func (d Denarius) BlockchainDataExists() (bool, error) {
 	return false, nil
 }
 
-func (d *Denarius) ConfFile() string {
+func (d Denarius) ConfFile() string {
 	return cConfFile
 }
 
@@ -390,7 +390,7 @@ func (d *Denarius) GetWalletSecurityState(gi *models.DenariusGetInfo) models.WET
 	}
 }
 
-func (d *Denarius) HomeDir() string {
+func (d Denarius) HomeDir() string {
 	if runtime.GOOS == "windows" {
 		return cHomeDirWin
 	} else {
@@ -398,7 +398,7 @@ func (d *Denarius) HomeDir() string {
 	}
 }
 
-func (d *Denarius) HomeDirFullPath() (string, error) {
+func (d Denarius) HomeDirFullPath() (string, error) {
 	u, err := user.Current()
 	if err != nil {
 		return "", err
