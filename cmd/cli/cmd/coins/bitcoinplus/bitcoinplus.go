@@ -97,30 +97,25 @@ func (x *XBC) AbbreviatedCoinName() string {
 	return cCoinNameAbbrev
 }
 
-func (x XBC) AllBinaryFilesExist() (allExist bool, err error) {
-	homeDir, err := x.HomeDirFullPath()
-	if err != nil {
-		return false, errors.New("unable to get HomeDir:" + err.Error())
-	}
-
+func (x XBC) AllBinaryFilesExist(location string) (allExist bool, err error) {
 	if runtime.GOOS == "windows" {
-		if !coins.FileExists(homeDir + cCliFileWin) {
+		if !coins.FileExists(location + cCliFileWin) {
 			return false, nil
 		}
-		if !coins.FileExists(homeDir + cDaemonFileWin) {
+		if !coins.FileExists(location + cDaemonFileWin) {
 			return false, nil
 		}
-		if !coins.FileExists(homeDir + cTxFileWin) {
+		if !coins.FileExists(location + cTxFileWin) {
 			return false, nil
 		}
 	} else {
-		if !coins.FileExists(homeDir + cCliFile) {
+		if !coins.FileExists(location + cCliFile) {
 			return false, nil
 		}
-		if !coins.FileExists(homeDir + cDaemonFileLin) {
+		if !coins.FileExists(location + cDaemonFileLin) {
 			return false, nil
 		}
-		if !coins.FileExists(homeDir + cTxFile) {
+		if !coins.FileExists(location + cTxFile) {
 			return false, nil
 		}
 	}
