@@ -80,7 +80,7 @@ type Denarius struct {
 	Port        string
 }
 
-func (d Denarius) BootStrap(rpcUser, rpcPassword, ip, port string) {
+func (d Denarius) Bootstrap(rpcUser, rpcPassword, ip, port string) {
 	d.RPCUser = rpcUser
 	d.RPCPassword = rpcPassword
 	d.IPAddress = ip
@@ -93,23 +93,12 @@ func (d *Denarius) AbbreviatedCoinName() string {
 
 func (d Denarius) AllBinaryFilesExist(dir string) (bool, error) {
 	if runtime.GOOS == "windows" {
-		if !fileExists(dir + cCliFileWin) {
-			return false, nil
-		}
-		if !fileExists(dir + cDaemonFileWin) {
-			return false, nil
-		}
-		if !fileExists(dir + cTxFileWin) {
-			return false, nil
-		}
+		return false, errors.New("windows is not currently supported for " + cCoinName)
 	} else {
-		if !fileExists(dir + cCliFile) {
+		if !fileExists(cBinDirLinux + cCliFile) {
 			return false, nil
 		}
-		if !fileExists(dir + cDaemonFile) {
-			return false, nil
-		}
-		if !fileExists(dir + cTxFile) {
+		if !fileExists(cBinDirLinux + cDaemonFile) {
 			return false, nil
 		}
 	}
@@ -480,6 +469,14 @@ func (d *Denarius) ListTransactions() (models.DenariusListTransactions, error) {
 	}
 
 	return respStruct, nil
+}
+
+func (d Denarius) RPCDefaultUsername() string {
+	return cRPCUser
+}
+
+func (d Denarius) RPCDefaultPort() string {
+	return cRPCPort
 }
 
 func (d *Denarius) StartDaemon(displayOutput bool) error {
