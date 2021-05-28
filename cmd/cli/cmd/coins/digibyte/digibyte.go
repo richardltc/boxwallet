@@ -60,7 +60,7 @@ type DigiByte struct {
 	Port        string
 }
 
-func (d DigiByte) BootStrap(rpcUser, rpcPassword, ip, port string) {
+func (d DigiByte) Bootstrap(rpcUser, rpcPassword, ip, port string) {
 	d.RPCUser = rpcUser
 	d.RPCPassword = rpcPassword
 	d.IPAddress = ip
