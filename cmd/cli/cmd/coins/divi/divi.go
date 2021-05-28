@@ -87,7 +87,7 @@ type Divi struct {
 var gLastBCSyncPos float64 = 0
 var ticker models.DiviTicker
 
-func (d Divi) BootStrap(rpcUser, rpcPassword, ip, port string) {
+func (d Divi) Bootstrap(rpcUser, rpcPassword, ip, port string) {
 	d.RPCUser = rpcUser
 	d.RPCPassword = rpcPassword
 	d.IPAddress = ip
