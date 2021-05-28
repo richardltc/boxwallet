@@ -390,26 +390,29 @@ func (d DigiByte) HomeDirFullPath() (string, error) {
 func (d DigiByte) Install(location string) error {
 
 	// Copy files to correct location
-	var srcPath, sfCLI, sfD, sfTX string
+	var srcPath, sfCLI, sfD, sfTX, dirToRemove string
 
 	switch runtime.GOOS {
 	case "windows":
-		srcPath = location + cDownloadFileWin
+		srcPath = location + cExtractedDirWin
 		sfCLI = cCliFileWin
 		sfD = cDaemonFileWin
 		sfTX = cTxFileWin
+		dirToRemove = location + cExtractedDirWin
 	case "linux":
 		switch runtime.GOARCH {
 		case "arm", "arm64":
-			srcPath = location + cExtractedDirLin
+			srcPath = location + cExtractedDirLin + "bin/"
 			sfCLI = cCliFileLin
 			sfD = cDaemonFileLin
 			sfTX = cTxFileLin
+			dirToRemove = location + cExtractedDirLin
 		case "amd64":
-			srcPath = location + cExtractedDirLin
+			srcPath = location + cExtractedDirLin + "bin/"
 			sfCLI = cCliFileLin
 			sfD = cDaemonFileLin
 			sfTX = cTxFileLin
+			dirToRemove = location + cExtractedDirLin
 		default:
 			return errors.New("unable to determine runtime.GOARCH " + runtime.GOARCH)
 		}
@@ -437,7 +440,7 @@ func (d DigiByte) Install(location string) error {
 		return fmt.Errorf("unable to chmod file: %v - %v", location+sfD, err)
 	}
 
-	// If the coitx file doesn't already exists the copy it.
+	// If the cointx file doesn't already exists the copy it.
 	if _, err := os.Stat(location + sfTX); os.IsNotExist(err) {
 		if err := coins.FileCopy(srcPath+sfTX, location+sfTX, false); err != nil {
 			return fmt.Errorf("unable to copyFile from: %v to %v - %v", srcPath+sfTX, location+sfTX, err)
@@ -445,6 +448,10 @@ func (d DigiByte) Install(location string) error {
 	}
 	if err := os.Chmod(location+sfTX, 0777); err != nil {
 		return fmt.Errorf("unable to chmod file: %v - %v", location+sfTX, err)
+	}
+
+	if err := os.RemoveAll(dirToRemove); err != nil {
+		return err
 	}
 
 	return nil
