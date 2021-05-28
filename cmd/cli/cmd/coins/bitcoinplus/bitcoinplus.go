@@ -82,7 +82,7 @@ type XBC struct {
 	Port        string
 }
 
-func (x XBC) BootStrap(rpcUser, rpcPassword, ip, port string) {
+func (x XBC) Bootstrap(rpcUser, rpcPassword, ip, port string) {
 	x.RPCUser = rpcUser
 	x.RPCPassword = rpcPassword
 	x.IPAddress = ip
@@ -221,6 +221,20 @@ func (x *XBC) BlockchainInfo() (models.XBCBlockchainInfo, error) {
 		return respStruct, err
 	}
 	return respStruct, nil
+}
+
+func (x XBC) HomeDirFullPath() (string, error) {
+	u, err := user.Current()
+	if err != nil {
+		return "", err
+	}
+	hd := u.HomeDir
+
+	if runtime.GOOS == "windows" {
+		return coins.AddTrailingSlash(hd) + "appdata\\roaming\\" + coins.AddTrailingSlash(cHomeDirWin), nil
+	} else {
+		return coins.AddTrailingSlash(hd) + coins.AddTrailingSlash(cHomeDirLin), nil
+	}
 }
 
 func (x *XBC) Info() (models.XBCGetInfo, string, error) {
@@ -418,20 +432,6 @@ func (x *XBC) StakingInfo() (models.XBCStakingInfo, error) {
 		return respStruct, err
 	}
 	return respStruct, nil
-}
-
-func (x XBC) HomeDirFullPath() (string, error) {
-	u, err := user.Current()
-	if err != nil {
-		return "", err
-	}
-	hd := u.HomeDir
-
-	if runtime.GOOS == "windows" {
-		return coins.AddTrailingSlash(hd) + "appdata\\roaming\\" + coins.AddTrailingSlash(cHomeDirWin), nil
-	} else {
-		return coins.AddTrailingSlash(hd) + coins.AddTrailingSlash(cHomeDirLin), nil
-	}
 }
 
 // Install - Puts the freshly downloaded files into their correct location.
