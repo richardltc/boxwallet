@@ -59,7 +59,7 @@ type DeVault struct {
 	Port        string
 }
 
-func (d DeVault) BootStrap(rpcUser, rpcPassword, ip, port string) {
+func (d DeVault) Bootstrap(rpcUser, rpcPassword, ip, port string) {
 	d.RPCUser = rpcUser
 	d.RPCPassword = rpcPassword
 	d.IPAddress = ip
