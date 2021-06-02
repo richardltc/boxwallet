@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"os/user"
+	"richardmace.co.uk/boxwallet/cmd/cli/cmd/fileutils"
 	"runtime"
 	"strings"
 	"time"
@@ -99,23 +100,23 @@ func (x *XBC) AbbreviatedCoinName() string {
 
 func (x XBC) AllBinaryFilesExist(location string) (allExist bool, err error) {
 	if runtime.GOOS == "windows" {
-		if !coins.FileExists(location + cCliFileWin) {
+		if !fileutils.FileExists(location + cCliFileWin) {
 			return false, nil
 		}
-		if !coins.FileExists(location + cDaemonFileWin) {
+		if !fileutils.FileExists(location + cDaemonFileWin) {
 			return false, nil
 		}
-		if !coins.FileExists(location + cTxFileWin) {
+		if !fileutils.FileExists(location + cTxFileWin) {
 			return false, nil
 		}
 	} else {
-		if !coins.FileExists(location + cCliFile) {
+		if !fileutils.FileExists(location + cCliFile) {
 			return false, nil
 		}
-		if !coins.FileExists(location + cDaemonFileLin) {
+		if !fileutils.FileExists(location + cDaemonFileLin) {
 			return false, nil
 		}
-		if !coins.FileExists(location + cTxFile) {
+		if !fileutils.FileExists(location + cTxFile) {
 			return false, nil
 		}
 	}
@@ -231,9 +232,9 @@ func (x XBC) HomeDirFullPath() (string, error) {
 	hd := u.HomeDir
 
 	if runtime.GOOS == "windows" {
-		return coins.AddTrailingSlash(hd) + "appdata\\roaming\\" + coins.AddTrailingSlash(cHomeDirWin), nil
+		return fileutils.AddTrailingSlash(hd) + "appdata\\roaming\\" + fileutils.AddTrailingSlash(cHomeDirWin), nil
 	} else {
-		return coins.AddTrailingSlash(hd) + coins.AddTrailingSlash(cHomeDirLin), nil
+		return fileutils.AddTrailingSlash(hd) + fileutils.AddTrailingSlash(cHomeDirLin), nil
 	}
 }
 
@@ -465,7 +466,7 @@ func (x XBC) Install(location string) error {
 
 	// If the coin-cli file doesn't already exists the copy it.
 	if _, err := os.Stat(location + srcFileCLI); os.IsNotExist(err) {
-		if err := coins.FileCopy(srcPath+srcFileCLI, location+srcFileCLI, false); err != nil {
+		if err := fileutils.FileCopy(srcPath+srcFileCLI, location+srcFileCLI, false); err != nil {
 			return fmt.Errorf("unable to copyFile from: %v to %v - %v", srcPath+srcFileCLI, location+srcFileCLI, err)
 		}
 	}
@@ -475,7 +476,7 @@ func (x XBC) Install(location string) error {
 
 	// If the coind file doesn't already exists the copy it.
 	if _, err := os.Stat(location + srcFileDaemon); os.IsNotExist(err) {
-		if err := coins.FileCopy(srcPath+srcFileDaemon, location+srcFileDaemon, false); err != nil {
+		if err := fileutils.FileCopy(srcPath+srcFileDaemon, location+srcFileDaemon, false); err != nil {
 			return fmt.Errorf("unable to copyFile from: %v to %v - %v", srcPath+srcFileDaemon, location+srcFileDaemon, err)
 		}
 	}
@@ -485,7 +486,7 @@ func (x XBC) Install(location string) error {
 
 	// If the coitx file doesn't already exists the copy it.
 	if _, err := os.Stat(location + srcFileTX); os.IsNotExist(err) {
-		if err := coins.FileCopy(srcPath+srcFileTX, location+srcFileTX, false); err != nil {
+		if err := fileutils.FileCopy(srcPath+srcFileTX, location+srcFileTX, false); err != nil {
 			return fmt.Errorf("unable to copyFile from: %v to %v - %v", srcPath+srcFileTX, location+srcFileTX, err)
 		}
 	}
@@ -568,7 +569,7 @@ func (x XBC) RPCDefaultPort() string {
 	return cRPCPort
 }
 
-func (x *XBC) StartDaemon(displayOutput bool) error {
+func (x XBC) StartDaemon(displayOutput bool) error {
 	b, _ := x.DaemonRunning()
 	if b {
 		return nil
@@ -606,7 +607,7 @@ func (x *XBC) StartDaemon(displayOutput bool) error {
 	return nil
 }
 
-func (x *XBC) StopDaemon() error {
+func (x XBC) StopDaemon() error {
 	// var respStruct models.GenericResponse
 
 	body := strings.NewReader("{\"jsonrpc\":\"1.0\",\"id\":\"curltext\",\"method\":\"stop\",\"params\":[]}")
