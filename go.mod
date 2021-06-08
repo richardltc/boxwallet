@@ -6,18 +6,21 @@ require (
 	github.com/AlecAivazis/survey/v2 v2.1.1
 	github.com/artdarek/go-unzip v1.0.0
 	github.com/cavaliercoder/grab v2.0.0+incompatible
+	github.com/coreos/etcd v3.3.13+incompatible // indirect
 	github.com/dariubs/percent v0.0.0-20200128140941-b7801cf1c7e2
 	github.com/dustin/go-humanize v1.0.0
 	github.com/fsnotify/fsnotify v1.4.9 // indirect
 	github.com/gizak/termui/v3 v3.1.0
 	github.com/gookit/color v1.3.7
 	github.com/magiconair/properties v1.8.2 // indirect
+	github.com/mholt/archiver v3.1.1+incompatible
 	github.com/mholt/archiver/v3 v3.5.0
 	github.com/mitchellh/go-homedir v1.1.0
 	github.com/mitchellh/go-ps v1.0.0
 	github.com/mitchellh/mapstructure v1.3.3 // indirect
 	github.com/niemeyer/pretty v0.0.0-20200227124842-a10e7caefd8e // indirect
 	github.com/pelletier/go-toml v1.8.0 // indirect
+	github.com/pierrec/lz4 v2.6.0+incompatible // indirect
 	github.com/spf13/afero v1.3.5 // indirect
 	github.com/spf13/cast v1.3.1 // indirect
 	github.com/spf13/cobra v1.0.0

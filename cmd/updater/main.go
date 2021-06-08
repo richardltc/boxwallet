@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+
 	"github.com/mholt/archiver/v3"
 
 	//gwc "github.com/richardltc/gwcommon"
@@ -11,9 +12,11 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
-	be "richardmace.co.uk/boxwallet/cmd/cli/cmd/bend"
 	"runtime"
 	"time"
+
+	be "richardmace.co.uk/boxwallet/cmd/cli/cmd/bend"
+	"richardmace.co.uk/boxwallet/cmd/cli/cmd/rjminternet"
 )
 
 const (
@@ -123,14 +126,14 @@ func main() {
 	fmt.Println(be.CUpdaterAppName + " v" + be.CBWAppVersion + " Started...")
 
 	// Check to make sure that the app (BoxWallet) is not currently running
-	bbwRunning, _, err := isBoxWalletRunning()
-	if err != nil {
-		log.Fatal("Unable to determine if " + be.CAppName + " is running - " + err.Error())
-	}
-	if bbwRunning {
-		log.Fatal(be.CAppName + " is currently running.  Please close " + be.CAppName + " and then run " + be.CUpdaterAppName + " again.")
-	}
-	fmt.Println(be.CAppName + " is not running, so checking online for latest version...")
+	// bbwRunning, _, err := isBoxWalletRunning()
+	// if err != nil {
+	// 	log.Fatal("Unable to determine if " + be.CAppName + " is running - " + err.Error())
+	// }
+	// if bbwRunning {
+	// 	log.Fatal(be.CAppName + " is currently running.  Please close " + be.CAppName + " and then run " + be.CUpdaterAppName + " again.")
+	// }
+	// fmt.Println(be.CAppName + " is not running, so checking online for latest version...")
 
 	//dbf, _ := gwc.GetAppsBinFolder(gwc.APPTCLI)
 	//dir, err := gwc.GetRunningDir()
@@ -184,7 +187,7 @@ func main() {
 	}
 
 	// Download the compressedFN
-	if err := be.DownloadFile(dir, url+compressedFN); err != nil {
+	if err := rjminternet.DownloadFile(dir, url+compressedFN); err != nil {
 		log.Fatal("unable to download compressedFN: ", url+compressedFN, err)
 	}
 	defer os.Remove(dir + compressedFN)
@@ -259,48 +262,20 @@ func getLatestVersionTag() (string, error) {
 	return ghInfo.TagName, nil
 }
 
-func isBoxWalletRunning() (bool, int, error) {
-	var pid int
-	var err error
-	if runtime.GOOS == "windows" {
-		pid, _, err = be.FindProcess(be.CAppFilenameWin)
-	} else {
-		pid, _, err = be.FindProcess(be.CAppFilename)
-	}
+// func isBoxWalletRunning() (bool, int, error) {
+// 	var pid int
+// 	var err error
+// 	if runtime.GOOS == "windows" {
+// 		pid, _, err = be.FindProcess(be.CAppFilenameWin)
+// 	} else {
+// 		pid, _, err = be.FindProcess(be.CAppFilename)
+// 	}
 
-	if err == nil {
-		return true, pid, nil
-	} else if err.Error() == "not found" {
-		return false, 0, nil
-	} else {
-		return false, 0, err
-	}
-}
-
-//func tellGDServerToShutdown() gwc.ServerResponse {
-//	ss := m.ServerRequestStruct{}
-//	ss.ServerRequest = gwc.CServRequestShutdownServer
-//	requestBody, err := json.Marshal(ss)
-//	if err != nil {
-//		log.Fatal(err)
-//	}
-//
-//	// We're just going to fire the request off, and then check for whether it's shutdown or not.
-//	_, _ = http.Post("http://127.0.0.1:4000/server/", "application/json", bytes.NewBuffer(requestBody))
-//	//resp, err := http.Post("http://127.0.0.1:4000/server/", "application/json", bytes.NewBuffer(requestBody))
-//	// if err != nil {
-//	// 	log.Fatal(err)
-//	// }
-//	// defer resp.Body.Close()
-//
-//	// body, err := ioutil.ReadAll(resp.Body)
-//	// if err != nil {
-//	// 	log.Fatal(err)
-//	// }
-//
-//	// if string(body) == "Server shutdown request detected, so shutting down" {
-//	// 	return gdc.NoServerError
-//	// }
-//
-//	return gwc.NoServerError
-//}
+// 	if err == nil {
+// 		return true, pid, nil
+// 	} else if err.Error() == "not found" {
+// 		return false, 0, nil
+// 	} else {
+// 		return false, 0, err
+// 	}
+// }
