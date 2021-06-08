@@ -1,18 +1,12 @@
 package coins
 
 import (
-	"bufio"
 	"errors"
 	"fmt"
-	"io"
-	"io/ioutil"
-	"os"
-	"runtime"
-	"strings"
-	"time"
-
 	"github.com/AlecAivazis/survey/v2"
 	"github.com/mitchellh/go-ps"
+	"os"
+	"richardmace.co.uk/boxwallet/cmd/cli/cmd/fileutils"
 	"richardmace.co.uk/boxwallet/cmd/cli/cmd/models"
 	"richardmace.co.uk/boxwallet/cmd/cli/cmd/rand"
 )
@@ -36,9 +30,13 @@ const (
 	CCoinNameVertcoin    string = "Vertcoin"
 )
 
+type CoinBlockchainIsSynced interface {
+	BlockchainIsSynced(coinAuth *models.CoinAuth) (bool, error)
+}
+
 type Coin interface {
 	AllBinaryFilesExist(location string) (allExist bool, err error)
-	BootStrap(rpcUser, rpcPassword, ip, port string)
+	Bootstrap(rpcUser, rpcPassword, ip, port string)
 	ConfFile() string
 	DownloadCoin(location string) error
 	HomeDirFullPath() (string, error)
@@ -54,10 +52,14 @@ type CoinBlockchain interface {
 }
 
 type CoinDaemon interface {
-	Filename() string
-	Running() (bool, error)
-	Start(displayOutput bool) error
-	Stop() error
+	DaemonFilename() string
+	DaemonRunning() (bool, error)
+	StartDaemon(displayOutput bool, appFolder string) error
+	StopDaemon(*models.CoinAuth) error
+}
+
+type CoinAnyAddresses interface {
+	AnyAddresses(auth *models.CoinAuth) (bool, error)
 }
 
 type CoinName interface {
@@ -72,114 +74,6 @@ type CoinRPCDefaults interface {
 
 type AddNodes interface {
 	AddNodesAlreadyExist() bool
-}
-
-func AddTrailingSlash(filePath string) string {
-	var lastChar = filePath[len(filePath)-1:]
-	switch runtime.GOOS {
-	case "windows":
-		if lastChar == "\\" {
-			return filePath
-		} else {
-			return filePath + "\\"
-		}
-	case "linux":
-		if lastChar == "/" {
-			return filePath
-		} else {
-			return filePath + "/"
-		}
-	}
-
-	return ""
-}
-
-func BackupFile(srcFolder, srcFile, dstFolder, prefixStr string, failOnNoSrc bool) error {
-	dt := time.Now()
-	dtStr := dt.Format("2006-01-02")
-
-	if !FileExists(srcFolder + srcFile) {
-		if failOnNoSrc {
-			return errors.New(srcFolder + srcFile + " doesn't exist")
-		} else {
-			return nil
-		}
-	}
-
-	originalFile, err := os.Open(srcFolder + srcFile)
-	if err != nil {
-		return err
-	}
-	defer originalFile.Close()
-
-	if dstFolder == "" {
-		dstFolder = srcFolder
-	}
-
-	var s string
-	if prefixStr != "" {
-		s = prefixStr + "-"
-	}
-
-	newFile, err := os.Create(dstFolder + s + dtStr + "-" + srcFile)
-	if err != nil {
-		return err
-	}
-	defer newFile.Close()
-
-	_, err = io.Copy(newFile, originalFile)
-	if err != nil {
-		return err
-	}
-
-	err = newFile.Sync()
-	if err != nil {
-		return err
-	}
-
-	return nil
-}
-
-func FileCopy(srcFile, destFile string, dispOutput bool) error {
-	// Open original file
-	originalFile, err := os.Open(srcFile)
-	if err != nil {
-		return err
-	}
-	defer originalFile.Close()
-
-	// Create new file
-	newFile, err := os.Create(destFile)
-	if err != nil {
-		return err
-	}
-	defer newFile.Close()
-
-	// Copy the bytes to destination from source
-	bytesWritten, err := io.Copy(newFile, originalFile)
-	if err != nil {
-		return err
-	}
-	if dispOutput {
-		fmt.Printf("Copied %d bytes.", bytesWritten)
-	}
-
-	// Commit the file contents
-	// Flushes memory to disk
-	err = newFile.Sync()
-	if err != nil {
-		return err
-	}
-
-	return nil
-}
-
-func FileExists(filename string) bool {
-	info, err := os.Stat(filename)
-	if os.IsNotExist(err) {
-		return false
-	}
-	return !info.IsDir()
 }
 
 func FindProcess(key string) (int, string, error) {
@@ -218,6 +112,7 @@ func GetPasswordToEncryptWallet() string {
 			return epw1
 		}
 	}
+
 	return ""
 }
 
@@ -243,41 +138,6 @@ Encrypt it now?:`,
 	return ans
 }
 
-func GetStrAfterStr(value string, a string) string {
-	// Get substring after a string.
-	pos := strings.LastIndex(value, a)
-	if pos == -1 {
-		return ""
-	}
-	adjustedPos := pos + len(a)
-	if adjustedPos >= len(value) {
-		return ""
-	}
-	return value[adjustedPos:]
-}
-
-// GetStringAfterStrFromFile - Returns the string after the passed string: e.g line in file is "greeting=hi", if the stringToFind was "greeting=" it would return "hi""
-func GetStringAfterStrFromFile(stringToFind, file string) (string, error) {
-	if !FileExists(file) {
-		return "", nil
-	}
-
-	data, err := ioutil.ReadFile(file)
-	if err != nil {
-		return "", err
-	}
-	scanner := bufio.NewScanner(strings.NewReader(string(data)))
-	for scanner.Scan() {
-		s := scanner.Text()
-		if strings.Contains(s, stringToFind) {
-			t := GetStrAfterStr(s, "=") //strings.Replace(s,stringToFind,"", -1)
-			return t, nil
-		}
-	}
-	return "", nil
-
-}
-
 func PopulateConfFile(confFile, homeDir, rpcUserCoin, rpcPortCoin string) (rpcUser, rpcPassword string, err error) {
 	// Add rpcuser info if required, or retrieve the existing one
 	bFileHasBeenBU := false
@@ -289,8 +149,8 @@ func PopulateConfFile(confFile, homeDir, rpcUserCoin, rpcPortCoin string) (rpcUs
 		return "", "", errors.New("unable to make directory - " + err.Error())
 	}
 
-	if FileExists(homeDir + confFile) {
-		bStrFound, err := StringExistsInFile(models.CRPCUser+"=", homeDir+confFile)
+	if fileutils.FileExists(homeDir + confFile) {
+		bStrFound, err := fileutils.StringExistsInFile(models.CRPCUser+"=", homeDir+confFile)
 		if err != nil {
 			return "", "", fmt.Errorf("unable to search for text in file - %v", err)
 		}
@@ -298,13 +158,13 @@ func PopulateConfFile(confFile, homeDir, rpcUserCoin, rpcPortCoin string) (rpcUs
 			// String not found
 			if !bFileHasBeenBU {
 				bFileHasBeenBU = true
-				if err := BackupFile(homeDir, confFile, "", "", false); err != nil {
+				if err := fileutils.BackupFile(homeDir, confFile, "", "", false); err != nil {
 					return "", "", fmt.Errorf("unable to backup file - %v", err)
 				}
 			}
 		} else {
 			bNeedToWriteStr = false
-			rpcu, err = GetStringAfterStrFromFile(models.CRPCUser+"=", homeDir+confFile)
+			rpcu, err = fileutils.GetStringAfterStrFromFile(models.CRPCUser+"=", homeDir+confFile)
 			if err != nil {
 				return "", "", fmt.Errorf("unable to search for text in file - %v", err)
 			}
@@ -315,15 +175,15 @@ func PopulateConfFile(confFile, homeDir, rpcUserCoin, rpcPortCoin string) (rpcUs
 	}
 	if bNeedToWriteStr {
 		rpcu = rpcUserCoin
-		if err := WriteTextToFile(homeDir+confFile, models.CRPCUser+"="+rpcu); err != nil {
+		if err := fileutils.WriteTextToFile(homeDir+confFile, models.CRPCUser+"="+rpcu); err != nil {
 			return "", "", err
 		}
 	}
 
 	// Add rpcpassword info if required, or retrieve the existing one
 	bNeedToWriteStr = true
-	if FileExists(homeDir + confFile) {
-		bStrFound, err := StringExistsInFile(models.CRPCPassword+"=", homeDir+confFile)
+	if fileutils.FileExists(homeDir + confFile) {
+		bStrFound, err := fileutils.StringExistsInFile(models.CRPCPassword+"=", homeDir+confFile)
 		if err != nil {
 			return "", "", fmt.Errorf("unable to search for text in file - %v", err)
 		}
@@ -331,13 +191,13 @@ func PopulateConfFile(confFile, homeDir, rpcUserCoin, rpcPortCoin string) (rpcUs
 			// String not found
 			if !bFileHasBeenBU {
 				bFileHasBeenBU = true
-				if err := BackupFile(homeDir, confFile, "", "", false); err != nil {
+				if err := fileutils.BackupFile(homeDir, confFile, "", "", false); err != nil {
 					return "", "", fmt.Errorf("unable to backup file - %v", err)
 				}
 			}
 		} else {
 			bNeedToWriteStr = false
-			rpcpw, err = GetStringAfterStrFromFile(models.CRPCPassword+"=", homeDir+confFile)
+			rpcpw, err = fileutils.GetStringAfterStrFromFile(models.CRPCPassword+"=", homeDir+confFile)
 			if err != nil {
 				return "", "", fmt.Errorf("unable to search for text in file - %v", err)
 			}
@@ -345,18 +205,18 @@ func PopulateConfFile(confFile, homeDir, rpcUserCoin, rpcPortCoin string) (rpcUs
 	}
 	if bNeedToWriteStr {
 		rpcpw = rand.String(20)
-		if err := WriteTextToFile(homeDir+confFile, models.CRPCPassword+"="+rpcpw); err != nil {
+		if err := fileutils.WriteTextToFile(homeDir+confFile, models.CRPCPassword+"="+rpcpw); err != nil {
 			return "", "", err
 		}
-		if err := WriteTextToFile(homeDir+confFile, ""); err != nil {
+		if err := fileutils.WriteTextToFile(homeDir+confFile, ""); err != nil {
 			return "", "", err
 		}
 	}
 
 	// Add daemon=1 info if required
 	bNeedToWriteStr = true
-	if FileExists(homeDir + confFile) {
-		bStrFound, err := StringExistsInFile("daemon=1", homeDir+confFile)
+	if fileutils.FileExists(homeDir + confFile) {
+		bStrFound, err := fileutils.StringExistsInFile("daemon=1", homeDir+confFile)
 		if err != nil {
 			return "", "", fmt.Errorf("unable to search for text in file - %v", err)
 		}
@@ -364,7 +224,7 @@ func PopulateConfFile(confFile, homeDir, rpcUserCoin, rpcPortCoin string) (rpcUs
 			// String not found
 			if !bFileHasBeenBU {
 				bFileHasBeenBU = true
-				if err := BackupFile(homeDir, confFile, "", "", false); err != nil {
+				if err := fileutils.BackupFile(homeDir, confFile, "", "", false); err != nil {
 					return "", "", fmt.Errorf("unable to backup file - %v", err)
 				}
 			}
@@ -373,18 +233,18 @@ func PopulateConfFile(confFile, homeDir, rpcUserCoin, rpcPortCoin string) (rpcUs
 		}
 	}
 	if bNeedToWriteStr {
-		if err := WriteTextToFile(homeDir+confFile, "daemon=1"); err != nil {
+		if err := fileutils.WriteTextToFile(homeDir+confFile, "daemon=1"); err != nil {
 			return "", "", err
 		}
-		if err := WriteTextToFile(homeDir+confFile, ""); err != nil {
+		if err := fileutils.WriteTextToFile(homeDir+confFile, ""); err != nil {
 			return "", "", err
 		}
 	}
 
 	// Add server=1 info if required
 	bNeedToWriteStr = true
-	if FileExists(homeDir + confFile) {
-		bStrFound, err := StringExistsInFile("server=1", homeDir+confFile)
+	if fileutils.FileExists(homeDir + confFile) {
+		bStrFound, err := fileutils.StringExistsInFile("server=1", homeDir+confFile)
 		if err != nil {
 			return "", "", fmt.Errorf("unable to search for text in file - %v", err)
 		}
@@ -392,7 +252,7 @@ func PopulateConfFile(confFile, homeDir, rpcUserCoin, rpcPortCoin string) (rpcUs
 			// String not found
 			if !bFileHasBeenBU {
 				bFileHasBeenBU = true
-				if err := BackupFile(homeDir, confFile, "", "", false); err != nil {
+				if err := fileutils.BackupFile(homeDir, confFile, "", "", false); err != nil {
 					return "", "", fmt.Errorf("unable to backup file - %v", err)
 				}
 			}
@@ -401,15 +261,15 @@ func PopulateConfFile(confFile, homeDir, rpcUserCoin, rpcPortCoin string) (rpcUs
 		}
 	}
 	if bNeedToWriteStr {
-		if err := WriteTextToFile(homeDir+confFile, "server=1"); err != nil {
+		if err := fileutils.WriteTextToFile(homeDir+confFile, "server=1"); err != nil {
 			return "", "", err
 		}
 	}
 
 	// Add rpcallowip= info if required
 	bNeedToWriteStr = true
-	if FileExists(homeDir + confFile) {
-		bStrFound, err := StringExistsInFile("rpcallowip=", homeDir+confFile)
+	if fileutils.FileExists(homeDir + confFile) {
+		bStrFound, err := fileutils.StringExistsInFile("rpcallowip=", homeDir+confFile)
 		if err != nil {
 			return "", "", fmt.Errorf("unable to search for text in file - %v", err)
 		}
@@ -417,7 +277,7 @@ func PopulateConfFile(confFile, homeDir, rpcUserCoin, rpcPortCoin string) (rpcUs
 			// String not found
 			if !bFileHasBeenBU {
 				bFileHasBeenBU = true
-				if err := BackupFile(homeDir, confFile, "", "", false); err != nil {
+				if err := fileutils.BackupFile(homeDir, confFile, "", "", false); err != nil {
 					return "", "", fmt.Errorf("unable to backup file - %v", err)
 				}
 			}
@@ -426,15 +286,15 @@ func PopulateConfFile(confFile, homeDir, rpcUserCoin, rpcPortCoin string) (rpcUs
 		}
 	}
 	if bNeedToWriteStr {
-		if err := WriteTextToFile(homeDir+confFile, "rpcallowip=192.168.1.0/255.255.255.0"); err != nil {
+		if err := fileutils.WriteTextToFile(homeDir+confFile, "rpcallowip=192.168.1.0/255.255.255.0"); err != nil {
 			return "", "", err
 		}
 	}
 
 	// Add rpcport= info if required
 	bNeedToWriteStr = true
-	if FileExists(homeDir + confFile) {
-		bStrFound, err := StringExistsInFile("rpcport=", homeDir+confFile)
+	if fileutils.FileExists(homeDir + confFile) {
+		bStrFound, err := fileutils.StringExistsInFile("rpcport=", homeDir+confFile)
 		if err != nil {
 			return "", "", fmt.Errorf("unable to search for text in file - %v", err)
 		}
@@ -442,7 +302,7 @@ func PopulateConfFile(confFile, homeDir, rpcUserCoin, rpcPortCoin string) (rpcUs
 			// String not found
 			if !bFileHasBeenBU {
 				bFileHasBeenBU = true
-				if err := BackupFile(homeDir, confFile, "", "", false); err != nil {
+				if err := fileutils.BackupFile(homeDir, confFile, "", "", false); err != nil {
 					return "", "", fmt.Errorf("unable to backup file - %v", err)
 				}
 			}
@@ -451,51 +311,11 @@ func PopulateConfFile(confFile, homeDir, rpcUserCoin, rpcPortCoin string) (rpcUs
 		}
 	}
 	if bNeedToWriteStr {
-		if err := WriteTextToFile(homeDir+confFile, "rpcport="+rpcPortCoin); err != nil {
+		if err := fileutils.WriteTextToFile(homeDir+confFile, "rpcport="+rpcPortCoin); err != nil {
 			return "", "", err
 		}
 	}
 
 	return rpcu, rpcpw, nil
 
-}
-
-func StringExistsInFile(str, file string) (bool, error) {
-	if !FileExists(file) {
-		return false, nil
-	}
-
-	data, err := ioutil.ReadFile(file)
-	if err != nil {
-		return false, errors.New(err.Error())
-	}
-	scanner := bufio.NewScanner(strings.NewReader(string(data)))
-	for scanner.Scan() {
-		s := scanner.Text()
-		if strings.Contains(s, str) {
-			return true, nil
-		}
-	}
-	return false, nil
-}
-
-func WriteTextToFile(fileName, text string) error {
-	// Open a new file for writing only
-	file, err := os.OpenFile(
-		fileName,
-		os.O_WRONLY|os.O_APPEND|os.O_CREATE,
-		0666,
-	)
-	if err != nil {
-		return err
-	}
-	defer file.Close()
-
-	byteSlice := []byte(text + "\n")
-	_, err = file.Write(byteSlice)
-	if err != nil {
-		return err
-	}
-
-	return nil
 }
