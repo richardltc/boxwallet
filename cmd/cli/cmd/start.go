@@ -18,12 +18,16 @@ package cmd
 
 import (
 	"fmt"
+	"log"
 	"os"
 
-	// gwc "github.com/richardltc/gwcommon"
 	"github.com/spf13/cobra"
-	"log"
-	be "richardmace.co.uk/boxwallet/cmd/cli/cmd/bend"
+	"richardmace.co.uk/boxwallet/cmd/cli/cmd/app"
+	"richardmace.co.uk/boxwallet/cmd/cli/cmd/coins"
+	xbc "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/bitcoinplus"
+	d "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/denarius"
+	"richardmace.co.uk/boxwallet/cmd/cli/cmd/conf"
+	"richardmace.co.uk/boxwallet/cmd/cli/cmd/models"
 )
 
 // startCmd represents the start command
@@ -32,99 +36,106 @@ var startCmd = &cobra.Command{
 	Short: "Starts you chosen coin's daemon server",
 	Long:  ``,
 	Run: func(cmd *cobra.Command, args []string) {
-		fmt.Println("  ____          __          __   _ _      _   \n |  _ \\         \\ \\        / /  | | |    | |  \n | |_) | _____  _\\ \\  /\\  / /_ _| | | ___| |_ \n |  _ < / _ \\ \\/ /\\ \\/  \\/ / _` | | |/ _ \\ __|\n | |_) | (_) >  <  \\  /\\  / (_| | | |  __/ |_ \n |____/ \\___/_/\\_\\  \\/  \\/ \\__,_|_|_|\\___|\\__| v" + be.CBWAppVersion + "\n                                              \n                                               ")
+		var app app.App
 
-		apw, err := be.GetAppWorkingFolder()
+		fmt.Println("  ____          __          __   _ _      _   \n |  _ \\         \\ \\        / /  | | |    | |  \n | |_) | _____  _\\ \\  /\\  / /_ _| | | ___| |_ \n |  _ < / _ \\ \\/ /\\ \\/  \\/ / _` | | |/ _ \\ __|\n | |_) | (_) >  <  \\  /\\  / (_| | | |  __/ |_ \n |____/ \\___/_/\\_\\  \\/  \\/ \\__,_|_|_|\\___|\\__| v" + app.Version() + "\n                                              \n                                               ")
+
+		var conf conf.Conf
+		//var coin coins.Coin
+		var coinDaemon coins.CoinDaemon
+		var coinName coins.CoinName
+
+		appHomeDir, err := app.HomeFolder()
 		if err != nil {
-			log.Fatal("Unable to GetAppWorkingFolder: " + err.Error())
+			log.Fatal("Unable to get HomeFolder: " + err.Error())
 		}
 
-		// Make sure the config file exists, and if not, force user to use "coin" command first.
-		if _, err := os.Stat(apw + be.CConfFile + be.CConfFileExt); os.IsNotExist(err) {
-			log.Fatal("Unable to determine coin type. Please run " + be.CAppFilename + " coin first")
-		}
+		conf.Bootstrap(appHomeDir)
 
-		// Lets load our config file to see what coin choice the user made..
-		cliConf, err := be.GetConfigStruct("", true)
+		appFileName, err := app.FileName()
 		if err != nil {
-			log.Fatal("Unable to determine coin type. Please run " + be.CAppFilename + " coin: " + err.Error())
-			//log.Fatal("Unable to GetCLIConfStruct " + err.Error())
+			log.Fatal("Unable to get appFilename: " + err.Error())
 		}
 
-		sCoinDaemonName, err := be.GetCoinDaemonFilename(be.APPTCLI, cliConf.ProjectType)
+		// Make sure the config file exists, and if not, force user to use "coin" command first..
+		if _, err := os.Stat(appHomeDir + conf.ConfFile()); os.IsNotExist(err) {
+			log.Fatal("Unable to determine coin type. Please run " + appFileName + " coin  first")
+		}
+
+		// Now load our config file to see what coin choice the user made...
+		confDB, err := conf.GetConfig(true)
 		if err != nil {
-			log.Fatal("Unable to GetCoinDaemonFilename " + err.Error())
+			log.Fatal("Unable to determine coin type. Please run " + appFileName + " coin: " + err.Error())
 		}
 
-		if cliConf.ServerIP != "127.0.0.1" {
-			log.Fatal("The start command can only be run on the same machine that's running the " + sCoinDaemonName + " wallet")
-		}
-
-		switch cliConf.ProjectType {
-		case be.PTBitcoinPlus:
-		case be.PTDenarius:
-		case be.PTDeVault:
-		case be.PTDigiByte:
-		case be.PTDivi:
-			// Add the addnodes if required..
-			log.Println("Checking for addnodes...")
-			exist, err := be.AddNodesAlreadyExist()
-			if err != nil {
-				log.Fatalf("unable to detect whether addnodes already exist: %v", err)
-			}
-			if exist {
-				log.Println("addnodes already exist...")
-			} else {
-				log.Println("addnodes are missing, so attempting to add...")
-				if err := be.AddAddNodesIfRequired(); err != nil {
-					log.Fatalf("failed to add addnodes: %v", err)
-				}
-				log.Println("addnodes added...")
-			}
-		case be.PTFeathercoin:
-		case be.PTGroestlcoin:
-		case be.PTPhore:
-		case be.PTPIVX:
-		case be.PTRapids:
-			// Add the addnodes if required...
-			log.Println("Checking for addnodes...")
-			exist, err := be.AddNodesAlreadyExist()
-			if err != nil {
-				log.Fatalf("unable to detect whether addnodes already exist: %v", err)
-			}
-			if exist {
-				log.Println("addnodes already exist...")
-			} else {
-				log.Println("addnodes are missing, so attempting to add...")
-				if err := be.AddAddNodesIfRequired(); err != nil {
-					log.Fatalf("failed to add addnodes: %v", err)
-				}
-				log.Println("addnodes added...")
-			}
-		case be.PTReddCoin:
-		case be.PTScala:
-		case be.PTTrezarcoin:
-		case be.PTVertcoin:
+		switch confDB.ProjectType {
+		case models.PTBitcoinPlus:
+			//coin = xbc.XBC{}
+			coinDaemon = xbc.XBC{}
+			coinName = xbc.XBC{}
+		case models.PTDenarius:
+			coinDaemon = d.Denarius{}
+			coinName = d.Denarius{}
+		case models.PTDeVault:
+		case models.PTDigiByte:
+		case models.PTDivi:
+			// // Add the addnodes if required..
+			// log.Println("Checking for addnodes...")
+			// exist, err := be.AddNodesAlreadyExist()
+			// if err != nil {
+			// 	log.Fatalf("unable to detect whether addnodes already exist: %v", err)
+			// }
+			// if exist {
+			// 	log.Println("addnodes already exist...")
+			// } else {
+			// 	log.Println("addnodes are missing, so attempting to add...")
+			// 	if err := be.AddAddNodesIfRequired(); err != nil {
+			// 		log.Fatalf("failed to add addnodes: %v", err)
+			// 	}
+			// 	log.Println("addnodes added...")
+			// }
+		case models.PTFeathercoin:
+		case models.PTGroestlcoin:
+		case models.PTPhore:
+		case models.PTPIVX:
+		case models.PTRapids:
+			// // Add the addnodes if required...
+			// log.Println("Checking for addnodes...")
+			// exist, err := be.AddNodesAlreadyExist()
+			// if err != nil {
+			// 	log.Fatalf("unable to detect whether addnodes already exist: %v", err)
+			// }
+			// if exist {
+			// 	log.Println("addnodes already exist...")
+			// } else {
+			// 	log.Println("addnodes are missing, so attempting to add...")
+			// 	if err := be.AddAddNodesIfRequired(); err != nil {
+			// 		log.Fatalf("failed to add addnodes: %v", err)
+			// 	}
+			// 	log.Println("addnodes added...")
+			// }
+		case models.PTReddCoin:
+		case models.PTScala:
+		case models.PTTrezarcoin:
+		case models.PTVertcoin:
 		default:
 			log.Fatal("unable to determine ProjectType")
 		}
 
+		//sCoinDaemon := coinDaemon.Filename()
+
+		if confDB.ServerIP != "127.0.0.1" {
+			log.Fatal("The start command can only be run on the same machine that's running the " + coinName.CoinName() + " wallet")
+		}
+
+		//coin.Bootstrap(confDB.RPCuser, confDB.RPCpassword, confDB.ServerIP, confDB.Port)
+
 		// Start the coin daemon server if required..
-		if err := be.StartCoinDaemon(true); err != nil {
-			log.Fatalf("failed to run "+sCoinDaemonName+": %v", err)
+		if err := coinDaemon.StartDaemon(true, appHomeDir); err != nil {
+			log.Fatalf("failed to run "+coinDaemon.DaemonFilename()+": %v", err)
 		}
 
-		//runDashNow := false.
-		//prompt := &survey.Confirm{
-		//	Message: "Run Dash now?",
-		//}
-		//survey.AskOne(prompt, &runDashNow)
-
-		sAppFileCLIName, err := be.GetAppFileName()
-		if err != nil {
-			log.Fatal("Unable to GetAppFileCLIName " + err.Error())
-		}
-		fmt.Println("\nNow, simply run ./" + sAppFileCLIName + " dash\n\n")
+		fmt.Println("\nNow, simply run ./" + appFileName + " dash\n\n")
 	},
 }
 

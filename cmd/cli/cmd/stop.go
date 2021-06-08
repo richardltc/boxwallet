@@ -17,14 +17,24 @@ limitations under the License.
 package cmd
 
 import (
+	// "fmt"
+	// "log"
+	// "os"
+	// "strconv"
+	// "time"
+
 	"fmt"
+	"github.com/spf13/cobra"
 	"log"
 	"os"
+	"richardmace.co.uk/boxwallet/cmd/cli/cmd/app"
+	"richardmace.co.uk/boxwallet/cmd/cli/cmd/coins"
+	xbc "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/bitcoinplus"
+	"richardmace.co.uk/boxwallet/cmd/cli/cmd/conf"
+	"richardmace.co.uk/boxwallet/cmd/cli/cmd/models"
 	"strconv"
 	"time"
-
-	"github.com/spf13/cobra"
-	be "richardmace.co.uk/boxwallet/cmd/cli/cmd/bend"
+	// be "richardmace.co.uk/boxwallet/cmd/cli/cmd/bend"
 )
 
 // stopCmd represents the stop command
@@ -33,86 +43,115 @@ var stopCmd = &cobra.Command{
 	Short: "Stops your chosen coin's daemon server",
 	Long:  ``,
 	Run: func(cmd *cobra.Command, args []string) {
-		fmt.Println("  ____          __          __   _ _      _   \n |  _ \\         \\ \\        / /  | | |    | |  \n | |_) | _____  _\\ \\  /\\  / /_ _| | | ___| |_ \n |  _ < / _ \\ \\/ /\\ \\/  \\/ / _` | | |/ _ \\ __|\n | |_) | (_) >  <  \\  /\\  / (_| | | |  __/ |_ \n |____/ \\___/_/\\_\\  \\/  \\/ \\__,_|_|_|\\___|\\__| v" + be.CBWAppVersion + "\n                                              \n                                               ")
+		var app app.App
 
-		apw, err := be.GetAppWorkingFolder()
+		fmt.Println("  ____          __          __   _ _      _   \n |  _ \\         \\ \\        / /  | | |    | |  \n | |_) | _____  _\\ \\  /\\  / /_ _| | | ___| |_ \n |  _ < / _ \\ \\/ /\\ \\/  \\/ / _` | | |/ _ \\ __|\n | |_) | (_) >  <  \\  /\\  / (_| | | |  __/ |_ \n |____/ \\___/_/\\_\\  \\/  \\/ \\__,_|_|_|\\___|\\__| v" + app.Version() + "\n                                              \n                                               ")
+
+		var conf conf.Conf
+		var coinDaemon coins.CoinDaemon
+		var coinName coins.CoinName
+
+		appHomeDir, err := app.HomeFolder()
 		if err != nil {
-			log.Fatal("Unable to GetAppWorkingFolder: " + err.Error())
+			log.Fatal("Unable to get app.HomeFolder: " + err.Error())
 		}
 
-		// Make sure the config file exists, and if not, force user to use "coin" command first.
-		if _, err := os.Stat(apw + be.CConfFile + be.CConfFileExt); os.IsNotExist(err) {
-			log.Fatal("Unable to determine coin type. Please run " + be.CAppFilename + " coin first")
-		}
+		conf.Bootstrap(appHomeDir)
 
-		cliConf, err := be.GetConfigStruct("", true)
+		appFileName, err := app.FileName()
 		if err != nil {
-			log.Fatal("Unable to GetCLIConfStruct " + err.Error())
+			log.Fatal("Unable to get appFilename: " + err.Error())
 		}
 
-		sCoinDaemonName, err := be.GetCoinDaemonFilename(be.APPTCLI, cliConf.ProjectType)
+		// Make sure the config file exists, and if not, force user to use "coin" command first..
+		if _, err := os.Stat(appHomeDir + conf.ConfFile()); os.IsNotExist(err) {
+			log.Fatal("Unable to determine coin type. Please run " + appFileName + " coin  first")
+		}
+
+		// Now load our config file to see what coin choice the user made...
+		confDB, err := conf.GetConfig(true)
 		if err != nil {
-			log.Fatal("Unable to GetCoinDaemonFilename " + err.Error())
+			log.Fatal("Unable to determine coin type. Please run " + appFileName + " coin: " + err.Error())
 		}
 
-		// If we're running locally and the coin daemon is not currently running, inform the user.
-		if cliConf.ServerIP != "127.0.0.1" {
-			bIsRunning, _, _ := be.IsCoinDaemonRunning(cliConf.ProjectType)
-			if !bIsRunning {
-				log.Fatal("The coin server " + sCoinDaemonName + " is not currently running.")
-			}
-		}
-
-		switch cliConf.ProjectType {
-		case be.PTScala:
-			resp, err := be.StopDaemonMonero(&cliConf)
-			if err != nil {
-				log.Fatal("Unable to StopDaemon " + err.Error())
-			}
-			fmt.Println(resp.Status)
-			fmt.Println("daemon stopping")
+		switch confDB.ProjectType {
+		case models.PTBitcoinPlus:
+			coinDaemon = xbc.XBC{}
+			coinName = xbc.XBC{}
+		case models.PTDenarius:
+		case models.PTDeVault:
+		case models.PTDigiByte:
+		case models.PTDivi:
+		case models.PTFeathercoin:
+		case models.PTGroestlcoin:
+		case models.PTPhore:
+		case models.PTPIVX:
+		case models.PTRapids:
+		case models.PTReddCoin:
+		case models.PTScala:
+		case models.PTTrezarcoin:
+		case models.PTVertcoin:
 		default:
-			fmt.Println("Stopping the " + sCoinDaemonName + " server...")
-			_, err := be.StopDaemon(&cliConf)
-			if err != nil {
-				log.Fatal("Unable to StopDaemon " + err.Error())
-			}
-			for i := 0; i < 600; i++ {
-				bStillRunning, _, _ := be.IsCoinDaemonRunning(cliConf.ProjectType)
-				if bStillRunning {
-					_, _ = be.StopDaemon(&cliConf)
-					fmt.Printf("\r" + "Waiting for " + sCoinDaemonName + " to stop. This could take a long time on slower devices... " + strconv.Itoa(i+1))
-					time.Sleep(1 * time.Second)
-				} else {
-					fmt.Println("\n" + sCoinDaemonName + " server stopped.")
-					break
-				}
+			log.Fatal("unable to determine ProjectType")
+		}
+
+		if confDB.ServerIP != "127.0.0.1" {
+			log.Fatal("The stop command can only be run on the same machine that's running the " + coinName.CoinName() + " wallet")
+		}
+
+		//coin.Bootstrap(confDB.RPCuser, confDB.RPCpassword, confDB.ServerIP, confDB.Port)
+		var coinAuth models.CoinAuth
+		coinAuth.RPCUser = confDB.RPCuser
+		coinAuth.RPCPassword = confDB.RPCpassword
+		coinAuth.IPAddress = confDB.ServerIP
+		coinAuth.Port = confDB.Port
+
+		fmt.Println("Stopping the " + coinDaemon.DaemonFilename() + " server...")
+		// Stop the coin daemon server..
+		if err := coinDaemon.StopDaemon(&coinAuth); err != nil {
+			log.Fatalf("failed to run "+coinDaemon.DaemonFilename()+": %v", err)
+		}
+		time.Sleep(1 * time.Second)
+
+		for i := 0; i < 600; i++ {
+			b, _ := coinDaemon.DaemonRunning()
+			if b {
+				_ = coinDaemon.StopDaemon(&coinAuth)
+				fmt.Printf("\r" + "Waiting for " + coinDaemon.DaemonFilename() + " to stop. This could take a long time on slower devices... " + strconv.Itoa(i+1))
+				time.Sleep(1 * time.Second)
+			} else {
+				fmt.Println("\n" + coinDaemon.DaemonFilename() + " server stopped.")
+				break
 			}
 		}
 
-		// sAppCLIName, err := gwc.GetAppCLIName() // e.g. GoDivi CLI
-		// if err != nil {
-		// 	log.Fatal("Unable to GetAppCLIName " + err.Error())
+		// switch cliConf.ProjectType {
+		// case be.PTScala:
+		// 	resp, err := be.StopDaemonMonero(&cliConf)
+		// 	if err != nil {
+		// 		log.Fatal("Unable to StopDaemon " + err.Error())
+		// 	}
+		// 	fmt.Println(resp.Status)
+		// 	fmt.Println("daemon stopping")
+		// default:
+		// 	fmt.Println("Stopping the " + sCoinDaemonName + " server...")
+		// 	_, err := be.StopDaemon(&cliConf)
+		// 	if err != nil {
+		// 		log.Fatal("Unable to StopDaemon " + err.Error())
+		// 	}
+		// 	for i := 0; i < 600; i++ {
+		// 		bStillRunning, _, _ := be.IsCoinDaemonRunning(cliConf.ProjectType)
+		// 		if bStillRunning {
+		// 			_, _ = be.StopDaemon(&cliConf)
+		// 			fmt.Printf("\r" + "Waiting for " + sCoinDaemonName + " to stop. This could take a long time on slower devices... " + strconv.Itoa(i+1))
+		// 			time.Sleep(1 * time.Second)
+		// 		} else {
+		// 			fmt.Println("\n" + sCoinDaemonName + " server stopped.")
+		// 			break
+		// 		}
+		// 	}
 		// }
 
-		// sAppFileCLIName, err := gwc.GetAppFileName(gwc.APPTCLI)
-		// if err != nil {
-		// 	log.Fatal("Unable to GetAppFileCLIName " + err.Error())
-		// }
-		// sCoinDaemonFile, err := gwc.GetCoinDaemonFilename()
-		// if err != nil {
-		// 	log.Fatal("Unable to GetCoinDaemonFilename " + err.Error())
-		// }
-
-		// // Check to make sure we're installed
-		// if !gwc.IsGoWalletInstalled() {
-		// 	log.Fatal(sAppCLIName + ` doesn't appear to be installed yet. Please run "` + sAppFileCLIName + ` install" first`)
-		// }
-
-		// err = gwc.StopCoinDaemon().
-		// if err != nil {
-		// 	log.Fatal(`Unable to stop ` + sCoinDaemonFile + ` server:` + err.Error())
-		// }
 	},
 }
 

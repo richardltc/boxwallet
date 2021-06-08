@@ -17,10 +17,10 @@ limitations under the License.
 package cmd
 
 import (
-	"fmt"
-	"log"
-	"os"
-	be "richardmace.co.uk/boxwallet/cmd/cli/cmd/bend"
+	// "fmt"
+	// "log"
+	// "os"
+	// be "richardmace.co.uk/boxwallet/cmd/cli/cmd/bend"
 
 	"github.com/spf13/cobra"
 )
@@ -38,127 +38,89 @@ var displayprivseedCmd = &cobra.Command{
 	Short: "Displays your wallet private seed for future restore (make sure nobody is watching over your shoulder)",
 	Long:  ``,
 	Run: func(cmd *cobra.Command, args []string) {
-		// sAppCLIName, err := gwc.GetAppCLIName() // e.g. GoDivi CLI
+
+		// apw, err := be.GetAppWorkingFolder()
 		// if err != nil {
-		// 	log.Fatal("Unable to GetAppCLIName " + err.Error())
+		// 	log.Fatal("Unable to GetAppWorkingFolder: " + err.Error())
 		// }
 
-		// sAppFileCLIName, err := gwc.GetAppFileName(gwc.APPTCLI)
+		// // Make sure the config file exists, and if not, force user to use "coin" command first.
+		// if _, err := os.Stat(apw + be.CConfFile + be.CConfFileExt); os.IsNotExist(err) {
+		// 	log.Fatal("Unable to determine coin type. Please run " + be.CAppFilename + " coin first")
+		// }
+
+		// cliConf, err := be.GetConfigStruct("", true)
+		// if err != nil {
+		// 	log.Fatal("Unable to GetCLIConfStruct " + err.Error())
+		// }
+
+		// sAppFileCLIName, err := be.GetAppFileName()
 		// if err != nil {
 		// 	log.Fatal("Unable to GetAppFileCLIName " + err.Error())
 		// }
 
-		// // Check to make sure we're installed
-		// if !gwc.IsGoWalletInstalled() {
-		// 	log.Fatal(sAppCLIName + ` doesn't appear to be installed yet. Please run "` + sAppFileCLIName + ` install" first`)
-		// }
-
-		// Start the DiviD server if required...
-		// err = gwc.RunCoinDaemon(true)
+		// coind, err := be.GetCoinDaemonFilename(be.APPTCLI, cliConf.ProjectType)
 		// if err != nil {
-		// 	log.Fatalf("failed to run divid: %v", err)
+		// 	log.Fatalf("Unable to GetCoinDaemonFilename - %v", err)
 		// }
 
-		// wi, err := gwc.GetWalletInfo(true)
-		// if err != nil {
-		// 	log.Fatalf("error getting wallet info: %v", err)
-		// }
-
-		// fmt.Println("\n\nWallet status is: " + wi.EncryptionStatus)
-		// If the wallet is locked, it needs to be unlocked to be able to display the seed
-		// if wi.EncryptionStatus == gwc.CWalletStatusLocked || wi.EncryptionStatus == gwc.CWalletStatusLockedAndSk {
-		// 	//pw := "getWalletUnlockPassword()"
-		// 	pw := gwc.GetWalletUnlockPassword()
-
-		// 	couldUW, err := gwc.UnlockWallet(pw, 30, false)
-
-		// 	if !couldUW || err != nil {
-		// 		log.Fatalf("Unable to unlock wallet: " + err.Error())
+		// // Check to see if we are running the coin daemon locally, and if we are, make sure it's actually running
+		// // before attempting to connect to it.
+		// if cliConf.ServerIP == "127.0.0.1" {
+		// 	bCDRunning, _, err := be.IsCoinDaemonRunning(cliConf.ProjectType)
+		// 	if err != nil {
+		// 		log.Fatal("Unable to determine if coin daemon is running: " + err.Error())
+		// 	}
+		// 	if !bCDRunning {
+		// 		log.Fatal("Unable to communicate with the " + coind + " server. Please make sure the " + coind + " server is running, by running:\n\n" +
+		// 			"./" + sAppFileCLIName + " start\n\n")
 		// 	}
 		// }
 
-		apw, err := be.GetAppWorkingFolder()
-		if err != nil {
-			log.Fatal("Unable to GetAppWorkingFolder: " + err.Error())
-		}
+		// wRunning, _, err := confirmWalletReady()
+		// if err != nil {
+		// 	log.Fatal("Unable to determine if wallet is ready: " + err.Error())
+		// }
 
-		// Make sure the config file exists, and if not, force user to use "coin" command first.
-		if _, err := os.Stat(apw + be.CConfFile + be.CConfFileExt); os.IsNotExist(err) {
-			log.Fatal("Unable to determine coin type. Please run " + be.CAppFilename + " coin first")
-		}
+		// if !wRunning {
+		// 	fmt.Println("")
+		// 	log.Fatal("Unable to communicate with the " + coind + " server. Please make sure the " + coind + " server is running, by running:\n\n" +
+		// 		"./" + sAppFileCLIName + " start\n\n")
+		// }
 
-		cliConf, err := be.GetConfigStruct("", true)
-		if err != nil {
-			log.Fatal("Unable to GetCLIConfStruct " + err.Error())
-		}
+		// cn, err := be.GetCoinName(be.APPTCLI)
+		// if err != nil {
+		// 	log.Fatal("Unable to GetCoinName: " + err.Error())
+		// }
 
-		sAppFileCLIName, err := be.GetAppFileName()
-		if err != nil {
-			log.Fatal("Unable to GetAppFileCLIName " + err.Error())
-		}
+		// switch cliConf.ProjectType {
+		// case be.PTDivi:
+		// 	wi, err := be.GetWalletInfoDivi(&cliConf)
+		// 	if err != nil {
+		// 		log.Fatalf("error getting wallet info: %v", err)
+		// 	}
+		// 	if wi.Result.EncryptionStatus != be.CWalletESUnlocked {
+		// 		log.Fatal("\n\nYour wallet is not currently unlocked.\n\nPlease use the command: boxwallet wallet unlock\n\nAnd then re-run this command again.")
+		// 	}
+		// default:
+		// 	log.Fatalf("It looks like " + cn + " does not currently support this command.")
+		// }
 
-		coind, err := be.GetCoinDaemonFilename(be.APPTCLI, cliConf.ProjectType)
-		if err != nil {
-			log.Fatalf("Unable to GetCoinDaemonFilename - %v", err)
-		}
+		// // Display instructions for displaying seed recovery
 
-		// Check to see if we are running the coin daemon locally, and if we are, make sure it's actually running
-		// before attempting to connect to it.
-		if cliConf.ServerIP == "127.0.0.1" {
-			bCDRunning, _, err := be.IsCoinDaemonRunning(cliConf.ProjectType)
-			if err != nil {
-				log.Fatal("Unable to determine if coin daemon is running: " + err.Error())
-			}
-			if !bCDRunning {
-				log.Fatal("Unable to communicate with the " + coind + " server. Please make sure the " + coind + " server is running, by running:\n\n" +
-					"./" + sAppFileCLIName + " start\n\n")
-			}
-		}
+		// sWarning := cWalletDisplaySeedWarning
+		// fmt.Printf(sWarning)
+		// fmt.Println("")
+		// fmt.Println("\nRequesting private seed...")
 
-		wRunning, _, err := confirmWalletReady()
-		if err != nil {
-			log.Fatal("Unable to determine if wallet is ready: " + err.Error())
-		}
+		// hdInfo, err := be.GetDumpHDInfoDivi(&cliConf)
+		// if err != nil {
+		// 	log.Fatalf("error calling hddumpinfo info: %v", err)
+		// }
 
-		if !wRunning {
-			fmt.Println("")
-			log.Fatal("Unable to communicate with the " + coind + " server. Please make sure the " + coind + " server is running, by running:\n\n" +
-				"./" + sAppFileCLIName + " start\n\n")
-		}
-
-		cn, err := be.GetCoinName(be.APPTCLI)
-		if err != nil {
-			log.Fatal("Unable to GetCoinName: " + err.Error())
-		}
-
-		switch cliConf.ProjectType {
-		case be.PTDivi:
-			wi, err := be.GetWalletInfoDivi(&cliConf)
-			if err != nil {
-				log.Fatalf("error getting wallet info: %v", err)
-			}
-			if wi.Result.EncryptionStatus != be.CWalletESUnlocked {
-				log.Fatal("\n\nYour wallet is not currently unlocked.\n\nPlease use the command: boxwallet wallet unlock\n\nAnd then re-run this command again.")
-			}
-		default:
-			log.Fatalf("It looks like " + cn + " does not currently support this command.")
-		}
-
-		// Display instructions for displaying seed recovery
-
-		sWarning := cWalletDisplaySeedWarning
-		fmt.Printf(sWarning)
-		fmt.Println("")
-		fmt.Println("\nRequesting private seed...")
-
-		hdInfo, err := be.GetDumpHDInfoDivi(&cliConf)
-		if err != nil {
-			log.Fatalf("error calling hddumpinfo info: %v", err)
-		}
-
-		fmt.Println("\nPrivate seed received...")
-		fmt.Println("")
-		println(hdInfo.Result.Mnemonic)
+		// fmt.Println("\nPrivate seed received...")
+		// fmt.Println("")
+		// println(hdInfo.Result.Mnemonic)
 	},
 }
 

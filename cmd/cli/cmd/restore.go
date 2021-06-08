@@ -19,9 +19,9 @@ package cmd
 import (
 	"bufio"
 	"fmt"
-	"log"
+	// "log"
 	"os"
-	be "richardmace.co.uk/boxwallet/cmd/cli/cmd/bend"
+	// be "richardmace.co.uk/boxwallet/cmd/cli/cmd/bend"
 	"strings"
 
 	//gwc "github.com/richardltc/gwcommon"
@@ -34,38 +34,28 @@ var restoreCmd = &cobra.Command{
 	Short: "Restore your wallet from your hdseed",
 	Long:  ``,
 	Run: func(cmd *cobra.Command, args []string) {
-		// sAppCLIName, err := gwc.GetAppCLIName() // e.g. GoDivi CLI
+		// sAppFileCLIName, err := be.GetAppFileName()
 		// if err != nil {
-		// 	log.Fatal("Unable to GetAppCLIName " + err.Error())
+		// 	log.Fatal("Unable to GetAppFileCLIName " + err.Error())
 		// }
 
-		sAppFileCLIName, err := be.GetAppFileName()
-		if err != nil {
-			log.Fatal("Unable to GetAppFileCLIName " + err.Error())
-		}
-
-		// // Check to make sure we're installed
-		// if !gwc.IsGoWalletInstalled() {
-		// 	log.Fatal(sAppCLIName + ` doesn't appear to be installed yet. Please run "` + sAppFileCLIName + ` install" first`)
+		// if len(args) < 1 {
+		// 	log.Fatal(`Please pass in the hdseed to perform a restore. e.g.  "` + sAppFileCLIName + ` wallet restore <hdseed>"`)
 		// }
 
-		if len(args) < 1 {
-			log.Fatal(`Please pass in the hdseed to perform a restore. e.g.  "` + sAppFileCLIName + ` wallet restore <hdseed>"`)
-		}
+		// if args[0] == "" {
+		// 	log.Fatal(`Please pass in the hdseed to perform a restore. e.g.  "` + sAppFileCLIName + ` wallet restore <hdseed>"`)
+		// }
 
-		if args[0] == "" {
-			log.Fatal(`Please pass in the hdseed to perform a restore. e.g.  "` + sAppFileCLIName + ` wallet restore <hdseed>"`)
-		}
+		// hdseed := strings.TrimSpace(args[0])
+		// if len(hdseed) != 128 {
+		// 	log.Fatal(`It looks like your "hdseed" is not quite the right length. Please double check and try again`)
+		// }
 
-		hdseed := strings.TrimSpace(args[0])
-		if len(hdseed) != 128 {
-			log.Fatal(`It looks like your "hdseed" is not quite the right length. Please double check and try again`)
-		}
+		// fmt.Println("Detected hdseed was " + hdseed)
 
-		fmt.Println("Detected hdseed was " + hdseed)
-
-		//TODO Finish the code for restoring a wallet
-		//TODO Rename wallet.dat file
+		// //TODO Finish the code for restoring a wallet
+		// //TODO Rename wallet.dat file.
 	},
 }
 
