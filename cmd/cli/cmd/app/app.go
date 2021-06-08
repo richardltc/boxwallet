@@ -3,6 +3,7 @@ package app
 import (
 	"errors"
 	"os/user"
+	"richardmace.co.uk/boxwallet/cmd/cli/cmd/fileutils"
 	"runtime"
 )
 
@@ -26,21 +27,7 @@ const (
 	cUtfTick     string = "\u2713"
 	CUtfTickBold string = "\u2714"
 
-	cCircProg1 string = "\u25F7"
-	cCircProg2 string = "\u25F6"
-	cCircProg3 string = "\u25F5"
-	cCircProg4 string = "\u25F4"
-
 	cUtfLock string = "\u1F512"
-
-	cProg1 string = "|"
-	cProg2 string = "/"
-	cProg3 string = "-"
-	cProg4 string = "\\"
-	cProg5 string = "|"
-	cProg6 string = "/"
-	cProg7 string = "-"
-	cProg8 string = "\\"
 
 	BUWWalletDat     string = "Backup wallet.dat"
 	BUWDisplayHDSeed string = "Display recovery seed"
@@ -74,35 +61,15 @@ func (a App) HomeFolder() (string, error) {
 	hd := u.HomeDir
 	if runtime.GOOS == "windows" {
 		// add the "appdata\roaming" part.
-		s = addTrailingSlash(hd) + "appdata\\roaming\\" + addTrailingSlash(cAppWorkingDirWin)
+		s = fileutils.AddTrailingSlash(hd) + "appdata\\roaming\\" + fileutils.AddTrailingSlash(cAppWorkingDirWin)
 	} else {
-		s = addTrailingSlash(hd) + addTrailingSlash(cAppWorkingDirLin)
+		s = fileutils.AddTrailingSlash(hd) + fileutils.AddTrailingSlash(cAppWorkingDirLin)
 	}
 	return s, nil
 }
 
 func (a App) Name() string {
 	return cAppName
-}
-
-func addTrailingSlash(filePath string) string {
-	var lastChar = filePath[len(filePath)-1:]
-	switch runtime.GOOS {
-	case "windows":
-		if lastChar == "\\" {
-			return filePath
-		} else {
-			return filePath + "\\"
-		}
-	case "linux":
-		if lastChar == "/" {
-			return filePath
-		} else {
-			return filePath + "/"
-		}
-	}
-
-	return ""
 }
 
 func (a App) Version() string {
