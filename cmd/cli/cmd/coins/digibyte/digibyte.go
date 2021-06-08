@@ -11,7 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"os/user"
-	"richardmace.co.uk/boxwallet/cmd/cli/cmd/coins"
+	"richardmace.co.uk/boxwallet/cmd/cli/cmd/fileutils"
 	"runtime"
 	"strings"
 	"time"
@@ -73,23 +73,23 @@ func (d DigiByte) AbbreviatedCoinName() string {
 
 func (d DigiByte) AllBinaryFilesExist(dir string) (bool, error) {
 	if runtime.GOOS == "windows" {
-		if !coins.FileExists(dir + cCliFileWin) {
+		if !fileutils.FileExists(dir + cCliFileWin) {
 			return false, nil
 		}
-		if !coins.FileExists(dir + cDaemonFileWin) {
+		if !fileutils.FileExists(dir + cDaemonFileWin) {
 			return false, nil
 		}
-		if !coins.FileExists(dir + cTxFileWin) {
+		if !fileutils.FileExists(dir + cTxFileWin) {
 			return false, nil
 		}
 	} else {
-		if !coins.FileExists(dir + cCliFileLin) {
+		if !fileutils.FileExists(dir + cCliFileLin) {
 			return false, nil
 		}
-		if !coins.FileExists(dir + cDaemonFileLin) {
+		if !fileutils.FileExists(dir + cDaemonFileLin) {
 			return false, nil
 		}
-		if !coins.FileExists(dir + cTxFileLin) {
+		if !fileutils.FileExists(dir + cTxFileLin) {
 			return false, nil
 		}
 	}
@@ -108,7 +108,7 @@ func (d DigiByte) CoinNameAbbrev() string {
 	return cCoinNameAbbrev
 }
 
-// DownloadCoin - Downloads the Syscoin files into the spcified location.
+// DownloadCoin - Downloads the Syscoin files into the specified location.
 // "location" should just be the AppBinaryFolder ~/.boxwallet
 func (d DigiByte) DownloadCoin(location string) error {
 	var fullFilePath, fullFileDLURL string
@@ -379,9 +379,9 @@ func (d DigiByte) HomeDirFullPath() (string, error) {
 	hd := u.HomeDir
 
 	if runtime.GOOS == "windows" {
-		return coins.AddTrailingSlash(hd) + "appdata\\roaming\\" + coins.AddTrailingSlash(cHomeDirWin), nil
+		return fileutils.AddTrailingSlash(hd) + "appdata\\roaming\\" + fileutils.AddTrailingSlash(cHomeDirWin), nil
 	} else {
-		return coins.AddTrailingSlash(hd) + coins.AddTrailingSlash(cHomeDirLin), nil
+		return fileutils.AddTrailingSlash(hd) + fileutils.AddTrailingSlash(cHomeDirLin), nil
 	}
 }
 
@@ -422,7 +422,7 @@ func (d DigiByte) Install(location string) error {
 
 	// If the coin-cli file doesn't already exists the copy it.
 	if _, err := os.Stat(location + sfCLI); os.IsNotExist(err) {
-		if err := coins.FileCopy(srcPath+sfCLI, location+sfCLI, false); err != nil {
+		if err := fileutils.FileCopy(srcPath+sfCLI, location+sfCLI, false); err != nil {
 			return fmt.Errorf("unable to copyFile from: %v to %v - %v", srcPath+sfCLI, location+sfCLI, err)
 		}
 	}
@@ -432,7 +432,7 @@ func (d DigiByte) Install(location string) error {
 
 	// If the coind file doesn't already exists the copy it.
 	if _, err := os.Stat(location + sfD); os.IsNotExist(err) {
-		if err := coins.FileCopy(srcPath+sfD, location+sfD, false); err != nil {
+		if err := fileutils.FileCopy(srcPath+sfD, location+sfD, false); err != nil {
 			return fmt.Errorf("unable to copyFile from: %v to %v - %v", srcPath+sfD, location+sfD, err)
 		}
 	}
@@ -442,7 +442,7 @@ func (d DigiByte) Install(location string) error {
 
 	// If the cointx file doesn't already exists the copy it.
 	if _, err := os.Stat(location + sfTX); os.IsNotExist(err) {
-		if err := coins.FileCopy(srcPath+sfTX, location+sfTX, false); err != nil {
+		if err := fileutils.FileCopy(srcPath+sfTX, location+sfTX, false); err != nil {
 			return fmt.Errorf("unable to copyFile from: %v to %v - %v", srcPath+sfTX, location+sfTX, err)
 		}
 	}
