@@ -16,10 +16,10 @@ limitations under the License.
 package cmd
 
 import (
-	"fmt"
+	// "fmt"
 	"github.com/spf13/cobra"
-	"log"
-	be "richardmace.co.uk/boxwallet/cmd/cli/cmd/bend"
+	// "log"
+	// be "richardmace.co.uk/boxwallet/cmd/cli/cmd/bend"
 )
 
 // backupCmd represents the backup command
@@ -29,81 +29,81 @@ var backupCmd = &cobra.Command{
 	Long:  `Copies the waller.dat file, of the currently selected coin, to the current directory`,
 	Run: func(cmd *cobra.Command, args []string) {
 		// The user has just chosen the wallet backup command, without specifying the coin type, so let's see if we have one
-		bwConf, err := be.GetConfigStruct("", true)
-		if err != nil {
-			log.Fatal("Unable to GetCLIConfStruct " + err.Error())
-		}
-		sCoinName, err := be.GetCoinName(be.APPTCLI)
-		if err != nil {
-			log.Fatal("Unable to GetCoinName " + err.Error())
-		}
+		// bwConf, err := be.GetConfigStruct("", true)
+		// if err != nil {
+		// 	log.Fatal("Unable to GetCLIConfStruct " + err.Error())
+		// }
+		// sCoinName, err := be.GetCoinName(be.APPTCLI)
+		// if err != nil {
+		// 	log.Fatal("Unable to GetCoinName " + err.Error())
+		// }
 
-		// Check that the current project is valid.
-		switch bwConf.ProjectType {
-		case be.PTBitcoinPlus:
-			if err := be.WalletBackup(be.PTBitcoinPlus); err != nil {
-				log.Fatal("Unable to backup the " + sCoinName + " wallet.dat file: " + err.Error())
-			}
-		case be.PTDenarius:
-			if err := be.WalletBackup(be.PTDenarius); err != nil {
-				log.Fatal("Unable to backup the " + sCoinName + " wallet.dat file: " + err.Error())
-			}
-		case be.PTDeVault:
-			if err := be.WalletBackup(be.PTDeVault); err != nil {
-				log.Fatal("Unable to backup the " + sCoinName + " wallet.dat file: " + err.Error())
-			}
-		case be.PTDigiByte:
-			if err := be.WalletBackup(be.PTDigiByte); err != nil {
-				log.Fatal("Unable to backup the " + sCoinName + " wallet.dat file: " + err.Error())
-			}
-		case be.PTDivi:
-			if err := be.WalletBackup(be.PTDivi); err != nil {
-				log.Fatal("Unable to backup the " + sCoinName + " wallet.dat file: " + err.Error())
-			}
-		case be.PTFeathercoin:
-			if err := be.WalletBackup(be.PTFeathercoin); err != nil {
-				log.Fatal("Unable to backup the " + sCoinName + " wallet.dat file: " + err.Error())
-			}
-		case be.PTGroestlcoin:
-			if err := be.WalletBackup(be.PTGroestlcoin); err != nil {
-				log.Fatal("Unable to backup the " + sCoinName + " wallet.dat file: " + err.Error())
-			}
-		case be.PTPhore:
-			if err := be.WalletBackup(be.PTPhore); err != nil {
-				log.Fatal("Unable to backup the " + sCoinName + " wallet.dat file: " + err.Error())
-			}
-		case be.PTPIVX:
-			if err := be.WalletBackup(be.PTPIVX); err != nil {
-				log.Fatal("Unable to backup the " + sCoinName + " wallet.dat file: " + err.Error())
-			}
-		case be.PTRapids:
-			if err := be.WalletBackup(be.PTRapids); err != nil {
-				log.Fatal("Unable to backup the " + sCoinName + " wallet.dat file: " + err.Error())
-			}
-		case be.PTReddCoin:
-			if err := be.WalletBackup(be.PTReddCoin); err != nil {
-				log.Fatal("Unable to backup the " + sCoinName + " wallet.dat file: " + err.Error())
-			}
-		case be.PTScala:
-			if err := be.WalletBackup(be.PTScala); err != nil {
-				log.Fatal("Unable to backup the " + sCoinName + " wallet.dat file: " + err.Error())
-			}
-		case be.PTTrezarcoin:
-			if err := be.WalletBackup(be.PTTrezarcoin); err != nil {
-				log.Fatal("Unable to backup the " + sCoinName + " wallet.dat file: " + err.Error())
-			}
-		case be.PTVertcoin:
-			if err := be.WalletBackup(be.PTVertcoin); err != nil {
-				log.Fatal("Unable to backup the " + sCoinName + " wallet.dat file: " + err.Error())
-			}
-		default:
-			log.Fatal("Unable to determine project type")
-		}
+		// // Check that the current project is valid.
+		// switch bwConf.ProjectType {
+		// case be.PTBitcoinPlus:
+		// 	if err := be.WalletBackup(be.PTBitcoinPlus); err != nil {
+		// 		log.Fatal("Unable to backup the " + sCoinName + " wallet.dat file: " + err.Error())
+		// 	}
+		// case be.PTDenarius:
+		// 	if err := be.WalletBackup(be.PTDenarius); err != nil {
+		// 		log.Fatal("Unable to backup the " + sCoinName + " wallet.dat file: " + err.Error())
+		// 	}
+		// case be.PTDeVault:
+		// 	if err := be.WalletBackup(be.PTDeVault); err != nil {
+		// 		log.Fatal("Unable to backup the " + sCoinName + " wallet.dat file: " + err.Error())
+		// 	}
+		// case be.PTDigiByte:
+		// 	if err := be.WalletBackup(be.PTDigiByte); err != nil {
+		// 		log.Fatal("Unable to backup the " + sCoinName + " wallet.dat file: " + err.Error())
+		// 	}
+		// case be.PTDivi:
+		// 	if err := be.WalletBackup(be.PTDivi); err != nil {
+		// 		log.Fatal("Unable to backup the " + sCoinName + " wallet.dat file: " + err.Error())
+		// 	}
+		// case be.PTFeathercoin:
+		// 	if err := be.WalletBackup(be.PTFeathercoin); err != nil {
+		// 		log.Fatal("Unable to backup the " + sCoinName + " wallet.dat file: " + err.Error())
+		// 	}
+		// case be.PTGroestlcoin:
+		// 	if err := be.WalletBackup(be.PTGroestlcoin); err != nil {
+		// 		log.Fatal("Unable to backup the " + sCoinName + " wallet.dat file: " + err.Error())
+		// 	}
+		// case be.PTPhore:
+		// 	if err := be.WalletBackup(be.PTPhore); err != nil {
+		// 		log.Fatal("Unable to backup the " + sCoinName + " wallet.dat file: " + err.Error())
+		// 	}
+		// case be.PTPIVX:
+		// 	if err := be.WalletBackup(be.PTPIVX); err != nil {
+		// 		log.Fatal("Unable to backup the " + sCoinName + " wallet.dat file: " + err.Error())
+		// 	}
+		// case be.PTRapids:
+		// 	if err := be.WalletBackup(be.PTRapids); err != nil {
+		// 		log.Fatal("Unable to backup the " + sCoinName + " wallet.dat file: " + err.Error())
+		// 	}
+		// case be.PTReddCoin:
+		// 	if err := be.WalletBackup(be.PTReddCoin); err != nil {
+		// 		log.Fatal("Unable to backup the " + sCoinName + " wallet.dat file: " + err.Error())
+		// 	}
+		// case be.PTScala:
+		// 	if err := be.WalletBackup(be.PTScala); err != nil {
+		// 		log.Fatal("Unable to backup the " + sCoinName + " wallet.dat file: " + err.Error())
+		// 	}
+		// case be.PTTrezarcoin:
+		// 	if err := be.WalletBackup(be.PTTrezarcoin); err != nil {
+		// 		log.Fatal("Unable to backup the " + sCoinName + " wallet.dat file: " + err.Error())
+		// 	}
+		// case be.PTVertcoin:
+		// 	if err := be.WalletBackup(be.PTVertcoin); err != nil {
+		// 		log.Fatal("Unable to backup the " + sCoinName + " wallet.dat file: " + err.Error())
+		// 	}
+		// default:
+		// 	log.Fatal("Unable to determine project type")
+		// }
 
-		fmt.Println("Backup completed. Please store your backup wallet.dat file somewhere safe.")
-		// Now display tip message.
-		sTipInfo := be.GetTipInfo(bwConf.ProjectType)
-		fmt.Println("\n\n" + sTipInfo + "\n")
+		// fmt.Println("Backup completed. Please store your backup wallet.dat file somewhere safe.")
+		// // Now display tip message.
+		// sTipInfo := be.GetTipInfo(bwConf.ProjectType)
+		// fmt.Println("\n\n" + sTipInfo + "\n")
 	},
 }
 

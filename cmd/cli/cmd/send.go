@@ -16,11 +16,9 @@ limitations under the License.
 package cmd
 
 import (
-	"fmt"
-	"github.com/AlecAivazis/survey/v2"
-	"log"
-	"os"
-	be "richardmace.co.uk/boxwallet/cmd/cli/cmd/bend"
+	// "log"
+	// "os"
+	// be "richardmace.co.uk/boxwallet/cmd/cli/cmd/bend"
 
 	"github.com/spf13/cobra"
 )
@@ -36,269 +34,269 @@ Cobra is a CLI library for Go that empowers applications.
 This application is a tool to generate the needed files
 to quickly create a Cobra application.`,
 	Run: func(cmd *cobra.Command, args []string) {
-		apw, err := be.GetAppWorkingFolder()
-		if err != nil {
-			log.Fatal("Unable to GetAppWorkingFolder: " + err.Error())
-		}
+		// apw, err := be.GetAppWorkingFolder()
+		// if err != nil {
+		// 	log.Fatal("Unable to GetAppWorkingFolder: " + err.Error())
+		// }
 
-		// Make sure the config file exists, and if not, force user to use "coin" command first..
-		if _, err := os.Stat(apw + be.CConfFile + be.CConfFileExt); os.IsNotExist(err) {
-			log.Fatal("Unable to determine coin type. Please run " + be.CAppFilename + " coin  first")
-		}
+		// // Make sure the config file exists, and if not, force user to use "coin" command first..
+		// if _, err := os.Stat(apw + be.CConfFile + be.CConfFileExt); os.IsNotExist(err) {
+		// 	log.Fatal("Unable to determine coin type. Please run " + be.CAppFilename + " coin  first")
+		// }
 
-		sAppFileCLIName, err := be.GetAppFileName()
-		if err != nil {
-			log.Fatal("Unable to GetAppFileCLIName " + err.Error())
-		}
+		// sAppFileCLIName, err := be.GetAppFileName()
+		// if err != nil {
+		// 	log.Fatal("Unable to GetAppFileCLIName " + err.Error())
+		// }
 
-		cliConf, err := be.GetConfigStruct("", true)
-		if err != nil {
-			log.Fatal("Unable to GetCLIConfStruct " + err.Error())
-		}
+		// cliConf, err := be.GetConfigStruct("", true)
+		// if err != nil {
+		// 	log.Fatal("Unable to GetCLIConfStruct " + err.Error())
+		// }
 
-		sAppFileCLIName, err = be.GetAppFileName()
-		if err != nil {
-			log.Fatal("Unable to GetAppFileCLIName " + err.Error())
-		}
+		// sAppFileCLIName, err = be.GetAppFileName()
+		// if err != nil {
+		// 	log.Fatal("Unable to GetAppFileCLIName " + err.Error())
+		// }
 
-		coind, err := be.GetCoinDaemonFilename(be.APPTCLI, cliConf.ProjectType)
-		if err != nil {
-			log.Fatalf("Unable to GetCoinDaemonFilename - %v", err)
-		}
+		// coind, err := be.GetCoinDaemonFilename(be.APPTCLI, cliConf.ProjectType)
+		// if err != nil {
+		// 	log.Fatalf("Unable to GetCoinDaemonFilename - %v", err)
+		// }
 
-		// Check to see if we are running the coin daemon locally, and if we are, make sure it's actually running
-		// before attempting to connect to it.
-		if cliConf.ServerIP == "127.0.0.1" {
-			bCDRunning, _, err := be.IsCoinDaemonRunning(cliConf.ProjectType)
-			if err != nil {
-				log.Fatal("Unable to determine if coin daemon is running: " + err.Error())
-			}
-			if !bCDRunning {
-				log.Fatal("Unable to communicate with the " + coind + " server. Please make sure the " + coind + " server is running, by running:\n\n" +
-					"./" + sAppFileCLIName + " start\n\n")
-			}
-		}
+		// // Check to see if we are running the coin daemon locally, and if we are, make sure it's actually running
+		// // before attempting to connect to it.
+		// if cliConf.ServerIP == "127.0.0.1" {
+		// 	bCDRunning, _, err := be.IsCoinDaemonRunning(cliConf.ProjectType)
+		// 	if err != nil {
+		// 		log.Fatal("Unable to determine if coin daemon is running: " + err.Error())
+		// 	}
+		// 	if !bCDRunning {
+		// 		log.Fatal("Unable to communicate with the " + coind + " server. Please make sure the " + coind + " server is running, by running:\n\n" +
+		// 			"./" + sAppFileCLIName + " start\n\n")
+		// 	}
+		// }
 
-		wRunning, _, err := confirmWalletReady()
-		if err != nil {
-			log.Fatal("Unable to determine if wallet is ready: " + err.Error())
-		}
+		// wRunning, _, err := confirmWalletReady()
+		// if err != nil {
+		// 	log.Fatal("Unable to determine if wallet is ready: " + err.Error())
+		// }
 
-		if !wRunning {
-			fmt.Println("")
-			log.Fatal("Unable to communicate with the " + coind + " server. Please make sure the " + coind + " server is running, by running:\n\n" +
-				"./" + sAppFileCLIName + " start\n\n")
-		}
+		// if !wRunning {
+		// 	fmt.Println("")
+		// 	log.Fatal("Unable to communicate with the " + coind + " server. Please make sure the " + coind + " server is running, by running:\n\n" +
+		// 		"./" + sAppFileCLIName + " start\n\n")
+		// }
 
-		cn, err := be.GetCoinName(be.APPTCLI)
-		if err != nil {
-			log.Fatal("Unable to GetCoinName: " + err.Error())
-		}
+		// cn, err := be.GetCoinName(be.APPTCLI)
+		// if err != nil {
+		// 	log.Fatal("Unable to GetCoinName: " + err.Error())
+		// }
 
-		// Then ask for the amount they want to send
-		var amount float32
-		promptAmount := &survey.Input{
-			Message: "How much would you like to send?",
-		}
-		survey.AskOne(promptAmount, &amount)
+		// // Then ask for the amount they want to send
+		// var amount float32
+		// promptAmount := &survey.Input{
+		// 	Message: "How much would you like to send?",
+		// }
+		// survey.AskOne(promptAmount, &amount)
 
-		// Then ask for the address
-		address := ""
-		promptAddress := &survey.Input{
-			Message: "Which " + cn + " address would you like to send to?",
-		}
-		survey.AskOne(promptAddress, &address)
+		// // Then ask for the address
+		// address := ""
+		// promptAddress := &survey.Input{
+		// 	Message: "Which " + cn + " address would you like to send to?",
+		// }
+		// survey.AskOne(promptAddress, &address)
 
-		// Validate address as best we can...
-		// DIVI, length is 34 and starts with a D
-		av := false
-		if av, err = be.ValidateAddress(cliConf.ProjectType, address); err != nil {
-			log.Fatalf("Unable to validate address: %v", err)
-		}
-		if !av {
-			log.Fatalf("It looks like the address that you are sending to is not a " + cn + " address?\n\n" +
-				"Please check and try again.")
-		}
+		// // Validate address as best we can...
+		// // DIVI, length is 34 and starts with a D
+		// av := false
+		// if av, err = be.ValidateAddress(cliConf.ProjectType, address); err != nil {
+		// 	log.Fatalf("Unable to validate address: %v", err)
+		// }
+		// if !av {
+		// 	log.Fatalf("It looks like the address that you are sending to is not a " + cn + " address?\n\n" +
+		// 		"Please check and try again.")
+		// }
 
-		// Then ask for confirmation
-		send := false
-		promptConfirm := &survey.Confirm{
-			Message: "Are you sure?\n\nSend: " + fmt.Sprintf("%f", amount) + "\n\nTo " + cn + " address: " + address + "\n\n",
-		}
-		survey.AskOne(promptConfirm, &send)
+		// // Then ask for confirmation
+		// send := false
+		// promptConfirm := &survey.Confirm{
+		// 	Message: "Are you sure?\n\nSend: " + fmt.Sprintf("%f", amount) + "\n\nTo " + cn + " address: " + address + "\n\n",
+		// }
+		// survey.AskOne(promptConfirm, &send)
 
-		// Check that their wallet is unlocked
+		// // Check that their wallet is unlocked
 
-		switch cliConf.ProjectType {
-		case be.PTDenarius:
-			wi, err := be.GetInfoDenarius(&cliConf)
-			if err != nil {
-				log.Fatalf("error getting wallet info: %v", err)
-			}
-			wet := be.GetWalletSecurityStateDenarius(&wi)
-			if wet != be.WETUnlocked {
-				wep := be.GetWalletEncryptionPassword()
-				r, err := unlockWallet(&cliConf, wep)
-				if err != nil || r.Error != nil {
-					log.Fatalf("failed to unlock wallet %s\n", err)
-				}
-			}
-		case be.PTDeVault:
-			wi, err := be.GetWalletInfoDVT(&cliConf)
-			if err != nil {
-				log.Fatalf("error getting wallet info: %v", err)
-			}
-			wet := be.GetWalletSecurityStateDVT(&wi)
-			if wet != be.WETUnlocked {
-				wep := be.GetWalletEncryptionPassword()
-				r, err := unlockWallet(&cliConf, wep)
-				if err != nil || r.Error != nil {
-					log.Fatalf("failed to unlock wallet %s\n", err)
-				}
-			}
-		case be.PTDigiByte:
-			wi, err := be.GetWalletInfoDGB(&cliConf)
-			if err != nil {
-				log.Fatalf("error getting wallet info: %v", err)
-			}
-			wet := be.GetWalletSecurityStateDGB(&wi)
-			if wet != be.WETUnlocked {
-				wep := be.GetWalletEncryptionPassword()
-				r, err := unlockWallet(&cliConf, wep)
-				if err != nil || r.Error != nil {
-					log.Fatalf("failed to unlock wallet %s\n", err)
-				}
-			}
-		case be.PTDivi:
-			wi, err := be.GetWalletInfoDivi(&cliConf)
-			if err != nil {
-				log.Fatalf("error getting wallet info: %v", err)
-			}
-			wet := be.GetWalletSecurityStateDivi(&wi)
-			if wet != be.WETUnlocked {
-				wep := be.GetWalletEncryptionPassword()
-				r, err := unlockWallet(&cliConf, wep)
-				if err != nil || r.Error != nil {
-					log.Fatalf("failed to unlock wallet %s\n", err)
-				}
-			}
-		case be.PTFeathercoin:
-			wi, err := be.GetWalletInfoFeathercoin(&cliConf)
-			if err != nil {
-				log.Fatalf("error getting wallet info: %v", err)
-			}
-			wet := be.GetWalletSecurityStateFeathercoin(&wi)
-			if wet != be.WETUnlocked {
-				wep := be.GetWalletEncryptionPassword()
-				r, err := unlockWallet(&cliConf, wep)
-				if err != nil || r.Error != nil {
-					log.Fatalf("failed to unlock wallet %s\n", err)
-				}
-			}
-		case be.PTGroestlcoin:
-			wi, err := be.GetWalletInfoGRS(&cliConf)
-			if err != nil {
-				log.Fatalf("error getting wallet info: %v", err)
-			}
-			wet := be.GetWalletSecurityStateGRS(&wi)
-			if wet != be.WETUnlocked {
-				wep := be.GetWalletEncryptionPassword()
-				r, err := unlockWallet(&cliConf, wep)
-				if err != nil || r.Error != nil {
-					log.Fatalf("failed to unlock wallet %s\n", err)
-				}
-			}
-		case be.PTPhore:
-			wi, err := be.GetWalletInfoPhore(&cliConf)
-			if err != nil {
-				log.Fatalf("error getting wallet info: %v", err)
-			}
-			wet := be.GetWalletSecurityStatePhore(&wi)
-			if wet != be.WETUnlocked {
-				wep := be.GetWalletEncryptionPassword()
-				r, err := unlockWallet(&cliConf, wep)
-				if err != nil || r.Error != nil {
-					log.Fatalf("failed to unlock wallet %s\n", err)
-				}
-			}
-		case be.PTPIVX:
-			wi, err := be.GetWalletInfoPIVX(&cliConf)
-			if err != nil {
-				log.Fatalf("error getting wallet info: %v", err)
-			}
-			wet := be.GetWalletSecurityStatePIVX(&wi)
-			if wet != be.WETUnlocked {
-				wep := be.GetWalletEncryptionPassword()
-				r, err := unlockWallet(&cliConf, wep)
-				if err != nil || r.Error != nil {
-					log.Fatalf("failed to unlock wallet %s\n", err)
-				}
-			}
-		case be.PTRapids:
-			wi, err := be.GetWalletInfoRapids(&cliConf)
-			if err != nil {
-				log.Fatalf("error getting wallet info: %v", err)
-			}
-			wet := be.GetWalletSecurityStateRapids(&wi)
-			if wet != be.WETUnlocked {
-				wep := be.GetWalletEncryptionPassword()
-				r, err := unlockWallet(&cliConf, wep)
-				if err != nil || r.Error != nil {
-					log.Fatalf("failed to unlock wallet %s\n", err)
-				}
-			}
-		case be.PTReddCoin:
-			wi, err := be.GetWalletInfoRDD(&cliConf)
-			if err != nil {
-				log.Fatalf("error getting wallet info: %v", err)
-			}
-			wet := be.GetWalletSecurityStateRDD(&wi)
-			if wet != be.WETUnlocked {
-				wep := be.GetWalletEncryptionPassword()
-				r, err := unlockWallet(&cliConf, wep)
-				if err != nil || r.Error != nil {
-					log.Fatalf("failed to unlock wallet %s\n", err)
-				}
-			}
-		case be.PTTrezarcoin:
-			wi, err := be.GetWalletInfoTrezarcoin(&cliConf)
-			if err != nil {
-				log.Fatalf("error getting wallet info: %v", err)
-			}
-			wet := be.GetWalletSecurityStateTrezarcoin(&wi)
-			if wet != be.WETUnlocked {
-				wep := be.GetWalletEncryptionPassword()
-				r, err := unlockWallet(&cliConf, wep)
-				if err != nil || r.Error != nil {
-					log.Fatalf("failed to unlock wallet %s\n", err)
-				}
-			}
-		case be.PTVertcoin:
-			wi, err := be.GetWalletInfoVTC(&cliConf)
-			if err != nil {
-				log.Fatalf("error getting wallet info: %v", err)
-			}
-			wet := be.GetWalletSecurityStateVTC(&wi)
-			if wet != be.WETUnlocked {
-				wep := be.GetWalletEncryptionPassword()
-				r, err := unlockWallet(&cliConf, wep)
-				if err != nil || r.Error != nil {
-					log.Fatalf("failed to unlock wallet %s\n", err)
-				}
-			}
-		default:
-			log.Fatalf("It looks like " + cn + " does not currently support this command.")
-		}
+		// switch cliConf.ProjectType {
+		// case be.PTDenarius:
+		// 	wi, err := be.GetInfoDenarius(&cliConf)
+		// 	if err != nil {
+		// 		log.Fatalf("error getting wallet info: %v", err)
+		// 	}
+		// 	wet := be.GetWalletSecurityStateDenarius(&wi)
+		// 	if wet != be.WETUnlocked {
+		// 		wep := be.GetWalletEncryptionPassword()
+		// 		r, err := unlockWallet(&cliConf, wep)
+		// 		if err != nil || r.Error != nil {
+		// 			log.Fatalf("failed to unlock wallet %s\n", err)
+		// 		}
+		// 	}
+		// case be.PTDeVault:
+		// 	wi, err := be.GetWalletInfoDVT(&cliConf)
+		// 	if err != nil {
+		// 		log.Fatalf("error getting wallet info: %v", err)
+		// 	}
+		// 	wet := be.GetWalletSecurityStateDVT(&wi)
+		// 	if wet != be.WETUnlocked {
+		// 		wep := be.GetWalletEncryptionPassword()
+		// 		r, err := unlockWallet(&cliConf, wep)
+		// 		if err != nil || r.Error != nil {
+		// 			log.Fatalf("failed to unlock wallet %s\n", err)
+		// 		}
+		// 	}
+		// case be.PTDigiByte:
+		// 	wi, err := be.GetWalletInfoDGB(&cliConf)
+		// 	if err != nil {
+		// 		log.Fatalf("error getting wallet info: %v", err)
+		// 	}
+		// 	wet := be.GetWalletSecurityStateDGB(&wi)
+		// 	if wet != be.WETUnlocked {
+		// 		wep := be.GetWalletEncryptionPassword()
+		// 		r, err := unlockWallet(&cliConf, wep)
+		// 		if err != nil || r.Error != nil {
+		// 			log.Fatalf("failed to unlock wallet %s\n", err)
+		// 		}
+		// 	}
+		// case be.PTDivi:
+		// 	wi, err := be.GetWalletInfoDivi(&cliConf)
+		// 	if err != nil {
+		// 		log.Fatalf("error getting wallet info: %v", err)
+		// 	}
+		// 	wet := be.GetWalletSecurityStateDivi(&wi)
+		// 	if wet != be.WETUnlocked {
+		// 		wep := be.GetWalletEncryptionPassword()
+		// 		r, err := unlockWallet(&cliConf, wep)
+		// 		if err != nil || r.Error != nil {
+		// 			log.Fatalf("failed to unlock wallet %s\n", err)
+		// 		}
+		// 	}
+		// case be.PTFeathercoin:
+		// 	wi, err := be.GetWalletInfoFeathercoin(&cliConf)
+		// 	if err != nil {
+		// 		log.Fatalf("error getting wallet info: %v", err)
+		// 	}
+		// 	wet := be.GetWalletSecurityStateFeathercoin(&wi)
+		// 	if wet != be.WETUnlocked {
+		// 		wep := be.GetWalletEncryptionPassword()
+		// 		r, err := unlockWallet(&cliConf, wep)
+		// 		if err != nil || r.Error != nil {
+		// 			log.Fatalf("failed to unlock wallet %s\n", err)
+		// 		}
+		// 	}
+		// case be.PTGroestlcoin:
+		// 	wi, err := be.GetWalletInfoGRS(&cliConf)
+		// 	if err != nil {
+		// 		log.Fatalf("error getting wallet info: %v", err)
+		// 	}
+		// 	wet := be.GetWalletSecurityStateGRS(&wi)
+		// 	if wet != be.WETUnlocked {
+		// 		wep := be.GetWalletEncryptionPassword()
+		// 		r, err := unlockWallet(&cliConf, wep)
+		// 		if err != nil || r.Error != nil {
+		// 			log.Fatalf("failed to unlock wallet %s\n", err)
+		// 		}
+		// 	}
+		// case be.PTPhore:
+		// 	wi, err := be.GetWalletInfoPhore(&cliConf)
+		// 	if err != nil {
+		// 		log.Fatalf("error getting wallet info: %v", err)
+		// 	}
+		// 	wet := be.GetWalletSecurityStatePhore(&wi)
+		// 	if wet != be.WETUnlocked {
+		// 		wep := be.GetWalletEncryptionPassword()
+		// 		r, err := unlockWallet(&cliConf, wep)
+		// 		if err != nil || r.Error != nil {
+		// 			log.Fatalf("failed to unlock wallet %s\n", err)
+		// 		}
+		// 	}
+		// case be.PTPIVX:
+		// 	wi, err := be.GetWalletInfoPIVX(&cliConf)
+		// 	if err != nil {
+		// 		log.Fatalf("error getting wallet info: %v", err)
+		// 	}
+		// 	wet := be.GetWalletSecurityStatePIVX(&wi)
+		// 	if wet != be.WETUnlocked {
+		// 		wep := be.GetWalletEncryptionPassword()
+		// 		r, err := unlockWallet(&cliConf, wep)
+		// 		if err != nil || r.Error != nil {
+		// 			log.Fatalf("failed to unlock wallet %s\n", err)
+		// 		}
+		// 	}
+		// case be.PTRapids:
+		// 	wi, err := be.GetWalletInfoRapids(&cliConf)
+		// 	if err != nil {
+		// 		log.Fatalf("error getting wallet info: %v", err)
+		// 	}
+		// 	wet := be.GetWalletSecurityStateRapids(&wi)
+		// 	if wet != be.WETUnlocked {
+		// 		wep := be.GetWalletEncryptionPassword()
+		// 		r, err := unlockWallet(&cliConf, wep)
+		// 		if err != nil || r.Error != nil {
+		// 			log.Fatalf("failed to unlock wallet %s\n", err)
+		// 		}
+		// 	}
+		// case be.PTReddCoin:
+		// 	wi, err := be.GetWalletInfoRDD(&cliConf)
+		// 	if err != nil {
+		// 		log.Fatalf("error getting wallet info: %v", err)
+		// 	}
+		// 	wet := be.GetWalletSecurityStateRDD(&wi)
+		// 	if wet != be.WETUnlocked {
+		// 		wep := be.GetWalletEncryptionPassword()
+		// 		r, err := unlockWallet(&cliConf, wep)
+		// 		if err != nil || r.Error != nil {
+		// 			log.Fatalf("failed to unlock wallet %s\n", err)
+		// 		}
+		// 	}
+		// case be.PTTrezarcoin:
+		// 	wi, err := be.GetWalletInfoTrezarcoin(&cliConf)
+		// 	if err != nil {
+		// 		log.Fatalf("error getting wallet info: %v", err)
+		// 	}
+		// 	wet := be.GetWalletSecurityStateTrezarcoin(&wi)
+		// 	if wet != be.WETUnlocked {
+		// 		wep := be.GetWalletEncryptionPassword()
+		// 		r, err := unlockWallet(&cliConf, wep)
+		// 		if err != nil || r.Error != nil {
+		// 			log.Fatalf("failed to unlock wallet %s\n", err)
+		// 		}
+		// 	}
+		// case be.PTVertcoin:
+		// 	wi, err := be.GetWalletInfoVTC(&cliConf)
+		// 	if err != nil {
+		// 		log.Fatalf("error getting wallet info: %v", err)
+		// 	}
+		// 	wet := be.GetWalletSecurityStateVTC(&wi)
+		// 	if wet != be.WETUnlocked {
+		// 		wep := be.GetWalletEncryptionPassword()
+		// 		r, err := unlockWallet(&cliConf, wep)
+		// 		if err != nil || r.Error != nil {
+		// 			log.Fatalf("failed to unlock wallet %s\n", err)
+		// 		}
+		// 	}
+		// default:
+		// 	log.Fatalf("It looks like " + cn + " does not currently support this command.")
+		// }
 
-		// Then send..
-		if send {
-			if r, err := be.SendToAddressDivi(&cliConf, address, amount); err != nil {
-				log.Fatalf("unable to send: %v", err)
-			} else {
-				fmt.Printf("Payment sent\n\n")
-				fmt.Println(r.Result)
-			}
-		}
+		// // Then send..
+		// if send {
+		// 	if r, err := be.SendToAddressDivi(&cliConf, address, amount); err != nil {
+		// 		log.Fatalf("unable to send: %v", err)
+		// 	} else {
+		// 		fmt.Printf("Payment sent\n\n")
+		// 		fmt.Println(r.Result)
+		// 	}
+		// }
 	},
 }
 

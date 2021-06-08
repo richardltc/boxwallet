@@ -17,9 +17,16 @@ package cmd
 
 import (
 	"fmt"
-	"github.com/AlecAivazis/survey/v2"
 	"log"
-	be "richardmace.co.uk/boxwallet/cmd/cli/cmd/bend"
+
+	"richardmace.co.uk/boxwallet/cmd/cli/cmd/app"
+	"richardmace.co.uk/boxwallet/cmd/cli/cmd/coins"
+	xbc "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/bitcoinplus"
+	"richardmace.co.uk/boxwallet/cmd/cli/cmd/models"
+	"richardmace.co.uk/boxwallet/cmd/cli/cmd/wallet"
+
+	"github.com/AlecAivazis/survey/v2"
+	"richardmace.co.uk/boxwallet/cmd/cli/cmd/conf"
 
 	"github.com/spf13/cobra"
 )
@@ -30,19 +37,39 @@ var resyncCmd = &cobra.Command{
 	Short: "Performs a resync of the complete blockchain",
 	Long:  ``,
 	Run: func(cmd *cobra.Command, args []string) {
-		bwConf, err := be.GetConfigStruct("", true)
+		var app app.App
+		var conf conf.Conf
+
+		appHomeDir, err := app.HomeFolder()
 		if err != nil {
-			log.Fatal("Unable to GetCLIConfStruct " + err.Error())
+			log.Fatal("Unable to get HomeFolder: " + err.Error())
 		}
 
-		cn, err := be.GetCoinName(be.APPTCLI)
+		conf.Bootstrap(appHomeDir)
+		confDB, err := conf.GetConfig(false)
+
+		var coinName coins.CoinName
+		var wallet wallet.Wallet
+
+		switch confDB.ProjectType {
+		case models.PTBitcoinPlus:
+			coinName = xbc.XBC{}
+			wallet = xbc.XBC{}
+		default:
+			log.Fatal("Unable to determine ProjectType")
+		}
+
+		b, err := wallet.DaemonRunning()
 		if err != nil {
-			log.Fatal("Unable to GetCoinName " + err.Error())
+			log.Fatal("Unable to determine if Daemon is running " + err.Error())
+		}
+		if b {
+			log.Fatal("Please stop the daemon first, before performing a resync")
 		}
 
 		ans := false
 		prompt := &survey.Confirm{
-			Message: `Are you sure? Perform a resync on your ` + cn + ` wallet?:`,
+			Message: `Are you sure? Perform a resync on your ` + coinName.CoinName() + ` wallet?:`,
 		}
 		if err := survey.AskOne(prompt, &ans); err != nil {
 			log.Fatal("Error using survey: " + err.Error())
@@ -50,11 +77,37 @@ var resyncCmd = &cobra.Command{
 		if !ans {
 			log.Fatal("reindex not attempted.")
 		}
-		if err := be.WalletFix(be.WFTReSync, bwConf.ProjectType); err != nil {
+		if err := wallet.WalletResync(); err != nil {
 			log.Fatal("Unable to perform resync: " + err.Error())
 		}
 
-		fmt.Println("Your " + cn + " wallet is now syncing again. Please use ./boxwallet dash to view")
+		fmt.Println("Your " + coinName.CoinName() + " wallet is now syncing again. Please use ./boxwallet dash to view")
+
+		// bwConf, err := be.GetConfigStruct("", true)
+		// if err != nil {
+		// 	log.Fatal("Unable to GetCLIConfStruct " + err.Error())
+		// }
+
+		// cn, err := be.GetCoinName(be.APPTCLI)
+		// if err != nil {
+		// 	log.Fatal("Unable to GetCoinName " + err.Error())
+		// }
+
+		// ans := false
+		// prompt := &survey.Confirm{
+		// 	Message: `Are you sure? Perform a resync on your ` + cn + ` wallet?:`,
+		// }
+		// if err := survey.AskOne(prompt, &ans); err != nil {
+		// 	log.Fatal("Error using survey: " + err.Error())
+		// }
+		// if !ans {
+		// 	log.Fatal("reindex not attempted.")
+		// }
+		// if err := be.WalletFix(be.WFTReSync, bwConf.ProjectType); err != nil {
+		// 	log.Fatal("Unable to perform resync: " + err.Error())
+		// }
+
+		// fmt.Println("Your " + cn + " wallet is now syncing again. Please use ./boxwallet dash to view")
 	},
 }
 

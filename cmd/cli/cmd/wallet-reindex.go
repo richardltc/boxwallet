@@ -16,10 +16,10 @@ limitations under the License.
 package cmd
 
 import (
-	"fmt"
-	"github.com/AlecAivazis/survey/v2"
-	"log"
-	be "richardmace.co.uk/boxwallet/cmd/cli/cmd/bend"
+	// "fmt"
+	// "github.com/AlecAivazis/survey/v2"
+	// "log"
+	// be "richardmace.co.uk/boxwallet/cmd/cli/cmd/bend"
 
 	"github.com/spf13/cobra"
 )
@@ -30,31 +30,31 @@ var reindexCmd = &cobra.Command{
 	Short: "Performs a reindex",
 	Long:  ``,
 	Run: func(cmd *cobra.Command, args []string) {
-		bwConf, err := be.GetConfigStruct("", true)
-		if err != nil {
-			log.Fatal("Unable to GetCLIConfStruct " + err.Error())
-		}
+		// bwConf, err := be.GetConfigStruct("", true)
+		// if err != nil {
+		// 	log.Fatal("Unable to GetCLIConfStruct " + err.Error())
+		// }
 
-		cn, err := be.GetCoinName(be.APPTCLI)
-		if err != nil {
-			log.Fatal("Unable to GetCoinName " + err.Error())
-		}
+		// cn, err := be.GetCoinName(be.APPTCLI)
+		// if err != nil {
+		// 	log.Fatal("Unable to GetCoinName " + err.Error())
+		// }
 
-		ans := false
-		prompt := &survey.Confirm{
-			Message: `Are you sure? Perform a reindex on your ` + cn + ` wallet?:`,
-		}
-		if err := survey.AskOne(prompt, &ans); err != nil {
-			log.Fatal("Error using survey: " + err.Error())
-		}
-		if !ans {
-			log.Fatal("reindex not attempted.")
-		}
-		if err := be.WalletFix(be.WFTReIndex, bwConf.ProjectType); err != nil {
-			log.Fatal("Unable to perform reindex: " + err.Error())
-		}
+		// ans := false
+		// prompt := &survey.Confirm{
+		// 	Message: `Are you sure? Perform a reindex on your ` + cn + ` wallet?:`,
+		// }
+		// if err := survey.AskOne(prompt, &ans); err != nil {
+		// 	log.Fatal("Error using survey: " + err.Error())
+		// }
+		// if !ans {
+		// 	log.Fatal("reindex not attempted.")
+		// }
+		// if err := be.WalletFix(be.WFTReIndex, bwConf.ProjectType); err != nil {
+		// 	log.Fatal("Unable to perform reindex: " + err.Error())
+		// }
 
-		fmt.Println("Your " + cn + " wallet is now syncing again. Please use ./boxwallet dash to view")
+		// fmt.Println("Your " + cn + " wallet is now syncing again. Please use ./boxwallet dash to view")
 	},
 }
 

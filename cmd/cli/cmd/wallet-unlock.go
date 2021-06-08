@@ -18,14 +18,14 @@ limitations under the License.
 package cmd
 
 import (
-	"encoding/json"
-	"fmt"
+	// "encoding/json"
+	// "fmt"
 	"github.com/spf13/cobra"
-	"io/ioutil"
-	"log"
-	"net/http"
-	be "richardmace.co.uk/boxwallet/cmd/cli/cmd/bend"
-	"strings"
+	// "io/ioutil"
+	// "log"
+	// "net/http"
+	// be "richardmace.co.uk/boxwallet/cmd/cli/cmd/bend"
+	// "strings"
 )
 
 // unlockCmd represents the unlock command
@@ -34,79 +34,28 @@ var unlockCmd = &cobra.Command{
 	Short: "Unlock wallet",
 	Long:  ``,
 	Run: func(cmd *cobra.Command, args []string) {
-		cliConf, err := be.GetConfigStruct("", true)
-		if err != nil {
-			log.Fatal("Unable to GetCLIConfStruct " + err.Error())
-		}
-
-		// Check to make sure wallet is actually encrypted
-		wi, err := be.GetWalletInfoDivi(&cliConf)
-		if err != nil {
-			log.Fatal("Unable to getWalletInfo " + err.Error())
-		}
-
-		if wi.Result.EncryptionStatus == be.CWalletESUnencrypted {
-			log.Fatal("Wallet is not encrypted")
-		}
-
-		wep := be.GetWalletEncryptionPassword()
-		r, err := unlockWallet(&cliConf, wep)
-		if err != nil || r.Error != nil {
-			log.Fatalf("failed to unlock wallet %s\n", err)
-		}
-		fmt.Println("Wallet unlocked")
-
-		// sAppCLIName, err := gwc.GetAppCLIName() // e.g. GoDivi CLI
+		// cliConf, err := be.GetConfigStruct("", true)
 		// if err != nil {
-		// 	log.Fatal("Unable to GetAppCLIName " + err.Error())
+		// 	log.Fatal("Unable to GetCLIConfStruct " + err.Error())
 		// }
 
-		// sAppFileCLIName, err := gwc.GetAppFileName(gwc.APPTCLI)
+		// // Check to make sure wallet is actually encrypted
+		// wi, err := be.GetWalletInfoDivi(&cliConf)
 		// if err != nil {
-		// 	log.Fatal("Unable to GetAppFileCLIName " + err.Error())
-		// }
-		// sCoinDaemonFile, err := gwc.GetCoinDaemonFilename()
-		// if err != nil {
-		// 	log.Fatal("Unable to GetCoinDaemonFilename " + err.Error())
+		// 	log.Fatal("Unable to getWalletInfo " + err.Error())
 		// }
 
-		// // Check to make sure we're installed
-		// if !gwc.IsGoWalletInstalled() {
-		// 	log.Fatal(sAppCLIName + ` doesn't appear to be installed yet. Please run "` + sAppFileCLIName + ` install" first`)
+		// if wi.Result.EncryptionStatus == be.CWalletESUnencrypted {
+		// 	log.Fatal("Wallet is not encrypted")
 		// }
 
-		// // Start the Coin Daemon server if required...
-		// err = gwc.StartCoinDaemon(true) //DiviD(true)
-		// if err != nil {
-		// 	log.Fatalf("failed to run "+sCoinDaemonFile+": %v", err)
+		// wep := be.GetWalletEncryptionPassword()
+		// r, err := unlockWallet(&cliConf, wep)
+		// if err != nil || r.Error != nil {
+		// 	log.Fatalf("failed to unlock wallet %s\n", err)
 		// }
+		// fmt.Println("Wallet unlocked")
 
-		// wi, err := gwc.GetWalletInfo(true)
-		// if err != nil {
-		// 	log.Fatalf("error getting wallet info: %v", err)
-		// }
-
-		// fmt.Println("Wallet status is: " + wi.EncryptionStatus)
-		// //os.Exit(0)
-		// if wi.EncryptionStatus == "unencrypted" {
-		// 	log.Fatalf("Looks like your wallet hasn't been encrypted yet")
-		// }
-
-		// pw := gwc.GetWalletUnlockPassword()
-
-		// couldUW, err := gwc.UnlockWallet(pw, 30, false)
-
-		// if !couldUW || err != nil {
-		// 	log.Fatalf("Unable to unlock wallet")
-		// }
-
-		// // Looks like this is needed...
-		// gwc.ClearScreen()
-		// fmt.Println("Restarting wallet after unlock for staking...")
-		// err = gwc.StartCoinDaemon(false)
-		// if err != nil {
-		// 	log.Fatalf("failed to run "+sCoinDaemonFile+": %v", err)
-		// }
 	},
 }
 
@@ -124,29 +73,29 @@ func init() {
 	// unlockCmd.Flags().BoolP("toggle", "t", false, "Help message for toggle")
 }
 
-func unlockWallet(cliConf *be.ConfStruct, pw string) (be.GenericRespStruct, error) {
-	var respStruct be.GenericRespStruct
+// func unlockWallet(cliConf *be.ConfStruct, pw string) (be.GenericRespStruct, error) {
+// 	var respStruct be.GenericRespStruct
 
-	body := strings.NewReader("{\"jsonrpc\":\"1.0\",\"id\":\"boxwallet\",\"method\":\"walletpassphrase\",\"params\":[\"" + pw + "\",300]}")
-	req, err := http.NewRequest("POST", "http://"+cliConf.ServerIP+":"+cliConf.Port, body)
-	if err != nil {
-		return respStruct, err
-	}
-	req.SetBasicAuth(cliConf.RPCuser, cliConf.RPCpassword)
-	req.Header.Set("Content-Type", "text/plain;")
+// 	body := strings.NewReader("{\"jsonrpc\":\"1.0\",\"id\":\"boxwallet\",\"method\":\"walletpassphrase\",\"params\":[\"" + pw + "\",300]}")
+// 	req, err := http.NewRequest("POST", "http://"+cliConf.ServerIP+":"+cliConf.Port, body)
+// 	if err != nil {
+// 		return respStruct, err
+// 	}
+// 	req.SetBasicAuth(cliConf.RPCuser, cliConf.RPCpassword)
+// 	req.Header.Set("Content-Type", "text/plain;")
 
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		return respStruct, err
-	}
-	defer resp.Body.Close()
-	bodyResp, err := ioutil.ReadAll(resp.Body)
-	if err != nil {
-		return respStruct, err
-	}
-	err = json.Unmarshal(bodyResp, &respStruct)
-	if err != nil {
-		return respStruct, err
-	}
-	return respStruct, nil
-}
+// 	resp, err := http.DefaultClient.Do(req)
+// 	if err != nil {
+// 		return respStruct, err
+// 	}
+// 	defer resp.Body.Close()
+// 	bodyResp, err := ioutil.ReadAll(resp.Body)
+// 	if err != nil {
+// 		return respStruct, err
+// 	}
+// 	err = json.Unmarshal(bodyResp, &respStruct)
+// 	if err != nil {
+// 		return respStruct, err
+// 	}
+// 	return respStruct, nil
+// }
