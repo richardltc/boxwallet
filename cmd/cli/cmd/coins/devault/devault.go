@@ -5,12 +5,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"io/ioutil"
 	"net/http"
 	"os"
 	"os/exec"
 	"os/user"
+	"richardmace.co.uk/boxwallet/cmd/cli/cmd/fileutils"
 	"runtime"
 	"strings"
 	"time"
@@ -22,7 +22,7 @@ import (
 
 const (
 	cCoinName       string = "DeVault"
-	cCoinNameAbbrev string = "DVT" // was private
+	cCoinNameAbbrev string = "DVT"
 
 	cCoreVersion string = "1.2.1"
 
@@ -72,23 +72,23 @@ func (d DeVault) AbbreviatedCoinName() string {
 
 func (d DeVault) AllBinaryFilesExist(dir string) (bool, error) {
 	if runtime.GOOS == "windows" {
-		if !fileExists(dir + cCliFileWin) {
+		if !fileutils.FileExists(dir + cCliFileWin) {
 			return false, nil
 		}
-		if !fileExists(dir + cDaemonFileWin) {
+		if !fileutils.FileExists(dir + cDaemonFileWin) {
 			return false, nil
 		}
-		if !fileExists(dir + cTxFileWin) {
+		if !fileutils.FileExists(dir + cTxFileWin) {
 			return false, nil
 		}
 	} else {
-		if !fileExists(dir + cCliFile) {
+		if !fileutils.FileExists(dir + cCliFile) {
 			return false, nil
 		}
-		if !fileExists(dir + cDaemonFile) {
+		if !fileutils.FileExists(dir + cDaemonFile) {
 			return false, nil
 		}
-		if !fileExists(dir + cTxFile) {
+		if !fileutils.FileExists(dir + cTxFile) {
 			return false, nil
 		}
 	}
@@ -321,9 +321,9 @@ func (d DeVault) HomeDirFullPath() (string, error) {
 	hd := u.HomeDir
 
 	if runtime.GOOS == "windows" {
-		return addTrailingSlash(hd) + "appdata\\roaming\\" + addTrailingSlash(cHomeDirWin), nil
+		return fileutils.AddTrailingSlash(hd) + "appdata\\roaming\\" + fileutils.AddTrailingSlash(cHomeDirWin), nil
 	} else {
-		return addTrailingSlash(hd) + addTrailingSlash(cHomeDirLin), nil
+		return fileutils.AddTrailingSlash(hd) + fileutils.AddTrailingSlash(cHomeDirLin), nil
 	}
 }
 
@@ -363,7 +363,7 @@ func (d DeVault) Install(location string) error {
 
 	// If the coin-cli file doesn't already exists the copy it.
 	if _, err := os.Stat(location + sfCLI); os.IsNotExist(err) {
-		if err := fileCopy(srcPath+sfCLI, location+sfCLI, false); err != nil {
+		if err := fileutils.FileCopy(srcPath+sfCLI, location+sfCLI, false); err != nil {
 			return fmt.Errorf("unable to copyFile from: %v to %v - %v", srcPath+sfCLI, location+sfCLI, err)
 		}
 	}
@@ -373,7 +373,7 @@ func (d DeVault) Install(location string) error {
 
 	// If the coind file doesn't already exists the copy it.
 	if _, err := os.Stat(location + sfD); os.IsNotExist(err) {
-		if err := fileCopy(srcPath+sfD, location+sfD, false); err != nil {
+		if err := fileutils.FileCopy(srcPath+sfD, location+sfD, false); err != nil {
 			return fmt.Errorf("unable to copyFile from: %v to %v - %v", srcPath+sfD, location+sfD, err)
 		}
 	}
@@ -383,7 +383,7 @@ func (d DeVault) Install(location string) error {
 
 	// If the cointx file doesn't already exists the copy it.
 	if _, err := os.Stat(location + sfTX); os.IsNotExist(err) {
-		if err := fileCopy(srcPath+sfTX, location+sfTX, false); err != nil {
+		if err := fileutils.FileCopy(srcPath+sfTX, location+sfTX, false); err != nil {
 			return fmt.Errorf("unable to copyFile from: %v to %v - %v", srcPath+sfTX, location+sfTX, err)
 		}
 	}
@@ -538,68 +538,6 @@ func (d *DeVault) WalletSecurityState() (models.WEType, error) {
 	} else {
 		return models.WETUnknown, nil
 	}
-}
-
-func addTrailingSlash(filePath string) string {
-	var lastChar = filePath[len(filePath)-1:]
-	switch runtime.GOOS {
-	case "windows":
-		if lastChar == "\\" {
-			return filePath
-		} else {
-			return filePath + "\\"
-		}
-	case "linux":
-		if lastChar == "/" {
-			return filePath
-		} else {
-			return filePath + "/"
-		}
-	}
-
-	return ""
-}
-
-func fileCopy(srcFile, destFile string, dispOutput bool) error {
-	// Open original file
-	originalFile, err := os.Open(srcFile)
-	if err != nil {
-		return err
-	}
-	defer originalFile.Close()
-
-	// Create new file
-	newFile, err := os.Create(destFile)
-	if err != nil {
-		return err
-	}
-	defer newFile.Close()
-
-	// Copy the bytes to destination from source
-	bytesWritten, err := io.Copy(newFile, originalFile)
-	if err != nil {
-		return err
-	}
-	if dispOutput {
-		fmt.Printf("Copied %d bytes.", bytesWritten)
-	}
-
-	// Commit the file contents
-	// Flushes memory to disk
-	err = newFile.Sync()
-	if err != nil {
-		return err
-	}
-
-	return nil
-}
-
-func fileExists(filename string) bool {
-	info, err := os.Stat(filename)
-	if os.IsNotExist(err) {
-		return false
-	}
-	return !info.IsDir()
 }
 
 func (d *DeVault) unarchiveFile(fullFilePath, location string) error {
