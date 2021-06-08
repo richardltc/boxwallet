@@ -3,7 +3,7 @@ package cmd
 import (
 	"fmt"
 	"github.com/AlecAivazis/survey/v2"
-	be "richardmace.co.uk/boxwallet/cmd/cli/cmd/bend"
+	// be "richardmace.co.uk/boxwallet/cmd/cli/cmd/bend"
 )
 
 func HandleWalletBURapids(pw string) (confirmedBU bool, err error) {
@@ -28,48 +28,49 @@ func HandleWalletBURapids(pw string) (confirmedBU bool, err error) {
 		return false, fmt.Errorf("unable to determine buNow choice")
 	}
 
-	cliConf, err := be.GetConfigStruct("", true)
-	if err != nil {
-		fmt.Errorf("unable to load config file: %v", err)
-	}
+	// cliConf, err := be.GetConfigStruct("", true)
 
-	// First check to make sure the wallet is unlocked or unencrypted
-	wet, err := be.GetWalletEncryptionStatus()
-	if err != nil {
-		return false, err
-	}
+	// if err != nil {
+	// 	fmt.Errorf("unable to load config file: %v", err)
+	// }
 
-	// If the wallet is locked, and the password is blank, return
-	if wet == be.WETLocked && pw == "" {
-		return false, fmt.Errorf("error: your wallet is locked and the password is blank")
-	}
+	// // First check to make sure the wallet is unlocked or unencrypted
+	// wet, err := be.GetWalletEncryptionStatus()
+	// if err != nil {
+	// 	return false, err
+	// }
 
-	// If the wallet is locked, and we have a password, let's unlock it.
-	if wet == be.WETLocked {
-		if err := be.UnlockWalletRapids(&cliConf, pw); err != nil {
-			return false, fmt.Errorf("unable to unlock wallet: %v", err)
-		}
-	}
+	// // If the wallet is locked, and the password is blank, return
+	// if wet == be.WETLocked && pw == "" {
+	// 	return false, fmt.Errorf("error: your wallet is locked and the password is blank")
+	// }
 
-	buOption := ""
-	prompt := &survey.Select{
-		Message: "Please choose how you'd like to backup your wallet:",
-		Options: []string{be.BUWDisplayHDSeed, be.BUWWalletDat},
-	}
-	survey.AskOne(prompt, &buOption)
+	// // If the wallet is locked, and we have a password, let's unlock it.
+	// if wet == be.WETLocked {
+	// 	if err := be.UnlockWalletRapids(&cliConf, pw); err != nil {
+	// 		return false, fmt.Errorf("unable to unlock wallet: %v", err)
+	// 	}
+	// }
 
-	switch buOption {
-	case be.BUWDisplayHDSeed:
-		pk, err := getPrivateKeyNew(&cliConf)
-		if err != nil {
-			return false, fmt.Errorf("Unable to getPrivateKey(): failed with %s\n", err)
-		}
-		fmt.Printf("\n\nYour private seed recovery details are as follows:\n\nHdseed: " +
-			pk.Result.Hdseed + "\n\nMnemonic phrase: " +
-			pk.Result.Mnemonic + "\n\nPlease make sure you safely secure this information, and then re-run " + be.CAppFilename + " dash again.\n\n")
-	case be.BUWWalletDat:
-	default:
-		return false, fmt.Errorf("unable to determine buOption choice")
-	}
+	// buOption := ""
+	// prompt := &survey.Select{
+	// 	Message: "Please choose how you'd like to backup your wallet:",
+	// 	Options: []string{be.BUWDisplayHDSeed, be.BUWWalletDat},
+	// }
+	// survey.AskOne(prompt, &buOption)
+
+	// switch buOption {
+	// case be.BUWDisplayHDSeed:
+	// 	pk, err := getPrivateKeyNew(&cliConf)
+	// 	if err != nil {
+	// 		return false, fmt.Errorf("Unable to getPrivateKey(): failed with %s\n", err)
+	// 	}
+	// 	fmt.Printf("\n\nYour private seed recovery details are as follows:\n\nHdseed: " +
+	// 		pk.Result.Hdseed + "\n\nMnemonic phrase: " +
+	// 		pk.Result.Mnemonic + "\n\nPlease make sure you safely secure this information, and then re-run " + be.CAppFilename + " dash again.\n\n")
+	// case be.BUWWalletDat:
+	// default:
+	// 	return false, fmt.Errorf("unable to determine buOption choice")
+	// }
 	return true, nil
 }
