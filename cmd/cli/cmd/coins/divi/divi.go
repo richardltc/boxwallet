@@ -10,13 +10,13 @@ import (
 	"os"
 	"os/exec"
 	"os/user"
+	"richardmace.co.uk/boxwallet/cmd/cli/cmd/fileutils"
 	"runtime"
 	"strings"
 	"time"
 
 	"github.com/mholt/archiver/v3"
 	"github.com/theckman/yacspin"
-	"richardmace.co.uk/boxwallet/cmd/cli/cmd/coins"
 	"richardmace.co.uk/boxwallet/cmd/cli/cmd/models"
 	"richardmace.co.uk/boxwallet/cmd/cli/cmd/rjminternet"
 )
@@ -105,7 +105,7 @@ func (d Divi) AbbreviatedCoinName() string {
 func (d Divi) AddNodesAlreadyExist() (bool, error) {
 	var exists bool
 
-	exists, err := coins.StringExistsInFile("addnode=", d.HomeDir()+cConfFile)
+	exists, err := fileutils.StringExistsInFile("addnode=", d.HomeDir()+cConfFile)
 	if err != nil {
 		return false, nil
 	}
@@ -138,7 +138,7 @@ func (d *Divi) AddAddNodesIfRequired() error {
 			return fmt.Errorf("unable to getDiviAddNodes - %v", err)
 		}
 
-		if err := coins.WriteTextToFile(fullPath+cConfFile, sAddnodes); err != nil {
+		if err := fileutils.WriteTextToFile(fullPath+cConfFile, sAddnodes); err != nil {
 			return fmt.Errorf("unable to write addnodes to file - %v", err)
 		}
 
@@ -147,7 +147,7 @@ func (d *Divi) AddAddNodesIfRequired() error {
 			return fmt.Errorf("unable to retrieve addnodes, please try again")
 		}
 
-		if err := coins.WriteTextToFile(fullPath+cConfFile, sAddnodes); err != nil {
+		if err := fileutils.WriteTextToFile(fullPath+cConfFile, sAddnodes); err != nil {
 			return fmt.Errorf("unable to write addnodes to file - %v", err)
 		}
 
@@ -157,30 +157,30 @@ func (d *Divi) AddAddNodesIfRequired() error {
 
 func (d Divi) AllBinaryFilesExist(dir string) (bool, error) {
 	if runtime.GOOS == "windows" {
-		if !coins.FileExists(dir + cCliFileWin) {
+		if !fileutils.FileExists(dir + cCliFileWin) {
 			return false, nil
 		}
-		if !coins.FileExists(dir + cDaemonFileWin) {
+		if !fileutils.FileExists(dir + cDaemonFileWin) {
 			return false, nil
 		}
-		if !coins.FileExists(dir + cTxFileWin) {
+		if !fileutils.FileExists(dir + cTxFileWin) {
 			return false, nil
 		}
 	} else {
-		if !coins.FileExists(dir + cCliFile) {
+		if !fileutils.FileExists(dir + cCliFile) {
 			return false, nil
 		}
-		if !coins.FileExists(dir + cDaemonFileLin) {
+		if !fileutils.FileExists(dir + cDaemonFileLin) {
 			return false, nil
 		}
-		if !coins.FileExists(dir + cTxFile) {
+		if !fileutils.FileExists(dir + cTxFile) {
 			return false, nil
 		}
 	}
 	return true, nil
 }
 
-// BlockchainDataExists - Returns true if the Blockchain data exists for the specified coin.
+// BlockchainDataExists - Returns true if the Blockchain data exists for the specified coin
 func (d Divi) BlockchainDataExists() (bool, error) {
 	coinDir, err := d.HomeDirFullPath()
 	if err != nil {
@@ -218,7 +218,7 @@ func (d Divi) DownloadBlockchain() error {
 	if err != nil {
 		return errors.New("unable to get HomeDirFullPath: " + err.Error())
 	}
-	bcsFileExists := coins.FileExists(coinDir + cDownloadFileBS)
+	bcsFileExists := fileutils.FileExists(coinDir + cDownloadFileBS)
 	if !bcsFileExists {
 		// Then download the file.
 		if err := rjminternet.DownloadFile(coinDir, cDownloadURLBS+cDownloadFileBS); err != nil {
@@ -279,9 +279,9 @@ func (d Divi) HomeDirFullPath() (string, error) {
 	hd := u.HomeDir
 
 	if runtime.GOOS == "windows" {
-		return coins.AddTrailingSlash(hd) + "appdata\\roaming\\" + coins.AddTrailingSlash(cHomeDirWin), nil
+		return fileutils.AddTrailingSlash(hd) + "appdata\\roaming\\" + fileutils.AddTrailingSlash(cHomeDirWin), nil
 	} else {
-		return coins.AddTrailingSlash(hd) + coins.AddTrailingSlash(cHomeDir), nil
+		return fileutils.AddTrailingSlash(hd) + fileutils.AddTrailingSlash(cHomeDir), nil
 	}
 }
 
@@ -321,7 +321,7 @@ func (d Divi) Install(location string) error {
 
 	// If the coin-cli file doesn't already exists the copy it.
 	if _, err := os.Stat(location + sfCLI); os.IsNotExist(err) {
-		if err := coins.FileCopy(srcPath+sfCLI, location+sfCLI, false); err != nil {
+		if err := fileutils.FileCopy(srcPath+sfCLI, location+sfCLI, false); err != nil {
 			return fmt.Errorf("unable to copyFile from: %v to %v - %v", srcPath+sfCLI, location+sfCLI, err)
 		}
 	}
@@ -331,7 +331,7 @@ func (d Divi) Install(location string) error {
 
 	// If the coind file doesn't already exists the copy it.
 	if _, err := os.Stat(location + sfD); os.IsNotExist(err) {
-		if err := coins.FileCopy(srcPath+sfD, location+sfD, false); err != nil {
+		if err := fileutils.FileCopy(srcPath+sfD, location+sfD, false); err != nil {
 			return fmt.Errorf("unable to copyFile from: %v to %v - %v", srcPath+sfD, location+sfD, err)
 		}
 	}
@@ -339,9 +339,9 @@ func (d Divi) Install(location string) error {
 		return fmt.Errorf("unable to chmod file: %v - %v", location+sfD, err)
 	}
 
-	// If the coitx file doesn't already exists the copy it.
+	// If the cointx file doesn't already exists the copy it.
 	if _, err := os.Stat(location + sfTX); os.IsNotExist(err) {
-		if err := coins.FileCopy(srcPath+sfTX, location+sfTX, false); err != nil {
+		if err := fileutils.FileCopy(srcPath+sfTX, location+sfTX, false); err != nil {
 			return fmt.Errorf("unable to copyFile from: %v to %v - %v", srcPath+sfTX, location+sfTX, err)
 		}
 	}
@@ -904,7 +904,7 @@ func (d Divi) UnarchiveBlockchainSnapshot() error {
 	}
 
 	// First, check to make sure that both the blockchain folders don't already exist. (blocks, chainstate)
-	bcsFileExists := coins.FileExists(coinDir + cDownloadFileBS)
+	bcsFileExists := fileutils.FileExists(coinDir + cDownloadFileBS)
 	if !bcsFileExists {
 		return errors.New("unable to find the snapshot file: " + coinDir + cDownloadFileBS)
 	}
