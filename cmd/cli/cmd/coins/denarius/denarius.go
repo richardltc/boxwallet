@@ -10,13 +10,14 @@ import (
 	"os"
 	"os/exec"
 	"os/user"
+	"richardmace.co.uk/boxwallet/cmd/cli/cmd/coins"
+	"richardmace.co.uk/boxwallet/cmd/cli/cmd/fileutils"
 	"runtime"
 	"strings"
 	"time"
 
 	"github.com/mholt/archiver"
 	"github.com/theckman/yacspin"
-	"richardmace.co.uk/boxwallet/cmd/cli/cmd/coins"
 	"richardmace.co.uk/boxwallet/cmd/cli/cmd/models"
 	"richardmace.co.uk/boxwallet/cmd/cli/cmd/rjminternet"
 )
@@ -48,7 +49,7 @@ const (
 	cConfFile      string = "denarius.conf"
 	cCliFile       string = "denarius"
 	cCliFileWin    string = "denarius-cli.exe"
-	cDaemonFile    string = "denarius.daemon"
+	cDaemonFileLin string = "denarius.daemon"
 	cDaemonMem     string = "denariusd"
 	cDaemonFileWin string = "denarius.daemon.exe"
 	cTxFile        string = "denarius-tx"
@@ -98,7 +99,7 @@ func (d Denarius) AllBinaryFilesExist(dir string) (bool, error) {
 		if !fileExists(cBinDirLinux + cCliFile) {
 			return false, nil
 		}
-		if !fileExists(cBinDirLinux + cDaemonFile) {
+		if !fileExists(cBinDirLinux + cDaemonFileLin) {
 			return false, nil
 		}
 	}
@@ -138,11 +139,30 @@ func (d Denarius) CoinNameAbbrev() string {
 	return cCoinNameAbbrev
 }
 
-func (d *Denarius) DaemonFilename() string {
+func (d Denarius) DaemonFilename() string {
 	if runtime.GOOS == "windows" {
 		return cDaemonFileWin
 	} else {
-		return cDaemonFile
+		return cDaemonFileLin
+	}
+}
+
+func (d Denarius) DaemonRunning() (bool, error) {
+	var err error
+
+	if runtime.GOOS == "windows" {
+		_, _, err = coins.FindProcess(cDaemonFileWin)
+	} else {
+		_, _, err = coins.FindProcess(cDaemonFileLin)
+	}
+
+	if err == nil {
+		return true, nil
+	}
+	if err.Error() == "not found" {
+		return false, nil
+	} else {
+		return false, err
 	}
 }
 
@@ -150,14 +170,14 @@ func (d Denarius) DownloadBlockchain() error {
 	var coinDir string
 	var err error
 
-	// First, check to make sure that both the blockchain folders don't already exist. (blocks, chainstate)
+	// First, check to make sure that both the blockchain folders don't already exist. (blocks, chainstate).
 	coinDir, err = d.HomeDirFullPath()
 	if err != nil {
 		return errors.New("unable to GetCoinHomeFolder")
 	}
 	switch runtime.GOARCH {
 	case "arm", "arm64":
-		bcsFileExists := coins.FileExists(coinDir + cDownloadFileBSARM)
+		bcsFileExists := fileutils.FileExists(coinDir + cDownloadFileBSARM)
 		if !bcsFileExists {
 			// Then download the file.
 			if err := rjminternet.DownloadFile(coinDir, cDownloadURLBS+cDownloadFileBSARM); err != nil {
@@ -165,7 +185,7 @@ func (d Denarius) DownloadBlockchain() error {
 			}
 		}
 	default:
-		bcsFileExists := coins.FileExists(coinDir + cDownloadFileBS)
+		bcsFileExists := fileutils.FileExists(coinDir + cDownloadFileBS)
 		if !bcsFileExists {
 			// Then download the file.
 			if err := rjminternet.DownloadFile(coinDir, cDownloadURLBS+cDownloadFileBS); err != nil {
@@ -479,10 +499,10 @@ func (d Denarius) RPCDefaultPort() string {
 	return cRPCPort
 }
 
-func (d *Denarius) StartDaemon(displayOutput bool) error {
+func (d Denarius) StartDaemon(displayOutput bool, appFolder string) error {
 	if runtime.GOOS == "windows" {
-		fp := cHomeDirWin + cDaemonFileWin
-		cmd := exec.Command("cmd.exe", "/C", "start", "/b", fp)
+		fullPath := appFolder + cDaemonFileWin
+		cmd := exec.Command("cmd.exe", "/C", "start", "/b", fullPath)
 		if err := cmd.Run(); err != nil {
 			return err
 		}
@@ -491,7 +511,7 @@ func (d *Denarius) StartDaemon(displayOutput bool) error {
 			fmt.Println("Attempting to run the denariusd daemon...")
 		}
 
-		cmdRun := exec.Command(cBinDirLinux + cDaemonFile)
+		cmdRun := exec.Command(appFolder + cDaemonFileLin)
 		//stdout, err := cmdRun.StdoutPipe()
 		err := cmdRun.Start()
 		if err != nil {
@@ -500,36 +520,35 @@ func (d *Denarius) StartDaemon(displayOutput bool) error {
 		if displayOutput {
 			fmt.Println("Denarius server starting")
 		}
-
 	}
 	return nil
 }
 
-func (d *Denarius) StopDaemon(displayOut bool) (models.GenericResponse, error) {
-	var respStruct models.GenericResponse
+func (d Denarius) StopDaemon(auth *models.CoinAuth) error {
+	//var respStruct models.GenericResponse
 
 	body := strings.NewReader("{\"jsonrpc\":\"1.0\",\"id\":\"curltext\",\"method\":\"stop\",\"params\":[]}")
-	req, err := http.NewRequest("POST", "http://"+d.IPAddress+":"+d.Port, body)
+	req, err := http.NewRequest("POST", "http://"+auth.IPAddress+":"+auth.Port, body)
 	if err != nil {
-		return respStruct, err
+		return err
 	}
-	req.SetBasicAuth(d.RPCUser, d.RPCPassword)
+	req.SetBasicAuth(auth.RPCUser, auth.RPCPassword)
 	req.Header.Set("Content-Type", "text/plain;")
 
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
-		return respStruct, err
+		return err
 	}
 	defer resp.Body.Close()
-	bodyResp, err := ioutil.ReadAll(resp.Body)
-	if err != nil {
-		return respStruct, err
-	}
-	err = json.Unmarshal(bodyResp, &respStruct)
-	if err != nil {
-		return respStruct, err
-	}
-	return respStruct, nil
+	//bodyResp, err := ioutil.ReadAll(resp.Body)
+	//if err != nil {
+	//	return err
+	//}
+	//err = json.Unmarshal(bodyResp, &respStruct)
+	//if err != nil {
+	//	return respStruct, err
+	//}
+	return nil
 }
 
 func (d Denarius) TipAddress() string {
@@ -553,7 +572,7 @@ func (d Denarius) UnarchiveBlockchainSnapshot() error {
 	}
 	switch runtime.GOARCH {
 	case "arm", "arm64":
-		bcsFileExists := coins.FileExists(coinDir + cDownloadFileBSARM)
+		bcsFileExists := fileutils.FileExists(coinDir + cDownloadFileBSARM)
 		if !bcsFileExists {
 			return errors.New("unable to find the snapshot file: " + coinDir + cDownloadFileBSARM)
 		}
@@ -564,7 +583,7 @@ func (d Denarius) UnarchiveBlockchainSnapshot() error {
 			return errors.New("unable to unarchive file: " + coinDir + cDownloadFileBSARM)
 		}
 	default:
-		bcsFileExists := coins.FileExists(coinDir + cDownloadFileBS)
+		bcsFileExists := fileutils.FileExists(coinDir + cDownloadFileBS)
 		if !bcsFileExists {
 			return errors.New("unable to find the snapshot file: " + coinDir + cDownloadFileBS)
 		}
