@@ -12,6 +12,7 @@ import (
 	"os/user"
 	"richardmace.co.uk/boxwallet/cmd/cli/cmd/fileutils"
 	"runtime"
+	"strconv"
 	"strings"
 	"time"
 
@@ -36,9 +37,9 @@ const (
 	//CDFFileWindowsBitcoinPlus        = "bitcoinplus-" + CCoreVersionBitcoinPlus + "-win64.zip"
 
 	// Directory const
-	cExtractedDirArm     string = "bitcoinplus-" + cCoreVersion + "/"
-	cExtractedDirLinux   string = "" //"bitcoinplus-" + CCoreVersionBitcoinPlus + "/"
-	cExtractedDirWindows string = "" //"bitcoinplus-" + CCoreVersionBitcoinPlus + "\\"
+	//cExtractedDirArm     string = "bitcoinplus-" + cCoreVersion + "/"
+	cExtractedDirLinux string = "" //"bitcoinplus-" + CCoreVersionBitcoinPlus + "/"
+	//cExtractedDirWindows string = "" //"bitcoinplus-" + CCoreVersionBitcoinPlus + "\\"
 
 	cDownloadURL string = "https://github.com/bitcoinplusorg/xbcwalletsource/releases/download/v" + cCoreVersion + "/"
 
@@ -61,19 +62,6 @@ const (
 	cRPCUser string = "bitcoinplusrpc"
 	cRPCPort string = "8885" // General CLI command constants
 
-	cCommandGetBCInfo             string = "getblockchaininfo"
-	cCommandGetInfo               string = "getinfo"
-	cCommandGetStakingInfo        string = "getstakinginfo"
-	cCommandListReceivedByAddress string = "listreceivedbyaddress"
-	cCommandListTransactions      string = "listtransactions"
-	cCommandGetNetworkInfo        string = "getnetworkinfo"
-	cCommandGetNewAddress         string = "getnewaddress"
-	cCommandGetWalletInfo         string = "getwalletinfo"
-	cCommandSendToAddress         string = "sendtoaddress"
-	cCommandMNSyncStatus1         string = "mnsync"
-	cCommandMNSyncStatus2         string = "status"
-	cCommandDumpHDInfo            string = "dumphdinfo" // ./divi-cli dumphdinfo
-
 )
 
 type XBC struct {
@@ -94,7 +82,7 @@ func (x XBC) Bootstrap(rpcUser, rpcPassword, ip, port string) {
 	}
 }
 
-func (x *XBC) AbbreviatedCoinName() string {
+func (x XBC) AbbreviatedCoinName() string {
 	return cCoinNameAbbrev
 }
 
@@ -121,6 +109,30 @@ func (x XBC) AllBinaryFilesExist(location string) (allExist bool, err error) {
 		}
 	}
 	return true, nil
+}
+
+func (x XBC) AnyAddresses(auth *models.CoinAuth) (bool, error) {
+	addresses, err := x.ListReceivedByAddress(auth, false)
+	if err != nil {
+		return false, err
+	}
+	if len(addresses.Result) > 0 {
+		return true, nil
+	}
+	return false, nil
+}
+
+func (x XBC) BlockchainIsSynced(coinAuth *models.CoinAuth) (bool, error) {
+	bci, err := x.BlockchainInfo(coinAuth)
+	if err != nil {
+		return false, err
+	}
+
+	if bci.Result.Verificationprogress > 0.99999 {
+		return true, nil
+	}
+
+	return false, nil
 }
 
 func (x XBC) ConfFile() string {
@@ -160,7 +172,6 @@ func (x XBC) DaemonRunning() (bool, error) {
 	} else {
 		return false, err
 	}
-
 }
 
 // DownloadCoin - Downloads the BitcoinPlus files into the specified location.
@@ -197,15 +208,15 @@ func (x XBC) DownloadCoin(location string) error {
 	return nil
 }
 
-func (x *XBC) BlockchainInfo() (models.XBCBlockchainInfo, error) {
+func (x *XBC) BlockchainInfo(coinAuth *models.CoinAuth) (models.XBCBlockchainInfo, error) {
 	var respStruct models.XBCBlockchainInfo
 
 	body := strings.NewReader("{\"jsonrpc\":\"1.0\",\"id\":\"boxwallet\",\"method\":\"" + models.CCommandGetBCInfo + "\",\"params\":[]}")
-	req, err := http.NewRequest("POST", "http://"+x.IPAddress+":"+x.Port, body)
+	req, err := http.NewRequest("POST", "http://"+coinAuth.IPAddress+":"+coinAuth.Port, body)
 	if err != nil {
 		return respStruct, err
 	}
-	req.SetBasicAuth(x.RPCUser, x.RPCPassword)
+	req.SetBasicAuth(coinAuth.RPCUser, coinAuth.RPCPassword)
 	req.Header.Set("Content-Type", "text/plain;")
 
 	resp, err := http.DefaultClient.Do(req)
@@ -238,16 +249,16 @@ func (x XBC) HomeDirFullPath() (string, error) {
 	}
 }
 
-func (x *XBC) Info() (models.XBCGetInfo, string, error) {
+func (x XBC) Info(auth *models.CoinAuth) (models.XBCGetInfo, string, error) {
 	var respStruct models.XBCGetInfo
 
 	for i := 1; i < 300; i++ {
-		body := strings.NewReader("{\"jsonrpc\":\"1.0\",\"id\":\"boxwallet\",\"method\":\"" + cCommandGetInfo + "\",\"params\":[]}")
-		req, err := http.NewRequest("POST", "http://"+x.IPAddress+":"+x.Port, body)
+		body := strings.NewReader("{\"jsonrpc\":\"1.0\",\"id\":\"boxwallet\",\"method\":\"" + models.CCommandGetInfo + "\",\"params\":[]}")
+		req, err := http.NewRequest("POST", "http://"+auth.IPAddress+":"+auth.Port, body)
 		if err != nil {
 			return respStruct, "", err
 		}
-		req.SetBasicAuth(x.RPCUser, x.RPCPassword)
+		req.SetBasicAuth(auth.RPCUser, auth.RPCPassword)
 		req.Header.Set("Content-Type", "text/plain;")
 
 		for j := 1; j < 50; j++ {
@@ -283,11 +294,11 @@ func (x *XBC) Info() (models.XBCGetInfo, string, error) {
 	return respStruct, "", nil
 }
 
-func (x *XBC) InfoUI(spin *yacspin.Spinner) (models.XBCGetInfo, string, error) {
+func (x *XBC) InfoUI(auth *models.CoinAuth, spin *yacspin.Spinner) (models.XBCGetInfo, string, error) {
 	var respStruct models.XBCGetInfo
 
 	for i := 1; i < 600; i++ {
-		body := strings.NewReader("{\"jsonrpc\":\"1.0\",\"id\":\"boxwallet\",\"method\":\"" + cCommandGetInfo + "\",\"params\":[]}")
+		body := strings.NewReader("{\"jsonrpc\":\"1.0\",\"id\":\"boxwallet\",\"method\":\"" + models.CCommandGetInfo + "\",\"params\":[]}")
 		req, err := http.NewRequest("POST", "http://"+x.IPAddress+":"+x.Port, body)
 		if err != nil {
 			return respStruct, "", err
@@ -341,17 +352,41 @@ func (x *XBC) InfoUI(spin *yacspin.Spinner) (models.XBCGetInfo, string, error) {
 	return respStruct, "", nil
 }
 
-func (x *XBC) NetworkInfo() (models.XBCNetworkInfo, error) {
+func (x XBC) NetworkDifficultyInfo() (float64, float64, error) {
+	// https://chainz.cryptoid.info/ftc/api.dws?q=getdifficulty
+
+	resp, err := http.Get("https://chainz.cryptoid.info/" + strings.ToLower(x.CoinNameAbbrev()) + "/api.dws?q=getdifficulty")
+	if err != nil {
+		return 0, 0, err
+	}
+	defer resp.Body.Close()
+
+	body, err := ioutil.ReadAll(resp.Body)
+	if err != nil {
+		return 0, 0, err
+	}
+
+	var fGood float64
+	var fWarning float64
+	// Now calculate the correct levels...
+	if fDiff, err := strconv.ParseFloat(string(body), 32); err == nil {
+		fGood = fDiff * 0.75
+		fWarning = fDiff * 0.50
+	}
+	return fGood, fWarning, nil
+}
+
+func (x *XBC) NetworkInfo(coinAuth *models.CoinAuth) (models.XBCNetworkInfo, error) {
 	var respStruct models.XBCNetworkInfo
 
 	for i := 1; i < 50; i++ {
-		body := strings.NewReader("{\"jsonrpc\":\"1.0\",\"id\":\"boxwallet\",\"method\":\"" + cCommandGetNetworkInfo + "\",\"params\":[]}")
+		body := strings.NewReader("{\"jsonrpc\":\"1.0\",\"id\":\"boxwallet\",\"method\":\"" + models.CCommandGetNetworkInfo + "\",\"params\":[]}")
 
-		req, err := http.NewRequest("POST", "http://"+x.IPAddress+":"+x.Port, body)
+		req, err := http.NewRequest("POST", "http://"+coinAuth.IPAddress+":"+coinAuth.Port, body)
 		if err != nil {
 			return respStruct, err
 		}
-		req.SetBasicAuth(x.RPCUser, x.RPCPassword)
+		req.SetBasicAuth(coinAuth.RPCUser, coinAuth.RPCPassword)
 		req.Header.Set("Content-Type", "text/plain;")
 
 		resp, err := http.DefaultClient.Do(req)
@@ -379,15 +414,15 @@ func (x *XBC) NetworkInfo() (models.XBCNetworkInfo, error) {
 	return respStruct, nil
 }
 
-func (x *XBC) NewAddress() (models.XBCGetNewAddress, error) {
+func (x *XBC) NewAddress(coinAuth *models.CoinAuth) (models.XBCGetNewAddress, error) {
 	var respStruct models.XBCGetNewAddress
 
 	body := strings.NewReader("{\"jsonrpc\":\"1.0\",\"id\":\"curltext\",\"method\":\"getnewaddress\",\"params\":[]}")
-	req, err := http.NewRequest("POST", "http://"+x.IPAddress+":"+x.Port, body)
+	req, err := http.NewRequest("POST", "http://"+coinAuth.IPAddress+":"+coinAuth.Port, body)
 	if err != nil {
 		return respStruct, err
 	}
-	req.SetBasicAuth(x.RPCUser, x.RPCPassword)
+	req.SetBasicAuth(coinAuth.RPCUser, coinAuth.RPCPassword)
 	req.Header.Set("Content-Type", "text/plain;")
 
 	resp, err := http.DefaultClient.Do(req)
@@ -408,15 +443,15 @@ func (x *XBC) NewAddress() (models.XBCGetNewAddress, error) {
 	return respStruct, nil
 }
 
-func (x *XBC) StakingInfo() (models.XBCStakingInfo, error) {
+func (x *XBC) StakingInfo(coinAuth *models.CoinAuth) (models.XBCStakingInfo, error) {
 	var respStruct models.XBCStakingInfo
 
-	body := strings.NewReader("{\"jsonrpc\":\"1.0\",\"id\":\"boxwallet\",\"method\":\"" + cCommandGetStakingInfo + "\",\"params\":[]}")
-	req, err := http.NewRequest("POST", "http://"+x.IPAddress+":"+x.Port, body)
+	body := strings.NewReader("{\"jsonrpc\":\"1.0\",\"id\":\"boxwallet\",\"method\":\"" + models.CCommandGetStakingInfo + "\",\"params\":[]}")
+	req, err := http.NewRequest("POST", "http://"+coinAuth.IPAddress+":"+coinAuth.Port, body)
 	if err != nil {
 		return respStruct, err
 	}
-	req.SetBasicAuth(x.RPCUser, x.RPCPassword)
+	req.SetBasicAuth(coinAuth.RPCUser, coinAuth.RPCPassword)
 	req.Header.Set("Content-Type", "text/plain;")
 
 	resp, err := http.DefaultClient.Do(req)
@@ -497,21 +532,21 @@ func (x XBC) Install(location string) error {
 	return nil
 }
 
-func (x *XBC) ListReceivedByAddress(includeZero bool) (models.XBCListReceivedByAddress, error) {
+func (x *XBC) ListReceivedByAddress(coinAuth *models.CoinAuth, includeZero bool) (models.XBCListReceivedByAddress, error) {
 	var respStruct models.XBCListReceivedByAddress
 
 	var s string
 	if includeZero {
-		s = "{\"jsonrpc\":\"1.0\",\"id\":\"curltext\",\"method\":\"" + cCommandListReceivedByAddress + "\",\"params\":[1, true]}"
+		s = "{\"jsonrpc\":\"1.0\",\"id\":\"curltext\",\"method\":\"" + models.CCommandListReceivedByAddress + "\",\"params\":[1, true]}"
 	} else {
-		s = "{\"jsonrpc\":\"1.0\",\"id\":\"curltext\",\"method\":\"" + cCommandListReceivedByAddress + "\",\"params\":[1, false]}"
+		s = "{\"jsonrpc\":\"1.0\",\"id\":\"curltext\",\"method\":\"" + models.CCommandListReceivedByAddress + "\",\"params\":[1, false]}"
 	}
 	body := strings.NewReader(s)
-	req, err := http.NewRequest("POST", "http://"+x.IPAddress+":"+x.Port, body)
+	req, err := http.NewRequest("POST", "http://"+coinAuth.IPAddress+":"+coinAuth.Port, body)
 	if err != nil {
 		return respStruct, err
 	}
-	req.SetBasicAuth(x.RPCUser, x.RPCPassword)
+	req.SetBasicAuth(coinAuth.RPCUser, coinAuth.RPCPassword)
 	req.Header.Set("Content-Type", "text/plain;")
 
 	resp, err := http.DefaultClient.Do(req)
@@ -532,15 +567,15 @@ func (x *XBC) ListReceivedByAddress(includeZero bool) (models.XBCListReceivedByA
 	return respStruct, nil
 }
 
-func (x *XBC) ListTransactions() (models.XBCListTransactions, error) {
+func (x XBC) ListTransactions(auth *models.CoinAuth) (models.XBCListTransactions, error) {
 	var respStruct models.XBCListTransactions
 
-	body := strings.NewReader("{\"jsonrpc\":\"1.0\",\"id\":\"boxwallet\",\"method\":\"" + cCommandListTransactions + "\",\"params\":[]}")
-	req, err := http.NewRequest("POST", "http://"+x.IPAddress+":"+x.Port, body)
+	body := strings.NewReader("{\"jsonrpc\":\"1.0\",\"id\":\"boxwallet\",\"method\":\"" + models.CCommandListTransactions + "\",\"params\":[]}")
+	req, err := http.NewRequest("POST", "http://"+auth.IPAddress+":"+auth.Port, body)
 	if err != nil {
 		return respStruct, err
 	}
-	req.SetBasicAuth(x.RPCUser, x.RPCPassword)
+	req.SetBasicAuth(auth.RPCUser, auth.RPCPassword)
 	req.Header.Set("Content-Type", "text/plain;")
 
 	resp, err := http.DefaultClient.Do(req)
@@ -569,18 +604,18 @@ func (x XBC) RPCDefaultPort() string {
 	return cRPCPort
 }
 
-func (x XBC) StartDaemon(displayOutput bool) error {
+func (x XBC) StartDaemon(displayOutput bool, appFolder string) error {
 	b, _ := x.DaemonRunning()
 	if b {
 		return nil
 	}
-	path, err := x.HomeDirFullPath()
-	if err != nil {
-		return errors.New("Unable to get HomeDirFullPath: " + err.Error())
-	}
+	//path, err := x.HomeDirFullPath()
+	//if err != nil {
+	//	return errors.New("Unable to get HomeDirFullPath: " + err.Error())
+	//}
 
 	if runtime.GOOS == "windows" {
-		fp := path + cDaemonFileWin
+		fp := appFolder + cDaemonFileWin
 		cmd := exec.Command("cmd.exe", "/C", "start", "/b", fp)
 		if err := cmd.Run(); err != nil {
 			return err
@@ -590,7 +625,7 @@ func (x XBC) StartDaemon(displayOutput bool) error {
 			fmt.Println("Attempting to run the " + cCoinName + " daemon...")
 		}
 
-		fp := path + cDaemonFileLin
+		fp := appFolder + cDaemonFileLin
 		cmdRun := exec.Command(fp)
 		//stdout, err := cmdRun.StdoutPipe()
 		//if err != nil {
@@ -607,15 +642,15 @@ func (x XBC) StartDaemon(displayOutput bool) error {
 	return nil
 }
 
-func (x XBC) StopDaemon() error {
+func (x XBC) StopDaemon(auth *models.CoinAuth) error {
 	// var respStruct models.GenericResponse
 
 	body := strings.NewReader("{\"jsonrpc\":\"1.0\",\"id\":\"curltext\",\"method\":\"stop\",\"params\":[]}")
-	req, err := http.NewRequest("POST", "http://"+x.IPAddress+":"+x.Port, body)
+	req, err := http.NewRequest("POST", "http://"+auth.IPAddress+":"+auth.Port, body)
 	if err != nil {
 		return err
 	}
-	req.SetBasicAuth(x.RPCUser, x.RPCPassword)
+	req.SetBasicAuth(auth.RPCUser, auth.RPCPassword)
 	req.Header.Set("Content-Type", "text/plain;")
 
 	resp, err := http.DefaultClient.Do(req)
@@ -638,15 +673,15 @@ func (x XBC) TipAddress() string {
 	return cTipAddress
 }
 
-func (x *XBC) WalletInfo() (models.XBCWalletInfo, error) {
+func (x *XBC) WalletInfo(coinAuth *models.CoinAuth) (models.XBCWalletInfo, error) {
 	var respStruct models.XBCWalletInfo
 
-	body := strings.NewReader("{\"jsonrpc\":\"1.0\",\"id\":\"boxwallet\",\"method\":\"" + cCommandGetWalletInfo + "\",\"params\":[]}")
-	req, err := http.NewRequest("POST", "http://"+x.IPAddress+":"+x.Port, body)
+	body := strings.NewReader("{\"jsonrpc\":\"1.0\",\"id\":\"boxwallet\",\"method\":\"" + models.CCommandGetWalletInfo + "\",\"params\":[]}")
+	req, err := http.NewRequest("POST", "http://"+coinAuth.IPAddress+":"+coinAuth.Port, body)
 	if err != nil {
 		return respStruct, err
 	}
-	req.SetBasicAuth(x.RPCUser, x.RPCPassword)
+	req.SetBasicAuth(coinAuth.RPCUser, coinAuth.RPCPassword)
 	req.Header.Set("Content-Type", "text/plain;")
 
 	resp, err := http.DefaultClient.Do(req)
@@ -673,13 +708,55 @@ func (x *XBC) WalletInfo() (models.XBCWalletInfo, error) {
 	return respStruct, nil
 }
 
-func (x XBC) WalletReady() bool {
-	i, _, _ := x.Info()
-	if i.Result.Version != 0 {
-		return true
+func (x XBC) WalletLoadingStatus(auth *models.CoinAuth) models.WLSType {
+	body := strings.NewReader("{\"jsonrpc\":\"1.0\",\"id\":\"boxwallet\",\"method\":\"" + models.CCommandGetInfo + "\",\"params\":[]}")
+	req, err := http.NewRequest("POST", "http://"+auth.IPAddress+":"+auth.Port, body)
+	if err != nil {
+		return models.WLSTUnknown
+	}
+	req.SetBasicAuth(auth.RPCUser, auth.RPCPassword)
+	req.Header.Set("Content-Type", "text/plain;")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return models.WLSTWaitingForResponse
+	} else {
+		defer resp.Body.Close()
+		bodyResp, err := ioutil.ReadAll(resp.Body)
+		if err != nil {
+			return models.WLSTWaitingForResponse
+		}
+
+		if bytes.Contains(bodyResp, []byte("Loading")) {
+			return models.WLSTLoading
+		}
+		if bytes.Contains(bodyResp, []byte("Rescanning")) {
+			return models.WLSTRescanning
+		}
+		if bytes.Contains(bodyResp, []byte("Rewinding")) {
+			return models.WLSTRewinding
+		}
+		if bytes.Contains(bodyResp, []byte("Verifying")) {
+			return models.WLSTVerifying
+		}
+		if bytes.Contains(bodyResp, []byte("Calculating money supply")) {
+			return models.WLSTCalculatingMoneySupply
+		}
+	}
+	return models.WLSTReady
+}
+
+func (x XBC) WalletNeedsEncrypting(coinAuth *models.CoinAuth) (bool, error) {
+	wi, err := x.WalletInfo(coinAuth)
+	if err != nil {
+		return true, errors.New("Unable to perform WalletInfo " + err.Error())
 	}
 
-	return false
+	if wi.Result.UnlockedUntil < 0 {
+		return true, nil
+	}
+
+	return false, nil
 }
 
 func (x XBC) WalletResync() error {
@@ -688,7 +765,7 @@ func (x XBC) WalletResync() error {
 		return errors.New("Unable to determine DaemonRunning: " + err.Error())
 	}
 	if daemonRunning {
-		return errors.New("Daemon is still running, please stop first.")
+		return errors.New("daemon is still running, please stop first")
 	}
 
 	coinDir, err := x.HomeDirFullPath()
@@ -705,10 +782,10 @@ func (x XBC) WalletResync() error {
 	return nil
 }
 
-func (x *XBC) WalletSecurityState() (models.WEType, error) {
-	wi, err := x.WalletInfo()
+func (x XBC) WalletSecurityState(coinAuth *models.CoinAuth) (models.WEType, error) {
+	wi, err := x.WalletInfo(coinAuth)
 	if err != nil {
-		return models.WETUnknown, errors.New("Unable to GetWalletSecurityState: " + err.Error())
+		return models.WETUnknown, errors.New("Unable to determine WalletSecurityState: " + err.Error())
 	}
 
 	if wi.Result.UnlockedUntil == 0 {
