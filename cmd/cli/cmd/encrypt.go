@@ -17,9 +17,9 @@ limitations under the License.
 package cmd
 
 import (
-	"fmt"
-	"log"
-	be "richardmace.co.uk/boxwallet/cmd/cli/cmd/bend"
+	// "fmt"
+	// "log"
+	// be "richardmace.co.uk/boxwallet/cmd/cli/cmd/bend"
 
 	"github.com/spf13/cobra"
 )
@@ -31,193 +31,193 @@ var encryptCmd = &cobra.Command{
 	Long:  ``,
 	Run: func(cmd *cobra.Command, args []string) {
 		// Lets load our config file first, to see if the user has made their coin choice..
-		cliConf, err := be.GetConfigStruct("", true)
-		if err != nil {
-			log.Fatal("Unable to determine coin type. Please run " + be.CAppFilename + " coin" + err.Error())
-		}
-
-		sCoinDaemonName, err := be.GetCoinDaemonFilename(be.APPTCLI, cliConf.ProjectType)
-		if err != nil {
-			log.Fatal("Unable to GetCoinDaemonFilename " + err.Error())
-		}
-
-		switch cliConf.ProjectType {
-		case be.PTBitcoinPlus:
-			wet, err := be.GetWalletEncryptionStatus()
-			if err != nil {
-				log.Fatalf("Unable to determine wallet encryption status")
-			}
-			if wet != be.WETUnencrypted {
-				log.Fatal("Wallet is already encrypted")
-			}
-		case be.PTDenarius:
-			wet, err := be.GetWalletEncryptionStatus()
-			if err != nil {
-				log.Fatalf("Unable to determine wallet encryption status")
-			}
-			if wet != be.WETUnencrypted {
-				log.Fatal("Wallet is already encrypted")
-			}
-		case be.PTDeVault:
-			wet, err := be.GetWalletEncryptionStatus()
-			if err != nil {
-				log.Fatalf("Unable to determine wallet encryption status")
-			}
-			if wet != be.WETUnencrypted {
-				log.Fatal("Wallet is already encrypted")
-			}
-		case be.PTDigiByte:
-			wet, err := be.GetWalletEncryptionStatus()
-			if err != nil {
-				log.Fatalf("Unable to determine wallet encryption status")
-			}
-			if wet != be.WETUnencrypted {
-				log.Fatal("Wallet is already encrypted")
-			}
-		case be.PTDivi:
-			wet, err := be.GetWalletEncryptionStatus()
-			if err != nil {
-				log.Fatalf("Unable to determine wallet encryption status")
-			}
-			if wet != be.WETUnencrypted {
-				log.Fatal("Wallet is already encrypted")
-			}
-
-			//// Check wallet encryption status
-			//wi, err := be.GetWalletInfoDivi(&cliConf)
-			//if err != nil {
-			//	log.Fatal("Unable to getWalletInfo " + err.Error())
-			//}
-			//
-			//if (wi.Result.EncryptionStatus != "unencrypted") && (wi.Result.EncryptionStatus != "") {
-			//	log.Fatal("Wallet is already encrypted")
-			//}
-		case be.PTFeathercoin:
-			wet, err := be.GetWalletEncryptionStatus()
-			if err != nil {
-				log.Fatalf("Unable to determine wallet encryption status")
-			}
-			if wet != be.WETUnencrypted {
-				log.Fatal("Wallet is already encrypted")
-			}
-		case be.PTGroestlcoin:
-			wet, err := be.GetWalletEncryptionStatus()
-			if err != nil {
-				log.Fatalf("Unable to determine wallet encryption status")
-			}
-			if wet != be.WETUnencrypted {
-				log.Fatal("Wallet is already encrypted")
-			}
-		case be.PTPhore:
-			wet, err := be.GetWalletEncryptionStatus()
-			if err != nil {
-				log.Fatalf("Unable to determine wallet encryption status")
-			}
-			if wet != be.WETUnencrypted {
-				log.Fatal("Wallet is already encrypted")
-			}
-		case be.PTPIVX:
-			wet, err := be.GetWalletEncryptionStatus()
-			if err != nil {
-				log.Fatalf("Unable to determine wallet encryption status")
-			}
-			if wet != be.WETUnencrypted {
-				log.Fatal("Wallet is already encrypted")
-			}
-		case be.PTReddCoin:
-			wet, err := be.GetWalletEncryptionStatus()
-			if err != nil {
-				log.Fatalf("Unable to determine wallet encryption status")
-			}
-			if wet != be.WETUnencrypted {
-				log.Fatal("Wallet is already encrypted")
-			}
-		case be.PTTrezarcoin:
-			wet, err := be.GetWalletEncryptionStatus()
-			if err != nil {
-				log.Fatalf("Unable to determine wallet encryption status")
-			}
-			if wet != be.WETUnencrypted {
-				log.Fatal("Wallet is already encrypted")
-			}
-		case be.PTVertcoin:
-			wet, err := be.GetWalletEncryptionStatus()
-			if err != nil {
-				log.Fatalf("Unable to determine wallet encryption status")
-			}
-			if wet != be.WETUnencrypted {
-				log.Fatal("Wallet is already encrypted")
-			}
-		default:
-			log.Fatal("Unable to determine project type ")
-		}
-
-		wep := be.GetPasswordToEncryptWallet()
-		r, err := encryptWallet(&cliConf, wep)
-		if err != nil {
-			log.Fatalf("failed to encrypt wallet %s\n", err)
-		}
-		fmt.Println(r.Result)
-		// Start the coin daemon server if required...
-		if err := be.StartCoinDaemon(true); err != nil {
-			log.Fatalf("failed to run "+sCoinDaemonName+": %v", err)
-		}
-
-		// sAppCLIName, err := gwc.GetAppCLIName() // e.g. GoDivi CLI
+		// cliConf, err := be.GetConfigStruct("", true)
 		// if err != nil {
-		// 	log.Fatal("Unable to GetAppCLIName " + err.Error())
+		// 	log.Fatal("Unable to determine coin type. Please run " + be.CAppFilename + " coin" + err.Error())
 		// }
 
-		// sAppFileCLIName, err := gwc.GetAppFileName(gwc.APPTCLI)
-		// if err != nil {
-		// 	log.Fatal("Unable to GetAppFileCLIName " + err.Error())
-		// }
-		// sCoinDaemonFile, err := gwc.GetCoinDaemonFilename()
+		// sCoinDaemonName, err := be.GetCoinDaemonFilename(be.APPTCLI, cliConf.ProjectType)
 		// if err != nil {
 		// 	log.Fatal("Unable to GetCoinDaemonFilename " + err.Error())
 		// }
 
-		// // Check to make sure we're installed
-		// if !gwc.IsGoWalletInstalled() { //DiviInstalled() {
-		// 	log.Fatal(sAppCLIName + ` doesn't appear to be installed yet. Please run "` + sAppFileCLIName + ` install" first`)
+		// switch cliConf.ProjectType {
+		// case be.PTBitcoinPlus:
+		// 	wet, err := be.GetWalletEncryptionStatus()
+		// 	if err != nil {
+		// 		log.Fatalf("Unable to determine wallet encryption status")
+		// 	}
+		// 	if wet != be.WETUnencrypted {
+		// 		log.Fatal("Wallet is already encrypted")
+		// 	}
+		// case be.PTDenarius:
+		// 	wet, err := be.GetWalletEncryptionStatus()
+		// 	if err != nil {
+		// 		log.Fatalf("Unable to determine wallet encryption status")
+		// 	}
+		// 	if wet != be.WETUnencrypted {
+		// 		log.Fatal("Wallet is already encrypted")
+		// 	}
+		// case be.PTDeVault:
+		// 	wet, err := be.GetWalletEncryptionStatus()
+		// 	if err != nil {
+		// 		log.Fatalf("Unable to determine wallet encryption status")
+		// 	}
+		// 	if wet != be.WETUnencrypted {
+		// 		log.Fatal("Wallet is already encrypted")
+		// 	}
+		// case be.PTDigiByte:
+		// 	wet, err := be.GetWalletEncryptionStatus()
+		// 	if err != nil {
+		// 		log.Fatalf("Unable to determine wallet encryption status")
+		// 	}
+		// 	if wet != be.WETUnencrypted {
+		// 		log.Fatal("Wallet is already encrypted")
+		// 	}
+		// case be.PTDivi:
+		// 	wet, err := be.GetWalletEncryptionStatus()
+		// 	if err != nil {
+		// 		log.Fatalf("Unable to determine wallet encryption status")
+		// 	}
+		// 	if wet != be.WETUnencrypted {
+		// 		log.Fatal("Wallet is already encrypted")
+		// 	}
+
+		// 	//// Check wallet encryption status
+		// 	//wi, err := be.GetWalletInfoDivi(&cliConf)
+		// 	//if err != nil {
+		// 	//	log.Fatal("Unable to getWalletInfo " + err.Error())
+		// 	//}
+		// 	//
+		// 	//if (wi.Result.EncryptionStatus != "unencrypted") && (wi.Result.EncryptionStatus != "") {
+		// 	//	log.Fatal("Wallet is already encrypted")
+		// 	//}
+		// case be.PTFeathercoin:
+		// 	wet, err := be.GetWalletEncryptionStatus()
+		// 	if err != nil {
+		// 		log.Fatalf("Unable to determine wallet encryption status")
+		// 	}
+		// 	if wet != be.WETUnencrypted {
+		// 		log.Fatal("Wallet is already encrypted")
+		// 	}
+		// case be.PTGroestlcoin:
+		// 	wet, err := be.GetWalletEncryptionStatus()
+		// 	if err != nil {
+		// 		log.Fatalf("Unable to determine wallet encryption status")
+		// 	}
+		// 	if wet != be.WETUnencrypted {
+		// 		log.Fatal("Wallet is already encrypted")
+		// 	}
+		// case be.PTPhore:
+		// 	wet, err := be.GetWalletEncryptionStatus()
+		// 	if err != nil {
+		// 		log.Fatalf("Unable to determine wallet encryption status")
+		// 	}
+		// 	if wet != be.WETUnencrypted {
+		// 		log.Fatal("Wallet is already encrypted")
+		// 	}
+		// case be.PTPIVX:
+		// 	wet, err := be.GetWalletEncryptionStatus()
+		// 	if err != nil {
+		// 		log.Fatalf("Unable to determine wallet encryption status")
+		// 	}
+		// 	if wet != be.WETUnencrypted {
+		// 		log.Fatal("Wallet is already encrypted")
+		// 	}
+		// case be.PTReddCoin:
+		// 	wet, err := be.GetWalletEncryptionStatus()
+		// 	if err != nil {
+		// 		log.Fatalf("Unable to determine wallet encryption status")
+		// 	}
+		// 	if wet != be.WETUnencrypted {
+		// 		log.Fatal("Wallet is already encrypted")
+		// 	}
+		// case be.PTTrezarcoin:
+		// 	wet, err := be.GetWalletEncryptionStatus()
+		// 	if err != nil {
+		// 		log.Fatalf("Unable to determine wallet encryption status")
+		// 	}
+		// 	if wet != be.WETUnencrypted {
+		// 		log.Fatal("Wallet is already encrypted")
+		// 	}
+		// case be.PTVertcoin:
+		// 	wet, err := be.GetWalletEncryptionStatus()
+		// 	if err != nil {
+		// 		log.Fatalf("Unable to determine wallet encryption status")
+		// 	}
+		// 	if wet != be.WETUnencrypted {
+		// 		log.Fatal("Wallet is already encrypted")
+		// 	}
+		// default:
+		// 	log.Fatal("Unable to determine project type ")
 		// }
 
-		// // Start the Coin Daemon server if required...
-		// err = gwc.StartCoinDaemon(true) //DiviD(true)
+		// wep := be.GetPasswordToEncryptWallet()
+		// r, err := encryptWallet(&cliConf, wep)
 		// if err != nil {
-		// 	log.Fatalf("failed to run "+sCoinDaemonFile+": %v", err)
+		// 	log.Fatalf("failed to encrypt wallet %s\n", err)
+		// }
+		// fmt.Println(r.Result)
+		// // Start the coin daemon server if required...
+		// if err := be.StartCoinDaemon(true); err != nil {
+		// 	log.Fatalf("failed to run "+sCoinDaemonName+": %v", err)
 		// }
 
-		// wi, err := gwc.GetWalletInfo(true)
-		// if err != nil {
-		// 	log.Fatalf("error getting wallet info: %v", err)
-		// }
+		// // sAppCLIName, err := gwc.GetAppCLIName() // e.g. GoDivi CLI
+		// // if err != nil {
+		// // 	log.Fatal("Unable to GetAppCLIName " + err.Error())
+		// // }
 
-		// fmt.Println("Wallet status is: " + wi.EncryptionStatus)
-		// if wi.EncryptionStatus != "unencrypted" {
-		// 	log.Fatalf("Looks like your wallet is already encrypted")
-		// }
+		// // sAppFileCLIName, err := gwc.GetAppFileName(gwc.APPTCLI)
+		// // if err != nil {
+		// // 	log.Fatal("Unable to GetAppFileCLIName " + err.Error())
+		// // }
+		// // sCoinDaemonFile, err := gwc.GetCoinDaemonFilename()
+		// // if err != nil {
+		// // 	log.Fatal("Unable to GetCoinDaemonFilename " + err.Error())
+		// // }
 
-		// abf, _ := gwc.GetAppsBinFolder()
-		// resp := gwc.GetEncryptWalletResp()
-		// if resp == "y" {
-		// 	wep := gwc.GetWalletEncryptionPassword()
-		// 	_, err := gwc.RunDCCommandWithValue(abf+sAppFileCLIName, gwc.CCommandEncryptWallet, wep, "Waiting for wallet to respond. This could take several minutes...", 30)
+		// // // Check to make sure we're installed
+		// // if !gwc.IsGoWalletInstalled() { //DiviInstalled() {
+		// // 	log.Fatal(sAppCLIName + ` doesn't appear to be installed yet. Please run "` + sAppFileCLIName + ` install" first`)
+		// // }
 
-		// 	if err != nil {
-		// 		log.Fatalf("cmd.Run() failed with %s\n", err)
-		// 	}
-		// 	fmt.Println("Restarting wallet after encryption...")
-		// 	err = gwc.StopCoinDaemon() //DiviD()
-		// 	if err != nil {
-		// 		log.Fatalf("failed to stop "+sCoinDaemonFile+": %v", err)
-		// 	}
-		// 	err = gwc.StartCoinDaemon(false) //DiviD(false)
-		// 	if err != nil {
-		// 		log.Fatalf("failed to run "+sCoinDaemonFile+": %v", err)
-		// 	}
+		// // // Start the Coin Daemon server if required...
+		// // err = gwc.StartCoinDaemon(true) //DiviD(true)
+		// // if err != nil {
+		// // 	log.Fatalf("failed to run "+sCoinDaemonFile+": %v", err)
+		// // }
 
-		// }
+		// // wi, err := gwc.GetWalletInfo(true)
+		// // if err != nil {
+		// // 	log.Fatalf("error getting wallet info: %v", err)
+		// // }
+
+		// // fmt.Println("Wallet status is: " + wi.EncryptionStatus)
+		// // if wi.EncryptionStatus != "unencrypted" {
+		// // 	log.Fatalf("Looks like your wallet is already encrypted")
+		// // }
+
+		// // abf, _ := gwc.GetAppsBinFolder()
+		// // resp := gwc.GetEncryptWalletResp()
+		// // if resp == "y" {
+		// // 	wep := gwc.GetWalletEncryptionPassword()
+		// // 	_, err := gwc.RunDCCommandWithValue(abf+sAppFileCLIName, gwc.CCommandEncryptWallet, wep, "Waiting for wallet to respond. This could take several minutes...", 30)
+
+		// // 	if err != nil {
+		// // 		log.Fatalf("cmd.Run() failed with %s\n", err)
+		// // 	}
+		// // 	fmt.Println("Restarting wallet after encryption...")
+		// // 	err = gwc.StopCoinDaemon() //DiviD()
+		// // 	if err != nil {
+		// // 		log.Fatalf("failed to stop "+sCoinDaemonFile+": %v", err)
+		// // 	}
+		// // 	err = gwc.StartCoinDaemon(false) //DiviD(false)
+		// // 	if err != nil {
+		// // 		log.Fatalf("failed to run "+sCoinDaemonFile+": %v", err)
+		// // 	}
+
+		// // }
 
 	},
 }
