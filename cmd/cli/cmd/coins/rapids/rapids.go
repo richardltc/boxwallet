@@ -702,31 +702,31 @@ func (r Rapids) StartDaemon(displayOutput bool, appFolder string) error {
 	return nil
 }
 
-func (r Rapids) StopDaemon(auth *models.CoinAuth) (models.GenericResponse, error) {
-	var respStruct models.GenericResponse
+func (r Rapids) StopDaemon(auth *models.CoinAuth) error {
+	//var respStruct models.GenericResponse
 
 	body := strings.NewReader("{\"jsonrpc\":\"1.0\",\"id\":\"curltext\",\"method\":\"stop\",\"params\":[]}")
 	req, err := http.NewRequest("POST", "http://"+auth.IPAddress+":"+auth.Port, body)
 	if err != nil {
-		return respStruct, err
+		return err
 	}
 	req.SetBasicAuth(auth.RPCUser, auth.RPCPassword)
 	req.Header.Set("Content-Type", "text/plain;")
 
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
-		return respStruct, err
+		return err
 	}
 	defer resp.Body.Close()
-	bodyResp, err := ioutil.ReadAll(resp.Body)
-	if err != nil {
-		return respStruct, err
-	}
-	err = json.Unmarshal(bodyResp, &respStruct)
-	if err != nil {
-		return respStruct, err
-	}
-	return respStruct, nil
+	//bodyResp, err := ioutil.ReadAll(resp.Body)
+	//if err != nil {
+	//	return respStruct, err
+	//}
+	//err = json.Unmarshal(bodyResp, &respStruct)
+	//if err != nil {
+	//	return respStruct, err
+	//}
+	return nil
 }
 
 func (r Rapids) TipAddress() string {
