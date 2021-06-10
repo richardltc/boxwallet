@@ -55,7 +55,7 @@ type CoinDaemon interface {
 	DaemonFilename() string
 	DaemonRunning() (bool, error)
 	StartDaemon(displayOutput bool, appFolder string) error
-	StopDaemon(*models.CoinAuth) error
+	StopDaemon(auth *models.CoinAuth) error
 }
 
 type CoinAnyAddresses interface {
