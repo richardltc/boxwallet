@@ -9,6 +9,10 @@ type Wallet interface {
 	WalletResync() error
 }
 
+type WalletUnlockFS interface {
+	WalletUnlockFS(coinAuth *models.CoinAuth) error
+}
+
 type WalletSecurityState interface {
 	WalletSecurityState(coinAuth *models.CoinAuth) (models.WEType, error)
 }
