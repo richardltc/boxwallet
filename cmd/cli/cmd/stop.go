@@ -30,6 +30,7 @@ import (
 	"richardmace.co.uk/boxwallet/cmd/cli/cmd/app"
 	"richardmace.co.uk/boxwallet/cmd/cli/cmd/coins"
 	xbc "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/bitcoinplus"
+	rpd "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/rapids"
 	"richardmace.co.uk/boxwallet/cmd/cli/cmd/conf"
 	"richardmace.co.uk/boxwallet/cmd/cli/cmd/models"
 	"strconv"
@@ -87,16 +88,14 @@ var stopCmd = &cobra.Command{
 		case models.PTPhore:
 		case models.PTPIVX:
 		case models.PTRapids:
+			coinDaemon = rpd.Rapids{}
+			coinName = rpd.Rapids{}
 		case models.PTReddCoin:
 		case models.PTScala:
 		case models.PTTrezarcoin:
 		case models.PTVertcoin:
 		default:
 			log.Fatal("unable to determine ProjectType")
-		}
-
-		if confDB.ServerIP != "127.0.0.1" {
-			log.Fatal("The stop command can only be run on the same machine that's running the " + coinName.CoinName() + " wallet")
 		}
 
 		//coin.Bootstrap(confDB.RPCuser, confDB.RPCpassword, confDB.ServerIP, confDB.Port)
