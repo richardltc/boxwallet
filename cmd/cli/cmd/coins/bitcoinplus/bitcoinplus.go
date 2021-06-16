@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"os/user"
+	be "richardmace.co.uk/boxwallet/cmd/cli/cmd/bend"
 	"richardmace.co.uk/boxwallet/cmd/cli/cmd/fileutils"
 	"runtime"
 	"strconv"
@@ -795,6 +796,39 @@ func (x XBC) WalletSecurityState(coinAuth *models.CoinAuth) (models.WEType, erro
 	} else {
 		return models.WETUnknown, nil
 	}
+}
+
+func (x XBC) WalletUnlockFS(coinAuth *models.CoinAuth, pw string) error {
+	var respStruct be.GenericRespStruct
+	var body *strings.Reader
+
+	// BitcoinPlus, doesn't currently support the "true" parameter to unlock for staking, so we're just adding an "unlock" command here
+	// until Peter has fixed it...
+	// todo Fix this in the future so that it *only* unlocks for staking.
+	body = strings.NewReader("{\"jsonrpc\":\"1.0\",\"id\":\"boxwallet\",\"method\":\"walletpassphrase\",\"params\":[\"" + pw + "\",9999999]}")
+
+	//body := strings.NewReader("{\"jsonrpc\":\"1.0\",\"id\":\"curltext\",\"method\":\"walletpassphrase\",\"params\":[\"" + pw + "\",0,true]}")
+	req, err := http.NewRequest("POST", "http://"+coinAuth.IPAddress+":"+coinAuth.Port, body)
+	if err != nil {
+		return err
+	}
+	req.SetBasicAuth(coinAuth.RPCUser, coinAuth.RPCPassword)
+	req.Header.Set("Content-Type", "text/plain;")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	bodyResp, err := ioutil.ReadAll(resp.Body)
+	if err != nil {
+		return err
+	}
+	err = json.Unmarshal(bodyResp, &respStruct)
+	if err != nil || respStruct.Error != nil {
+		return err
+	}
+	return nil
 }
 
 func (x XBC) unarchiveFile(fullFilePath, location string) error {
