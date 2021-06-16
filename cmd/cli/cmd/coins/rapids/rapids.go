@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/exec"
 	"os/user"
+	be "richardmace.co.uk/boxwallet/cmd/cli/cmd/bend"
 	"richardmace.co.uk/boxwallet/cmd/cli/cmd/coins"
 	"richardmace.co.uk/boxwallet/cmd/cli/cmd/fileutils"
 	"richardmace.co.uk/boxwallet/cmd/cli/cmd/rjminternet"
@@ -229,8 +230,8 @@ func getRapidsAddNodes() ([]byte, error) {
 	return addnodes, nil
 }
 
-func (r *Rapids) BlockchainInfo(coinAuth *models.CoinAuth) (models.RapidsBlockchainInfo, error) {
-	var respStruct models.RapidsBlockchainInfo
+func (r *Rapids) BlockchainInfo(coinAuth *models.CoinAuth) (models.RPDBlockchainInfo, error) {
+	var respStruct models.RPDBlockchainInfo
 
 	body := strings.NewReader("{\"jsonrpc\":\"1.0\",\"id\":\"curltext\",\"method\":\"getblockchaininfo\",\"params\":[]}")
 	req, err := http.NewRequest("POST", "http://"+coinAuth.IPAddress+":"+coinAuth.Port, body)
@@ -278,26 +279,26 @@ func (r Rapids) HomeDirFullPath() (string, error) {
 	}
 }
 
-func (r *Rapids) Info(auth *models.CoinAuth) (models.RapidsGetInfo, error) {
-	var respStruct models.RapidsGetInfo
+func (r *Rapids) Info(auth *models.CoinAuth) (models.RPDGetInfo, string, error) {
+	var respStruct models.RPDGetInfo
 
 	for i := 1; i < 50; i++ {
 		body := strings.NewReader("{\"jsonrpc\":\"1.0\",\"id\":\"boxwallet\",\"method\":\"" + models.CCommandGetInfo + "\",\"params\":[]}")
 		req, err := http.NewRequest("POST", "http://"+auth.IPAddress+":"+auth.Port, body)
 		if err != nil {
-			return respStruct, err
+			return respStruct, "", err
 		}
 		req.SetBasicAuth(auth.RPCUser, auth.RPCPassword)
 		req.Header.Set("Content-Type", "text/plain;")
 
 		resp, err := http.DefaultClient.Do(req)
 		if err != nil {
-			return respStruct, err
+			return respStruct, "", err
 		}
 		defer resp.Body.Close()
 		bodyResp, err := ioutil.ReadAll(resp.Body)
 		if err != nil {
-			return respStruct, err
+			return respStruct, "", err
 		}
 
 		// Check to make sure we are not loading the wallet
@@ -309,16 +310,16 @@ func (r *Rapids) Info(auth *models.CoinAuth) (models.RapidsGetInfo, error) {
 			var errStruct models.GenericResponse
 			err = json.Unmarshal(bodyResp, &errStruct)
 			if err != nil {
-				return respStruct, err
+				return respStruct, "", err
 			}
 			time.Sleep(5 * time.Second)
 		} else {
 
 			_ = json.Unmarshal(bodyResp, &respStruct)
-			return respStruct, err
+			return respStruct, string(bodyResp), err
 		}
 	}
-	return respStruct, nil
+	return respStruct, "", nil
 }
 
 // Install - Puts the freshly downloaded files into their correct location.
@@ -380,8 +381,8 @@ func (r Rapids) Install(location string) error {
 	return nil
 }
 
-func (r *Rapids) InfoUI(spin *yacspin.Spinner) (models.RapidsGetInfo, string, error) {
-	var respStruct models.RapidsGetInfo
+func (r *Rapids) InfoUI(spin *yacspin.Spinner) (models.RPDGetInfo, string, error) {
+	var respStruct models.RPDGetInfo
 
 	for i := 1; i < 600; i++ {
 		body := strings.NewReader("{\"jsonrpc\":\"1.0\",\"id\":\"boxwallet\",\"method\":\"" + models.CCommandGetInfo + "\",\"params\":[]}")
@@ -439,8 +440,8 @@ func (r *Rapids) InfoUI(spin *yacspin.Spinner) (models.RapidsGetInfo, string, er
 	return respStruct, "", nil
 }
 
-func (r *Rapids) ListReceivedByAddress(includeZero bool) (models.RapidsListReceivedByAddress, error) {
-	var respStruct models.RapidsListReceivedByAddress
+func (r *Rapids) ListReceivedByAddress(coinAuth *models.CoinAuth, includeZero bool) (models.RPDListReceivedByAddress, error) {
+	var respStruct models.RPDListReceivedByAddress
 
 	var s string
 	if includeZero {
@@ -449,11 +450,11 @@ func (r *Rapids) ListReceivedByAddress(includeZero bool) (models.RapidsListRecei
 		s = "{\"jsonrpc\":\"1.0\",\"id\":\"curltext\",\"method\":\"listreceivedbyaddress\",\"params\":[1, false]}"
 	}
 	body := strings.NewReader(s)
-	req, err := http.NewRequest("POST", "http://"+r.IPAddress+":"+r.Port, body)
+	req, err := http.NewRequest("POST", "http://"+coinAuth.IPAddress+":"+coinAuth.Port, body)
 	if err != nil {
 		return respStruct, err
 	}
-	req.SetBasicAuth(r.RPCUser, r.RPCPassword)
+	req.SetBasicAuth(coinAuth.RPCUser, coinAuth.RPCPassword)
 	req.Header.Set("Content-Type", "text/plain;")
 
 	resp, err := http.DefaultClient.Do(req)
@@ -474,8 +475,37 @@ func (r *Rapids) ListReceivedByAddress(includeZero bool) (models.RapidsListRecei
 	return respStruct, nil
 }
 
-func (r Rapids) MNSyncStatus(auth *models.CoinAuth) (models.RapidsMNSyncStatus, error) {
-	var respStruct models.RapidsMNSyncStatus
+func (r Rapids) ListTransactions(auth *models.CoinAuth) (models.RPDListTransactions, error) {
+	var respStruct models.RPDListTransactions
+
+	body := strings.NewReader("{\"jsonrpc\":\"1.0\",\"id\":\"boxwallet\",\"method\":\"" + models.CCommandListTransactions + "\",\"params\":[]}")
+	req, err := http.NewRequest("POST", "http://"+auth.IPAddress+":"+auth.Port, body)
+	if err != nil {
+		return respStruct, err
+	}
+	req.SetBasicAuth(auth.RPCUser, auth.RPCPassword)
+	req.Header.Set("Content-Type", "text/plain;")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return respStruct, err
+	}
+	defer resp.Body.Close()
+	bodyResp, err := ioutil.ReadAll(resp.Body)
+	if err != nil {
+		return respStruct, err
+	}
+
+	err = json.Unmarshal(bodyResp, &respStruct)
+	if err != nil {
+		return respStruct, err
+	}
+
+	return respStruct, nil
+}
+
+func (r Rapids) MNSyncStatus(auth *models.CoinAuth) (models.RPDMNSyncStatus, error) {
+	var respStruct models.RPDMNSyncStatus
 
 	body := strings.NewReader("{\"jsonrpc\":\"1.0\",\"id\":\"curltext\",\"method\":\"mnsync\",\"params\":[\"status\"]}")
 	req, err := http.NewRequest("POST", "http://"+auth.IPAddress+":"+auth.Port, body)
@@ -501,7 +531,7 @@ func (r Rapids) MNSyncStatus(auth *models.CoinAuth) (models.RapidsMNSyncStatus, 
 	return respStruct, nil
 }
 
-// func (r *Rapids) GetNetworkBlocksTxt(bci *models.RapidsBlockchainInfo) string {
+// func (r *Rapids) GetNetworkBlocksTxt(bci *models.RPDBlockchainInfo) string {
 // 	blocksStr := humanize.Comma(int64(bci.Result.Blocks))
 
 // 	if bci.Result.Blocks > 100 {
@@ -534,7 +564,7 @@ func (r Rapids) MNSyncStatus(auth *models.CoinAuth) (models.RapidsMNSyncStatus, 
 // 	}
 // }
 
-// func (r *Rapids) BlockchainSyncTxt(synced bool, bci *models.RapidsBlockchainInfo) (txt string) {
+// func (r *Rapids) BlockchainSyncTxt(synced bool, bci *models.RPDBlockchainInfo) (txt string) {
 // 	s := convertBCVerification(bci.Result.Verificationprogress)
 // 	if s == "0.0" {
 // 		s = ""
@@ -616,8 +646,8 @@ func (r Rapids) RPCDefaultPort() string {
 	return cRPCPort
 }
 
-func (r Rapids) StakingStatus(auth *models.CoinAuth) (models.RapidsStakingStatus, error) {
-	var respStruct models.RapidsStakingStatus
+func (r Rapids) StakingStatus(auth *models.CoinAuth) (models.RPDStakingStatus, error) {
+	var respStruct models.RPDStakingStatus
 
 	body := strings.NewReader("{\"jsonrpc\":\"1.0\",\"id\":\"curltext\",\"method\":\"getstakingstatus\",\"params\":[]}")
 	req, err := http.NewRequest("POST", "http://"+auth.IPAddress+":"+auth.Port, body)
@@ -644,7 +674,7 @@ func (r Rapids) StakingStatus(auth *models.CoinAuth) (models.RapidsStakingStatus
 }
 
 func (r Rapids) StartDaemon(displayOutput bool, appFolder string) error {
-	b, _ := x.DaemonRunning()
+	b, _ := r.DaemonRunning()
 	if b {
 		return nil
 	}
@@ -733,8 +763,8 @@ func (r Rapids) TipAddress() string {
 	return cTipAddress
 }
 
-func (r Rapids) WalletInfo(auth *models.CoinAuth) (models.RapidsWalletInfo, error) {
-	var respStruct models.RapidsWalletInfo
+func (r Rapids) WalletInfo(auth *models.CoinAuth) (models.RPDWalletInfo, error) {
+	var respStruct models.RPDWalletInfo
 
 	body := strings.NewReader("{\"jsonrpc\":\"1.0\",\"id\":\"boxwallet\",\"method\":\"" + models.CCommandGetWalletInfo + "\",\"params\":[]}")
 	req, err := http.NewRequest("POST", "http://"+auth.IPAddress+":"+auth.Port, body)
@@ -856,6 +886,35 @@ func (r Rapids) WalletSecurityState(ca *models.CoinAuth) (models.WEType, error) 
 	} else {
 		return models.WETUnknown, nil
 	}
+}
+
+func (r Rapids) WalletUnlockFS(coinAuth *models.CoinAuth, pw string) error {
+	var respStruct be.GenericRespStruct
+	var body *strings.Reader
+
+	body = strings.NewReader("{\"jsonrpc\":\"1.0\",\"id\":\"boxwallet\",\"method\":\"walletpassphrase\",\"params\":[\"" + pw + "\",9999999,true]}")
+
+	req, err := http.NewRequest("POST", "http://"+coinAuth.IPAddress+":"+coinAuth.Port, body)
+	if err != nil {
+		return err
+	}
+	req.SetBasicAuth(coinAuth.RPCUser, coinAuth.RPCPassword)
+	req.Header.Set("Content-Type", "text/plain;")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	bodyResp, err := ioutil.ReadAll(resp.Body)
+	if err != nil {
+		return err
+	}
+	err = json.Unmarshal(bodyResp, &respStruct)
+	if err != nil || respStruct.Error != nil {
+		return err
+	}
+	return nil
 }
 
 func (r Rapids) unarchiveFile(fullFilePath, location string) error {
