@@ -1,10 +1,13 @@
 package coins
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"github.com/AlecAivazis/survey/v2"
 	"github.com/mitchellh/go-ps"
+	"io/ioutil"
+	"net/http"
 	"os"
 	"richardmace.co.uk/boxwallet/cmd/cli/cmd/fileutils"
 	"richardmace.co.uk/boxwallet/cmd/cli/cmd/models"
@@ -318,4 +321,40 @@ func PopulateConfFile(confFile, homeDir, rpcUserCoin, rpcPortCoin string) (rpcUs
 
 	return rpcu, rpcpw, nil
 
+}
+
+func UpdateAUDPriceInfo() error {
+	resp, err := http.Get("https://api.exchangeratesapi.io/latest?base=USD&symbols=AUD")
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	body, err := ioutil.ReadAll(resp.Body)
+	if err != nil {
+		return err
+	}
+	err = json.Unmarshal(body, &gPricePerCoinAUD)
+	if err != nil {
+		return err
+	}
+	return errors.New("unable to updateAUDPriceInfo")
+}
+
+func UpdateGBPPriceInfo() error {
+	resp, err := http.Get("https://api.exchangeratesapi.io/latest?base=USD&symbols=GBP")
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	body, err := ioutil.ReadAll(resp.Body)
+	if err != nil {
+		return err
+	}
+	err = json.Unmarshal(body, &gPricePerCoinGBP)
+	if err != nil {
+		return err
+	}
+	return errors.New("unable to updateGBPPriceInfo")
 }
