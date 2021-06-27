@@ -1,11 +1,7 @@
 package bend
 
 import (
-	"encoding/json"
-	"errors"
 	"fmt"
-	"io/ioutil"
-	"net/http"
 	"os/exec"
 	"strconv"
 	"strings"
@@ -252,9 +248,9 @@ const (
 //var gLastMNSyncStatus string = ""
 
 // Ticker related variables
-var gGetTickerInfoCount int
-var gPricePerCoinAUD usd2AUDRespStruct
-var gPricePerCoinGBP usd2GBPRespStruct
+//var gGetTickerInfoCount int
+//var gPricePerCoinAUD usd2AUDRespStruct
+//var gPricePerCoinGBP usd2GBPRespStruct
 
 // ConvertBCVerification - Convert Blockchain verification progress...
 func ConvertBCVerification(verificationPG float64) string {
@@ -282,78 +278,6 @@ func getWalletResponse(sOut string) walletResponseType {
 
 	return wrtUnknown
 }
-
-func UpdateAUDPriceInfo() error {
-	resp, err := http.Get("https://api.exchangeratesapi.io/latest?base=USD&symbols=AUD")
-	if err != nil {
-		return err
-	}
-	defer resp.Body.Close()
-
-	body, err := ioutil.ReadAll(resp.Body)
-	if err != nil {
-		return err
-	}
-	err = json.Unmarshal(body, &gPricePerCoinAUD)
-	if err != nil {
-		return err
-	}
-	return errors.New("unable to updateAUDPriceInfo")
-}
-
-func UpdateGBPPriceInfo() error {
-	resp, err := http.Get("https://api.exchangeratesapi.io/latest?base=USD&symbols=GBP")
-	if err != nil {
-		return err
-	}
-	defer resp.Body.Close()
-
-	body, err := ioutil.ReadAll(resp.Body)
-	if err != nil {
-		return err
-	}
-	err = json.Unmarshal(body, &gPricePerCoinGBP)
-	if err != nil {
-		return err
-	}
-	return errors.New("unable to updateGBPPriceInfo")
-}
-
-// func WalletFix(wft WalletFixType, pt ProjectType) error {
-// 	cn, err := GetCoinName(APPTCLI)
-// 	if err != nil {
-// 		return fmt.Errorf("unable to retrieve coin name")
-// 	}
-
-// 	// Stop the coin daemon if it's running
-// 	if err := StopCoinDaemon(false); err != nil {
-// 		return fmt.Errorf("unable to stop the "+cn+" coin daemon: %v", err)
-// 	}
-
-// 	abf, _ := GetAppWorkingFolder()
-
-// 	coind, err := GetCoinDaemonFilename(APPTCLI, pt)
-// 	if err != nil {
-// 		return fmt.Errorf("unable to GetCoinDaemonFilename - %v", err)
-// 	}
-
-// 	var arg1 string
-// 	switch wft {
-// 	case WFTReIndex:
-// 		arg1 = "-reindex"
-// 	case WFTReSync:
-// 		arg1 = "-resync"
-// 	default:
-// 		return fmt.Errorf("unable to determine WalletFixType - [WalletFix-" + cn + "]")
-// 	}
-
-// 	cRun := exec.Command(abf+coind, arg1)
-// 	if err := cRun.Run(); err != nil {
-// 		return errors.new("unable to run "+coind+" "+arg1+": %v", err)
-// 	}
-
-// 	return nil
-// }
 
 func runDCCommand(cmdBaseStr, cmdStr, waitingStr string, attempts int) (string, error) {
 	var err error
