@@ -20,12 +20,15 @@ import (
 	"fmt"
 	"log"
 	"os"
+	divi "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/divi"
+	sys "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/syscoin"
 
 	"github.com/spf13/cobra"
 	"richardmace.co.uk/boxwallet/cmd/cli/cmd/app"
 	"richardmace.co.uk/boxwallet/cmd/cli/cmd/coins"
 	xbc "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/bitcoinplus"
 	d "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/denarius"
+	rpd "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/rapids"
 	"richardmace.co.uk/boxwallet/cmd/cli/cmd/conf"
 	"richardmace.co.uk/boxwallet/cmd/cli/cmd/models"
 )
@@ -70,7 +73,6 @@ var startCmd = &cobra.Command{
 
 		switch confDB.ProjectType {
 		case models.PTBitcoinPlus:
-			//coin = xbc.XBC{}
 			coinDaemon = xbc.XBC{}
 			coinName = xbc.XBC{}
 		case models.PTDenarius:
@@ -79,56 +81,33 @@ var startCmd = &cobra.Command{
 		case models.PTDeVault:
 		case models.PTDigiByte:
 		case models.PTDivi:
-			// // Add the addnodes if required..
-			// log.Println("Checking for addnodes...")
-			// exist, err := be.AddNodesAlreadyExist()
-			// if err != nil {
-			// 	log.Fatalf("unable to detect whether addnodes already exist: %v", err)
-			// }
-			// if exist {
-			// 	log.Println("addnodes already exist...")
-			// } else {
-			// 	log.Println("addnodes are missing, so attempting to add...")
-			// 	if err := be.AddAddNodesIfRequired(); err != nil {
-			// 		log.Fatalf("failed to add addnodes: %v", err)
-			// 	}
-			// 	log.Println("addnodes added...")
-			// }
+			coinDaemon = divi.Divi{}
+			coinName = divi.Divi{}
+			var d divi.Divi
+			if err := d.AddAddNodesIfRequired(); err != nil {
+				log.Fatal("Unable to add AddNodes" + err.Error())
+			}
 		case models.PTFeathercoin:
 		case models.PTGroestlcoin:
 		case models.PTPhore:
 		case models.PTPIVX:
 		case models.PTRapids:
-			// // Add the addnodes if required...
-			// log.Println("Checking for addnodes...")
-			// exist, err := be.AddNodesAlreadyExist()
-			// if err != nil {
-			// 	log.Fatalf("unable to detect whether addnodes already exist: %v", err)
-			// }
-			// if exist {
-			// 	log.Println("addnodes already exist...")
-			// } else {
-			// 	log.Println("addnodes are missing, so attempting to add...")
-			// 	if err := be.AddAddNodesIfRequired(); err != nil {
-			// 		log.Fatalf("failed to add addnodes: %v", err)
-			// 	}
-			// 	log.Println("addnodes added...")
-			// }
+			coinDaemon = rpd.Rapids{}
+			coinName = rpd.Rapids{}
 		case models.PTReddCoin:
 		case models.PTScala:
+		case models.PTSyscoin:
+			coinDaemon = sys.Syscoin{}
+			coinName = sys.Syscoin{}
 		case models.PTTrezarcoin:
 		case models.PTVertcoin:
 		default:
 			log.Fatal("unable to determine ProjectType")
 		}
 
-		//sCoinDaemon := coinDaemon.Filename()
-
 		if confDB.ServerIP != "127.0.0.1" {
 			log.Fatal("The start command can only be run on the same machine that's running the " + coinName.CoinName() + " wallet")
 		}
-
-		//coin.Bootstrap(confDB.RPCuser, confDB.RPCpassword, confDB.ServerIP, confDB.Port)
 
 		// Start the coin daemon server if required..
 		if err := coinDaemon.StartDaemon(true, appHomeDir); err != nil {
