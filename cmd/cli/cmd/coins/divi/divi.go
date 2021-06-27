@@ -60,10 +60,10 @@ const (
 	cTipAddress string = "DGvhjUXznuDyALk9zX4Y3ko4QQTmRhF7jZ"
 
 	// Wallet encryption status
-	cWalletESUnlockedForStaking = "unlocked-for-staking"
-	cWalletESLocked             = "locked"
-	cWalletESUnlocked           = "unlocked"
-	cWalletESUnencrypted        = "unencrypted"
+	CWalletESUnlockedForStaking = "unlocked-for-staking"
+	CWalletESLocked             = "locked"
+	CWalletESUnlocked           = "unlocked"
+	CWalletESUnencrypted        = "unencrypted"
 
 	// General CLI command constants
 	cCommandGetBCInfo             string = "getblockchaininfo"
@@ -88,7 +88,6 @@ type Divi struct {
 }
 
 var gLastBCSyncPos float64 = 0
-var ticker models.DiviTicker
 
 func (d Divi) Bootstrap(rpcUser, rpcPassword, ip, port string) {
 	d.RPCUser = rpcUser
@@ -119,7 +118,7 @@ func (d Divi) addNodesAlreadyExist() (bool, error) {
 	return false, nil
 }
 
-func (d *Divi) AddAddNodesIfRequired() error {
+func (d Divi) AddAddNodesIfRequired() error {
 	doExist, err := d.addNodesAlreadyExist()
 	if err != nil {
 		return err
@@ -215,7 +214,7 @@ func (d Divi) BlockchainDataExists() (bool, error) {
 	return false, nil
 }
 
-func (d *Divi) BlockchainInfo(auth *models.CoinAuth) (models.DiviBlockchainInfo, error) {
+func (d Divi) BlockchainInfo(auth *models.CoinAuth) (models.DiviBlockchainInfo, error) {
 	var respStruct models.DiviBlockchainInfo
 
 	body := strings.NewReader("{\"jsonrpc\":\"1.0\",\"id\":\"curltext\",\"method\":\"getblockchaininfo\",\"params\":[]}")
@@ -240,6 +239,19 @@ func (d *Divi) BlockchainInfo(auth *models.CoinAuth) (models.DiviBlockchainInfo,
 		return respStruct, err
 	}
 	return respStruct, nil
+}
+
+func (d Divi) BlockchainIsSynced(coinAuth *models.CoinAuth) (bool, error) {
+	bci, err := d.BlockchainInfo(coinAuth)
+	if err != nil {
+		return false, err
+	}
+
+	if bci.Result.Verificationprogress > 0.99999 {
+		return true, nil
+	}
+
+	return false, nil
 }
 
 func (d Divi) ConfFile() string {
@@ -353,26 +365,26 @@ func (d Divi) HomeDirFullPath() (string, error) {
 	}
 }
 
-func (d *Divi) Info(auth *models.CoinAuth) (models.DiviGetInfo, error) {
+func (d Divi) Info(auth *models.CoinAuth) (models.DiviGetInfo, string, error) {
 	var respStruct models.DiviGetInfo
 
 	for i := 1; i < 50; i++ {
 		body := strings.NewReader("{\"jsonrpc\":\"1.0\",\"id\":\"curltext\",\"method\":\"getinfo\",\"params\":[]}")
 		req, err := http.NewRequest("POST", "http://"+auth.IPAddress+":"+auth.Port, body)
 		if err != nil {
-			return respStruct, err
+			return respStruct, "", err
 		}
 		req.SetBasicAuth(auth.RPCUser, auth.RPCPassword)
 		req.Header.Set("Content-Type", "text/plain;")
 
 		resp, err := http.DefaultClient.Do(req)
 		if err != nil {
-			return respStruct, err
+			return respStruct, "", err
 		}
 		defer resp.Body.Close()
 		bodyResp, err := ioutil.ReadAll(resp.Body)
 		if err != nil {
-			return respStruct, err
+			return respStruct, "", err
 		}
 
 		// Check to make sure we are not loading the wallet
@@ -383,17 +395,17 @@ func (d *Divi) Info(auth *models.CoinAuth) (models.DiviGetInfo, error) {
 			var errStruct models.GenericResponse
 			err = json.Unmarshal(bodyResp, &errStruct)
 			if err != nil {
-				return respStruct, err
+				return respStruct, "", err
 			}
 			//fmt.Println("Waiting for wallet to load...")
 			time.Sleep(5 * time.Second)
 		} else {
 
 			_ = json.Unmarshal(bodyResp, &respStruct)
-			return respStruct, err
+			return respStruct, string(bodyResp), err
 		}
 	}
-	return respStruct, nil
+	return respStruct, "", nil
 }
 
 // Install - Puts the freshly downloaded files into their correct location.
@@ -633,7 +645,7 @@ func (d *Divi) InfoUI(spin *yacspin.Spinner) (models.DiviGetInfo, string, error)
 	return respStruct, "", nil
 }
 
-func (d *Divi) ListReceivedByAddress(coinAuth *models.CoinAuth, includeZero bool) (models.DiviListReceivedByAddress, error) {
+func (d Divi) ListReceivedByAddress(coinAuth *models.CoinAuth, includeZero bool) (models.DiviListReceivedByAddress, error) {
 	var respStruct models.DiviListReceivedByAddress
 
 	var s string
@@ -668,7 +680,7 @@ func (d *Divi) ListReceivedByAddress(coinAuth *models.CoinAuth, includeZero bool
 	return respStruct, nil
 }
 
-func (d *Divi) ListTransactions(auth *models.CoinAuth) (models.DiviListTransactions, error) {
+func (d Divi) ListTransactions(auth *models.CoinAuth) (models.DiviListTransactions, error) {
 	var respStruct models.DiviListTransactions
 
 	body := strings.NewReader("{\"jsonrpc\":\"1.0\",\"id\":\"boxwallet\",\"method\":\"" + cCommandListTransactions + "\",\"params\":[]}")
@@ -697,6 +709,25 @@ func (d *Divi) ListTransactions(auth *models.CoinAuth) (models.DiviListTransacti
 	return respStruct, nil
 }
 
+func (d Divi) LotteryInfo() (models.DiviLottery, error) {
+	var respStruct models.DiviLottery
+
+	resp, err := http.Get("https://statbot.neist.io/api/v1/statbot")
+	if err != nil {
+		return respStruct, err
+	}
+	defer resp.Body.Close()
+
+	body, err := ioutil.ReadAll(resp.Body)
+	if err != nil {
+		return respStruct, err
+	}
+	err = json.Unmarshal(body, &respStruct)
+	if err != nil {
+		return respStruct, err
+	}
+	return respStruct, errors.New("unable to LotteryInfo")
+}
 func (d *Divi) MNSyncStatus(auth *models.CoinAuth) (models.DiviMNSyncStatus, error) {
 	var respStruct models.DiviMNSyncStatus
 
@@ -828,7 +859,7 @@ func (d Divi) StakingStatus(auth *models.CoinAuth) (models.DiviStakingStatus, er
 	return respStruct, nil
 }
 
-func (d *Divi) SendToAddress(address string, amount float32) (returnResp models.GenericResponse, err error) {
+func (d Divi) SendToAddress(address string, amount float32) (returnResp models.GenericResponse, err error) {
 	var respStruct models.GenericResponse
 
 	sAmount := fmt.Sprintf("%f", amount) // sAmount == "123.456000"
@@ -857,9 +888,14 @@ func (d *Divi) SendToAddress(address string, amount float32) (returnResp models.
 	return respStruct, nil
 }
 
-func (d Divi) StartDaemon(dir string, displayOutput bool) error {
+func (d Divi) StartDaemon(displayOutput bool, appFolder string) error {
+	b, _ := d.DaemonRunning()
+	if b {
+		return nil
+	}
+
 	if runtime.GOOS == "windows" {
-		fp := dir + cDaemonFileWin
+		fp := appFolder + cDaemonFileWin
 		cmd := exec.Command("cmd.exe", "/C", "start", "/b", fp)
 		if err := cmd.Run(); err != nil {
 			return err
@@ -869,7 +905,7 @@ func (d Divi) StartDaemon(dir string, displayOutput bool) error {
 			fmt.Println("Attempting to run the " + cCoinName + " daemon...")
 		}
 
-		cmdRun := exec.Command(dir + cDaemonFileLin)
+		cmdRun := exec.Command(appFolder + cDaemonFileLin)
 		//stdout, err := cmdRun.StdoutPipe()
 		//if err != nil {
 		//	return err
@@ -885,38 +921,39 @@ func (d Divi) StartDaemon(dir string, displayOutput bool) error {
 	return nil
 }
 
-func (d Divi) StopDaemon(auth *models.CoinAuth) (models.GenericResponse, error) {
-	var respStruct models.GenericResponse
+func (d Divi) StopDaemon(auth *models.CoinAuth) error {
+	//var respStruct models.GenericResponse
 
 	body := strings.NewReader("{\"jsonrpc\":\"1.0\",\"id\":\"curltext\",\"method\":\"stop\",\"params\":[]}")
 	req, err := http.NewRequest("POST", "http://"+auth.IPAddress+":"+auth.Port, body)
 	if err != nil {
-		return respStruct, err
+		return err
 	}
 	req.SetBasicAuth(auth.RPCUser, auth.RPCPassword)
 	req.Header.Set("Content-Type", "text/plain;")
 
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
-		return respStruct, err
+		return err
 	}
 	defer resp.Body.Close()
-	bodyResp, err := ioutil.ReadAll(resp.Body)
-	if err != nil {
-		return respStruct, err
-	}
-	err = json.Unmarshal(bodyResp, &respStruct)
-	if err != nil {
-		return respStruct, err
-	}
-	return respStruct, nil
+	//bodyResp, err := ioutil.ReadAll(resp.Body)
+	//if err != nil {
+	//	return err
+	//}
+	//err = json.Unmarshal(bodyResp, &respStruct)
+	//if err != nil {
+	//	return err
+	//}
+
+	return nil
 }
 
 func (d Divi) TipAddress() string {
 	return cTipAddress
 }
 
-func (d *Divi) WalletInfo(auth *models.CoinAuth) (models.DiviWalletInfo, error) {
+func (d Divi) WalletInfo(auth *models.CoinAuth) (models.DiviWalletInfo, error) {
 	var respStruct models.DiviWalletInfo
 
 	body := strings.NewReader("{\"jsonrpc\":\"1.0\",\"id\":\"boxwallet\",\"method\":\"" + cCommandGetWalletInfo + "\",\"params\":[]}")
@@ -987,7 +1024,7 @@ func (d Divi) WalletNeedsEncrypting(coinAuth *models.CoinAuth) (bool, error) {
 		return true, errors.New("Unable to perform WalletInfo " + err.Error())
 	}
 
-	if wi.Result.EncryptionStatus == cWalletESUnencrypted {
+	if wi.Result.EncryptionStatus == CWalletESUnencrypted {
 		return true, nil
 	}
 
@@ -1028,13 +1065,13 @@ func (d Divi) WalletSecurityState(coinAuth *models.CoinAuth) (models.WEType, err
 		return models.WETUnknown, errors.New("Unable to GetWalletSecurityState: " + err.Error())
 	}
 
-	if wi.Result.EncryptionStatus == cWalletESLocked {
+	if wi.Result.EncryptionStatus == CWalletESLocked {
 		return models.WETLocked, nil
-	} else if wi.Result.EncryptionStatus == cWalletESUnlocked {
+	} else if wi.Result.EncryptionStatus == CWalletESUnlocked {
 		return models.WETUnlocked, nil
-	} else if wi.Result.EncryptionStatus == cWalletESUnlockedForStaking {
+	} else if wi.Result.EncryptionStatus == CWalletESUnlockedForStaking {
 		return models.WETUnlockedForStaking, nil
-	} else if wi.Result.EncryptionStatus == cWalletESUnencrypted {
+	} else if wi.Result.EncryptionStatus == CWalletESUnencrypted {
 		return models.WETUnencrypted, nil
 	} else {
 		return models.WETUnknown, nil
@@ -1116,22 +1153,22 @@ func (d Divi) WalletUnlock(coinAuth *models.CoinAuth, pw string) error {
 	return nil
 }
 
-func (d *Divi) UpdateTickerInfo() error {
+func (d Divi) UpdateTickerInfo() (ticker models.DiviTicker, err error) {
 	resp, err := http.Get("https://ticker.neist.io/DIVI")
 	if err != nil {
-		return err
+		return ticker, err
 	}
 	defer resp.Body.Close()
 
 	body, err := ioutil.ReadAll(resp.Body)
 	if err != nil {
-		return err
+		return ticker, err
 	}
 	err = json.Unmarshal(body, &ticker)
 	if err != nil {
-		return err
+		return ticker, err
 	}
-	return errors.New("unable to updateTicketInfo")
+	return ticker, nil
 }
 
 func (d *Divi) unarchiveFile(fullFilePath, location string) error {
