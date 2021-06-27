@@ -1,10 +1,8 @@
 package coins
 
 import (
-	"encoding/json"
 	"errors"
 	"fmt"
-	"io/ioutil"
 	"net/http"
 	"os"
 	"os/exec"
@@ -273,9 +271,14 @@ func (s Syscoin) RPCDefaultPort() string {
 	return cRPCPort
 }
 
-func (s Syscoin) StartDaemon(displayOutput bool) error {
+func (s Syscoin) StartDaemon(displayOutput bool, appFolder string) error {
+	b, _ := s.DaemonRunning()
+	if b {
+		return nil
+	}
+
 	if runtime.GOOS == "windows" {
-		fp := cHomeDirWin + cDaemonFileWin
+		fp := appFolder + cDaemonFileWin
 		cmd := exec.Command("cmd.exe", "/C", "start", "/b", fp)
 		if err := cmd.Run(); err != nil {
 			return err
@@ -285,7 +288,7 @@ func (s Syscoin) StartDaemon(displayOutput bool) error {
 			fmt.Println("Attempting to run the " + cCoinName + " daemon...")
 		}
 
-		cmdRun := exec.Command(cHomeDir + cDaemonFileLin)
+		cmdRun := exec.Command(appFolder + cDaemonFileLin)
 		//stdout, err := cmdRun.StdoutPipe()
 		//if err != nil {
 		//	return err
@@ -301,31 +304,31 @@ func (s Syscoin) StartDaemon(displayOutput bool) error {
 	return nil
 }
 
-func (s Syscoin) StopDaemon(ip, port, rpcUser, rpcPassword string, displayOut bool) (models.GenericResponse, error) {
-	var respStruct models.GenericResponse
+func (s Syscoin) StopDaemon(auth *models.CoinAuth) error {
+	//var respStruct models.GenericResponse
 
 	body := strings.NewReader("{\"jsonrpc\":\"1.0\",\"id\":\"curltext\",\"method\":\"stop\",\"params\":[]}")
-	req, err := http.NewRequest("POST", "http://"+ip+":"+port, body)
+	req, err := http.NewRequest("POST", "http://"+auth.IPAddress+":"+auth.Port, body)
 	if err != nil {
-		return respStruct, err
+		return err
 	}
-	req.SetBasicAuth(rpcUser, rpcPassword)
+	req.SetBasicAuth(auth.RPCUser, auth.RPCPassword)
 	req.Header.Set("Content-Type", "text/plain;")
 
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
-		return respStruct, err
+		return err
 	}
 	defer resp.Body.Close()
-	bodyResp, err := ioutil.ReadAll(resp.Body)
-	if err != nil {
-		return respStruct, err
-	}
-	err = json.Unmarshal(bodyResp, &respStruct)
-	if err != nil {
-		return respStruct, err
-	}
-	return respStruct, nil
+	//bodyResp, err := ioutil.ReadAll(resp.Body)
+	//if err != nil {
+	//	return respStruct, err
+	//}
+	//err = json.Unmarshal(bodyResp, &respStruct)
+	//if err != nil {
+	//	return respStruct, err
+	//}
+	return nil
 }
 
 func (s Syscoin) TipAddress() string {
