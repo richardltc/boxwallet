@@ -30,7 +30,9 @@ import (
 	"richardmace.co.uk/boxwallet/cmd/cli/cmd/app"
 	"richardmace.co.uk/boxwallet/cmd/cli/cmd/coins"
 	xbc "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/bitcoinplus"
+	divi "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/divi"
 	rpd "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/rapids"
+	sys "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/syscoin"
 	"richardmace.co.uk/boxwallet/cmd/cli/cmd/conf"
 	"richardmace.co.uk/boxwallet/cmd/cli/cmd/models"
 	"strconv"
@@ -50,7 +52,6 @@ var stopCmd = &cobra.Command{
 
 		var conf conf.Conf
 		var coinDaemon coins.CoinDaemon
-		var coinName coins.CoinName
 
 		appHomeDir, err := app.HomeFolder()
 		if err != nil {
@@ -78,20 +79,21 @@ var stopCmd = &cobra.Command{
 		switch confDB.ProjectType {
 		case models.PTBitcoinPlus:
 			coinDaemon = xbc.XBC{}
-			coinName = xbc.XBC{}
 		case models.PTDenarius:
 		case models.PTDeVault:
 		case models.PTDigiByte:
 		case models.PTDivi:
+			coinDaemon = divi.Divi{}
 		case models.PTFeathercoin:
 		case models.PTGroestlcoin:
 		case models.PTPhore:
 		case models.PTPIVX:
 		case models.PTRapids:
 			coinDaemon = rpd.Rapids{}
-			coinName = rpd.Rapids{}
 		case models.PTReddCoin:
 		case models.PTScala:
+		case models.PTSyscoin:
+			coinDaemon = sys.Syscoin{}
 		case models.PTTrezarcoin:
 		case models.PTVertcoin:
 		default:
