@@ -39,8 +39,12 @@ import (
 	// be "richardmace.co.uk/boxwallet/cmd/cli/ccoinsbend"
 	"richardmace.co.uk/boxwallet/cmd/cli/cmd/app"
 	"richardmace.co.uk/boxwallet/cmd/cli/cmd/coins"
+	divi "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/divi"
+	rpd "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/rapids"
 	"richardmace.co.uk/boxwallet/cmd/cli/cmd/conf"
 	xbcDisplay "richardmace.co.uk/boxwallet/cmd/cli/cmd/display/bitcoinplus"
+	diviDisplay "richardmace.co.uk/boxwallet/cmd/cli/cmd/display/divi"
+	rpdDisplay "richardmace.co.uk/boxwallet/cmd/cli/cmd/display/rapids"
 	"richardmace.co.uk/boxwallet/cmd/cli/cmd/models"
 	// "richardmace.co.uk/boxwallet/cmd/cli/cmd/wallet"
 	// //m "richardmace.co.uk/boxwallet/pkg/models"
@@ -131,9 +135,11 @@ var dashCmd = &cobra.Command{
 		var coinAuth models.CoinAuth
 		//var coinAnyAddresses coins.CoinAnyAddresses
 		var coinName coins.CoinName
+		var coinPrice coins.CoinPrice
 		var coinWallet wallet.Wallet
 		var walletRefreshDifficulty display.RefreshDifficulty
 		var walletRefreshNetwork display.RefreshNetwork
+		var walletRefreshTransactions display.RefreshTransactions
 		var walletSecurityState wallet.WalletSecurityState
 
 		appHomeDir, err := app.HomeFolder()
@@ -180,7 +186,43 @@ var dashCmd = &cobra.Command{
 			coinWallet = xbc.XBC{}
 			walletRefreshDifficulty = xbcDisplay.XBC{}
 			walletRefreshNetwork = xbcDisplay.XBC{}
+			walletRefreshTransactions = xbcDisplay.XBC{}
 			walletSecurityState = xbc.XBC{}
+		case models.PTDivi:
+			coin = divi.Divi{}
+			coinBlockchainIsSynced = divi.Divi{}
+			coinDaemon = divi.Divi{}
+			coinDispAbout = diviDisplay.DIVI{}
+			coinDispInitialBalance = diviDisplay.DIVI{}
+			coinDispInitialNetwork = diviDisplay.DIVI{}
+			coinDispLiveNetwork = diviDisplay.DIVI{}
+			coinDispLiveTransactions = diviDisplay.DIVI{}
+			coinDispLiveWallet = diviDisplay.DIVI{}
+			coinName = divi.Divi{}
+			coinPrice = diviDisplay.DIVI{}
+			coinWallet = divi.Divi{}
+			walletRefreshDifficulty = diviDisplay.DIVI{}
+			walletRefreshNetwork = diviDisplay.DIVI{}
+			walletRefreshTransactions = diviDisplay.DIVI{}
+			walletSecurityState = divi.Divi{}
+		case models.PTRapids:
+			coin = rpd.Rapids{}
+			coinBlockchainIsSynced = rpd.Rapids{}
+			coinDaemon = rpd.Rapids{}
+			coinDispAbout = rpdDisplay.RPD{}
+			coinDispInitialBalance = rpdDisplay.RPD{}
+			coinDispInitialNetwork = rpdDisplay.RPD{}
+			coinDispLiveNetwork = rpdDisplay.RPD{}
+			coinDispLiveTransactions = rpdDisplay.RPD{}
+			coinDispLiveWallet = rpdDisplay.RPD{}
+			//coinAnyAddresses = xbc.XBC{}
+			coinName = rpd.Rapids{}
+			coinWallet = rpd.Rapids{}
+			walletRefreshDifficulty = rpdDisplay.RPD{}
+			walletRefreshNetwork = rpdDisplay.RPD{}
+			walletRefreshTransactions = rpdDisplay.RPD{}
+			walletSecurityState = rpd.Rapids{}
+
 		default:
 			log.Fatal("Unable to determine ProjectType")
 		}
@@ -241,13 +283,6 @@ var dashCmd = &cobra.Command{
 		// 	} else {
 		// 		sCoreVersion = strconv.Itoa(gi.Result.Walletversion)
 		// 	}
-		// case be.PTDivi:
-		// 	gi, err := be.GetInfoDivi(&cliConf)
-		// 	if err != nil {
-		// 		sCoreVersion = "Unknown"
-		// 	} else {
-		// 		sCoreVersion = gi.Result.Version
-		// 	}
 		// case be.PTFeathercoin:
 		// 	gi, err := be.GetNetworkInfoFeathercoin(&cliConf)
 		// 	if err != nil {
@@ -271,13 +306,6 @@ var dashCmd = &cobra.Command{
 		// 	}
 		// case be.PTPIVX:
 		// 	gi, _, err := be.GetInfoPIVX(&cliConf)
-		// 	if err != nil {
-		// 		sCoreVersion = "Unknown"
-		// 	} else {
-		// 		sCoreVersion = strconv.Itoa(gi.Result.Version)
-		// 	}
-		// case be.PTRapids:
-		// 	gi, err := be.GetInfoRapids(&cliConf)
 		// 	if err != nil {
 		// 		sCoreVersion = "Unknown"
 		// 	} else {
@@ -388,20 +416,6 @@ var dashCmd = &cobra.Command{
 		// 		}
 		// 		if wet == be.WETLocked {
 		// 			pw = be.GetWalletEncryptionPassword()
-		// 		}
-
-		// 	case be.PTRapids:
-		// 		wet, err := be.GetWalletEncryptionStatus()
-		// 		if err != nil {
-		// 			log.Fatalf("Unable to determine wallet encryption status")
-		// 		}
-		// 		if wet == be.WETLocked {
-		// 			pw = be.GetWalletEncryptionPassword()
-		// 		}
-		// 		bConfirmedBU, err := HandleWalletBURapids(pw)
-		// 		cliConf.UserConfirmedWalletBU = bConfirmedBU
-		// 		if err := be.SetConfigStruct("", cliConf); err != nil {
-		// 			log.Fatalf("Unable to SetCLIConfStruct(): failed with %s\n", err)
 		// 		}
 		// 	case be.PTReddCoin:
 		// 		wet, err := be.GetWalletEncryptionStatus()
@@ -578,46 +592,6 @@ var dashCmd = &cobra.Command{
 		pAbout.TextStyle.Fg = ui.ColorWhite
 		pAbout.BorderStyle.Fg = ui.ColorGreen
 		pAbout.Text = coinDispAbout.About(&coinAuth)
-		// switch cliConf.ProjectType {
-		// case be.PTDenarius:
-		// 	pAbout.Text = "  [" + be.CAppName + "     v" + be.CBWAppVersion + "](fg:white)\n" +
-		// 		"  [" + sCoinName + " Core " + sCoreVersion + "](fg:white)\n\n"
-		// case be.PTDeVault:
-		// 	pAbout.Text = "  [" + be.CAppName + "    v" + be.CBWAppVersion + "](fg:white)\n" +
-		// 		"  [" + sCoinName + " Core v" + sCoreVersion + "](fg:white)\n\n"
-		// case be.PTDigiByte:
-		// 	pAbout.Text = "  [" + be.CAppName + "     v" + be.CBWAppVersion + "](fg:white)\n" +
-		// 		"  [" + sCoinName + " Core v" + sCoreVersion + "](fg:white)\n\n"
-		// case be.PTDivi:
-		// 	pAbout.Text = "  [" + be.CAppName + "    v" + be.CBWAppVersion + "](fg:white)\n" +
-		// 		"  [" + sCoinName + " Core    v" + sCoreVersion + "](fg:white)\n\n"
-		// case be.PTFeathercoin:
-		// 	pAbout.Text = "  [" + be.CAppName + "          v" + be.CBWAppVersion + "](fg:white)\n" +
-		// 		"  [" + sCoinName + " Core   v" + sCoreVersion + "](fg:white)\n\n"
-		// case be.PTGroestlcoin:
-		// 	pAbout.Text = "  [" + be.CAppName + "          v" + be.CBWAppVersion + "](fg:white)\n" +
-		// 		"  [" + sCoinName + " Core   v" + sCoreVersion + "](fg:white)\n\n"
-		// case be.PTPhore:
-		// 	pAbout.Text = "  [" + be.CAppName + "    v" + be.CBWAppVersion + "](fg:white)\n" +
-		// 		"  [" + sCoinName + " Core   v" + sCoreVersion + "](fg:white)\n\n"
-		// case be.PTPIVX:
-		// 	pAbout.Text = "  [" + be.CAppName + "    v" + be.CBWAppVersion + "](fg:white)\n" +
-		// 		"  [" + sCoinName + " Core    v" + sCoreVersion + "](fg:white)\n\n"
-		// case be.PTRapids:
-		// 	pAbout.Text = "  [" + be.CAppName + "    v" + be.CBWAppVersion + "](fg:white)\n" +
-		// 		"  [" + sCoinName + " Core  v" + sCoreVersion + "](fg:white)\n\n"
-		// case be.PTReddCoin:
-		// 	pAbout.Text = "  [" + be.CAppName + "     v" + be.CBWAppVersion + "](fg:white)\n" +
-		// 		"  [" + sCoinName + " Core v" + sCoreVersion + "](fg:white)\n\n"
-		// case be.PTTrezarcoin:
-		// 	pAbout.Text = "  [" + be.CAppName + "         v" + be.CBWAppVersion + "](fg:white)\n" +
-		// 		"  [" + sCoinName + " Core   v" + sCoreVersion + "](fg:white)\n\n"
-		// case be.PTVertcoin:
-		// 	pAbout.Text = "  [" + be.CAppName + "       v" + be.CBWAppVersion + "](fg:white)\n" +
-		// 		"  [" + sCoinName + " Core   v" + sCoreVersion + "](fg:white)\n\n"
-		// default:
-		// 	err = errors.New("unable to determine ProjectType")
-		// }
 
 		// **************************
 		// Populate the Wallet panel
@@ -640,14 +614,6 @@ var dashCmd = &cobra.Command{
 		// case be.PTDigiByte:
 		// 	pWallet.Text = "  Balance:          [waiting for sync...](fg:yellow)\n" +
 		// 		"  Security:         [waiting for sync...](fg:yellow)\n"
-		// case be.PTDivi:
-		// 	pWallet.Text = "  Balance:          [waiting for sync...](fg:yellow)\n" +
-		// 		"  Currency:         [waiting for sync...](fg:yellow)\n" +
-		// 		"  Security:         [waiting for sync...](fg:yellow)\n" +
-		// 		"  Staking %:	        [waiting for sync...](fg:yellow)\n" +
-		// 		"  Actively Staking: [waiting for sync...](fg:yellow)\n" +
-		// 		"  Next Lottery:     [waiting for sync...](fg:yellow)\n" +
-		// 		"  Lottery tickets:	  [waiting for sync...](fg:yellow)"
 		// case be.PTFeathercoin:
 		// 	pWallet.Text = "  Balance:          [waiting for sync...](fg:yellow)\n" +
 		// 		"  Security:         [waiting for sync...](fg:yellow)\n"
@@ -659,10 +625,6 @@ var dashCmd = &cobra.Command{
 		// 		"  Security:         [waiting for sync...](fg:yellow)\n" +
 		// 		"  Actively Staking: [waiting for sync...](fg:yellow)\n"
 		// case be.PTPIVX:
-		// 	pWallet.Text = "  Balance:          [waiting for sync...](fg:yellow)\n" +
-		// 		"  Security:         [waiting for sync...](fg:yellow)\n" +
-		// 		"  Actively Staking: [waiting for sync...](fg:yellow)\n"
-		// case be.PTRapids:
 		// 	pWallet.Text = "  Balance:          [waiting for sync...](fg:yellow)\n" +
 		// 		"  Security:         [waiting for sync...](fg:yellow)\n" +
 		// 		"  Actively Staking: [waiting for sync...](fg:yellow)\n"
@@ -724,12 +686,6 @@ var dashCmd = &cobra.Command{
 		// 		"  Difficulty:  [checking...](fg:yellow)\n" +
 		// 		"  Blockchain:  [checking...](fg:yellow)\n" +
 		// 		"  Peers:  [checking...](fg:yellow)\n"
-		// case be.PTDivi:
-		// 	pNetwork.Text = "  Blocks:      [checking...](fg:yellow)\n" +
-		// 		"  Difficulty:  [checking...](fg:yellow)\n" +
-		// 		"  Blockchain:  [checking...](fg:yellow)\n" +
-		// 		"  Masternodes: [checking...](fg:yellow)" +
-		// 		"  Peers:  [checking...](fg:yellow)\n"
 		// case be.PTFeathercoin:
 		// 	pNetwork.Text = "  Headers:     [checking...](fg:yellow)\n" +
 		// 		"  Blocks:      [checking...](fg:yellow)\n" +
@@ -756,12 +712,6 @@ var dashCmd = &cobra.Command{
 		// 		"  Masternodes: [checking...](fg:yellow)" +
 		// 		"  Peers:  [checking...](fg:yellow)\n"
 
-		// case be.PTRapids:
-		// 	pNetwork.Text = "  Blocks:      [checking...](fg:yellow)\n" +
-		// 		"  Difficulty:  [checking...](fg:yellow)\n" +
-		// 		"  Blockchain:  [checking...](fg:yellow)\n" +
-		// 		"  Masternodes: [checking...](fg:yellow)" +
-		// 		"  Peers:  [checking...](fg:yellow)\n"
 		// case be.PTReddCoin:
 		// 	pNetwork.Text = "  Headers:     [checking...](fg:yellow)\n" +
 		// 		"  Blocks:      [checking...](fg:yellow)\n" +
@@ -802,11 +752,9 @@ var dashCmd = &cobra.Command{
 		pTransactions.BorderStyle.Fg = ui.ColorWhite
 
 		// // var numSeconds int = -1
-		// var bciXBC be.XBCBlockchainInfoRespStruct
 		// var bciDenarius be.DenariusBlockchainInfoRespStruct
 		// var bciDeVault be.DVTBlockchainInfoRespStruct
 		// var bciDigiByte be.DGBBlockchainInfoRespStruct
-		// var bciDivi be.DiviBlockchainInfoRespStruct
 		// var bciFeathercoin be.FeathercoinBlockchainInfoRespStruct
 		// var bciGroestlcoin be.GRSBlockchainInfoRespStruct
 		// var bciPhore be.PhoreBlockchainInfoRespStruct
@@ -870,6 +818,7 @@ var dashCmd = &cobra.Command{
 					gGetBCInfoCount++
 				}
 				walletRefreshNetwork.RefreshNetwork(&coinAuth)
+				walletRefreshTransactions.RefreshTransactions(&coinAuth)
 				bBlockchainIsSynced, _ = coinBlockchainIsSynced.BlockchainIsSynced(&coinAuth)
 
 				// Refresh
@@ -941,12 +890,6 @@ var dashCmd = &cobra.Command{
 				pNetwork.BorderStyle.Fg = ui.ColorYellow
 			}
 			// 	switch cliConf.ProjectType {
-			// 	case be.PTBitcoinPlus:
-			// 		if bciXBC.Result.Verificationprogress > 0.999 {
-			// 			ssXBC, _ = be.GetStakingInfoXBC(&cliConf)
-			// 			transXBC, _ = be.ListTransactionsXBC(&cliConf)
-			// 			wiXBC, _ = be.GetWalletInfoXBC(&cliConf)
-			// 		}
 			// 	case be.PTDenarius:
 			// 		if bDenariusBlockchainIsSynced {
 			// 			giDenarius, _ = be.GetInfoDenarius(&cliConf)
@@ -988,12 +931,6 @@ var dashCmd = &cobra.Command{
 			// 			mnssPIVX, _ = be.GetMNSyncStatusPIVX(&cliConf)
 			// 			ssPIVX, _ = be.GetStakingStatusPIVX(&cliConf)
 			// 			wiPIVX, _ = be.GetWalletInfoPIVX(&cliConf)
-			// 		}
-			// 	case be.PTRapids:
-			// 		if bciRapids.Result.Verificationprogress > 0.999 {
-			// 			mnssRapids, _ = be.GetMNSyncStatusRapids(&cliConf)
-			// 			ssRapids, _ = be.GetStakingStatusRapids(&cliConf)
-			// 			wiRapids, _ = be.GetWalletInfoRapids(&cliConf)
 			// 		}
 			// 	case be.PTReddCoin:
 			// 		if bRDDBlockchainIsSynced {
@@ -1072,12 +1009,6 @@ var dashCmd = &cobra.Command{
 			// 		sBlockchainSync = getBlockchainSyncTxtPIVX(mnssPIVX.Result.IsBlockchainSynced, &bciPIVX)
 			// 		sMNSync = getMNSyncStatusTxtPIVX(mnssPIVX.Result.IsBlockchainSynced, &mnssPIVX)
 			// 		sPeers = getNetworkConnectionsTxtPIVX(gConnections)
-			// 	case be.PTRapids:
-			// 		sBlocks = be.GetNetworkBlocksTxtRapids(&bciRapids)
-			// 		sDiff = be.GetNetworkDifficultyTxtRapids(bciRapids.Result.Difficulty, gDiffGood, gDiffWarning)
-			// 		sBlockchainSync = getBlockchainSyncTxtRPD(mnssRapids.Result.IsBlockchainSynced, &bciRapids)
-			// 		sMNSync = getMNSyncStatusTxtRapids(mnssRapids.Result.IsBlockchainSynced, &mnssRapids)
-			// 		sPeers = be.GetNetworkConnectionsTxtRPD(gConnections)
 			// 	case be.PTReddCoin:
 			// 		sHeaders = be.GetNetworkHeadersTxtRDD(&bciReddCoin)
 			// 		sBlocks = be.GetNetworkBlocksTxtRDD(&bciReddCoin)
@@ -1142,12 +1073,6 @@ var dashCmd = &cobra.Command{
 			// 			"  " + sMNSync + "\n" +
 			// 			"  " + sPeers
 			// 	case be.PTPIVX:
-			// 		pNetwork.Text = "  " + sBlocks + "\n" +
-			// 			"  " + sDiff + "\n" +
-			// 			"  " + sBlockchainSync + "\n" +
-			// 			"  " + sMNSync + "\n" +
-			// 			"  " + sPeers
-			// 	case be.PTRapids:
 			// 		pNetwork.Text = "  " + sBlocks + "\n" +
 			// 			"  " + sDiff + "\n" +
 			// 			"  " + sBlockchainSync + "\n" +
@@ -1251,12 +1176,6 @@ var dashCmd = &cobra.Command{
 			// 				"  " + getWalletSecurityStatusTxtPIVX(&wiPIVX) + "\n" +
 			// 				"  " + getActivelyStakingTxtPIVX(&ssPIVX) + "\n" //e.g. "15%" or "staking"
 			// 		}
-			// 	case be.PTRapids:
-			// 		if bciRapids.Result.Verificationprogress > 0.999 {
-			// 			pWallet.Text = "" + getBalanceInRapidsTxt(&wiRapids) + "\n" +
-			// 				"  " + getWalletSecurityStatusTxtRapids(&wiRapids) + "\n" +
-			// 				"  " + getActivelyStakingTxtRapids(&ssRapids) + "\n" //e.g. "15%" or "staking"
-			// 		}
 			// 	case be.PTReddCoin:
 			// 		if bciReddCoin.Result.Verificationprogress > 0.999 {
 			// 			pWallet.Text = "" + getBalanceInRDDTxt(&wiReddCoin) + "\n" +
@@ -1282,7 +1201,13 @@ var dashCmd = &cobra.Command{
 			// *******************************************************
 
 			if bBlockchainIsSynced {
-				coinDispLiveTransactions.LiveTransactions()
+				containsZeroConfs, rows := coinDispLiveTransactions.LiveTransactions()
+				if containsZeroConfs {
+					pWallet.BorderStyle.Fg = ui.ColorYellow
+				} else {
+					pWallet.BorderStyle.Fg = ui.ColorGreen
+				}
+				pTransactions.Rows = rows
 			}
 
 			// 	switch cliConf.ProjectType {
@@ -1329,14 +1254,10 @@ var dashCmd = &cobra.Command{
 					g30SecTickerCounter++
 				}
 
+				coinPrice.RefreshPrice()
 				walletRefreshDifficulty.RefreshDifficulty()
 
 				// 		switch cliConf.ProjectType {
-				// 		case be.PTBitcoinPlus:
-				// 			gDiffGood, gDiffWarning, _ = getNetworkDifficultyInfo(be.PTBitcoinPlus)
-				// 			// update the Network Info details
-				// 			niXBC, _ := be.GetNetworkInfoXBC(&cliConf)
-				// 			gConnections = niXBC.Result.Connections
 				// 		case be.PTDenarius:
 				// 			// We need to get the difficulty and the Block height for Denarius so we can work the verification progress.
 				// 			// I think the difficulty routine should be in a separate 60 seconds timer, to reduce the amount of api calls to the service
@@ -1710,16 +1631,16 @@ func confirmWalletReady(coinAuth *models.CoinAuth, coinName string, wallet walle
 // }
 
 // func getNextLotteryTxtDIVI() string {
-// 	if NextLotteryCounter > (60*30) || NextLotteryStored == "" {
-// 		NextLotteryCounter = 0
+// 	if nextLotteryCounter > (60*30) || nextLotteryStored == "" {
+// 		nextLotteryCounter = 0
 // 		//lrs, _ := getDiviLotteryInfo(conf)
 // 		if gDiviLottery.Lottery.Countdown.Humanized != "" {
 // 			return "Next Lottery:     [" + gDiviLottery.Lottery.Countdown.Humanized + "](fg:white)"
 // 		} else {
-// 			return "Next Lottery:     [" + NextLotteryStored + "](fg:white)"
+// 			return "Next Lottery:     [" + nextLotteryStored + "](fg:white)"
 // 		}
 // 	} else {
-// 		return "Next Lottery:     [" + NextLotteryStored + "](fg:white)"
+// 		return "Next Lottery:     [" + nextLotteryStored + "](fg:white)"
 // 	}
 // }
 
@@ -1779,14 +1700,6 @@ func confirmWalletReady(coinAuth *models.CoinAuth, coinName string, wallet walle
 // }
 
 // func getActivelyStakingTxtPIVX(ss *be.PIVXStakingStatusRespStruct) string {
-// 	if ss.Result.StakingStatus == true {
-// 		return "Actively Staking: [Yes](fg:green)"
-// 	} else {
-// 		return "Actively Staking: [No](fg:yellow)"
-// 	}
-// }
-
-// func getActivelyStakingTxtRapids(ss *be.RapidsStakingStatusRespStruct) string {
 // 	if ss.Result.StakingStatus == true {
 // 		return "Actively Staking: [Yes](fg:green)"
 // 	} else {
