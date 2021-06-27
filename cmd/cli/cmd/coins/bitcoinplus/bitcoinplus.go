@@ -758,7 +758,7 @@ func (x XBC) WalletNeedsEncrypting(coinAuth *models.CoinAuth) (bool, error) {
 	return false, nil
 }
 
-func (x XBC) WalletResync() error {
+func (x XBC) WalletResync(appFolder string) error {
 	daemonRunning, err := x.DaemonRunning()
 	if err != nil {
 		return errors.New("Unable to determine DaemonRunning: " + err.Error())
@@ -767,13 +767,9 @@ func (x XBC) WalletResync() error {
 		return errors.New("daemon is still running, please stop first")
 	}
 
-	coinDir, err := x.HomeDirFullPath()
-	if err != nil {
-		return errors.New("Unable to determine HomeDirFullPath: " + err.Error())
-	}
 	arg1 := "-resync"
 
-	cRun := exec.Command(coinDir+cDaemonFileLin, arg1)
+	cRun := exec.Command(appFolder+cDaemonFileLin, arg1)
 	if err := cRun.Run(); err != nil {
 		return fmt.Errorf("unable to run "+cDaemonFileLin+" "+arg1+": %v", err)
 	}
