@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"os/user"
+	"richardmace.co.uk/boxwallet/cmd/cli/cmd/coins"
 	"richardmace.co.uk/boxwallet/cmd/cli/cmd/fileutils"
 	"runtime"
 	"strings"
@@ -41,13 +42,13 @@ const (
 	cHomeDirWin string = "syscoin"
 
 	// File constants
-	cConfFile   string = "syscoin.conf"
-	cCliFile    string = "syscoin-cli"
-	cCliFileWin string = "syscoin-cli.exe"
-	cDFileLin   string = "syscoind"
-	cDFileWin   string = "syscoind.exe"
-	cTxFile     string = "syscoin-tx"
-	cTxFileWin  string = "syscoin-tx.exe"
+	cConfFile      string = "syscoin.conf"
+	cCliFile       string = "syscoin-cli"
+	cCliFileWin    string = "syscoin-cli.exe"
+	cDaemonFileLin string = "syscoind"
+	cDaemonFileWin string = "syscoind.exe"
+	cTxFile        string = "syscoin-tx"
+	cTxFileWin     string = "syscoin-tx.exe"
 
 	cTipAddress string = "sys1qkj3tfnpndluj85k5vmfzccxfsl6nt4kn6slxey"
 
@@ -78,7 +79,7 @@ func (s Syscoin) AllBinaryFilesExist(dir string) (bool, error) {
 		if !fileutils.FileExists(dir + cCliFileWin) {
 			return false, nil
 		}
-		if !fileutils.FileExists(dir + cDFileWin) {
+		if !fileutils.FileExists(dir + cDaemonFileWin) {
 			return false, nil
 		}
 		if !fileutils.FileExists(dir + cTxFileWin) {
@@ -88,7 +89,7 @@ func (s Syscoin) AllBinaryFilesExist(dir string) (bool, error) {
 		if !fileutils.FileExists(dir + cCliFile) {
 			return false, nil
 		}
-		if !fileutils.FileExists(dir + cDFileLin) {
+		if !fileutils.FileExists(dir + cDaemonFileLin) {
 			return false, nil
 		}
 		if !fileutils.FileExists(dir + cTxFile) {
@@ -148,9 +149,28 @@ func (s Syscoin) DownloadCoin(location string) error {
 
 func (s Syscoin) DaemonFilename() string {
 	if runtime.GOOS == "windows" {
-		return cDFileWin
+		return cDaemonFileWin
 	} else {
-		return cDFileLin
+		return cDaemonFileLin
+	}
+}
+
+func (s Syscoin) DaemonRunning() (bool, error) {
+	var err error
+
+	if runtime.GOOS == "windows" {
+		_, _, err = coins.FindProcess(cDaemonFileWin)
+	} else {
+		_, _, err = coins.FindProcess(cDaemonFileLin)
+	}
+
+	if err == nil {
+		return true, nil
+	}
+	if err.Error() == "not found" {
+		return false, nil
+	} else {
+		return false, err
 	}
 }
 
@@ -187,20 +207,20 @@ func (s Syscoin) Install(location string) error {
 	case "windows":
 		srcPath = location + cDownloadFileWin
 		sfCLI = cCliFileWin
-		sfD = cDFileWin
+		sfD = cDaemonFileWin
 		sfTX = cTxFileWin
 	case "linux":
 		switch runtime.GOARCH {
 		case "arm", "arm64":
 			srcPath = location + cExtractedDirLin + "bin/"
 			sfCLI = cCliFile
-			sfD = cDFileLin
+			sfD = cDaemonFileLin
 			sfTX = cTxFile
 			dirToRemove = location + cExtractedDirLin
 		case "amd64":
 			srcPath = location + cExtractedDirLin + "bin/"
 			sfCLI = cCliFile
-			sfD = cDFileLin
+			sfD = cDaemonFileLin
 			sfTX = cTxFile
 			dirToRemove = location + cExtractedDirLin
 		default:
@@ -253,9 +273,9 @@ func (s Syscoin) RPCDefaultPort() string {
 	return cRPCPort
 }
 
-func (s *Syscoin) StartDaemon(displayOutput bool) error {
+func (s Syscoin) StartDaemon(displayOutput bool) error {
 	if runtime.GOOS == "windows" {
-		fp := cHomeDirWin + cDFileWin
+		fp := cHomeDirWin + cDaemonFileWin
 		cmd := exec.Command("cmd.exe", "/C", "start", "/b", fp)
 		if err := cmd.Run(); err != nil {
 			return err
@@ -265,7 +285,7 @@ func (s *Syscoin) StartDaemon(displayOutput bool) error {
 			fmt.Println("Attempting to run the " + cCoinName + " daemon...")
 		}
 
-		cmdRun := exec.Command(cHomeDir + cDFileLin)
+		cmdRun := exec.Command(cHomeDir + cDaemonFileLin)
 		//stdout, err := cmdRun.StdoutPipe()
 		//if err != nil {
 		//	return err
@@ -281,7 +301,7 @@ func (s *Syscoin) StartDaemon(displayOutput bool) error {
 	return nil
 }
 
-func (s *Syscoin) StopDaemon(ip, port, rpcUser, rpcPassword string, displayOut bool) (models.GenericResponse, error) {
+func (s Syscoin) StopDaemon(ip, port, rpcUser, rpcPassword string, displayOut bool) (models.GenericResponse, error) {
 	var respStruct models.GenericResponse
 
 	body := strings.NewReader("{\"jsonrpc\":\"1.0\",\"id\":\"curltext\",\"method\":\"stop\",\"params\":[]}")
