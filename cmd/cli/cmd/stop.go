@@ -31,6 +31,7 @@ import (
 	"richardmace.co.uk/boxwallet/cmd/cli/cmd/coins"
 	xbc "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/bitcoinplus"
 	divi "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/divi"
+	ppc "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/peercoin"
 	rpd "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/rapids"
 	sys "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/syscoin"
 	"richardmace.co.uk/boxwallet/cmd/cli/cmd/conf"
@@ -86,6 +87,8 @@ var stopCmd = &cobra.Command{
 			coinDaemon = divi.Divi{}
 		case models.PTFeathercoin:
 		case models.PTGroestlcoin:
+		case models.PTPeercoin:
+			coinDaemon = ppc.Peercoin{}
 		case models.PTPhore:
 		case models.PTPIVX:
 		case models.PTRapids:
@@ -106,6 +109,12 @@ var stopCmd = &cobra.Command{
 		coinAuth.RPCPassword = confDB.RPCpassword
 		coinAuth.IPAddress = confDB.ServerIP
 		coinAuth.Port = confDB.Port
+
+		running, _ := coinDaemon.DaemonRunning()
+		if !running {
+			log.Fatal("The " + coinDaemon.DaemonFilename() + " is not running.")
+
+		}
 
 		fmt.Println("Stopping the " + coinDaemon.DaemonFilename() + " server...")
 		// Stop the coin daemon server..
