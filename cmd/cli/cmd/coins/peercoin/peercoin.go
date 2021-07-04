@@ -1,6 +1,7 @@
 package bend
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -9,9 +10,11 @@ import (
 	"os"
 	"os/exec"
 	"os/user"
+	be "richardmace.co.uk/boxwallet/cmd/cli/cmd/bend"
 	"richardmace.co.uk/boxwallet/cmd/cli/cmd/coins"
 	"richardmace.co.uk/boxwallet/cmd/cli/cmd/fileutils"
 	"runtime"
+	"strconv"
 	"strings"
 
 	"github.com/mholt/archiver"
@@ -101,16 +104,56 @@ func (p Peercoin) AllBinaryFilesExist(dir string) (bool, error) {
 	return true, nil
 }
 
-//func (p Peercoin) AnyAddresses(auth *models.CoinAuth) (bool, error) {
-//	addresses, err := p.ListReceivedByAddress(auth, false)
-//	if err != nil {
-//		return false, err
-//	}
-//	if len(addresses.Result) > 0 {
-//		return true, nil
-//	}
-//	return false, nil
-//}
+func (p Peercoin) AnyAddresses(auth *models.CoinAuth) (bool, error) {
+	addresses, err := p.ListReceivedByAddress(auth, false)
+	if err != nil {
+		return false, err
+	}
+	if len(addresses.Result) > 0 {
+		return true, nil
+	}
+	return false, nil
+}
+
+func (p Peercoin) BlockchainInfo(auth *models.CoinAuth) (models.PPCBlockchainInfo, error) {
+	var respStruct models.PPCBlockchainInfo
+
+	body := strings.NewReader("{\"jsonrpc\":\"1.0\",\"id\":\"curltext\",\"method\":\"getblockchaininfo\",\"params\":[]}")
+	req, err := http.NewRequest("POST", "http://"+auth.IPAddress+":"+auth.Port, body)
+	if err != nil {
+		return respStruct, err
+	}
+	req.SetBasicAuth(auth.RPCUser, auth.RPCPassword)
+	req.Header.Set("Content-Type", "text/plain;")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return respStruct, err
+	}
+	defer resp.Body.Close()
+	bodyResp, err := ioutil.ReadAll(resp.Body)
+	if err != nil {
+		return respStruct, err
+	}
+	err = json.Unmarshal(bodyResp, &respStruct)
+	if err != nil {
+		return respStruct, err
+	}
+	return respStruct, nil
+}
+
+func (p Peercoin) BlockchainIsSynced(coinAuth *models.CoinAuth) (bool, error) {
+	bci, err := p.BlockchainInfo(coinAuth)
+	if err != nil {
+		return false, err
+	}
+
+	if bci.Result.Verificationprogress > 0.99999 {
+		return true, nil
+	}
+
+	return false, nil
+}
 
 func (p Peercoin) ConfFile() string {
 	return cConfFile
@@ -122,6 +165,14 @@ func (p Peercoin) CoinName() string {
 
 func (p Peercoin) CoinNameAbbrev() string {
 	return cCoinNameAbbrev
+}
+
+func (p Peercoin) DaemonFilename() string {
+	if runtime.GOOS == "windows" {
+		return cDaemonFileWin
+	}
+
+	return cDaemonFileLin
 }
 
 func (p Peercoin) DaemonRunning() (bool, error) {
@@ -176,14 +227,6 @@ func (p Peercoin) DownloadCoin(location string) error {
 		return err
 	}
 	return nil
-}
-
-func (p Peercoin) DaemonFilename() string {
-	if runtime.GOOS == "windows" {
-		return cDaemonFileWin
-	} else {
-		return cDaemonFileLin
-	}
 }
 
 func (p Peercoin) HomeDir() string {
@@ -276,23 +319,21 @@ func (p Peercoin) Install(location string) error {
 	return nil
 }
 
-func (p Peercoin) RPCDefaultUsername() string {
-	return cRPCUser
-}
+func (p Peercoin) ListReceivedByAddress(coinAuth *models.CoinAuth, includeZero bool) (models.PPCListReceivedByAddress, error) {
+	var respStruct models.PPCListReceivedByAddress
 
-func (p Peercoin) RPCDefaultPort() string {
-	return cRPCPort
-}
-
-func (p *Peercoin) WalletInfo() (models.PPCWalletInfo, error) {
-	var respStruct models.PPCWalletInfo
-
-	body := strings.NewReader("{\"jsonrpc\":\"1.0\",\"id\":\"boxwallet\",\"method\":\"" + models.CCommandGetWalletInfo + "\",\"params\":[]}")
-	req, err := http.NewRequest("POST", "http://"+p.IPAddress+":"+p.Port, body)
+	var s string
+	if includeZero {
+		s = "{\"jsonrpc\":\"1.0\",\"id\":\"curltext\",\"method\":\"listreceivedbyaddress\",\"params\":[1, true]}"
+	} else {
+		s = "{\"jsonrpc\":\"1.0\",\"id\":\"curltext\",\"method\":\"listreceivedbyaddress\",\"params\":[1, false]}"
+	}
+	body := strings.NewReader(s)
+	req, err := http.NewRequest("POST", "http://"+coinAuth.IPAddress+":"+coinAuth.Port, body)
 	if err != nil {
 		return respStruct, err
 	}
-	req.SetBasicAuth(p.RPCUser, p.RPCPassword)
+	req.SetBasicAuth(coinAuth.RPCUser, coinAuth.RPCPassword)
 	req.Header.Set("Content-Type", "text/plain;")
 
 	resp, err := http.DefaultClient.Do(req)
@@ -310,30 +351,97 @@ func (p *Peercoin) WalletInfo() (models.PPCWalletInfo, error) {
 		return respStruct, err
 	}
 
-	// Check to see if the json response contains "unlocked_until"
-	s := string(bodyResp)
-	if !strings.Contains(s, "unlocked_until") {
-		respStruct.Result.UnlockedUntil = -1
+	return respStruct, nil
+}
+
+func (p Peercoin) ListTransactions(auth *models.CoinAuth) (models.PPCListTransactions, error) {
+	var respStruct models.PPCListTransactions
+
+	body := strings.NewReader("{\"jsonrpc\":\"1.0\",\"id\":\"boxwallet\",\"method\":\"" + models.CCommandListTransactions + "\",\"params\":[]}")
+	req, err := http.NewRequest("POST", "http://"+auth.IPAddress+":"+auth.Port, body)
+	if err != nil {
+		return respStruct, err
+	}
+	req.SetBasicAuth(auth.RPCUser, auth.RPCPassword)
+	req.Header.Set("Content-Type", "text/plain;")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return respStruct, err
+	}
+	defer resp.Body.Close()
+	bodyResp, err := ioutil.ReadAll(resp.Body)
+	if err != nil {
+		return respStruct, err
+	}
+
+	err = json.Unmarshal(bodyResp, &respStruct)
+	if err != nil {
+		return respStruct, err
 	}
 
 	return respStruct, nil
 }
 
-func (p Peercoin) WalletSecurityState() (models.WEType, error) {
-	wi, err := p.WalletInfo()
+func (p Peercoin) NetworkDifficultyInfo() (float64, float64, error) {
+	// https://chainz.cryptoid.info/ftc/api.dws?q=getdifficulty
+
+	resp, err := http.Get("https://chainz.cryptoid.info/" + strings.ToLower(p.CoinNameAbbrev()) + "/api.dws?q=getdifficulty")
 	if err != nil {
-		return models.WETUnknown, errors.New("Unable to GetWalletSecurityState: " + err.Error())
+		return 0, 0, err
+	}
+	defer resp.Body.Close()
+
+	body, err := ioutil.ReadAll(resp.Body)
+	if err != nil {
+		return 0, 0, err
 	}
 
-	if wi.Result.UnlockedUntil == 0 {
-		return models.WETLocked, nil
-	} else if wi.Result.UnlockedUntil == -1 {
-		return models.WETUnencrypted, nil
-	} else if wi.Result.UnlockedUntil > 0 {
-		return models.WETUnlockedForStaking, nil
-	} else {
-		return models.WETUnknown, nil
+	var fGood float64
+	var fWarning float64
+	// Now calculate the correct levels...
+	if fDiff, err := strconv.ParseFloat(string(body), 32); err == nil {
+		fGood = fDiff * 0.75
+		fWarning = fDiff * 0.50
 	}
+	return fGood, fWarning, nil
+}
+
+func (p Peercoin) NewAddress(auth *models.CoinAuth) (models.PPCNewAddress, error) {
+	var respStruct models.PPCNewAddress
+
+	body := strings.NewReader("{\"jsonrpc\":\"1.0\",\"id\":\"curltext\",\"method\":\"getnewaddress\",\"params\":[]}")
+	req, err := http.NewRequest("POST", "http://"+auth.IPAddress+":"+auth.Port, body)
+	if err != nil {
+		return respStruct, err
+	}
+	req.SetBasicAuth(auth.RPCUser, auth.RPCPassword)
+	req.Header.Set("Content-Type", "text/plain;")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return respStruct, err
+	}
+	defer resp.Body.Close()
+	bodyResp, err := ioutil.ReadAll(resp.Body)
+	if err != nil {
+		return respStruct, err
+	}
+
+	err = json.Unmarshal(bodyResp, &respStruct)
+	if err != nil {
+		return respStruct, err
+	}
+
+	return respStruct, nil
+}
+
+func (p Peercoin) RPCDefaultUsername() string {
+	return cRPCUser
+}
+
+func (p Peercoin) RPCDefaultPort() string {
+	return cRPCPort
 }
 
 func (p Peercoin) StartDaemon(displayOutput bool, appFolder string, auth *models.CoinAuth) error {
@@ -416,6 +524,211 @@ func (p Peercoin) StopDaemon(auth *models.CoinAuth) error {
 
 func (p Peercoin) TipAddress() string {
 	return cTipAddress
+}
+
+func (p *Peercoin) WalletInfo() (models.PPCWalletInfo, error) {
+	var respStruct models.PPCWalletInfo
+
+	body := strings.NewReader("{\"jsonrpc\":\"1.0\",\"id\":\"boxwallet\",\"method\":\"" + models.CCommandGetWalletInfo + "\",\"params\":[]}")
+	req, err := http.NewRequest("POST", "http://"+p.IPAddress+":"+p.Port, body)
+	if err != nil {
+		return respStruct, err
+	}
+	req.SetBasicAuth(p.RPCUser, p.RPCPassword)
+	req.Header.Set("Content-Type", "text/plain;")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return respStruct, err
+	}
+	defer resp.Body.Close()
+	bodyResp, err := ioutil.ReadAll(resp.Body)
+	if err != nil {
+		return respStruct, err
+	}
+
+	err = json.Unmarshal(bodyResp, &respStruct)
+	if err != nil {
+		return respStruct, err
+	}
+
+	// Check to see if the json response contains "unlocked_until"
+	s := string(bodyResp)
+	if !strings.Contains(s, "unlocked_until") {
+		respStruct.Result.UnlockedUntil = -1
+	}
+
+	return respStruct, nil
+}
+
+func (p Peercoin) WalletLoadingStatus(auth *models.CoinAuth) models.WLSType {
+	body := strings.NewReader("{\"jsonrpc\":\"1.0\",\"id\":\"boxwallet\",\"method\":\"" + models.CCommandGetInfo + "\",\"params\":[]}")
+	req, err := http.NewRequest("POST", "http://"+auth.IPAddress+":"+auth.Port, body)
+	if err != nil {
+		return models.WLSTUnknown
+	}
+	req.SetBasicAuth(auth.RPCUser, auth.RPCPassword)
+	req.Header.Set("Content-Type", "text/plain;")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return models.WLSTWaitingForResponse
+	} else {
+		defer resp.Body.Close()
+		bodyResp, err := ioutil.ReadAll(resp.Body)
+		if err != nil {
+			return models.WLSTWaitingForResponse
+		}
+
+		if bytes.Contains(bodyResp, []byte("Loading")) {
+			return models.WLSTLoading
+		}
+		if bytes.Contains(bodyResp, []byte("Rescanning")) {
+			return models.WLSTRescanning
+		}
+		if bytes.Contains(bodyResp, []byte("Rewinding")) {
+			return models.WLSTRewinding
+		}
+		if bytes.Contains(bodyResp, []byte("Verifying")) {
+			return models.WLSTVerifying
+		}
+		if bytes.Contains(bodyResp, []byte("Calculating money supply")) {
+			return models.WLSTCalculatingMoneySupply
+		}
+	}
+	return models.WLSTReady
+}
+
+func (p Peercoin) WalletNeedsEncrypting(coinAuth *models.CoinAuth) (bool, error) {
+	wi, err := p.WalletInfo()
+	if err != nil {
+		return true, errors.New("Unable to perform WalletInfo " + err.Error())
+	}
+
+	if wi.Result.UnlockedUntil < 0 {
+		return true, nil
+	}
+
+	return false, nil
+}
+
+func (p Peercoin) WalletResync(appFolder string) error {
+	daemonRunning, err := p.DaemonRunning()
+	if err != nil {
+		return errors.New("Unable to determine DaemonRunning: " + err.Error())
+	}
+	if daemonRunning {
+		return errors.New("daemon is still running, please stop first")
+	}
+
+	arg1 := "-resync"
+
+	if runtime.GOOS == "windows" {
+		fullPath := appFolder + cDaemonFileWin
+		cmd := exec.Command("cmd.exe", "/C", "start", "/b", fullPath, arg1)
+		if err := cmd.Run(); err != nil {
+			return err
+		}
+	} else {
+		fullPath := appFolder + cDaemonFileLin
+		cmdRun := exec.Command(fullPath, arg1)
+		if err := cmdRun.Run(); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+func (p Peercoin) WalletSecurityState() (models.WEType, error) {
+	wi, err := p.WalletInfo()
+	if err != nil {
+		return models.WETUnknown, errors.New("Unable to GetWalletSecurityState: " + err.Error())
+	}
+
+	if wi.Result.UnlockedUntil == 0 {
+		return models.WETLocked, nil
+	} else if wi.Result.UnlockedUntil == -1 {
+		return models.WETUnencrypted, nil
+	} else if wi.Result.UnlockedUntil > 0 {
+		return models.WETUnlockedForStaking, nil
+	} else {
+		return models.WETUnknown, nil
+	}
+}
+
+func (p Peercoin) WalletUnlockFS(coinAuth *models.CoinAuth, pw string) error {
+	var respStruct be.GenericRespStruct
+	var body *strings.Reader
+
+	body = strings.NewReader("{\"jsonrpc\":\"1.0\",\"id\":\"boxwallet\",\"method\":\"walletpassphrase\",\"params\":[\"" + pw + "\",9999999,true]}")
+
+	req, err := http.NewRequest("POST", "http://"+coinAuth.IPAddress+":"+coinAuth.Port, body)
+	if err != nil {
+		return err
+	}
+	req.SetBasicAuth(coinAuth.RPCUser, coinAuth.RPCPassword)
+	req.Header.Set("Content-Type", "text/plain;")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	bodyResp, err := ioutil.ReadAll(resp.Body)
+	if err != nil {
+		return err
+	}
+	err = json.Unmarshal(bodyResp, &respStruct)
+	if err != nil || respStruct.Error != nil {
+		return err
+	}
+	return nil
+}
+
+func (p Peercoin) WalletUnlock(coinAuth *models.CoinAuth, pw string) error {
+	var respStruct models.GenericResponse
+
+	body := strings.NewReader("{\"jsonrpc\":\"1.0\",\"id\":\"curltext\",\"method\":\"walletpassphrase\",\"params\":[\"" + pw + "\",0]}")
+	req, err := http.NewRequest("POST", "http://"+coinAuth.IPAddress+":"+coinAuth.Port, body)
+	if err != nil {
+		return err
+	}
+	req.SetBasicAuth(coinAuth.RPCUser, coinAuth.RPCPassword)
+	req.Header.Set("Content-Type", "text/plain;")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	bodyResp, err := ioutil.ReadAll(resp.Body)
+	if err != nil {
+		return err
+	}
+	err = json.Unmarshal(bodyResp, &respStruct)
+	if err != nil {
+		return err
+	}
+	return nil
+}
+
+func (p Peercoin) UpdateTickerInfo() (ticker models.DiviTicker, err error) {
+	resp, err := http.Get("https://ticker.neist.io/PPC")
+	if err != nil {
+		return ticker, err
+	}
+	defer resp.Body.Close()
+
+	body, err := ioutil.ReadAll(resp.Body)
+	if err != nil {
+		return ticker, err
+	}
+	err = json.Unmarshal(body, &ticker)
+	if err != nil {
+		return ticker, err
+	}
+	return ticker, nil
 }
 
 func (p *Peercoin) unarchiveFile(fullFilePath, location string) error {
