@@ -1,6 +1,7 @@
 package coins
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -10,7 +11,6 @@ import (
 	"os/exec"
 	"os/user"
 	"richardmace.co.uk/boxwallet/cmd/cli/cmd/coins"
-	d "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/denarius"
 	"richardmace.co.uk/boxwallet/cmd/cli/cmd/fileutils"
 	"runtime"
 	"strconv"
@@ -318,7 +318,7 @@ func (s Syscoin) ListReceivedByAddress(coinAuth *models.CoinAuth, includeZero bo
 	} else {
 		str = "{\"jsonrpc\":\"1.0\",\"id\":\"curltext\",\"method\":\"listreceivedbyaddress\",\"params\":[1, false]}"
 	}
-	body := strings.NewReader(s)
+	body := strings.NewReader(str)
 	req, err := http.NewRequest("POST", "http://"+coinAuth.IPAddress+":"+coinAuth.Port, body)
 	if err != nil {
 		return respStruct, err
@@ -463,7 +463,7 @@ func (s Syscoin) SendToAddress(coinAuth *models.CoinAuth, address string, amount
 	return respStruct, nil
 }
 
-func (s Syscoin) StartDaemon(displayOutput bool, appFolder string) error {
+func (s Syscoin) StartDaemon(displayOutput bool, appFolder string, auth *models.CoinAuth) error {
 	b, _ := s.DaemonRunning()
 	if b {
 		return nil
@@ -500,6 +500,27 @@ func (s Syscoin) StartDaemon(displayOutput bool, appFolder string) error {
 
 	// If it does, load it, if not, create it.
 
+	wExists, err := s.WalletExists()
+	if err != nil {
+		return err
+	}
+
+	if !wExists {
+		// The wallet doesn't exist - When you create it, it's auto loaded
+		err := s.WalletCreate(auth)
+		if err != nil {
+			return err
+		}
+	}
+
+	wl := s.WalletLoaded(auth)
+	if !wl {
+		err := s.WalletLoad(auth)
+		if err != nil {
+			return err
+		}
+	}
+
 	return nil
 }
 
@@ -534,31 +555,48 @@ func (s Syscoin) TipAddress() string {
 	return cTipAddress
 }
 
-func (s Syscoin) WalletCreate(auth *models.CoinAuth) (models.SYSCreateWallet, error) {
-	var respStruct models.SYSCreateWallet
+func (s Syscoin) WalletCreate(auth *models.CoinAuth) error {
+	//var respStruct models.SYSCreateWallet
 
-	body := strings.NewReader("{\"jsonrpc\":\"1.0\",\"id\":\"boxwallet\",\"method\":\"" + models.CCommandCreateWallet + "\",\"params\":[\"" + cWalletName + "\"]}")
+	body := strings.NewReader("{\"jsonrpc\":\"1.0\",\"id\":\"boxwallet\",\"method\":\"" + models.CCommandCreateWallet + "\",\"params\":[\"" + cWalletName + "\",true]}")
 	req, err := http.NewRequest("POST", "http://"+auth.IPAddress+":"+auth.Port, body)
 	if err != nil {
-		return respStruct, err
+		return err
 	}
 	req.SetBasicAuth(auth.RPCUser, auth.RPCPassword)
 	req.Header.Set("Content-Type", "text/plain;")
 
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
-		return respStruct, err
+		return err
 	}
 	defer resp.Body.Close()
 	bodyResp, err := ioutil.ReadAll(resp.Body)
 	if err != nil {
-		return respStruct, err
+		return err
 	}
-	err = json.Unmarshal(bodyResp, &respStruct)
+	if bytes.Contains(bodyResp, []byte("Error")) {
+		return errors.New("unable to load wallet")
+	}
+
+	//err = json.Unmarshal(bodyResp, &respStruct)
+	//if err != nil {
+	//	return respStruct, err
+	//}
+	return nil
+}
+
+func (s Syscoin) WalletExists() (bool, error) {
+	fp, err := s.HomeDirFullPath()
 	if err != nil {
-		return respStruct, err
+		return false, err
 	}
-	return respStruct, nil
+
+	if _, err := os.Stat(fp + cWalletName); os.IsNotExist(err) {
+		return false, nil
+	}
+
+	return true, nil
 }
 
 func (s Syscoin) WalletInfo(auth *models.CoinAuth) (models.SYSWalletInfo, error) {
@@ -588,31 +626,44 @@ func (s Syscoin) WalletInfo(auth *models.CoinAuth) (models.SYSWalletInfo, error)
 	return respStruct, nil
 }
 
-func (s Syscoin) WalletLoad(auth *models.CoinAuth) (models.SYSLoadWallet, error) {
-	var respStruct models.SYSLoadWallet
+func (s Syscoin) WalletLoad(auth *models.CoinAuth) error {
+	//var respStruct models.SYSLoadWallet
 
-	body := strings.NewReader("{\"jsonrpc\":\"1.0\",\"id\":\"boxwallet\",\"method\":\"" + models.CCommandLoadWallet + "\",\"params\":[\"" + cWalletName + "\"]}")
+	body := strings.NewReader("{\"jsonrpc\":\"1.0\",\"id\":\"boxwallet\",\"method\":\"" + models.CCommandLoadWallet + "\",\"params\":[\"" + cWalletName + "\",true]}")
 	req, err := http.NewRequest("POST", "http://"+auth.IPAddress+":"+auth.Port, body)
 	if err != nil {
-		return respStruct, err
+		return err
 	}
 	req.SetBasicAuth(auth.RPCUser, auth.RPCPassword)
 	req.Header.Set("Content-Type", "text/plain;")
 
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
-		return respStruct, err
+		return err
 	}
 	defer resp.Body.Close()
-	bodyResp, err := ioutil.ReadAll(resp.Body)
-	if err != nil {
-		return respStruct, err
+	//bodyResp, err := ioutil.ReadAll(resp.Body)
+	//if err != nil {
+	//	return err
+	//}
+	//if !bytes.Contains(bodyResp, []byte("\"error\":null")) {
+	//	return errors.New("unable to load wallet")
+	//}
+
+	//err = json.Unmarshal(bodyResp, &respStruct)
+	//if err != nil {
+	//	return respStruct, err
+	//}
+	return nil
+}
+
+func (s Syscoin) WalletLoaded(auth *models.CoinAuth) bool {
+	wi, _ := s.WalletInfo(auth)
+	if wi.Result.Walletversion > 0 {
+		return true
 	}
-	err = json.Unmarshal(bodyResp, &respStruct)
-	if err != nil {
-		return respStruct, err
-	}
-	return respStruct, nil
+
+	return false
 }
 
 func (s *Syscoin) unarchiveFile(fullFilePath, location string) error {
