@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"os/user"
+	"richardmace.co.uk/boxwallet/cmd/cli/cmd/coins"
 	"richardmace.co.uk/boxwallet/cmd/cli/cmd/fileutils"
 	"runtime"
 	"strings"
@@ -23,7 +24,7 @@ const (
 	cCoinName       string = "Peercoin"
 	cCoinNameAbbrev string = "PPC"
 
-	cCoreVersion       string = "0.9.0"
+	cCoreVersion       string = "0.10.3"
 	cDownloadFileArm32        = "peercoin-" + cCoreVersion + "-arm-linux-gnueabihf.tar.gz"
 	cDownloadFileArm64        = "peercoin-" + cCoreVersion + "-aarch64-linux-gnu.tar.gz"
 	cDownloadFileLin          = "peercoin-" + cCoreVersion + "-x86_64-linux-gnu.tar.gz"
@@ -101,6 +102,17 @@ func (p Peercoin) AllBinaryFilesExist(dir string) (bool, error) {
 	return true, nil
 }
 
+//func (p Peercoin) AnyAddresses(auth *models.CoinAuth) (bool, error) {
+//	addresses, err := p.ListReceivedByAddress(auth, false)
+//	if err != nil {
+//		return false, err
+//	}
+//	if len(addresses.Result) > 0 {
+//		return true, nil
+//	}
+//	return false, nil
+//}
+
 func (p Peercoin) ConfFile() string {
 	return cConfFile
 }
@@ -111,6 +123,25 @@ func (p Peercoin) CoinName() string {
 
 func (p Peercoin) CoinNameAbbrev() string {
 	return cCoinNameAbbrev
+}
+
+func (p Peercoin) DaemonRunning() (bool, error) {
+	var err error
+
+	if runtime.GOOS == "windows" {
+		_, _, err = coins.FindProcess(cDaemonFileWin)
+	} else {
+		_, _, err = coins.FindProcess(cDaemonFileLin)
+	}
+
+	if err == nil {
+		return true, nil
+	}
+	if err.Error() == "not found" {
+		return false, nil
+	} else {
+		return false, err
+	}
 }
 
 // DownloadCoin - Downloads the Syscoin files into the spcified location.
@@ -306,10 +337,10 @@ func (p Peercoin) WalletSecurityState() (models.WEType, error) {
 	}
 }
 
-func (p *Peercoin) StartDaemon(displayOutput bool) error {
+func (p Peercoin) StartDaemon(displayOutput bool, appFolder string, auth *models.CoinAuth) error {
 	if runtime.GOOS == "windows" {
 		//_ = exec.Command(GetAppsBinFolder() + cDiviDFileWin)
-		fp := cHomeDirWin + cDaemonFileWin
+		fp := appFolder + cDaemonFileWin
 		cmd := exec.Command("cmd.exe", "/C", "start", "/b", fp)
 		if err := cmd.Run(); err != nil {
 			return err
@@ -319,7 +350,7 @@ func (p *Peercoin) StartDaemon(displayOutput bool) error {
 			fmt.Println("Attempting to run the peercoind daemon...")
 		}
 
-		cmdRun := exec.Command(cHomeDirLin + cDaemonFileLin)
+		cmdRun := exec.Command(appFolder + cDaemonFileLin)
 		stdout, err := cmdRun.StdoutPipe()
 		if err != nil {
 			return err
@@ -350,31 +381,31 @@ func (p *Peercoin) StartDaemon(displayOutput bool) error {
 	return nil
 }
 
-func (p *Peercoin) StopDaemon(ip, port, rpcUser, rpcPassword string, displayOut bool) (models.GenericResponse, error) {
-	var respStruct models.GenericResponse
+func (p Peercoin) StopDaemon(auth *models.CoinAuth) error {
+	//var respStruct models.GenericResponse
 
 	body := strings.NewReader("{\"jsonrpc\":\"1.0\",\"id\":\"curltext\",\"method\":\"stop\",\"params\":[]}")
-	req, err := http.NewRequest("POST", "http://"+p.IPAddress+":"+p.Port, body)
+	req, err := http.NewRequest("POST", "http://"+auth.IPAddress+":"+auth.Port, body)
 	if err != nil {
-		return respStruct, err
+		return err
 	}
 	req.SetBasicAuth(p.RPCUser, p.RPCPassword)
 	req.Header.Set("Content-Type", "text/plain;")
 
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
-		return respStruct, err
+		return err
 	}
 	defer resp.Body.Close()
-	bodyResp, err := ioutil.ReadAll(resp.Body)
-	if err != nil {
-		return respStruct, err
-	}
-	err = json.Unmarshal(bodyResp, &respStruct)
-	if err != nil {
-		return respStruct, err
-	}
-	return respStruct, nil
+	//bodyResp, err := ioutil.ReadAll(resp.Body)
+	//if err != nil {
+	//	return err
+	//}
+	//err = json.Unmarshal(bodyResp, &respStruct)
+	//if err != nil {
+	//	return respStruct, err
+	//}
+	return nil
 }
 
 func (p Peercoin) TipAddress() string {
