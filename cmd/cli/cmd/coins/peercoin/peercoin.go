@@ -1,7 +1,6 @@
 package bend
 
 import (
-	"bufio"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -351,45 +350,52 @@ func (p Peercoin) StartDaemon(displayOutput bool, appFolder string, auth *models
 		}
 
 		cmdRun := exec.Command(appFolder + cDaemonFileLin)
-		stdout, err := cmdRun.StdoutPipe()
-		if err != nil {
+		if err := cmdRun.Start(); err != nil {
 			return err
 		}
-		err = cmdRun.Start()
-		if err != nil {
-			return err
+		if displayOutput {
+			fmt.Println(cCoinName + " server starting")
 		}
 
-		buf := bufio.NewReader(stdout)
-		num := 1
-		for {
-			line, _, _ := buf.ReadLine()
-			if num > 3 {
-				os.Exit(0)
-			}
-			num++
-			if string(line) == "Peercoin server starting" {
-				if displayOutput {
-					fmt.Println("Peercoin server starting")
-				}
-				return nil
-			} else {
-				return errors.New("unable to start Peercoin server: " + string(line))
-			}
-		}
+		//	stdout, err := cmdRun.StdoutPipe()
+		//	if err != nil {
+		//		return err
+		//	}
+		//	err = cmdRun.Start()
+		//	if err != nil {
+		//		return err
+		//	}
+		//
+		//	buf := bufio.NewReader(stdout)
+		//	num := 1
+		//	for {
+		//		line, _, _ := buf.ReadLine()
+		//		if num > 3 {
+		//			os.Exit(0)
+		//		}
+		//		num++
+		//		if string(line) == "Peercoin server starting" {
+		//			if displayOutput {
+		//				fmt.Println("Peercoin server starting")
+		//			}
+		//			return nil
+		//		} else {
+		//			return errors.New("unable to start Peercoin server: " + string(line))
+		//		}
+		//	}
 	}
 	return nil
 }
 
 func (p Peercoin) StopDaemon(auth *models.CoinAuth) error {
-	//var respStruct models.GenericResponse
+	var respStruct models.GenericResponse
 
 	body := strings.NewReader("{\"jsonrpc\":\"1.0\",\"id\":\"curltext\",\"method\":\"stop\",\"params\":[]}")
 	req, err := http.NewRequest("POST", "http://"+auth.IPAddress+":"+auth.Port, body)
 	if err != nil {
 		return err
 	}
-	req.SetBasicAuth(p.RPCUser, p.RPCPassword)
+	req.SetBasicAuth(auth.RPCUser, auth.RPCPassword)
 	req.Header.Set("Content-Type", "text/plain;")
 
 	resp, err := http.DefaultClient.Do(req)
@@ -397,14 +403,14 @@ func (p Peercoin) StopDaemon(auth *models.CoinAuth) error {
 		return err
 	}
 	defer resp.Body.Close()
-	//bodyResp, err := ioutil.ReadAll(resp.Body)
-	//if err != nil {
-	//	return err
-	//}
-	//err = json.Unmarshal(bodyResp, &respStruct)
-	//if err != nil {
-	//	return respStruct, err
-	//}
+	bodyResp, err := ioutil.ReadAll(resp.Body)
+	if err != nil {
+		return err
+	}
+	err = json.Unmarshal(bodyResp, &respStruct)
+	if err != nil {
+		return err
+	}
 	return nil
 }
 
