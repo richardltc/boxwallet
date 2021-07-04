@@ -96,6 +96,7 @@ type PPCWalletInfo struct {
 		Keypoololdest         int     `json:"keypoololdest"`
 		Keypoolsize           int     `json:"keypoolsize"`
 		KeypoolsizeHdInternal int     `json:"keypoolsize_hd_internal"`
+		UnlockedUntil         int     `json:"unlocked_until"`
 		Hdmasterkeyid         string  `json:"hdmasterkeyid"`
 	} `json:"result"`
 	Error interface{} `json:"error"`
