@@ -21,6 +21,7 @@ import (
 	"log"
 	"os"
 	divi "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/divi"
+	ppc "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/peercoin"
 	sys "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/syscoin"
 
 	"github.com/spf13/cobra"
@@ -89,6 +90,9 @@ var startCmd = &cobra.Command{
 			}
 		case models.PTFeathercoin:
 		case models.PTGroestlcoin:
+		case models.PTPeercoin:
+			coinDaemon = ppc.Peercoin{}
+			coinName = ppc.Peercoin{}
 		case models.PTPhore:
 		case models.PTPIVX:
 		case models.PTRapids:
@@ -109,8 +113,14 @@ var startCmd = &cobra.Command{
 			log.Fatal("The start command can only be run on the same machine that's running the " + coinName.CoinName() + " wallet")
 		}
 
+		var coinAuth models.CoinAuth
+		coinAuth.RPCUser = confDB.RPCuser
+		coinAuth.RPCPassword = confDB.RPCpassword
+		coinAuth.IPAddress = confDB.ServerIP
+		coinAuth.Port = confDB.Port
+
 		// Start the coin daemon server if required..
-		if err := coinDaemon.StartDaemon(true, appHomeDir); err != nil {
+		if err := coinDaemon.StartDaemon(true, appHomeDir, &coinAuth); err != nil {
 			log.Fatalf("failed to run "+coinDaemon.DaemonFilename()+": %v", err)
 		}
 
