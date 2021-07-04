@@ -499,7 +499,7 @@ func (d Denarius) RPCDefaultPort() string {
 	return cRPCPort
 }
 
-func (d Denarius) StartDaemon(displayOutput bool, appFolder string) error {
+func (d Denarius) StartDaemon(displayOutput bool, appFolder string, auth *models.CoinAuth) error {
 	if runtime.GOOS == "windows" {
 		fullPath := appFolder + cDaemonFileWin
 		cmd := exec.Command("cmd.exe", "/C", "start", "/b", fullPath)
@@ -521,6 +521,7 @@ func (d Denarius) StartDaemon(displayOutput bool, appFolder string) error {
 			fmt.Println("Denarius server starting")
 		}
 	}
+
 	return nil
 }
 
