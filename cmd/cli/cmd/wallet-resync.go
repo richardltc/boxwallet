@@ -18,6 +18,7 @@ package cmd
 import (
 	"fmt"
 	"log"
+	rpd "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/rapids"
 
 	"richardmace.co.uk/boxwallet/cmd/cli/cmd/app"
 	"richardmace.co.uk/boxwallet/cmd/cli/cmd/coins"
@@ -55,6 +56,9 @@ var resyncCmd = &cobra.Command{
 		case models.PTBitcoinPlus:
 			coinName = xbc.XBC{}
 			wallet = xbc.XBC{}
+		case models.PTRapids:
+			coinName = rpd.Rapids{}
+			wallet = rpd.Rapids{}
 		default:
 			log.Fatal("Unable to determine ProjectType")
 		}
@@ -77,16 +81,11 @@ var resyncCmd = &cobra.Command{
 		if !ans {
 			log.Fatal("reindex not attempted.")
 		}
-		if err := wallet.WalletResync(); err != nil {
+		if err := wallet.WalletResync(appHomeDir); err != nil {
 			log.Fatal("Unable to perform resync: " + err.Error())
 		}
 
 		fmt.Println("Your " + coinName.CoinName() + " wallet is now syncing again. Please use ./boxwallet dash to view")
-
-		// bwConf, err := be.GetConfigStruct("", true)
-		// if err != nil {
-		// 	log.Fatal("Unable to GetCLIConfStruct " + err.Error())
-		// }
 
 		// cn, err := be.GetCoinName(be.APPTCLI)
 		// if err != nil {
