@@ -2,11 +2,14 @@ package models
 
 const (
 	// General CLI command constants
+	CCommandCreateWallet          string = "createwallet"
+	CCommandEncryptWallet         string = "encryptwallet"
 	CCommandGetBCInfo             string = "getblockchaininfo"
 	CCommandGetInfo               string = "getinfo"
 	CCommandGetStakingInfo        string = "getstakinginfo"
 	CCommandListReceivedByAddress string = "listreceivedbyaddress"
 	CCommandListTransactions      string = "listtransactions"
+	CCommandLoadWallet            string = "loadwallet"
 	CCommandGetNetworkInfo        string = "getnetworkinfo"
 	CCommandGetNewAddress         string = "getnewaddress"
 	CCommandGetWalletInfo         string = "getwalletinfo"
@@ -39,6 +42,7 @@ const (
 	PTSyscoin
 	PTBitcoinPlus
 	PTPeercoin
+	PTPrimecoin
 )
 
 type GenericResponse struct {
