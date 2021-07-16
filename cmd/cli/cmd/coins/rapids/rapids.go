@@ -673,7 +673,7 @@ func (r Rapids) StakingStatus(auth *models.CoinAuth) (models.RPDStakingStatus, e
 	return respStruct, nil
 }
 
-func (r Rapids) StartDaemon(displayOutput bool, appFolder string) error {
+func (r Rapids) StartDaemon(displayOutput bool, appFolder string, auth *models.CoinAuth) error {
 	b, _ := r.DaemonRunning()
 	if b {
 		return nil
@@ -756,11 +756,39 @@ func (r Rapids) StopDaemon(auth *models.CoinAuth) error {
 	//if err != nil {
 	//	return respStruct, err
 	//}
+
 	return nil
 }
 
 func (r Rapids) TipAddress() string {
 	return cTipAddress
+}
+
+func (r Rapids) WalletEncrypt(coinAuth *models.CoinAuth, pw string) (be.GenericRespStruct, error) {
+	var respStruct be.GenericRespStruct
+
+	body := strings.NewReader("{\"jsonrpc\":\"1.0\",\"id\":\"boxwallet\",\"method\":\"" + models.CCommandEncryptWallet + "\",\"params\":[\"" + pw + "\"]}")
+	req, err := http.NewRequest("POST", "http://"+coinAuth.IPAddress+":"+coinAuth.Port, body)
+	if err != nil {
+		return respStruct, err
+	}
+	req.SetBasicAuth(coinAuth.RPCUser, coinAuth.RPCPassword)
+	req.Header.Set("Content-Type", "text/plain;")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return respStruct, err
+	}
+	defer resp.Body.Close()
+	bodyResp, err := ioutil.ReadAll(resp.Body)
+	if err != nil {
+		return respStruct, err
+	}
+	err = json.Unmarshal(bodyResp, &respStruct)
+	if err != nil {
+		return respStruct, err
+	}
+	return respStruct, nil
 }
 
 func (r Rapids) WalletInfo(auth *models.CoinAuth) (models.RPDWalletInfo, error) {
@@ -848,7 +876,7 @@ func (r Rapids) WalletNeedsEncrypting(coinAuth *models.CoinAuth) (bool, error) {
 	return false, nil
 }
 
-func (r Rapids) WalletResync() error {
+func (r Rapids) WalletResync(appFolder string) error {
 	daemonRunning, err := r.DaemonRunning()
 	if err != nil {
 		return errors.New("Unable to determine DaemonRunning: " + err.Error())
@@ -857,15 +885,20 @@ func (r Rapids) WalletResync() error {
 		return errors.New("daemon is still running, please stop first")
 	}
 
-	coinDir, err := r.HomeDirFullPath()
-	if err != nil {
-		return errors.New("Unable to determine HomeDirFullPath: " + err.Error())
-	}
 	arg1 := "-resync"
 
-	cRun := exec.Command(coinDir+cDaemonFileLin, arg1)
-	if err := cRun.Run(); err != nil {
-		return fmt.Errorf("unable to run "+cDaemonFileLin+" "+arg1+": %v", err)
+	if runtime.GOOS == "windows" {
+		fullPath := appFolder + cDaemonFileWin
+		cmd := exec.Command("cmd.exe", "/C", "start", "/b", fullPath, arg1)
+		if err := cmd.Run(); err != nil {
+			return err
+		}
+	} else {
+		fullPath := appFolder + cDaemonFileLin
+		cmdRun := exec.Command(fullPath, arg1)
+		if err := cmdRun.Run(); err != nil {
+			return err
+		}
 	}
 
 	return nil
