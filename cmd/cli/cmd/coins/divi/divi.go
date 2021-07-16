@@ -978,6 +978,7 @@ func (d Divi) WalletEncrypt(coinAuth *models.CoinAuth, pw string) (be.GenericRes
 	if err != nil {
 		return respStruct, err
 	}
+
 	return respStruct, nil
 }
 
