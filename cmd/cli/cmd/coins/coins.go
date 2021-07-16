@@ -1,13 +1,10 @@
 package coins
 
 import (
-	"encoding/json"
 	"errors"
 	"fmt"
 	"github.com/AlecAivazis/survey/v2"
 	"github.com/mitchellh/go-ps"
-	"io/ioutil"
-	"net/http"
 	"os"
 	"richardmace.co.uk/boxwallet/cmd/cli/cmd/fileutils"
 	"richardmace.co.uk/boxwallet/cmd/cli/cmd/models"
@@ -25,6 +22,7 @@ const (
 	CCoinNamePeercoin    string = "Peercoin"
 	CCoinNamePhore       string = "Phore"
 	CCoinNamePIVX        string = "PIVX"
+	CCoinNamePrimecoin   string = "Primecoin"
 	CCoinNameRapids      string = "Rapids"
 	CCoinNameReddCoin    string = "ReddCoin"
 	CCoinNameScala       string = "Scala"
@@ -57,7 +55,7 @@ type CoinBlockchain interface {
 type CoinDaemon interface {
 	DaemonFilename() string
 	DaemonRunning() (bool, error)
-	StartDaemon(displayOutput bool, appFolder string) error
+	StartDaemon(displayOutput bool, appFolder string, auth *models.CoinAuth) error
 	StopDaemon(auth *models.CoinAuth) error
 }
 
@@ -68,6 +66,10 @@ type CoinAnyAddresses interface {
 type CoinName interface {
 	CoinName() string
 	CoinNameAbbrev() string
+}
+
+type CoinPrice interface {
+	RefreshPrice()
 }
 
 type CoinRPCDefaults interface {
@@ -93,6 +95,7 @@ func FindProcess(key string) (int, string, error) {
 			break
 		}
 	}
+
 	return pid, pname, err
 }
 
@@ -321,40 +324,4 @@ func PopulateConfFile(confFile, homeDir, rpcUserCoin, rpcPortCoin string) (rpcUs
 
 	return rpcu, rpcpw, nil
 
-}
-
-func UpdateAUDPriceInfo() error {
-	resp, err := http.Get("https://api.exchangeratesapi.io/latest?base=USD&symbols=AUD")
-	if err != nil {
-		return err
-	}
-	defer resp.Body.Close()
-
-	body, err := ioutil.ReadAll(resp.Body)
-	if err != nil {
-		return err
-	}
-	err = json.Unmarshal(body, &gPricePerCoinAUD)
-	if err != nil {
-		return err
-	}
-	return errors.New("unable to updateAUDPriceInfo")
-}
-
-func UpdateGBPPriceInfo() error {
-	resp, err := http.Get("https://api.exchangeratesapi.io/latest?base=USD&symbols=GBP")
-	if err != nil {
-		return err
-	}
-	defer resp.Body.Close()
-
-	body, err := ioutil.ReadAll(resp.Body)
-	if err != nil {
-		return err
-	}
-	err = json.Unmarshal(body, &gPricePerCoinGBP)
-	if err != nil {
-		return err
-	}
-	return errors.New("unable to updateGBPPriceInfo")
 }
