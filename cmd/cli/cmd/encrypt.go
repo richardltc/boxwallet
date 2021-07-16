@@ -18,10 +18,22 @@ package cmd
 
 import (
 	// "fmt"
-	// "log"
+	"log"
+	xbc "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/bitcoinplus"
+	divi "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/divi"
+	ppc "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/peercoin"
+	rpd "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/rapids"
+	"richardmace.co.uk/boxwallet/cmd/cli/cmd/models"
+	"richardmace.co.uk/boxwallet/cmd/cli/cmd/wallet"
+
 	// be "richardmace.co.uk/boxwallet/cmd/cli/cmd/bend"
 
+	"fmt"
 	"github.com/spf13/cobra"
+	"os"
+	"richardmace.co.uk/boxwallet/cmd/cli/cmd/app"
+
+	"richardmace.co.uk/boxwallet/cmd/cli/cmd/conf"
 )
 
 // encryptCmd represents the encrypt command
@@ -30,6 +42,88 @@ var encryptCmd = &cobra.Command{
 	Short: "Encrypts your wallet",
 	Long:  ``,
 	Run: func(cmd *cobra.Command, args []string) {
+		var app app.App
+
+		fmt.Println("  ____          __          __   _ _      _   \n |  _ \\         \\ \\        / /  | | |    | |  \n | |_) | _____  _\\ \\  /\\  / /_ _| | | ___| |_ \n |  _ < / _ \\ \\/ /\\ \\/  \\/ / _` | | |/ _ \\ __|\n | |_) | (_) >  <  \\  /\\  / (_| | | |  __/ |_ \n |____/ \\___/_/\\_\\  \\/  \\/ \\__,_|_|_|\\___|\\__| v" + app.Version() + "\n                                              \n                                               ")
+
+		var conf conf.Conf
+		var walletSecurityState wallet.WalletSecurityState
+		var walletEncrypt wallet.WalletEncrypt
+
+		appHomeDir, err := app.HomeFolder()
+		if err != nil {
+			log.Fatal("Unable to get HomeFolder: " + err.Error())
+		}
+
+		conf.Bootstrap(appHomeDir)
+
+		appFileName, err := app.FileName()
+		if err != nil {
+			log.Fatal("Unable to get appFilename: " + err.Error())
+		}
+
+		// Make sure the config file exists, and if not, force user to use "coin" command first..
+		if _, err := os.Stat(appHomeDir + conf.ConfFile()); os.IsNotExist(err) {
+			log.Fatal("Unable to determine coin type. Please run " + appFileName + " coin  first")
+		}
+
+		// Now load our config file to see what coin choice the user made....
+		confDB, err := conf.GetConfig(true)
+		if err != nil {
+			log.Fatal("Unable to determine coin type. Please run " + appFileName + " coin: " + err.Error())
+		}
+
+		switch confDB.ProjectType {
+		case models.PTBitcoinPlus:
+			walletSecurityState = xbc.XBC{}
+			walletEncrypt = xbc.XBC{}
+		case models.PTDenarius:
+		case models.PTDeVault:
+		case models.PTDigiByte:
+		case models.PTDivi:
+			walletSecurityState = divi.Divi{}
+			walletEncrypt = divi.Divi{}
+		case models.PTFeathercoin:
+		case models.PTGroestlcoin:
+		case models.PTPeercoin:
+			walletSecurityState = ppc.Peercoin{}
+			walletEncrypt = ppc.Peercoin{}
+		case models.PTPhore:
+		case models.PTPIVX:
+		case models.PTRapids:
+			walletSecurityState = rpd.Rapids{}
+			walletEncrypt = rpd.Rapids{}
+		case models.PTReddCoin:
+		case models.PTScala:
+		case models.PTTrezarcoin:
+		case models.PTVertcoin:
+		default:
+			log.Fatal("unable to determine ProjectType")
+		}
+
+		var coinAuth models.CoinAuth
+		coinAuth.RPCUser = confDB.RPCuser
+		coinAuth.RPCPassword = confDB.RPCpassword
+		coinAuth.IPAddress = confDB.ServerIP
+		coinAuth.Port = confDB.Port
+
+		wst, err := walletSecurityState.WalletSecurityState(&coinAuth)
+		if err != nil {
+			log.Fatal("Unable to determine Wallet Security State: " + err.Error())
+		}
+		if wst != models.WETUnencrypted {
+			log.Fatal("Wallet is already encrypted")
+		}
+
+		wep := wallet.GetWalletEncryptionPassword()
+
+		r, err := walletEncrypt.WalletEncrypt(&coinAuth, wep)
+		if err != nil {
+			log.Fatal("failed to encrypt wallet: ", err.Error())
+		}
+
+		fmt.Println(r.Result)
+
 		// Lets load our config file first, to see if the user has made their coin choice..
 		// cliConf, err := be.GetConfigStruct("", true)
 		// if err != nil {
@@ -92,14 +186,6 @@ var encryptCmd = &cobra.Command{
 		// 	//if (wi.Result.EncryptionStatus != "unencrypted") && (wi.Result.EncryptionStatus != "") {
 		// 	//	log.Fatal("Wallet is already encrypted")
 		// 	//}
-		// case be.PTFeathercoin:
-		// 	wet, err := be.GetWalletEncryptionStatus()
-		// 	if err != nil {
-		// 		log.Fatalf("Unable to determine wallet encryption status")
-		// 	}
-		// 	if wet != be.WETUnencrypted {
-		// 		log.Fatal("Wallet is already encrypted")
-		// 	}
 		// case be.PTGroestlcoin:
 		// 	wet, err := be.GetWalletEncryptionStatus()
 		// 	if err != nil {
@@ -197,25 +283,6 @@ var encryptCmd = &cobra.Command{
 		// // if wi.EncryptionStatus != "unencrypted" {
 		// // 	log.Fatalf("Looks like your wallet is already encrypted")
 		// // }
-
-		// // abf, _ := gwc.GetAppsBinFolder()
-		// // resp := gwc.GetEncryptWalletResp()
-		// // if resp == "y" {
-		// // 	wep := gwc.GetWalletEncryptionPassword()
-		// // 	_, err := gwc.RunDCCommandWithValue(abf+sAppFileCLIName, gwc.CCommandEncryptWallet, wep, "Waiting for wallet to respond. This could take several minutes...", 30)
-
-		// // 	if err != nil {
-		// // 		log.Fatalf("cmd.Run() failed with %s\n", err)
-		// // 	}
-		// // 	fmt.Println("Restarting wallet after encryption...")
-		// // 	err = gwc.StopCoinDaemon() //DiviD()
-		// // 	if err != nil {
-		// // 		log.Fatalf("failed to stop "+sCoinDaemonFile+": %v", err)
-		// // 	}
-		// // 	err = gwc.StartCoinDaemon(false) //DiviD(false)
-		// // 	if err != nil {
-		// // 		log.Fatalf("failed to run "+sCoinDaemonFile+": %v", err)
-		// // 	}
 
 		// // }
 
