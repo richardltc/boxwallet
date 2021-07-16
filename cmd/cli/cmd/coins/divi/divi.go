@@ -683,7 +683,7 @@ func (d Divi) ListReceivedByAddress(coinAuth *models.CoinAuth, includeZero bool)
 func (d Divi) ListTransactions(auth *models.CoinAuth) (models.DiviListTransactions, error) {
 	var respStruct models.DiviListTransactions
 
-	body := strings.NewReader("{\"jsonrpc\":\"1.0\",\"id\":\"boxwallet\",\"method\":\"" + cCommandListTransactions + "\",\"params\":[]}")
+	body := strings.NewReader("{\"jsonrpc\":\"1.0\",\"id\":\"boxwallet\",\"method\":\"" + models.CCommandListTransactions + "\",\"params\":[]}")
 	req, err := http.NewRequest("POST", "http://"+auth.IPAddress+":"+auth.Port, body)
 	if err != nil {
 		return respStruct, err
@@ -859,17 +859,17 @@ func (d Divi) StakingStatus(auth *models.CoinAuth) (models.DiviStakingStatus, er
 	return respStruct, nil
 }
 
-func (d Divi) SendToAddress(address string, amount float32) (returnResp models.GenericResponse, err error) {
+func (d Divi) SendToAddress(coinAuth *models.CoinAuth, address string, amount float32) (returnResp models.GenericResponse, err error) {
 	var respStruct models.GenericResponse
 
 	sAmount := fmt.Sprintf("%f", amount) // sAmount == "123.456000"
 
-	body := strings.NewReader("{\"jsonrpc\":\"1.0\",\"id\":\"boxwallet\",\"method\":\"" + cCommandSendToAddress + "\",\"params\":[\"" + address + "\"," + sAmount + "]}")
-	req, err := http.NewRequest("POST", "http://"+d.IPAddress+":"+d.Port, body)
+	body := strings.NewReader("{\"jsonrpc\":\"1.0\",\"id\":\"boxwallet\",\"method\":\"" + models.CCommandSendToAddress + "\",\"params\":[\"" + address + "\"," + sAmount + "]}")
+	req, err := http.NewRequest("POST", "http://"+coinAuth.IPAddress+":"+coinAuth.Port, body)
 	if err != nil {
 		return respStruct, err
 	}
-	req.SetBasicAuth(d.RPCUser, d.RPCPassword)
+	req.SetBasicAuth(coinAuth.RPCUser, coinAuth.RPCPassword)
 	req.Header.Set("Content-Type", "text/plain;")
 
 	resp, err := http.DefaultClient.Do(req)
@@ -888,7 +888,7 @@ func (d Divi) SendToAddress(address string, amount float32) (returnResp models.G
 	return respStruct, nil
 }
 
-func (d Divi) StartDaemon(displayOutput bool, appFolder string) error {
+func (d Divi) StartDaemon(displayOutput bool, appFolder string, auth *models.CoinAuth) error {
 	b, _ := d.DaemonRunning()
 	if b {
 		return nil
@@ -918,6 +918,7 @@ func (d Divi) StartDaemon(displayOutput bool, appFolder string) error {
 		}
 
 	}
+
 	return nil
 }
 
@@ -951,6 +952,33 @@ func (d Divi) StopDaemon(auth *models.CoinAuth) error {
 
 func (d Divi) TipAddress() string {
 	return cTipAddress
+}
+
+func (d Divi) WalletEncrypt(coinAuth *models.CoinAuth, pw string) (be.GenericRespStruct, error) {
+	var respStruct be.GenericRespStruct
+
+	body := strings.NewReader("{\"jsonrpc\":\"1.0\",\"id\":\"boxwallet\",\"method\":\"" + models.CCommandEncryptWallet + "\",\"params\":[\"" + pw + "\"]}")
+	req, err := http.NewRequest("POST", "http://"+coinAuth.IPAddress+":"+coinAuth.Port, body)
+	if err != nil {
+		return respStruct, err
+	}
+	req.SetBasicAuth(coinAuth.RPCUser, coinAuth.RPCPassword)
+	req.Header.Set("Content-Type", "text/plain;")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return respStruct, err
+	}
+	defer resp.Body.Close()
+	bodyResp, err := ioutil.ReadAll(resp.Body)
+	if err != nil {
+		return respStruct, err
+	}
+	err = json.Unmarshal(bodyResp, &respStruct)
+	if err != nil {
+		return respStruct, err
+	}
+	return respStruct, nil
 }
 
 func (d Divi) WalletInfo(auth *models.CoinAuth) (models.DiviWalletInfo, error) {
