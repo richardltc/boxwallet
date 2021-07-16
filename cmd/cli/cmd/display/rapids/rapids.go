@@ -55,7 +55,7 @@ func balanceTxt() string {
 
 	// Work out balance
 	if walletInfo.Result.ImmatureBalance > 0 {
-		return "  Incoming....... [" + tBalanceStr + "](fg:cyan)"
+		return "  Incoming.......   [" + tBalanceStr + "](fg:cyan)"
 	} else if walletInfo.Result.UnconfirmedBalance > 0 {
 		return "  Confirming....... [" + tBalanceStr + "](fg:yellow)"
 	} else {
@@ -149,7 +149,6 @@ func (r RPD) LiveNetwork() string {
 		"  " + sDiff + "\n" +
 		"  " + sBlockchainSync + "\n" +
 		"  " + sConnections
-
 }
 
 func (r RPD) LiveTransactions() (containsZeroConfs bool, rows [][]string) {
@@ -174,7 +173,7 @@ func (r RPD) LiveTransactions() (containsZeroConfs bool, rows [][]string) {
 		}
 		tm := time.Unix(iTime, 0)
 		sCat := display.GetCategorySymbol(transactions.Result[i].Category)
-		tAmountStr := humanize.FormatFloat("#,###.####", transactions.Result[i].Amount)
+		tAmountStr := humanize.FormatFloat("#,###.########", transactions.Result[i].Amount)
 		sColour := display.GetCategoryColour(transactions.Result[i].Category)
 		sRows = append(sRows, []string{
 			" [" + tm.Format("2006-01-02 15:04"+"](fg:"+sColour+")"),
