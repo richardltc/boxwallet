@@ -56,6 +56,7 @@ type DiviGetNewAddress struct {
 	Error  interface{} `json:"error"`
 	ID     string      `json:"id"`
 }
+
 type DiviListReceivedByAddress struct {
 	Result []struct {
 		Address         string   `json:"address"`
