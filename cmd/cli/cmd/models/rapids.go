@@ -1,6 +1,6 @@
 package models
 
-type RapidsBlockchainInfo struct {
+type RPDBlockchainInfo struct {
 	Result struct {
 		Chain                string  `json:"chain"`
 		Blocks               int     `json:"blocks"`
@@ -63,7 +63,7 @@ type RapidsBlockchainInfo struct {
 	ID    string      `json:"id"`
 }
 
-type RapidsGetInfo struct {
+type RPDGetInfo struct {
 	Result struct {
 		Version         int     `json:"version"`
 		Protocolversion int     `json:"protocolversion"`
@@ -100,7 +100,7 @@ type RapidsGetInfo struct {
 	ID    string      `json:"id"`
 }
 
-type RapidsListReceivedByAddress struct {
+type RPDListReceivedByAddress struct {
 	Result []struct {
 		Address         string        `json:"address"`
 		Account         string        `json:"account"`
@@ -114,7 +114,28 @@ type RapidsListReceivedByAddress struct {
 	ID    string      `json:"id"`
 }
 
-type RapidsMNSyncStatus struct {
+type RPDListTransactions struct {
+	Result []struct {
+		Account         string        `json:"account"`
+		Address         string        `json:"address"`
+		Category        string        `json:"category"`
+		Amount          float64       `json:"amount"`
+		Vout            int           `json:"vout,omitempty"`
+		Confirmations   int           `json:"confirmations"`
+		Blockhash       string        `json:"blockhash"`
+		Blockindex      int           `json:"blockindex"`
+		Blocktime       int           `json:"blocktime"`
+		Txid            string        `json:"txid"`
+		Walletconflicts []interface{} `json:"walletconflicts"`
+		Time            int           `json:"time"`
+		Timereceived    int           `json:"timereceived"`
+		Generated       bool          `json:"generated,omitempty"`
+	} `json:"result"`
+	Error interface{} `json:"error"`
+	ID    string      `json:"id"`
+}
+
+type RPDMNSyncStatus struct {
 	Result struct {
 		IsBlockchainSynced         bool `json:"IsBlockchainSynced"`
 		LastMasternodeList         int  `json:"lastMasternodeList"`
@@ -137,7 +158,7 @@ type RapidsMNSyncStatus struct {
 	ID    string      `json:"id"`
 }
 
-type RapidsStakingStatus struct {
+type RPDStakingStatus struct {
 	Result struct {
 		StakingStatus       bool    `json:"staking_status"`
 		StakingEnabled      bool    `json:"staking_enabled"`
@@ -158,7 +179,7 @@ type RapidsStakingStatus struct {
 	ID    string      `json:"id"`
 }
 
-type RapidsWalletInfo struct {
+type RPDWalletInfo struct {
 	Result struct {
 		Walletversion              int     `json:"walletversion"`
 		Balance                    float64 `json:"balance"`
