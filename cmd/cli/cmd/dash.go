@@ -19,6 +19,7 @@ package cmd
 import (
 	"errors"
 	"fmt"
+	ppc "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/peercoin"
 	"time"
 
 	ui "github.com/gizak/termui/v3"
@@ -44,6 +45,7 @@ import (
 	"richardmace.co.uk/boxwallet/cmd/cli/cmd/conf"
 	xbcDisplay "richardmace.co.uk/boxwallet/cmd/cli/cmd/display/bitcoinplus"
 	diviDisplay "richardmace.co.uk/boxwallet/cmd/cli/cmd/display/divi"
+	ppcDisplay "richardmace.co.uk/boxwallet/cmd/cli/cmd/display/peercoin"
 	rpdDisplay "richardmace.co.uk/boxwallet/cmd/cli/cmd/display/rapids"
 	"richardmace.co.uk/boxwallet/cmd/cli/cmd/models"
 	// "richardmace.co.uk/boxwallet/cmd/cli/cmd/wallet"
@@ -53,7 +55,7 @@ import (
 
 const (
 	cStakeReceived   string = "\u2618"
-	cPaymentReceived string = "<--" //"\u2770"
+	cPaymentReceived string = "<--"
 	cPaymentSent     string = "-->" //"\u2771"
 
 	cProg1 string = "|"
@@ -205,6 +207,23 @@ var dashCmd = &cobra.Command{
 			walletRefreshNetwork = diviDisplay.DIVI{}
 			walletRefreshTransactions = diviDisplay.DIVI{}
 			walletSecurityState = divi.Divi{}
+		case models.PTPeercoin:
+			coin = ppc.Peercoin{}
+			coinBlockchainIsSynced = ppc.Peercoin{}
+			coinDaemon = ppc.Peercoin{}
+			coinDispAbout = ppcDisplay.PPC{}
+			coinDispInitialBalance = ppcDisplay.PPC{}
+			coinDispInitialNetwork = ppcDisplay.PPC{}
+			coinDispLiveNetwork = ppcDisplay.PPC{}
+			coinDispLiveTransactions = ppcDisplay.PPC{}
+			coinDispLiveWallet = ppcDisplay.PPC{}
+			coinName = ppc.Peercoin{}
+			coinPrice = ppcDisplay.PPC{}
+			coinWallet = ppc.Peercoin{}
+			walletRefreshDifficulty = ppcDisplay.PPC{}
+			walletRefreshNetwork = ppcDisplay.PPC{}
+			walletRefreshTransactions = ppcDisplay.PPC{}
+			walletSecurityState = ppc.Peercoin{}
 		case models.PTRapids:
 			coin = rpd.Rapids{}
 			coinBlockchainIsSynced = rpd.Rapids{}
