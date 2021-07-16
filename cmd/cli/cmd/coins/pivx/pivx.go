@@ -27,7 +27,7 @@ const (
 	cCoinName       string = "PIVX"
 	cCoinNameAbbrev string = "PIVX"
 
-	cCoreVersion           string = "5.1.0"
+	cCoreVersion           string = "5.2.0.1"
 	cDownloadFileArm32            = "pivx-" + cCoreVersion + "-arm-linux-gnueabihf.tar.gz"
 	cDownloadFileArm64            = "pivx-" + cCoreVersion + "-aarch64-linux-gnu.tar.gz"
 	cDownloadFileLin              = "pivx-" + cCoreVersion + "-x86_64-linux-gnu.tar.gz"
@@ -155,6 +155,7 @@ func (p PIVX) DownloadCoin(location string) error {
 	if err := p.unarchiveFile(fullFilePath, location); err != nil {
 		return err
 	}
+
 	return nil
 }
 
