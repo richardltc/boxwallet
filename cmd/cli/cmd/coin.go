@@ -34,6 +34,7 @@ import (
 	ppc "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/peercoin"
 	phr "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/phore"
 	pivx "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/pivx"
+	xpm "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/primecoin"
 	rpd "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/rapids"
 	rdd "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/reddcoin"
 	sys "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/syscoin"
@@ -86,6 +87,7 @@ var coinCmd = &cobra.Command{
 				coins.CCoinNamePeercoin,
 				coins.CCoinNamePhore,
 				coins.CCoinNamePIVX,
+				coins.CCoinNamePrimecoin,
 				coins.CCoinNameRapids,
 				coins.CCoinNameReddCoin,
 				coins.CCoinNameScala,
@@ -104,6 +106,7 @@ var coinCmd = &cobra.Command{
 		conf.Bootstrap(appWorkingDir)
 		var rpcUser, rpcPassword, ipAddress string
 		var err error
+
 		ipAddress = "127.0.0.1"
 
 		switch selectedCoin {
@@ -157,6 +160,11 @@ var coinCmd = &cobra.Command{
 			coinName = pivx.PIVX{}
 			coinRPC = pivx.PIVX{}
 			coinType = models.PTPIVX
+		case coins.CCoinNamePrimecoin:
+			coin = xpm.Primecoin{}
+			coinName = xpm.Primecoin{}
+			coinRPC = xpm.Primecoin{}
+			coinType = models.PTPrimecoin
 		case coins.CCoinNameRapids:
 			coin = rpd.Rapids{}
 			coinName = rpd.Rapids{}
