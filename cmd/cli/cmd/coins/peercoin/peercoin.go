@@ -16,6 +16,7 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/mholt/archiver"
 	"richardmace.co.uk/boxwallet/cmd/cli/cmd/models"
@@ -407,6 +408,44 @@ func (p Peercoin) NetworkDifficultyInfo() (float64, float64, error) {
 	return fGood, fWarning, nil
 }
 
+func (p Peercoin) NetworkInfo(coinAuth *models.CoinAuth) (models.PPCNetworkInfo, error) {
+	var respStruct models.PPCNetworkInfo
+
+	for i := 1; i < 50; i++ {
+		body := strings.NewReader("{\"jsonrpc\":\"1.0\",\"id\":\"boxwallet\",\"method\":\"" + models.CCommandGetNetworkInfo + "\",\"params\":[]}")
+
+		req, err := http.NewRequest("POST", "http://"+coinAuth.IPAddress+":"+coinAuth.Port, body)
+		if err != nil {
+			return respStruct, err
+		}
+		req.SetBasicAuth(coinAuth.RPCUser, coinAuth.RPCPassword)
+		req.Header.Set("Content-Type", "text/plain;")
+
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			return respStruct, err
+		}
+		defer resp.Body.Close()
+		bodyResp, err := ioutil.ReadAll(resp.Body)
+		if err != nil {
+			return respStruct, err
+		}
+
+		// Check to make sure we are not loading the wallet
+		if bytes.Contains(bodyResp, []byte("Loading")) ||
+			bytes.Contains(bodyResp, []byte("Rescanning")) ||
+			bytes.Contains(bodyResp, []byte("Rewinding")) ||
+			bytes.Contains(bodyResp, []byte("Verifying")) {
+			// The wallet is still loading, so print message, and sleep for 3 seconds and try again
+			time.Sleep(5 * time.Second)
+		} else {
+			_ = json.Unmarshal(bodyResp, &respStruct)
+			return respStruct, err
+		}
+	}
+	return respStruct, nil
+}
+
 func (p Peercoin) NewAddress(auth *models.CoinAuth) (models.PPCNewAddress, error) {
 	var respStruct models.PPCNewAddress
 
@@ -526,15 +565,42 @@ func (p Peercoin) TipAddress() string {
 	return cTipAddress
 }
 
-func (p *Peercoin) WalletInfo() (models.PPCWalletInfo, error) {
-	var respStruct models.PPCWalletInfo
+func (p Peercoin) WalletEncrypt(coinAuth *models.CoinAuth, pw string) (be.GenericRespStruct, error) {
+	var respStruct be.GenericRespStruct
 
-	body := strings.NewReader("{\"jsonrpc\":\"1.0\",\"id\":\"boxwallet\",\"method\":\"" + models.CCommandGetWalletInfo + "\",\"params\":[]}")
-	req, err := http.NewRequest("POST", "http://"+p.IPAddress+":"+p.Port, body)
+	body := strings.NewReader("{\"jsonrpc\":\"1.0\",\"id\":\"boxwallet\",\"method\":\"" + models.CCommandEncryptWallet + "\",\"params\":[\"" + pw + "\"]}")
+	req, err := http.NewRequest("POST", "http://"+coinAuth.IPAddress+":"+coinAuth.Port, body)
 	if err != nil {
 		return respStruct, err
 	}
-	req.SetBasicAuth(p.RPCUser, p.RPCPassword)
+	req.SetBasicAuth(coinAuth.RPCUser, coinAuth.RPCPassword)
+	req.Header.Set("Content-Type", "text/plain;")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return respStruct, err
+	}
+	defer resp.Body.Close()
+	bodyResp, err := ioutil.ReadAll(resp.Body)
+	if err != nil {
+		return respStruct, err
+	}
+	err = json.Unmarshal(bodyResp, &respStruct)
+	if err != nil {
+		return respStruct, err
+	}
+	return respStruct, nil
+}
+
+func (p Peercoin) WalletInfo(coinAuth *models.CoinAuth) (models.PPCWalletInfo, error) {
+	var respStruct models.PPCWalletInfo
+
+	body := strings.NewReader("{\"jsonrpc\":\"1.0\",\"id\":\"boxwallet\",\"method\":\"" + models.CCommandGetWalletInfo + "\",\"params\":[]}")
+	req, err := http.NewRequest("POST", "http://"+coinAuth.IPAddress+":"+coinAuth.Port, body)
+	if err != nil {
+		return respStruct, err
+	}
+	req.SetBasicAuth(coinAuth.RPCUser, coinAuth.RPCPassword)
 	req.Header.Set("Content-Type", "text/plain;")
 
 	resp, err := http.DefaultClient.Do(req)
@@ -600,7 +666,7 @@ func (p Peercoin) WalletLoadingStatus(auth *models.CoinAuth) models.WLSType {
 }
 
 func (p Peercoin) WalletNeedsEncrypting(coinAuth *models.CoinAuth) (bool, error) {
-	wi, err := p.WalletInfo()
+	wi, err := p.WalletInfo(coinAuth)
 	if err != nil {
 		return true, errors.New("Unable to perform WalletInfo " + err.Error())
 	}
@@ -640,8 +706,8 @@ func (p Peercoin) WalletResync(appFolder string) error {
 	return nil
 }
 
-func (p Peercoin) WalletSecurityState() (models.WEType, error) {
-	wi, err := p.WalletInfo()
+func (p Peercoin) WalletSecurityState(coinAuth *models.CoinAuth) (models.WEType, error) {
+	wi, err := p.WalletInfo(coinAuth)
 	if err != nil {
 		return models.WETUnknown, errors.New("Unable to GetWalletSecurityState: " + err.Error())
 	}
@@ -683,6 +749,7 @@ func (p Peercoin) WalletUnlockFS(coinAuth *models.CoinAuth, pw string) error {
 	if err != nil || respStruct.Error != nil {
 		return err
 	}
+
 	return nil
 }
 
@@ -713,7 +780,7 @@ func (p Peercoin) WalletUnlock(coinAuth *models.CoinAuth, pw string) error {
 	return nil
 }
 
-func (p Peercoin) UpdateTickerInfo() (ticker models.DiviTicker, err error) {
+func (p Peercoin) UpdateTickerInfo() (ticker models.PPCTicker, err error) {
 	resp, err := http.Get("https://ticker.neist.io/PPC")
 	if err != nil {
 		return ticker, err
@@ -737,7 +804,7 @@ func (p *Peercoin) unarchiveFile(fullFilePath, location string) error {
 	}
 	switch runtime.GOOS {
 	case "windows":
-		return errors.New("Windows is not currently supported for :" + cCoinName)
+		return errors.New("windows is not currently supported for :" + cCoinName)
 	case "linux":
 		switch runtime.GOARCH {
 		case "arm":
