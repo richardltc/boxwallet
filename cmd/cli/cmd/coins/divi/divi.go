@@ -33,7 +33,7 @@ const (
 	cHomeDir    string = ".divi"
 	cHomeDirWin string = "DIVI"
 
-	cCoreVersion         string = "2.0.1"
+	cCoreVersion         string = "2.5.1"
 	cDownloadFileArm32          = "divi-" + cCoreVersion + "-RPi2.tar.gz"
 	cDownloadFileLinux          = "divi-" + cCoreVersion + "-x86_64-linux.tar.gz"
 	cDownloadFileWindows        = "divi-" + cCoreVersion + "-win64.zip"
