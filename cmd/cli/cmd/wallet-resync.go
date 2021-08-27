@@ -18,6 +18,7 @@ package cmd
 import (
 	"fmt"
 	"log"
+	divi "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/divi"
 	rpd "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/rapids"
 
 	"richardmace.co.uk/boxwallet/cmd/cli/cmd/app"
@@ -56,6 +57,9 @@ var resyncCmd = &cobra.Command{
 		case models.PTBitcoinPlus:
 			coinName = xbc.XBC{}
 			wallet = xbc.XBC{}
+		case models.PTDivi:
+			coinName = divi.Divi{}
+			wallet = divi.Divi{}
 		case models.PTRapids:
 			coinName = rpd.Rapids{}
 			wallet = rpd.Rapids{}
