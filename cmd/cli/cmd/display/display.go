@@ -121,3 +121,25 @@ func NextProgBCIndicator(previousIndicator string) string {
 		return cProg1
 	}
 }
+
+func NextProgMNIndicator(previousIndicator string) string {
+	if previousIndicator == cProg1 {
+		return cProg2
+	} else if previousIndicator == cProg2 {
+		return cProg3
+	} else if previousIndicator == cProg3 {
+		return cProg4
+	} else if previousIndicator == cProg4 {
+		return cProg5
+	} else if previousIndicator == cProg5 {
+		return cProg6
+	} else if previousIndicator == cProg6 {
+		return cProg7
+	} else if previousIndicator == cProg7 {
+		return cProg8
+	} else if previousIndicator == cProg8 || previousIndicator == "" {
+		return cProg1
+	} else {
+		return cProg1
+	}
+}
