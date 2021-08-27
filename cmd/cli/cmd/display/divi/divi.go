@@ -25,6 +25,7 @@ var transactions models.DiviListTransactions
 var walletInfo models.DiviWalletInfo
 var diffGood, diffWarning float64
 var lastBCSyncStatus = ""
+var lastMNSyncStatus = ""
 
 // var gDiviLottery be.DiviLotteryRespStruct
 var nextLotteryStored string
@@ -182,20 +183,25 @@ func (d DIVI) InitialNetwork() string {
 
 func (d DIVI) LiveNetwork() string {
 	var bcSynced bool
-	var sBlockchainSync, sConnections, sHeaders, sBlocks, sDiff, sDiffVal string
+	var mnSynced bool
+	var sBlockchainSync, sMNSync, sConnections, sBlocks, sDiff, sDiffVal string
 
 	if blockChainInfo.Result.Verificationprogress > 0.99999 {
 		bcSynced = true
 	}
 
+	if stakingInfo.Result.Mnsync {
+		mnSynced = true
+	}
+
 	// bci, _ := xBC.BlockchainInfo(coinAuth)
 
-	headersStr := humanize.Comma(int64(blockChainInfo.Result.Headers))
-	if blockChainInfo.Result.Headers > 1 {
-		sHeaders = "Headers:     [" + headersStr + "](fg:green)"
-	} else {
-		sHeaders = "[Headers:     " + headersStr + "](fg:red)"
-	}
+	//headersStr := humanize.Comma(int64(blockChainInfo.Result.Headers))
+	//if blockChainInfo.Result.Headers > 1 {
+	//	sHeaders = "Headers:     [" + headersStr + "](fg:green)"
+	//} else {
+	//	sHeaders = "[Headers:     " + headersStr + "](fg:red)"
+	//}
 
 	blocksStr := humanize.Comma(int64(blockChainInfo.Result.Blocks))
 	if blocksStr == "0" {
@@ -218,14 +224,22 @@ func (d DIVI) LiveNetwork() string {
 		sDiff = "Difficulty:  [" + sDiffVal + "](fg:red)"
 	}
 
-	s := blockchainSyncTxt()
+	sBC := blockchainSyncTxt()
 
 	if !bcSynced {
 		nextBCSyncIndicator := display.NextProgBCIndicator(lastBCSyncStatus)
-		sBlockchainSync = "Blockchain: [" + display.NextProgBCIndicator(nextBCSyncIndicator) + "syncing " + s + " ](fg:yellow)"
+		sBlockchainSync = "Blockchain: [" + display.NextProgBCIndicator(nextBCSyncIndicator) + "syncing " + sBC + " ](fg:yellow)"
 		lastBCSyncStatus = nextBCSyncIndicator
 	} else {
 		sBlockchainSync = "Blockchain:  [synced " + display.CUTFTickBold + "](fg:green)"
+	}
+
+	if !mnSynced {
+		nextMNSyncIndicator := display.NextProgBCIndicator(lastMNSyncStatus)
+		sMNSync = "Masternodes:[" + display.NextProgMNIndicator(nextMNSyncIndicator) + "syncing ](fg:yellow)"
+		lastMNSyncStatus = nextMNSyncIndicator
+	} else {
+		sMNSync = "Masternodes: [synced " + display.CUTFTickBold + "](fg:green)"
 	}
 
 	sNumCon := strconv.Itoa(info.Result.Connections)
@@ -236,10 +250,10 @@ func (d DIVI) LiveNetwork() string {
 		sConnections = "Connections: [" + sNumCon + "](fg:green)\n"
 	}
 
-	return "  " + sHeaders + "\n" +
-		"  " + sBlocks + "\n" +
+	return "  " + sBlocks + "\n" +
 		"  " + sDiff + "\n" +
 		"  " + sBlockchainSync + "\n" +
+		"  " + sMNSync + "\n" +
 		"  " + sConnections
 }
 
@@ -297,6 +311,18 @@ func (d DIVI) LiveWallet() string {
 		"  " + activelyStakingTxt() + "\n" + //e.g. "15%" or "staking".
 		"  " + nextLottery() + "\n" +
 		"  " + lotteryTickets()
+}
+
+func mnSyncTxt(mns bool) string {
+	if stakingInfo.Result.Mnsync == true {
+		return "[synced " + display.CUTFTickBold + "](fg:green)"
+	} else {
+		if mns {
+			return "[" + display.NextProgBCIndicator(lastMNSyncStatus) + "syncing...](fg:yellow)"
+		} else {
+			return "[waiting...](fg:yellow)"
+		}
+	}
 }
 
 func nextLottery() string {
