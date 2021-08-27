@@ -4,11 +4,9 @@ go 1.14
 
 require (
 	github.com/AlecAivazis/survey/v2 v2.1.1
-	github.com/artdarek/go-unzip v1.0.0
 	github.com/cavaliercoder/grab v2.0.0+incompatible
-	github.com/coreos/etcd v3.3.13+incompatible // indirect
-	github.com/dariubs/percent v0.0.0-20200128140941-b7801cf1c7e2
 	github.com/dustin/go-humanize v1.0.0
+	github.com/frankban/quicktest v1.13.0 // indirect
 	github.com/fsnotify/fsnotify v1.4.9 // indirect
 	github.com/gizak/termui/v3 v3.1.0
 	github.com/gookit/color v1.3.7
