@@ -31,8 +31,8 @@ const (
 	cDownloadFileArm32        = "peercoin-" + cCoreVersion + "-arm-linux-gnueabihf.tar.gz"
 	cDownloadFileArm64        = "peercoin-" + cCoreVersion + "-aarch64-linux-gnu.tar.gz"
 	cDownloadFileLin          = "peercoin-" + cCoreVersion + "-x86_64-linux-gnu.tar.gz"
-	cDownloadFilemacOS        = "peercoin-" + cCoreVersion + "-osx64.tar.gz"
-	//CDFFileWindowsPeercoin = "peercoin-" + CCoreVersionPeercoin + "-win64.zip"
+	// cDownloadFilemacOS        = "peercoin-" + cCoreVersion + "-osx64.tar.gz"
+	// CDFFileWindowsPeercoin = "peercoin-" + CCoreVersionPeercoin + "-win64.zip"
 
 	// Directory constants
 
@@ -724,7 +724,7 @@ func (p Peercoin) WalletSecurityState(coinAuth *models.CoinAuth) (models.WEType,
 }
 
 func (p Peercoin) WalletUnlockFS(coinAuth *models.CoinAuth, pw string) error {
-	var respStruct be.GenericRespStruct
+	var respStruct models.PPCWalletUnlockFS
 	var body *strings.Reader
 
 	body = strings.NewReader("{\"jsonrpc\":\"1.0\",\"id\":\"boxwallet\",\"method\":\"walletpassphrase\",\"params\":[\"" + pw + "\",9999999,true]}")
