@@ -19,6 +19,7 @@ import (
 	"fmt"
 	"log"
 	divi "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/divi"
+	ppc "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/peercoin"
 	rpd "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/rapids"
 
 	"richardmace.co.uk/boxwallet/cmd/cli/cmd/app"
@@ -60,6 +61,9 @@ var resyncCmd = &cobra.Command{
 		case models.PTDivi:
 			coinName = divi.Divi{}
 			wallet = divi.Divi{}
+		case models.PTPeercoin:
+			coinName = ppc.Peercoin{}
+			wallet = ppc.Peercoin{}
 		case models.PTRapids:
 			coinName = rpd.Rapids{}
 			wallet = rpd.Rapids{}
@@ -110,7 +114,7 @@ var resyncCmd = &cobra.Command{
 		// 	log.Fatal("Unable to perform resync: " + err.Error())
 		// }
 
-		// fmt.Println("Your " + cn + " wallet is now syncing again. Please use ./boxwallet dash to view")
+		// fmt.Println("Your " + cn + " wallet is now syncing again. Please use ./boxwallet dash to view").
 	},
 }
 
