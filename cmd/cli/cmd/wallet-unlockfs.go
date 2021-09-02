@@ -24,13 +24,14 @@ import (
 	"richardmace.co.uk/boxwallet/cmd/cli/cmd/app"
 	xbc "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/bitcoinplus"
 	divi "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/divi"
+	ppc "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/peercoin"
+	rpd "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/rapids"
 	"richardmace.co.uk/boxwallet/cmd/cli/cmd/conf"
 	"richardmace.co.uk/boxwallet/cmd/cli/cmd/wallet"
 
 	// "encoding/json"
 	// "fmt"
 	"github.com/spf13/cobra"
-	rpd "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/rapids"
 	"richardmace.co.uk/boxwallet/cmd/cli/cmd/models"
 	// "io/ioutil"
 	// "log"
@@ -89,6 +90,9 @@ var unlockfsCmd = &cobra.Command{
 		case models.PTFeathercoin:
 		case models.PTGroestlcoin:
 		case models.PTPhore:
+		case models.PTPeercoin:
+			walletSecurityState = ppc.Peercoin{}
+			walletUnlockFS = ppc.Peercoin{}
 		case models.PTPIVX:
 		case models.PTRapids:
 			walletSecurityState = rpd.Rapids{}
@@ -185,7 +189,7 @@ var unlockfsCmd = &cobra.Command{
 		// if err != nil || r.Error != nil {
 		// 	log.Fatalf("failed to unlock wallet for staking %s\n", r.Error)
 		// }
-		// fmt.Println("Wallet unlocked for staking")
+		// fmt.Println("Wallet unlocked for staking").
 
 	},
 }
