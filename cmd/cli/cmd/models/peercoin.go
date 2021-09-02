@@ -149,3 +149,11 @@ type PPCWalletInfo struct {
 	Error interface{} `json:"error"`
 	ID    string      `json:"id"`
 }
+
+type PPCWalletUnlockFS struct {
+	Result struct {
+		UnlockedMintingOnly bool `json:"unlocked_minting_only"`
+	} `json:"result"`
+	Error interface{} `json:"error"`
+	ID    string      `json:"id"`
+}
