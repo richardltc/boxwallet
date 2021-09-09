@@ -6,6 +6,10 @@ import (
 	"richardmace.co.uk/boxwallet/cmd/cli/cmd/models"
 )
 
+type WalletAddress interface {
+	WalletAddress(auth *models.CoinAuth) (string, error)
+}
+
 type Wallet interface {
 	DaemonRunning() (bool, error)
 	WalletNeedsEncrypting(coinAuth *models.CoinAuth) (bool, error)
