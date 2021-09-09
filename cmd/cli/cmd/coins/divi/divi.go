@@ -179,6 +179,7 @@ func (d Divi) AllBinaryFilesExist(dir string) (bool, error) {
 			return false, nil
 		}
 	}
+
 	return true, nil
 }
 
@@ -952,6 +953,21 @@ func (d Divi) StopDaemon(auth *models.CoinAuth) error {
 
 func (d Divi) TipAddress() string {
 	return cTipAddress
+}
+
+func (d Divi) WalletAddress(auth *models.CoinAuth) (string, error) {
+	var sAddress string
+	addresses, _ := d.ListReceivedByAddress(auth, true)
+	if len(addresses.Result) > 0 {
+		sAddress = addresses.Result[0].Address
+	} else {
+		r, err := d.NewAddress(auth)
+		if err != nil {
+			return "", err
+		}
+		sAddress = r.Result
+	}
+	return sAddress, nil
 }
 
 func (d Divi) WalletEncrypt(coinAuth *models.CoinAuth, pw string) (be.GenericRespStruct, error) {
