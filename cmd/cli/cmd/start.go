@@ -29,6 +29,7 @@ import (
 	"richardmace.co.uk/boxwallet/cmd/cli/cmd/coins"
 	xbc "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/bitcoinplus"
 	d "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/denarius"
+	xpm "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/primecoin"
 	rpd "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/rapids"
 	"richardmace.co.uk/boxwallet/cmd/cli/cmd/conf"
 	"richardmace.co.uk/boxwallet/cmd/cli/cmd/models"
@@ -61,7 +62,7 @@ var startCmd = &cobra.Command{
 			log.Fatal("Unable to get appFilename: " + err.Error())
 		}
 
-		// Make sure the config file exists, and if not, force user to use "coin" command first..
+		// Make sure the config file exists, and if not, force user to use "coin" command first.
 		if _, err := os.Stat(appHomeDir + conf.ConfFile()); os.IsNotExist(err) {
 			log.Fatal("Unable to determine coin type. Please run " + appFileName + " coin  first")
 		}
@@ -95,6 +96,9 @@ var startCmd = &cobra.Command{
 			coinName = ppc.Peercoin{}
 		case models.PTPhore:
 		case models.PTPIVX:
+		case models.PTPrimecoin:
+			coinDaemon = xpm.Primecoin{}
+			coinName = xpm.Primecoin{}
 		case models.PTRapids:
 			coinDaemon = rpd.Rapids{}
 			coinName = rpd.Rapids{}
