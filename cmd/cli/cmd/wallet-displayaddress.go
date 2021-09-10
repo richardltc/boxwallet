@@ -23,7 +23,17 @@ import (
 
 	// be "richardmace.co.uk/boxwallet/cmd/cli/cmd/bend"
 
+	"fmt"
 	"github.com/spf13/cobra"
+	"log"
+	"os"
+	"richardmace.co.uk/boxwallet/cmd/cli/cmd/app"
+	"richardmace.co.uk/boxwallet/cmd/cli/cmd/coins"
+
+	divi "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/divi"
+	"richardmace.co.uk/boxwallet/cmd/cli/cmd/conf"
+	"richardmace.co.uk/boxwallet/cmd/cli/cmd/models"
+	"richardmace.co.uk/boxwallet/cmd/cli/cmd/wallet"
 )
 
 // displayaddressCmd represents the displayaddress command
@@ -32,6 +42,72 @@ var displayaddressCmd = &cobra.Command{
 	Short: "Displays your wallet address",
 	Long:  ``,
 	Run: func(cmd *cobra.Command, args []string) {
+		var app app.App
+
+		fmt.Println("  ____          __          __   _ _      _   \n |  _ \\         \\ \\        / /  | | |    | |  \n | |_) | _____  _\\ \\  /\\  / /_ _| | | ___| |_ \n |  _ < / _ \\ \\/ /\\ \\/  \\/ / _` | | |/ _ \\ __|\n | |_) | (_) >  <  \\  /\\  / (_| | | |  __/ |_ \n |____/ \\___/_/\\_\\  \\/  \\/ \\__,_|_|_|\\___|\\__| v" + app.Version() + "\n                                              \n                                               ")
+
+		var conf conf.Conf
+		var coinName coins.CoinName
+		var walletAddress wallet.WalletAddress
+
+		appHomeDir, err := app.HomeFolder()
+		if err != nil {
+			log.Fatal("Unable to get HomeFolder: " + err.Error())
+		}
+
+		conf.Bootstrap(appHomeDir)
+
+		appFileName, err := app.FileName()
+		if err != nil {
+			log.Fatal("Unable to get appFilename: " + err.Error())
+		}
+
+		// Make sure the config file exists, and if not, force user to use "coin" command first...
+		if _, err := os.Stat(appHomeDir + conf.ConfFile()); os.IsNotExist(err) {
+			log.Fatal("Unable to determine coin type. Please run " + appFileName + " coin  first")
+		}
+
+		// Now load our config file to see what coin choice the user made..
+		confDB, err := conf.GetConfig(true)
+		if err != nil {
+			log.Fatal("Unable to determine coin type. Please run " + appFileName + " coin: " + err.Error())
+		}
+
+		switch confDB.ProjectType {
+		case models.PTBitcoinPlus:
+		case models.PTDenarius:
+		case models.PTDeVault:
+		case models.PTDigiByte:
+		case models.PTDivi:
+			coinName = divi.Divi{}
+			walletAddress = divi.Divi{}
+		case models.PTFeathercoin:
+		case models.PTGroestlcoin:
+		case models.PTPhore:
+		case models.PTPeercoin:
+		case models.PTPIVX:
+		case models.PTRapids:
+		case models.PTReddCoin:
+		case models.PTScala:
+		case models.PTTrezarcoin:
+		case models.PTVertcoin:
+		default:
+			log.Fatal("unable to determine ProjectType")
+		}
+
+		var coinAuth models.CoinAuth
+		coinAuth.RPCUser = confDB.RPCuser
+		coinAuth.RPCPassword = confDB.RPCpassword
+		coinAuth.IPAddress = confDB.ServerIP
+		coinAuth.Port = confDB.Port
+
+		sAddress, err := walletAddress.WalletAddress(&coinAuth)
+		if err != nil {
+			log.Fatal("Unable to DisplayWalletAddress: " + err.Error())
+		}
+
+		fmt.Println("Your " + coinName.CoinName() + " address is: \n\n" + sAddress + "\n")
+
 		// apw, err := be.GetAppWorkingFolder()
 		// if err != nil {
 		// 	log.Fatal("Unable to GetAppWorkingFolder: " + err.Error())
