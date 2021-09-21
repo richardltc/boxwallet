@@ -116,6 +116,9 @@ var encryptCmd = &cobra.Command{
 		}
 
 		wep := wallet.GetWalletEncryptionPassword()
+		if wep == "" {
+			log.Fatal("Password was blank or didn't match")
+		}
 
 		r, err := walletEncrypt.WalletEncrypt(&coinAuth, wep)
 		if err != nil {
