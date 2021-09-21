@@ -30,11 +30,20 @@ type WalletSecurityState interface {
 }
 
 func GetWalletEncryptionPassword() string {
-	pw := ""
-	prompt := &survey.Password{
+	var pw1, pw2 string
+	prompt1 := &survey.Password{
 		Message: "Please enter your wallet password",
 	}
-	survey.AskOne(prompt, &pw)
+	survey.AskOne(prompt1, &pw1)
 
-	return pw
+	prompt2 := &survey.Password{
+		Message: "Now please re-enter your wallet password",
+	}
+	survey.AskOne(prompt2, &pw2)
+
+	if pw1 != pw2 {
+		return ""
+	}
+
+	return pw1
 }
