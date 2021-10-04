@@ -17,6 +17,10 @@ type Wallet interface {
 	WalletResync(appFolder string) error
 }
 
+type WalletDumpHDInfo interface {
+	WalletDumpHDInfo(coinAuth *models.CoinAuth, pw string)
+}
+
 type WalletEncrypt interface {
 	WalletEncrypt(coinAuth *models.CoinAuth, pw string) (be.GenericRespStruct, error)
 }
