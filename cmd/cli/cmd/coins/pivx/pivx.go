@@ -27,7 +27,7 @@ const (
 	cCoinName       string = "PIVX"
 	cCoinNameAbbrev string = "PIVX"
 
-	cCoreVersion           string = "5.2.0.1"
+	cCoreVersion           string = "5.3.2"
 	cDownloadFileArm32            = "pivx-" + cCoreVersion + "-arm-linux-gnueabihf.tar.gz"
 	cDownloadFileArm64            = "pivx-" + cCoreVersion + "-aarch64-linux-gnu.tar.gz"
 	cDownloadFileLin              = "pivx-" + cCoreVersion + "-x86_64-linux-gnu.tar.gz"
@@ -48,7 +48,7 @@ const (
 	cHomeDirLin string = ".pivx"
 	cHomeDirWin string = "PIVX"
 
-	// File constants
+	// File constants.
 	cConfFile      string = "pivx.conf"
 	cCliFileLin    string = "pivx-cli"
 	cCliFileWin    string = "pivx-cli.exe"
