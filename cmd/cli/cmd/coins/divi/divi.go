@@ -562,15 +562,15 @@ func getDiviAddNodes() ([]byte, error) {
 	return body, nil
 }
 
-func (d *Divi) DumpHDInfoDivi() (models.DiviDumpHDInfo, error) {
+func (d Divi) DumpHDInfoDivi(coinAuth *models.CoinAuth) (string, error) {
 	var respStruct models.DiviDumpHDInfo
 
 	body := strings.NewReader("{\"jsonrpc\":\"1.0\",\"id\":\"boxwallet\",\"method\":\"" + cCommandDumpHDInfo + "\",\"params\":[]}")
-	req, err := http.NewRequest("POST", "http://"+d.IPAddress+":"+d.Port, body)
+	req, err := http.NewRequest("POST", "http://"+coinAuth.IPAddress+":"+coinAuth.Port, body)
 	if err != nil {
 		return respStruct, err
 	}
-	req.SetBasicAuth(d.RPCUser, d.RPCPassword)
+	req.SetBasicAuth(coinAuth.RPCUser, coinAuth.RPCPassword)
 	req.Header.Set("Content-Type", "text/plain;")
 
 	resp, err := http.DefaultClient.Do(req)
