@@ -129,7 +129,7 @@ to quickly create a Cobra application.`,
 		// Then ask for the amount they want to send
 		var amount float32
 		promptAmount := &survey.Input{
-			Message: "How much would you like to send?",
+			Message: "How much " + coinName.CoinNameAbbrev() + " would you like to send?",
 		}
 		survey.AskOne(promptAmount, &amount)
 
