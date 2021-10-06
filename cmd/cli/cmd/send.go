@@ -20,7 +20,18 @@ import (
 	// "os"
 	// be "richardmace.co.uk/boxwallet/cmd/cli/cmd/bend"
 
+	"fmt"
+	"github.com/AlecAivazis/survey/v2"
 	"github.com/spf13/cobra"
+	"log"
+	"os"
+	"richardmace.co.uk/boxwallet/cmd/cli/cmd/app"
+	"richardmace.co.uk/boxwallet/cmd/cli/cmd/coins"
+	xbc "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/bitcoinplus"
+	divi "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/divi"
+	"richardmace.co.uk/boxwallet/cmd/cli/cmd/conf"
+	"richardmace.co.uk/boxwallet/cmd/cli/cmd/models"
+	"richardmace.co.uk/boxwallet/cmd/cli/cmd/wallet"
 )
 
 // sendCmd represents the send command
@@ -34,6 +45,149 @@ Cobra is a CLI library for Go that empowers applications.
 This application is a tool to generate the needed files
 to quickly create a Cobra application.`,
 	Run: func(cmd *cobra.Command, args []string) {
+		var app app.App
+
+		fmt.Println("  ____          __          __   _ _      _   \n |  _ \\         \\ \\        / /  | | |    | |  \n | |_) | _____  _\\ \\  /\\  / /_ _| | | ___| |_ \n |  _ < / _ \\ \\/ /\\ \\/  \\/ / _` | | |/ _ \\ __|\n | |_) | (_) >  <  \\  /\\  / (_| | | |  __/ |_ \n |____/ \\___/_/\\_\\  \\/  \\/ \\__,_|_|_|\\___|\\__| v" + app.Version() + "\n                                              \n                                               ")
+
+		var conf conf.Conf
+		var coinName coins.CoinName
+		var daemonRunning coins.CoinDaemon
+		var walletSecurityState wallet.WalletSecurityState
+		var walletUnlock wallet.WalletUnlock
+		var walletValidateAddress wallet.WalletVaidateAddress
+		var sendToAddress wallet.WalletSendToAddress
+
+		appHomeDir, err := app.HomeFolder()
+		if err != nil {
+			log.Fatal("Unable to get HomeFolder: " + err.Error())
+		}
+
+		conf.Bootstrap(appHomeDir)
+
+		appFileName, err := app.FileName()
+		if err != nil {
+			log.Fatal("Unable to get appFilename: " + err.Error())
+		}
+
+		// Make sure the config file exists, and if not, force user to use "coin" command first...
+		if _, err := os.Stat(appHomeDir + conf.ConfFile()); os.IsNotExist(err) {
+			log.Fatal("Unable to determine coin type. Please run " + appFileName + " coin  first")
+		}
+
+		// Now load our config file to see what coin choice the user made...
+		confDB, err := conf.GetConfig(true)
+		if err != nil {
+			log.Fatal("Unable to determine coin type. Please run " + appFileName + " coin: " + err.Error())
+		}
+
+		switch confDB.ProjectType {
+		case models.PTBitcoinPlus:
+			walletSecurityState = xbc.XBC{}
+		case models.PTDenarius:
+		case models.PTDeVault:
+		case models.PTDigiByte:
+		case models.PTDivi:
+			coinName = divi.Divi{}
+			daemonRunning = divi.Divi{}
+			walletSecurityState = divi.Divi{}
+			walletUnlock = divi.Divi{}
+			walletValidateAddress = divi.Divi{}
+			sendToAddress = divi.Divi{}
+		case models.PTFeathercoin:
+		case models.PTGroestlcoin:
+		case models.PTPhore:
+		case models.PTPeercoin:
+		case models.PTPIVX:
+		case models.PTRapids:
+		case models.PTReddCoin:
+		case models.PTScala:
+		case models.PTTrezarcoin:
+		case models.PTVertcoin:
+		default:
+			log.Fatal("unable to determine ProjectType")
+		}
+
+		var coinAuth models.CoinAuth
+		coinAuth.RPCUser = confDB.RPCuser
+		coinAuth.RPCPassword = confDB.RPCpassword
+		coinAuth.IPAddress = confDB.ServerIP
+		coinAuth.Port = confDB.Port
+
+		// Check to see if we are running the coin daemon locally, and if we are, make sure it's actually running
+		// before attempting to connect to it.
+		if coinAuth.IPAddress == "127.0.0.1" {
+			bCDRunning, err := daemonRunning.DaemonRunning()
+			if err != nil {
+				log.Fatal("Unable to determine if coin daemon is running: " + err.Error())
+			}
+			if !bCDRunning {
+				log.Fatal("Unable to communicate with the " + coinName.CoinName() + " server. Please make sure the " + coinName.CoinName() + " server is running, by running:\n\n" +
+					appFileName + " start\n\n")
+			}
+		}
+
+		// Then ask for the amount they want to send
+		var amount float32
+		promptAmount := &survey.Input{
+			Message: "How much would you like to send?",
+		}
+		survey.AskOne(promptAmount, &amount)
+
+		// Then ask for the address
+		address := ""
+		promptAddress := &survey.Input{
+			Message: "Which " + coinName.CoinName() + " address would you like to send to?",
+		}
+		survey.AskOne(promptAddress, &address)
+
+		// Validate address as best we can...
+		// DIVI, length is 34 and starts with a D
+		av := walletValidateAddress.ValidateAddress(address)
+		if !av {
+			log.Fatalf("It looks like the address that you are sending to is not a " + coinName.CoinName() + " address?\n\n" +
+				"Please check and try again.")
+		}
+
+		// Then ask for confirmation
+		send := false
+		promptConfirm := &survey.Confirm{
+			Message: "Are you sure?\n\nSend: " + fmt.Sprintf("%f", amount) + "\n\nTo " + coinName.CoinName() + " address: " + address + "\n\n",
+		}
+		survey.AskOne(promptConfirm, &send)
+
+		// Check that their wallet is unlocked
+
+		wst, err := walletSecurityState.WalletSecurityState(&coinAuth)
+		if err != nil {
+			log.Fatal("Unable to determine Wallet Security State: " + err.Error())
+		}
+		if wst != models.WETUnlocked {
+			wep := coins.GetWalletEncryptionPassword()
+			err := walletUnlock.WalletUnlock(&coinAuth, wep)
+			if err != nil {
+				log.Fatalf("failed to unlock wallet %s\n", err)
+			}
+		}
+
+		// Then send..
+		if send {
+			if r, err := sendToAddress.SendToAddress(&coinAuth, address, amount); err != nil {
+				log.Fatalf("unable to send: %v", err)
+			} else {
+				fmt.Printf("Payment sent\n\n")
+				fmt.Println("txid: " + r.Result)
+			}
+		}
+
+		// 	wet := be.GetWalletSecurityStateDivi(&wi)
+		// 	if wet != be.WETUnlocked {
+		// 		wep := be.GetWalletEncryptionPassword()
+		// 		r, err := unlockWallet(&cliConf, wep)
+		// 		if err != nil || r.Error != nil {
+		// 			log.Fatalf("failed to unlock wallet %s\n", err)
+		// 		}
+		// 	}
+
 		// apw, err := be.GetAppWorkingFolder()
 		// if err != nil {
 		// 	log.Fatal("Unable to GetAppWorkingFolder: " + err.Error())
