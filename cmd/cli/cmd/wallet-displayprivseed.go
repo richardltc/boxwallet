@@ -22,7 +22,15 @@ import (
 	// "os"
 	// be "richardmace.co.uk/boxwallet/cmd/cli/cmd/bend"
 
+	"fmt"
 	"github.com/spf13/cobra"
+	"log"
+	"os"
+	"richardmace.co.uk/boxwallet/cmd/cli/cmd/app"
+	divi "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/divi"
+	"richardmace.co.uk/boxwallet/cmd/cli/cmd/conf"
+	"richardmace.co.uk/boxwallet/cmd/cli/cmd/models"
+	"richardmace.co.uk/boxwallet/cmd/cli/cmd/wallet"
 )
 
 const (
@@ -38,6 +46,79 @@ var displayprivseedCmd = &cobra.Command{
 	Short: "Displays your wallet private seed for future restore (make sure nobody is watching over your shoulder)",
 	Long:  ``,
 	Run: func(cmd *cobra.Command, args []string) {
+		var app app.App
+
+		fmt.Println("  ____          __          __   _ _      _   \n |  _ \\         \\ \\        / /  | | |    | |  \n | |_) | _____  _\\ \\  /\\  / /_ _| | | ___| |_ \n |  _ < / _ \\ \\/ /\\ \\/  \\/ / _` | | |/ _ \\ __|\n | |_) | (_) >  <  \\  /\\  / (_| | | |  __/ |_ \n |____/ \\___/_/\\_\\  \\/  \\/ \\__,_|_|_|\\___|\\__| v" + app.Version() + "\n                                              \n                                               ")
+
+		var conf conf.Conf
+		var walletSecurityState wallet.WalletSecurityState
+		var walletDumpHDInfo wallet.WalletDumpHDInfo
+
+		appHomeDir, err := app.HomeFolder()
+		if err != nil {
+			log.Fatal("Unable to get HomeFolder: " + err.Error())
+		}
+
+		conf.Bootstrap(appHomeDir)
+
+		appFileName, err := app.FileName()
+		if err != nil {
+			log.Fatal("Unable to get appFilename: " + err.Error())
+		}
+
+		// Make sure the config file exists, and if not, force user to use "coin" command first..
+		if _, err := os.Stat(appHomeDir + conf.ConfFile()); os.IsNotExist(err) {
+			log.Fatal("Unable to determine coin type. Please run " + appFileName + " coin  first")
+		}
+
+		// Now load our config file to see what coin choice the user made...
+		confDB, err := conf.GetConfig(true)
+		if err != nil {
+			log.Fatal("Unable to determine coin type. Please run " + appFileName + " coin: " + err.Error())
+		}
+
+		switch confDB.ProjectType {
+		case models.PTBitcoinPlus:
+		case models.PTDenarius:
+		case models.PTDeVault:
+		case models.PTDigiByte:
+		case models.PTDivi:
+			walletSecurityState = divi.Divi{}
+			walletDumpHDInfo = divi.Divi{}
+		case models.PTFeathercoin:
+		case models.PTGroestlcoin:
+		case models.PTPhore:
+		case models.PTPeercoin:
+		case models.PTPIVX:
+		case models.PTRapids:
+		case models.PTReddCoin:
+		case models.PTScala:
+		case models.PTTrezarcoin:
+		case models.PTVertcoin:
+		default:
+			log.Fatal("unable to determine ProjectType")
+		}
+
+		var coinAuth models.CoinAuth
+		coinAuth.RPCUser = confDB.RPCuser
+		coinAuth.RPCPassword = confDB.RPCpassword
+		coinAuth.IPAddress = confDB.ServerIP
+		coinAuth.Port = confDB.Port
+
+		wst, err := walletSecurityState.WalletSecurityState(&coinAuth)
+		if err != nil {
+			log.Fatal("Unable to determine Wallet Security State: " + err.Error())
+		}
+		if wst != models.WETUnlocked {
+			log.Fatal("Wallet is not unlocked.")
+		}
+
+		s, err := walletDumpHDInfo.DumpHDInfo(&coinAuth, "")
+		if err != nil {
+			log.Fatal("Unable to dump private seed words: ", err.Error())
+		}
+
+		fmt.Println("Your private seed words are: " + s)
 
 		// apw, err := be.GetAppWorkingFolder()
 		// if err != nil {
