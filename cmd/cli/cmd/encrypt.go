@@ -115,7 +115,7 @@ var encryptCmd = &cobra.Command{
 			log.Fatal("Wallet is already encrypted")
 		}
 
-		wep := wallet.GetWalletEncryptionPassword()
+		wep := wallet.GetWalletEncryptionPasswordFresh()
 		if wep == "" {
 			log.Fatal("Password was blank or didn't match")
 		}
@@ -128,7 +128,7 @@ var encryptCmd = &cobra.Command{
 		fmt.Println(r.Result)
 
 		// Lets load our config file first, to see if the user has made their coin choice..
-		// cliConf, err := be.GetConfigStruct("", true)
+		// cliConf, err := be.GetConfigStruct("", true)//
 		// if err != nil {
 		// 	log.Fatal("Unable to determine coin type. Please run " + be.CAppFilename + " coin" + err.Error())
 		// }
