@@ -562,31 +562,31 @@ func getDiviAddNodes() ([]byte, error) {
 	return body, nil
 }
 
-func (d Divi) DumpHDInfoDivi(coinAuth *models.CoinAuth) (string, error) {
+func (d Divi) DumpHDInfo(coinAuth *models.CoinAuth, pw string) (string, error) {
 	var respStruct models.DiviDumpHDInfo
 
 	body := strings.NewReader("{\"jsonrpc\":\"1.0\",\"id\":\"boxwallet\",\"method\":\"" + cCommandDumpHDInfo + "\",\"params\":[]}")
 	req, err := http.NewRequest("POST", "http://"+coinAuth.IPAddress+":"+coinAuth.Port, body)
 	if err != nil {
-		return respStruct, err
+		return "", err
 	}
 	req.SetBasicAuth(coinAuth.RPCUser, coinAuth.RPCPassword)
 	req.Header.Set("Content-Type", "text/plain;")
 
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
-		return respStruct, err
+		return "", err
 	}
 	defer resp.Body.Close()
 	bodyResp, err := ioutil.ReadAll(resp.Body)
 	if err != nil {
-		return respStruct, err
+		return "", err
 	}
 	err = json.Unmarshal(bodyResp, &respStruct)
 	if err != nil {
-		return respStruct, err
+		return "", err
 	}
-	return respStruct, nil
+	return respStruct.Result.Mnemonic, nil
 }
 
 func (d *Divi) InfoUI(spin *yacspin.Spinner) (models.DiviGetInfo, string, error) {
@@ -953,6 +953,21 @@ func (d Divi) StopDaemon(auth *models.CoinAuth) error {
 
 func (d Divi) TipAddress() string {
 	return cTipAddress
+}
+
+func (d Divi) ValidateAddress(ad string) bool {
+	// First, work out what the coin type is
+	// If the length of the address is not exactly 34 characters...
+	if len(ad) != 34 {
+		return false
+	}
+	sFirst := ad[0]
+
+	// 68 = UTF for D
+	if sFirst != 68 {
+		return false
+	}
+	return true
 }
 
 func (d Divi) WalletAddress(auth *models.CoinAuth) (string, error) {
