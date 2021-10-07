@@ -31,6 +31,7 @@ import (
 	divi "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/divi"
 	ftc "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/feathercoin"
 	grs "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/groestlcoin"
+	lcp "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/litecoinplus"
 	ppc "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/peercoin"
 	phr "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/phore"
 	pivx "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/pivx"
@@ -84,6 +85,7 @@ var coinCmd = &cobra.Command{
 				coins.CCoinNameDigiByte,
 				coins.CCoinNameFeathercoin,
 				coins.CCoinNameGroestlcoin,
+				coins.CCoinNameLitecoinPlus,
 				coins.CCoinNamePeercoin,
 				coins.CCoinNamePhore,
 				coins.CCoinNamePIVX,
@@ -145,6 +147,11 @@ var coinCmd = &cobra.Command{
 			coinName = grs.Groestlcoin{}
 			coinRPC = grs.Groestlcoin{}
 			coinType = models.PTGroestlcoin
+		case coins.CCoinNameLitecoinPlus:
+			coin = lcp.LitecoinPlus{}
+			coinName = lcp.LitecoinPlus{}
+			coinRPC = lcp.LitecoinPlus{}
+			coinType = models.PTLitecoinPlus
 		case coins.CCoinNamePeercoin:
 			coin = ppc.Peercoin{}
 			coinName = ppc.Peercoin{}
