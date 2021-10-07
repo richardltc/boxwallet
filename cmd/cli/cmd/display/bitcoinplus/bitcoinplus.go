@@ -1,13 +1,13 @@
 package bitcoinplus
 
 import (
+	"richardmace.co.uk/boxwallet/cmd/cli/cmd/display"
 	"strconv"
 	"time"
 
 	"github.com/dustin/go-humanize"
 	"richardmace.co.uk/boxwallet/cmd/cli/cmd/app"
 	xbcImport "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/bitcoinplus"
-	"richardmace.co.uk/boxwallet/cmd/cli/cmd/display"
 	"richardmace.co.uk/boxwallet/cmd/cli/cmd/models"
 )
 
