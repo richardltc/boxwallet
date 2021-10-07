@@ -43,6 +43,7 @@ const (
 	PTBitcoinPlus
 	PTPeercoin
 	PTPrimecoin
+	PTLitecoinPlus
 )
 
 type GenericResponse struct {
@@ -68,7 +69,7 @@ const (
 	WETUnknown
 )
 
-// WLSType - Wallet loading status type, whats stage are we with the wallet loading?
+// WLSType - Wallet loading status type, what stage are we with the wallet loading?
 type WLSType int
 
 const (
