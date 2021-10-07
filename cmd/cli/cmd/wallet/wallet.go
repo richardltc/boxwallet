@@ -18,11 +18,19 @@ type Wallet interface {
 }
 
 type WalletDumpHDInfo interface {
-	WalletDumpHDInfo(coinAuth *models.CoinAuth, pw string)
+	DumpHDInfo(coinAuth *models.CoinAuth, pw string) (string, error)
 }
 
 type WalletEncrypt interface {
 	WalletEncrypt(coinAuth *models.CoinAuth, pw string) (be.GenericRespStruct, error)
+}
+
+type WalletSendToAddress interface {
+	SendToAddress(coinAuth *models.CoinAuth, address string, amount float32) (models.GenericResponse, error)
+}
+
+type WalletUnlock interface {
+	WalletUnlock(coinAuth *models.CoinAuth, password string) error
 }
 
 type WalletUnlockFS interface {
@@ -33,7 +41,11 @@ type WalletSecurityState interface {
 	WalletSecurityState(coinAuth *models.CoinAuth) (models.WEType, error)
 }
 
-func GetWalletEncryptionPassword() string {
+type WalletVaidateAddress interface {
+	ValidateAddress(ad string) bool
+}
+
+func GetWalletEncryptionPasswordFresh() string {
 	var pw1, pw2 string
 	prompt1 := &survey.Password{
 		Message: "Please enter your wallet password",
@@ -50,4 +62,14 @@ func GetWalletEncryptionPassword() string {
 	}
 
 	return pw1
+}
+
+func GetWalletEncryptionPassword() string {
+	var pw string
+	prompt1 := &survey.Password{
+		Message: "Please enter your wallet password",
+	}
+	survey.AskOne(prompt1, &pw)
+
+	return pw
 }
