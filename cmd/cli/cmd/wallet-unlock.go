@@ -18,9 +18,21 @@ limitations under the License.
 package cmd
 
 import (
+	"fmt"
+	"os"
+	"richardmace.co.uk/boxwallet/cmd/cli/cmd/app"
+	xbc "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/bitcoinplus"
+	divi "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/divi"
+	ppc "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/peercoin"
+	rpd "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/rapids"
+	"richardmace.co.uk/boxwallet/cmd/cli/cmd/conf"
+
 	// "encoding/json"
 	// "fmt"
 	"github.com/spf13/cobra"
+	"log"
+	"richardmace.co.uk/boxwallet/cmd/cli/cmd/models"
+	"richardmace.co.uk/boxwallet/cmd/cli/cmd/wallet"
 	// "io/ioutil"
 	// "log"
 	// "net/http"
@@ -34,6 +46,87 @@ var unlockCmd = &cobra.Command{
 	Short: "Unlock wallet",
 	Long:  ``,
 	Run: func(cmd *cobra.Command, args []string) {
+		var app app.App
+
+		fmt.Println("  ____          __          __   _ _      _   \n |  _ \\         \\ \\        / /  | | |    | |  \n | |_) | _____  _\\ \\  /\\  / /_ _| | | ___| |_ \n |  _ < / _ \\ \\/ /\\ \\/  \\/ / _` | | |/ _ \\ __|\n | |_) | (_) >  <  \\  /\\  / (_| | | |  __/ |_ \n |____/ \\___/_/\\_\\  \\/  \\/ \\__,_|_|_|\\___|\\__| v" + app.Version() + "\n                                              \n                                               ")
+
+		var conf conf.Conf
+		var walletSecurityState wallet.WalletSecurityState
+		var walletUnlock wallet.WalletUnlock
+
+		appHomeDir, err := app.HomeFolder()
+		if err != nil {
+			log.Fatal("Unable to get HomeFolder: " + err.Error())
+		}
+
+		conf.Bootstrap(appHomeDir)
+
+		appFileName, err := app.FileName()
+		if err != nil {
+			log.Fatal("Unable to get appFilename: " + err.Error())
+		}
+
+		// Make sure the config file exists, and if not, force user to use "coin" command first..
+		if _, err := os.Stat(appHomeDir + conf.ConfFile()); os.IsNotExist(err) {
+			log.Fatal("Unable to determine coin type. Please run " + appFileName + " coin  first")
+		}
+
+		// Now load our config file to see what coin choice the user made...
+		confDB, err := conf.GetConfig(true)
+		if err != nil {
+			log.Fatal("Unable to determine coin type. Please run " + appFileName + " coin: " + err.Error())
+		}
+
+		switch confDB.ProjectType {
+		case models.PTBitcoinPlus:
+			walletSecurityState = xbc.XBC{}
+			//walletUnlock = xbc.XBC{}
+		case models.PTDenarius:
+		case models.PTDeVault:
+		case models.PTDigiByte:
+		case models.PTDivi:
+			walletSecurityState = divi.Divi{}
+			walletUnlock = divi.Divi{}
+		case models.PTFeathercoin:
+		case models.PTGroestlcoin:
+		case models.PTPhore:
+		case models.PTPeercoin:
+			walletSecurityState = ppc.Peercoin{}
+			walletUnlock = ppc.Peercoin{}
+		case models.PTPIVX:
+		case models.PTRapids:
+			walletSecurityState = rpd.Rapids{}
+			//walletUnlock = rpd.Rapids{}
+		case models.PTReddCoin:
+		case models.PTScala:
+		case models.PTTrezarcoin:
+		case models.PTVertcoin:
+		default:
+			log.Fatal("unable to determine ProjectType")
+		}
+
+		var coinAuth models.CoinAuth
+		coinAuth.RPCUser = confDB.RPCuser
+		coinAuth.RPCPassword = confDB.RPCpassword
+		coinAuth.IPAddress = confDB.ServerIP
+		coinAuth.Port = confDB.Port
+
+		wst, err := walletSecurityState.WalletSecurityState(&coinAuth)
+		if err != nil {
+			log.Fatal("Unable to determine Wallet Security State: " + err.Error())
+		}
+		if wst == models.WETUnencrypted {
+			log.Fatal("Wallet is not encrypted")
+		}
+
+		wep := wallet.GetWalletEncryptionPassword()
+
+		if err := walletUnlock.WalletUnlock(&coinAuth, wep); err != nil {
+			log.Fatal("failed to unlock wallet for staking: ", err.Error())
+		}
+
+		fmt.Println("Wallet unlocked!")
+
 		// cliConf, err := be.GetConfigStruct("", true)
 		// if err != nil {
 		// 	log.Fatal("Unable to GetCLIConfStruct " + err.Error())
