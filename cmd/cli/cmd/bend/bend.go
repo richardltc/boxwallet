@@ -407,17 +407,6 @@ func ValidateAddress(pt ProjectType, ad string) (bool, error) {
 		if sFirst == 68 || sFirst == 100 {
 			return true, nil
 		}
-	case PTDivi:
-		// If the length of the address is not exactly 34 characters...
-		if len(ad) != 34 {
-			return false, nil
-		}
-		sFirst := ad[0]
-
-		// 68 = UTF for D
-		if sFirst != 68 {
-			return false, nil
-		}
 	case PTFeathercoin:
 		// It's un-clear what the address format is at present...
 		return true, nil
