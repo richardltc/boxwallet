@@ -20,6 +20,8 @@ import (
 	"errors"
 	"fmt"
 	ppc "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/peercoin"
+	"richardmace.co.uk/boxwallet/cmd/cli/cmd/display/bitcoinplus"
+	divi2 "richardmace.co.uk/boxwallet/cmd/cli/cmd/display/divi"
 	"time"
 
 	ui "github.com/gizak/termui/v3"
@@ -43,8 +45,6 @@ import (
 	divi "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/divi"
 	rpd "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/rapids"
 	"richardmace.co.uk/boxwallet/cmd/cli/cmd/conf"
-	xbcDisplay "richardmace.co.uk/boxwallet/cmd/cli/cmd/display/bitcoinplus"
-	diviDisplay "richardmace.co.uk/boxwallet/cmd/cli/cmd/display/divi"
 	ppcDisplay "richardmace.co.uk/boxwallet/cmd/cli/cmd/display/peercoin"
 	rpdDisplay "richardmace.co.uk/boxwallet/cmd/cli/cmd/display/rapids"
 	"richardmace.co.uk/boxwallet/cmd/cli/cmd/models"
@@ -177,35 +177,35 @@ var dashCmd = &cobra.Command{
 			coin = xbc.XBC{}
 			coinBlockchainIsSynced = xbc.XBC{}
 			coinDaemon = xbc.XBC{}
-			coinDispAbout = xbcDisplay.XBC{}
-			coinDispInitialBalance = xbcDisplay.XBC{}
-			coinDispInitialNetwork = xbcDisplay.XBC{}
-			coinDispLiveNetwork = xbcDisplay.XBC{}
-			coinDispLiveTransactions = xbcDisplay.XBC{}
-			coinDispLiveWallet = xbcDisplay.XBC{}
+			coinDispAbout = bitcoinplus.XBC{}
+			coinDispInitialBalance = bitcoinplus.XBC{}
+			coinDispInitialNetwork = bitcoinplus.XBC{}
+			coinDispLiveNetwork = bitcoinplus.XBC{}
+			coinDispLiveTransactions = bitcoinplus.XBC{}
+			coinDispLiveWallet = bitcoinplus.XBC{}
 			//coinAnyAddresses = xbc.XBC{}
 			coinName = xbc.XBC{}
 			coinWallet = xbc.XBC{}
-			walletRefreshDifficulty = xbcDisplay.XBC{}
-			walletRefreshNetwork = xbcDisplay.XBC{}
-			walletRefreshTransactions = xbcDisplay.XBC{}
+			walletRefreshDifficulty = bitcoinplus.XBC{}
+			walletRefreshNetwork = bitcoinplus.XBC{}
+			walletRefreshTransactions = bitcoinplus.XBC{}
 			walletSecurityState = xbc.XBC{}
 		case models.PTDivi:
 			coin = divi.Divi{}
 			coinBlockchainIsSynced = divi.Divi{}
 			coinDaemon = divi.Divi{}
-			coinDispAbout = diviDisplay.DIVI{}
-			coinDispInitialBalance = diviDisplay.DIVI{}
-			coinDispInitialNetwork = diviDisplay.DIVI{}
-			coinDispLiveNetwork = diviDisplay.DIVI{}
-			coinDispLiveTransactions = diviDisplay.DIVI{}
-			coinDispLiveWallet = diviDisplay.DIVI{}
+			coinDispAbout = divi2.DIVI{}
+			coinDispInitialBalance = divi2.DIVI{}
+			coinDispInitialNetwork = divi2.DIVI{}
+			coinDispLiveNetwork = divi2.DIVI{}
+			coinDispLiveTransactions = divi2.DIVI{}
+			coinDispLiveWallet = divi2.DIVI{}
 			coinName = divi.Divi{}
-			coinPrice = diviDisplay.DIVI{}
+			coinPrice = divi2.DIVI{}
 			coinWallet = divi.Divi{}
-			walletRefreshDifficulty = diviDisplay.DIVI{}
-			walletRefreshNetwork = diviDisplay.DIVI{}
-			walletRefreshTransactions = diviDisplay.DIVI{}
+			walletRefreshDifficulty = divi2.DIVI{}
+			walletRefreshNetwork = divi2.DIVI{}
+			walletRefreshTransactions = divi2.DIVI{}
 			walletSecurityState = divi.Divi{}
 		case models.PTPeercoin:
 			coin = ppc.Peercoin{}
@@ -1426,7 +1426,7 @@ func confirmWalletReady(coinAuth *models.CoinAuth, coinName string, wallet walle
 	// }
 	// sCoinName, err := be.GetCoinName(be.APPTCLI)
 
-	// Lets make sure that we have a running daemon.
+	// Lets make sure that we have a running daemon
 	cfg := yacspin.Config{
 		Frequency:       250 * time.Millisecond,
 		CharSet:         yacspin.CharSets[43],
