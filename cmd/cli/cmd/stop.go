@@ -34,6 +34,7 @@ import (
 	ppc "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/peercoin"
 	xpm "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/primecoin"
 	rpd "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/rapids"
+	rdd "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/reddcoin"
 	sys "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/syscoin"
 	"richardmace.co.uk/boxwallet/cmd/cli/cmd/conf"
 	"richardmace.co.uk/boxwallet/cmd/cli/cmd/models"
@@ -97,6 +98,7 @@ var stopCmd = &cobra.Command{
 		case models.PTRapids:
 			coinDaemon = rpd.Rapids{}
 		case models.PTReddCoin:
+			coinDaemon = rdd.ReddCoin{}
 		case models.PTScala:
 		case models.PTSyscoin:
 			coinDaemon = sys.Syscoin{}
