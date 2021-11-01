@@ -29,6 +29,7 @@ import (
 	"richardmace.co.uk/boxwallet/cmd/cli/cmd/coins"
 	xbc "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/bitcoinplus"
 	divi "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/divi"
+	rdd "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/reddcoin"
 	"richardmace.co.uk/boxwallet/cmd/cli/cmd/conf"
 	"richardmace.co.uk/boxwallet/cmd/cli/cmd/models"
 	"richardmace.co.uk/boxwallet/cmd/cli/cmd/wallet"
@@ -100,6 +101,12 @@ to quickly create a Cobra application.`,
 		case models.PTPIVX:
 		case models.PTRapids:
 		case models.PTReddCoin:
+			coinName = rdd.ReddCoin{}
+			daemonRunning = rdd.ReddCoin{}
+			walletSecurityState = rdd.ReddCoin{}
+			walletUnlock = rdd.ReddCoin{}
+			walletValidateAddress = rdd.ReddCoin{}
+			sendToAddress = rdd.ReddCoin{}
 		case models.PTScala:
 		case models.PTTrezarcoin:
 		case models.PTVertcoin:
