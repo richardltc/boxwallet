@@ -22,6 +22,7 @@ import (
 	"os"
 	divi "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/divi"
 	ppc "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/peercoin"
+	rdd "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/reddcoin"
 	sys "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/syscoin"
 
 	"github.com/spf13/cobra"
@@ -103,6 +104,8 @@ var startCmd = &cobra.Command{
 			coinDaemon = rpd.Rapids{}
 			coinName = rpd.Rapids{}
 		case models.PTReddCoin:
+			coinDaemon = rdd.ReddCoin{}
+			coinName = rdd.ReddCoin{}
 		case models.PTScala:
 		case models.PTSyscoin:
 			coinDaemon = sys.Syscoin{}
