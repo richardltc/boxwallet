@@ -12,6 +12,8 @@ import (
 	"os"
 	"os/exec"
 	"os/user"
+	be "richardmace.co.uk/boxwallet/cmd/cli/cmd/bend"
+	"richardmace.co.uk/boxwallet/cmd/cli/cmd/coins"
 	"richardmace.co.uk/boxwallet/cmd/cli/cmd/fileutils"
 	"runtime"
 	"strings"
@@ -33,7 +35,7 @@ const (
 	cDownloadFileLin32 string = "reddcoin-" + cCoinCoreVersion + "-linux32.tar.gz"
 	cDownloadFileLin64 string = "reddcoin-" + cCoinCoreVersion + "-linux64.tar.gz"
 	cDownloadFileWin   string = "reddcoin-" + cCoinCoreVersion + "-win64.zip"
-	cDownloadFileBS    string = "blockchain-Nov-26-2020.zip"
+	cDownloadFileBS    string = "blockchain-latest.zip"
 
 	cExtractedDirLin = "reddcoin-" + cCoinCoreVersion + "/"
 	cExtractedDirWin = "reddcoin-" + cCoinCoreVersion + "\\"
@@ -123,6 +125,45 @@ func (r ReddCoin) BlockchainDataExists() (bool, error) {
 	return false, nil
 }
 
+func (r ReddCoin) BlockchainInfo(auth *models.CoinAuth) (models.RDDBlockchainInfo, error) {
+	var respStruct models.RDDBlockchainInfo
+
+	body := strings.NewReader("{\"jsonrpc\":\"1.0\",\"id\":\"boxwallet\",\"method\":\"" + models.CCommandGetBCInfo + "\",\"params\":[]}")
+	req, err := http.NewRequest("POST", "http://"+auth.IPAddress+":"+auth.Port, body)
+	if err != nil {
+		return respStruct, err
+	}
+	req.SetBasicAuth(auth.RPCUser, auth.RPCPassword)
+	req.Header.Set("Content-Type", "text/plain;")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return respStruct, err
+	}
+	defer resp.Body.Close()
+	bodyResp, err := ioutil.ReadAll(resp.Body)
+	if err != nil {
+		return respStruct, err
+	}
+	err = json.Unmarshal(bodyResp, &respStruct)
+	if err != nil {
+		return respStruct, err
+	}
+	return respStruct, nil
+}
+func (r ReddCoin) BlockchainIsSynced(coinAuth *models.CoinAuth) (bool, error) {
+	bci, err := r.BlockchainInfo(coinAuth)
+	if err != nil {
+		return false, err
+	}
+
+	if bci.Result.Verificationprogress > 0.99999 {
+		return true, nil
+	}
+
+	return false, nil
+}
+
 func (r ReddCoin) ConfFile() string {
 	return cConfFile
 }
@@ -133,6 +174,25 @@ func (r ReddCoin) CoinName() string {
 
 func (r ReddCoin) CoinNameAbbrev() string {
 	return cCoinNameAbbrev
+}
+
+func (r ReddCoin) DaemonRunning() (bool, error) {
+	var err error
+
+	if runtime.GOOS == "windows" {
+		_, _, err = coins.FindProcess(cDaemonFileWin)
+	} else {
+		_, _, err = coins.FindProcess(cDaemonFileLin)
+	}
+
+	if err == nil {
+		return true, nil
+	}
+	if err.Error() == "not found" {
+		return false, nil
+	} else {
+		return false, err
+	}
 }
 
 func (r ReddCoin) DownloadBlockchain() error {
@@ -191,33 +251,6 @@ func (r ReddCoin) DaemonFilename() string {
 	} else {
 		return cDaemonFileLin
 	}
-}
-
-func (r ReddCoin) BlockchainInfo() (models.RDDBlockchainInfo, error) {
-	var respStruct models.RDDBlockchainInfo
-
-	body := strings.NewReader("{\"jsonrpc\":\"1.0\",\"id\":\"boxwallet\",\"method\":\"" + models.CCommandGetBCInfo + "\",\"params\":[]}")
-	req, err := http.NewRequest("POST", "http://"+r.IPAddress+":"+r.Port, body)
-	if err != nil {
-		return respStruct, err
-	}
-	req.SetBasicAuth(r.RPCUser, r.RPCPassword)
-	req.Header.Set("Content-Type", "text/plain;")
-
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		return respStruct, err
-	}
-	defer resp.Body.Close()
-	bodyResp, err := ioutil.ReadAll(resp.Body)
-	if err != nil {
-		return respStruct, err
-	}
-	err = json.Unmarshal(bodyResp, &respStruct)
-	if err != nil {
-		return respStruct, err
-	}
-	return respStruct, nil
 }
 
 // func (r *ReddCoin)GetBlockchainSyncTxtRDD(synced bool, bci *models.RDDBlockchainInfo) string {
@@ -466,17 +499,17 @@ func (r ReddCoin) Install(location string) error {
 // 	}
 // }
 
-func (r *ReddCoin) NetworkInfo() (models.RDDNetworkInfo, error) {
+func (r *ReddCoin) NetworkInfo(auth *models.CoinAuth) (models.RDDNetworkInfo, error) {
 	var respStruct models.RDDNetworkInfo
 
 	for i := 1; i < 50; i++ {
 		body := strings.NewReader("{\"jsonrpc\":\"1.0\",\"id\":\"boxwallet\",\"method\":\"" + models.CCommandGetNetworkInfo + "\",\"params\":[]}")
 
-		req, err := http.NewRequest("POST", "http://"+r.IPAddress+":"+r.Port, body)
+		req, err := http.NewRequest("POST", "http://"+auth.IPAddress+":"+auth.Port, body)
 		if err != nil {
 			return respStruct, err
 		}
-		req.SetBasicAuth(r.RPCUser, r.RPCPassword)
+		req.SetBasicAuth(auth.RPCUser, auth.RPCPassword)
 		req.Header.Set("Content-Type", "text/plain;")
 
 		resp, err := http.DefaultClient.Do(req)
@@ -540,15 +573,15 @@ func (r ReddCoin) RPCDefaultPort() string {
 	return cRPCPort
 }
 
-func (r *ReddCoin) WalletInfo() (models.RDDWalletInfo, error) {
+func (r ReddCoin) WalletInfo(auth *models.CoinAuth) (models.RDDWalletInfo, error) {
 	var respStruct models.RDDWalletInfo
 
 	body := strings.NewReader("{\"jsonrpc\":\"1.0\",\"id\":\"boxwallet\",\"method\":\"" + models.CCommandGetWalletInfo + "\",\"params\":[]}")
-	req, err := http.NewRequest("POST", "http://"+r.IPAddress+":"+r.Port, body)
+	req, err := http.NewRequest("POST", "http://"+auth.IPAddress+":"+auth.Port, body)
 	if err != nil {
 		return respStruct, err
 	}
-	req.SetBasicAuth(r.RPCUser, r.RPCPassword)
+	req.SetBasicAuth(auth.RPCUser, auth.RPCPassword)
 	req.Header.Set("Content-Type", "text/plain;")
 
 	resp, err := http.DefaultClient.Do(req)
@@ -575,8 +608,8 @@ func (r *ReddCoin) WalletInfo() (models.RDDWalletInfo, error) {
 	return respStruct, nil
 }
 
-func (r ReddCoin) WalletSecurityState() (models.WEType, error) {
-	wi, err := r.WalletInfo()
+func (r ReddCoin) WalletSecurityState(coinAuth *models.CoinAuth) (models.WEType, error) {
+	wi, err := r.WalletInfo(coinAuth)
 	if err != nil {
 		return models.WETUnknown, errors.New("Unable to GetWalletSecurityState: " + err.Error())
 	}
@@ -641,15 +674,15 @@ func (r *ReddCoin) ListReceivedByAddress(includeZero bool) (models.RDDListReceiv
 	return respStruct, nil
 }
 
-func (r *ReddCoin) ListTransactions() (models.RDDListTransactions, error) {
+func (r *ReddCoin) ListTransactions(auth *models.CoinAuth) (models.RDDListTransactions, error) {
 	var respStruct models.RDDListTransactions
 
 	body := strings.NewReader("{\"jsonrpc\":\"1.0\",\"id\":\"boxwallet\",\"method\":\"" + models.CCommandListTransactions + "\",\"params\":[]}")
-	req, err := http.NewRequest("POST", "http://"+r.IPAddress+":"+r.Port, body)
+	req, err := http.NewRequest("POST", "http://"+auth.IPAddress+":"+auth.Port, body)
 	if err != nil {
 		return respStruct, err
 	}
-	req.SetBasicAuth(r.RPCUser, r.RPCPassword)
+	req.SetBasicAuth(auth.RPCUser, auth.RPCPassword)
 	req.Header.Set("Content-Type", "text/plain;")
 
 	resp, err := http.DefaultClient.Do(req)
@@ -670,10 +703,44 @@ func (r *ReddCoin) ListTransactions() (models.RDDListTransactions, error) {
 	return respStruct, nil
 }
 
-func (r *ReddCoin) StartDaemon(displayOutput bool) error {
+func (r ReddCoin) SendToAddress(coinAuth *models.CoinAuth, address string, amount float32) (returnResp models.GenericResponse, err error) {
+	var respStruct models.GenericResponse
+
+	sAmount := fmt.Sprintf("%f", amount) // sAmount == "123.456000"
+
+	body := strings.NewReader("{\"jsonrpc\":\"1.0\",\"id\":\"boxwallet\",\"method\":\"" + models.CCommandSendToAddress + "\",\"params\":[\"" + address + "\"," + sAmount + "]}")
+	req, err := http.NewRequest("POST", "http://"+coinAuth.IPAddress+":"+coinAuth.Port, body)
+	if err != nil {
+		return respStruct, err
+	}
+	req.SetBasicAuth(coinAuth.RPCUser, coinAuth.RPCPassword)
+	req.Header.Set("Content-Type", "text/plain;")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return respStruct, err
+	}
+	defer resp.Body.Close()
+	bodyResp, err := ioutil.ReadAll(resp.Body)
+	if err != nil {
+		return respStruct, err
+	}
+	err = json.Unmarshal(bodyResp, &respStruct)
+	if err != nil {
+		return respStruct, err
+	}
+	return respStruct, nil
+}
+
+func (r ReddCoin) StartDaemon(displayOutput bool, appFolder string, auth *models.CoinAuth) error {
+	b, _ := r.DaemonRunning()
+	if b {
+		return nil
+	}
+
 	if runtime.GOOS == "windows" {
 		//_ = exec.Command(GetAppsBinFolder() + cDiviDFileWin)
-		fp := cHomeDirWin + cDaemonFileWin
+		fp := appFolder + cDaemonFileWin
 		cmd := exec.Command("cmd.exe", "/C", "start", "/b", fp)
 		if err := cmd.Run(); err != nil {
 			return err
@@ -683,7 +750,7 @@ func (r *ReddCoin) StartDaemon(displayOutput bool) error {
 			fmt.Println("Attempting to run the reddcoin daemon...")
 		}
 
-		cmdRun := exec.Command(cHomeDirLin + cDaemonFileLin)
+		cmdRun := exec.Command(appFolder + cDaemonFileLin)
 		stdout, err := cmdRun.StdoutPipe()
 		if err != nil {
 			return err
@@ -716,31 +783,22 @@ func (r *ReddCoin) StartDaemon(displayOutput bool) error {
 	return nil
 }
 
-func (r *ReddCoin) StopDaemon(ip, port, rpcUser, rpcPassword string, displayOut bool) (models.GenericResponse, error) {
-	var respStruct models.GenericResponse
-
+func (r ReddCoin) StopDaemon(auth *models.CoinAuth) error {
 	body := strings.NewReader("{\"jsonrpc\":\"1.0\",\"id\":\"curltext\",\"method\":\"stop\",\"params\":[]}")
-	req, err := http.NewRequest("POST", "http://"+ip+":"+port, body)
+	req, err := http.NewRequest("POST", "http://"+auth.IPAddress+":"+auth.Port, body)
 	if err != nil {
-		return respStruct, err
+		return err
 	}
-	req.SetBasicAuth(rpcUser, rpcPassword)
+	req.SetBasicAuth(auth.RPCUser, auth.RPCPassword)
 	req.Header.Set("Content-Type", "text/plain;")
 
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
-		return respStruct, err
+		return err
 	}
 	defer resp.Body.Close()
-	bodyResp, err := ioutil.ReadAll(resp.Body)
-	if err != nil {
-		return respStruct, err
-	}
-	err = json.Unmarshal(bodyResp, &respStruct)
-	if err != nil {
-		return respStruct, err
-	}
-	return respStruct, nil
+
+	return nil
 }
 
 func (r ReddCoin) TipAddress() string {
@@ -775,6 +833,172 @@ func (r *ReddCoin) UnlockWallet(pw string) error {
 		return err
 	}
 	req.SetBasicAuth(r.RPCUser, r.RPCPassword)
+	req.Header.Set("Content-Type", "text/plain;")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	bodyResp, err := ioutil.ReadAll(resp.Body)
+	if err != nil {
+		return err
+	}
+	err = json.Unmarshal(bodyResp, &respStruct)
+	if err != nil {
+		return err
+	}
+	return nil
+}
+
+func (r ReddCoin) UpdateTickerInfo() (ticker models.RDDTicker, err error) {
+	resp, err := http.Get("https://ticker.neist.io/RDD")
+	if err != nil {
+		return ticker, err
+	}
+	defer resp.Body.Close()
+
+	body, err := ioutil.ReadAll(resp.Body)
+	if err != nil {
+		return ticker, err
+	}
+	err = json.Unmarshal(body, &ticker)
+	if err != nil {
+		return ticker, err
+	}
+	return ticker, nil
+}
+
+func (r ReddCoin) ValidateAddress(ad string) bool {
+	// First, work out what the coin type is
+	// If the length of the address is not exactly 34 characters...
+	if len(ad) != 34 {
+		return false
+	}
+	sFirst := ad[0]
+
+	// 82 = UTF for R
+	if sFirst != 82 {
+		return false
+	}
+	return true
+}
+
+func (r ReddCoin) WalletEncrypt(coinAuth *models.CoinAuth, pw string) (be.GenericRespStruct, error) {
+	var respStruct be.GenericRespStruct
+
+	body := strings.NewReader("{\"jsonrpc\":\"1.0\",\"id\":\"boxwallet\",\"method\":\"" + models.CCommandEncryptWallet + "\",\"params\":[\"" + pw + "\"]}")
+	req, err := http.NewRequest("POST", "http://"+coinAuth.IPAddress+":"+coinAuth.Port, body)
+	if err != nil {
+		return respStruct, err
+	}
+	req.SetBasicAuth(coinAuth.RPCUser, coinAuth.RPCPassword)
+	req.Header.Set("Content-Type", "text/plain;")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return respStruct, err
+	}
+	defer resp.Body.Close()
+	bodyResp, err := ioutil.ReadAll(resp.Body)
+	if err != nil {
+		return respStruct, err
+	}
+	err = json.Unmarshal(bodyResp, &respStruct)
+	if err != nil {
+		return respStruct, err
+	}
+
+	return respStruct, nil
+}
+
+func (r ReddCoin) WalletNeedsEncrypting(coinAuth *models.CoinAuth) (bool, error) {
+	wi, err := r.WalletInfo(coinAuth)
+	if err != nil {
+		return true, errors.New("Unable to perform WalletInfo " + err.Error())
+	}
+
+	if wi.Result.UnlockedUntil == -1 {
+		return true, nil
+	}
+
+	return false, nil
+}
+
+func (r ReddCoin) WalletLoadingStatus(auth *models.CoinAuth) models.WLSType {
+	body := strings.NewReader("{\"jsonrpc\":\"1.0\",\"id\":\"boxwallet\",\"method\":\"" + models.CCommandGetInfo + "\",\"params\":[]}")
+	req, err := http.NewRequest("POST", "http://"+auth.IPAddress+":"+auth.Port, body)
+	if err != nil {
+		return models.WLSTUnknown
+	}
+	req.SetBasicAuth(auth.RPCUser, auth.RPCPassword)
+	req.Header.Set("Content-Type", "text/plain;")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return models.WLSTWaitingForResponse
+	} else {
+		defer resp.Body.Close()
+		bodyResp, err := ioutil.ReadAll(resp.Body)
+		if err != nil {
+			return models.WLSTWaitingForResponse
+		}
+
+		if bytes.Contains(bodyResp, []byte("Loading")) {
+			return models.WLSTLoading
+		}
+		if bytes.Contains(bodyResp, []byte("Rescanning")) {
+			return models.WLSTRescanning
+		}
+		if bytes.Contains(bodyResp, []byte("Rewinding")) {
+			return models.WLSTRewinding
+		}
+		if bytes.Contains(bodyResp, []byte("Verifying")) {
+			return models.WLSTVerifying
+		}
+		if bytes.Contains(bodyResp, []byte("Calculating money supply")) {
+			return models.WLSTCalculatingMoneySupply
+		}
+	}
+	return models.WLSTReady
+}
+
+func (r ReddCoin) WalletResync(appFolder string) error {
+	daemonRunning, err := r.DaemonRunning()
+	if err != nil {
+		return errors.New("Unable to determine DaemonRunning: " + err.Error())
+	}
+	if daemonRunning {
+		return errors.New("daemon is still running, please stop first")
+	}
+
+	arg1 := "-resync"
+
+	if runtime.GOOS == "windows" {
+		fullPath := appFolder + cDaemonFileWin
+		cmd := exec.Command("cmd.exe", "/C", "start", "/b", fullPath, arg1)
+		if err := cmd.Run(); err != nil {
+			return err
+		}
+	} else {
+		fullPath := appFolder + cDaemonFileLin
+		cmdRun := exec.Command(fullPath, arg1)
+		if err := cmdRun.Run(); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+func (r ReddCoin) WalletUnlock(coinAuth *models.CoinAuth, pw string) error {
+	var respStruct models.GenericResponse
+
+	body := strings.NewReader("{\"jsonrpc\":\"1.0\",\"id\":\"curltext\",\"method\":\"walletpassphrase\",\"params\":[\"" + pw + "\",0]}")
+	req, err := http.NewRequest("POST", "http://"+coinAuth.IPAddress+":"+coinAuth.Port, body)
+	if err != nil {
+		return err
+	}
+	req.SetBasicAuth(coinAuth.RPCUser, coinAuth.RPCPassword)
 	req.Header.Set("Content-Type", "text/plain;")
 
 	resp, err := http.DefaultClient.Do(req)
