@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"io/ioutil"
 	"net/http"
 	"os"
@@ -536,35 +535,6 @@ func (r *ReddCoin) NetworkInfo(auth *models.CoinAuth) (models.RDDNetworkInfo, er
 	return respStruct, nil
 }
 
-func (r *ReddCoin) NewAddress() (models.RDDGetNewAddress, error) {
-	var respStruct models.RDDGetNewAddress
-
-	body := strings.NewReader("{\"jsonrpc\":\"1.0\",\"id\":\"boxwallet\",\"method\":\"" + models.CCommandGetNewAddress + "\",\"params\":[]}")
-	req, err := http.NewRequest("POST", "http://"+r.IPAddress+":"+r.Port, body)
-	if err != nil {
-		return respStruct, err
-	}
-	req.SetBasicAuth(r.RPCUser, r.RPCPassword)
-	req.Header.Set("Content-Type", "text/plain;")
-
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		return respStruct, err
-	}
-	defer resp.Body.Close()
-	bodyResp, err := ioutil.ReadAll(resp.Body)
-	if err != nil {
-		return respStruct, err
-	}
-
-	err = json.Unmarshal(bodyResp, &respStruct)
-	if err != nil {
-		return respStruct, err
-	}
-
-	return respStruct, nil
-}
-
 func (r ReddCoin) RPCDefaultUsername() string {
 	return cRPCUser
 }
@@ -639,7 +609,7 @@ func (r ReddCoin) HomeDirFullPath() (string, error) {
 	}
 }
 
-func (r *ReddCoin) ListReceivedByAddress(includeZero bool) (models.RDDListReceivedByAddress, error) {
+func (r ReddCoin) ListReceivedByAddress(coinAuth *models.CoinAuth, includeZero bool) (models.RDDListReceivedByAddress, error) {
 	var respStruct models.RDDListReceivedByAddress
 
 	var s string
@@ -649,11 +619,11 @@ func (r *ReddCoin) ListReceivedByAddress(includeZero bool) (models.RDDListReceiv
 		s = "{\"jsonrpc\":\"1.0\",\"id\":\"curltext\",\"method\":\"listreceivedbyaddress\",\"params\":[1, false]}"
 	}
 	body := strings.NewReader(s)
-	req, err := http.NewRequest("POST", "http://"+r.IPAddress+":"+r.Port, body)
+	req, err := http.NewRequest("POST", "http://"+coinAuth.IPAddress+":"+coinAuth.Port, body)
 	if err != nil {
 		return respStruct, err
 	}
-	req.SetBasicAuth(r.RPCUser, r.RPCPassword)
+	req.SetBasicAuth(coinAuth.RPCUser, coinAuth.RPCPassword)
 	req.Header.Set("Content-Type", "text/plain;")
 
 	resp, err := http.DefaultClient.Do(req)
@@ -678,6 +648,35 @@ func (r *ReddCoin) ListTransactions(auth *models.CoinAuth) (models.RDDListTransa
 	var respStruct models.RDDListTransactions
 
 	body := strings.NewReader("{\"jsonrpc\":\"1.0\",\"id\":\"boxwallet\",\"method\":\"" + models.CCommandListTransactions + "\",\"params\":[]}")
+	req, err := http.NewRequest("POST", "http://"+auth.IPAddress+":"+auth.Port, body)
+	if err != nil {
+		return respStruct, err
+	}
+	req.SetBasicAuth(auth.RPCUser, auth.RPCPassword)
+	req.Header.Set("Content-Type", "text/plain;")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return respStruct, err
+	}
+	defer resp.Body.Close()
+	bodyResp, err := ioutil.ReadAll(resp.Body)
+	if err != nil {
+		return respStruct, err
+	}
+
+	err = json.Unmarshal(bodyResp, &respStruct)
+	if err != nil {
+		return respStruct, err
+	}
+
+	return respStruct, nil
+}
+
+func (r ReddCoin) NewAddress(auth *models.CoinAuth) (models.RDDGetNewAddress, error) {
+	var respStruct models.RDDGetNewAddress
+
+	body := strings.NewReader("{\"jsonrpc\":\"1.0\",\"id\":\"curltext\",\"method\":\"getnewaddress\",\"params\":[]}")
 	req, err := http.NewRequest("POST", "http://"+auth.IPAddress+":"+auth.Port, body)
 	if err != nil {
 		return respStruct, err
@@ -884,6 +883,21 @@ func (r ReddCoin) ValidateAddress(ad string) bool {
 	return true
 }
 
+func (r ReddCoin) WalletAddress(auth *models.CoinAuth) (string, error) {
+	var sAddress string
+	addresses, _ := r.ListReceivedByAddress(auth, true)
+	if len(addresses.Result) > 0 {
+		sAddress = addresses.Result[0].Address
+	} else {
+		res, err := r.NewAddress(auth)
+		if err != nil {
+			return "", err
+		}
+		sAddress = res.Result
+	}
+	return sAddress, nil
+}
+
 func (r ReddCoin) WalletEncrypt(coinAuth *models.CoinAuth, pw string) (be.GenericRespStruct, error) {
 	var respStruct be.GenericRespStruct
 
@@ -1017,57 +1031,32 @@ func (r ReddCoin) WalletUnlock(coinAuth *models.CoinAuth, pw string) error {
 	return nil
 }
 
-func addTrailingSlash(filePath string) string {
-	var lastChar = filePath[len(filePath)-1:]
-	switch runtime.GOOS {
-	case "windows":
-		if lastChar == "\\" {
-			return filePath
-		} else {
-			return filePath + "\\"
-		}
-	case "linux":
-		if lastChar == "/" {
-			return filePath
-		} else {
-			return filePath + "/"
-		}
-	}
+func (r ReddCoin) WalletUnlockFS(coinAuth *models.CoinAuth, pw string) error {
+	var respStruct be.GenericRespStruct
+	var body *strings.Reader
 
-	return ""
-}
+	body = strings.NewReader("{\"jsonrpc\":\"1.0\",\"id\":\"boxwallet\",\"method\":\"walletpassphrase\",\"params\":[\"" + pw + "\",9999999,true]}")
 
-func fileCopy(srcFile, destFile string, dispOutput bool) error {
-	// Open original file
-	originalFile, err := os.Open(srcFile)
+	req, err := http.NewRequest("POST", "http://"+coinAuth.IPAddress+":"+coinAuth.Port, body)
 	if err != nil {
 		return err
 	}
-	defer originalFile.Close()
+	req.SetBasicAuth(coinAuth.RPCUser, coinAuth.RPCPassword)
+	req.Header.Set("Content-Type", "text/plain;")
 
-	// Create new file
-	newFile, err := os.Create(destFile)
+	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		return err
 	}
-	defer newFile.Close()
-
-	// Copy the bytes to destination from source
-	bytesWritten, err := io.Copy(newFile, originalFile)
+	defer resp.Body.Close()
+	bodyResp, err := ioutil.ReadAll(resp.Body)
 	if err != nil {
 		return err
 	}
-	if dispOutput {
-		fmt.Printf("Copied %d bytes.", bytesWritten)
-	}
-
-	// Commit the file contents
-	// Flushes memory to disk
-	err = newFile.Sync()
-	if err != nil {
+	err = json.Unmarshal(bodyResp, &respStruct)
+	if err != nil || respStruct.Error != nil {
 		return err
 	}
-
 	return nil
 }
 
