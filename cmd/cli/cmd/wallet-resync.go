@@ -21,6 +21,7 @@ import (
 	divi "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/divi"
 	ppc "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/peercoin"
 	rpd "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/rapids"
+	rdd "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/reddcoin"
 
 	"richardmace.co.uk/boxwallet/cmd/cli/cmd/app"
 	"richardmace.co.uk/boxwallet/cmd/cli/cmd/coins"
@@ -67,6 +68,9 @@ var resyncCmd = &cobra.Command{
 		case models.PTRapids:
 			coinName = rpd.Rapids{}
 			wallet = rpd.Rapids{}
+		case models.PTReddCoin:
+			coinName = rdd.ReddCoin{}
+			wallet = rdd.ReddCoin{}
 		default:
 			log.Fatal("Unable to determine ProjectType")
 		}

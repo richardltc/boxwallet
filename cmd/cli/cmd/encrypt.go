@@ -23,6 +23,7 @@ import (
 	divi "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/divi"
 	ppc "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/peercoin"
 	rpd "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/rapids"
+	rdd "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/reddcoin"
 	"richardmace.co.uk/boxwallet/cmd/cli/cmd/models"
 	"richardmace.co.uk/boxwallet/cmd/cli/cmd/wallet"
 
@@ -94,6 +95,8 @@ var encryptCmd = &cobra.Command{
 			walletSecurityState = rpd.Rapids{}
 			walletEncrypt = rpd.Rapids{}
 		case models.PTReddCoin:
+			walletSecurityState = rdd.ReddCoin{}
+			walletEncrypt = rdd.ReddCoin{}
 		case models.PTScala:
 		case models.PTTrezarcoin:
 		case models.PTVertcoin:
