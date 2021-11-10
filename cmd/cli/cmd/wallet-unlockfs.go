@@ -26,6 +26,7 @@ import (
 	divi "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/divi"
 	ppc "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/peercoin"
 	rpd "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/rapids"
+	rdd "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/reddcoin"
 	"richardmace.co.uk/boxwallet/cmd/cli/cmd/conf"
 	"richardmace.co.uk/boxwallet/cmd/cli/cmd/wallet"
 
@@ -98,6 +99,8 @@ var unlockfsCmd = &cobra.Command{
 			walletSecurityState = rpd.Rapids{}
 			walletUnlockFS = rpd.Rapids{}
 		case models.PTReddCoin:
+			walletSecurityState = rdd.ReddCoin{}
+			walletUnlockFS = rdd.ReddCoin{}
 		case models.PTScala:
 		case models.PTTrezarcoin:
 		case models.PTVertcoin:

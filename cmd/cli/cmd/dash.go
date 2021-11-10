@@ -20,8 +20,9 @@ import (
 	"errors"
 	"fmt"
 	ppc "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/peercoin"
+	rdd "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/reddcoin"
 	"richardmace.co.uk/boxwallet/cmd/cli/cmd/display/bitcoinplus"
-	divi2 "richardmace.co.uk/boxwallet/cmd/cli/cmd/display/divi"
+	diviDisplay "richardmace.co.uk/boxwallet/cmd/cli/cmd/display/divi"
 	"time"
 
 	ui "github.com/gizak/termui/v3"
@@ -47,6 +48,7 @@ import (
 	"richardmace.co.uk/boxwallet/cmd/cli/cmd/conf"
 	ppcDisplay "richardmace.co.uk/boxwallet/cmd/cli/cmd/display/peercoin"
 	rpdDisplay "richardmace.co.uk/boxwallet/cmd/cli/cmd/display/rapids"
+	rddDisplay "richardmace.co.uk/boxwallet/cmd/cli/cmd/display/reddcoin"
 	"richardmace.co.uk/boxwallet/cmd/cli/cmd/models"
 	// "richardmace.co.uk/boxwallet/cmd/cli/cmd/wallet"
 	// //m "richardmace.co.uk/boxwallet/pkg/models"
@@ -194,18 +196,18 @@ var dashCmd = &cobra.Command{
 			coin = divi.Divi{}
 			coinBlockchainIsSynced = divi.Divi{}
 			coinDaemon = divi.Divi{}
-			coinDispAbout = divi2.DIVI{}
-			coinDispInitialBalance = divi2.DIVI{}
-			coinDispInitialNetwork = divi2.DIVI{}
-			coinDispLiveNetwork = divi2.DIVI{}
-			coinDispLiveTransactions = divi2.DIVI{}
-			coinDispLiveWallet = divi2.DIVI{}
+			coinDispAbout = diviDisplay.DIVI{}
+			coinDispInitialBalance = diviDisplay.DIVI{}
+			coinDispInitialNetwork = diviDisplay.DIVI{}
+			coinDispLiveNetwork = diviDisplay.DIVI{}
+			coinDispLiveTransactions = diviDisplay.DIVI{}
+			coinDispLiveWallet = diviDisplay.DIVI{}
 			coinName = divi.Divi{}
-			coinPrice = divi2.DIVI{}
+			coinPrice = diviDisplay.DIVI{}
 			coinWallet = divi.Divi{}
-			walletRefreshDifficulty = divi2.DIVI{}
-			walletRefreshNetwork = divi2.DIVI{}
-			walletRefreshTransactions = divi2.DIVI{}
+			walletRefreshDifficulty = diviDisplay.DIVI{}
+			walletRefreshNetwork = diviDisplay.DIVI{}
+			walletRefreshTransactions = diviDisplay.DIVI{}
 			walletSecurityState = divi.Divi{}
 		case models.PTPeercoin:
 			coin = ppc.Peercoin{}
@@ -241,6 +243,24 @@ var dashCmd = &cobra.Command{
 			walletRefreshNetwork = rpdDisplay.RPD{}
 			walletRefreshTransactions = rpdDisplay.RPD{}
 			walletSecurityState = rpd.Rapids{}
+		case models.PTReddCoin:
+			coin = rdd.ReddCoin{}
+			coinBlockchainIsSynced = rdd.ReddCoin{}
+			coinDaemon = rdd.ReddCoin{}
+			coinDispAbout = rddDisplay.RDD{}
+			coinDispInitialBalance = rddDisplay.RDD{}
+			coinDispInitialNetwork = rddDisplay.RDD{}
+			coinDispLiveNetwork = rddDisplay.RDD{}
+			coinDispLiveTransactions = rddDisplay.RDD{}
+			coinDispLiveWallet = rddDisplay.RDD{}
+			//coinAnyAddresses = xbc.XBC{}
+			coinName = rdd.ReddCoin{}
+			coinPrice = rddDisplay.RDD{}
+			coinWallet = rdd.ReddCoin{}
+			walletRefreshDifficulty = rddDisplay.RDD{}
+			walletRefreshNetwork = rddDisplay.RDD{}
+			walletRefreshTransactions = rddDisplay.RDD{}
+			walletSecurityState = rdd.ReddCoin{}
 
 		default:
 			log.Fatal("Unable to determine ProjectType")
@@ -400,19 +420,6 @@ var dashCmd = &cobra.Command{
 		// 		if err := be.SetConfigStruct("", cliConf); err != nil {
 		// 			log.Fatalf("Unable to SetCLIConfStruct(): failed with %s\n", err)
 		// 		}
-		// 	case be.PTDivi:
-		// 		wet, err := be.GetWalletEncryptionStatus()
-		// 		if err != nil {
-		// 			log.Fatalf("Unable to determine wallet encryption status")
-		// 		}
-		// 		if wet == be.WETLocked {
-		// 			pw = be.GetWalletEncryptionPassword()
-		// 		}
-		// 		bConfirmedBU, err := HandleWalletBUDivi(pw)
-		// 		cliConf.UserConfirmedWalletBU = bConfirmedBU
-		// 		if err := be.SetConfigStruct("", cliConf); err != nil {
-		// 			log.Fatalf("Unable to SetCLIConfStruct(): failed with %s\n", err)
-		// 		}
 		// 	case be.PTFeathercoin:
 		// 	case be.PTGroestlcoin:
 		// 		wet, err := be.GetWalletEncryptionStatus()
@@ -500,15 +507,6 @@ var dashCmd = &cobra.Command{
 		// 	}
 
 		// 	if wi.Result.UnlockedUntil < 0 {
-		// 		bWalletNeedsEncrypting = true
-		// 	}
-		// case be.PTDivi:
-		// 	wi, err := be.GetWalletInfoDivi(&cliConf)
-		// 	if err != nil {
-		// 		log.Fatal("Unable to perform GetWalletInfoDivi " + err.Error())
-		// 	}
-
-		// 	if wi.Result.EncryptionStatus == be.CWalletESUnencrypted {
 		// 		bWalletNeedsEncrypting = true
 		// 	}
 		// case be.PTFeathercoin:
@@ -860,13 +858,6 @@ var dashCmd = &cobra.Command{
 				//	if bciDigiByte.Result.Verificationprogress > 0.99999 {
 				//		bDGBBlockchainIsSynced = true
 				//	}
-				//case be.PTDivi:
-				//	bciDivi, _ = be.GetBlockchainInfoDivi(&cliConf)
-				//case be.PTFeathercoin:
-				//	bciFeathercoin, _ = be.GetBlockchainInfoFeathercoin(&cliConf)
-				//	if bciFeathercoin.Result.Verificationprogress > 0.99999 {
-				//		bFTCBlockchainIsSynced = true
-				//	}
 				//case be.PTGroestlcoin:
 				//	bciGroestlcoin, _ = be.GetBlockchainInfoGRS(&cliConf)
 				//	if bciGroestlcoin.Result.Verificationprogress > 0.99999 {
@@ -922,13 +913,6 @@ var dashCmd = &cobra.Command{
 			// 	case be.PTDigiByte:
 			// 		if bDGBBlockchainIsSynced {
 			// 			wiDigiByte, _ = be.GetWalletInfoDGB(&cliConf)
-			// 		}
-			// 	case be.PTDivi:
-			// 		if bciDivi.Result.Verificationprogress > 0.999 {
-			// 			mnssDivi, _ = be.GetMNSyncStatusDivi(&cliConf)
-			// 			ssDivi, _ = be.GetStakingStatusDivi(&cliConf)
-			// 			transDivi, _ = be.ListTransactionsDivi(&cliConf)
-			// 			wiDivi, _ = be.GetWalletInfoDivi(&cliConf)
 			// 		}
 			// 	case be.PTFeathercoin:
 			// 		if bFTCBlockchainIsSynced {
@@ -998,12 +982,6 @@ var dashCmd = &cobra.Command{
 			// 		sDiff = getNetworkDifficultyTxtDGB(bciDigiByte.Result.Difficulties.Scrypt, gDiffGood, gDiffWarning)
 			// 		sBlockchainSync = getBlockchainSyncTxtDGB(bDGBBlockchainIsSynced, &bciDigiByte)
 			// 		sPeers = getNetworkConnectionsTxtDGB(gConnections)
-			// 	case be.PTDivi:
-			// 		sBlocks = getNetworkBlocksTxtDivi(&bciDivi)
-			// 		sDiff = getNetworkDifficultyTxtDivi(bciDivi.Result.Difficulty, gDiffGood, gDiffWarning)
-			// 		sBlockchainSync = getBlockchainSyncTxtDivi(mnssDivi.Result.IsBlockchainSynced, &bciDivi)
-			// 		sMNSync = getMNSyncStatusTxtDivi(mnssDivi.Result.IsBlockchainSynced, &mnssDivi)
-			// 		sPeers = getNetworkConnectionsTxtDivi(gConnections)
 			// 	case be.PTFeathercoin:
 			// 		sHeaders = getNetworkHeadersTxtFeathercoin(&bciFeathercoin)
 			// 		sBlocks = getNetworkBlocksTxtFeathercoin(&bciFeathercoin)
@@ -1066,12 +1044,6 @@ var dashCmd = &cobra.Command{
 			// 			"  " + sBlocks + "\n" +
 			// 			"  " + sDiff + "\n" +
 			// 			"  " + sBlockchainSync + "\n" +
-			// 			"  " + sPeers
-			// 	case be.PTDivi:
-			// 		pNetwork.Text = "  " + sBlocks + "\n" +
-			// 			"  " + sDiff + "\n" +
-			// 			"  " + sBlockchainSync + "\n" +
-			// 			"  " + sMNSync + "\n" +
 			// 			"  " + sPeers
 			// 	case be.PTFeathercoin:
 			// 		pNetwork.Text = "  " + sHeaders + "\n" +
@@ -1163,16 +1135,6 @@ var dashCmd = &cobra.Command{
 			// 			pWallet.Text = "" + getBalanceInDGBTxt(&wiDigiByte) + "\n" +
 			// 				"  " + getWalletSecurityStatusTxtDGB(&wiDigiByte) + "\n"
 			// 		}
-			// 	case be.PTDivi:
-			// 		if bciDivi.Result.Verificationprogress > 0.999 {
-			// 			pWallet.Text = "" + getBalanceInDiviTxt(&wiDivi) + "\n" +
-			// 				"  " + be.GetBalanceInCurrencyTxtDivi(&cliConf, &wiDivi) + "\n" +
-			// 				"  " + getWalletSecurityStatusTxtDivi(&wiDivi) + "\n" +
-			// 				"  " + getWalletStakingTxt(&wiDivi) + "\n" + //e.g. "15%" or "staking"
-			// 				"  " + getActivelyStakingTxtDivi(&ssDivi, &wiDivi) + "\n" + //e.g. "15%" or "staking"
-			// 				"  " + getNextLotteryTxtDIVI() + "\n" +
-			// 				"  " + getLotteryTicketsTxtDIVI(&transDivi) //"Lottery tickets:  0"
-			// 		}
 			// 	case be.PTFeathercoin:
 			// 		if bciFeathercoin.Result.Verificationprogress > 0.999 {
 			// 			pWallet.Text = "" + getBalanceInFeathercoinTxt(&wiFeathercoin) + "\n" +
@@ -1237,10 +1199,6 @@ var dashCmd = &cobra.Command{
 			// 	case be.PTDigiByte:
 			// 		if bciDigiByte.Result.Verificationprogress > 0.999 {
 			// 			updateTransactionsDGB(&transDGB, pTransactions)
-			// 		}
-			// 	case be.PTDivi:
-			// 		if bciDivi.Result.Verificationprogress > 0.999 {
-			// 			updateTransactionsDIVI(&transDivi, pTransactions)
 			// 		}
 			// 	case be.PTFeathercoin:
 			// 		if bciFeathercoin.Result.Verificationprogress > 0.999 {
@@ -1394,31 +1352,6 @@ func init() {
 	// dashCmd.Flags().BoolP("toggle", "t", false, "Help message for toggle")
 }
 
-// func checkHealth(bci *be.DiviBlockchainInfoRespStruct) error {
-// 	// This func will be called regularly and will check the health of the local wallet. It will..
-
-// 	// If the blockchain verification is 0.99 or higher, than all so good, otherwise...
-// 	if bci.Result.Verificationprogress > 0.99 {
-// 		return nil
-// 	}
-
-// 	// If the block count is stuck at 100...
-// 	if bci.Result.Blocks == 100 {
-// 		// 20 * 3 = 3 minutes
-// 		if gBCSyncStuckCount > 20*3 {
-// 			if err := be.WalletFix(be.WFTReSync, be.PTDivi); err != nil {
-// 				return fmt.Errorf("unable to perform wallet resync: %v", err)
-// 			}
-// 			return nil
-// 		} else {
-// 			gBCSyncStuckCount++
-// 			return nil
-// 		}
-// 	}
-
-// 	return nil
-// }
-
 func confirmWalletReady(coinAuth *models.CoinAuth, coinName string, wallet wallet.Wallet) (bool, error) {
 	// cliConf, err := be.GetConfigStruct("", true)
 	// if err != nil {
@@ -1511,16 +1444,6 @@ func confirmWalletReady(coinAuth *models.CoinAuth, coinName string, wallet walle
 	//		return false, s, fmt.Errorf("Unable to communicate with the " + coind + " server.")
 	//	}
 	//	if gi.Result.Version == 0 {
-	//		return false, s, fmt.Errorf("unable to call getinfo %s\n", err)
-	//	}
-	//case be.PTDivi:
-	//	gi, s, err := be.GetInfoDIVIUI(&cliConf, spinner)
-	//	if err != nil {
-	//		if err := spinner.Stop(); err != nil {
-	//		}
-	//		return false, s, fmt.Errorf("Unable to communicate with the " + coind + " server.")
-	//	}
-	//	if gi.Result.Version == "" {
 	//		return false, s, fmt.Errorf("unable to call getinfo %s\n", err)
 	//	}
 	//case be.PTFeathercoin:
@@ -1649,61 +1572,8 @@ func confirmWalletReady(coinAuth *models.CoinAuth, coinName string, wallet walle
 // 	return respStruct, nil
 // }
 
-// func getNextLotteryTxtDIVI() string {
-// 	if nextLotteryCounter > (60*30) || nextLotteryStored == "" {
-// 		nextLotteryCounter = 0
-// 		//lrs, _ := getDiviLotteryInfo(conf)
-// 		if gDiviLottery.Lottery.Countdown.Humanized != "" {
-// 			return "Next Lottery:     [" + gDiviLottery.Lottery.Countdown.Humanized + "](fg:white)"
-// 		} else {
-// 			return "Next Lottery:     [" + nextLotteryStored + "](fg:white)"
-// 		}
-// 	} else {
-// 		return "Next Lottery:     [" + nextLotteryStored + "](fg:white)"
-// 	}
-// }
-
-// func getLotteryTicketsTxtDIVI(trans *be.DiviListTransactions) string {
-// 	iTotalTickets := 0
-
-// 	for i := len(trans.Result) - 1; i >= 0; i-- {
-// 		// If this transaction is not a stake, we're not interested in it.
-// 		if trans.Result[i].Category != "stake_reward" {
-// 			continue
-// 		}
-
-// 		// Check to make sure the confirmations count is higher than -1
-// 		if trans.Result[i].Confirmations < 0 {
-// 			continue
-// 		}
-
-// 		prevBlock := gDiviLottery.Lottery.NextLotteryBlock - 10080
-// 		numBlocksSpread := gDiviLottery.Lottery.CurrentBlock - prevBlock
-
-// 		// If the stake block is less than the next lottery block - 10080 then it's not in this weeks lottery
-// 		if trans.Result[i].Confirmations > numBlocksSpread {
-// 			continue
-// 		}
-
-// 		// We've got here, so count the stake...
-// 		iTotalTickets = iTotalTickets + 1
-// 	}
-
-// 	return "Lottery tickets:  " + strconv.Itoa(iTotalTickets)
-// }
-
 // func getActivelyStakingTxtDenarius(ss *be.DenariusStakingInfoStruct) string {
 // 	if ss.Result.Staking == true {
-// 		return "Actively Staking: [Yes](fg:green)"
-// 	} else {
-// 		return "Actively Staking: [No](fg:yellow)"
-// 	}
-// }
-
-// func getActivelyStakingTxtDivi(ss *be.DiviStakingStatusRespStruct, wi *be.DiviWalletInfoRespStruct) string {
-// 	// Work out balance
-// 	//todo Make sure that we only return yes, if the StakingStatus is true AND we have enough coins
-// 	if ss.Result.StakingStatus == true && (wi.Result.Balance > 10000) {
 // 		return "Actively Staking: [Yes](fg:green)"
 // 	} else {
 // 		return "Actively Staking: [No](fg:yellow)"
@@ -1752,20 +1622,6 @@ func confirmWalletReady(coinAuth *models.CoinAuth, coinName string, wallet walle
 // }
 
 // func getBalanceInDGBTxt(wi *be.DGBWalletInfoRespStruct) string {
-// 	tBalance := wi.Result.ImmatureBalance + wi.Result.UnconfirmedBalance + wi.Result.Balance
-// 	tBalanceStr := humanize.FormatFloat("#,###.####", tBalance)
-
-// 	// Work out balance
-// 	if wi.Result.ImmatureBalance > 0 {
-// 		return "  Incoming....... [" + tBalanceStr + "](fg:cyan)"
-// 	} else if wi.Result.UnconfirmedBalance > 0 {
-// 		return "  Confirming....... [" + tBalanceStr + "](fg:yellow)"
-// 	} else {
-// 		return "  Balance:          [" + tBalanceStr + "](fg:green)"
-// 	}
-// }
-
-// func getBalanceInDiviTxt(wi *be.DiviWalletInfoRespStruct) string {
 // 	tBalance := wi.Result.ImmatureBalance + wi.Result.UnconfirmedBalance + wi.Result.Balance
 // 	tBalanceStr := humanize.FormatFloat("#,###.####", tBalance)
 
@@ -2008,28 +1864,6 @@ func confirmWalletReady(coinAuth *models.CoinAuth, coinName string, wallet walle
 // 	}
 // }
 
-// func getBlockchainSyncTxtDivi(synced bool, bci *be.DiviBlockchainInfoRespStruct) string {
-// 	s := convertBCVerification(bci.Result.Verificationprogress)
-// 	if s == "0.0" {
-// 		s = ""
-// 	} else {
-// 		s = s + "%"
-// 	}
-
-// 	if !synced {
-// 		return "Blockchain: [" + getNextProgBCIndicator(gLastBCSyncStatus) + "syncing " + s + " ](fg:yellow)"
-// 		//if bci.Result.Verificationprogress > gLastBCSyncPos {
-// 		//	gLastBCSyncPos = bci.Result.Verificationprogress
-// 		//	return "Blockchain:  [syncing " + s + " ](fg:yellow)"
-// 		//} else {
-// 		//	gLastBCSyncPos = bci.Result.Verificationprogress
-// 		//	return "Blockchain:  [waiting " + s + " ](fg:yellow)"
-// 		//}
-// 	} else {
-// 		return "Blockchain:  [synced " + cUtfTickBold + "](fg:green)"
-// 	}
-// }
-
 // func getBlockchainSyncTxtFTC(synced bool, bci *be.FeathercoinBlockchainInfoRespStruct) string {
 // 	s := convertBCVerification(bci.Result.Verificationprogress)
 // 	if s == "0.0" {
@@ -2150,18 +1984,6 @@ func confirmWalletReady(coinAuth *models.CoinAuth, coinName string, wallet walle
 // 	}
 // }
 
-// func getMNSyncStatusTxtDivi(bcs bool, mnss *be.DiviMNSyncStatusRespStruct) string {
-// 	if mnss.Result.RequestedMasternodeAssets == 999 {
-// 		return "Masternodes: [synced " + cUtfTickBold + "](fg:green)"
-// 	} else {
-// 		if bcs {
-// 			return "Masternodes:[" + getNextProgMNIndicator(gLastMNSyncStatus) + "syncing...](fg:yellow)"
-// 		} else {
-// 			return "Masternodes: [waiting...](fg:yellow)"
-// 		}
-// 	}
-// }
-
 // func getMNSyncStatusTxtPhore(bcs bool, mnss *be.PhoreMNSyncStatusRespStruct) string {
 // 	if mnss.Result.RequestedMasternodeAssets == 999 {
 // 		return "Masternodes: [synced " + cUtfTickBold + "](fg:green)"
@@ -2217,16 +2039,6 @@ func confirmWalletReady(coinAuth *models.CoinAuth, coinName string, wallet walle
 
 // 	return "Blocks:      [" + blocksStr + "](fg:green)"
 
-// }
-
-// func getNetworkBlocksTxtDivi(bci *be.DiviBlockchainInfoRespStruct) string {
-// 	blocksStr := humanize.Comma(int64(bci.Result.Blocks))
-
-// 	if bci.Result.Blocks > 100 {
-// 		return "Blocks:      [" + blocksStr + "](fg:green)"
-// 	} else {
-// 		return "[Blocks:      " + blocksStr + "](fg:red)"
-// 	}
 // }
 
 // func getNetworkBlocksTxtFeathercoin(bci *be.FeathercoinBlockchainInfoRespStruct) string {
@@ -2309,13 +2121,6 @@ func confirmWalletReady(coinAuth *models.CoinAuth, coinName string, wallet walle
 // }
 
 // func getNetworkConnectionsTxtDGB(connections int) string {
-// 	if connections == 0 {
-// 		return "Peers:       [0](fg:red)"
-// 	}
-// 	return "Peers:       [" + strconv.Itoa(connections) + "](fg:green)"
-// }
-
-// func getNetworkConnectionsTxtDivi(connections int) string {
 // 	if connections == 0 {
 // 		return "Peers:       [0](fg:red)"
 // 	}
@@ -2491,25 +2296,6 @@ func confirmWalletReady(coinAuth *models.CoinAuth, coinName string, wallet walle
 // 	}
 // }
 
-// func getWalletStakingTxt(wi *be.DiviWalletInfoRespStruct) string {
-// 	var fPercent float64
-// 	if wi.Result.Balance > 10000 {
-// 		fPercent = 100
-// 	} else {
-// 		fPercent = (wi.Result.Balance / 10000) * 100
-// 	}
-
-// 	fPercentStr := humanize.FormatFloat("###.##", fPercent)
-// 	if fPercent < 75 {
-// 		return "Staking %:        [" + fPercentStr + "](fg:red)"
-// 	} else if (fPercent >= 76) && (fPercent <= 99) {
-// 		return "Staking %:        [" + fPercentStr + "](fg:yellow)"
-// 	} else {
-// 		return "Staking %:        [" + fPercentStr + "](fg:green)"
-// 	}
-
-// }
-
 // func getWalletSecurityStatusTxtDenarius(gi *be.DenariusGetInfoRespStruct) string {
 // 	if gi.Result.UnlockedUntil == 0 {
 // 		return "Security:         [Locked - Not Staking](fg:yellow)"
@@ -2657,26 +2443,6 @@ func confirmWalletReady(coinAuth *models.CoinAuth, coinName string, wallet walle
 // 	}
 // }
 
-// func getDiviLotteryInfo(cliConf *be.ConfStruct) (be.DiviLotteryRespStruct, error) {
-// 	var respStruct be.DiviLotteryRespStruct
-
-// 	resp, err := http.Get("https://statbot.neist.io/api/v1/statbot")
-// 	if err != nil {
-// 		return respStruct, err
-// 	}
-// 	defer resp.Body.Close()
-
-// 	body, err := ioutil.ReadAll(resp.Body)
-// 	if err != nil {
-// 		return respStruct, err
-// 	}
-// 	err = json.Unmarshal(body, &respStruct)
-// 	if err != nil {
-// 		return respStruct, err
-// 	}
-// 	return respStruct, errors.New("unable to getDiviLotteryInfo")
-// }
-
 // func getNetworkDifficultyInfo(pt be.ProjectType) (float64, float64, error) {
 // 	var coin string
 // 	// https://chainz.cryptoid.info/ftc/api.dws?q=getdifficulty
@@ -2758,22 +2524,6 @@ func confirmWalletReady(coinAuth *models.CoinAuth, coinName string, wallet walle
 // 		return "[Difficulty:  waiting...](fg:white)"
 // 	}
 
-// 	if difficulty >= good {
-// 		return "Difficulty:  [" + s + "](fg:green)"
-// 	} else if difficulty >= warn {
-// 		return "Difficulty:  [" + s + "](fg:yellow)"
-// 	} else {
-// 		return "Difficulty:  [" + s + "](fg:red)"
-// 	}
-// }
-
-// func getNetworkDifficultyTxtDivi(difficulty, good, warn float64) string {
-// 	var s string
-// 	if difficulty > 1000 {
-// 		s = humanize.FormatFloat("#.#", difficulty/1000) + "k"
-// 	} else {
-// 		s = humanize.Ftoa(difficulty)
-// 	}
 // 	if difficulty >= good {
 // 		return "Difficulty:  [" + s + "](fg:green)"
 // 	} else if difficulty >= warn {
@@ -3040,48 +2790,6 @@ func confirmWalletReady(coinAuth *models.CoinAuth, coinName string, wallet walle
 // }
 
 // func updateTransactionsDGB(trans *be.DGBListTransactions, pt *widgets.Table) {
-// 	pt.Rows = [][]string{
-// 		[]string{" Date", " Category", " Amount", " Confirmations"},
-// 	}
-
-// 	// Record whether any of the transactions have 0 conf (so that we can display the boarder as yellow)
-// 	bYellowBoarder := false
-
-// 	for i := len(trans.Result) - 1; i >= 0; i-- {
-// 		// Check to make sure the confirmations count is higher than -1
-// 		if trans.Result[i].Confirmations < 0 {
-// 			continue
-// 		}
-
-// 		if trans.Result[i].Confirmations < 1 {
-// 			bYellowBoarder = true
-// 		}
-// 		iTime, err := strconv.ParseInt(strconv.Itoa(trans.Result[i].Blocktime), 10, 64)
-// 		if err != nil {
-// 			panic(err)
-// 		}
-// 		tm := time.Unix(iTime, 0)
-// 		sCat := getCategorySymbol(trans.Result[i].Category)
-// 		tAmountStr := humanize.FormatFloat("#,###.##", trans.Result[i].Amount)
-// 		sColour := getCategoryColour(trans.Result[i].Category)
-// 		pt.Rows = append(pt.Rows, []string{
-// 			" [" + tm.Format("2006-01-02 15:04"+"](fg:"+sColour+")"),
-// 			" [" + sCat + "](fg:" + sColour + ")",
-// 			" [" + tAmountStr + "](fg:" + sColour + ")",
-// 			" [" + strconv.Itoa(trans.Result[i].Confirmations) + "](fg:" + sColour + ")"})
-
-// 		if i > 10 {
-// 			break
-// 		}
-// 	}
-// 	if bYellowBoarder {
-// 		pt.BorderStyle.Fg = ui.ColorYellow
-// 	} else {
-// 		pt.BorderStyle.Fg = ui.ColorGreen
-// 	}
-// }
-
-// func updateTransactionsDIVI(trans *be.DiviListTransactions, pt *widgets.Table) {
 // 	pt.Rows = [][]string{
 // 		[]string{" Date", " Category", " Amount", " Confirmations"},
 // 	}

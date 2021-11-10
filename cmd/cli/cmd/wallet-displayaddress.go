@@ -29,6 +29,7 @@ import (
 	"os"
 	"richardmace.co.uk/boxwallet/cmd/cli/cmd/app"
 	"richardmace.co.uk/boxwallet/cmd/cli/cmd/coins"
+	rdd "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/reddcoin"
 
 	divi "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/divi"
 	"richardmace.co.uk/boxwallet/cmd/cli/cmd/conf"
@@ -88,6 +89,8 @@ var displayaddressCmd = &cobra.Command{
 		case models.PTPIVX:
 		case models.PTRapids:
 		case models.PTReddCoin:
+			coinName = rdd.ReddCoin{}
+			walletAddress = rdd.ReddCoin{}
 		case models.PTScala:
 		case models.PTTrezarcoin:
 		case models.PTVertcoin:
