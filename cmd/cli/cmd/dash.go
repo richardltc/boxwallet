@@ -296,7 +296,7 @@ var dashCmd = &cobra.Command{
 
 		// Let's display the tip message so the user sees it when they exit the dash command.
 		sTipInfo := coinName.CoinNameAbbrev() + ": " + coin.TipAddress()
-		fmt.Println("\n\n" + sTipInfo + "\n")
+		fmt.Println("\n\nAny tips received on the following address, are very much appreciated:\n\n" + sTipInfo + "\n")
 
 		// // The first thing we need to do is to store the coin core version for the About display...
 		// sCoreVersion := ""
