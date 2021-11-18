@@ -2,6 +2,7 @@ package models
 
 const (
 	// General CLI command constants
+
 	CCommandCreateWallet          string = "createwallet"
 	CCommandEncryptWallet         string = "encryptwallet"
 	CCommandGetBCInfo             string = "getblockchaininfo"
@@ -16,9 +17,9 @@ const (
 	CCommandSendToAddress         string = "sendtoaddress"
 	CCommandSetTxFee              string = "settxfee"
 
-	CCommandMNSyncStatus1 string = "mnsync"
-	CCommandMNSyncStatus2 string = "status"
-	CCommandDumpHDInfo    string = "dumphdinfo" // ./divi-cli dumphdinfo
+	//CCommandMNSyncStatus1 string = "mnsync"
+	//CCommandMNSyncStatus2 string = "status"
+	//CCommandDumpHDInfo    string = "dumphdinfo" // ./divi-cli dumphdinfo
 
 	CRPCUser     string = "rpcuser"
 	CRPCPassword string = "rpcpassword"
