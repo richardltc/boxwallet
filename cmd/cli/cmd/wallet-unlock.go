@@ -81,7 +81,7 @@ var unlockCmd = &cobra.Command{
 		switch confDB.ProjectType {
 		case models.PTBitcoinPlus:
 			walletSecurityState = xbc.XBC{}
-			//walletUnlock = xbc.XBC{}
+			walletUnlock = xbc.XBC{}
 		case models.PTDenarius:
 		case models.PTDeVault:
 		case models.PTDigiByte:
