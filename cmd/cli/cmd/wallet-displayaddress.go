@@ -29,6 +29,7 @@ import (
 	"os"
 	"richardmace.co.uk/boxwallet/cmd/cli/cmd/app"
 	"richardmace.co.uk/boxwallet/cmd/cli/cmd/coins"
+	xbc "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/bitcoinplus"
 	rdd "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/reddcoin"
 
 	divi "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/divi"
@@ -76,6 +77,8 @@ var displayaddressCmd = &cobra.Command{
 
 		switch confDB.ProjectType {
 		case models.PTBitcoinPlus:
+			coinName = xbc.XBC{}
+			walletAddress = xbc.XBC{}
 		case models.PTDenarius:
 		case models.PTDeVault:
 		case models.PTDigiByte:
