@@ -207,6 +207,7 @@ func (r RDD) RefreshPrice() {
 
 	ticker, _ = rdd.UpdateTickerInfo()
 }
+
 func (r RDD) RefreshTransactions(coinAuth *models.CoinAuth) {
 	var rdd rddImport.ReddCoin
 
