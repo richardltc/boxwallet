@@ -33,6 +33,7 @@ import (
 	"richardmace.co.uk/boxwallet/cmd/cli/cmd/conf"
 	"richardmace.co.uk/boxwallet/cmd/cli/cmd/models"
 	"richardmace.co.uk/boxwallet/cmd/cli/cmd/wallet"
+	"time"
 )
 
 // sendCmd represents the send command
@@ -168,7 +169,7 @@ to quickly create a Cobra application.`,
 		if err != nil {
 			log.Fatal("Unable to determine Wallet Security State: " + err.Error())
 		}
-		if wst != models.WETUnlocked {
+		if wst == models.WETLocked || wst == models.WETUnlockedForStaking {
 			wep := coins.GetWalletEncryptionPassword()
 			err := walletUnlock.WalletUnlock(&coinAuth, wep)
 			if err != nil {
@@ -176,7 +177,8 @@ to quickly create a Cobra application.`,
 			}
 		}
 
-		// Then send..
+		time.Sleep(1 * time.Second)
+		// Then send...
 		if send {
 			if r, err := sendToAddress.SendToAddress(&coinAuth, address, amount); err != nil {
 				log.Fatalf("unable to send: %v", err)
