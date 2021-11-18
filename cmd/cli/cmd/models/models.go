@@ -14,9 +14,11 @@ const (
 	CCommandGetNewAddress         string = "getnewaddress"
 	CCommandGetWalletInfo         string = "getwalletinfo"
 	CCommandSendToAddress         string = "sendtoaddress"
-	CCommandMNSyncStatus1         string = "mnsync"
-	CCommandMNSyncStatus2         string = "status"
-	CCommandDumpHDInfo            string = "dumphdinfo" // ./divi-cli dumphdinfo
+	CCommandSetTxFee              string = "settxfee"
+
+	CCommandMNSyncStatus1 string = "mnsync"
+	CCommandMNSyncStatus2 string = "status"
+	CCommandDumpHDInfo    string = "dumphdinfo" // ./divi-cli dumphdinfo
 
 	CRPCUser     string = "rpcuser"
 	CRPCPassword string = "rpcpassword"
