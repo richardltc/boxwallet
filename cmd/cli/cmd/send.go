@@ -139,14 +139,14 @@ to quickly create a Cobra application.`,
 		promptAmount := &survey.Input{
 			Message: "How much " + coinName.CoinNameAbbrev() + " would you like to send?",
 		}
-		survey.AskOne(promptAmount, &amount)
+		_ = survey.AskOne(promptAmount, &amount)
 
 		// Then ask for the address
 		address := ""
 		promptAddress := &survey.Input{
 			Message: "Which " + coinName.CoinName() + " address would you like to send to?",
 		}
-		survey.AskOne(promptAddress, &address)
+		_ = survey.AskOne(promptAddress, &address)
 
 		// Validate address as best we can...
 		// DIVI, length is 34 and starts with a D
@@ -161,7 +161,7 @@ to quickly create a Cobra application.`,
 		promptConfirm := &survey.Confirm{
 			Message: "Are you sure?\n\nSend: " + fmt.Sprintf("%f", amount) + "\n\nTo " + coinName.CoinName() + " address: " + address + "\n\n",
 		}
-		survey.AskOne(promptConfirm, &send)
+		_ = survey.AskOne(promptConfirm, &send)
 
 		// Check that their wallet is unlocked
 
