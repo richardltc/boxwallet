@@ -576,6 +576,35 @@ func (x XBC) RPCDefaultPort() string {
 	return cRPCPort
 }
 
+func (x XBC) SendToAddress(coinAuth *models.CoinAuth, address string, amount float32) (returnResp models.GenericResponse, err error) {
+	var respStruct models.GenericResponse
+
+	sAmount := fmt.Sprintf("%f", amount) // sAmount == "123.456000"
+
+	body := strings.NewReader("{\"jsonrpc\":\"1.0\",\"id\":\"boxwallet\",\"method\":\"" + models.CCommandSendToAddress + "\",\"params\":[\"" + address + "\"," + sAmount + "]}")
+	req, err := http.NewRequest("POST", "http://"+coinAuth.IPAddress+":"+coinAuth.Port, body)
+	if err != nil {
+		return respStruct, err
+	}
+	req.SetBasicAuth(coinAuth.RPCUser, coinAuth.RPCPassword)
+	req.Header.Set("Content-Type", "text/plain;")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return respStruct, err
+	}
+	defer resp.Body.Close()
+	bodyResp, err := ioutil.ReadAll(resp.Body)
+	if err != nil {
+		return respStruct, err
+	}
+	err = json.Unmarshal(bodyResp, &respStruct)
+	if err != nil {
+		return respStruct, err
+	}
+	return respStruct, nil
+}
+
 func (x *XBC) StakingInfo(coinAuth *models.CoinAuth) (models.XBCStakingInfo, error) {
 	var respStruct models.XBCStakingInfo
 
@@ -689,6 +718,23 @@ func (x XBC) UpdateTickerInfo() (ticker models.XBCTicker, err error) {
 		return ticker, err
 	}
 	return ticker, nil
+}
+
+func (x XBC) ValidateAddress(ad string) bool {
+	// First, work out what the coin type is
+	// If the length of the address is not exactly 34 characters...
+	if len(ad) != 34 {
+		return false
+	}
+
+	//sFirst := ad[0]
+	//
+	//// 82 = UTF for R
+	//if sFirst != 82 {
+	//	return false
+	//}
+
+	return true
 }
 
 func (x XBC) WalletAddress(auth *models.CoinAuth) (string, error) {

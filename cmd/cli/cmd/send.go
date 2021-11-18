@@ -84,7 +84,12 @@ to quickly create a Cobra application.`,
 
 		switch confDB.ProjectType {
 		case models.PTBitcoinPlus:
+			coinName = xbc.XBC{}
+			daemonRunning = xbc.XBC{}
 			walletSecurityState = xbc.XBC{}
+			walletUnlock = xbc.XBC{}
+			walletValidateAddress = xbc.XBC{}
+			sendToAddress = xbc.XBC{}
 		case models.PTDenarius:
 		case models.PTDeVault:
 		case models.PTDigiByte:
