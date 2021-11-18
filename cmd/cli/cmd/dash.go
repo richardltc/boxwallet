@@ -21,7 +21,7 @@ import (
 	"fmt"
 	ppc "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/peercoin"
 	rdd "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/reddcoin"
-	"richardmace.co.uk/boxwallet/cmd/cli/cmd/display/bitcoinplus"
+	xbcDisplay "richardmace.co.uk/boxwallet/cmd/cli/cmd/display/bitcoinplus"
 	diviDisplay "richardmace.co.uk/boxwallet/cmd/cli/cmd/display/divi"
 	"time"
 
@@ -179,18 +179,19 @@ var dashCmd = &cobra.Command{
 			coin = xbc.XBC{}
 			coinBlockchainIsSynced = xbc.XBC{}
 			coinDaemon = xbc.XBC{}
-			coinDispAbout = bitcoinplus.XBC{}
-			coinDispInitialBalance = bitcoinplus.XBC{}
-			coinDispInitialNetwork = bitcoinplus.XBC{}
-			coinDispLiveNetwork = bitcoinplus.XBC{}
-			coinDispLiveTransactions = bitcoinplus.XBC{}
-			coinDispLiveWallet = bitcoinplus.XBC{}
+			coinDispAbout = xbcDisplay.XBC{}
+			coinDispInitialBalance = xbcDisplay.XBC{}
+			coinDispInitialNetwork = xbcDisplay.XBC{}
+			coinDispLiveNetwork = xbcDisplay.XBC{}
+			coinDispLiveTransactions = xbcDisplay.XBC{}
+			coinDispLiveWallet = xbcDisplay.XBC{}
 			//coinAnyAddresses = xbc.XBC{}
 			coinName = xbc.XBC{}
+			coinPrice = xbcDisplay.XBC{}
 			coinWallet = xbc.XBC{}
-			walletRefreshDifficulty = bitcoinplus.XBC{}
-			walletRefreshNetwork = bitcoinplus.XBC{}
-			walletRefreshTransactions = bitcoinplus.XBC{}
+			walletRefreshDifficulty = xbcDisplay.XBC{}
+			walletRefreshNetwork = xbcDisplay.XBC{}
+			walletRefreshTransactions = xbcDisplay.XBC{}
 			walletSecurityState = xbc.XBC{}
 		case models.PTDivi:
 			coin = divi.Divi{}
