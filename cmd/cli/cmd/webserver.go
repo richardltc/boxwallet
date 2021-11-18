@@ -27,7 +27,7 @@ var webserverCmd = &cobra.Command{
 	Short: "Turns BoxWallet into a web server",
 	Long:  ``,
 	Run: func(cmd *cobra.Command, args []string) {
-		fmt.Println("webserver called")
+		fmt.Println("Not currently implemented.")
 
 	},
 }
