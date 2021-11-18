@@ -54,6 +54,8 @@ const (
 	cTxFileLin     string = "reddcoin-tx"
 	cTxFileWin     string = "reddcoin-tx.exe"
 
+	cMinTXFee float64 = 0.004
+
 	cTipAddress string = "RtH6nZvmnstUsy5w5cmdwTrarbTPm6zyrC"
 
 	cRPCUser string = "reddcoinrpc"
@@ -705,9 +707,44 @@ func (r ReddCoin) NewAddress(auth *models.CoinAuth) (models.RDDGetNewAddress, er
 func (r ReddCoin) SendToAddress(coinAuth *models.CoinAuth, address string, amount float32) (returnResp models.GenericResponse, err error) {
 	var respStruct models.GenericResponse
 
-	sAmount := fmt.Sprintf("%f", amount) // sAmount == "123.456000"
+	_, _ = setTXFee(coinAuth)
+
+	//sAmount := fmt.Sprintf("%f.8", amount)
+	sAmount := fmt.Sprintf("%v", amount)
+
+	//sAmount := strconv.FormatFloat(amount,'E',-1,//fmt.Sprintf("%f", amount) // sAmount == "123.456000"
+	//sMinFee := strconv.FormatFloat(cMinTXFee,'E',-1,64) //fmt.Sprintf("%f", cMinTXFee)
 
 	body := strings.NewReader("{\"jsonrpc\":\"1.0\",\"id\":\"boxwallet\",\"method\":\"" + models.CCommandSendToAddress + "\",\"params\":[\"" + address + "\"," + sAmount + "]}")
+	req, err := http.NewRequest("POST", "http://"+coinAuth.IPAddress+":"+coinAuth.Port, body)
+	if err != nil {
+		return respStruct, err
+	}
+	req.SetBasicAuth(coinAuth.RPCUser, coinAuth.RPCPassword)
+	req.Header.Set("Content-Type", "text/plain;")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return respStruct, err
+	}
+	defer resp.Body.Close()
+	bodyResp, err := ioutil.ReadAll(resp.Body)
+	if err != nil {
+		return respStruct, err
+	}
+	err = json.Unmarshal(bodyResp, &respStruct)
+	if err != nil {
+		return respStruct, err
+	}
+	return respStruct, nil
+}
+
+func setTXFee(coinAuth *models.CoinAuth) (returnResp models.GenericResponse, err error) {
+	var respStruct models.GenericResponse
+
+	sMinFee := fmt.Sprintf("%v", cMinTXFee)
+
+	body := strings.NewReader("{\"jsonrpc\":\"1.0\",\"id\":\"boxwallet\",\"method\":\"" + models.CCommandSetTxFee + "\",\"params\":[" + sMinFee + "]}")
 	req, err := http.NewRequest("POST", "http://"+coinAuth.IPAddress+":"+coinAuth.Port, body)
 	if err != nil {
 		return respStruct, err
@@ -1007,7 +1044,7 @@ func (r ReddCoin) WalletResync(appFolder string) error {
 func (r ReddCoin) WalletUnlock(coinAuth *models.CoinAuth, pw string) error {
 	var respStruct models.GenericResponse
 
-	body := strings.NewReader("{\"jsonrpc\":\"1.0\",\"id\":\"curltext\",\"method\":\"walletpassphrase\",\"params\":[\"" + pw + "\",0]}")
+	body := strings.NewReader("{\"jsonrpc\":\"1.0\",\"id\":\"curltext\",\"method\":\"walletpassphrase\",\"params\":[\"" + pw + "\",60]}")
 	req, err := http.NewRequest("POST", "http://"+coinAuth.IPAddress+":"+coinAuth.Port, body)
 	if err != nil {
 		return err
