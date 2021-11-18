@@ -855,6 +855,33 @@ func (x XBC) WalletSecurityState(coinAuth *models.CoinAuth) (models.WEType, erro
 	}
 }
 
+func (x XBC) WalletUnlock(coinAuth *models.CoinAuth, pw string) error {
+	var respStruct models.GenericResponse
+
+	body := strings.NewReader("{\"jsonrpc\":\"1.0\",\"id\":\"curltext\",\"method\":\"walletpassphrase\",\"params\":[\"" + pw + "\",60]}")
+	req, err := http.NewRequest("POST", "http://"+coinAuth.IPAddress+":"+coinAuth.Port, body)
+	if err != nil {
+		return err
+	}
+	req.SetBasicAuth(coinAuth.RPCUser, coinAuth.RPCPassword)
+	req.Header.Set("Content-Type", "text/plain;")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	bodyResp, err := ioutil.ReadAll(resp.Body)
+	if err != nil {
+		return err
+	}
+	err = json.Unmarshal(bodyResp, &respStruct)
+	if err != nil {
+		return err
+	}
+	return nil
+}
+
 func (x XBC) WalletUnlockFS(coinAuth *models.CoinAuth, pw string) error {
 	var respStruct be.GenericRespStruct
 	var body *strings.Reader
