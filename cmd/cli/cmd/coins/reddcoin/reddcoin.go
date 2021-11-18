@@ -1041,6 +1041,7 @@ func (r ReddCoin) WalletResync(appFolder string) error {
 
 	return nil
 }
+
 func (r ReddCoin) WalletUnlock(coinAuth *models.CoinAuth, pw string) error {
 	var respStruct models.GenericResponse
 
