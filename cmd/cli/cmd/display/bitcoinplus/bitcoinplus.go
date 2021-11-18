@@ -17,6 +17,7 @@ type XBC struct {
 var blockChainInfo models.XBCBlockchainInfo
 var networkInfo models.XBCNetworkInfo
 var stakingInfo models.XBCStakingInfo
+var ticker models.XBCTicker
 var transactions models.XBCListTransactions
 var walletInfo models.XBCWalletInfo
 var diffGood, diffWarning float64
@@ -205,6 +206,12 @@ func (x XBC) RefreshNetwork(coinAuth *models.CoinAuth) {
 	networkInfo, _ = xbc.NetworkInfo(coinAuth)
 	stakingInfo, _ = xbc.StakingInfo(coinAuth)
 	walletInfo, _ = xbc.WalletInfo(coinAuth)
+}
+
+func (x XBC) RefreshPrice() {
+	var xbc xbcImport.XBC
+
+	ticker, _ = xbc.UpdateTickerInfo()
 }
 
 func (x XBC) RefreshTransactions(coinAuth *models.CoinAuth) {
