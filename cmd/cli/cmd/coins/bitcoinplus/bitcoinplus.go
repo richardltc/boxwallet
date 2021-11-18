@@ -691,6 +691,21 @@ func (x XBC) UpdateTickerInfo() (ticker models.XBCTicker, err error) {
 	return ticker, nil
 }
 
+func (x XBC) WalletAddress(auth *models.CoinAuth) (string, error) {
+	var sAddress string
+	addresses, _ := x.ListReceivedByAddress(auth, true)
+	if len(addresses.Result) > 0 {
+		sAddress = addresses.Result[0].Address
+	} else {
+		res, err := x.NewAddress(auth)
+		if err != nil {
+			return "", err
+		}
+		sAddress = res.Result
+	}
+	return sAddress, nil
+}
+
 func (x XBC) WalletEncrypt(coinAuth *models.CoinAuth, pw string) (be.GenericRespStruct, error) {
 	var respStruct be.GenericRespStruct
 
