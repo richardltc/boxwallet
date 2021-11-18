@@ -673,6 +673,24 @@ func (x XBC) TipAddress() string {
 	return cTipAddress
 }
 
+func (x XBC) UpdateTickerInfo() (ticker models.XBCTicker, err error) {
+	resp, err := http.Get("https://ticker.neist.io/XBC")
+	if err != nil {
+		return ticker, err
+	}
+	defer resp.Body.Close()
+
+	body, err := ioutil.ReadAll(resp.Body)
+	if err != nil {
+		return ticker, err
+	}
+	err = json.Unmarshal(body, &ticker)
+	if err != nil {
+		return ticker, err
+	}
+	return ticker, nil
+}
+
 func (x XBC) WalletEncrypt(coinAuth *models.CoinAuth, pw string) (be.GenericRespStruct, error) {
 	var respStruct be.GenericRespStruct
 
