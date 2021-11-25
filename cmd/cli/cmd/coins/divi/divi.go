@@ -970,6 +970,68 @@ func (d Divi) ValidateAddress(ad string) bool {
 	return true
 }
 
+func (d Divi) UnarchiveBlockchainSnapshot() error {
+	coinDir, err := d.HomeDirFullPath()
+	if err != nil {
+		return errors.New("unable to get HomeDirFul - " + err.Error())
+	}
+
+	// First, check to make sure that both the blockchain folders don't already exist. (blocks, chainstate)
+	bcsFileExists := fileutils.FileExists(coinDir + cDownloadFileBS)
+	if !bcsFileExists {
+		return errors.New("unable to find the snapshot file: " + coinDir + cDownloadFileBS)
+	}
+
+	// Now extract it straight into the ~/.divi folder
+	if err := archiver.Unarchive(coinDir+cDownloadFileBS, coinDir); err != nil {
+		return errors.New("unable to unarchive file: " + coinDir + cDownloadFileBS + " " + err.Error())
+	}
+	return nil
+}
+
+func (d Divi) UpdateTickerInfo() (ticker models.DiviTicker, err error) {
+	resp, err := http.Get("https://ticker.neist.io/DIVI")
+	if err != nil {
+		return ticker, err
+	}
+	defer resp.Body.Close()
+
+	body, err := ioutil.ReadAll(resp.Body)
+	if err != nil {
+		return ticker, err
+	}
+	err = json.Unmarshal(body, &ticker)
+	if err != nil {
+		return ticker, err
+	}
+	return ticker, nil
+}
+
+func (d *Divi) unarchiveFile(fullFilePath, location string) error {
+	if err := archiver.Unarchive(fullFilePath, location); err != nil {
+		return fmt.Errorf("unable to unarchive file: %v - %v", fullFilePath, err)
+	}
+	switch runtime.GOOS {
+	case "windows":
+		defer os.RemoveAll(location + cDownloadFileWindows)
+	case "linux":
+		switch runtime.GOARCH {
+		case "arm":
+			defer os.RemoveAll(location + cDownloadFileArm32)
+		case "arm64":
+			return errors.New("arm64 is not currently supported for :" + cCoinName)
+		case "386":
+			return errors.New("linux 386 is not currently supported for :" + cCoinName)
+		case "amd64":
+			defer os.RemoveAll(location + cDownloadFileLinux)
+		}
+	}
+
+	defer os.Remove(fullFilePath)
+
+	return nil
+}
+
 func (d Divi) WalletAddress(auth *models.CoinAuth) (string, error) {
 	var sAddress string
 	addresses, _ := d.ListReceivedByAddress(auth, true)
@@ -1138,6 +1200,33 @@ func (d Divi) WalletSecurityState(coinAuth *models.CoinAuth) (models.WEType, err
 	}
 }
 
+func (d Divi) WalletUnlock(coinAuth *models.CoinAuth, pw string) error {
+	var respStruct models.GenericResponse
+
+	body := strings.NewReader("{\"jsonrpc\":\"1.0\",\"id\":\"curltext\",\"method\":\"walletpassphrase\",\"params\":[\"" + pw + "\",0]}")
+	req, err := http.NewRequest("POST", "http://"+coinAuth.IPAddress+":"+coinAuth.Port, body)
+	if err != nil {
+		return err
+	}
+	req.SetBasicAuth(coinAuth.RPCUser, coinAuth.RPCPassword)
+	req.Header.Set("Content-Type", "text/plain;")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	bodyResp, err := ioutil.ReadAll(resp.Body)
+	if err != nil {
+		return err
+	}
+	err = json.Unmarshal(bodyResp, &respStruct)
+	if err != nil {
+		return err
+	}
+	return nil
+}
+
 func (d Divi) WalletUnlockFS(coinAuth *models.CoinAuth, pw string) error {
 	var respStruct be.GenericRespStruct
 	var body *strings.Reader
@@ -1168,95 +1257,6 @@ func (d Divi) WalletUnlockFS(coinAuth *models.CoinAuth, pw string) error {
 	if respStruct.Error != nil {
 		return errors.New(fmt.Sprintf("%v", respStruct.Error))
 	}
-
-	return nil
-}
-
-func (d Divi) UnarchiveBlockchainSnapshot() error {
-	coinDir, err := d.HomeDirFullPath()
-	if err != nil {
-		return errors.New("unable to get HomeDirFul - " + err.Error())
-	}
-
-	// First, check to make sure that both the blockchain folders don't already exist. (blocks, chainstate)
-	bcsFileExists := fileutils.FileExists(coinDir + cDownloadFileBS)
-	if !bcsFileExists {
-		return errors.New("unable to find the snapshot file: " + coinDir + cDownloadFileBS)
-	}
-
-	// Now extract it straight into the ~/.divi folder
-	if err := archiver.Unarchive(coinDir+cDownloadFileBS, coinDir); err != nil {
-		return errors.New("unable to unarchive file: " + coinDir + cDownloadFileBS + " " + err.Error())
-	}
-	return nil
-}
-
-func (d Divi) WalletUnlock(coinAuth *models.CoinAuth, pw string) error {
-	var respStruct models.GenericResponse
-
-	body := strings.NewReader("{\"jsonrpc\":\"1.0\",\"id\":\"curltext\",\"method\":\"walletpassphrase\",\"params\":[\"" + pw + "\",0]}")
-	req, err := http.NewRequest("POST", "http://"+coinAuth.IPAddress+":"+coinAuth.Port, body)
-	if err != nil {
-		return err
-	}
-	req.SetBasicAuth(coinAuth.RPCUser, coinAuth.RPCPassword)
-	req.Header.Set("Content-Type", "text/plain;")
-
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		return err
-	}
-	defer resp.Body.Close()
-	bodyResp, err := ioutil.ReadAll(resp.Body)
-	if err != nil {
-		return err
-	}
-	err = json.Unmarshal(bodyResp, &respStruct)
-	if err != nil {
-		return err
-	}
-	return nil
-}
-
-func (d Divi) UpdateTickerInfo() (ticker models.DiviTicker, err error) {
-	resp, err := http.Get("https://ticker.neist.io/DIVI")
-	if err != nil {
-		return ticker, err
-	}
-	defer resp.Body.Close()
-
-	body, err := ioutil.ReadAll(resp.Body)
-	if err != nil {
-		return ticker, err
-	}
-	err = json.Unmarshal(body, &ticker)
-	if err != nil {
-		return ticker, err
-	}
-	return ticker, nil
-}
-
-func (d *Divi) unarchiveFile(fullFilePath, location string) error {
-	if err := archiver.Unarchive(fullFilePath, location); err != nil {
-		return fmt.Errorf("unable to unarchive file: %v - %v", fullFilePath, err)
-	}
-	switch runtime.GOOS {
-	case "windows":
-		defer os.RemoveAll(location + cDownloadFileWindows)
-	case "linux":
-		switch runtime.GOARCH {
-		case "arm":
-			defer os.RemoveAll(location + cDownloadFileArm32)
-		case "arm64":
-			return errors.New("arm64 is not currently supported for :" + cCoinName)
-		case "386":
-			return errors.New("linux 386 is not currently supported for :" + cCoinName)
-		case "amd64":
-			defer os.RemoveAll(location + cDownloadFileLinux)
-		}
-	}
-
-	defer os.Remove(fullFilePath)
 
 	return nil
 }
