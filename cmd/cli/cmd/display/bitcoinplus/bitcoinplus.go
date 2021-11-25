@@ -52,7 +52,7 @@ func balanceTxt() string {
 
 	// Work out balance
 	if walletInfo.Result.ImmatureBalance > 0 {
-		return "  Incoming....... [" + tBalanceStr + "](fg:cyan)"
+		return "  Incoming......... [" + tBalanceStr + "](fg:cyan)"
 	} else if walletInfo.Result.UnconfirmedBalance > 0 {
 		return "  Confirming....... [" + tBalanceStr + "](fg:yellow)"
 	} else {
