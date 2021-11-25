@@ -1161,9 +1161,14 @@ func (d Divi) WalletUnlockFS(coinAuth *models.CoinAuth, pw string) error {
 		return err
 	}
 	err = json.Unmarshal(bodyResp, &respStruct)
-	if err != nil || respStruct.Error != nil {
+	if err != nil {
 		return err
 	}
+
+	if respStruct.Error != nil {
+		return errors.New(fmt.Sprintf("%v", respStruct.Error))
+	}
+
 	return nil
 }
 
