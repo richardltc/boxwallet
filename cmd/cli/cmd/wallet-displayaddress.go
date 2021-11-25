@@ -30,6 +30,7 @@ import (
 	"richardmace.co.uk/boxwallet/cmd/cli/cmd/app"
 	"richardmace.co.uk/boxwallet/cmd/cli/cmd/coins"
 	xbc "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/bitcoinplus"
+	ppc "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/peercoin"
 	rdd "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/reddcoin"
 
 	divi "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/divi"
@@ -89,6 +90,8 @@ var displayaddressCmd = &cobra.Command{
 		case models.PTGroestlcoin:
 		case models.PTPhore:
 		case models.PTPeercoin:
+			coinName = ppc.Peercoin{}
+			walletAddress = ppc.Peercoin{}
 		case models.PTPIVX:
 		case models.PTRapids:
 		case models.PTReddCoin:
@@ -165,17 +168,6 @@ var displayaddressCmd = &cobra.Command{
 
 		// var sAddress string
 		// switch cliConf.ProjectType {
-		// case be.PTBitcoinPlus:
-		// 	addresses, _ := be.ListReceivedByAddressXBC(&cliConf, true)
-		// 	if len(addresses.Result) > 0 {
-		// 		sAddress = addresses.Result[0].Address
-		// 	} else {
-		// 		r, err := be.GetNewAddressXBC(&cliConf)
-		// 		if err != nil {
-		// 			log.Fatalf("Unable to GetNewAddressDivi")
-		// 		}
-		// 		sAddress = r.Result
-		// 	}
 		// case be.PTDenarius:
 		// 	addresses, _ := be.ListReceivedByAddressDenarius(&cliConf, true)
 		// 	if len(addresses.Result) > 0 {
