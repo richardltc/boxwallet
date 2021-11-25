@@ -1,4 +1,4 @@
-package bend
+package bitcoinplus
 
 import (
 	"bytes"
@@ -10,7 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"os/user"
-	be "richardmace.co.uk/boxwallet/cmd/cli/cmd/bend"
+	//be "richardmace.co.uk/boxwallet/cmd/cli/cmd/bend"
 	"richardmace.co.uk/boxwallet/cmd/cli/cmd/fileutils"
 	"runtime"
 	"strconv"
@@ -60,7 +60,6 @@ const (
 	// pivx.conf file constants.
 	cRPCUser string = "bitcoinplusrpc"
 	cRPCPort string = "8885" // General CLI command constants
-
 )
 
 type XBC struct {
@@ -753,8 +752,8 @@ func (x XBC) WalletAddress(auth *models.CoinAuth) (string, error) {
 	return sAddress, nil
 }
 
-func (x XBC) WalletEncrypt(coinAuth *models.CoinAuth, pw string) (be.GenericRespStruct, error) {
-	var respStruct be.GenericRespStruct
+func (x XBC) WalletEncrypt(coinAuth *models.CoinAuth, pw string) (models.GenericResponse, error) {
+	var respStruct models.GenericResponse
 
 	body := strings.NewReader("{\"jsonrpc\":\"1.0\",\"id\":\"boxwallet\",\"method\":\"" + models.CCommandEncryptWallet + "\",\"params\":[\"" + pw + "\"]}")
 	req, err := http.NewRequest("POST", "http://"+coinAuth.IPAddress+":"+coinAuth.Port, body)
@@ -926,11 +925,12 @@ func (x XBC) WalletUnlock(coinAuth *models.CoinAuth, pw string) error {
 	if err != nil {
 		return err
 	}
+
 	return nil
 }
 
 func (x XBC) WalletUnlockFS(coinAuth *models.CoinAuth, pw string) error {
-	var respStruct be.GenericRespStruct
+	var respStruct models.GenericResponse
 	var body *strings.Reader
 
 	// BitcoinPlus, doesn't currently support the "true" parameter to unlock for staking, so we're just adding an "unlock" command here
