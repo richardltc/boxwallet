@@ -1,4 +1,4 @@
-package bend
+package reddcoin
 
 import (
 	"bufio"
@@ -30,14 +30,14 @@ const (
 
 	cCoinCoreVersion string = "3.10.3"
 
-	cDownloadFileArm32 string = "reddcoin-" + cCoinCoreVersion + "-armhf.zip"
-	cDownloadFileLin32 string = "reddcoin-" + cCoinCoreVersion + "-linux32.tar.gz"
+	cDownloadFileArm32 = "reddcoin-" + cCoinCoreVersion + "-armhf.zip"
+	//cDownloadFileLin32 string = "reddcoin-" + cCoinCoreVersion + "-linux32.tar.gz"
 	cDownloadFileLin64 string = "reddcoin-" + cCoinCoreVersion + "-linux64.tar.gz"
 	cDownloadFileWin   string = "reddcoin-" + cCoinCoreVersion + "-win64.zip"
 	cDownloadFileBS    string = "blockchain-latest.zip"
 
 	cExtractedDirLin = "reddcoin-" + cCoinCoreVersion + "/"
-	cExtractedDirWin = "reddcoin-" + cCoinCoreVersion + "\\"
+	//cExtractedDirWin = "reddcoin-" + cCoinCoreVersion + "\\"
 
 	cDownloadURL    string = "https://download.reddcoin.com/bin/reddcoin-core-" + cCoinCoreVersion + "/"
 	cDownloadURLArm string = "https://sourceforge.net/projects/reddpi/files/update/reddcoin-" + cCoinCoreVersion + "-armhf.zip/download"
@@ -224,7 +224,7 @@ func (r ReddCoin) DownloadCoin(location string) error {
 		switch runtime.GOARCH {
 		case "arm":
 			fullFilePath = location + cDownloadFileArm32
-			fullFileDLURL = cDownloadURL + cDownloadFileArm32
+			fullFileDLURL = cDownloadURLArm + cDownloadFileArm32
 		case "arm64":
 			return errors.New("arm64 is not currently supported for :" + cCoinName)
 		case "386":
