@@ -1,4 +1,4 @@
-package bend
+package divi
 
 import (
 	"bytes"
@@ -10,7 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"os/user"
-	be "richardmace.co.uk/boxwallet/cmd/cli/cmd/bend"
+
 	"richardmace.co.uk/boxwallet/cmd/cli/cmd/coins"
 	"richardmace.co.uk/boxwallet/cmd/cli/cmd/fileutils"
 	"runtime"
@@ -39,8 +39,8 @@ const (
 	cDownloadFileWindows        = "divi-" + cCoreVersion + "-win64.zip"
 	cDownloadFileBS      string = "DIVI-snapshot.zip"
 
-	cExtractedDirLinux   = "divi-" + cCoreVersion + "/"
-	cExtractedDirWindows = "divi-" + cCoreVersion + "\\"
+	cExtractedDirLinux = "divi-" + cCoreVersion + "/"
+	// cExtractedDirWindows = "divi-" + cCoreVersion + "\\"
 
 	cDownloadURL          = "https://github.com/DiviProject/Divi/releases/download/v" + cCoreVersion + "/"
 	cDownloadURLBS string = "https://snapshots.diviproject.org/dist/"
@@ -66,18 +66,18 @@ const (
 	CWalletESUnencrypted        = "unencrypted"
 
 	// General CLI command constants
-	cCommandGetBCInfo             string = "getblockchaininfo"
-	cCommandGetInfo               string = "getinfo"
-	cCommandGetStakingInfo        string = "getstakinginfo"
-	cCommandListReceivedByAddress string = "listreceivedbyaddress"
-	cCommandListTransactions      string = "listtransactions"
-	cCommandGetNetworkInfo        string = "getnetworkinfo"
-	cCommandGetNewAddress         string = "getnewaddress"
-	cCommandGetWalletInfo         string = "getwalletinfo"
-	cCommandSendToAddress         string = "sendtoaddress"
-	cCommandMNSyncStatus1         string = "mnsync"
-	cCommandMNSyncStatus2         string = "status"
-	cCommandDumpHDInfo            string = "dumphdinfo" // ./divi-cli dumphdinfo
+	// cCommandGetBCInfo             string = "getblockchaininfo"
+	cCommandGetInfo string = "getinfo"
+	// cCommandGetStakingInfo        string = "getstakinginfo"
+	// cCommandListReceivedByAddress string = "listreceivedbyaddress"
+	// cCommandListTransactions      string = "listtransactions"
+	// cCommandGetNetworkInfo        string = "getnetworkinfo"
+	// cCommandGetNewAddress         string = "getnewaddress"
+	cCommandGetWalletInfo string = "getwalletinfo"
+	// cCommandSendToAddress         string = "sendtoaddress"
+	// cCommandMNSyncStatus1         string = "mnsync"
+	// cCommandMNSyncStatus2         string = "status"
+	cCommandDumpHDInfo string = "dumphdinfo" // ./divi-cli dumphdinfo
 )
 
 type Divi struct {
@@ -87,7 +87,7 @@ type Divi struct {
 	Port        string
 }
 
-var gLastBCSyncPos float64 = 0
+// var gLastBCSyncPos float64 = 0
 
 func (d Divi) Bootstrap(rpcUser, rpcPassword, ip, port string) {
 	d.RPCUser = rpcUser
@@ -1047,8 +1047,8 @@ func (d Divi) WalletAddress(auth *models.CoinAuth) (string, error) {
 	return sAddress, nil
 }
 
-func (d Divi) WalletEncrypt(coinAuth *models.CoinAuth, pw string) (be.GenericRespStruct, error) {
-	var respStruct be.GenericRespStruct
+func (d Divi) WalletEncrypt(coinAuth *models.CoinAuth, pw string) (models.GenericResponse, error) {
+	var respStruct models.GenericResponse
 
 	body := strings.NewReader("{\"jsonrpc\":\"1.0\",\"id\":\"boxwallet\",\"method\":\"" + models.CCommandEncryptWallet + "\",\"params\":[\"" + pw + "\"]}")
 	req, err := http.NewRequest("POST", "http://"+coinAuth.IPAddress+":"+coinAuth.Port, body)
@@ -1233,7 +1233,7 @@ func (d Divi) WalletUnlock(coinAuth *models.CoinAuth, pw string) error {
 }
 
 func (d Divi) WalletUnlockFS(coinAuth *models.CoinAuth, pw string) error {
-	var respStruct be.GenericRespStruct
+	var respStruct models.GenericResponse
 	var body *strings.Reader
 
 	body = strings.NewReader("{\"jsonrpc\":\"1.0\",\"id\":\"boxwallet\",\"method\":\"walletpassphrase\",\"params\":[\"" + pw + "\",9999999,true]}")
