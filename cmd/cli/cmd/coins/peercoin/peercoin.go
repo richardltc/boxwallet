@@ -1,4 +1,4 @@
-package bend
+package peercoin
 
 import (
 	"bytes"
@@ -10,7 +10,6 @@ import (
 	"os"
 	"os/exec"
 	"os/user"
-	be "richardmace.co.uk/boxwallet/cmd/cli/cmd/bend"
 	"richardmace.co.uk/boxwallet/cmd/cli/cmd/coins"
 	"richardmace.co.uk/boxwallet/cmd/cli/cmd/fileutils"
 	"runtime"
@@ -27,7 +26,7 @@ const (
 	cCoinName       string = "Peercoin"
 	cCoinNameAbbrev string = "PPC"
 
-	cCoreVersion       string = "0.10.3"
+	cCoreVersion       string = "0.11.2"
 	cDownloadFileArm32        = "peercoin-" + cCoreVersion + "-arm-linux-gnueabihf.tar.gz"
 	cDownloadFileArm64        = "peercoin-" + cCoreVersion + "-aarch64-linux-gnu.tar.gz"
 	cDownloadFileLin          = "peercoin-" + cCoreVersion + "-x86_64-linux-gnu.tar.gz"
@@ -483,6 +482,35 @@ func (p Peercoin) RPCDefaultPort() string {
 	return cRPCPort
 }
 
+func (p Peercoin) SendToAddress(coinAuth *models.CoinAuth, address string, amount float32) (returnResp models.GenericResponse, err error) {
+	var respStruct models.GenericResponse
+
+	sAmount := fmt.Sprintf("%f", amount) // sAmount == "123.456000"
+
+	body := strings.NewReader("{\"jsonrpc\":\"1.0\",\"id\":\"boxwallet\",\"method\":\"" + models.CCommandSendToAddress + "\",\"params\":[\"" + address + "\"," + sAmount + "]}")
+	req, err := http.NewRequest("POST", "http://"+coinAuth.IPAddress+":"+coinAuth.Port, body)
+	if err != nil {
+		return respStruct, err
+	}
+	req.SetBasicAuth(coinAuth.RPCUser, coinAuth.RPCPassword)
+	req.Header.Set("Content-Type", "text/plain;")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return respStruct, err
+	}
+	defer resp.Body.Close()
+	bodyResp, err := ioutil.ReadAll(resp.Body)
+	if err != nil {
+		return respStruct, err
+	}
+	err = json.Unmarshal(bodyResp, &respStruct)
+	if err != nil {
+		return respStruct, err
+	}
+	return respStruct, nil
+}
+
 func (p Peercoin) StartDaemon(displayOutput bool, appFolder string, auth *models.CoinAuth) error {
 	if runtime.GOOS == "windows" {
 		//_ = exec.Command(GetAppsBinFolder() + cDiviDFileWin)
@@ -565,8 +593,81 @@ func (p Peercoin) TipAddress() string {
 	return cTipAddress
 }
 
-func (p Peercoin) WalletEncrypt(coinAuth *models.CoinAuth, pw string) (be.GenericRespStruct, error) {
-	var respStruct be.GenericRespStruct
+func (p Peercoin) ValidateAddress(ad string) bool {
+	// First, work out what the coin type is
+	// If the length of the address is not exactly 34 characters...
+	if len(ad) != 34 {
+		return false
+	}
+	sFirst := ad[0]
+
+	// 80 = UTF for P
+	if sFirst != 80 {
+		return false
+	}
+	return true
+}
+
+func (p Peercoin) UpdateTickerInfo() (ticker models.PPCTicker, err error) {
+	resp, err := http.Get("https://ticker.neist.io/PPC")
+	if err != nil {
+		return ticker, err
+	}
+	defer resp.Body.Close()
+
+	body, err := ioutil.ReadAll(resp.Body)
+	if err != nil {
+		return ticker, err
+	}
+	err = json.Unmarshal(body, &ticker)
+	if err != nil {
+		return ticker, err
+	}
+	return ticker, nil
+}
+
+func (p *Peercoin) unarchiveFile(fullFilePath, location string) error {
+	if err := archiver.Unarchive(fullFilePath, location); err != nil {
+		return fmt.Errorf("unable to unarchive file: %v - %v", fullFilePath, err)
+	}
+	switch runtime.GOOS {
+	case "windows":
+		return errors.New("windows is not currently supported for :" + cCoinName)
+	case "linux":
+		switch runtime.GOARCH {
+		case "arm":
+			defer os.RemoveAll(location + cDownloadFileArm32)
+		case "arm64":
+			defer os.RemoveAll(location + cDownloadFileArm64)
+		case "386":
+			return errors.New("linux 386 is not currently supported for :" + cCoinName)
+		case "amd64":
+			defer os.RemoveAll(location + cDownloadFileLin)
+		}
+	}
+
+	defer os.Remove(fullFilePath)
+
+	return nil
+}
+
+func (p Peercoin) WalletAddress(auth *models.CoinAuth) (string, error) {
+	var sAddress string
+	addresses, _ := p.ListReceivedByAddress(auth, true)
+	if len(addresses.Result) > 0 {
+		sAddress = addresses.Result[0].Address
+	} else {
+		r, err := p.NewAddress(auth)
+		if err != nil {
+			return "", err
+		}
+		sAddress = r.Result
+	}
+	return sAddress, nil
+}
+
+func (p Peercoin) WalletEncrypt(coinAuth *models.CoinAuth, pw string) (models.GenericResponse, error) {
+	var respStruct models.GenericResponse
 
 	body := strings.NewReader("{\"jsonrpc\":\"1.0\",\"id\":\"boxwallet\",\"method\":\"" + models.CCommandEncryptWallet + "\",\"params\":[\"" + pw + "\"]}")
 	req, err := http.NewRequest("POST", "http://"+coinAuth.IPAddress+":"+coinAuth.Port, body)
@@ -746,8 +847,12 @@ func (p Peercoin) WalletUnlockFS(coinAuth *models.CoinAuth, pw string) error {
 		return err
 	}
 	err = json.Unmarshal(bodyResp, &respStruct)
-	if err != nil || respStruct.Error != nil {
+	if err != nil {
 		return err
+	}
+
+	if respStruct.Error != nil {
+		return errors.New(fmt.Sprintf("%v", respStruct.Error))
 	}
 
 	return nil
@@ -777,48 +882,10 @@ func (p Peercoin) WalletUnlock(coinAuth *models.CoinAuth, pw string) error {
 	if err != nil {
 		return err
 	}
-	return nil
-}
 
-func (p Peercoin) UpdateTickerInfo() (ticker models.PPCTicker, err error) {
-	resp, err := http.Get("https://ticker.neist.io/PPC")
-	if err != nil {
-		return ticker, err
+	if respStruct.Error != nil {
+		return errors.New(fmt.Sprintf("%v", respStruct.Error))
 	}
-	defer resp.Body.Close()
-
-	body, err := ioutil.ReadAll(resp.Body)
-	if err != nil {
-		return ticker, err
-	}
-	err = json.Unmarshal(body, &ticker)
-	if err != nil {
-		return ticker, err
-	}
-	return ticker, nil
-}
-
-func (p *Peercoin) unarchiveFile(fullFilePath, location string) error {
-	if err := archiver.Unarchive(fullFilePath, location); err != nil {
-		return fmt.Errorf("unable to unarchive file: %v - %v", fullFilePath, err)
-	}
-	switch runtime.GOOS {
-	case "windows":
-		return errors.New("windows is not currently supported for :" + cCoinName)
-	case "linux":
-		switch runtime.GOARCH {
-		case "arm":
-			defer os.RemoveAll(location + cDownloadFileArm32)
-		case "arm64":
-			defer os.RemoveAll(location + cDownloadFileArm64)
-		case "386":
-			return errors.New("linux 386 is not currently supported for :" + cCoinName)
-		case "amd64":
-			defer os.RemoveAll(location + cDownloadFileLin)
-		}
-	}
-
-	defer os.Remove(fullFilePath)
 
 	return nil
 }
