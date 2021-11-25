@@ -136,23 +136,15 @@ var unlockfsCmd = &cobra.Command{
 		// }
 
 		// var wiDenarius be.DenariusGetInfoRespStruct
-		// var wiDivi be.DiviWalletInfoRespStruct
 		// var wiPhore be.PhoreWalletInfoRespStruct
 		// var wiPIVX be.PIVXWalletInfoRespStruct
 		// var wiRapids be.RapidsWalletInfoRespStruct
-		// var wiRDD be.RDDWalletInfoRespStruct
 		// var wiTrezarcoin be.TrezarcoinWalletInfoRespStruct
 		// var wiXBC be.XBCWalletInfoRespStruct
 		// switch cliConf.ProjectType {
 		// case be.PTDenarius:
 		// 	wiDenarius, err = be.GetInfoDenarius(&cliConf)
 		// 	wet := be.GetWalletSecurityStateDenarius(&wiDenarius)
-		// 	if wet == be.WETUnencrypted {
-		// 		log.Fatal("Wallet is not encrypted")
-		// 	}
-		// case be.PTDivi:
-		// 	wiDivi, err = be.GetWalletInfoDivi(&cliConf)
-		// 	wet := be.GetWalletSecurityStateDivi(&wiDivi)
 		// 	if wet == be.WETUnencrypted {
 		// 		log.Fatal("Wallet is not encrypted")
 		// 	}
