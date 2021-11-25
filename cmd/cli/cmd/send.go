@@ -1,24 +1,8 @@
-/*
-Copyright © 2021 NAME HERE <EMAIL ADDRESS>
-
-Licensed under the Apache License, Version 2.0 (the "License");
-you may not use this file except in compliance with the License.
-You may obtain a copy of the License at
-
-    http://www.apache.org/licenses/LICENSE-2.0
-
-Unless required by applicable law or agreed to in writing, software
-distributed under the License is distributed on an "AS IS" BASIS,
-WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-See the License for the specific language governing permissions and
-limitations under the License.
-*/
 package cmd
 
 import (
 	// "log"
 	// "os"
-	// be "richardmace.co.uk/boxwallet/cmd/cli/cmd/bend"
 
 	"fmt"
 	"github.com/AlecAivazis/survey/v2"
@@ -29,6 +13,7 @@ import (
 	"richardmace.co.uk/boxwallet/cmd/cli/cmd/coins"
 	xbc "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/bitcoinplus"
 	divi "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/divi"
+	ppc "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/peercoin"
 	rdd "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/reddcoin"
 	"richardmace.co.uk/boxwallet/cmd/cli/cmd/conf"
 	"richardmace.co.uk/boxwallet/cmd/cli/cmd/models"
@@ -104,6 +89,12 @@ to quickly create a Cobra application.`,
 		case models.PTGroestlcoin:
 		case models.PTPhore:
 		case models.PTPeercoin:
+			coinName = ppc.Peercoin{}
+			daemonRunning = ppc.Peercoin{}
+			walletSecurityState = ppc.Peercoin{}
+			walletUnlock = ppc.Peercoin{}
+			walletValidateAddress = ppc.Peercoin{}
+			sendToAddress = ppc.Peercoin{}
 		case models.PTPIVX:
 		case models.PTRapids:
 		case models.PTReddCoin:
@@ -335,19 +326,6 @@ to quickly create a Cobra application.`,
 		// 			log.Fatalf("failed to unlock wallet %s\n", err)
 		// 		}
 		// 	}
-		// case be.PTDivi:
-		// 	wi, err := be.GetWalletInfoDivi(&cliConf)
-		// 	if err != nil {
-		// 		log.Fatalf("error getting wallet info: %v", err)
-		// 	}
-		// 	wet := be.GetWalletSecurityStateDivi(&wi)
-		// 	if wet != be.WETUnlocked {
-		// 		wep := be.GetWalletEncryptionPassword()
-		// 		r, err := unlockWallet(&cliConf, wep)
-		// 		if err != nil || r.Error != nil {
-		// 			log.Fatalf("failed to unlock wallet %s\n", err)
-		// 		}
-		// 	}
 		// case be.PTFeathercoin:
 		// 	wi, err := be.GetWalletInfoFeathercoin(&cliConf)
 		// 	if err != nil {
@@ -413,19 +391,6 @@ to quickly create a Cobra application.`,
 		// 			log.Fatalf("failed to unlock wallet %s\n", err)
 		// 		}
 		// 	}
-		// case be.PTReddCoin:
-		// 	wi, err := be.GetWalletInfoRDD(&cliConf)
-		// 	if err != nil {
-		// 		log.Fatalf("error getting wallet info: %v", err)
-		// 	}
-		// 	wet := be.GetWalletSecurityStateRDD(&wi)
-		// 	if wet != be.WETUnlocked {
-		// 		wep := be.GetWalletEncryptionPassword()
-		// 		r, err := unlockWallet(&cliConf, wep)
-		// 		if err != nil || r.Error != nil {
-		// 			log.Fatalf("failed to unlock wallet %s\n", err)
-		// 		}
-		// 	}
 		// case be.PTTrezarcoin:
 		// 	wi, err := be.GetWalletInfoTrezarcoin(&cliConf)
 		// 	if err != nil {
@@ -456,7 +421,7 @@ to quickly create a Cobra application.`,
 		// 	log.Fatalf("It looks like " + cn + " does not currently support this command.")
 		// }
 
-		// // Then send..
+		// // Then send...
 		// if send {
 		// 	if r, err := be.SendToAddressDivi(&cliConf, address, amount); err != nil {
 		// 		log.Fatalf("unable to send: %v", err)
