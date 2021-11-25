@@ -2,7 +2,6 @@ package wallet
 
 import (
 	"github.com/AlecAivazis/survey/v2"
-	be "richardmace.co.uk/boxwallet/cmd/cli/cmd/bend"
 	"richardmace.co.uk/boxwallet/cmd/cli/cmd/models"
 )
 
@@ -22,7 +21,7 @@ type WalletDumpHDInfo interface {
 }
 
 type WalletEncrypt interface {
-	WalletEncrypt(coinAuth *models.CoinAuth, pw string) (be.GenericRespStruct, error)
+	WalletEncrypt(coinAuth *models.CoinAuth, pw string) (models.GenericResponse, error)
 }
 
 type WalletSendToAddress interface {
