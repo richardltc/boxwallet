@@ -287,7 +287,7 @@ func (d DIVI) LiveTransactions() (containsZeroConfs bool, rows [][]string) {
 			" [" + tAmountStr + "](fg:" + sColour + ")",
 			" [" + strconv.Itoa(transactions.Result[i].Confirmations) + "](fg:" + sColour + ")"})
 
-		if i > 10 {
+		if i > 25 {
 			break
 		}
 	}
@@ -296,14 +296,6 @@ func (d DIVI) LiveTransactions() (containsZeroConfs bool, rows [][]string) {
 }
 
 func (d DIVI) LiveWallet() string {
-	//return "  Balance:          [waiting for sync...](fg:yellow)\n" +
-	//	"  Currency:         [waiting for sync...](fg:yellow)\n" +
-	//	"  Security:         [waiting for sync...](fg:yellow)\n" +
-	//	"  Staking %:	        [waiting for sync...](fg:yellow)\n" +
-	//	"  Actively Staking: [waiting for sync...](fg:yellow)\n" +
-	//	"  Next Lottery:     [waiting for sync...](fg:yellow)\n" +
-	//	"  Lottery tickets:	  [waiting for sync...](fg:yellow)"
-
 	return "" + balanceTxt() + "\n" +
 		"  " + balanceInCurrency() + "\n" +
 		"  " + walletSecurityStatusTxt() + "\n" +
