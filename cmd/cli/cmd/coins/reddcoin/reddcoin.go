@@ -935,8 +935,8 @@ func (r ReddCoin) WalletAddress(auth *models.CoinAuth) (string, error) {
 	return sAddress, nil
 }
 
-func (r ReddCoin) WalletEncrypt(coinAuth *models.CoinAuth, pw string) (be.GenericRespStruct, error) {
-	var respStruct be.GenericRespStruct
+func (r ReddCoin) WalletEncrypt(coinAuth *models.CoinAuth, pw string) (models.GenericResponse, error) {
+	var respStruct models.GenericResponse
 
 	body := strings.NewReader("{\"jsonrpc\":\"1.0\",\"id\":\"boxwallet\",\"method\":\"" + models.CCommandEncryptWallet + "\",\"params\":[\"" + pw + "\"]}")
 	req, err := http.NewRequest("POST", "http://"+coinAuth.IPAddress+":"+coinAuth.Port, body)

@@ -764,8 +764,8 @@ func (r Rapids) TipAddress() string {
 	return cTipAddress
 }
 
-func (r Rapids) WalletEncrypt(coinAuth *models.CoinAuth, pw string) (be.GenericRespStruct, error) {
-	var respStruct be.GenericRespStruct
+func (r Rapids) WalletEncrypt(coinAuth *models.CoinAuth, pw string) (models.GenericResponse, error) {
+	var respStruct models.GenericResponse
 
 	body := strings.NewReader("{\"jsonrpc\":\"1.0\",\"id\":\"boxwallet\",\"method\":\"" + models.CCommandEncryptWallet + "\",\"params\":[\"" + pw + "\"]}")
 	req, err := http.NewRequest("POST", "http://"+coinAuth.IPAddress+":"+coinAuth.Port, body)
