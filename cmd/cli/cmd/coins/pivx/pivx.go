@@ -27,7 +27,7 @@ const (
 	cCoinName       string = "PIVX"
 	cCoinNameAbbrev string = "PIVX"
 
-	cCoreVersion           string = "5.3.2"
+	cCoreVersion           string = "5.3.3"
 	cDownloadFileArm32            = "pivx-" + cCoreVersion + "-arm-linux-gnueabihf.tar.gz"
 	cDownloadFileArm64            = "pivx-" + cCoreVersion + "-aarch64-linux-gnu.tar.gz"
 	cDownloadFileLin              = "pivx-" + cCoreVersion + "-x86_64-linux-gnu.tar.gz"
@@ -60,6 +60,7 @@ const (
 	cSapling1 string = "sapling-output.params"
 	cSapling2 string = "sapling-spend.params"
 
+	// Tips address
 	cTipAddress string = "D69t8ja9KZNcxdEwWVVBFKD7YjLnMuaUYr"
 
 	// pivx.conf file constants
