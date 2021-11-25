@@ -1,4 +1,4 @@
-package bend
+package denarius
 
 import (
 	"bytes"
@@ -71,7 +71,6 @@ const (
 	cCommandMNSyncStatus1         string = "mnsync"
 	cCommandMNSyncStatus2         string = "status"
 	cCommandDumpHDInfo            string = "dumphdinfo" // ./divi-cli dumphdinfo
-
 )
 
 type Denarius struct {
