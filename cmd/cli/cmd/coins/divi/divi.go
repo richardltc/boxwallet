@@ -1224,6 +1224,11 @@ func (d Divi) WalletUnlock(coinAuth *models.CoinAuth, pw string) error {
 	if err != nil {
 		return err
 	}
+
+	if respStruct.Error != nil {
+		return errors.New(fmt.Sprintf("%v", respStruct.Error))
+	}
+
 	return nil
 }
 
