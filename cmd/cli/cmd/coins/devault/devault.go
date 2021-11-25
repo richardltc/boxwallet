@@ -1,4 +1,4 @@
-package bend
+package devault
 
 import (
 	"bytes"
@@ -361,7 +361,7 @@ func (d DeVault) Install(location string) error {
 		return errors.New("unable to determine runtime.GOOS")
 	}
 
-	// If the coin-cli file doesn't already exists the copy it.
+	// If the coin-cli file doesn't already exist then copy it.
 	if _, err := os.Stat(location + sfCLI); os.IsNotExist(err) {
 		if err := fileutils.FileCopy(srcPath+sfCLI, location+sfCLI, false); err != nil {
 			return fmt.Errorf("unable to copyFile from: %v to %v - %v", srcPath+sfCLI, location+sfCLI, err)
