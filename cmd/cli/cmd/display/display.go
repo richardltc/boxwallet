@@ -7,7 +7,7 @@ import (
 )
 
 const (
-	cStakeReceived   string = "\u2618"
+	cStakeReceived   string = "\u2607" + "\u2607" + "\u2607"
 	cPaymentReceived string = "<--"
 	cPaymentSent     string = "-->"
 
@@ -20,7 +20,7 @@ const (
 	cProg7 string = "-"
 	cProg8 string = "\\"
 
-	CUTFTickBold string = "\u2714"
+	CUTFTickBold string = "\u2713"
 )
 
 type About interface {
@@ -85,6 +85,7 @@ func GetCategoryColour(s string) string {
 	case "stake", "stake_reward", "generate":
 		return "green"
 	}
+
 	return "white"
 }
 
