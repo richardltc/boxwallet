@@ -351,13 +351,6 @@ var dashCmd = &cobra.Command{
 		// 	} else {
 		// 		sCoreVersion = strconv.Itoa(gi.Result.Version)
 		// 	}
-		// case be.PTReddCoin:
-		// 	gi, err := be.GetNetworkInfoRDD(&cliConf)
-		// 	if err != nil {
-		// 		sCoreVersion = "Unknown"
-		// 	} else {
-		// 		sCoreVersion = strconv.Itoa(gi.Result.Version)
-		// 	}
 		// case be.PTTrezarcoin:
 		// 	gi, err := be.GetInfoTrezarcoin(&cliConf)
 		// 	if err != nil {
@@ -586,7 +579,7 @@ var dashCmd = &cobra.Command{
 		// 	log.Fatalf("Unable to determine project type")
 		// }
 
-		// Display warning message (visible when the users stops dash) if they haven't encrypted their wallet
+		// Display warning message (visible when the users stops dash) if they haven't encrypted their wallet.
 		if bWalletNeedsEncrypting {
 			color.Danger.Println("*** WARNING: Your wallet is NOT encrypted! ***")
 			fmt.Println("\nPlease encrypt it NOW with the command:\n\n" +
