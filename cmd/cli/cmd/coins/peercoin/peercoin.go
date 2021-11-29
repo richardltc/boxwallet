@@ -485,7 +485,7 @@ func (p Peercoin) RPCDefaultPort() string {
 func (p Peercoin) SendToAddress(coinAuth *models.CoinAuth, address string, amount float32) (returnResp models.GenericResponse, err error) {
 	var respStruct models.GenericResponse
 
-	sAmount := fmt.Sprintf("%f", amount) // sAmount == "123.456000"
+	sAmount := fmt.Sprintf("%v", amount)
 
 	body := strings.NewReader("{\"jsonrpc\":\"1.0\",\"id\":\"boxwallet\",\"method\":\"" + models.CCommandSendToAddress + "\",\"params\":[\"" + address + "\"," + sAmount + "]}")
 	req, err := http.NewRequest("POST", "http://"+coinAuth.IPAddress+":"+coinAuth.Port, body)
@@ -763,6 +763,7 @@ func (p Peercoin) WalletLoadingStatus(auth *models.CoinAuth) models.WLSType {
 			return models.WLSTCalculatingMoneySupply
 		}
 	}
+
 	return models.WLSTReady
 }
 
