@@ -64,6 +64,10 @@ type CoinAnyAddresses interface {
 	AnyAddresses(auth *models.CoinAuth) (bool, error)
 }
 
+type CoinIsPOS interface {
+	IsPOS() bool
+}
+
 type CoinName interface {
 	CoinName() string
 	CoinNameAbbrev() string
@@ -129,6 +133,7 @@ func GetWalletEncryptionPassword() string {
 		Message: "Please enter your wallet password",
 	}
 	survey.AskOne(prompt, &pw)
+
 	return pw
 }
 
