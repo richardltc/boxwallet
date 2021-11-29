@@ -424,12 +424,14 @@ func (d Divi) Install(location string) error {
 		sfTX = cTxFileWin
 	case "linux":
 		switch runtime.GOARCH {
-		case "arm", "arm64":
+		case "arm":
 			srcPath = location + cExtractedDirLinux + "bin/"
 			sfCLI = cCliFile
 			sfD = cDaemonFileLin
 			sfTX = cTxFile
 			dirToRemove = location + cExtractedDirLinux
+		case "arm64":
+			return errors.New("arm64 is not currently supported by " + cCoinName)
 		case "amd64":
 			srcPath = location + cExtractedDirLinux + "bin/"
 			sfCLI = cCliFile
