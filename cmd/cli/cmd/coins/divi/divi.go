@@ -443,7 +443,7 @@ func (d Divi) Install(location string) error {
 		return errors.New("unable to determine runtime.GOOS")
 	}
 
-	// If the coin-cli file doesn't already exists the copy it.
+	// If the coin-cli file doesn't already exist the copy it.
 	if _, err := os.Stat(location + sfCLI); os.IsNotExist(err) {
 		if err := fileutils.FileCopy(srcPath+sfCLI, location+sfCLI, false); err != nil {
 			return fmt.Errorf("unable to copyFile from: %v to %v - %v", srcPath+sfCLI, location+sfCLI, err)
@@ -478,6 +478,10 @@ func (d Divi) Install(location string) error {
 	}
 
 	return nil
+}
+
+func (d Divi) IsPOS() bool {
+	return true
 }
 
 // func GetBalanceInCurrencyTxtDivi(currency string, wi *DiviWalletInfoRespStruct) string {
