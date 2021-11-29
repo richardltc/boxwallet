@@ -394,12 +394,14 @@ func (r ReddCoin) Install(location string) error {
 		sfTX = cTxFileWin
 	case "linux":
 		switch runtime.GOARCH {
-		case "arm", "arm64":
+		case "arm":
 			srcPath = location + cExtractedDirLin + "bin/"
 			sfCLI = cCliFileLin
 			sfD = cDaemonFileLin
 			sfTX = cTxFileLin
 			dirToRemove = location + cExtractedDirLin
+		case "arm64":
+			return errors.New("arm64 is not currently supported by " + cCoinName)
 		case "amd64":
 			srcPath = location + cExtractedDirLin + "bin/"
 			sfCLI = cCliFileLin
