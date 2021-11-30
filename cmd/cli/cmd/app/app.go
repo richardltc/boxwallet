@@ -10,7 +10,7 @@ import (
 const (
 	cAppName        string = "BoxWallet"
 	CUpdaterAppName string = "bwupdater"
-	cAppVersion     string = "0.50.1"
+	CAppVersion     string = "0.50.1"
 	CAppFilename    string = "boxwallet"
 	CAppFilenameWin string = "boxwallet.exe"
 	CAppLogfile     string = "boxwallet.log"
@@ -23,9 +23,6 @@ const (
 	cCommandUnlockWallet   string = "walletpassphrase" // ./divi-cli walletpassphrase “password” 0
 	cCommandUnlockWalletFS string = "walletpassphrase" // ./divi-cli walletpassphrase “password” 0 true
 	cCommandLockWallet     string = "walletlock"       // ./divi-cli walletlock
-
-	cUtfTick     string = "\u2713"
-	CUtfTickBold string = "\u2714"
 
 	cUtfLock string = "\u1F512"
 
@@ -73,5 +70,5 @@ func (a App) Name() string {
 }
 
 func (a App) Version() string {
-	return cAppVersion
+	return CAppVersion
 }
