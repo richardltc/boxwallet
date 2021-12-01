@@ -1,8 +1,8 @@
 # What is BoxWallet? #
 
-BoxWallet is a single binary multi-coin CLI tool, that gets your coin-of-choice wallet/node set-up ***fast*** with just a few commands:
+BoxWallet is a single binary multi-coin CLI tool, that gets your coin-of-choice wallet/node set-up ***fast***, with just a few commands:
 
-`./boxwallet coin` - allows you to choose your coin of choice, which then downloads the projects core files from their official website and installs them automatically.
+`./boxwallet coin` - allows you to choose your coin of choice, which then downloads the project's core files from their official website, and installs them automatically.
 
 ![alt text](img/coin.gif)
 
@@ -34,6 +34,7 @@ BoxWallet is a single binary multi-coin CLI tool, that gets your coin-of-choice 
 * Divi
 * Groestlcoin
 * Feathercoin
+* Peercoin
 * Phore
 * PIVX
 * Rapids
@@ -104,7 +105,7 @@ Then  `./boxwallet dash`, where you will be greeted with an initial wizard to ge
 
 * `boxwallet send` - Send your crypto.
 
-* `boxwallet wallet backup` - Creates a backup of your `wallet.dat` file, and names it based on the days date.
+* `boxwallet wallet backup` - Creates a backup of your `wallet.dat` file, based on today's dates, and names it based on the days date.
 
 * `boxwallet wallet encrypt/unlock/unlockfs` - Allows the encryption and unlocking of the wallet for safe staking.
 
@@ -115,49 +116,9 @@ Then  `./boxwallet dash`, where you will be greeted with an initial wizard to ge
 * `boxwallet wallet resync` - Performs a complete, from scratch, resync of the Blockchain.
 
 
-* Allows you to "web enable" your existing wallet.
+* Allows you to "web enable" your existing wallet (coming soon).
 
-## How do I setup a client/server environment?
-
-There may be times when you have your coin server running on one machine (machine A), and you want to run BoxWallet on another machine (machine B). This is how you would achieve that.
-
-### Configure machine A (The coin daemon server)
-
-On the machine running the coin daemon server, edit the coin's conf file e.g. `divi.conf`, that's stored in the hidden folder `~/.divi/` and make sure it contains the following settings, which are explained below:
-
-```
-rpcuser=divirpc
-rpcpassword=A_Random_Password
-
-server=1
-rpcallowip=192.168.1.0/255.255.255.0
-rpcport=51473
-
-```
-The `server=1` tells `divid` to listen for requests from BoxWallet.
-
-The `rpcallowip=192.168.1.0/255.255.255.0` line, tells the `divid` server what IP addresses to *allow* a connection from. So, in our example, any local ipaddress in the range of 192.168.1.1-254 would be able to connect to the `divid` server.
-
-Finally, the `rpcport=51473` tells the `divid` server what port to listen on. e.g. `51473`
-
-After the settings have been implemented, you'll need to restart your `divid` server which can be achieved by `./boxwallet stop` and then `./boxwallet start`.
-
-### Configure machine B (The BoxWallet client)
-
-Download the latest version of BoxWallet from the website, or just copy the files from an existing installation.
-
-Edit the `conf.json` config file, and make sure the following settings exist:
-```
-port: "51473"
-rpcpassword: A_Random_Password
-rpcuser: divirpc
-serverip: 127.0.0.1
-
-```
-
-Make sure the `port`,`rpcuser` and `rpcpassword` are all the same as what it is in your `divi.conf` file on the server, and make sure the `serverip:` address, is set the same as the ipaddress as the server (machine A). In the above example, the `serverip: 127.0.0.1` would only work if BoxWallet was running on the *same* server as `divid`.
-
-## Is it free? ##
+## Is BoxWallet free? ##
 
 Yes! BoxWallet is FREE to use, however, if you'd like to send a tip, please feel free:
 
