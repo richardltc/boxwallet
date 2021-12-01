@@ -1053,6 +1053,43 @@ func (d Divi) WalletAddress(auth *models.CoinAuth) (string, error) {
 	return sAddress, nil
 }
 
+func (d Divi) WalletBackup(coinAuth *models.CoinAuth, destDir string) (models.GenericResponse, error) {
+	var respStruct models.GenericResponse
+
+	destDir = fileutils.AddTrailingSlash(destDir)
+	dt := time.Now()
+	destFile := dt.Format("2006-01-02") + "-" + cCoinNameAbbrev + "-wallet.dat"
+
+	body := strings.NewReader("{\"jsonrpc\":\"1.0\",\"id\":\"boxwallet\",\"method\":\"" + models.CCommandBackupWallet + "\",\"params\":[\"" + destDir + destFile + "\"]}")
+
+	req, err := http.NewRequest("POST", "http://"+coinAuth.IPAddress+":"+coinAuth.Port, body)
+	if err != nil {
+		return respStruct, err
+	}
+	req.SetBasicAuth(coinAuth.RPCUser, coinAuth.RPCPassword)
+	req.Header.Set("Content-Type", "text/plain;")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return respStruct, err
+	}
+	defer resp.Body.Close()
+	bodyResp, err := ioutil.ReadAll(resp.Body)
+	if err != nil {
+		return respStruct, err
+	}
+	err = json.Unmarshal(bodyResp, &respStruct)
+	if err != nil {
+		return respStruct, err
+	}
+
+	if respStruct.Error != nil {
+		return respStruct, errors.New(fmt.Sprintf("%v", respStruct.Error))
+	}
+
+	return respStruct, nil
+}
+
 func (d Divi) WalletEncrypt(coinAuth *models.CoinAuth, pw string) (models.GenericResponse, error) {
 	var respStruct models.GenericResponse
 
@@ -1105,6 +1142,7 @@ func (d Divi) WalletInfo(auth *models.CoinAuth) (models.DiviWalletInfo, error) {
 	if err != nil {
 		return respStruct, err
 	}
+
 	return respStruct, nil
 }
 
