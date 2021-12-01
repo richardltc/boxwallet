@@ -19,7 +19,8 @@ package cmd
 import (
 	"fmt"
 	"os"
-	be "richardmace.co.uk/boxwallet/cmd/cli/cmd/bend"
+	//be "richardmace.co.uk/boxwallet/cmd/cli/cmd/bend"
+	"richardmace.co.uk/boxwallet/cmd/cli/cmd/app"
 
 	"github.com/spf13/cobra"
 
@@ -40,8 +41,9 @@ var cfgFile string
 
 // rootCmd represents the base command when called without any subcommands
 var rootCmd = &cobra.Command{
-	Use:   be.CAppName, //sAppCLIFilename, //"boxwallet",
-	Short: be.CAppName + " v" + be.CBWAppVersion + " is a multi-coin CLI tool that makes it very easy to setup a wallet/node with a few commands",
+
+	Use:   app.CAppFilename, //  be.CAppName, //sAppCLIFilename, //"boxwallet",
+	Short: app.CAppFilename + " v" + app.CAppVersion + " is a multi-coin CLI tool that makes it very easy to setup a wallet/node with a few commands",
 	Long:  ``,
 	// Uncomment the following line if your bare application
 	// has an action associated with it:
