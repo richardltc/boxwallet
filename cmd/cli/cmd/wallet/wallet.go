@@ -16,6 +16,11 @@ type Wallet interface {
 	WalletResync(appFolder string) error
 }
 
+// WalletBackup - For wallet backup
+type WalletBackup interface {
+	WalletBackup(coinAuth *models.CoinAuth, destDir string) (models.GenericResponse, error)
+}
+
 type WalletDumpHDInfo interface {
 	DumpHDInfo(coinAuth *models.CoinAuth, pw string) (string, error)
 }
