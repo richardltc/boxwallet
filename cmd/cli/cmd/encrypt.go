@@ -19,6 +19,7 @@ package cmd
 import (
 	// "fmt"
 	"log"
+	"richardmace.co.uk/boxwallet/cmd/cli/cmd/coins"
 	xbc "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/bitcoinplus"
 	divi "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/divi"
 	ppc "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/peercoin"
@@ -48,6 +49,8 @@ var encryptCmd = &cobra.Command{
 		fmt.Println("  ____          __          __   _ _      _   \n |  _ \\         \\ \\        / /  | | |    | |  \n | |_) | _____  _\\ \\  /\\  / /_ _| | | ___| |_ \n |  _ < / _ \\ \\/ /\\ \\/  \\/ / _` | | |/ _ \\ __|\n | |_) | (_) >  <  \\  /\\  / (_| | | |  __/ |_ \n |____/ \\___/_/\\_\\  \\/  \\/ \\__,_|_|_|\\___|\\__| v" + app.Version() + "\n                                              \n                                               ")
 
 		var conf conf.Conf
+		var coinName coins.CoinName
+		var daemonRunning coins.CoinDaemon
 		var walletSecurityState wallet.WalletSecurityState
 		var walletEncrypt wallet.WalletEncrypt
 
@@ -63,7 +66,7 @@ var encryptCmd = &cobra.Command{
 			log.Fatal("Unable to get appFilename: " + err.Error())
 		}
 
-		// Make sure the config file exists, and if not, force user to use "coin" command first..
+		// Make sure the config file exists, and if not, force user to use "coin" command first.
 		if _, err := os.Stat(appHomeDir + conf.ConfFile()); os.IsNotExist(err) {
 			log.Fatal("Unable to determine coin type. Please run " + appFileName + " coin  first")
 		}
@@ -76,25 +79,35 @@ var encryptCmd = &cobra.Command{
 
 		switch confDB.ProjectType {
 		case models.PTBitcoinPlus:
+			coinName = xbc.XBC{}
+			daemonRunning = xbc.XBC{}
 			walletSecurityState = xbc.XBC{}
 			walletEncrypt = xbc.XBC{}
 		case models.PTDenarius:
 		case models.PTDeVault:
 		case models.PTDigiByte:
 		case models.PTDivi:
+			coinName = divi.Divi{}
+			daemonRunning = divi.Divi{}
 			walletSecurityState = divi.Divi{}
 			walletEncrypt = divi.Divi{}
 		case models.PTFeathercoin:
 		case models.PTGroestlcoin:
 		case models.PTPeercoin:
+			coinName = ppc.Peercoin{}
+			daemonRunning = ppc.Peercoin{}
 			walletSecurityState = ppc.Peercoin{}
 			walletEncrypt = ppc.Peercoin{}
 		case models.PTPhore:
 		case models.PTPIVX:
 		case models.PTRapids:
+			coinName = rpd.Rapids{}
+			daemonRunning = rpd.Rapids{}
 			walletSecurityState = rpd.Rapids{}
 			walletEncrypt = rpd.Rapids{}
 		case models.PTReddCoin:
+			coinName = rdd.ReddCoin{}
+			daemonRunning = rdd.ReddCoin{}
 			walletSecurityState = rdd.ReddCoin{}
 			walletEncrypt = rdd.ReddCoin{}
 		case models.PTScala:
@@ -109,6 +122,19 @@ var encryptCmd = &cobra.Command{
 		coinAuth.RPCPassword = confDB.RPCpassword
 		coinAuth.IPAddress = confDB.ServerIP
 		coinAuth.Port = confDB.Port
+
+		// Check to see if we are running the coin daemon locally, and if we are, make sure it's actually running
+		// before attempting to connect to it.
+		if coinAuth.IPAddress == "127.0.0.1" {
+			bCDRunning, err := daemonRunning.DaemonRunning()
+			if err != nil {
+				log.Fatal("Unable to determine if coin daemon is running: " + err.Error())
+			}
+			if !bCDRunning {
+				log.Fatal("Unable to communicate with the " + coinName.CoinName() + " server. Please make sure the " + coinName.CoinName() + " server is running, by running:\n\n" +
+					appFileName + " start\n\n")
+			}
+		}
 
 		wst, err := walletSecurityState.WalletSecurityState(&coinAuth)
 		if err != nil {
