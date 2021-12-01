@@ -62,11 +62,16 @@ func (a App) HomeFolder() (string, error) {
 	} else {
 		s = fileutils.AddTrailingSlash(hd) + fileutils.AddTrailingSlash(cAppWorkingDirLin)
 	}
+
 	return s, nil
 }
 
 func (a App) Name() string {
 	return cAppName
+}
+
+func (a App) UpdaterName() string {
+	return CUpdaterAppName
 }
 
 func (a App) Version() string {
