@@ -1,7 +1,7 @@
 /*
 Package cmd ...
 
-Copyright © 2020 NAME HERE <EMAIL ADDRESS>
+Copyright © 2020 NAME HERE richard.mace@gmail.com
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -18,6 +18,7 @@ limitations under the License.
 package cmd
 
 import (
+	"richardmace.co.uk/boxwallet/cmd/cli/cmd/app"
 	be "richardmace.co.uk/boxwallet/cmd/cli/cmd/bend"
 
 	"github.com/spf13/cobra"
@@ -30,7 +31,9 @@ var updateCmd = &cobra.Command{
 	Short: "You can update " + be.CAppName + " to the latest version by running ",
 	Long:  ``,
 	Run: func(cmd *cobra.Command, args []string) {
-		log.Fatal(be.CAppName + ` can be updated to the latest version by running: ./` + be.CUpdaterAppName)
+		var app app.App
+
+		log.Fatal(app.Name() + ` can be updated to the latest version by running: ./` + app.UpdaterName())
 
 	},
 }
