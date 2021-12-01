@@ -16,8 +16,20 @@ limitations under the License.
 package cmd
 
 import (
+	"fmt"
+	"os"
+	"path/filepath"
+	"richardmace.co.uk/boxwallet/cmd/cli/cmd/app"
+	"richardmace.co.uk/boxwallet/cmd/cli/cmd/coins"
+	"richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/divi"
+	ppc "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/peercoin"
+	"richardmace.co.uk/boxwallet/cmd/cli/cmd/conf"
+	"richardmace.co.uk/boxwallet/cmd/cli/cmd/models"
+
 	// "fmt"
 	"github.com/spf13/cobra"
+	"log"
+	"richardmace.co.uk/boxwallet/cmd/cli/cmd/wallet"
 	// "log"
 	// be "richardmace.co.uk/boxwallet/cmd/cli/cmd/bend"
 )
@@ -28,6 +40,108 @@ var backupCmd = &cobra.Command{
 	Short: "Performs a backup of the wallet.dat file for the current coin",
 	Long:  `Copies the waller.dat file, of the currently selected coin, to the current directory`,
 	Run: func(cmd *cobra.Command, args []string) {
+		var app app.App
+
+		fmt.Println("  ____          __          __   _ _      _   \n |  _ \\         \\ \\        / /  | | |    | |  \n | |_) | _____  _\\ \\  /\\  / /_ _| | | ___| |_ \n |  _ < / _ \\ \\/ /\\ \\/  \\/ / _` | | |/ _ \\ __|\n | |_) | (_) >  <  \\  /\\  / (_| | | |  __/ |_ \n |____/ \\___/_/\\_\\  \\/  \\/ \\__,_|_|_|\\___|\\__| v" + app.Version() + "\n                                              \n                                               ")
+
+		var conf conf.Conf
+		var coinName coins.CoinName
+		var daemonRunning coins.CoinDaemon
+		var walletSecurityState wallet.WalletSecurityState
+		var walletBackup wallet.WalletBackup
+
+		appHomeDir, err := app.HomeFolder()
+		if err != nil {
+			log.Fatal("Unable to get HomeFolder: " + err.Error())
+		}
+
+		conf.Bootstrap(appHomeDir)
+
+		appFileName, err := app.FileName()
+		if err != nil {
+			log.Fatal("Unable to get appFilename: " + err.Error())
+		}
+
+		// Make sure the config file exists, and if not, force user to use "coin" command first..
+		if _, err := os.Stat(appHomeDir + conf.ConfFile()); os.IsNotExist(err) {
+			log.Fatal("Unable to determine coin type. Please run " + appFileName + " coin  first")
+		}
+
+		// Now load our config file to see what coin choice the user made...
+		confDB, err := conf.GetConfig(true)
+		if err != nil {
+			log.Fatal("Unable to determine coin type. Please run " + appFileName + " coin: " + err.Error())
+		}
+
+		switch confDB.ProjectType {
+		case models.PTBitcoinPlus:
+		case models.PTDenarius:
+		case models.PTDeVault:
+		case models.PTDigiByte:
+		case models.PTDivi:
+			coinName = divi.Divi{}
+			daemonRunning = divi.Divi{}
+			walletSecurityState = divi.Divi{}
+			walletBackup = divi.Divi{}
+		case models.PTFeathercoin:
+		case models.PTGroestlcoin:
+		case models.PTPeercoin:
+			coinName = ppc.Peercoin{}
+			daemonRunning = ppc.Peercoin{}
+			walletSecurityState = ppc.Peercoin{}
+			walletBackup = ppc.Peercoin{}
+		case models.PTPhore:
+		case models.PTPIVX:
+		case models.PTRapids:
+		case models.PTReddCoin:
+		case models.PTScala:
+		case models.PTTrezarcoin:
+		case models.PTVertcoin:
+		default:
+			log.Fatal("unable to determine ProjectType")
+		}
+
+		var coinAuth models.CoinAuth
+		coinAuth.RPCUser = confDB.RPCuser
+		coinAuth.RPCPassword = confDB.RPCpassword
+		coinAuth.IPAddress = confDB.ServerIP
+		coinAuth.Port = confDB.Port
+
+		// Check to see if we are running the coin daemon locally, and if we are, make sure it's actually running
+		// before attempting to connect to it.
+		if coinAuth.IPAddress == "127.0.0.1" {
+			bCDRunning, err := daemonRunning.DaemonRunning()
+			if err != nil {
+				log.Fatal("Unable to determine if coin daemon is running: " + err.Error())
+			}
+			if !bCDRunning {
+				log.Fatal("Unable to communicate with the " + coinName.CoinName() + " server. Please make sure the " + coinName.CoinName() + " server is running, by running:\n\n" +
+					appFileName + " start\n\n")
+			}
+		}
+
+		wst, err := walletSecurityState.WalletSecurityState(&coinAuth)
+		if err != nil {
+			log.Fatal("Unable to determine Wallet Security State: " + err.Error())
+		}
+		if wst == models.WETUnencrypted {
+			log.Fatal("Your wallet is not currently encrypted! Please encrypt before backing up\n\n" +
+				"Your wallet has ***NOT*** been backed up!")
+		}
+
+		ex, err := os.Executable()
+		if err != nil {
+			panic(err)
+		}
+		exPath := filepath.Dir(ex)
+
+		r, err := walletBackup.WalletBackup(&coinAuth, exPath)
+		if err != nil {
+			log.Fatal("failed to backup wallet: \n\n"+r.Result, err.Error())
+		}
+
+		fmt.Println("Your wallet.dat file has been backed up to: " + exPath)
+
 		// The user has just chosen the wallet backup command, without specifying the coin type, so let's see if we have one
 		// bwConf, err := be.GetConfigStruct("", true)
 		// if err != nil {
