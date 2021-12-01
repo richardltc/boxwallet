@@ -1,8 +1,9 @@
 package models
 
 const (
-	// General CLI command constants
+	// General CLI command constants.
 
+	CCommandBackupWallet          string = "backupwallet"
 	CCommandCreateWallet          string = "createwallet"
 	CCommandEncryptWallet         string = "encryptwallet"
 	CCommandGetBCInfo             string = "getblockchaininfo"
