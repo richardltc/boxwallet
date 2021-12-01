@@ -667,40 +667,41 @@ func (p Peercoin) WalletAddress(auth *models.CoinAuth) (string, error) {
 	return sAddress, nil
 }
 
-func (p Peercoin) WalletBackup(coinAuth *models.CoinAuth, destDir string) error {
+func (p Peercoin) WalletBackup(coinAuth *models.CoinAuth, destDir string) (models.GenericResponse, error) {
 	var respStruct models.GenericResponse
+
 	destDir = fileutils.AddTrailingSlash(destDir)
 	dt := time.Now()
-	destFile := dt.Format("2006-01-02") + cCoinNameAbbrev + "-wallet.dat"
+	destFile := dt.Format("2006-01-02") + "-" + cCoinNameAbbrev + "-wallet.dat"
 
-	body := strings.NewReader("{\"jsonrpc\":\"1.0\",\"id\":\"boxwallet\",\"method\":\"" + models.CCommandBackupWallet + "\",\"params\":[\"" + destDir + destFile + "]}")
+	body := strings.NewReader("{\"jsonrpc\":\"1.0\",\"id\":\"boxwallet\",\"method\":\"" + models.CCommandBackupWallet + "\",\"params\":[\"" + destDir + destFile + "\"]}")
 
 	req, err := http.NewRequest("POST", "http://"+coinAuth.IPAddress+":"+coinAuth.Port, body)
 	if err != nil {
-		return err
+		return respStruct, err
 	}
 	req.SetBasicAuth(coinAuth.RPCUser, coinAuth.RPCPassword)
 	req.Header.Set("Content-Type", "text/plain;")
 
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
-		return err
+		return respStruct, err
 	}
 	defer resp.Body.Close()
 	bodyResp, err := ioutil.ReadAll(resp.Body)
 	if err != nil {
-		return err
+		return respStruct, err
 	}
 	err = json.Unmarshal(bodyResp, &respStruct)
 	if err != nil {
-		return err
+		return respStruct, err
 	}
 
 	if respStruct.Error != nil {
-		return errors.New(fmt.Sprintf("%v", respStruct.Error))
+		return respStruct, errors.New(fmt.Sprintf("%v", respStruct.Error))
 	}
 
-	return nil
+	return respStruct, nil
 }
 
 func (p Peercoin) WalletEncrypt(coinAuth *models.CoinAuth, pw string) (models.GenericResponse, error) {
@@ -727,6 +728,7 @@ func (p Peercoin) WalletEncrypt(coinAuth *models.CoinAuth, pw string) (models.Ge
 	if err != nil {
 		return respStruct, err
 	}
+
 	return respStruct, nil
 }
 
