@@ -44,10 +44,13 @@ const (
 	cHomeDirWin string = "primecoin"
 
 	// File constants
-	cConfFile      string = "primecoin.conf"
-	cCliFileLin    string = "primecoin-cli"
-	cCliFileWin    string = "primecoin-cli.exe"
-	cDaemonFileLin string = "primecoind-0.1.5-linux"
+	cConfFile         string = "primecoin.conf"
+	cCliFileLin       string = "primecoin-cli"
+	cCliFileWin       string = "primecoin-cli.exe"
+	cDaemonFileSrcLin string = "primecoind-0.1.5-linux"
+	cDaemonFileLin    string = "primecoind"
+	cDaemonFileMem    string = "primecoind-0.1."
+	//cDaemonFileLin string = "primecoind"
 	cDaemonFileWin string = "primecoind.exe"
 	cTxFileLin     string = "primecoin-tx"
 	cTxFileWin     string = "primecoin-tx.exe"
@@ -248,7 +251,7 @@ func (p Primecoin) HomeDirFullPath() (string, error) {
 func (p Primecoin) Install(location string) error {
 
 	// Copy files to correct location
-	var srcPath, sfD string
+	var srcPath, srcFileDaemon, srcOrigFileDaemon string
 
 	switch runtime.GOOS {
 	case "windows":
@@ -259,7 +262,8 @@ func (p Primecoin) Install(location string) error {
 			return errors.New("arm is not currently supported for " + cCoinName)
 		case "amd64":
 			srcPath = location
-			sfD = cDaemonFileLin
+			srcFileDaemon = cDaemonFileLin
+			srcOrigFileDaemon = cDaemonFileSrcLin
 		default:
 			return errors.New("unable to determine runtime.GOARCH " + runtime.GOARCH)
 		}
@@ -267,14 +271,14 @@ func (p Primecoin) Install(location string) error {
 		return errors.New("unable to determine runtime.GOOS")
 	}
 
-	// If the coind file doesn't already exists the copy it.
-	if _, err := os.Stat(location + sfD); os.IsNotExist(err) {
-		if err := fileutils.FileCopy(srcPath+sfD, location+sfD, false); err != nil {
-			return fmt.Errorf("unable to copyFile from: %v to %v - %v", srcPath+sfD, location+sfD, err)
+	// If the coind file doesn't already exist the copy it.
+	if _, err := os.Stat(location + srcFileDaemon); os.IsNotExist(err) {
+		if err := fileutils.FileCopy(srcPath+srcOrigFileDaemon, location+srcFileDaemon, false); err != nil {
+			return fmt.Errorf("unable to copyFile from: %v to %v - %v", srcPath+srcOrigFileDaemon, location+srcFileDaemon, err)
 		}
 	}
-	if err := os.Chmod(location+sfD, 0777); err != nil {
-		return fmt.Errorf("unable to chmod file: %v - %v", location+sfD, err)
+	if err := os.Chmod(location+srcFileDaemon, 0777); err != nil {
+		return fmt.Errorf("unable to chmod file: %v - %v", location+srcFileDaemon, err)
 	}
 
 	return nil
