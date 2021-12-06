@@ -24,10 +24,10 @@ const (
 	cCoinName       string = "Primecoin"
 	cCoinNameAbbrev string = "XPM"
 
-	cCoreVersion string = "0.1.5"
+	cCoreVersion string = "0.16.3"
 	//cDownloadFileArm32        = "peercoin-" + cCoreVersion + "-arm-linux-gnueabihf.tar.gz"
 	//cDownloadFileArm64        = "peercoin-" + cCoreVersion + "-aarch64-linux-gnu.tar.gz"
-	cDownloadFileLin   = "primecoind-" + cCoreVersion + "-linux"
+	cDownloadFileLin   = "primecoind-" + cCoreVersion + "-x86_64-linux-gnu.tar.gz"
 	cDownloadFilemacOS = "peercoin-" + cCoreVersion + "-osx64.tar.gz"
 	//CDFFileWindowsPeercoin = "peercoin-" + CCoreVersionPeercoin + "-win64.zip"
 
@@ -37,7 +37,8 @@ const (
 	//cExtractedDirLin string = "peercoin-" + cCoreVersion + "/"
 	cExtractedDirWin string = "peercoin-" + cCoreVersion + "\\"
 	//https://github.com/primecoin/primecoin/releases/download/v0.1.5xpm/primecoind-0.1.5-linux
-	cDownloadURL string = "https://github.com/primecoin/primecoin/releases/download/v" + cCoreVersion + "xpm/"
+	//https://github.com/primecoin/primecoin/releases/download/v0.2.0xpm-test-rc2-addrindex/primecoin-0.16.3-x86_64-linux-gnu.tar.gz
+	cDownloadURL string = "https://github.com/primecoin/primecoin/releases/download/v" + "0.2.0" + "xpm-test-rc2-addrindex/"
 
 	// Peercoin Wallet Constants
 	cHomeDirLin string = ".primecoin"
@@ -244,6 +245,34 @@ func (p Primecoin) HomeDirFullPath() (string, error) {
 	} else {
 		return fileutils.AddTrailingSlash(hd) + fileutils.AddTrailingSlash(cHomeDirLin), nil
 	}
+}
+
+func (p Primecoin) Info(auth *models.CoinAuth) (models.XPMGetInfo, error) {
+	var respStruct models.XPMGetInfo
+
+	body := strings.NewReader("{\"jsonrpc\":\"1.0\",\"id\":\"boxwallet\",\"method\":\"" + models.CCommandGetInfo + "\",\"params\":[]}")
+	req, err := http.NewRequest("POST", "http://"+auth.IPAddress+":"+auth.Port, body)
+	if err != nil {
+		return respStruct, err
+	}
+	req.SetBasicAuth(auth.RPCUser, auth.RPCPassword)
+	req.Header.Set("Content-Type", "text/plain;")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return respStruct, err
+	}
+	defer resp.Body.Close()
+	bodyResp, err := ioutil.ReadAll(resp.Body)
+	if err != nil {
+		return respStruct, err
+	}
+	err = json.Unmarshal(bodyResp, &respStruct)
+	if err != nil {
+		return respStruct, err
+	}
+
+	return respStruct, nil
 }
 
 // Install - Puts the freshly downloaded files into their correct location.
@@ -740,6 +769,7 @@ func (p Primecoin) WalletUnlock(coinAuth *models.CoinAuth, pw string) error {
 	if err != nil {
 		return err
 	}
+
 	return nil
 }
 
