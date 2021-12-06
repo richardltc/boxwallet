@@ -21,8 +21,10 @@ import (
 	"path/filepath"
 	"richardmace.co.uk/boxwallet/cmd/cli/cmd/app"
 	"richardmace.co.uk/boxwallet/cmd/cli/cmd/coins"
+	xbc "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/bitcoinplus"
 	"richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/divi"
 	ppc "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/peercoin"
+	rdd "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/reddcoin"
 	"richardmace.co.uk/boxwallet/cmd/cli/cmd/conf"
 	"richardmace.co.uk/boxwallet/cmd/cli/cmd/models"
 
@@ -75,6 +77,10 @@ var backupCmd = &cobra.Command{
 
 		switch confDB.ProjectType {
 		case models.PTBitcoinPlus:
+			coinName = xbc.XBC{}
+			daemonRunning = xbc.XBC{}
+			walletSecurityState = xbc.XBC{}
+			walletBackup = xbc.XBC{}
 		case models.PTDenarius:
 		case models.PTDeVault:
 		case models.PTDigiByte:
@@ -94,6 +100,10 @@ var backupCmd = &cobra.Command{
 		case models.PTPIVX:
 		case models.PTRapids:
 		case models.PTReddCoin:
+			coinName = rdd.ReddCoin{}
+			daemonRunning = rdd.ReddCoin{}
+			walletSecurityState = rdd.ReddCoin{}
+			walletBackup = rdd.ReddCoin{}
 		case models.PTScala:
 		case models.PTTrezarcoin:
 		case models.PTVertcoin:
@@ -170,10 +180,6 @@ var backupCmd = &cobra.Command{
 		// 	if err := be.WalletBackup(be.PTDigiByte); err != nil {
 		// 		log.Fatal("Unable to backup the " + sCoinName + " wallet.dat file: " + err.Error())
 		// 	}
-		// case be.PTDivi:
-		// 	if err := be.WalletBackup(be.PTDivi); err != nil {
-		// 		log.Fatal("Unable to backup the " + sCoinName + " wallet.dat file: " + err.Error())
-		// 	}
 		// case be.PTFeathercoin:
 		// 	if err := be.WalletBackup(be.PTFeathercoin); err != nil {
 		// 		log.Fatal("Unable to backup the " + sCoinName + " wallet.dat file: " + err.Error())
@@ -192,10 +198,6 @@ var backupCmd = &cobra.Command{
 		// 	}
 		// case be.PTRapids:
 		// 	if err := be.WalletBackup(be.PTRapids); err != nil {
-		// 		log.Fatal("Unable to backup the " + sCoinName + " wallet.dat file: " + err.Error())
-		// 	}
-		// case be.PTReddCoin:
-		// 	if err := be.WalletBackup(be.PTReddCoin); err != nil {
 		// 		log.Fatal("Unable to backup the " + sCoinName + " wallet.dat file: " + err.Error())
 		// 	}
 		// case be.PTScala:
