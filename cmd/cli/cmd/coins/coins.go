@@ -93,6 +93,7 @@ func FindProcess(key string) (int, string, error) {
 	process, _ := ps.Processes()
 
 	for i := range process {
+		//fmt.Print(process[i].Executable()+"\n")
 		if process[i].Executable() == key {
 			pid = process[i].Pid()
 			pname = process[i].Executable()
@@ -147,6 +148,7 @@ It is *highly* recommended that you encrypt your wallet before proceeding any fu
 Encrypt it now?:`,
 	}
 	survey.AskOne(prompt, &ans)
+
 	return ans
 }
 
