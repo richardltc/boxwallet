@@ -150,7 +150,7 @@ type PPCWalletInfo struct {
 	ID    string      `json:"id"`
 }
 
-type PPCWalletUnlockFS struct {
+type PPCWalletUnlock struct {
 	Result struct {
 		UnlockedMintingOnly bool `json:"unlocked_minting_only"`
 	} `json:"result"`
