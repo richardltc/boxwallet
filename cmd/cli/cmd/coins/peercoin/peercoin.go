@@ -865,7 +865,7 @@ func (p Peercoin) WalletSecurityState(coinAuth *models.CoinAuth) (models.WEType,
 }
 
 func (p Peercoin) WalletUnlockFS(coinAuth *models.CoinAuth, pw string) error {
-	var respStruct models.PPCWalletUnlockFS
+	var respStruct models.PPCWalletUnlock
 	var body *strings.Reader
 
 	body = strings.NewReader("{\"jsonrpc\":\"1.0\",\"id\":\"boxwallet\",\"method\":\"walletpassphrase\",\"params\":[\"" + pw + "\",9999999,true]}")
@@ -899,9 +899,9 @@ func (p Peercoin) WalletUnlockFS(coinAuth *models.CoinAuth, pw string) error {
 }
 
 func (p Peercoin) WalletUnlock(coinAuth *models.CoinAuth, pw string) error {
-	var respStruct models.GenericResponse
+	var respStruct models.PPCWalletUnlock
 
-	body := strings.NewReader("{\"jsonrpc\":\"1.0\",\"id\":\"curltext\",\"method\":\"walletpassphrase\",\"params\":[\"" + pw + "\",0]}")
+	body := strings.NewReader("{\"jsonrpc\":\"1.0\",\"id\":\"curltext\",\"method\":\"walletpassphrase\",\"params\":[\"" + pw + "\",300]}")
 	req, err := http.NewRequest("POST", "http://"+coinAuth.IPAddress+":"+coinAuth.Port, body)
 	if err != nil {
 		return err
