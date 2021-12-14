@@ -17,6 +17,7 @@ const (
 	CCommandGetWalletInfo         string = "getwalletinfo"
 	CCommandSendToAddress         string = "sendtoaddress"
 	CCommandSetTxFee              string = "settxfee"
+	CCommandStop                  string = "stop"
 
 	//CCommandMNSyncStatus1 string = "mnsync"
 	//CCommandMNSyncStatus2 string = "status"
