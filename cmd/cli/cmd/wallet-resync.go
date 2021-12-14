@@ -19,6 +19,7 @@ import (
 	"fmt"
 	"log"
 	divi "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/divi"
+	grs "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/groestlcoin"
 	ppc "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/peercoin"
 	rpd "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/rapids"
 	rdd "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/reddcoin"
@@ -62,6 +63,9 @@ var resyncCmd = &cobra.Command{
 		case models.PTDivi:
 			coinName = divi.Divi{}
 			wallet = divi.Divi{}
+		case models.PTGroestlcoin:
+			coinName = grs.Groestlcoin{}
+			wallet = grs.Groestlcoin{}
 		case models.PTPeercoin:
 			coinName = ppc.Peercoin{}
 			wallet = ppc.Peercoin{}
