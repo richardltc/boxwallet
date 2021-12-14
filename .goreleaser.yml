@@ -14,15 +14,15 @@ builds:
     goos:
       - linux
       - windows
-      - darwin
+      #- darwin
     goarch:
       - amd64
       - arm64
       - arm
       - 386
     ignore:
-      - goos: darwin
-        goarch: 386
+      #- goos: darwin
+      #  goarch: 386
       - goos: windows
         goarch: 386
       #- goos: linux
@@ -35,15 +35,15 @@ builds:
     goos:
       - linux
       - windows
-      - darwin
+      #- darwin
     goarch:
       - amd64
       - arm64
       - arm
       - 386
     ignore:
-      - goos: darwin
-        goarch: 386
+      #- goos: darwin
+      #  goarch: 386
       - goos: windows
         goarch: 386
       #- goos: linux
@@ -57,7 +57,7 @@ archives:
         format: zip
     name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
     replacements:
-      darwin: macOS
+      #darwin: macOS
       linux: Linux
       windows: Windows
       386: 32bit
