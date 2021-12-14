@@ -30,6 +30,7 @@ import (
 	"richardmace.co.uk/boxwallet/cmd/cli/cmd/app"
 	"richardmace.co.uk/boxwallet/cmd/cli/cmd/coins"
 	xbc "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/bitcoinplus"
+	grs "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/groestlcoin"
 	ppc "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/peercoin"
 	rdd "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/reddcoin"
 
@@ -88,6 +89,8 @@ var displayaddressCmd = &cobra.Command{
 			walletAddress = divi.Divi{}
 		case models.PTFeathercoin:
 		case models.PTGroestlcoin:
+			coinName = grs.Groestlcoin{}
+			walletAddress = grs.Groestlcoin{}
 		case models.PTPhore:
 		case models.PTPeercoin:
 			coinName = ppc.Peercoin{}
