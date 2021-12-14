@@ -21,6 +21,7 @@ import (
 	"log"
 	"os"
 	divi "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/divi"
+	grs "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/groestlcoin"
 	ppc "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/peercoin"
 	rdd "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/reddcoin"
 	sys "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/syscoin"
@@ -92,6 +93,8 @@ var startCmd = &cobra.Command{
 			}
 		case models.PTFeathercoin:
 		case models.PTGroestlcoin:
+			coinDaemon = grs.Groestlcoin{}
+			coinName = grs.Groestlcoin{}
 		case models.PTPeercoin:
 			coinDaemon = ppc.Peercoin{}
 			coinName = ppc.Peercoin{}
