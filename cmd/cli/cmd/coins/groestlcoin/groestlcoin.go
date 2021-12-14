@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"os/user"
+	"richardmace.co.uk/boxwallet/cmd/cli/cmd/coins"
 	"richardmace.co.uk/boxwallet/cmd/cli/cmd/fileutils"
 	"runtime"
 	"strconv"
@@ -126,6 +127,19 @@ func (g *Groestlcoin) BlockchainInfo(auth *models.CoinAuth) (models.GRSBlockchai
 	return respStruct, nil
 }
 
+func (g Groestlcoin) BlockchainIsSynced(coinAuth *models.CoinAuth) (bool, error) {
+	bci, err := g.BlockchainInfo(coinAuth)
+	if err != nil {
+		return false, err
+	}
+
+	if bci.Result.Verificationprogress > 0.99999 {
+		return true, nil
+	}
+
+	return false, nil
+}
+
 func (g Groestlcoin) ConfFile() string {
 	return cConfFile
 }
@@ -136,6 +150,25 @@ func (g Groestlcoin) CoinName() string {
 
 func (g Groestlcoin) CoinNameAbbrev() string {
 	return cCoinNameAbbrev
+}
+
+func (g Groestlcoin) DaemonRunning() (bool, error) {
+	var err error
+
+	if runtime.GOOS == "windows" {
+		_, _, err = coins.FindProcess(cDaemonFileWin)
+	} else {
+		_, _, err = coins.FindProcess(cDaemonFileLin)
+	}
+
+	if err == nil {
+		return true, nil
+	}
+	if err.Error() == "not found" {
+		return false, nil
+	} else {
+		return false, err
+	}
 }
 
 // DownloadCoin - Downloads the Syscoin files into the spcified location.
@@ -180,6 +213,41 @@ func (g Groestlcoin) DaemonFilename() string {
 	} else {
 		return cDaemonFileLin
 	}
+}
+
+func (g Groestlcoin) ListReceivedByAddress(coinAuth *models.CoinAuth, includeZero bool) (models.GRSListReceivedByAddress, error) {
+	var respStruct models.GRSListReceivedByAddress
+
+	var s string
+	if includeZero {
+		s = "{\"jsonrpc\":\"1.0\",\"id\":\"curltext\",\"method\":\"listreceivedbyaddress\",\"params\":[1, true]}"
+	} else {
+		s = "{\"jsonrpc\":\"1.0\",\"id\":\"curltext\",\"method\":\"listreceivedbyaddress\",\"params\":[1, false]}"
+	}
+	body := strings.NewReader(s)
+	req, err := http.NewRequest("POST", "http://"+coinAuth.IPAddress+":"+coinAuth.Port, body)
+	if err != nil {
+		return respStruct, err
+	}
+	req.SetBasicAuth(coinAuth.RPCUser, coinAuth.RPCPassword)
+	req.Header.Set("Content-Type", "text/plain;")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return respStruct, err
+	}
+	defer resp.Body.Close()
+	bodyResp, err := ioutil.ReadAll(resp.Body)
+	if err != nil {
+		return respStruct, err
+	}
+
+	err = json.Unmarshal(bodyResp, &respStruct)
+	if err != nil {
+		return respStruct, err
+	}
+
+	return respStruct, nil
 }
 
 func (g Groestlcoin) ListTransactions(auth *models.CoinAuth) (models.GRSListTransactions, error) {
@@ -271,6 +339,34 @@ func (g Groestlcoin) RPCDefaultUsername() string {
 
 func (g Groestlcoin) RPCDefaultPort() string {
 	return cRPCPort
+}
+
+func (g Groestlcoin) StopDaemon(auth *models.CoinAuth) error {
+	//var respStruct models.GenericResponse
+
+	body := strings.NewReader("{\"jsonrpc\":\"1.0\",\"id\":\"boxwallet\",\"method\":\"" + models.CCommandStop + "\",\"params\":[]}")
+	req, err := http.NewRequest("POST", "http://"+auth.IPAddress+":"+auth.Port, body)
+	if err != nil {
+		return err
+	}
+	req.SetBasicAuth(auth.RPCUser, auth.RPCPassword)
+	req.Header.Set("Content-Type", "text/plain;")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	//bodyResp, err := ioutil.ReadAll(resp.Body)
+	//if err != nil {
+	//	return err
+	//}
+	//err = json.Unmarshal(bodyResp, &respStruct)
+	//if err != nil {
+	//	return err
+	//}
+
+	return nil
 }
 
 func (g *Groestlcoin) WalletInfo(coinAuth *models.CoinAuth) (models.GRSWalletInfo, error) {
@@ -371,6 +467,138 @@ func (g Groestlcoin) TipAddress() string {
 	return cTipAddress
 }
 
+func (g Groestlcoin) WalletAddress(auth *models.CoinAuth) (string, error) {
+	var sAddress string
+	addresses, _ := g.ListReceivedByAddress(auth, true)
+	if len(addresses.Result) > 0 {
+		sAddress = addresses.Result[0].Address
+	} else {
+		r, err := g.NewAddress(auth)
+		if err != nil {
+			return "", err
+		}
+		sAddress = r.Result
+	}
+	return sAddress, nil
+}
+
+func (g Groestlcoin) WalletBackup(coinAuth *models.CoinAuth, destDir string) (models.GenericResponse, error) {
+	var respStruct models.GenericResponse
+
+	destDir = fileutils.AddTrailingSlash(destDir)
+	dt := time.Now()
+	destFile := dt.Format("2006-01-02") + "-" + cCoinNameAbbrev + "-wallet.dat"
+
+	body := strings.NewReader("{\"jsonrpc\":\"1.0\",\"id\":\"boxwallet\",\"method\":\"" + models.CCommandBackupWallet + "\",\"params\":[\"" + destDir + destFile + "\"]}")
+
+	req, err := http.NewRequest("POST", "http://"+coinAuth.IPAddress+":"+coinAuth.Port, body)
+	if err != nil {
+		return respStruct, err
+	}
+	req.SetBasicAuth(coinAuth.RPCUser, coinAuth.RPCPassword)
+	req.Header.Set("Content-Type", "text/plain;")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return respStruct, err
+	}
+	defer resp.Body.Close()
+	bodyResp, err := ioutil.ReadAll(resp.Body)
+	if err != nil {
+		return respStruct, err
+	}
+	err = json.Unmarshal(bodyResp, &respStruct)
+	if err != nil {
+		return respStruct, err
+	}
+
+	if respStruct.Error != nil {
+		return respStruct, errors.New(fmt.Sprintf("%v", respStruct.Error))
+	}
+
+	return respStruct, nil
+}
+
+func (g Groestlcoin) WalletLoadingStatus(auth *models.CoinAuth) models.WLSType {
+	body := strings.NewReader("{\"jsonrpc\":\"1.0\",\"id\":\"boxwallet\",\"method\":\"" + models.CCommandGetInfo + "\",\"params\":[]}")
+	req, err := http.NewRequest("POST", "http://"+auth.IPAddress+":"+auth.Port, body)
+	if err != nil {
+		return models.WLSTUnknown
+	}
+	req.SetBasicAuth(auth.RPCUser, auth.RPCPassword)
+	req.Header.Set("Content-Type", "text/plain;")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return models.WLSTWaitingForResponse
+	} else {
+		defer resp.Body.Close()
+		bodyResp, err := ioutil.ReadAll(resp.Body)
+		if err != nil {
+			return models.WLSTWaitingForResponse
+		}
+
+		if bytes.Contains(bodyResp, []byte("Loading")) {
+			return models.WLSTLoading
+		}
+		if bytes.Contains(bodyResp, []byte("Rescanning")) {
+			return models.WLSTRescanning
+		}
+		if bytes.Contains(bodyResp, []byte("Rewinding")) {
+			return models.WLSTRewinding
+		}
+		if bytes.Contains(bodyResp, []byte("Verifying")) {
+			return models.WLSTVerifying
+		}
+		if bytes.Contains(bodyResp, []byte("Calculating money supply")) {
+			return models.WLSTCalculatingMoneySupply
+		}
+	}
+
+	return models.WLSTReady
+}
+
+func (g Groestlcoin) WalletNeedsEncrypting(coinAuth *models.CoinAuth) (bool, error) {
+	wi, err := g.WalletInfo(coinAuth)
+	if err != nil {
+		return true, errors.New("Unable to perform WalletInfo " + err.Error())
+	}
+
+	if wi.Result.UnlockedUntil == -1 {
+		return true, nil
+	}
+
+	return false, nil
+}
+
+func (g Groestlcoin) WalletResync(appFolder string) error {
+	daemonRunning, err := g.DaemonRunning()
+	if err != nil {
+		return errors.New("Unable to determine DaemonRunning: " + err.Error())
+	}
+	if daemonRunning {
+		return errors.New("daemon is still running, please stop first")
+	}
+
+	arg1 := "-resync"
+
+	if runtime.GOOS == "windows" {
+		fullPath := appFolder + cDaemonFileWin
+		cmd := exec.Command("cmd.exe", "/C", "start", "/b", fullPath, arg1)
+		if err := cmd.Run(); err != nil {
+			return err
+		}
+	} else {
+		fullPath := appFolder + cDaemonFileLin
+		cmdRun := exec.Command(fullPath, arg1)
+		if err := cmdRun.Run(); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
 func (g Groestlcoin) WalletSecurityState(coinAuth *models.CoinAuth) (models.WEType, error) {
 	wi, err := g.WalletInfo(coinAuth)
 	if err != nil {
@@ -386,41 +614,6 @@ func (g Groestlcoin) WalletSecurityState(coinAuth *models.CoinAuth) (models.WETy
 	} else {
 		return models.WETUnknown, nil
 	}
-}
-
-func (g *Groestlcoin) ListReceivedByAddress(includeZero bool) (models.GRSListReceivedByAddress, error) {
-	var respStruct models.GRSListReceivedByAddress
-
-	var s string
-	if includeZero {
-		s = "{\"jsonrpc\":\"1.0\",\"id\":\"curltext\",\"method\":\"listreceivedbyaddress\",\"params\":[1, true]}"
-	} else {
-		s = "{\"jsonrpc\":\"1.0\",\"id\":\"curltext\",\"method\":\"listreceivedbyaddress\",\"params\":[1, false]}"
-	}
-	body := strings.NewReader(s)
-	req, err := http.NewRequest("POST", "http://"+g.IPAddress+":"+g.Port, body)
-	if err != nil {
-		return respStruct, err
-	}
-	req.SetBasicAuth(g.RPCUser, g.RPCPassword)
-	req.Header.Set("Content-Type", "text/plain;")
-
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		return respStruct, err
-	}
-	defer resp.Body.Close()
-	bodyResp, err := ioutil.ReadAll(resp.Body)
-	if err != nil {
-		return respStruct, err
-	}
-
-	err = json.Unmarshal(bodyResp, &respStruct)
-	if err != nil {
-		return respStruct, err
-	}
-
-	return respStruct, nil
 }
 
 func (g Groestlcoin) HomeDir() string {
@@ -539,33 +732,6 @@ func (g Groestlcoin) StartDaemon(displayOutput bool, appFolder string, auth *mod
 	}
 
 	return nil
-}
-
-func (g Groestlcoin) StopDaemon(auth *models.CoinAuth) (models.GenericResponse, error) {
-	var respStruct models.GenericResponse
-
-	body := strings.NewReader("{\"jsonrpc\":\"1.0\",\"id\":\"curltext\",\"method\":\"stop\",\"params\":[]}")
-	req, err := http.NewRequest("POST", "http://"+auth.IPAddress+":"+auth.Port, body)
-	if err != nil {
-		return respStruct, err
-	}
-	req.SetBasicAuth(auth.RPCUser, auth.RPCPassword)
-	req.Header.Set("Content-Type", "text/plain;")
-
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		return respStruct, err
-	}
-	defer resp.Body.Close()
-	bodyResp, err := ioutil.ReadAll(resp.Body)
-	if err != nil {
-		return respStruct, err
-	}
-	err = json.Unmarshal(bodyResp, &respStruct)
-	if err != nil {
-		return respStruct, err
-	}
-	return respStruct, nil
 }
 
 func (g *Groestlcoin) unarchiveFile(fullFilePath, location string) error {
