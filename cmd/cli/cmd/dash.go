@@ -19,10 +19,12 @@ package cmd
 import (
 	"errors"
 	"fmt"
+	grs "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/groestlcoin"
 	ppc "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/peercoin"
 	rdd "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/reddcoin"
 	xbcDisplay "richardmace.co.uk/boxwallet/cmd/cli/cmd/display/bitcoinplus"
 	diviDisplay "richardmace.co.uk/boxwallet/cmd/cli/cmd/display/divi"
+	grsDisplay "richardmace.co.uk/boxwallet/cmd/cli/cmd/display/groestlcoin"
 	"time"
 
 	ui "github.com/gizak/termui/v3"
@@ -210,6 +212,23 @@ var dashCmd = &cobra.Command{
 			walletRefreshNetwork = diviDisplay.DIVI{}
 			walletRefreshTransactions = diviDisplay.DIVI{}
 			walletSecurityState = divi.Divi{}
+		case models.PTGroestlcoin:
+			coin = grs.Groestlcoin{}
+			coinBlockchainIsSynced = grs.Groestlcoin{}
+			coinDaemon = grs.Groestlcoin{}
+			coinDispAbout = grsDisplay.GRS{}
+			coinDispInitialBalance = grsDisplay.GRS{}
+			coinDispInitialNetwork = grsDisplay.GRS{}
+			coinDispLiveNetwork = grsDisplay.GRS{}
+			coinDispLiveTransactions = grsDisplay.GRS{}
+			coinDispLiveWallet = grsDisplay.GRS{}
+			coinName = grs.Groestlcoin{}
+			coinPrice = grsDisplay.GRS{}
+			coinWallet = grs.Groestlcoin{}
+			walletRefreshDifficulty = grsDisplay.GRS{}
+			walletRefreshNetwork = grsDisplay.GRS{}
+			walletRefreshTransactions = grsDisplay.GRS{}
+			walletSecurityState = grs.Groestlcoin{}
 		case models.PTPeercoin:
 			coin = ppc.Peercoin{}
 			coinBlockchainIsSynced = ppc.Peercoin{}
