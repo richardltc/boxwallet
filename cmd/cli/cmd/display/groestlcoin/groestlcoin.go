@@ -35,7 +35,7 @@ func (g GRS) About(coinAuth *models.CoinAuth) string {
 	}
 
 	return "  [" + a.Name() + "        v" + a.Version() + "](fg:white)\n" +
-		"  [" + grs.CoinName() + " Core    v" + sCoreVersion + "](fg:white)\n\n"
+		"  [" + grs.CoinName() + " Core v" + sCoreVersion + "](fg:white)\n\n"
 }
 
 func balanceTxt() string {
