@@ -23,6 +23,7 @@ import (
 	"richardmace.co.uk/boxwallet/cmd/cli/cmd/coins"
 	xbc "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/bitcoinplus"
 	"richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/divi"
+	grs "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/groestlcoin"
 	ppc "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/peercoin"
 	rdd "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/reddcoin"
 	"richardmace.co.uk/boxwallet/cmd/cli/cmd/conf"
@@ -91,6 +92,10 @@ var backupCmd = &cobra.Command{
 			walletBackup = divi.Divi{}
 		case models.PTFeathercoin:
 		case models.PTGroestlcoin:
+			coinName = grs.Groestlcoin{}
+			daemonRunning = grs.Groestlcoin{}
+			walletSecurityState = grs.Groestlcoin{}
+			walletBackup = grs.Groestlcoin{}
 		case models.PTPeercoin:
 			coinName = ppc.Peercoin{}
 			daemonRunning = ppc.Peercoin{}
@@ -182,10 +187,6 @@ var backupCmd = &cobra.Command{
 		// 	}
 		// case be.PTFeathercoin:
 		// 	if err := be.WalletBackup(be.PTFeathercoin); err != nil {
-		// 		log.Fatal("Unable to backup the " + sCoinName + " wallet.dat file: " + err.Error())
-		// 	}
-		// case be.PTGroestlcoin:
-		// 	if err := be.WalletBackup(be.PTGroestlcoin); err != nil {
 		// 		log.Fatal("Unable to backup the " + sCoinName + " wallet.dat file: " + err.Error())
 		// 	}
 		// case be.PTPhore:
