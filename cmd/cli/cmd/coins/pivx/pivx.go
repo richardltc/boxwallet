@@ -286,16 +286,16 @@ func (p PIVX) HomeDirFullPath() (string, error) {
 	}
 }
 
-func (p *PIVX) Info() (models.PIVXGetInfo, string, error) {
+func (p PIVX) Info(auth *models.CoinAuth) (models.PIVXGetInfo, string, error) {
 	var respStruct models.PIVXGetInfo
 
 	for i := 1; i < 300; i++ {
 		body := strings.NewReader("{\"jsonrpc\":\"1.0\",\"id\":\"boxwallet\",\"method\":\"" + models.CCommandGetInfo + "\",\"params\":[]}")
-		req, err := http.NewRequest("POST", "http://"+p.IPAddress+":"+p.Port, body)
+		req, err := http.NewRequest("POST", "http://"+auth.IPAddress+":"+auth.Port, body)
 		if err != nil {
 			return respStruct, "", err
 		}
-		req.SetBasicAuth(p.RPCUser, p.RPCPassword)
+		req.SetBasicAuth(auth.RPCUser, auth.RPCPassword)
 		req.Header.Set("Content-Type", "text/plain;")
 
 		for j := 1; j < 50; j++ {
