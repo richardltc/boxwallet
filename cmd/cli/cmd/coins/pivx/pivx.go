@@ -146,15 +146,15 @@ func (p PIVX) BlockchainDataExists() (bool, error) {
 	return false, nil
 }
 
-func (p PIVX) BlockchainInfo() (models.PIVXBlockchainInfo, error) {
+func (p PIVX) BlockchainInfo(auth *models.CoinAuth) (models.PIVXBlockchainInfo, error) {
 	var respStruct models.PIVXBlockchainInfo
 
 	body := strings.NewReader("{\"jsonrpc\":\"1.0\",\"id\":\"curltext\",\"method\":\"getblockchaininfo\",\"params\":[]}")
-	req, err := http.NewRequest("POST", "http://"+p.IPAddress+":"+p.Port, body)
+	req, err := http.NewRequest("POST", "http://"+auth.IPAddress+":"+auth.Port, body)
 	if err != nil {
 		return respStruct, err
 	}
-	req.SetBasicAuth(p.RPCUser, p.RPCPassword)
+	req.SetBasicAuth(auth.RPCUser, auth.RPCPassword)
 	req.Header.Set("Content-Type", "text/plain;")
 
 	resp, err := http.DefaultClient.Do(req)
@@ -172,6 +172,19 @@ func (p PIVX) BlockchainInfo() (models.PIVXBlockchainInfo, error) {
 	}
 
 	return respStruct, nil
+}
+
+func (p PIVX) BlockchainIsSynced(coinAuth *models.CoinAuth) (bool, error) {
+	bci, err := p.BlockchainInfo(coinAuth)
+	if err != nil {
+		return false, err
+	}
+
+	if bci.Result.Verificationprogress > 0.99999 {
+		return true, nil
+	}
+
+	return false, nil
 }
 
 func (p PIVX) ConfFile() string {
