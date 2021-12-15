@@ -146,6 +146,34 @@ func (p PIVX) BlockchainDataExists() (bool, error) {
 	return false, nil
 }
 
+func (p PIVX) BlockchainInfo() (models.PIVXBlockchainInfo, error) {
+	var respStruct models.PIVXBlockchainInfo
+
+	body := strings.NewReader("{\"jsonrpc\":\"1.0\",\"id\":\"curltext\",\"method\":\"getblockchaininfo\",\"params\":[]}")
+	req, err := http.NewRequest("POST", "http://"+p.IPAddress+":"+p.Port, body)
+	if err != nil {
+		return respStruct, err
+	}
+	req.SetBasicAuth(p.RPCUser, p.RPCPassword)
+	req.Header.Set("Content-Type", "text/plain;")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return respStruct, err
+	}
+	defer resp.Body.Close()
+	bodyResp, err := ioutil.ReadAll(resp.Body)
+	if err != nil {
+		return respStruct, err
+	}
+	err = json.Unmarshal(bodyResp, &respStruct)
+	if err != nil {
+		return respStruct, err
+	}
+
+	return respStruct, nil
+}
+
 func (p PIVX) ConfFile() string {
 	return cConfFile
 }
@@ -201,34 +229,6 @@ func (p PIVX) DaemonFilename() string {
 	} else {
 		return cDaemonFileLin
 	}
-}
-
-func (p *PIVX) BlockchainInfo() (models.PIVXBlockchainInfo, error) {
-	var respStruct models.PIVXBlockchainInfo
-
-	body := strings.NewReader("{\"jsonrpc\":\"1.0\",\"id\":\"curltext\",\"method\":\"getblockchaininfo\",\"params\":[]}")
-	req, err := http.NewRequest("POST", "http://"+p.IPAddress+":"+p.Port, body)
-	if err != nil {
-		return respStruct, err
-	}
-	req.SetBasicAuth(p.RPCUser, p.RPCPassword)
-	req.Header.Set("Content-Type", "text/plain;")
-
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		return respStruct, err
-	}
-	defer resp.Body.Close()
-	bodyResp, err := ioutil.ReadAll(resp.Body)
-	if err != nil {
-		return respStruct, err
-	}
-	err = json.Unmarshal(bodyResp, &respStruct)
-	if err != nil {
-		return respStruct, err
-	}
-
-	return respStruct, nil
 }
 
 func (p PIVX) HomeDir() string {
