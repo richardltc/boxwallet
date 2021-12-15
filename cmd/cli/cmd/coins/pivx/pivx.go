@@ -108,6 +108,7 @@ func (p PIVX) AllBinaryFilesExist(dir string) (bool, error) {
 			return false, nil
 		}
 	}
+
 	return true, nil
 }
 
@@ -192,6 +193,7 @@ func (p *PIVX) BlockchainInfo() (models.PIVXBlockchainInfo, error) {
 	if err != nil {
 		return respStruct, err
 	}
+
 	return respStruct, nil
 }
 
@@ -260,6 +262,7 @@ func (p *PIVX) Info() (models.PIVXGetInfo, string, error) {
 			}
 		}
 	}
+
 	return respStruct, "", nil
 }
 
@@ -318,6 +321,7 @@ func (p *PIVX) InfoUI(spin *yacspin.Spinner) (models.PIVXGetInfo, string, error)
 			}
 		}
 	}
+
 	return respStruct, "", nil
 }
 
@@ -444,6 +448,7 @@ func (p *PIVX) MNSyncStatus() (models.PIVXMNSyncStatus, error) {
 	if err != nil {
 		return respStruct, err
 	}
+
 	return respStruct, nil
 }
 
@@ -508,6 +513,7 @@ func (p *PIVX) StakingStatus() (models.PIVXStakingStatus, error) {
 	if err != nil {
 		return respStruct, err
 	}
+
 	return respStruct, nil
 }
 
@@ -643,6 +649,7 @@ func (p PIVX) SaplingDir() (string, error) {
 	} else {
 		s = fileutils.AddTrailingSlash(hd) + fileutils.AddTrailingSlash(cSaplingDirLinux)
 	}
+
 	return s, nil
 }
 
@@ -686,6 +693,7 @@ func (p *PIVX) StartDaemon(displayOutput bool) error {
 			}
 		}
 	}
+
 	return nil
 }
 
@@ -713,6 +721,7 @@ func (p *PIVX) StopDaemon(ip, port, rpcUser, rpcPassword string, displayOut bool
 	if err != nil {
 		return respStruct, err
 	}
+
 	return respStruct, nil
 }
 
@@ -740,6 +749,7 @@ func (p *PIVX) UnlockWallet(pw string) error {
 	if err != nil {
 		return err
 	}
+
 	return nil
 }
 
