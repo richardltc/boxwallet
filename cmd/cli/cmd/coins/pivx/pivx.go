@@ -12,7 +12,6 @@ import (
 	"os"
 	"os/exec"
 	"os/user"
-	d "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/denarius"
 	"richardmace.co.uk/boxwallet/cmd/cli/cmd/fileutils"
 	"runtime"
 	"strings"
@@ -114,7 +113,7 @@ func (p PIVX) AllBinaryFilesExist(dir string) (bool, error) {
 }
 
 func (p PIVX) AnyAddresses(auth *models.CoinAuth) (bool, error) {
-	addresses, err := p.ListReceivedByAddressPIVX(auth, false)
+	addresses, err := p.ListReceivedByAddress(auth, false)
 	if err != nil {
 		return false, err
 	}
@@ -585,7 +584,7 @@ func (p *PIVX) WalletSecurityState() (models.WEType, error) {
 	}
 }
 
-func (p PIVX) ListReceivedByAddress(includeZero bool) (models.PIVXListReceivedByAddress, error) {
+func (p PIVX) ListReceivedByAddress(coinAuth *models.CoinAuth, includeZero bool) (models.PIVXListReceivedByAddress, error) {
 	var respStruct models.PIVXListReceivedByAddress
 
 	var s string
