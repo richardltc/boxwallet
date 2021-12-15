@@ -124,6 +124,28 @@ func (p PIVX) AnyAddresses(auth *models.CoinAuth) (bool, error) {
 	return false, nil
 }
 
+// BlockchainDataExists - Returns true if the Blockchain data exists for the specified coin
+func (p PIVX) BlockchainDataExists() (bool, error) {
+	coinDir, err := p.HomeDirFullPath()
+	if err != nil {
+		return false, errors.New("unable to HomeDirFullPath - BlockchainDataExists")
+	}
+
+	// If the "blocks" directory already exists, return.
+	if _, err := os.Stat(coinDir + "blocks"); !os.IsNotExist(err) {
+		err := errors.New("The directory: " + coinDir + "blocks already exists")
+		return true, err
+	}
+
+	// If the "chainstate" directory already exists, return
+	if _, err := os.Stat(coinDir + "chainstate"); !os.IsNotExist(err) {
+		err := errors.New("The directory: " + coinDir + "chainstate already exists")
+		return true, err
+	}
+
+	return false, nil
+}
+
 func (p PIVX) ConfFile() string {
 	return cConfFile
 }
