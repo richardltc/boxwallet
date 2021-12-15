@@ -115,6 +115,7 @@ func (d Divi) addNodesAlreadyExist() (bool, error) {
 	if exists {
 		return true, nil
 	}
+
 	return false, nil
 }
 
@@ -154,6 +155,7 @@ func (d Divi) AddAddNodesIfRequired() error {
 		}
 
 	}
+
 	return nil
 }
 
@@ -191,6 +193,7 @@ func (d Divi) AnyAddresses(auth *models.CoinAuth) (bool, error) {
 	if len(addresses.Result) > 0 {
 		return true, nil
 	}
+
 	return false, nil
 }
 
@@ -212,6 +215,7 @@ func (d Divi) BlockchainDataExists() (bool, error) {
 		err := errors.New("The directory: " + coinDir + "chainstate already exists")
 		return true, err
 	}
+
 	return false, nil
 }
 
@@ -239,6 +243,7 @@ func (d Divi) BlockchainInfo(auth *models.CoinAuth) (models.DiviBlockchainInfo, 
 	if err != nil {
 		return respStruct, err
 	}
+
 	return respStruct, nil
 }
 
@@ -306,6 +311,7 @@ func (d Divi) DownloadBlockchain() error {
 			return fmt.Errorf("unable to download file: %v - %v", cDownloadURLBS, err)
 		}
 	}
+
 	return nil
 }
 
@@ -341,6 +347,7 @@ func (d Divi) DownloadCoin(location string) error {
 	if err := d.unarchiveFile(fullFilePath, location); err != nil {
 		return err
 	}
+
 	return nil
 }
 
@@ -406,6 +413,7 @@ func (d Divi) Info(auth *models.CoinAuth) (models.DiviGetInfo, string, error) {
 			return respStruct, string(bodyResp), err
 		}
 	}
+
 	return respStruct, "", nil
 }
 
@@ -592,6 +600,7 @@ func (d Divi) DumpHDInfo(coinAuth *models.CoinAuth, pw string) (string, error) {
 	if err != nil {
 		return "", err
 	}
+
 	return respStruct.Result.Mnemonic, nil
 }
 
@@ -649,6 +658,7 @@ func (d *Divi) InfoUI(spin *yacspin.Spinner) (models.DiviGetInfo, string, error)
 			}
 		}
 	}
+
 	return respStruct, "", nil
 }
 
@@ -733,6 +743,7 @@ func (d Divi) LotteryInfo() (models.DiviLottery, error) {
 	if err != nil {
 		return respStruct, err
 	}
+
 	return respStruct, errors.New("unable to LotteryInfo")
 }
 func (d *Divi) MNSyncStatus(auth *models.CoinAuth) (models.DiviMNSyncStatus, error) {
@@ -759,6 +770,7 @@ func (d *Divi) MNSyncStatus(auth *models.CoinAuth) (models.DiviMNSyncStatus, err
 	if err != nil {
 		return respStruct, err
 	}
+
 	return respStruct, nil
 }
 
@@ -783,6 +795,7 @@ func (d Divi) NetworkDifficultyInfo() (float64, float64, error) {
 		fGood = fDiff * 0.75
 		fWarning = fDiff * 0.50
 	}
+
 	return fGood, fWarning, nil
 }
 
@@ -863,6 +876,7 @@ func (d Divi) StakingStatus(auth *models.CoinAuth) (models.DiviStakingStatus, er
 	if err != nil {
 		return respStruct, err
 	}
+
 	return respStruct, nil
 }
 
@@ -892,6 +906,7 @@ func (d Divi) SendToAddress(coinAuth *models.CoinAuth, address string, amount fl
 	if err != nil {
 		return respStruct, err
 	}
+
 	return respStruct, nil
 }
 
@@ -973,6 +988,7 @@ func (d Divi) ValidateAddress(ad string) bool {
 	if sFirst != 68 {
 		return false
 	}
+
 	return true
 }
 
@@ -992,6 +1008,7 @@ func (d Divi) UnarchiveBlockchainSnapshot() error {
 	if err := archiver.Unarchive(coinDir+cDownloadFileBS, coinDir); err != nil {
 		return errors.New("unable to unarchive file: " + coinDir + cDownloadFileBS + " " + err.Error())
 	}
+
 	return nil
 }
 
@@ -1010,6 +1027,7 @@ func (d Divi) UpdateTickerInfo() (ticker models.DiviTicker, err error) {
 	if err != nil {
 		return ticker, err
 	}
+
 	return ticker, nil
 }
 
@@ -1050,6 +1068,7 @@ func (d Divi) WalletAddress(auth *models.CoinAuth) (string, error) {
 		}
 		sAddress = r.Result
 	}
+
 	return sAddress, nil
 }
 
@@ -1181,6 +1200,7 @@ func (d Divi) WalletLoadingStatus(auth *models.CoinAuth) models.WLSType {
 			return models.WLSTCalculatingMoneySupply
 		}
 	}
+
 	return models.WLSTReady
 }
 
