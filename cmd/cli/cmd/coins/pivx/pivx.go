@@ -199,6 +199,14 @@ func (p PIVX) CoinNameAbbrev() string {
 	return cCoinNameAbbrev
 }
 
+func (p PIVX) DaemonFilename() string {
+	if runtime.GOOS == "windows" {
+		return cDaemonFileWin
+	}
+
+	return cDaemonFileLin
+}
+
 // DownloadCoin - Downloads the Syscoin files into the spcified location.
 // "location" should just be the AppBinaryFolder ~/.boxwallet
 func (p PIVX) DownloadCoin(location string) error {
@@ -234,14 +242,6 @@ func (p PIVX) DownloadCoin(location string) error {
 	}
 
 	return nil
-}
-
-func (p PIVX) DaemonFilename() string {
-	if runtime.GOOS == "windows" {
-		return cDaemonFileWin
-	} else {
-		return cDaemonFileLin
-	}
 }
 
 func (p PIVX) HomeDir() string {
