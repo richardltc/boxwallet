@@ -242,8 +242,10 @@ func walletSecurityStatusTxt() string {
 		return "Security:         [Locked](fg:green)"
 	} else if walletInfo.Result.UnlockedUntil == -1 {
 		return "Security:         [UNENCRYPTED](fg:red)"
-	} else if walletInfo.Result.UnlockedUntil > 0 {
+	} else if walletInfo.Result.UnlockedUntil > 0 && walletInfo.Result.UnlockedMintingOnly {
 		return "Security:         [Locked and Staking](fg:green)"
+	} else if walletInfo.Result.UnlockedUntil > 0 {
+		return "Security:         [Unlocked](fg:yellow)"
 	} else {
 		return "Security:         [checking...](fg:yellow)"
 	}
