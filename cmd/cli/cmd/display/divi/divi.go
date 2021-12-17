@@ -368,9 +368,9 @@ func walletSecurityStatusTxt() string {
 		return "Security:         [UNENCRYPTED](fg:red)"
 	} else if walletInfo.Result.EncryptionStatus == diviImport.CWalletESUnlockedForStaking {
 		return "Security:         [Locked and Staking](fg:green)"
-	} else if walletInfo.Result.EncryptionStatus == diviImport.CWalletESUnlockedForStaking {
-		return "Security:         [Unlocked](fg:yellow)"
 	} else if walletInfo.Result.EncryptionStatus == diviImport.CWalletESUnlocked {
+		return "Security:         [Unlocked](fg:yellow)"
+	} else {
 		return "Security:         [checking...](fg:yellow)"
 	}
 }
