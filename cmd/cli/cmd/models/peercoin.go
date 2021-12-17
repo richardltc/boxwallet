@@ -142,12 +142,16 @@ type PPCWalletInfo struct {
 		Txcount               int     `json:"txcount"`
 		Keypoololdest         int     `json:"keypoololdest"`
 		Keypoolsize           int     `json:"keypoolsize"`
+		Hdseedid              string  `json:"hdseedid"`
 		KeypoolsizeHdInternal int     `json:"keypoolsize_hd_internal"`
 		UnlockedUntil         int     `json:"unlocked_until"`
-		Hdmasterkeyid         string  `json:"hdmasterkeyid"`
+		UnlockedMintingOnly   bool    `json:"unlocked_minting_only"`
+		PrivateKeysEnabled    bool    `json:"private_keys_enabled"`
+		AvoidReuse            bool    `json:"avoid_reuse"`
+		Scanning              bool    `json:"scanning"`
 	} `json:"result"`
 	Error interface{} `json:"error"`
-	ID    string      `json:"id"`
+	Id    string      `json:"id"`
 }
 
 type PPCWalletUnlock struct {
