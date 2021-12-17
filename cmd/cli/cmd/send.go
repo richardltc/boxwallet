@@ -155,7 +155,7 @@ to quickly create a Cobra application.`,
 		// Then ask for confirmation
 		send := false
 		promptConfirm := &survey.Confirm{
-			Message: "Are you sure?\n\nSend: " + fmt.Sprintf("%f", amount) + "\n\nTo " + coinName.CoinName() + " address: " + address + "\n\n",
+			Message: "Are you sure?\n\nSend: " + fmt.Sprintf("%v", amount) + "\n\nTo " + coinName.CoinName() + " address: " + address + "\n\n",
 		}
 		_ = survey.AskOne(promptConfirm, &send)
 
