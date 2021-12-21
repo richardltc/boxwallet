@@ -23,6 +23,7 @@ import (
 	divi "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/divi"
 	grs "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/groestlcoin"
 	ppc "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/peercoin"
+	pivx "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/pivx"
 	rdd "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/reddcoin"
 	sys "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/syscoin"
 
@@ -100,6 +101,8 @@ var startCmd = &cobra.Command{
 			coinName = ppc.Peercoin{}
 		case models.PTPhore:
 		case models.PTPIVX:
+			coinDaemon = pivx.PIVX{}
+			coinName = pivx.PIVX{}
 		case models.PTPrimecoin:
 			coinDaemon = xpm.Primecoin{}
 			coinName = xpm.Primecoin{}
