@@ -753,7 +753,7 @@ func (p PIVX) StartDaemon(displayOutput bool, appFolder string, auth *models.Coi
 	}
 
 	if runtime.GOOS == "windows" {
-		fp := cHomeDirWin + cDaemonFileWin
+		fp := appFolder + cDaemonFileWin
 		cmd := exec.Command("cmd.exe", "/C", "start", "/b", fp)
 		if err := cmd.Run(); err != nil {
 			return err
@@ -763,7 +763,7 @@ func (p PIVX) StartDaemon(displayOutput bool, appFolder string, auth *models.Coi
 			fmt.Println("Attempting to run the pivxd daemon...")
 		}
 
-		cmdRun := exec.Command(cHomeDirLin + cDaemonFileLin)
+		cmdRun := exec.Command(appFolder + cDaemonFileLin)
 		stdout, err := cmdRun.StdoutPipe()
 		if err != nil {
 			return err
