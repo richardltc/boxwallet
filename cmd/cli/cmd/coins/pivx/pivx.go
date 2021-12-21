@@ -746,7 +746,7 @@ func (p PIVX) SaplingDir() (string, error) {
 	return s, nil
 }
 
-func (p *PIVX) StartDaemon(displayOutput bool) error {
+func (p PIVX) StartDaemon(displayOutput bool) error {
 	if runtime.GOOS == "windows" {
 		fp := cHomeDirWin + cDaemonFileWin
 		cmd := exec.Command("cmd.exe", "/C", "start", "/b", fp)
@@ -790,7 +790,7 @@ func (p *PIVX) StartDaemon(displayOutput bool) error {
 	return nil
 }
 
-func (p *PIVX) StopDaemon(ip, port, rpcUser, rpcPassword string, displayOut bool) (models.GenericResponse, error) {
+func (p PIVX) StopDaemon(ip, port, rpcUser, rpcPassword string, displayOut bool) (models.GenericResponse, error) {
 	var respStruct models.GenericResponse
 
 	body := strings.NewReader("{\"jsonrpc\":\"1.0\",\"id\":\"curltext\",\"method\":\"stop\",\"params\":[]}")
