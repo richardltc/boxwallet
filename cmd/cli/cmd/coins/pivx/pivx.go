@@ -846,6 +846,25 @@ func (p *PIVX) UnlockWallet(pw string) error {
 	return nil
 }
 
+func (p PIVX) UpdateTickerInfo() (ticker models.PIVXTicker, err error) {
+	resp, err := http.Get("https://ticker.neist.io/PIVX")
+	if err != nil {
+		return ticker, err
+	}
+	defer resp.Body.Close()
+
+	body, err := ioutil.ReadAll(resp.Body)
+	if err != nil {
+		return ticker, err
+	}
+	err = json.Unmarshal(body, &ticker)
+	if err != nil {
+		return ticker, err
+	}
+
+	return ticker, nil
+}
+
 func addTrailingSlash(filePath string) string {
 	var lastChar = filePath[len(filePath)-1:]
 	switch runtime.GOOS {
