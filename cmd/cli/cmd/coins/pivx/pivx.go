@@ -795,32 +795,32 @@ func (p PIVX) StartDaemon(displayOutput bool, appFolder string, auth *models.Coi
 	return nil
 }
 
-func (p PIVX) StopDaemon(ip, port, rpcUser, rpcPassword string, displayOut bool) (models.GenericResponse, error) {
+func (p PIVX) StopDaemon(auth *models.CoinAuth) error {
 	var respStruct models.GenericResponse
 
 	body := strings.NewReader("{\"jsonrpc\":\"1.0\",\"id\":\"curltext\",\"method\":\"stop\",\"params\":[]}")
-	req, err := http.NewRequest("POST", "http://"+ip+":"+port, body)
+	req, err := http.NewRequest("POST", "http://"+auth.IPAddress+":"+auth.Port, body)
 	if err != nil {
-		return respStruct, err
+		return err
 	}
-	req.SetBasicAuth(rpcUser, rpcPassword)
+	req.SetBasicAuth(auth.RPCUser, auth.RPCPassword)
 	req.Header.Set("Content-Type", "text/plain;")
 
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
-		return respStruct, err
+		return err
 	}
 	defer resp.Body.Close()
 	bodyResp, err := ioutil.ReadAll(resp.Body)
 	if err != nil {
-		return respStruct, err
+		return err
 	}
 	err = json.Unmarshal(bodyResp, &respStruct)
 	if err != nil {
-		return respStruct, err
+		return err
 	}
 
-	return respStruct, nil
+	return nil
 }
 
 func (p *PIVX) UnlockWallet(pw string) error {
