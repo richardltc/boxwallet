@@ -746,7 +746,12 @@ func (p PIVX) SaplingDir() (string, error) {
 	return s, nil
 }
 
-func (p PIVX) StartDaemon(displayOutput bool) error {
+func (p PIVX) StartDaemon(displayOutput bool, appFolder string, auth *models.CoinAuth) error {
+	b, _ := p.DaemonRunning()
+	if b {
+		return nil
+	}
+
 	if runtime.GOOS == "windows" {
 		fp := cHomeDirWin + cDaemonFileWin
 		cmd := exec.Command("cmd.exe", "/C", "start", "/b", fp)
