@@ -24,6 +24,7 @@ import (
 	xbc "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/bitcoinplus"
 	divi "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/divi"
 	ppc "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/peercoin"
+	pivx "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/pivx"
 	rpd "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/rapids"
 	rdd "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/reddcoin"
 	"richardmace.co.uk/boxwallet/cmd/cli/cmd/conf"
@@ -67,7 +68,7 @@ var unlockCmd = &cobra.Command{
 			log.Fatal("Unable to get appFilename: " + err.Error())
 		}
 
-		// Make sure the config file exists, and if not, force user to use "coin" command first..
+		// Make sure the config file exists, and if not, force user to use "coin" command first...
 		if _, err := os.Stat(appHomeDir + conf.ConfFile()); os.IsNotExist(err) {
 			log.Fatal("Unable to determine coin type. Please run " + appFileName + " coin  first")
 		}
@@ -95,6 +96,8 @@ var unlockCmd = &cobra.Command{
 			walletSecurityState = ppc.Peercoin{}
 			walletUnlock = ppc.Peercoin{}
 		case models.PTPIVX:
+			walletSecurityState = pivx.PIVX{}
+			walletUnlock = pivx.PIVX{}
 		case models.PTRapids:
 			walletSecurityState = rpd.Rapids{}
 			//walletUnlock = rpd.Rapids{}
