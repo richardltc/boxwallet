@@ -890,8 +890,8 @@ func (p PIVX) ValidateAddress(ad string) bool {
 	}
 	sFirst := ad[0]
 
-	// 80 = UTF for P
-	if sFirst != 80 {
+	// 44 = UTF for D
+	if sFirst != 44 {
 		return false
 	}
 
