@@ -119,9 +119,7 @@ func (p PIVX) InitialBalance() string {
 		"  Currency:         [waiting for sync...](fg:yellow)\n" +
 		"  Security:         [waiting for sync...](fg:yellow)\n" +
 		"  Staking %:	        [waiting for sync...](fg:yellow)\n" +
-		"  Actively Staking: [waiting for sync...](fg:yellow)\n" +
-		"  Next Lottery:     [waiting for sync...](fg:yellow)\n" +
-		"  Lottery tickets:	  [waiting for sync...](fg:yellow)"
+		"  Actively Staking: [waiting for sync...](fg:yellow)\n"
 }
 
 func (p PIVX) InitialNetwork() string {
@@ -280,7 +278,7 @@ func (p PIVX) RefreshNetwork(coinAuth *models.CoinAuth) {
 	//networkInfo, _ = xbc.NetworkInfo(coinAuth)
 	info, _, _ = pivx.Info(coinAuth)
 	stakingInfo, _ = pivx.StakingStatus()
-	walletInfo, _ = pivx.WalletInfo()
+	walletInfo, _ = pivx.WalletInfo(coinAuth)
 }
 
 func (p PIVX) RefreshPrice() {
