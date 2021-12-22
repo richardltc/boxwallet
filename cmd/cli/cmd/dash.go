@@ -21,6 +21,7 @@ import (
 	"fmt"
 	grs "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/groestlcoin"
 	ppc "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/peercoin"
+	pivx "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/pivx"
 	rdd "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/reddcoin"
 	xbcDisplay "richardmace.co.uk/boxwallet/cmd/cli/cmd/display/bitcoinplus"
 	diviDisplay "richardmace.co.uk/boxwallet/cmd/cli/cmd/display/divi"
@@ -49,6 +50,7 @@ import (
 	rpd "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/rapids"
 	"richardmace.co.uk/boxwallet/cmd/cli/cmd/conf"
 	ppcDisplay "richardmace.co.uk/boxwallet/cmd/cli/cmd/display/peercoin"
+	pivxDisplay "richardmace.co.uk/boxwallet/cmd/cli/cmd/display/pivx"
 	rpdDisplay "richardmace.co.uk/boxwallet/cmd/cli/cmd/display/rapids"
 	rddDisplay "richardmace.co.uk/boxwallet/cmd/cli/cmd/display/reddcoin"
 	"richardmace.co.uk/boxwallet/cmd/cli/cmd/models"
@@ -165,7 +167,7 @@ var dashCmd = &cobra.Command{
 			log.Fatal("Unable to determine coin type. Please run " + appFileName + " coin  first")
 		}
 
-		// Now load our config file to see what coin choice the user made...
+		// Now load our config file to see what coin choice the user has made...
 		confDB, err := conf.GetConfig(true)
 		if err != nil {
 			log.Fatal("Unable to determine coin type. Please run " + appFileName + " coin: " + err.Error())
@@ -246,6 +248,23 @@ var dashCmd = &cobra.Command{
 			walletRefreshNetwork = ppcDisplay.PPC{}
 			walletRefreshTransactions = ppcDisplay.PPC{}
 			walletSecurityState = ppc.Peercoin{}
+		case models.PTPIVX:
+			coin = pivx.PIVX{}
+			coinBlockchainIsSynced = pivx.PIVX{}
+			coinDaemon = pivx.PIVX{}
+			coinDispAbout = pivxDisplay.PIVX{}
+			coinDispInitialBalance = pivxDisplay.PIVX{}
+			coinDispInitialNetwork = pivxDisplay.PIVX{}
+			coinDispLiveNetwork = pivxDisplay.PIVX{}
+			coinDispLiveTransactions = pivxDisplay.PIVX{}
+			coinDispLiveWallet = pivxDisplay.PIVX{}
+			coinName = pivx.PIVX{}
+			coinPrice = pivxDisplay.PIVX{}
+			coinWallet = pivx.PIVX{}
+			walletRefreshDifficulty = pivxDisplay.PIVX{}
+			walletRefreshNetwork = pivxDisplay.PIVX{}
+			walletRefreshTransactions = pivxDisplay.PIVX{}
+			walletSecurityState = pivx.PIVX{}
 		case models.PTRapids:
 			coin = rpd.Rapids{}
 			coinBlockchainIsSynced = rpd.Rapids{}
