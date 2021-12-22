@@ -545,15 +545,15 @@ func (p PIVX) NetworkDifficultyInfo() (float64, float64, error) {
 	return fGood, fWarning, nil
 }
 
-func (p *PIVX) NewAddress() (models.PIVXGetNewAddress, error) {
+func (p PIVX) NewAddress(auth *models.CoinAuth) (models.PIVXGetNewAddress, error) {
 	var respStruct models.PIVXGetNewAddress
 
 	body := strings.NewReader("{\"jsonrpc\":\"1.0\",\"id\":\"curltext\",\"method\":\"getnewaddress\",\"params\":[]}")
-	req, err := http.NewRequest("POST", "http://"+p.IPAddress+":"+p.Port, body)
+	req, err := http.NewRequest("POST", "http://"+auth.IPAddress+":"+auth.Port, body)
 	if err != nil {
 		return respStruct, err
 	}
-	req.SetBasicAuth(p.RPCUser, p.RPCPassword)
+	req.SetBasicAuth(auth.RPCUser, auth.RPCPassword)
 	req.Header.Set("Content-Type", "text/plain;")
 
 	resp, err := http.DefaultClient.Do(req)
@@ -614,56 +614,39 @@ func (p PIVX) TipAddress() string {
 	return cTipAddress
 }
 
-func (p *PIVX) WalletInfo() (models.PIVXWalletInfo, error) {
-	var respStruct models.PIVXWalletInfo
-
-	body := strings.NewReader("{\"jsonrpc\":\"1.0\",\"id\":\"curltext\",\"method\":\"getwalletinfo\",\"params\":[]}")
-	req, err := http.NewRequest("POST", "http://"+p.IPAddress+":"+p.Port, body)
-	if err != nil {
-		return respStruct, err
-	}
-	req.SetBasicAuth(p.RPCUser, p.RPCPassword)
-	req.Header.Set("Content-Type", "text/plain;")
-
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		return respStruct, err
-	}
-	defer resp.Body.Close()
-	bodyResp, err := ioutil.ReadAll(resp.Body)
-	if err != nil {
-		return respStruct, err
-	}
-	err = json.Unmarshal(bodyResp, &respStruct)
-	if err != nil {
-		return respStruct, err
-	}
-
-	// Check to see if the json response contains "unlocked_until"
-	s := string([]byte(bodyResp))
-	if !strings.Contains(s, "unlocked_until") {
-		respStruct.Result.UnlockedUntil = -1
-	}
-
-	return respStruct, nil
-}
-
-func (p *PIVX) WalletSecurityState() (models.WEType, error) {
-	wi, err := p.WalletInfo()
-	if err != nil {
-		return models.WETUnknown, errors.New("Unable to GetWalletSecurityState: " + err.Error())
-	}
-
-	if wi.Result.UnlockedUntil == 0 {
-		return models.WETLocked, nil
-	} else if wi.Result.UnlockedUntil == -1 {
-		return models.WETUnencrypted, nil
-	} else if wi.Result.UnlockedUntil > 0 {
-		return models.WETUnlockedForStaking, nil
-	} else {
-		return models.WETUnknown, nil
-	}
-}
+//func (p *PIVX) WalletInfo() (models.PIVXWalletInfo, error) {
+//	var respStruct models.PIVXWalletInfo
+//
+//	body := strings.NewReader("{\"jsonrpc\":\"1.0\",\"id\":\"curltext\",\"method\":\"getwalletinfo\",\"params\":[]}")
+//	req, err := http.NewRequest("POST", "http://"+p.IPAddress+":"+p.Port, body)
+//	if err != nil {
+//		return respStruct, err
+//	}
+//	req.SetBasicAuth(p.RPCUser, p.RPCPassword)
+//	req.Header.Set("Content-Type", "text/plain;")
+//
+//	resp, err := http.DefaultClient.Do(req)
+//	if err != nil {
+//		return respStruct, err
+//	}
+//	defer resp.Body.Close()
+//	bodyResp, err := ioutil.ReadAll(resp.Body)
+//	if err != nil {
+//		return respStruct, err
+//	}
+//	err = json.Unmarshal(bodyResp, &respStruct)
+//	if err != nil {
+//		return respStruct, err
+//	}
+//
+//	// Check to see if the json response contains "unlocked_until"
+//	s := string([]byte(bodyResp))
+//	if !strings.Contains(s, "unlocked_until") {
+//		respStruct.Result.UnlockedUntil = -1
+//	}
+//
+//	return respStruct, nil
+//}
 
 func (p PIVX) ListReceivedByAddress(coinAuth *models.CoinAuth, includeZero bool) (models.PIVXListReceivedByAddress, error) {
 	var respStruct models.PIVXListReceivedByAddress
@@ -744,6 +727,35 @@ func (p PIVX) SaplingDir() (string, error) {
 	}
 
 	return s, nil
+}
+
+func (p PIVX) SendToAddress(coinAuth *models.CoinAuth, address string, amount float32) (returnResp models.GenericResponse, err error) {
+	var respStruct models.GenericResponse
+
+	sAmount := fmt.Sprintf("%v", amount)
+
+	body := strings.NewReader("{\"jsonrpc\":\"1.0\",\"id\":\"boxwallet\",\"method\":\"" + models.CCommandSendToAddress + "\",\"params\":[\"" + address + "\"," + sAmount + "]}")
+	req, err := http.NewRequest("POST", "http://"+coinAuth.IPAddress+":"+coinAuth.Port, body)
+	if err != nil {
+		return respStruct, err
+	}
+	req.SetBasicAuth(coinAuth.RPCUser, coinAuth.RPCPassword)
+	req.Header.Set("Content-Type", "text/plain;")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return respStruct, err
+	}
+	defer resp.Body.Close()
+	bodyResp, err := ioutil.ReadAll(resp.Body)
+	if err != nil {
+		return respStruct, err
+	}
+	err = json.Unmarshal(bodyResp, &respStruct)
+	if err != nil {
+		return respStruct, err
+	}
+	return respStruct, nil
 }
 
 func (p PIVX) StartDaemon(displayOutput bool, appFolder string, auth *models.CoinAuth) error {
@@ -870,24 +882,273 @@ func (p PIVX) UpdateTickerInfo() (ticker models.PIVXTicker, err error) {
 	return ticker, nil
 }
 
-func addTrailingSlash(filePath string) string {
-	var lastChar = filePath[len(filePath)-1:]
-	switch runtime.GOOS {
-	case "windows":
-		if lastChar == "\\" {
-			return filePath
-		} else {
-			return filePath + "\\"
+func (p PIVX) ValidateAddress(ad string) bool {
+	// First, work out what the coin type is
+	// If the length of the address is not exactly 34 characters...
+	if len(ad) != 34 {
+		return false
+	}
+	sFirst := ad[0]
+
+	// 80 = UTF for P
+	if sFirst != 80 {
+		return false
+	}
+
+	return true
+}
+
+func (p PIVX) WalletAddress(auth *models.CoinAuth) (string, error) {
+	var sAddress string
+	addresses, _ := p.ListReceivedByAddress(auth, true)
+	if len(addresses.Result) > 0 {
+		sAddress = addresses.Result[0].Address
+	} else {
+		r, err := p.NewAddress(auth)
+		if err != nil {
+			return "", err
 		}
-	case "linux":
-		if lastChar == "/" {
-			return filePath
-		} else {
-			return filePath + "/"
+		sAddress = r.Result
+	}
+
+	return sAddress, nil
+}
+
+func (p PIVX) WalletBackup(coinAuth *models.CoinAuth, destDir string) (models.GenericResponse, error) {
+	var respStruct models.GenericResponse
+
+	destDir = fileutils.AddTrailingSlash(destDir)
+	dt := time.Now()
+	destFile := dt.Format("2006-01-02") + "-" + cCoinNameAbbrev + "-wallet.dat"
+
+	body := strings.NewReader("{\"jsonrpc\":\"1.0\",\"id\":\"boxwallet\",\"method\":\"" + models.CCommandBackupWallet + "\",\"params\":[\"" + destDir + destFile + "\"]}")
+
+	req, err := http.NewRequest("POST", "http://"+coinAuth.IPAddress+":"+coinAuth.Port, body)
+	if err != nil {
+		return respStruct, err
+	}
+	req.SetBasicAuth(coinAuth.RPCUser, coinAuth.RPCPassword)
+	req.Header.Set("Content-Type", "text/plain;")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return respStruct, err
+	}
+	defer resp.Body.Close()
+	bodyResp, err := ioutil.ReadAll(resp.Body)
+	if err != nil {
+		return respStruct, err
+	}
+	err = json.Unmarshal(bodyResp, &respStruct)
+	if err != nil {
+		return respStruct, err
+	}
+
+	if respStruct.Error != nil {
+		return respStruct, errors.New(fmt.Sprintf("%v", respStruct.Error))
+	}
+
+	return respStruct, nil
+}
+
+func (p PIVX) WalletInfo(auth *models.CoinAuth) (models.PIVXWalletInfo, error) {
+	var respStruct models.PIVXWalletInfo
+
+	body := strings.NewReader("{\"jsonrpc\":\"1.0\",\"id\":\"curltext\",\"method\":\"getwalletinfo\",\"params\":[]}")
+	req, err := http.NewRequest("POST", "http://"+auth.IPAddress+":"+auth.Port, body)
+	if err != nil {
+		return respStruct, err
+	}
+	req.SetBasicAuth(auth.RPCUser, auth.RPCPassword)
+	req.Header.Set("Content-Type", "text/plain;")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return respStruct, err
+	}
+	defer resp.Body.Close()
+	bodyResp, err := ioutil.ReadAll(resp.Body)
+	if err != nil {
+		return respStruct, err
+	}
+	err = json.Unmarshal(bodyResp, &respStruct)
+	if err != nil {
+		return respStruct, err
+	}
+
+	// Check to see if the json response contains "unlocked_until"
+	s := string([]byte(bodyResp))
+	if !strings.Contains(s, "unlocked_until") {
+		respStruct.Result.UnlockedUntil = -1
+	}
+
+	return respStruct, nil
+}
+
+func (p PIVX) WalletLoadingStatus(auth *models.CoinAuth) models.WLSType {
+	body := strings.NewReader("{\"jsonrpc\":\"1.0\",\"id\":\"boxwallet\",\"method\":\"" + models.CCommandGetInfo + "\",\"params\":[]}")
+	req, err := http.NewRequest("POST", "http://"+auth.IPAddress+":"+auth.Port, body)
+	if err != nil {
+		return models.WLSTUnknown
+	}
+	req.SetBasicAuth(auth.RPCUser, auth.RPCPassword)
+	req.Header.Set("Content-Type", "text/plain;")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return models.WLSTWaitingForResponse
+	} else {
+		defer resp.Body.Close()
+		bodyResp, err := ioutil.ReadAll(resp.Body)
+		if err != nil {
+			return models.WLSTWaitingForResponse
+		}
+
+		if bytes.Contains(bodyResp, []byte("Loading")) {
+			return models.WLSTLoading
+		}
+		if bytes.Contains(bodyResp, []byte("Rescanning")) {
+			return models.WLSTRescanning
+		}
+		if bytes.Contains(bodyResp, []byte("Rewinding")) {
+			return models.WLSTRewinding
+		}
+		if bytes.Contains(bodyResp, []byte("RPC in warm-up")) {
+			return models.WLSTRPCInWarmUp
+		}
+		if bytes.Contains(bodyResp, []byte("Verifying")) {
+			return models.WLSTVerifying
+		}
+		if bytes.Contains(bodyResp, []byte("Calculating money supply")) {
+			return models.WLSTCalculatingMoneySupply
 		}
 	}
 
-	return ""
+	return models.WLSTReady
+}
+
+func (p PIVX) WalletNeedsEncrypting(coinAuth *models.CoinAuth) (bool, error) {
+	wi, err := p.WalletInfo(coinAuth)
+	if err != nil {
+		return true, errors.New("Unable to perform WalletInfo " + err.Error())
+	}
+
+	if wi.Result.UnlockedUntil == -1 {
+		return true, nil
+	}
+
+	return false, nil
+}
+
+func (p PIVX) WalletResync(appFolder string) error {
+	daemonRunning, err := p.DaemonRunning()
+	if err != nil {
+		return errors.New("Unable to determine DaemonRunning: " + err.Error())
+	}
+	if daemonRunning {
+		return errors.New("daemon is still running, please stop first")
+	}
+
+	arg1 := "-resync"
+
+	if runtime.GOOS == "windows" {
+		fullPath := appFolder + cDaemonFileWin
+		cmd := exec.Command("cmd.exe", "/C", "start", "/b", fullPath, arg1)
+		if err := cmd.Run(); err != nil {
+			return err
+		}
+	} else {
+		fullPath := appFolder + cDaemonFileLin
+		cmdRun := exec.Command(fullPath, arg1)
+		if err := cmdRun.Run(); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+func (p PIVX) WalletSecurityState(coinAuth *models.CoinAuth) (models.WEType, error) {
+	wi, err := p.WalletInfo(coinAuth)
+	if err != nil {
+		return models.WETUnknown, errors.New("Unable to GetWalletSecurityState: " + err.Error())
+	}
+
+	if wi.Result.UnlockedUntil == 0 {
+		return models.WETLocked, nil
+	} else if wi.Result.UnlockedUntil == -1 {
+		return models.WETUnencrypted, nil
+	} else if wi.Result.UnlockedUntil > 0 {
+		return models.WETUnlockedForStaking, nil
+	} else {
+		return models.WETUnknown, nil
+	}
+}
+
+func (p PIVX) WalletUnlock(coinAuth *models.CoinAuth, pw string) error {
+	var respStruct models.PPCWalletUnlock
+
+	body := strings.NewReader("{\"jsonrpc\":\"1.0\",\"id\":\"curltext\",\"method\":\"walletpassphrase\",\"params\":[\"" + pw + "\",300]}")
+	req, err := http.NewRequest("POST", "http://"+coinAuth.IPAddress+":"+coinAuth.Port, body)
+	if err != nil {
+		return err
+	}
+	req.SetBasicAuth(coinAuth.RPCUser, coinAuth.RPCPassword)
+	req.Header.Set("Content-Type", "text/plain;")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	bodyResp, err := ioutil.ReadAll(resp.Body)
+	if err != nil {
+		return err
+	}
+	err = json.Unmarshal(bodyResp, &respStruct)
+	if err != nil {
+		return err
+	}
+
+	if respStruct.Error != nil {
+		return errors.New(fmt.Sprintf("%v", respStruct.Error))
+	}
+
+	return nil
+}
+
+func (p PIVX) WalletUnlockFS(coinAuth *models.CoinAuth, pw string) error {
+	var respStruct models.GenericResponse
+	var body *strings.Reader
+
+	body = strings.NewReader("{\"jsonrpc\":\"1.0\",\"id\":\"boxwallet\",\"method\":\"walletpassphrase\",\"params\":[\"" + pw + "\",9999999,true]}")
+
+	req, err := http.NewRequest("POST", "http://"+coinAuth.IPAddress+":"+coinAuth.Port, body)
+	if err != nil {
+		return err
+	}
+	req.SetBasicAuth(coinAuth.RPCUser, coinAuth.RPCPassword)
+	req.Header.Set("Content-Type", "text/plain;")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	bodyResp, err := ioutil.ReadAll(resp.Body)
+	if err != nil {
+		return err
+	}
+	err = json.Unmarshal(bodyResp, &respStruct)
+	if err != nil {
+		return err
+	}
+
+	if respStruct.Error != nil {
+		return errors.New(fmt.Sprintf("%v", respStruct.Error))
+	}
+
+	return nil
 }
 
 func fileCopy(srcFile, destFile string, dispOutput bool) error {
