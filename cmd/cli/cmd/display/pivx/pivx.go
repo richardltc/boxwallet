@@ -118,7 +118,6 @@ func (p PIVX) InitialBalance() string {
 	return "  Balance:          [waiting for sync...](fg:yellow)\n" +
 		"  Currency:         [waiting for sync...](fg:yellow)\n" +
 		"  Security:         [waiting for sync...](fg:yellow)\n" +
-		"  Staking %:	        [waiting for sync...](fg:yellow)\n" +
 		"  Actively Staking: [waiting for sync...](fg:yellow)\n"
 }
 
@@ -248,7 +247,6 @@ func (p PIVX) LiveWallet() string {
 	return "" + balanceTxt() + "\n" +
 		"  " + balanceInCurrency() + "\n" +
 		"  " + walletSecurityStatusTxt() + "\n" +
-		"  " + walletStaking() + "\n" +
 		"  " + activelyStakingTxt()
 }
 
@@ -303,23 +301,4 @@ func walletSecurityStatusTxt() string {
 	} else {
 		return "Security:         [checking...](fg:yellow)"
 	}
-}
-
-func walletStaking() string {
-	var fPercent float64
-	if walletInfo.Result.Balance > 10000 {
-		fPercent = 100
-	} else {
-		fPercent = (walletInfo.Result.Balance / 10000) * 100
-	}
-
-	fPercentStr := humanize.FormatFloat("###.##", fPercent)
-	if fPercent < 75 {
-		return "Staking %:        [" + fPercentStr + "](fg:red)"
-	} else if (fPercent >= 76) && (fPercent <= 99) {
-		return "Staking %:        [" + fPercentStr + "](fg:yellow)"
-	} else {
-		return "Staking %:        [" + fPercentStr + "](fg:green)"
-	}
-
 }
