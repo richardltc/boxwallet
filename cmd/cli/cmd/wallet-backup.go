@@ -25,6 +25,7 @@ import (
 	"richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/divi"
 	grs "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/groestlcoin"
 	ppc "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/peercoin"
+	pivx "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/pivx"
 	rdd "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/reddcoin"
 	"richardmace.co.uk/boxwallet/cmd/cli/cmd/conf"
 	"richardmace.co.uk/boxwallet/cmd/cli/cmd/models"
@@ -65,7 +66,7 @@ var backupCmd = &cobra.Command{
 			log.Fatal("Unable to get appFilename: " + err.Error())
 		}
 
-		// Make sure the config file exists, and if not, force user to use "coin" command first..
+		// Make sure the config file exists, and if not, force user to use "coin" command first...
 		if _, err := os.Stat(appHomeDir + conf.ConfFile()); os.IsNotExist(err) {
 			log.Fatal("Unable to determine coin type. Please run " + appFileName + " coin  first")
 		}
@@ -103,6 +104,10 @@ var backupCmd = &cobra.Command{
 			walletBackup = ppc.Peercoin{}
 		case models.PTPhore:
 		case models.PTPIVX:
+			coinName = pivx.PIVX{}
+			daemonRunning = pivx.PIVX{}
+			walletSecurityState = pivx.PIVX{}
+			walletBackup = pivx.PIVX{}
 		case models.PTRapids:
 		case models.PTReddCoin:
 			coinName = rdd.ReddCoin{}
