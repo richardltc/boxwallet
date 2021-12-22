@@ -74,7 +74,7 @@ const (
 	WETUnknown
 )
 
-// WLSType - Wallet loading status type, what stage are we with the wallet loading?
+// WLSType - Wallet loading status type, calculated at different stages as the wallet loads?
 type WLSType int
 
 const (
@@ -86,4 +86,5 @@ const (
 	WLSTVerifying
 	WLSTCalculatingMoneySupply
 	WLSTWaitingForResponse
+	WLSTRPCInWarmUp
 )
