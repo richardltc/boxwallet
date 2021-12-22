@@ -14,6 +14,7 @@ import (
 	xbc "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/bitcoinplus"
 	divi "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/divi"
 	ppc "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/peercoin"
+	pivx "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/pivx"
 	rdd "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/reddcoin"
 	"richardmace.co.uk/boxwallet/cmd/cli/cmd/conf"
 	"richardmace.co.uk/boxwallet/cmd/cli/cmd/models"
@@ -56,7 +57,7 @@ to quickly create a Cobra application.`,
 			log.Fatal("Unable to get appFilename: " + err.Error())
 		}
 
-		// Make sure the config file exists, and if not, force user to use "coin" command first...
+		// Make sure the config file exists, and if not, force user to use "coin" command first..
 		if _, err := os.Stat(appHomeDir + conf.ConfFile()); os.IsNotExist(err) {
 			log.Fatal("Unable to determine coin type. Please run " + appFileName + " coin  first")
 		}
@@ -96,6 +97,12 @@ to quickly create a Cobra application.`,
 			walletValidateAddress = ppc.Peercoin{}
 			sendToAddress = ppc.Peercoin{}
 		case models.PTPIVX:
+			coinName = pivx.PIVX{}
+			daemonRunning = pivx.PIVX{}
+			walletSecurityState = pivx.PIVX{}
+			walletUnlock = pivx.PIVX{}
+			walletValidateAddress = pivx.PIVX{}
+			sendToAddress = pivx.PIVX{}
 		case models.PTRapids:
 		case models.PTReddCoin:
 			coinName = rdd.ReddCoin{}
