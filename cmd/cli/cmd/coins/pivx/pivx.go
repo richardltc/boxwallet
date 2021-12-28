@@ -28,7 +28,7 @@ const (
 	cCoinName       string = "PIVX"
 	cCoinNameAbbrev string = "PIVX"
 
-	cCoreVersion           string = "5.3.3"
+	cCoreVersion           string = "5.4.0"
 	cDownloadFileArm32            = "pivx-" + cCoreVersion + "-arm-linux-gnueabihf.tar.gz"
 	cDownloadFileArm64            = "pivx-" + cCoreVersion + "-aarch64-linux-gnu.tar.gz"
 	cDownloadFileLin              = "pivx-" + cCoreVersion + "-x86_64-linux-gnu.tar.gz"
