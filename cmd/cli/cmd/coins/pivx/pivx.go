@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"io/ioutil"
 	"net/http"
 	"os"
@@ -43,6 +42,7 @@ const (
 	cSaplingDirLinux string = ".pivx-params" + "/"
 	cSaplingDirWin   string = "PIVXParams" + "\\"
 
+	cAPIURL      string = "https://api.github.com/repos/PIVX-Project/PIVX/releases/latest"
 	cDownloadURL string = "https://github.com/PIVX-Project/PIVX/releases/download/v" + cCoreVersion + "/"
 
 	// PIVX Wallet Constants
@@ -429,7 +429,7 @@ func (p PIVX) Install(location string) error {
 
 	// If the coin-cli file doesn't already exists the copy it.
 	if _, err := os.Stat(location + srcFileCLI); os.IsNotExist(err) {
-		if err := fileCopy(srcPath+srcFileCLI, location+srcFileCLI, false); err != nil {
+		if err := fileutils.FileCopy(srcPath+srcFileCLI, location+srcFileCLI, false); err != nil {
 			return fmt.Errorf("unable to copyFile from: %v to %v - %v", srcPath+srcFileCLI, location+srcFileCLI, err)
 		}
 	}
@@ -439,7 +439,7 @@ func (p PIVX) Install(location string) error {
 
 	// If the coind file doesn't already exists the copy it.
 	if _, err := os.Stat(location + srcFileDaemon); os.IsNotExist(err) {
-		if err := fileCopy(srcPath+srcFileDaemon, location+srcFileDaemon, false); err != nil {
+		if err := fileutils.FileCopy(srcPath+srcFileDaemon, location+srcFileDaemon, false); err != nil {
 			return fmt.Errorf("unable to copyFile from: %v to %v - %v", srcPath+srcFileDaemon, location+srcFileDaemon, err)
 		}
 	}
@@ -449,7 +449,7 @@ func (p PIVX) Install(location string) error {
 
 	// If the coitx file doesn't already exists the copy it.
 	if _, err := os.Stat(location + srcFileTX); os.IsNotExist(err) {
-		if err := fileCopy(srcPath+srcFileTX, location+srcFileTX, false); err != nil {
+		if err := fileutils.FileCopy(srcPath+srcFileTX, location+srcFileTX, false); err != nil {
 			return fmt.Errorf("unable to copyFile from: %v to %v - %v", srcPath+srcFileTX, location+srcFileTX, err)
 		}
 	}
@@ -492,15 +492,36 @@ func (p PIVX) Install(location string) error {
 	return nil
 }
 
-func (p *PIVX) MNSyncStatus() (models.PIVXMNSyncStatus, error) {
+func latestAssets() (models.GithubInfo, error) {
+	var ghInfo models.GithubInfo
+
+	resp, err := http.Get(cAPIURL)
+	if err != nil {
+		return ghInfo, err
+	}
+	defer resp.Body.Close()
+
+	body, err := ioutil.ReadAll(resp.Body)
+	if err != nil {
+		return ghInfo, err
+	}
+	err = json.Unmarshal(body, &ghInfo)
+	if err != nil {
+		return ghInfo, err
+	}
+
+	return ghInfo, nil
+}
+
+func (p *PIVX) MNSyncStatus(auth *models.CoinAuth) (models.PIVXMNSyncStatus, error) {
 	var respStruct models.PIVXMNSyncStatus
 
 	body := strings.NewReader("{\"jsonrpc\":\"1.0\",\"id\":\"curltext\",\"method\":\"mnsync\",\"params\":[\"status\"]}")
-	req, err := http.NewRequest("POST", "http://"+p.IPAddress+":"+p.Port, body)
+	req, err := http.NewRequest("POST", "http://"+auth.IPAddress+":"+auth.Port, body)
 	if err != nil {
 		return respStruct, err
 	}
-	req.SetBasicAuth(p.RPCUser, p.RPCPassword)
+	req.SetBasicAuth(auth.RPCUser, auth.RPCPassword)
 	req.Header.Set("Content-Type", "text/plain;")
 
 	resp, err := http.DefaultClient.Do(req)
@@ -1146,40 +1167,6 @@ func (p PIVX) WalletUnlockFS(coinAuth *models.CoinAuth, pw string) error {
 
 	if respStruct.Error != nil {
 		return errors.New(fmt.Sprintf("%v", respStruct.Error))
-	}
-
-	return nil
-}
-
-func fileCopy(srcFile, destFile string, dispOutput bool) error {
-	// Open original file
-	originalFile, err := os.Open(srcFile)
-	if err != nil {
-		return err
-	}
-	defer originalFile.Close()
-
-	// Create new file
-	newFile, err := os.Create(destFile)
-	if err != nil {
-		return err
-	}
-	defer newFile.Close()
-
-	// Copy the bytes to destination from source
-	bytesWritten, err := io.Copy(newFile, originalFile)
-	if err != nil {
-		return err
-	}
-	if dispOutput {
-		fmt.Printf("Copied %d bytes.", bytesWritten)
-	}
-
-	// Commit the file contents
-	// Flushes memory to disk
-	err = newFile.Sync()
-	if err != nil {
-		return err
 	}
 
 	return nil
