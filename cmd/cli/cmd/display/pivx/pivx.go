@@ -16,7 +16,7 @@ type PIVX struct {
 
 var blockChainInfo models.PIVXBlockchainInfo
 var info models.PIVXGetInfo
-
+var mnSyncStatus models.PIVXMNSyncStatus
 var stakingInfo models.PIVXStakingStatus
 var ticker models.PIVXTicker
 var transactions models.PIVXListTransactions
@@ -111,6 +111,7 @@ func blockchainSyncTxt() string {
 	} else {
 		s = s + "%"
 	}
+
 	return s
 }
 
@@ -138,7 +139,7 @@ func (p PIVX) LiveNetwork() string {
 		bcSynced = true
 	}
 
-	if stakingInfo.Result.Mnsync {
+	if mnSyncStatus.Result.RequestedMasternodeAssets == 999 { // stakingInfo.Result.Mnsync {
 		mnSynced = true
 	}
 
@@ -275,6 +276,7 @@ func (p PIVX) RefreshNetwork(coinAuth *models.CoinAuth) {
 	currConvert.Refresh()
 	//networkInfo, _ = xbc.NetworkInfo(coinAuth)
 	info, _, _ = pivx.Info(coinAuth)
+	mnSyncStatus, _ = pivx.MNSyncStatus(coinAuth)
 	stakingInfo, _ = pivx.StakingStatus()
 	walletInfo, _ = pivx.WalletInfo(coinAuth)
 }
