@@ -492,6 +492,42 @@ func (p PIVX) Install(location string) error {
 	return nil
 }
 
+func archStrToURL(arch string, ghInfo *models.GithubInfo) string {
+	for _, a := range ghInfo.Assets {
+		if strings.Contains(a.BrowserDownloadURL, arch) {
+			return a.BrowserDownloadURL
+		}
+	}
+
+	return ""
+}
+
+func latestDownloadFileURL() (string, error) {
+	ghInfo, err := latestAssets()
+	if err != nil {
+		return "", err
+	}
+
+	var sURL string
+	switch runtime.GOOS {
+	case "windows":
+		sURL = archStrToURL("win64", &ghInfo)
+	case "linux":
+		switch runtime.GOARCH {
+		case "arm":
+			sURL = archStrToURL("arm", &ghInfo)
+		case "arm64":
+			sURL = archStrToURL("aarch64", &ghInfo)
+		case "386":
+			return "", errors.New("linux 386 is not currently supported for :" + cCoinName)
+		case "amd64":
+			sURL = archStrToURL("x86_64", &ghInfo)
+		}
+	}
+
+	return sURL, nil
+}
+
 func latestAssets() (models.GithubInfo, error) {
 	var ghInfo models.GithubInfo
 
