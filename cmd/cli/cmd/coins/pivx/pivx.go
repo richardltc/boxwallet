@@ -227,30 +227,46 @@ func (p PIVX) DaemonRunning() (bool, error) {
 	}
 }
 
-// DownloadCoin - Downloads the Syscoin files into the spcified location.
+// DownloadCoin - Downloads the Syscoin files into the specified location.
 // "location" should just be the AppBinaryFolder ~/.boxwallet
 func (p PIVX) DownloadCoin(location string) error {
-	var fullFilePath, fullFileDLURL string
-
-	switch runtime.GOOS {
-	case "windows":
-		fullFilePath = location + cDownloadFileWin
-		fullFileDLURL = cDownloadURL + cDownloadFileWin
-	case "linux":
-		switch runtime.GOARCH {
-		case "arm":
-			fullFilePath = location + cDownloadFileArm32
-			fullFileDLURL = cDownloadURL + cDownloadFileArm32
-		case "arm64":
-			fullFilePath = location + cDownloadFileArm64
-			fullFileDLURL = cDownloadURL + cDownloadFileArm64
-		case "386":
-			return errors.New("linux 386 is not currently supported for :" + cCoinName)
-		case "amd64":
-			fullFilePath = location + cDownloadFileLin
-			fullFileDLURL = cDownloadURL + cDownloadFileLin
-		}
+	var fullFilePath string
+	ghInfo, err := latestAssets()
+	if err != nil {
+		return err
 	}
+
+	downloadFile, err := latestDownloadFile(&ghInfo)
+	if err != nil {
+		return err
+	}
+
+	fullFileDLURL, err := latestDownloadFileURL(&ghInfo)
+	if err != nil {
+		return err
+	}
+
+	fullFilePath = location + downloadFile
+
+	//switch runtime.GOOS {
+	//case "windows":
+	//	fullFilePath = location + cDownloadFileWin
+	//	fullFileDLURL = cDownloadURL + cDownloadFileWin
+	//case "linux":
+	//	switch runtime.GOARCH {
+	//	case "arm":
+	//		fullFilePath = location + cDownloadFileArm32
+	//		fullFileDLURL = cDownloadURL + cDownloadFileArm32
+	//	case "arm64":
+	//		fullFilePath = location + cDownloadFileArm64
+	//		fullFileDLURL = cDownloadURL + cDownloadFileArm64
+	//	case "386":
+	//		return errors.New("linux 386 is not currently supported for :" + cCoinName)
+	//	case "amd64":
+	//		fullFilePath = location + cDownloadFileLin
+	//		fullFileDLURL = cDownloadURL + cDownloadFileLin
+	//	}
+	//}
 
 	if err := rjminternet.DownloadFile(fullFilePath, fullFileDLURL); err != nil {
 		return fmt.Errorf("unable to download file: %v - %v", fullFilePath+fullFileDLURL, err)
@@ -492,7 +508,17 @@ func (p PIVX) Install(location string) error {
 	return nil
 }
 
-func archStrToURL(arch string, ghInfo *models.GithubInfo) string {
+func archStrToFile(arch string, ghInfo *models.GithubInfo) (fileName string) {
+	for _, a := range ghInfo.Assets {
+		if strings.Contains(a.Name, arch) {
+			return a.Name
+		}
+	}
+
+	return ""
+}
+
+func archStrToFileDownloadURL(arch string, ghInfo *models.GithubInfo) string {
 	for _, a := range ghInfo.Assets {
 		if strings.Contains(a.BrowserDownloadURL, arch) {
 			return a.BrowserDownloadURL
@@ -502,27 +528,56 @@ func archStrToURL(arch string, ghInfo *models.GithubInfo) string {
 	return ""
 }
 
-func latestDownloadFileURL() (string, error) {
-	ghInfo, err := latestAssets()
-	if err != nil {
-		return "", err
-	}
-
-	var sURL string
+func latestDownloadFile(ghInfo *models.GithubInfo) (string, error) {
+	var sFile string
 	switch runtime.GOOS {
 	case "windows":
-		sURL = archStrToURL("win64", &ghInfo)
+		sFile = archStrToFile("win64", ghInfo)
 	case "linux":
 		switch runtime.GOARCH {
 		case "arm":
-			sURL = archStrToURL("arm", &ghInfo)
+			sFile = archStrToFile("arm", ghInfo)
 		case "arm64":
-			sURL = archStrToURL("aarch64", &ghInfo)
+			sFile = archStrToFile("aarch64", ghInfo)
 		case "386":
 			return "", errors.New("linux 386 is not currently supported for :" + cCoinName)
 		case "amd64":
-			sURL = archStrToURL("x86_64", &ghInfo)
+			sFile = archStrToFile("x86_64", ghInfo)
 		}
+	}
+
+	if sFile == "" {
+		return "", errors.New("unable to determine download url - latestDownloadFileURL")
+	}
+
+	return sFile, nil
+}
+
+func latestDownloadFileURL(ghInfo *models.GithubInfo) (string, error) {
+	//ghInfo, err := latestAssets()
+	//if err != nil {
+	//	return "", err
+	//}
+	//
+	var sURL string
+	switch runtime.GOOS {
+	case "windows":
+		sURL = archStrToFileDownloadURL("win64", ghInfo)
+	case "linux":
+		switch runtime.GOARCH {
+		case "arm":
+			sURL = archStrToFileDownloadURL("arm", ghInfo)
+		case "arm64":
+			sURL = archStrToFileDownloadURL("aarch64", ghInfo)
+		case "386":
+			return "", errors.New("linux 386 is not currently supported for :" + cCoinName)
+		case "amd64":
+			sURL = archStrToFileDownloadURL("x86_64", ghInfo)
+		}
+	}
+
+	if sURL == "" {
+		return "", errors.New("unable to determine download url - latestDownloadFileURL")
 	}
 
 	return sURL, nil
