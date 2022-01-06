@@ -89,23 +89,23 @@ func (p PIVX) AbbreviatedCoinName() string {
 
 func (p PIVX) AllBinaryFilesExist(dir string) (bool, error) {
 	if runtime.GOOS == "windows" {
-		if !fileExists(dir + cCliFileWin) {
+		if !fileutils.FileExists(dir + cCliFileWin) {
 			return false, nil
 		}
-		if !fileExists(dir + cDaemonFileWin) {
+		if !fileutils.FileExists(dir + cDaemonFileWin) {
 			return false, nil
 		}
-		if !fileExists(dir + cTxFileWin) {
+		if !fileutils.FileExists(dir + cTxFileWin) {
 			return false, nil
 		}
 	} else {
-		if !fileExists(dir + cCliFileLin) {
+		if !fileutils.FileExists(dir + cCliFileLin) {
 			return false, nil
 		}
-		if !fileExists(dir + cDaemonFileLin) {
+		if !fileutils.FileExists(dir + cDaemonFileLin) {
 			return false, nil
 		}
-		if !fileExists(dir + cTxFileLin) {
+		if !fileutils.FileExists(dir + cTxFileLin) {
 			return false, nil
 		}
 	}
@@ -222,9 +222,9 @@ func (p PIVX) DaemonRunning() (bool, error) {
 	}
 	if err.Error() == "not found" {
 		return false, nil
-	} else {
-		return false, err
 	}
+
+	return false, err
 }
 
 // DownloadCoin - Downloads the Syscoin files into the specified location.
@@ -328,9 +328,9 @@ func (p PIVX) Info(auth *models.CoinAuth) (models.PIVXGetInfo, string, error) {
 
 			// Check to make sure we are not loading the wallet
 			if bytes.Contains(bodyResp, []byte("Loading")) ||
-				bytes.Contains(bodyResp, []byte("RPC in warm-up")) ||
 				bytes.Contains(bodyResp, []byte("Rescanning")) ||
 				bytes.Contains(bodyResp, []byte("Rewinding")) ||
+				bytes.Contains(bodyResp, []byte("RPC in warm-up")) ||
 				bytes.Contains(bodyResp, []byte("Verifying")) {
 				// The wallet is still loading, so print message, and sleep for 3 seconds and try again.
 				var errStruct models.GenericResponse
@@ -349,65 +349,6 @@ func (p PIVX) Info(auth *models.CoinAuth) (models.PIVXGetInfo, string, error) {
 
 	return respStruct, "", nil
 }
-
-//func (p *PIVX) InfoUI(spin *yacspin.Spinner) (models.PIVXGetInfo, string, error) {
-//	var respStruct models.PIVXGetInfo
-//
-//	for i := 1; i < 600; i++ {
-//		body := strings.NewReader("{\"jsonrpc\":\"1.0\",\"id\":\"boxwallet\",\"method\":\"" + models.CCommandGetInfo + "\",\"params\":[]}")
-//		req, err := http.NewRequest("POST", "http://"+p.IPAddress+":"+p.Port, body)
-//		if err != nil {
-//			return respStruct, "", err
-//		}
-//		req.SetBasicAuth(p.RPCUser, p.RPCPassword)
-//		req.Header.Set("Content-Type", "text/plain;")
-//
-//		resp, err := http.DefaultClient.Do(req)
-//		//defer resp.Body.Close()
-//		if err != nil {
-//			spin.Message(" waiting for your " + cCoinName + " wallet to respond, this could take several minutes (ctrl-c to cancel)...")
-//			time.Sleep(1 * time.Second)
-//		} else {
-//			defer resp.Body.Close()
-//			bodyResp, err := ioutil.ReadAll(resp.Body)
-//			if err != nil {
-//				return respStruct, "", err
-//			}
-//
-//			// Check to make sure we are not loading the wallet
-//			if bytes.Contains(bodyResp, []byte("Loading")) ||
-//				bytes.Contains(bodyResp, []byte("Rescanning")) ||
-//				bytes.Contains(bodyResp, []byte("Rewinding")) ||
-//				bytes.Contains(bodyResp, []byte("RPC in warm-up: Calculating money supply")) ||
-//				bytes.Contains(bodyResp, []byte("Verifying")) {
-//				// The wallet is still loading, so print message, and sleep for 1 second and try again..
-//				var errStruct models.GenericResponse
-//				err = json.Unmarshal(bodyResp, &errStruct)
-//				if err != nil {
-//					return respStruct, "", err
-//				}
-//
-//				if bytes.Contains(bodyResp, []byte("Loading")) {
-//					spin.Message(" Your " + cCoinName + " wallet is *Loading*, this could take a while...")
-//				} else if bytes.Contains(bodyResp, []byte("Rescanning")) {
-//					spin.Message(" Your " + cCoinName + " wallet is *Rescanning*, this could take a while...")
-//				} else if bytes.Contains(bodyResp, []byte("Rewinding")) {
-//					spin.Message(" Your " + cCoinName + " wallet is *Rewinding*, this could take a while...")
-//				} else if bytes.Contains(bodyResp, []byte("Verifying")) {
-//					spin.Message(" Your " + cCoinName + " wallet is *Verifying*, this could take a while...")
-//				} else if bytes.Contains(bodyResp, []byte("Calculating money supply")) {
-//					spin.Message(" Your " + cCoinName + " wallet is *Calculating money supply*, this could take a while...")
-//				}
-//				time.Sleep(1 * time.Second)
-//			} else {
-//				_ = json.Unmarshal(bodyResp, &respStruct)
-//				return respStruct, string(bodyResp), err
-//			}
-//		}
-//	}
-//
-//	return respStruct, "", nil
-//}
 
 // Install - Puts the freshly downloaded files into their correct location.
 // "location" should just be the AppBinaryFolder ~/.boxwallet
@@ -725,40 +666,6 @@ func (p *PIVX) StakingStatus() (models.PIVXStakingStatus, error) {
 func (p PIVX) TipAddress() string {
 	return cTipAddress
 }
-
-//func (p *PIVX) WalletInfo() (models.PIVXWalletInfo, error) {
-//	var respStruct models.PIVXWalletInfo
-//
-//	body := strings.NewReader("{\"jsonrpc\":\"1.0\",\"id\":\"curltext\",\"method\":\"getwalletinfo\",\"params\":[]}")
-//	req, err := http.NewRequest("POST", "http://"+p.IPAddress+":"+p.Port, body)
-//	if err != nil {
-//		return respStruct, err
-//	}
-//	req.SetBasicAuth(p.RPCUser, p.RPCPassword)
-//	req.Header.Set("Content-Type", "text/plain;")
-//
-//	resp, err := http.DefaultClient.Do(req)
-//	if err != nil {
-//		return respStruct, err
-//	}
-//	defer resp.Body.Close()
-//	bodyResp, err := ioutil.ReadAll(resp.Body)
-//	if err != nil {
-//		return respStruct, err
-//	}
-//	err = json.Unmarshal(bodyResp, &respStruct)
-//	if err != nil {
-//		return respStruct, err
-//	}
-//
-//	// Check to see if the json response contains "unlocked_until"
-//	s := string([]byte(bodyResp))
-//	if !strings.Contains(s, "unlocked_until") {
-//		respStruct.Result.UnlockedUntil = -1
-//	}
-//
-//	return respStruct, nil
-//}
 
 func (p PIVX) ListReceivedByAddress(coinAuth *models.CoinAuth, includeZero bool) (models.PIVXListReceivedByAddress, error) {
 	var respStruct models.PIVXListReceivedByAddress
@@ -1263,13 +1170,13 @@ func (p PIVX) WalletUnlockFS(coinAuth *models.CoinAuth, pw string) error {
 	return nil
 }
 
-func fileExists(filename string) bool {
-	info, err := os.Stat(filename)
-	if os.IsNotExist(err) {
-		return false
-	}
-	return !info.IsDir()
-}
+//func fileExists(filename string) bool {
+//	info, err := os.Stat(filename)
+//	if os.IsNotExist(err) {
+//		return false
+//	}
+//	return !info.IsDir()
+//}
 
 func (p *PIVX) unarchiveFile(fullFilePath, location string) error {
 	if err := archiver.Unarchive(fullFilePath, location); err != nil {
