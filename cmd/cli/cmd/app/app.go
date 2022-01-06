@@ -10,7 +10,7 @@ import (
 const (
 	cAppName        string = "BoxWallet"
 	CUpdaterAppName string = "bwupdater"
-	CAppVersion     string = "0.50.6"
+	CAppVersion     string = "0.50.7"
 	CAppFilename    string = "boxwallet"
 	CAppFilenameWin string = "boxwallet.exe"
 	CAppLogfile     string = "boxwallet.log"
@@ -34,7 +34,7 @@ const (
 type App struct {
 }
 
-// FileName - Returns the name of the app binary file e.g. boxwallet or boxwallet.exe
+// FileName - Returns the name of the app binary file e.g. boxwallet or boxwallet.exe (for Windows)
 func (a App) FileName() (string, error) {
 	switch runtime.GOOS {
 	case "arm":
