@@ -700,7 +700,8 @@ func (d Divi) ListReceivedByAddress(coinAuth *models.CoinAuth, includeZero bool)
 func (d Divi) ListTransactions(auth *models.CoinAuth) (models.DiviListTransactions, error) {
 	var respStruct models.DiviListTransactions
 
-	body := strings.NewReader("{\"jsonrpc\":\"1.0\",\"id\":\"boxwallet\",\"method\":\"" + models.CCommandListTransactions + "\",\"params\":[]}")
+	//body := strings.NewReader("{\"jsonrpc\":\"1.0\",\"id\":\"boxwallet\",\"method\":\"" + models.CCommandListTransactions + "\",\"params\":[]}")
+	body := strings.NewReader("{\"jsonrpc\":\"1.0\",\"id\":\"boxwallet\",\"method\":\"" + models.CCommandListTransactions + "\",\"params\":[\"*\",25,0]}")
 	req, err := http.NewRequest("POST", "http://"+auth.IPAddress+":"+auth.Port, body)
 	if err != nil {
 		return respStruct, err
@@ -746,6 +747,7 @@ func (d Divi) LotteryInfo() (models.DiviLottery, error) {
 
 	return respStruct, errors.New("unable to LotteryInfo")
 }
+
 func (d *Divi) MNSyncStatus(auth *models.CoinAuth) (models.DiviMNSyncStatus, error) {
 	var respStruct models.DiviMNSyncStatus
 
