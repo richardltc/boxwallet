@@ -287,9 +287,9 @@ func (d DIVI) LiveTransactions() (containsZeroConfs bool, rows [][]string) {
 			" [" + tAmountStr + "](fg:" + sColour + ")",
 			" [" + strconv.Itoa(transactions.Result[i].Confirmations) + "](fg:" + sColour + ")"})
 
-		if i > 25 {
-			break
-		}
+		//if i > 25 {
+		//	break
+		//}
 	}
 
 	return bZeroConfs, sRows
@@ -391,5 +391,4 @@ func walletStaking() string {
 	} else {
 		return "Staking %:        [" + fPercentStr + "](fg:green)"
 	}
-
 }
