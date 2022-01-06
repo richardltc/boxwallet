@@ -23,9 +23,11 @@ import (
 	ppc "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/peercoin"
 	pivx "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/pivx"
 	rdd "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/reddcoin"
+	tzc "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/trezarcoin"
 	xbcDisplay "richardmace.co.uk/boxwallet/cmd/cli/cmd/display/bitcoinplus"
 	diviDisplay "richardmace.co.uk/boxwallet/cmd/cli/cmd/display/divi"
 	grsDisplay "richardmace.co.uk/boxwallet/cmd/cli/cmd/display/groestlcoin"
+	tzcDisplay "richardmace.co.uk/boxwallet/cmd/cli/cmd/display/trezarcoin"
 	"time"
 
 	ui "github.com/gizak/termui/v3"
@@ -292,7 +294,6 @@ var dashCmd = &cobra.Command{
 			coinDispLiveNetwork = rddDisplay.RDD{}
 			coinDispLiveTransactions = rddDisplay.RDD{}
 			coinDispLiveWallet = rddDisplay.RDD{}
-			//coinAnyAddresses = xbc.XBC{}
 			coinName = rdd.ReddCoin{}
 			coinPrice = rddDisplay.RDD{}
 			coinWallet = rdd.ReddCoin{}
@@ -300,7 +301,23 @@ var dashCmd = &cobra.Command{
 			walletRefreshNetwork = rddDisplay.RDD{}
 			walletRefreshTransactions = rddDisplay.RDD{}
 			walletSecurityState = rdd.ReddCoin{}
-
+		case models.PTTrezarcoin:
+			coin = tzc.Trezarcoin{}
+			coinBlockchainIsSynced = tzc.Trezarcoin{}
+			coinDaemon = tzc.Trezarcoin{}
+			coinDispAbout = tzcDisplay.TZC{}
+			coinDispInitialBalance = tzcDisplay.TZC{}
+			coinDispInitialNetwork = tzcDisplay.TZC{}
+			coinDispLiveNetwork = tzcDisplay.TZC{}
+			coinDispLiveTransactions = tzcDisplay.TZC{}
+			coinDispLiveWallet = tzcDisplay.TZC{}
+			coinName = tzc.Trezarcoin{}
+			coinPrice = tzcDisplay.TZC{}
+			coinWallet = tzc.Trezarcoin{}
+			walletRefreshDifficulty = tzcDisplay.TZC{}
+			walletRefreshNetwork = tzcDisplay.TZC{}
+			walletRefreshTransactions = tzcDisplay.TZC{}
+			walletSecurityState = tzc.Trezarcoin{}
 		default:
 			log.Fatal("Unable to determine ProjectType")
 		}
