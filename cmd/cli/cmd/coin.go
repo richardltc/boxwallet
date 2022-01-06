@@ -87,7 +87,7 @@ var coinCmd = &cobra.Command{
 				coins.CCoinNameGroestlcoin,
 				//coins.CCoinNameLitecoinPlus,
 				coins.CCoinNamePeercoin,
-				coins.CCoinNamePhore,
+				//coins.CCoinNamePhore,
 				coins.CCoinNamePIVX,
 				coins.CCoinNamePrimecoin,
 				coins.CCoinNameRapids,
