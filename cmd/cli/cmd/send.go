@@ -16,6 +16,7 @@ import (
 	ppc "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/peercoin"
 	pivx "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/pivx"
 	rdd "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/reddcoin"
+	tzc "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/trezarcoin"
 	"richardmace.co.uk/boxwallet/cmd/cli/cmd/conf"
 	"richardmace.co.uk/boxwallet/cmd/cli/cmd/models"
 	"richardmace.co.uk/boxwallet/cmd/cli/cmd/wallet"
@@ -113,6 +114,12 @@ to quickly create a Cobra application.`,
 			sendToAddress = rdd.ReddCoin{}
 		case models.PTScala:
 		case models.PTTrezarcoin:
+			coinName = tzc.Trezarcoin{}
+			daemonRunning = tzc.Trezarcoin{}
+			walletSecurityState = tzc.Trezarcoin{}
+			walletUnlock = tzc.Trezarcoin{}
+			walletValidateAddress = tzc.Trezarcoin{}
+			sendToAddress = tzc.Trezarcoin{}
 		case models.PTVertcoin:
 		default:
 			log.Fatal("unable to determine ProjectType")
@@ -152,7 +159,7 @@ to quickly create a Cobra application.`,
 		_ = survey.AskOne(promptAddress, &address)
 
 		// Validate address as best we can...
-		// DIVI, length is 34 and starts with a D
+		// DIVI, length is 34 and starts with a D as an example...
 		av := walletValidateAddress.ValidateAddress(address)
 		if !av {
 			log.Fatalf("It looks like the address that you are sending to is not a " + coinName.CoinName() + " address?\n\n" +
