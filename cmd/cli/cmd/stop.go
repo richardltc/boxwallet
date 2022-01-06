@@ -39,6 +39,7 @@ import (
 	rpd "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/rapids"
 	rdd "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/reddcoin"
 	sys "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/syscoin"
+	tzc "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/trezarcoin"
 	"richardmace.co.uk/boxwallet/cmd/cli/cmd/conf"
 	"richardmace.co.uk/boxwallet/cmd/cli/cmd/models"
 	"strconv"
@@ -71,7 +72,7 @@ var stopCmd = &cobra.Command{
 			log.Fatal("Unable to get appFilename: " + err.Error())
 		}
 
-		// Make sure the config file exists, and if not, force user to use "coin" command first..
+		// Make sure the config file exists, and if not, force user to use "coin" command first...
 		if _, err := os.Stat(appHomeDir + conf.ConfFile()); os.IsNotExist(err) {
 			log.Fatal("Unable to determine coin type. Please run " + appFileName + " coin  first")
 		}
@@ -110,6 +111,7 @@ var stopCmd = &cobra.Command{
 		case models.PTSyscoin:
 			coinDaemon = sys.Syscoin{}
 		case models.PTTrezarcoin:
+			coinDaemon = tzc.Trezarcoin{}
 		case models.PTVertcoin:
 		default:
 			log.Fatal("unable to determine ProjectType")
