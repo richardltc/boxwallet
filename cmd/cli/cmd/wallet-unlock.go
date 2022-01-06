@@ -27,6 +27,7 @@ import (
 	pivx "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/pivx"
 	rpd "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/rapids"
 	rdd "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/reddcoin"
+	tzc "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/trezarcoin"
 	"richardmace.co.uk/boxwallet/cmd/cli/cmd/conf"
 
 	// "encoding/json"
@@ -73,7 +74,7 @@ var unlockCmd = &cobra.Command{
 			log.Fatal("Unable to determine coin type. Please run " + appFileName + " coin  first")
 		}
 
-		// Now load our config file to see what coin choice the user made...
+		// Now load our config file to see what coin choice the user made..
 		confDB, err := conf.GetConfig(true)
 		if err != nil {
 			log.Fatal("Unable to determine coin type. Please run " + appFileName + " coin: " + err.Error())
@@ -106,6 +107,8 @@ var unlockCmd = &cobra.Command{
 			walletUnlock = rdd.ReddCoin{}
 		case models.PTScala:
 		case models.PTTrezarcoin:
+			walletSecurityState = tzc.Trezarcoin{}
+			walletUnlock = tzc.Trezarcoin{}
 		case models.PTVertcoin:
 		default:
 			log.Fatal("unable to determine ProjectType")
