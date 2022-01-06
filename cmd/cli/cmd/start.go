@@ -22,6 +22,7 @@ import (
 	"os"
 	divi "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/divi"
 	grs "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/groestlcoin"
+	lcp "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/litecoinplus"
 	ppc "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/peercoin"
 	pivx "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/pivx"
 	rdd "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/reddcoin"
@@ -96,6 +97,9 @@ var startCmd = &cobra.Command{
 		case models.PTGroestlcoin:
 			coinDaemon = grs.Groestlcoin{}
 			coinName = grs.Groestlcoin{}
+		case models.PTLitecoinPlus:
+			coinDaemon = lcp.LitecoinPlus{}
+			coinName = lcp.LitecoinPlus{}
 		case models.PTPeercoin:
 			coinDaemon = ppc.Peercoin{}
 			coinName = ppc.Peercoin{}
@@ -132,7 +136,7 @@ var startCmd = &cobra.Command{
 		coinAuth.IPAddress = confDB.ServerIP
 		coinAuth.Port = confDB.Port
 
-		// Start the coin daemon server if required..
+		// Start the coin daemon server if required.
 		if err := coinDaemon.StartDaemon(true, appHomeDir, &coinAuth); err != nil {
 			log.Fatalf("failed to run "+coinDaemon.DaemonFilename()+": %v", err)
 		}
