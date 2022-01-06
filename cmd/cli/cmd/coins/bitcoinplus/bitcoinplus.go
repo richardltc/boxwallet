@@ -450,7 +450,8 @@ func (x *XBC) ListReceivedByAddress(coinAuth *models.CoinAuth, includeZero bool)
 func (x XBC) ListTransactions(auth *models.CoinAuth) (models.XBCListTransactions, error) {
 	var respStruct models.XBCListTransactions
 
-	body := strings.NewReader("{\"jsonrpc\":\"1.0\",\"id\":\"boxwallet\",\"method\":\"" + models.CCommandListTransactions + "\",\"params\":[]}")
+	//body := strings.NewReader("{\"jsonrpc\":\"1.0\",\"id\":\"boxwallet\",\"method\":\"" + models.CCommandListTransactions + "\",\"params\":[]}")
+	body := strings.NewReader("{\"jsonrpc\":\"1.0\",\"id\":\"boxwallet\",\"method\":\"" + models.CCommandListTransactions + "\",\"params\":[\"*\",25,0]}")
 	req, err := http.NewRequest("POST", "http://"+auth.IPAddress+":"+auth.Port, body)
 	if err != nil {
 		return respStruct, err
@@ -497,6 +498,7 @@ func (x XBC) NetworkDifficultyInfo() (float64, float64, error) {
 		fGood = fDiff * 0.75
 		fWarning = fDiff * 0.50
 	}
+
 	return fGood, fWarning, nil
 }
 
