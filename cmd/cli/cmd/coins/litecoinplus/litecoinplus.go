@@ -41,7 +41,7 @@ const (
 	cDownloadURL = "https://litecoinplus.co/downloads/"
 	//cDownloadURLBS string = "https://snapshots.diviproject.org/dist/"
 
-	cConfFile string = "litecoinplus.conf"
+	cConfFile string = "LitecoinPlus.conf"
 	//cCliFile       string = "divi-cli"
 	//cCliFileWin    string = "divi-cli.exe"
 	cDaemonFileLin string = "litecoinplusd"
@@ -170,6 +170,7 @@ func (l LitecoinPlus) BlockchainInfo(auth *models.CoinAuth) (models.DiviBlockcha
 	if err != nil {
 		return respStruct, err
 	}
+
 	return respStruct, nil
 }
 
