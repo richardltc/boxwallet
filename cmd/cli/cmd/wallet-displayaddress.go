@@ -34,6 +34,7 @@ import (
 	ppc "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/peercoin"
 	pivx "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/pivx"
 	rdd "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/reddcoin"
+	tzc "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/trezarcoin"
 
 	divi "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/divi"
 	"richardmace.co.uk/boxwallet/cmd/cli/cmd/conf"
@@ -72,7 +73,7 @@ var displayaddressCmd = &cobra.Command{
 			log.Fatal("Unable to determine coin type. Please run " + appFileName + " coin  first")
 		}
 
-		// Now load our config file to see what coin choice the user made..
+		// Now load our config file to see what coin choice the user made...
 		confDB, err := conf.GetConfig(true)
 		if err != nil {
 			log.Fatal("Unable to determine coin type. Please run " + appFileName + " coin: " + err.Error())
@@ -105,6 +106,8 @@ var displayaddressCmd = &cobra.Command{
 			walletAddress = rdd.ReddCoin{}
 		case models.PTScala:
 		case models.PTTrezarcoin:
+			coinName = tzc.Trezarcoin{}
+			walletAddress = tzc.Trezarcoin{}
 		case models.PTVertcoin:
 		default:
 			log.Fatal("unable to determine ProjectType")
