@@ -24,6 +24,7 @@ import (
 	pivx "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/pivx"
 	rpd "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/rapids"
 	rdd "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/reddcoin"
+	tzc "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/trezarcoin"
 
 	"richardmace.co.uk/boxwallet/cmd/cli/cmd/app"
 	"richardmace.co.uk/boxwallet/cmd/cli/cmd/coins"
@@ -79,6 +80,9 @@ var resyncCmd = &cobra.Command{
 		case models.PTReddCoin:
 			coinName = rdd.ReddCoin{}
 			wallet = rdd.ReddCoin{}
+		case models.PTTrezarcoin:
+			coinName = tzc.Trezarcoin{}
+			wallet = tzc.Trezarcoin{}
 		default:
 			log.Fatal("Unable to determine ProjectType")
 		}
