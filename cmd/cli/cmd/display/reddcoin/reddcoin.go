@@ -1,7 +1,6 @@
 package reddcoin
 
 import (
-	xbcImport "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/bitcoinplus"
 	"richardmace.co.uk/boxwallet/cmd/cli/cmd/display"
 	"strconv"
 	"time"
@@ -174,9 +173,9 @@ func (r RDD) LiveTransactions() (containsZeroConfs bool, rows [][]string) {
 			" [" + tAmountStr + "](fg:" + sColour + ")",
 			" [" + strconv.Itoa(transactions.Result[i].Confirmations) + "](fg:" + sColour + ")"})
 
-		if i > 10 {
-			break
-		}
+		//if i > 10 {
+		//	break
+		//}
 	}
 
 	return bZeroConfs, sRows
@@ -188,9 +187,9 @@ func (r RDD) LiveWallet() string {
 }
 
 func (r RDD) RefreshDifficulty() {
-	var xbc xbcImport.XBC
+	var rdd rddImport.ReddCoin
 
-	diffGood, diffWarning, _ = xbc.NetworkDifficultyInfo()
+	diffGood, diffWarning, _ = rdd.NetworkDifficultyInfo()
 }
 
 func (r RDD) RefreshNetwork(coinAuth *models.CoinAuth) {
