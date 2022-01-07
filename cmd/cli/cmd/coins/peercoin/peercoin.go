@@ -511,7 +511,7 @@ func (p Peercoin) SendToAddress(coinAuth *models.CoinAuth, address string, amoun
 	return respStruct, nil
 }
 
-func (p Peercoin) StartDaemon(displayOutput bool, appFolder string, auth *models.CoinAuth) error {
+func (p Peercoin) StartDaemon(displayOutput bool, appFolder string) error {
 	if runtime.GOOS == "windows" {
 		//_ = exec.Command(GetAppsBinFolder() + cDiviDFileWin)
 		fp := appFolder + cDaemonFileWin

@@ -56,7 +56,7 @@ type CoinBlockchain interface {
 type CoinDaemon interface {
 	DaemonFilename() string
 	DaemonRunning() (bool, error)
-	StartDaemon(displayOutput bool, appFolder string, auth *models.CoinAuth) error
+	StartDaemon(displayOutput bool, appFolder string) error
 	StopDaemon(auth *models.CoinAuth) error
 }
 

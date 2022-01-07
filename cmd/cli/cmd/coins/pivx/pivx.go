@@ -777,7 +777,7 @@ func (p PIVX) SendToAddress(coinAuth *models.CoinAuth, address string, amount fl
 	return respStruct, nil
 }
 
-func (p PIVX) StartDaemon(displayOutput bool, appFolder string, auth *models.CoinAuth) error {
+func (p PIVX) StartDaemon(displayOutput bool, appFolder string) error {
 	b, _ := p.DaemonRunning()
 	if b {
 		return nil

@@ -673,7 +673,7 @@ func (r Rapids) StakingStatus(auth *models.CoinAuth) (models.RPDStakingStatus, e
 	return respStruct, nil
 }
 
-func (r Rapids) StartDaemon(displayOutput bool, appFolder string, auth *models.CoinAuth) error {
+func (r Rapids) StartDaemon(displayOutput bool, appFolder string) error {
 	b, _ := r.DaemonRunning()
 	if b {
 		return nil

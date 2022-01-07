@@ -748,7 +748,7 @@ func (l LitecoinPlus) SendToAddress(coinAuth *models.CoinAuth, address string, a
 	return respStruct, nil
 }
 
-func (l LitecoinPlus) StartDaemon(displayOutput bool, appFolder string, auth *models.CoinAuth) error {
+func (l LitecoinPlus) StartDaemon(displayOutput bool, appFolder string) error {
 	b, _ := l.DaemonRunning()
 	if b {
 		return nil

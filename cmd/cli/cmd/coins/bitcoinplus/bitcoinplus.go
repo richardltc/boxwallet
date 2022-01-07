@@ -635,7 +635,7 @@ func (x *XBC) StakingInfo(coinAuth *models.CoinAuth) (models.XBCStakingInfo, err
 	return respStruct, nil
 }
 
-func (x XBC) StartDaemon(displayOutput bool, appFolder string, auth *models.CoinAuth) error {
+func (x XBC) StartDaemon(displayOutput bool, appFolder string) error {
 	b, _ := x.DaemonRunning()
 	if b {
 		return nil
