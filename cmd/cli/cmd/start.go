@@ -140,7 +140,7 @@ var startCmd = &cobra.Command{
 		coinAuth.Port = confDB.Port
 
 		// Start the coin daemon server if required.
-		if err := coinDaemon.StartDaemon(true, appHomeDir, &coinAuth); err != nil {
+		if err := coinDaemon.StartDaemon(true, appHomeDir); err != nil {
 			log.Fatalf("failed to run "+coinDaemon.DaemonFilename()+": %v", err)
 		}
 
