@@ -834,7 +834,7 @@ func setTXFee(coinAuth *models.CoinAuth) (returnResp models.GenericResponse, err
 	return respStruct, nil
 }
 
-func (r ReddCoin) StartDaemon(displayOutput bool, appFolder string, auth *models.CoinAuth) error {
+func (r ReddCoin) StartDaemon(displayOutput bool, appFolder string) error {
 	b, _ := r.DaemonRunning()
 	if b {
 		return nil

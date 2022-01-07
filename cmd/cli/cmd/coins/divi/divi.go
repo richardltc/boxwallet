@@ -912,7 +912,7 @@ func (d Divi) SendToAddress(coinAuth *models.CoinAuth, address string, amount fl
 	return respStruct, nil
 }
 
-func (d Divi) StartDaemon(displayOutput bool, appFolder string, auth *models.CoinAuth) error {
+func (d Divi) StartDaemon(displayOutput bool, appFolder string) error {
 	b, _ := d.DaemonRunning()
 	if b {
 		return nil

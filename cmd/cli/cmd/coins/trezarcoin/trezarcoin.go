@@ -769,7 +769,7 @@ func (t Trezarcoin) StakingInfo(auth *models.CoinAuth) (models.TZCStakingInfo, e
 	return respStruct, nil
 }
 
-func (t Trezarcoin) StartDaemon(displayOutput bool, appFolder string, auth *models.CoinAuth) error {
+func (t Trezarcoin) StartDaemon(displayOutput bool, appFolder string) error {
 	b, _ := t.DaemonRunning()
 	if b {
 		return nil

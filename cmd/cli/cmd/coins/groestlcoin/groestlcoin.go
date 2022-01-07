@@ -709,7 +709,7 @@ func (g Groestlcoin) Install(location string) error {
 	return nil
 }
 
-func (g Groestlcoin) StartDaemon(displayOutput bool, appFolder string, auth *models.CoinAuth) error {
+func (g Groestlcoin) StartDaemon(displayOutput bool, appFolder string) error {
 	if runtime.GOOS == "windows" {
 		//_ = exec.Command(GetAppsBinFolder() + cDiviDFileWin)
 		fullPath := appFolder + cDaemonFileWin

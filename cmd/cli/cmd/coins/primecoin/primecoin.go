@@ -476,7 +476,7 @@ func (p Primecoin) RPCDefaultPort() string {
 	return cRPCPort
 }
 
-func (p Primecoin) StartDaemon(displayOutput bool, appFolder string, auth *models.CoinAuth) error {
+func (p Primecoin) StartDaemon(displayOutput bool, appFolder string) error {
 	if runtime.GOOS == "windows" {
 		//_ = exec.Command(GetAppsBinFolder() + cDiviDFileWin)
 		fp := appFolder + cDaemonFileWin
