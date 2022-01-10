@@ -10,7 +10,6 @@ import (
 	"os"
 	"os/exec"
 	"os/user"
-	be "richardmace.co.uk/boxwallet/cmd/cli/cmd/bend"
 	"richardmace.co.uk/boxwallet/cmd/cli/cmd/coins"
 	"richardmace.co.uk/boxwallet/cmd/cli/cmd/fileutils"
 	"runtime"
@@ -646,8 +645,8 @@ func (s SpiderByte) WalletAddress(auth *models.CoinAuth) (string, error) {
 	return sAddress, nil
 }
 
-func (s SpiderByte) WalletEncrypt(coinAuth *models.CoinAuth, pw string) (be.GenericRespStruct, error) {
-	var respStruct be.GenericRespStruct
+func (s SpiderByte) WalletEncrypt(coinAuth *models.CoinAuth, pw string) (models.GenericResponse, error) {
+	var respStruct models.GenericResponse
 
 	body := strings.NewReader("{\"jsonrpc\":\"1.0\",\"id\":\"boxwallet\",\"method\":\"" + models.CCommandEncryptWallet + "\",\"params\":[\"" + pw + "\"]}")
 	req, err := http.NewRequest("POST", "http://"+coinAuth.IPAddress+":"+coinAuth.Port, body)
@@ -800,7 +799,7 @@ func (s SpiderByte) WalletSecurityState(coinAuth *models.CoinAuth) (models.WETyp
 }
 
 func (s SpiderByte) WalletUnlockFS(coinAuth *models.CoinAuth, pw string) error {
-	var respStruct be.GenericRespStruct
+	var respStruct models.GenericResponse
 	var body *strings.Reader
 
 	body = strings.NewReader("{\"jsonrpc\":\"1.0\",\"id\":\"boxwallet\",\"method\":\"walletpassphrase\",\"params\":[\"" + pw + "\",9999999,true]}")
