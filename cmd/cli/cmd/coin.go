@@ -17,21 +17,20 @@ package cmd
 
 import (
 	"fmt"
+	"github.com/AlecAivazis/survey/v2"
 	"log"
 	"os"
-	dvt "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/devault"
-
-	"github.com/AlecAivazis/survey/v2"
 	"richardmace.co.uk/boxwallet/cmd/cli/cmd/app"
 	be "richardmace.co.uk/boxwallet/cmd/cli/cmd/bend"
 	"richardmace.co.uk/boxwallet/cmd/cli/cmd/coins"
 	xbc "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/bitcoinplus"
 	denarius "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/denarius"
+	dvt "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/devault"
 	dgb "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/digibyte"
 	divi "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/divi"
 	ftc "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/feathercoin"
 	grs "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/groestlcoin"
-	lcp "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/litecoinplus"
+	ltc "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/litecoin"
 	ppc "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/peercoin"
 	phr "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/phore"
 	pivx "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/pivx"
@@ -85,7 +84,7 @@ var coinCmd = &cobra.Command{
 				coins.CCoinNameDigiByte,
 				coins.CCoinNameFeathercoin,
 				coins.CCoinNameGroestlcoin,
-				//coins.CCoinNameLitecoinPlus,
+				coins.CCoinNameLitecoin,
 				coins.CCoinNamePeercoin,
 				//coins.CCoinNamePhore,
 				coins.CCoinNamePIVX,
@@ -147,11 +146,11 @@ var coinCmd = &cobra.Command{
 			coinName = grs.Groestlcoin{}
 			coinRPC = grs.Groestlcoin{}
 			coinType = models.PTGroestlcoin
-		case coins.CCoinNameLitecoinPlus:
-			coin = lcp.LitecoinPlus{}
-			coinName = lcp.LitecoinPlus{}
-			coinRPC = lcp.LitecoinPlus{}
-			coinType = models.PTLitecoinPlus
+		case coins.CCoinNameLitecoin:
+			coin = ltc.Litecoin{}
+			coinName = ltc.Litecoin{}
+			coinRPC = ltc.Litecoin{}
+			coinType = models.PTLitecoin
 		case coins.CCoinNamePeercoin:
 			coin = ppc.Peercoin{}
 			coinName = ppc.Peercoin{}
@@ -232,7 +231,7 @@ var coinCmd = &cobra.Command{
 
 		sCoinName := coinName.CoinName()
 
-		// Now add the coin to the coin database
+		// Now add the coin to the coin database.
 		var dbCoinDetails database.CoinDetails
 		dbCoinDetails.Bootstrap(appWorkingDir)
 
