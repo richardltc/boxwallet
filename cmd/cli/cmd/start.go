@@ -22,7 +22,7 @@ import (
 	"os"
 	divi "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/divi"
 	grs "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/groestlcoin"
-	lcp "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/litecoinplus"
+	ltc "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/litecoin"
 	ppc "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/peercoin"
 	pivx "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/pivx"
 	rdd "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/reddcoin"
@@ -67,7 +67,7 @@ var startCmd = &cobra.Command{
 			log.Fatal("Unable to get appFilename: " + err.Error())
 		}
 
-		// Make sure the config file exists, and if not, force user to use "coin" command first...
+		// Make sure the config file exists, and if not, force user to use "coin" command first....
 		if _, err := os.Stat(appHomeDir + conf.ConfFile()); os.IsNotExist(err) {
 			log.Fatal("Unable to determine coin type. Please run " + appFileName + " coin  first")
 		}
@@ -98,9 +98,9 @@ var startCmd = &cobra.Command{
 		case models.PTGroestlcoin:
 			coinDaemon = grs.Groestlcoin{}
 			coinName = grs.Groestlcoin{}
-		case models.PTLitecoinPlus:
-			coinDaemon = lcp.LitecoinPlus{}
-			coinName = lcp.LitecoinPlus{}
+		case models.PTLitecoin:
+			coinDaemon = ltc.Litecoin{}
+			coinName = ltc.Litecoin{}
 		case models.PTPeercoin:
 			coinDaemon = ppc.Peercoin{}
 			coinName = ppc.Peercoin{}
