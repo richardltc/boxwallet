@@ -32,7 +32,7 @@ import (
 	xbc "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/bitcoinplus"
 	divi "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/divi"
 	grs "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/groestlcoin"
-	lcp "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/litecoinplus"
+	ltc "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/litecoin"
 	ppc "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/peercoin"
 	pivx "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/pivx"
 	xpm "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/primecoin"
@@ -44,7 +44,6 @@ import (
 	"richardmace.co.uk/boxwallet/cmd/cli/cmd/models"
 	"strconv"
 	"time"
-	// be "richardmace.co.uk/boxwallet/cmd/cli/cmd/bend"
 )
 
 // stopCmd represents the stop command
@@ -72,7 +71,7 @@ var stopCmd = &cobra.Command{
 			log.Fatal("Unable to get appFilename: " + err.Error())
 		}
 
-		// Make sure the config file exists, and if not, force user to use "coin" command first...
+		// Make sure the config file exists, and if not, force user to use "coin" command first....
 		if _, err := os.Stat(appHomeDir + conf.ConfFile()); os.IsNotExist(err) {
 			log.Fatal("Unable to determine coin type. Please run " + appFileName + " coin  first")
 		}
@@ -94,8 +93,8 @@ var stopCmd = &cobra.Command{
 		case models.PTFeathercoin:
 		case models.PTGroestlcoin:
 			coinDaemon = grs.Groestlcoin{}
-		case models.PTLitecoinPlus:
-			coinDaemon = lcp.LitecoinPlus{}
+		case models.PTLitecoin:
+			coinDaemon = ltc.Litecoin{}
 		case models.PTPeercoin:
 			coinDaemon = ppc.Peercoin{}
 		case models.PTPhore:
@@ -117,7 +116,6 @@ var stopCmd = &cobra.Command{
 			log.Fatal("unable to determine ProjectType")
 		}
 
-		//coin.Bootstrap(confDB.RPCuser, confDB.RPCpassword, confDB.ServerIP, confDB.Port)
 		var coinAuth models.CoinAuth
 		coinAuth.RPCUser = confDB.RPCuser
 		coinAuth.RPCPassword = confDB.RPCpassword
