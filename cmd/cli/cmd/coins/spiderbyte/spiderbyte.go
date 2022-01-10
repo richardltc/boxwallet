@@ -268,7 +268,7 @@ func (s SpiderByte) DownloadCoin(location string) error {
 	}
 
 	// Unarchive the files
-	if err := l.unarchiveFile(fullFilePath, location); err != nil {
+	if err := s.unarchiveFile(fullFilePath, location); err != nil {
 		return err
 	}
 	return nil
@@ -565,8 +565,8 @@ func (s SpiderByte) SendToAddress(coinAuth *models.CoinAuth, address string, amo
 	return respStruct, nil
 }
 
-func (l LitecoinPlus) StartDaemon(displayOutput bool, appFolder string) error {
-	b, _ := l.DaemonRunning()
+func (s SpiderByte) StartDaemon(displayOutput bool, appFolder string) error {
+	b, _ := s.DaemonRunning()
 	if b {
 		return nil
 	}
@@ -599,7 +599,7 @@ func (l LitecoinPlus) StartDaemon(displayOutput bool, appFolder string) error {
 	return nil
 }
 
-func (l LitecoinPlus) StopDaemon(auth *models.CoinAuth) error {
+func (s SpiderByte) StopDaemon(auth *models.CoinAuth) error {
 	//var respStruct models.GenericResponse
 
 	body := strings.NewReader("{\"jsonrpc\":\"1.0\",\"id\":\"curltext\",\"method\":\"stop\",\"params\":[]}")
@@ -627,17 +627,17 @@ func (l LitecoinPlus) StopDaemon(auth *models.CoinAuth) error {
 	return nil
 }
 
-func (l LitecoinPlus) TipAddress() string {
+func (s SpiderByte) TipAddress() string {
 	return cTipAddress
 }
 
-func (l LitecoinPlus) WalletAddress(auth *models.CoinAuth) (string, error) {
+func (s SpiderByte) WalletAddress(auth *models.CoinAuth) (string, error) {
 	var sAddress string
-	addresses, _ := l.ListReceivedByAddress(auth, true)
+	addresses, _ := s.ListReceivedByAddress(auth, true)
 	if len(addresses.Result) > 0 {
 		sAddress = addresses.Result[0].Address
 	} else {
-		r, err := l.NewAddress(auth)
+		r, err := s.NewAddress(auth)
 		if err != nil {
 			return "", err
 		}
@@ -646,7 +646,7 @@ func (l LitecoinPlus) WalletAddress(auth *models.CoinAuth) (string, error) {
 	return sAddress, nil
 }
 
-func (l LitecoinPlus) WalletEncrypt(coinAuth *models.CoinAuth, pw string) (be.GenericRespStruct, error) {
+func (s SpiderByte) WalletEncrypt(coinAuth *models.CoinAuth, pw string) (be.GenericRespStruct, error) {
 	var respStruct be.GenericRespStruct
 
 	body := strings.NewReader("{\"jsonrpc\":\"1.0\",\"id\":\"boxwallet\",\"method\":\"" + models.CCommandEncryptWallet + "\",\"params\":[\"" + pw + "\"]}")
@@ -674,7 +674,7 @@ func (l LitecoinPlus) WalletEncrypt(coinAuth *models.CoinAuth, pw string) (be.Ge
 	return respStruct, nil
 }
 
-func (l LitecoinPlus) WalletInfo(auth *models.CoinAuth) (models.DiviWalletInfo, error) {
+func (s SpiderByte) WalletInfo(auth *models.CoinAuth) (models.DiviWalletInfo, error) {
 	var respStruct models.DiviWalletInfo
 
 	body := strings.NewReader("{\"jsonrpc\":\"1.0\",\"id\":\"boxwallet\",\"method\":\"" + cCommandGetWalletInfo + "\",\"params\":[]}")
@@ -701,7 +701,7 @@ func (l LitecoinPlus) WalletInfo(auth *models.CoinAuth) (models.DiviWalletInfo, 
 	return respStruct, nil
 }
 
-func (l LitecoinPlus) WalletLoadingStatus(auth *models.CoinAuth) models.WLSType {
+func (s SpiderByte) WalletLoadingStatus(auth *models.CoinAuth) models.WLSType {
 	body := strings.NewReader("{\"jsonrpc\":\"1.0\",\"id\":\"boxwallet\",\"method\":\"" + models.CCommandGetInfo + "\",\"params\":[]}")
 	req, err := http.NewRequest("POST", "http://"+auth.IPAddress+":"+auth.Port, body)
 	if err != nil {
@@ -739,8 +739,8 @@ func (l LitecoinPlus) WalletLoadingStatus(auth *models.CoinAuth) models.WLSType 
 	return models.WLSTReady
 }
 
-func (l LitecoinPlus) WalletNeedsEncrypting(coinAuth *models.CoinAuth) (bool, error) {
-	wi, err := l.WalletInfo(coinAuth)
+func (s SpiderByte) WalletNeedsEncrypting(coinAuth *models.CoinAuth) (bool, error) {
+	wi, err := s.WalletInfo(coinAuth)
 	if err != nil {
 		return true, errors.New("Unable to perform WalletInfo " + err.Error())
 	}
@@ -752,8 +752,8 @@ func (l LitecoinPlus) WalletNeedsEncrypting(coinAuth *models.CoinAuth) (bool, er
 	return false, nil
 }
 
-func (l LitecoinPlus) WalletResync(appFolder string) error {
-	daemonRunning, err := l.DaemonRunning()
+func (s SpiderByte) WalletResync(appFolder string) error {
+	daemonRunning, err := s.DaemonRunning()
 	if err != nil {
 		return errors.New("Unable to determine DaemonRunning: " + err.Error())
 	}
@@ -780,8 +780,8 @@ func (l LitecoinPlus) WalletResync(appFolder string) error {
 	return nil
 }
 
-func (l LitecoinPlus) WalletSecurityState(coinAuth *models.CoinAuth) (models.WEType, error) {
-	wi, err := l.WalletInfo(coinAuth)
+func (s SpiderByte) WalletSecurityState(coinAuth *models.CoinAuth) (models.WEType, error) {
+	wi, err := s.WalletInfo(coinAuth)
 	if err != nil {
 		return models.WETUnknown, errors.New("Unable to GetWalletSecurityState: " + err.Error())
 	}
@@ -799,7 +799,7 @@ func (l LitecoinPlus) WalletSecurityState(coinAuth *models.CoinAuth) (models.WET
 	}
 }
 
-func (l LitecoinPlus) WalletUnlockFS(coinAuth *models.CoinAuth, pw string) error {
+func (s SpiderByte) WalletUnlockFS(coinAuth *models.CoinAuth, pw string) error {
 	var respStruct be.GenericRespStruct
 	var body *strings.Reader
 
@@ -847,7 +847,7 @@ func (l LitecoinPlus) WalletUnlockFS(coinAuth *models.CoinAuth, pw string) error
 //	return nil
 //}
 
-func (l LitecoinPlus) WalletUnlock(coinAuth *models.CoinAuth, pw string) error {
+func (s SpiderByte) WalletUnlock(coinAuth *models.CoinAuth, pw string) error {
 	var respStruct models.GenericResponse
 
 	body := strings.NewReader("{\"jsonrpc\":\"1.0\",\"id\":\"curltext\",\"method\":\"walletpassphrase\",\"params\":[\"" + pw + "\",0]}")
@@ -874,7 +874,7 @@ func (l LitecoinPlus) WalletUnlock(coinAuth *models.CoinAuth, pw string) error {
 	return nil
 }
 
-func (l LitecoinPlus) UpdateTickerInfo() (ticker models.DiviTicker, err error) {
+func (s SpiderByte) UpdateTickerInfo() (ticker models.DiviTicker, err error) {
 	resp, err := http.Get("https://ticker.neist.io/DIVI")
 	if err != nil {
 		return ticker, err
@@ -892,7 +892,7 @@ func (l LitecoinPlus) UpdateTickerInfo() (ticker models.DiviTicker, err error) {
 	return ticker, nil
 }
 
-func (l *LitecoinPlus) unarchiveFile(fullFilePath, location string) error {
+func (s *SpiderByte) unarchiveFile(fullFilePath, location string) error {
 	if err := archiver.Unarchive(fullFilePath, location); err != nil {
 		return fmt.Errorf("unable to unarchive file: %v - %v", fullFilePath, err)
 	}
