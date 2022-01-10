@@ -463,7 +463,7 @@ func (s Syscoin) SendToAddress(coinAuth *models.CoinAuth, address string, amount
 	return respStruct, nil
 }
 
-func (s Syscoin) StartDaemon(displayOutput bool, appFolder string, auth *models.CoinAuth) error {
+func (s Syscoin) StartDaemon(displayOutput bool, appFolder string) error {
 	b, _ := s.DaemonRunning()
 	if b {
 		return nil
@@ -485,6 +485,7 @@ func (s Syscoin) StartDaemon(displayOutput bool, appFolder string, auth *models.
 		//if err != nil {
 		//	return err
 		//}
+
 		if err := cmdRun.Start(); err != nil {
 			return err
 		}
@@ -500,26 +501,26 @@ func (s Syscoin) StartDaemon(displayOutput bool, appFolder string, auth *models.
 
 	// If it does, load it, if not, create it.
 
-	wExists, err := s.WalletExists()
-	if err != nil {
-		return err
-	}
+	//wExists, err := s.WalletExists()
+	//if err != nil {
+	//	return err
+	//}
 
-	if !wExists {
-		// The wallet doesn't exist - When you create it, it's auto loaded
-		err := s.WalletCreate(auth)
-		if err != nil {
-			return err
-		}
-	}
+	//if !wExists {
+	//	// The wallet doesn't exist - When you create it, it's auto loaded
+	//	err := s.WalletCreate(auth)
+	//	if err != nil {
+	//		return err
+	//	}
+	//}
 
-	wl := s.WalletLoaded(auth)
-	if !wl {
-		err := s.WalletLoad(auth)
-		if err != nil {
-			return err
-		}
-	}
+	//wl := s.WalletLoaded(auth)
+	//if !wl {
+	//	err := s.WalletLoad(auth)
+	//	if err != nil {
+	//		return err
+	//	}
+	//}
 
 	return nil
 }
