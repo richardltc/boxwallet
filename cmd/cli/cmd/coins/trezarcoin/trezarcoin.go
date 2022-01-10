@@ -210,9 +210,9 @@ func (t Trezarcoin) CoinNameAbbrev() string {
 func (t Trezarcoin) DaemonFilename() string {
 	if runtime.GOOS == "windows" {
 		return cDaemonFileWin
-	} else {
-		return cDaemonFileLin
 	}
+
+	return cDaemonFileLin
 }
 
 func (t Trezarcoin) DaemonRunning() (bool, error) {
@@ -425,17 +425,17 @@ func latestDownloadFile(ghInfo *models.GithubInfo) (string, error) {
 	var sFile string
 	switch runtime.GOOS {
 	case "windows":
-		sFile = archStrToFile("win64", ghInfo)
+		return "", errors.New("windows is not currently supported for :" + cCoinName)
 	case "linux":
 		switch runtime.GOARCH {
 		case "arm":
-			sFile = archStrToFile("arm", ghInfo)
+			sFile = archStrToFile(cDownloadFileArm32, ghInfo)
 		case "arm64":
-			sFile = archStrToFile("aarch64", ghInfo)
+			return "", errors.New("arm64 is not currently supported for :" + cCoinName)
 		case "386":
 			return "", errors.New("linux 386 is not currently supported for :" + cCoinName)
 		case "amd64":
-			sFile = archStrToFile("x86_64", ghInfo)
+			sFile = archStrToFile(cDownloadFileLin64, ghInfo)
 		}
 	}
 
@@ -450,17 +450,17 @@ func latestDownloadFileURL(ghInfo *models.GithubInfo) (string, error) {
 	var sURL string
 	switch runtime.GOOS {
 	case "windows":
-		sURL = archStrToFileDownloadURL("win64", ghInfo)
+		return "", errors.New("windows is not currently supported for :" + cCoinName)
 	case "linux":
 		switch runtime.GOARCH {
 		case "arm":
-			sURL = archStrToFileDownloadURL("arm", ghInfo)
+			sURL = archStrToFileDownloadURL(cDownloadFileArm32, ghInfo)
 		case "arm64":
-			sURL = archStrToFileDownloadURL("aarch64", ghInfo)
+			return "", errors.New("arm 64 is not currently supported for :" + cCoinName)
 		case "386":
 			return "", errors.New("linux 386 is not currently supported for :" + cCoinName)
 		case "amd64":
-			sURL = archStrToFileDownloadURL("x86_64", ghInfo)
+			sURL = archStrToFileDownloadURL(cDownloadFileLin64, ghInfo)
 		}
 	}
 
