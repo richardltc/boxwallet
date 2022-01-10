@@ -1,4 +1,4 @@
-package litecoinplus
+package spiderbyte
 
 import (
 	"bytes"
@@ -24,8 +24,8 @@ import (
 )
 
 const (
-	cCoinName       string = "LitecoinPlus"
-	cCoinNameAbbrev string = "LCP"
+	cCoinName       string = "SpiderByte"
+	cCoinNameAbbrev string = "SBYTE"
 
 	cHomeDir    string = ".LitecoinPlus"
 	cHomeDirWin string = "litecoinplus"
@@ -39,7 +39,6 @@ const (
 	cExtractedDirWindows = "divi-" + cCoreVersion + "\\"
 
 	cDownloadURL = "https://litecoinplus.co/downloads/"
-	//cDownloadURLBS string = "https://snapshots.diviproject.org/dist/"
 
 	cConfFile string = "LitecoinPlus.conf"
 	//cCliFile       string = "divi-cli"
@@ -50,7 +49,7 @@ const (
 	//cTxFileWin     string = "divi-tx.exe"
 
 	// divi.conf file constants.
-	cRPCUser string = "litecoinplusrpc"
+	cRPCUser string = "spiderbyterpc"
 	cRPCPort string = "44350"
 
 	cTipAddress string = "XSkTNFjTUA2fhexZH271GiPzkhJGknV38K"
@@ -76,7 +75,7 @@ const (
 	cCommandDumpHDInfo            string = "dumphdinfo" // ./divi-cli dumphdinfo
 )
 
-type LitecoinPlus struct {
+type SpiderByte struct {
 	RPCUser     string
 	RPCPassword string
 	IPAddress   string
@@ -85,22 +84,22 @@ type LitecoinPlus struct {
 
 var gLastBCSyncPos float64 = 0
 
-func (l LitecoinPlus) Bootstrap(rpcUser, rpcPassword, ip, port string) {
-	l.RPCUser = rpcUser
-	l.RPCPassword = rpcPassword
-	l.IPAddress = ip
+func (s SpiderByte) Bootstrap(rpcUser, rpcPassword, ip, port string) {
+	s.RPCUser = rpcUser
+	s.RPCPassword = rpcPassword
+	s.IPAddress = ip
 	if port == "" {
-		l.Port = cRPCPort
+		s.Port = cRPCPort
 	} else {
-		l.Port = port
+		s.Port = port
 	}
 }
 
-func (l LitecoinPlus) AbbreviatedCoinName() string {
+func (s SpiderByte) AbbreviatedCoinName() string {
 	return cCoinNameAbbrev
 }
 
-func (l LitecoinPlus) AllBinaryFilesExist(dir string) (bool, error) {
+func (s SpiderByte) AllBinaryFilesExist(dir string) (bool, error) {
 	if runtime.GOOS == "windows" {
 		if !fileutils.FileExists(dir + cDaemonFileWin) {
 			return false, nil
@@ -114,8 +113,8 @@ func (l LitecoinPlus) AllBinaryFilesExist(dir string) (bool, error) {
 	return true, nil
 }
 
-func (l LitecoinPlus) AnyAddresses(auth *models.CoinAuth) (bool, error) {
-	addresses, err := l.ListReceivedByAddress(auth, false)
+func (s SpiderByte) AnyAddresses(auth *models.CoinAuth) (bool, error) {
+	addresses, err := s.ListReceivedByAddress(auth, false)
 	if err != nil {
 		return false, err
 	}
@@ -126,8 +125,8 @@ func (l LitecoinPlus) AnyAddresses(auth *models.CoinAuth) (bool, error) {
 }
 
 // BlockchainDataExists - Returns true if the Blockchain data exists for the specified coin
-func (l LitecoinPlus) BlockchainDataExists() (bool, error) {
-	coinDir, err := l.HomeDirFullPath()
+func (s SpiderByte) BlockchainDataExists() (bool, error) {
+	coinDir, err := s.HomeDirFullPath()
 	if err != nil {
 		return false, errors.New("unable to HomeDirFullPath - BlockchainDataExists")
 	}
@@ -146,7 +145,7 @@ func (l LitecoinPlus) BlockchainDataExists() (bool, error) {
 	return false, nil
 }
 
-func (l LitecoinPlus) BlockchainInfo(auth *models.CoinAuth) (models.DiviBlockchainInfo, error) {
+func (s SpiderByte) BlockchainInfo(auth *models.CoinAuth) (models.DiviBlockchainInfo, error) {
 	var respStruct models.DiviBlockchainInfo
 
 	body := strings.NewReader("{\"jsonrpc\":\"1.0\",\"id\":\"curltext\",\"method\":\"getblockchaininfo\",\"params\":[]}")
@@ -174,8 +173,8 @@ func (l LitecoinPlus) BlockchainInfo(auth *models.CoinAuth) (models.DiviBlockcha
 	return respStruct, nil
 }
 
-func (l LitecoinPlus) BlockchainIsSynced(coinAuth *models.CoinAuth) (bool, error) {
-	bci, err := l.BlockchainInfo(coinAuth)
+func (s SpiderByte) BlockchainIsSynced(coinAuth *models.CoinAuth) (bool, error) {
+	bci, err := s.BlockchainInfo(coinAuth)
 	if err != nil {
 		return false, err
 	}
@@ -187,19 +186,19 @@ func (l LitecoinPlus) BlockchainIsSynced(coinAuth *models.CoinAuth) (bool, error
 	return false, nil
 }
 
-func (l LitecoinPlus) ConfFile() string {
+func (s SpiderByte) ConfFile() string {
 	return cConfFile
 }
 
-func (l LitecoinPlus) CoinName() string {
+func (s SpiderByte) CoinName() string {
 	return cCoinName
 }
 
-func (l LitecoinPlus) CoinNameAbbrev() string {
+func (s SpiderByte) CoinNameAbbrev() string {
 	return cCoinNameAbbrev
 }
 
-func (l LitecoinPlus) DaemonFilename() string {
+func (s SpiderByte) DaemonFilename() string {
 	if runtime.GOOS == "windows" {
 		return cDaemonFileWin
 	}
@@ -207,7 +206,7 @@ func (l LitecoinPlus) DaemonFilename() string {
 	return cDaemonFileLin
 }
 
-func (l LitecoinPlus) DaemonRunning() (bool, error) {
+func (s SpiderByte) DaemonRunning() (bool, error) {
 	var err error
 
 	if runtime.GOOS == "windows" {
@@ -243,7 +242,7 @@ func (l LitecoinPlus) DaemonRunning() (bool, error) {
 
 // DownloadCoin - Downloads the Syscoin files into the spcified location.
 // "location" should just be the AppBinaryFolder ~/.boxwallet
-func (l LitecoinPlus) DownloadCoin(location string) error {
+func (s SpiderByte) DownloadCoin(location string) error {
 	var fullFilePath, fullFileDLURL string
 
 	switch runtime.GOOS {
@@ -275,7 +274,7 @@ func (l LitecoinPlus) DownloadCoin(location string) error {
 	return nil
 }
 
-func (l LitecoinPlus) HomeDir() string {
+func (s SpiderByte) HomeDir() string {
 	if runtime.GOOS == "windows" {
 		return cHomeDirWin
 	} else {
@@ -283,7 +282,7 @@ func (l LitecoinPlus) HomeDir() string {
 	}
 }
 
-func (l LitecoinPlus) HomeDirFullPath() (string, error) {
+func (s SpiderByte) HomeDirFullPath() (string, error) {
 	u, err := user.Current()
 	if err != nil {
 		return "", err
@@ -297,7 +296,7 @@ func (l LitecoinPlus) HomeDirFullPath() (string, error) {
 	}
 }
 
-func (l LitecoinPlus) Info(auth *models.CoinAuth) (models.DiviGetInfo, string, error) {
+func (s SpiderByte) Info(auth *models.CoinAuth) (models.DiviGetInfo, string, error) {
 	var respStruct models.DiviGetInfo
 
 	for i := 1; i < 50; i++ {
@@ -342,7 +341,7 @@ func (l LitecoinPlus) Info(auth *models.CoinAuth) (models.DiviGetInfo, string, e
 
 // Install - Puts the freshly downloaded files into their correct location.
 // "location" should just be the AppBinaryFolder ~/.boxwallet
-func (l LitecoinPlus) Install(location string) error {
+func (s SpiderByte) Install(location string) error {
 
 	// Copy files to correct location
 	var srcPath, sfD, dirToRemove string
@@ -385,182 +384,16 @@ func (l LitecoinPlus) Install(location string) error {
 	return nil
 }
 
-// func GetBalanceInCurrencyTxtDivi(currency string, wi *DiviWalletInfoRespStruct) string {
-// 	tBalance := wi.Result.ImmatureBalance + wi.Result.UnconfirmedBalance + wi.Result.Balance
-// 	var pricePerCoin float64
-// 	var symbol string
-
-// 	// Work out what currency
-// 	switch currency {
-// 	case "AUD":
-// 		symbol = "$"
-// 		pricePerCoin = gTicker.DIVI.Quote.USD.Price * gPricePerCoinAUD.Rates.AUD
-// 	case "USD":
-// 		symbol = "$"
-// 		pricePerCoin = gTicker.DIVI.Quote.USD.Price
-// 	case "GBP":
-// 		symbol = "£"
-// 		pricePerCoin = gTicker.DIVI.Quote.USD.Price * gPricePerCoinGBP.Rates.GBP
-// 	default:
-// 		symbol = "$"
-// 		pricePerCoin = gTicker.DIVI.Quote.USD.Price
-// 	}
-
-// 	tBalanceCurrency := pricePerCoin * tBalance
-
-// 	tBalanceCurrencyStr := humanize.FormatFloat("###,###.##", tBalanceCurrency) //humanize.Commaf(tBalanceCurrency) //FormatFloat("#,###.####", tBalanceCurrency)
-
-// 	// Work out balance
-// 	if wi.Result.ImmatureBalance > 0 {
-// 		return "Incoming......... [" + symbol + tBalanceCurrencyStr + "](fg:cyan)"
-// 	} else if wi.Result.UnconfirmedBalance > 0 {
-// 		return "Confirming....... [" + symbol + tBalanceCurrencyStr + "](fg:yellow)"
-// 	} else {
-// 		return "Currency:         [" + symbol + tBalanceCurrencyStr + "](fg:green)"
-// 	}
-// }
-
-//func GetBlockchainSyncTxtDivi(synced bool, bci *DiviBlockchainInfoRespStruct) string {
-//	s := ConvertBCVerification(bci.Result.Verificationprogress)
-//	if s == "0.0" {
-//		s = ""
-//	} else {
-//		s = s + "%"
-//	}
-//
-//	if !synced {
-//		return "Blockchain: [" + getNextProgBCIndicator(gLastBCSyncStatus) + "syncing " + sProg + " ](fg:yellow)"
-//		if bci.Result.Verificationprogress > gLastBCSyncPos {
-//			gLastBCSyncPos = bci.Result.Verificationprogress
-//			return "Blockchain:  [syncing " + s + " ](fg:yellow)"
-//		} else {
-//			gLastBCSyncPos = bci.Result.Verificationprogress
-//			return "Blockchain:  [waiting " + s + " ](fg:yellow)"
-//		}
-//	} else {
-//		return "Blockchain:  [synced " + CUtfTickBold + "](fg:green)"
-//	}
-//}
-
-//func getDiviAddNodes() ([]byte, error) {
-//	addNodesClient := http.Client{
-//		Timeout: time.Second * 3, // Maximum of 3 secs.
-//	}
-//
-//	req, err := http.NewRequest(http.MethodGet, cAddNodeURL, nil)
-//	if err != nil {
-//		return nil, err
-//	}
-//
-//	req.Header.Set("User-Agent", "boxwallet")
-//
-//	res, getErr := addNodesClient.Do(req)
-//	if getErr != nil {
-//		return nil, err
-//	}
-//
-//	body, readErr := ioutil.ReadAll(res.Body)
-//	if readErr != nil {
-//		return nil, err
-//	}
-//
-//	return body, nil
-//}
-
-//func (d *Divi) DumpHDInfoDivi() (models.DiviDumpHDInfo, error) {
-//	var respStruct models.DiviDumpHDInfo
-//
-//	body := strings.NewReader("{\"jsonrpc\":\"1.0\",\"id\":\"boxwallet\",\"method\":\"" + cCommandDumpHDInfo + "\",\"params\":[]}")
-//	req, err := http.NewRequest("POST", "http://"+d.IPAddress+":"+d.Port, body)
-//	if err != nil {
-//		return respStruct, err
-//	}
-//	req.SetBasicAuth(d.RPCUser, d.RPCPassword)
-//	req.Header.Set("Content-Type", "text/plain;")
-//
-//	resp, err := http.DefaultClient.Do(req)
-//	if err != nil {
-//		return respStruct, err
-//	}
-//	defer resp.Body.Close()
-//	bodyResp, err := ioutil.ReadAll(resp.Body)
-//	if err != nil {
-//		return respStruct, err
-//	}
-//	err = json.Unmarshal(bodyResp, &respStruct)
-//	if err != nil {
-//		return respStruct, err
-//	}
-//	return respStruct, nil
-//}
-
-//func (l *LitecoinPlus) InfoUI(spin *yacspin.Spinner) (models.DiviGetInfo, string, error) {
-//	var respStruct models.DiviGetInfo
-//
-//	for i := 1; i < 600; i++ {
-//		body := strings.NewReader("{\"jsonrpc\":\"1.0\",\"id\":\"boxwallet\",\"method\":\"" + cCommandGetInfo + "\",\"params\":[]}")
-//		req, err := http.NewRequest("POST", "http://"+d.IPAddress+":"+d.Port, body)
-//		if err != nil {
-//			return respStruct, "", err
-//		}
-//		req.SetBasicAuth(d.RPCUser, d.RPCPassword)
-//		req.Header.Set("Content-Type", "text/plain;")
-//
-//		resp, err := http.DefaultClient.Do(req)
-//		if err != nil {
-//			spin.Message(" waiting for your " + cCoinName + " wallet to respond, this could take several minutes (ctrl-c to cancel)...")
-//			time.Sleep(1 * time.Second)
-//		} else {
-//			defer resp.Body.Close()
-//			bodyResp, err := ioutil.ReadAll(resp.Body)
-//			if err != nil {
-//				return respStruct, "", err
-//			}
-//
-//			// Check to make sure we are not loading the wallet
-//			if bytes.Contains(bodyResp, []byte("Loading")) ||
-//				bytes.Contains(bodyResp, []byte("Rescanning")) ||
-//				bytes.Contains(bodyResp, []byte("Rewinding")) ||
-//				bytes.Contains(bodyResp, []byte("RPC in warm-up: Calculating money supply")) ||
-//				bytes.Contains(bodyResp, []byte("Verifying")) {
-//				// The wallet is still loading, so print message, and sleep for 1 second and try again..
-//				var errStruct models.GenericResponse
-//				err = json.Unmarshal(bodyResp, &errStruct)
-//				if err != nil {
-//					return respStruct, "", err
-//				}
-//
-//				if bytes.Contains(bodyResp, []byte("Loading")) {
-//					spin.Message(" Your " + cCoinName + " wallet is *Loading*, this could take a while...")
-//				} else if bytes.Contains(bodyResp, []byte("Rescanning")) {
-//					spin.Message(" Your " + cCoinName + " wallet is *Rescanning*, this could take a while...")
-//				} else if bytes.Contains(bodyResp, []byte("Rewinding")) {
-//					spin.Message(" Your " + cCoinName + " wallet is *Rewinding*, this could take a while...")
-//				} else if bytes.Contains(bodyResp, []byte("Verifying")) {
-//					spin.Message(" Your " + cCoinName + " wallet is *Verifying*, this could take a while...")
-//				} else if bytes.Contains(bodyResp, []byte("Calculating money supply")) {
-//					spin.Message(" Your " + cCoinName + " wallet is *Calculating money supply*, this could take a while...")
-//				}
-//				time.Sleep(1 * time.Second)
-//			} else {
-//				_ = json.Unmarshal(bodyResp, &respStruct)
-//				return respStruct, string(bodyResp), err
-//			}
-//		}
-//	}
-//	return respStruct, "", nil
-//}
-
-func (l LitecoinPlus) ListReceivedByAddress(coinAuth *models.CoinAuth, includeZero bool) (models.DiviListReceivedByAddress, error) {
+func (s SpiderByte) ListReceivedByAddress(coinAuth *models.CoinAuth, includeZero bool) (models.DiviListReceivedByAddress, error) {
 	var respStruct models.DiviListReceivedByAddress
 
-	var s string
+	var str string
 	if includeZero {
-		s = "{\"jsonrpc\":\"1.0\",\"id\":\"curltext\",\"method\":\"listreceivedbyaddress\",\"params\":[1, true]}"
+		str = "{\"jsonrpc\":\"1.0\",\"id\":\"curltext\",\"method\":\"listreceivedbyaddress\",\"params\":[1, true]}"
 	} else {
-		s = "{\"jsonrpc\":\"1.0\",\"id\":\"curltext\",\"method\":\"listreceivedbyaddress\",\"params\":[1, false]}"
+		str = "{\"jsonrpc\":\"1.0\",\"id\":\"curltext\",\"method\":\"listreceivedbyaddress\",\"params\":[1, false]}"
 	}
-	body := strings.NewReader(s)
+	body := strings.NewReader(str)
 	req, err := http.NewRequest("POST", "http://"+coinAuth.IPAddress+":"+coinAuth.Port, body)
 	if err != nil {
 		return respStruct, err
@@ -586,7 +419,7 @@ func (l LitecoinPlus) ListReceivedByAddress(coinAuth *models.CoinAuth, includeZe
 	return respStruct, nil
 }
 
-func (l LitecoinPlus) ListTransactions(auth *models.CoinAuth) (models.DiviListTransactions, error) {
+func (s SpiderByte) ListTransactions(auth *models.CoinAuth) (models.DiviListTransactions, error) {
 	var respStruct models.DiviListTransactions
 
 	body := strings.NewReader("{\"jsonrpc\":\"1.0\",\"id\":\"boxwallet\",\"method\":\"" + models.CCommandListTransactions + "\",\"params\":[]}")
@@ -615,10 +448,10 @@ func (l LitecoinPlus) ListTransactions(auth *models.CoinAuth) (models.DiviListTr
 	return respStruct, nil
 }
 
-func (l LitecoinPlus) NetworkDifficultyInfo() (float64, float64, error) {
+func (s SpiderByte) NetworkDifficultyInfo() (float64, float64, error) {
 	// https://chainz.cryptoid.info/ftc/api.dws?q=getdifficulty
 
-	resp, err := http.Get("https://chainz.cryptoid.info/" + strings.ToLower(l.CoinNameAbbrev()) + "/api.dws?q=getdifficulty")
+	resp, err := http.Get("https://chainz.cryptoid.info/" + strings.ToLower(s.CoinNameAbbrev()) + "/api.dws?q=getdifficulty")
 	if err != nil {
 		return 0, 0, err
 	}
@@ -639,7 +472,7 @@ func (l LitecoinPlus) NetworkDifficultyInfo() (float64, float64, error) {
 	return fGood, fWarning, nil
 }
 
-func (l LitecoinPlus) NewAddress(auth *models.CoinAuth) (models.DiviGetNewAddress, error) {
+func (s SpiderByte) NewAddress(auth *models.CoinAuth) (models.DiviGetNewAddress, error) {
 	var respStruct models.DiviGetNewAddress
 
 	body := strings.NewReader("{\"jsonrpc\":\"1.0\",\"id\":\"curltext\",\"method\":\"getnewaddress\",\"params\":[]}")
@@ -668,31 +501,15 @@ func (l LitecoinPlus) NewAddress(auth *models.CoinAuth) (models.DiviGetNewAddres
 	return respStruct, nil
 }
 
-//func GetNetworkDifficultyTxtDivi(difficulty float64) string {
-//	var s string
-//	if difficulty > 1000 {
-//		s = humanize.FormatFloat("#.#", difficulty/1000) + "k"
-//	} else {
-//		s = humanize.Ftoa(difficulty)
-//	}
-//	if difficulty > 6000 {
-//		return "Difficulty:  [" + s + "](fg:green)"
-//	} else if difficulty > 3000 {
-//		return "[Difficulty:  " + s + "](fg:yellow)"
-//	} else {
-//		return "[Difficulty:  " + s + "](fg:red)"
-//	}
-//}
-
-func (l LitecoinPlus) RPCDefaultUsername() string {
+func (s SpiderByte) RPCDefaultUsername() string {
 	return cRPCUser
 }
 
-func (l LitecoinPlus) RPCDefaultPort() string {
+func (s SpiderByte) RPCDefaultPort() string {
 	return cRPCPort
 }
 
-func (l LitecoinPlus) StakingStatus(auth *models.CoinAuth) (models.DiviStakingStatus, error) {
+func (s SpiderByte) StakingStatus(auth *models.CoinAuth) (models.DiviStakingStatus, error) {
 	var respStruct models.DiviStakingStatus
 
 	body := strings.NewReader("{\"jsonrpc\":\"1.0\",\"id\":\"curltext\",\"method\":\"getstakingstatus\",\"params\":[]}")
@@ -719,7 +536,7 @@ func (l LitecoinPlus) StakingStatus(auth *models.CoinAuth) (models.DiviStakingSt
 	return respStruct, nil
 }
 
-func (l LitecoinPlus) SendToAddress(coinAuth *models.CoinAuth, address string, amount float32) (returnResp models.GenericResponse, err error) {
+func (s SpiderByte) SendToAddress(coinAuth *models.CoinAuth, address string, amount float32) (returnResp models.GenericResponse, err error) {
 	var respStruct models.GenericResponse
 
 	sAmount := fmt.Sprintf("%f", amount) // sAmount == "123.456000"
