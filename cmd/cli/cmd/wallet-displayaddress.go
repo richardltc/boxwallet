@@ -34,6 +34,7 @@ import (
 	ppc "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/peercoin"
 	pivx "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/pivx"
 	rdd "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/reddcoin"
+	sbyte "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/spiderbyte"
 	tzc "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/trezarcoin"
 
 	divi "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/divi"
@@ -105,6 +106,9 @@ var displayaddressCmd = &cobra.Command{
 			coinName = rdd.ReddCoin{}
 			walletAddress = rdd.ReddCoin{}
 		case models.PTScala:
+		case models.PTSpiderByte:
+			coinName = sbyte.SpiderByte{}
+			walletAddress = sbyte.SpiderByte{}
 		case models.PTTrezarcoin:
 			coinName = tzc.Trezarcoin{}
 			walletAddress = tzc.Trezarcoin{}
