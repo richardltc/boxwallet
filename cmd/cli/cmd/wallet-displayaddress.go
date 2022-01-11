@@ -31,6 +31,7 @@ import (
 	"richardmace.co.uk/boxwallet/cmd/cli/cmd/coins"
 	xbc "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/bitcoinplus"
 	grs "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/groestlcoin"
+	ltc "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/litecoin"
 	ppc "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/peercoin"
 	pivx "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/pivx"
 	rdd "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/reddcoin"
@@ -94,6 +95,9 @@ var displayaddressCmd = &cobra.Command{
 		case models.PTGroestlcoin:
 			coinName = grs.Groestlcoin{}
 			walletAddress = grs.Groestlcoin{}
+		case models.PTLitecoin:
+			coinName = ltc.Litecoin{}
+			walletAddress = ltc.Litecoin{}
 		case models.PTPhore:
 		case models.PTPeercoin:
 			coinName = ppc.Peercoin{}
