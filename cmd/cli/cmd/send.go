@@ -16,6 +16,7 @@ import (
 	ppc "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/peercoin"
 	pivx "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/pivx"
 	rdd "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/reddcoin"
+	sbyte "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/spiderbyte"
 	tzc "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/trezarcoin"
 	"richardmace.co.uk/boxwallet/cmd/cli/cmd/conf"
 	"richardmace.co.uk/boxwallet/cmd/cli/cmd/models"
@@ -113,6 +114,13 @@ to quickly create a Cobra application.`,
 			walletValidateAddress = rdd.ReddCoin{}
 			sendToAddress = rdd.ReddCoin{}
 		case models.PTScala:
+		case models.PTSpiderByte:
+			coinName = sbyte.SpiderByte{}
+			daemonRunning = sbyte.SpiderByte{}
+			walletSecurityState = sbyte.SpiderByte{}
+			walletUnlock = sbyte.SpiderByte{}
+			walletValidateAddress = sbyte.SpiderByte{}
+			sendToAddress = sbyte.SpiderByte{}
 		case models.PTTrezarcoin:
 			coinName = tzc.Trezarcoin{}
 			daemonRunning = tzc.Trezarcoin{}
@@ -144,7 +152,7 @@ to quickly create a Cobra application.`,
 			}
 		}
 
-		// Then ask for the amount they want to send
+		// Then ask for the amount they want to send.
 		var amount float32
 		promptAmount := &survey.Input{
 			Message: "How much " + coinName.CoinNameAbbrev() + " would you like to send?",
