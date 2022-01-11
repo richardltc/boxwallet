@@ -27,6 +27,7 @@ import (
 	ppc "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/peercoin"
 	pivx "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/pivx"
 	rdd "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/reddcoin"
+	sbyte "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/spiderbyte"
 	tzc "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/trezarcoin"
 	"richardmace.co.uk/boxwallet/cmd/cli/cmd/conf"
 	"richardmace.co.uk/boxwallet/cmd/cli/cmd/models"
@@ -67,7 +68,7 @@ var backupCmd = &cobra.Command{
 			log.Fatal("Unable to get appFilename: " + err.Error())
 		}
 
-		// Make sure the config file exists, and if not, force user to use "coin" command first...
+		// Make sure the config file exists, and if not, force user to use "coin" command first..
 		if _, err := os.Stat(appHomeDir + conf.ConfFile()); os.IsNotExist(err) {
 			log.Fatal("Unable to determine coin type. Please run " + appFileName + " coin  first")
 		}
@@ -116,6 +117,11 @@ var backupCmd = &cobra.Command{
 			walletSecurityState = rdd.ReddCoin{}
 			walletBackup = rdd.ReddCoin{}
 		case models.PTScala:
+		case models.PTSpiderByte:
+			coinName = sbyte.SpiderByte{}
+			daemonRunning = sbyte.SpiderByte{}
+			walletSecurityState = sbyte.SpiderByte{}
+			walletBackup = sbyte.SpiderByte{}
 		case models.PTTrezarcoin:
 			coinName = tzc.Trezarcoin{}
 			daemonRunning = tzc.Trezarcoin{}
