@@ -28,6 +28,7 @@ import (
 	pivx "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/pivx"
 	rpd "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/rapids"
 	rdd "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/reddcoin"
+	sbyte "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/spiderbyte"
 	tzc "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/trezarcoin"
 	"richardmace.co.uk/boxwallet/cmd/cli/cmd/conf"
 	"richardmace.co.uk/boxwallet/cmd/cli/cmd/wallet"
@@ -106,6 +107,9 @@ var unlockfsCmd = &cobra.Command{
 			walletSecurityState = rdd.ReddCoin{}
 			walletUnlockFS = rdd.ReddCoin{}
 		case models.PTScala:
+		case models.PTSpiderByte:
+			walletSecurityState = sbyte.SpiderByte{}
+			walletUnlockFS = sbyte.SpiderByte{}
 		case models.PTTrezarcoin:
 			walletSecurityState = tzc.Trezarcoin{}
 			walletUnlockFS = tzc.Trezarcoin{}
