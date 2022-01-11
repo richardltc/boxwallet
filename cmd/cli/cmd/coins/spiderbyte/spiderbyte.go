@@ -630,6 +630,22 @@ func (s SpiderByte) TipAddress() string {
 	return cTipAddress
 }
 
+func (s SpiderByte) ValidateAddress(ad string) bool {
+	// First, work out what the coin type is
+	// If the length of the address is not exactly 34 characters...
+	if len(ad) != 34 {
+		return false
+	}
+	sFirst := ad[0]
+
+	// 68 = UTF for D
+	if sFirst != 68 {
+		return false
+	}
+
+	return true
+}
+
 func (s SpiderByte) WalletAddress(auth *models.CoinAuth) (string, error) {
 	var sAddress string
 	addresses, _ := s.ListReceivedByAddress(auth, true)
@@ -697,6 +713,7 @@ func (s SpiderByte) WalletInfo(auth *models.CoinAuth) (models.DiviWalletInfo, er
 	if err != nil {
 		return respStruct, err
 	}
+
 	return respStruct, nil
 }
 
