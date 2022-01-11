@@ -13,6 +13,7 @@ import (
 	"richardmace.co.uk/boxwallet/cmd/cli/cmd/coins"
 	xbc "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/bitcoinplus"
 	divi "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/divi"
+	ltc "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/litecoin"
 	ppc "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/peercoin"
 	pivx "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/pivx"
 	rdd "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/reddcoin"
@@ -90,6 +91,13 @@ to quickly create a Cobra application.`,
 			sendToAddress = divi.Divi{}
 		case models.PTFeathercoin:
 		case models.PTGroestlcoin:
+		case models.PTLitecoin:
+			coinName = ltc.Litecoin{}
+			daemonRunning = ltc.Litecoin{}
+			walletSecurityState = ltc.Litecoin{}
+			walletUnlock = ltc.Litecoin{}
+			walletValidateAddress = ltc.Litecoin{}
+			sendToAddress = ltc.Litecoin{}
 		case models.PTPhore:
 		case models.PTPeercoin:
 			coinName = ppc.Peercoin{}
