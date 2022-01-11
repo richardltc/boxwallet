@@ -24,6 +24,7 @@ import (
 	pivx "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/pivx"
 	rpd "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/rapids"
 	rdd "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/reddcoin"
+	sbyte "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/spiderbyte"
 	tzc "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/trezarcoin"
 
 	"richardmace.co.uk/boxwallet/cmd/cli/cmd/app"
@@ -80,6 +81,9 @@ var resyncCmd = &cobra.Command{
 		case models.PTReddCoin:
 			coinName = rdd.ReddCoin{}
 			wallet = rdd.ReddCoin{}
+		case models.PTSpiderByte:
+			coinName = sbyte.SpiderByte{}
+			wallet = sbyte.SpiderByte{}
 		case models.PTTrezarcoin:
 			coinName = tzc.Trezarcoin{}
 			wallet = tzc.Trezarcoin{}
