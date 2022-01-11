@@ -26,6 +26,7 @@ import (
 	ppc "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/peercoin"
 	pivx "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/pivx"
 	rdd "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/reddcoin"
+	sbyte "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/spiderbyte"
 	sys "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/syscoin"
 	tzc "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/trezarcoin"
 
@@ -67,7 +68,7 @@ var startCmd = &cobra.Command{
 			log.Fatal("Unable to get appFilename: " + err.Error())
 		}
 
-		// Make sure the config file exists, and if not, force user to use "coin" command first....
+		// Make sure the config file exists, and if not, force user to use "coin" command first...
 		if _, err := os.Stat(appHomeDir + conf.ConfFile()); os.IsNotExist(err) {
 			log.Fatal("Unable to determine coin type. Please run " + appFileName + " coin  first")
 		}
@@ -118,6 +119,9 @@ var startCmd = &cobra.Command{
 			coinDaemon = rdd.ReddCoin{}
 			coinName = rdd.ReddCoin{}
 		case models.PTScala:
+		case models.PTSpiderByte:
+			coinDaemon = sbyte.SpiderByte{}
+			coinName = sbyte.SpiderByte{}
 		case models.PTSyscoin:
 			coinDaemon = sys.Syscoin{}
 			coinName = sys.Syscoin{}
