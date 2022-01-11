@@ -24,6 +24,7 @@ import (
 	xbc "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/bitcoinplus"
 	"richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/divi"
 	grs "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/groestlcoin"
+	ltc "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/litecoin"
 	ppc "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/peercoin"
 	pivx "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/pivx"
 	rdd "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/reddcoin"
@@ -99,6 +100,11 @@ var backupCmd = &cobra.Command{
 			daemonRunning = grs.Groestlcoin{}
 			walletSecurityState = grs.Groestlcoin{}
 			walletBackup = grs.Groestlcoin{}
+		case models.PTLitecoin:
+			coinName = ltc.Litecoin{}
+			daemonRunning = ltc.Litecoin{}
+			walletSecurityState = ltc.Litecoin{}
+			walletBackup = ltc.Litecoin{}
 		case models.PTPeercoin:
 			coinName = ppc.Peercoin{}
 			daemonRunning = ppc.Peercoin{}
