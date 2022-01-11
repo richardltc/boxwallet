@@ -37,6 +37,7 @@ import (
 	xpm "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/primecoin"
 	rpd "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/rapids"
 	rdd "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/reddcoin"
+	sbyte "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/spiderbyte"
 	sys "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/syscoin"
 	tzc "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/trezarcoin"
 	vtc "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/vertcoin"
@@ -92,6 +93,7 @@ var coinCmd = &cobra.Command{
 				coins.CCoinNameRapids,
 				coins.CCoinNameReddCoin,
 				coins.CCoinNameScala,
+				coins.CCoinNameSpiderByte,
 				coins.CCoinNameSyscoin,
 				coins.CCoinNameTrezarcoin,
 				coins.CCoinNameVertcoin},
@@ -183,6 +185,11 @@ var coinCmd = &cobra.Command{
 			coinType = models.PTReddCoin
 		case coins.CCoinNameScala:
 			coinType = models.PTScala
+		case coins.CCoinNameSpiderByte:
+			coin = sbyte.SpiderByte{}
+			coinName = sbyte.SpiderByte{}
+			coinRPC = sbyte.SpiderByte{}
+			coinType = models.PTSpiderByte
 		case coins.CCoinNameSyscoin:
 			coin = sys.Syscoin{}
 			coinName = sys.Syscoin{}
@@ -269,7 +276,7 @@ var coinCmd = &cobra.Command{
 			be.AddToLog(logFile, "The "+sCoinName+" CLI bin files have already been installed.", true)
 		}
 
-		// I think here is the best place to check whether the user would like to download the blockchain snapshot..
+		// I think here is the best place to check whether the user would like to download the blockchain snapshot.
 		coinSupportsBCSnapshot := false
 		var coinBC coins.CoinBlockchain
 		switch coinType {
