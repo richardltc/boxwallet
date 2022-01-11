@@ -145,7 +145,6 @@ func (x XBC) LiveNetwork() string {
 		"  " + sDiff + "\n" +
 		"  " + sBlockchainSync + "\n" +
 		"  " + sConnections
-
 }
 
 func (x XBC) LiveTransactions() (containsZeroConfs bool, rows [][]string) {
@@ -178,9 +177,9 @@ func (x XBC) LiveTransactions() (containsZeroConfs bool, rows [][]string) {
 			" [" + tAmountStr + "](fg:" + sColour + ")",
 			" [" + strconv.Itoa(transactions.Result[i].Confirmations) + "](fg:" + sColour + ")"})
 
-		if i > 10 {
-			break
-		}
+		//if i > 10 {
+		//	break
+		//}
 	}
 
 	return bZeroConfs, sRows
