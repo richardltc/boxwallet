@@ -25,6 +25,7 @@ import (
 	ppc "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/peercoin"
 	rpd "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/rapids"
 	rdd "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/reddcoin"
+	sbyte "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/spiderbyte"
 	tzc "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/trezarcoin"
 	"richardmace.co.uk/boxwallet/cmd/cli/cmd/models"
 	"richardmace.co.uk/boxwallet/cmd/cli/cmd/wallet"
@@ -112,6 +113,11 @@ var encryptCmd = &cobra.Command{
 			walletSecurityState = rdd.ReddCoin{}
 			walletEncrypt = rdd.ReddCoin{}
 		case models.PTScala:
+		case models.PTSpiderByte:
+			coinName = sbyte.SpiderByte{}
+			daemonRunning = sbyte.SpiderByte{}
+			walletSecurityState = sbyte.SpiderByte{}
+			walletEncrypt = sbyte.SpiderByte{}
 		case models.PTTrezarcoin:
 			coinName = tzc.Trezarcoin{}
 			daemonRunning = tzc.Trezarcoin{}
@@ -161,7 +167,7 @@ var encryptCmd = &cobra.Command{
 
 		fmt.Println(r.Result)
 
-		// Lets load our config file first, to see if the user has made their coin choice..
+		// Let's load our config file first, to see if the user has made their coin choice..
 		// cliConf, err := be.GetConfigStruct("", true)//
 		// if err != nil {
 		// 	log.Fatal("Unable to determine coin type. Please run " + be.CAppFilename + " coin" + err.Error())
