@@ -93,6 +93,7 @@ var unlockfsCmd = &cobra.Command{
 			walletUnlockFS = divi.Divi{}
 		case models.PTFeathercoin:
 		case models.PTGroestlcoin:
+		case models.PTLitecoin:
 		case models.PTPhore:
 		case models.PTPeercoin:
 			walletSecurityState = ppc.Peercoin{}
