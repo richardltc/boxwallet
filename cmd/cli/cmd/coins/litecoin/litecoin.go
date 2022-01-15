@@ -126,8 +126,8 @@ func (l Litecoin) BlockchainDataExists() (bool, error) {
 	return false, nil
 }
 
-func (l Litecoin) BlockchainInfo(auth *models.CoinAuth) (models.RDDBlockchainInfo, error) {
-	var respStruct models.RDDBlockchainInfo
+func (l Litecoin) BlockchainInfo(auth *models.CoinAuth) (models.LTCBlockchainInfo, error) {
+	var respStruct models.LTCBlockchainInfo
 
 	body := strings.NewReader("{\"jsonrpc\":\"1.0\",\"id\":\"boxwallet\",\"method\":\"" + models.CCommandGetBCInfo + "\",\"params\":[]}")
 	req, err := http.NewRequest("POST", "http://"+auth.IPAddress+":"+auth.Port, body)
@@ -238,49 +238,49 @@ func (l Litecoin) DaemonFilename() string {
 	}
 }
 
-func (l *Litecoin) Info() (models.RDDGetInfo, error) {
-	var respStruct models.RDDGetInfo
-
-	for i := 1; i < 50; i++ {
-		//fmt.Printf("\r"+waitingStr+" %d/"+strconv.Itoa(attempts), i)
-		body := strings.NewReader("{\"jsonrpc\":\"1.0\",\"id\":\"boxwallet\",\"method\":\"" + models.CCommandGetInfo + "\",\"params\":[]}")
-		req, err := http.NewRequest("POST", "http://"+l.IPAddress+":"+l.Port, body)
-		if err != nil {
-			return respStruct, err
-		}
-		req.SetBasicAuth(l.RPCUser, l.RPCPassword)
-		req.Header.Set("Content-Type", "text/plain;")
-
-		resp, err := http.DefaultClient.Do(req)
-		if err != nil {
-			return respStruct, err
-		}
-		defer resp.Body.Close()
-		bodyResp, err := ioutil.ReadAll(resp.Body)
-		if err != nil {
-			return respStruct, err
-		}
-
-		// Check to make sure we are not loading the wallet
-		if bytes.Contains(bodyResp, []byte("Loading")) ||
-			bytes.Contains(bodyResp, []byte("Rewinding")) ||
-			bytes.Contains(bodyResp, []byte("Verifying")) {
-			// The wallet is still loading, so print message, and sleep for 3 seconds and try again..
-			var errStruct models.GenericResponse
-			err = json.Unmarshal(bodyResp, &errStruct)
-			if err != nil {
-				return respStruct, err
-			}
-			//fmt.Println("Waiting for wallet to load...")
-			time.Sleep(5 * time.Second)
-		} else {
-
-			_ = json.Unmarshal(bodyResp, &respStruct)
-			return respStruct, err
-		}
-	}
-	return respStruct, nil
-}
+//func (l *Litecoin) Info() (models.RDDGetInfo, error) {
+//	var respStruct models.RDDGetInfo
+//
+//	for i := 1; i < 50; i++ {
+//		//fmt.Printf("\r"+waitingStr+" %d/"+strconv.Itoa(attempts), i)
+//		body := strings.NewReader("{\"jsonrpc\":\"1.0\",\"id\":\"boxwallet\",\"method\":\"" + models.CCommandGetInfo + "\",\"params\":[]}")
+//		req, err := http.NewRequest("POST", "http://"+l.IPAddress+":"+l.Port, body)
+//		if err != nil {
+//			return respStruct, err
+//		}
+//		req.SetBasicAuth(l.RPCUser, l.RPCPassword)
+//		req.Header.Set("Content-Type", "text/plain;")
+//
+//		resp, err := http.DefaultClient.Do(req)
+//		if err != nil {
+//			return respStruct, err
+//		}
+//		defer resp.Body.Close()
+//		bodyResp, err := ioutil.ReadAll(resp.Body)
+//		if err != nil {
+//			return respStruct, err
+//		}
+//
+//		// Check to make sure we are not loading the wallet
+//		if bytes.Contains(bodyResp, []byte("Loading")) ||
+//			bytes.Contains(bodyResp, []byte("Rewinding")) ||
+//			bytes.Contains(bodyResp, []byte("Verifying")) {
+//			// The wallet is still loading, so print message, and sleep for 3 seconds and try again..
+//			var errStruct models.GenericResponse
+//			err = json.Unmarshal(bodyResp, &errStruct)
+//			if err != nil {
+//				return respStruct, err
+//			}
+//			//fmt.Println("Waiting for wallet to load...")
+//			time.Sleep(5 * time.Second)
+//		} else {
+//
+//			_ = json.Unmarshal(bodyResp, &respStruct)
+//			return respStruct, err
+//		}
+//	}
+//	return respStruct, nil
+//}
 
 // Install - Puts the freshly downloaded files into their correct location.
 // "location" should just be the AppBinaryFolder ~/.boxwallet
@@ -377,8 +377,8 @@ func (l Litecoin) NetworkDifficultyInfo() (float64, float64, error) {
 	return fGood, fWarning, nil
 }
 
-func (l *Litecoin) NetworkInfo(auth *models.CoinAuth) (models.RDDNetworkInfo, error) {
-	var respStruct models.RDDNetworkInfo
+func (l *Litecoin) NetworkInfo(auth *models.CoinAuth) (models.LTCNetworkInfo, error) {
+	var respStruct models.LTCNetworkInfo
 
 	for i := 1; i < 50; i++ {
 		body := strings.NewReader("{\"jsonrpc\":\"1.0\",\"id\":\"boxwallet\",\"method\":\"" + models.CCommandGetNetworkInfo + "\",\"params\":[]}")
@@ -460,8 +460,8 @@ func (l Litecoin) WalletBackup(coinAuth *models.CoinAuth, destDir string) (model
 	return respStruct, nil
 }
 
-func (l Litecoin) WalletInfo(auth *models.CoinAuth) (models.RDDWalletInfo, error) {
-	var respStruct models.RDDWalletInfo
+func (l Litecoin) WalletInfo(auth *models.CoinAuth) (models.LTCWalletInfo, error) {
+	var respStruct models.LTCWalletInfo
 
 	body := strings.NewReader("{\"jsonrpc\":\"1.0\",\"id\":\"boxwallet\",\"method\":\"" + models.CCommandGetWalletInfo + "\",\"params\":[]}")
 	req, err := http.NewRequest("POST", "http://"+auth.IPAddress+":"+auth.Port, body)
@@ -526,8 +526,8 @@ func (l Litecoin) HomeDirFullPath() (string, error) {
 	}
 }
 
-func (l Litecoin) ListReceivedByAddress(coinAuth *models.CoinAuth, includeZero bool) (models.RDDListReceivedByAddress, error) {
-	var respStruct models.RDDListReceivedByAddress
+func (l Litecoin) ListReceivedByAddress(coinAuth *models.CoinAuth, includeZero bool) (models.LTCListReceivedByAddress, error) {
+	var respStruct models.LTCListReceivedByAddress
 
 	var s string
 	if includeZero {
@@ -561,8 +561,8 @@ func (l Litecoin) ListReceivedByAddress(coinAuth *models.CoinAuth, includeZero b
 	return respStruct, nil
 }
 
-func (l *Litecoin) ListTransactions(auth *models.CoinAuth) (models.RDDListTransactions, error) {
-	var respStruct models.RDDListTransactions
+func (l *Litecoin) ListTransactions(auth *models.CoinAuth) (models.LTCListTransactions, error) {
+	var respStruct models.LTCListTransactions
 
 	body := strings.NewReader("{\"jsonrpc\":\"1.0\",\"id\":\"boxwallet\",\"method\":\"" + models.CCommandListTransactions + "\",\"params\":[]}")
 	req, err := http.NewRequest("POST", "http://"+auth.IPAddress+":"+auth.Port, body)
@@ -590,8 +590,8 @@ func (l *Litecoin) ListTransactions(auth *models.CoinAuth) (models.RDDListTransa
 	return respStruct, nil
 }
 
-func (l Litecoin) NewAddress(auth *models.CoinAuth) (models.RDDGetNewAddress, error) {
-	var respStruct models.RDDGetNewAddress
+func (l Litecoin) NewAddress(auth *models.CoinAuth) (models.LTCGetNewAddress, error) {
+	var respStruct models.LTCGetNewAddress
 
 	body := strings.NewReader("{\"jsonrpc\":\"1.0\",\"id\":\"curltext\",\"method\":\"getnewaddress\",\"params\":[]}")
 	req, err := http.NewRequest("POST", "http://"+auth.IPAddress+":"+auth.Port, body)
@@ -796,8 +796,8 @@ func (l *Litecoin) UnlockWallet(pw string) error {
 	return nil
 }
 
-func (l Litecoin) UpdateTickerInfo() (ticker models.RDDTicker, err error) {
-	resp, err := http.Get("https://ticker.neist.io/RDD")
+func (l Litecoin) UpdateTickerInfo() (ticker models.LTCTicker, err error) {
+	resp, err := http.Get("https://ticker.neist.io/LTC")
 	if err != nil {
 		return ticker, err
 	}
@@ -842,6 +842,7 @@ func (l Litecoin) WalletAddress(auth *models.CoinAuth) (string, error) {
 		}
 		sAddress = res.Result
 	}
+
 	return sAddress, nil
 }
 
