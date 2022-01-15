@@ -32,7 +32,6 @@ const (
 	cCoreVersion         string = "5.1.2.1"
 	cDownloadFileLinux          = "linux-packed.zip"
 	cDownloadFileWindows        = "litecoinplus-qt.zip"
-	//cDownloadFileBS      string = "DIVI-snapshot.zip"
 
 	cExtractedDirLinux   = "linux-packed/"
 	cExtractedDirWindows = "divi-" + cCoreVersion + "\\"
@@ -144,45 +143,66 @@ func (s SpiderByte) BlockchainDataExists() (bool, error) {
 	return false, nil
 }
 
-func (s SpiderByte) BlockchainInfo(auth *models.CoinAuth) (models.DiviBlockchainInfo, error) {
-	var respStruct models.DiviBlockchainInfo
-
-	body := strings.NewReader("{\"jsonrpc\":\"1.0\",\"id\":\"curltext\",\"method\":\"getblockchaininfo\",\"params\":[]}")
-	req, err := http.NewRequest("POST", "http://"+auth.IPAddress+":"+auth.Port, body)
-	if err != nil {
-		return respStruct, err
-	}
-	req.SetBasicAuth(auth.RPCUser, auth.RPCPassword)
-	req.Header.Set("Content-Type", "text/plain;")
-
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		return respStruct, err
-	}
-	defer resp.Body.Close()
-	bodyResp, err := ioutil.ReadAll(resp.Body)
-	if err != nil {
-		return respStruct, err
-	}
-	err = json.Unmarshal(bodyResp, &respStruct)
-	if err != nil {
-		return respStruct, err
-	}
-
-	return respStruct, nil
-}
+//func (s SpiderByte) BlockchainInfo(auth *models.CoinAuth) (models.DiviBlockchainInfo, error) {
+//	var respStruct models.DiviBlockchainInfo
+//
+//	body := strings.NewReader("{\"jsonrpc\":\"1.0\",\"id\":\"curltext\",\"method\":\"getblockchaininfo\",\"params\":[]}")
+//	req, err := http.NewRequest("POST", "http://"+auth.IPAddress+":"+auth.Port, body)
+//	if err != nil {
+//		return respStruct, err
+//	}
+//	req.SetBasicAuth(auth.RPCUser, auth.RPCPassword)
+//	req.Header.Set("Content-Type", "text/plain;")
+//
+//	resp, err := http.DefaultClient.Do(req)
+//	if err != nil {
+//		return respStruct, err
+//	}
+//	defer resp.Body.Close()
+//	bodyResp, err := ioutil.ReadAll(resp.Body)
+//	if err != nil {
+//		return respStruct, err
+//	}
+//	err = json.Unmarshal(bodyResp, &respStruct)
+//	if err != nil {
+//		return respStruct, err
+//	}
+//
+//	return respStruct, nil
+//}
 
 func (s SpiderByte) BlockchainIsSynced(coinAuth *models.CoinAuth) (bool, error) {
-	bci, err := s.BlockchainInfo(coinAuth)
+	info, _, err := s.Info(coinAuth)
 	if err != nil {
 		return false, err
 	}
 
-	if bci.Result.Verificationprogress > 0.99999 {
+	blockCount, _ := s.BlockCount()
+	if info.Result.Blocks == blockCount {
 		return true, nil
 	}
 
 	return false, nil
+}
+
+func (s SpiderByte) BlockCount() (int, error) {
+	// http://explorer.litecoinplus.co/api/getblockcount
+
+	resp, err := http.Get("http://explorer.litecoinplus.co/api/getblockcount")
+	if err != nil {
+		return 0, err
+	}
+	defer resp.Body.Close()
+
+	body, err := ioutil.ReadAll(resp.Body)
+	if err != nil {
+		return 0, err
+	}
+
+	// Now calculate the block count...
+	iCount, _ := strconv.Atoi(string(body))
+
+	return iCount, nil
 }
 
 func (s SpiderByte) ConfFile() string {
@@ -295,8 +315,8 @@ func (s SpiderByte) HomeDirFullPath() (string, error) {
 	}
 }
 
-func (s SpiderByte) Info(auth *models.CoinAuth) (models.DiviGetInfo, string, error) {
-	var respStruct models.DiviGetInfo
+func (s SpiderByte) Info(auth *models.CoinAuth) (models.SBYTEInfo, string, error) {
+	var respStruct models.SBYTEInfo
 
 	for i := 1; i < 50; i++ {
 		body := strings.NewReader("{\"jsonrpc\":\"1.0\",\"id\":\"curltext\",\"method\":\"getinfo\",\"params\":[]}")
@@ -418,8 +438,8 @@ func (s SpiderByte) ListReceivedByAddress(coinAuth *models.CoinAuth, includeZero
 	return respStruct, nil
 }
 
-func (s SpiderByte) ListTransactions(auth *models.CoinAuth) (models.DiviListTransactions, error) {
-	var respStruct models.DiviListTransactions
+func (s SpiderByte) ListTransactions(auth *models.CoinAuth) (models.SBYTEListTransactions, error) {
+	var respStruct models.SBYTEListTransactions
 
 	body := strings.NewReader("{\"jsonrpc\":\"1.0\",\"id\":\"boxwallet\",\"method\":\"" + models.CCommandListTransactions + "\",\"params\":[]}")
 	req, err := http.NewRequest("POST", "http://"+auth.IPAddress+":"+auth.Port, body)
@@ -468,6 +488,7 @@ func (s SpiderByte) NetworkDifficultyInfo() (float64, float64, error) {
 		fGood = fDiff * 0.75
 		fWarning = fDiff * 0.50
 	}
+
 	return fGood, fWarning, nil
 }
 
@@ -880,25 +901,6 @@ func (s SpiderByte) WalletUnlockFS(coinAuth *models.CoinAuth, pw string) error {
 	}
 	return nil
 }
-
-//func (l LitecoinPlus) UnarchiveBlockchainSnapshot() error {
-//	coinDir, err := l.HomeDirFullPath()
-//	if err != nil {
-//		return errors.New("unable to get HomeDirFul - " + err.Error())
-//	}
-//
-//	// First, check to make sure that both the blockchain folders don't already exist. (blocks, chainstate)
-//	bcsFileExists := fileutils.FileExists(coinDir + cDownloadFileBS)
-//	if !bcsFileExists {
-//		return errors.New("unable to find the snapshot file: " + coinDir + cDownloadFileBS)
-//	}
-//
-//	// Now extract it straight into the ~/.divi folder
-//	if err := archiver.Unarchive(coinDir+cDownloadFileBS, coinDir); err != nil {
-//		return errors.New("unable to unarchive file: " + coinDir + cDownloadFileBS + " " + err.Error())
-//	}
-//	return nil
-//}
 
 func (s SpiderByte) WalletUnlock(coinAuth *models.CoinAuth, pw string) error {
 	var respStruct models.GenericResponse
