@@ -23,10 +23,12 @@ import (
 	ppc "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/peercoin"
 	pivx "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/pivx"
 	rdd "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/reddcoin"
+	sbyte "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/spiderbyte"
 	tzc "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/trezarcoin"
 	xbcDisplay "richardmace.co.uk/boxwallet/cmd/cli/cmd/display/bitcoinplus"
 	diviDisplay "richardmace.co.uk/boxwallet/cmd/cli/cmd/display/divi"
 	grsDisplay "richardmace.co.uk/boxwallet/cmd/cli/cmd/display/groestlcoin"
+	sbyteDisplay "richardmace.co.uk/boxwallet/cmd/cli/cmd/display/spiderbyte"
 	tzcDisplay "richardmace.co.uk/boxwallet/cmd/cli/cmd/display/trezarcoin"
 	"time"
 
@@ -301,6 +303,23 @@ var dashCmd = &cobra.Command{
 			walletRefreshNetwork = rddDisplay.RDD{}
 			walletRefreshTransactions = rddDisplay.RDD{}
 			walletSecurityState = rdd.ReddCoin{}
+		case models.PTSpiderByte:
+			coin = sbyte.SpiderByte{}
+			coinBlockchainIsSynced = sbyte.SpiderByte{}
+			coinDaemon = sbyte.SpiderByte{}
+			coinDispAbout = sbyteDisplay.SBYTE{}
+			coinDispInitialBalance = sbyteDisplay.SBYTE{}
+			coinDispInitialNetwork = sbyteDisplay.SBYTE{}
+			coinDispLiveNetwork = sbyteDisplay.SBYTE{}
+			coinDispLiveTransactions = sbyteDisplay.SBYTE{}
+			coinDispLiveWallet = sbyteDisplay.SBYTE{}
+			coinName = sbyte.SpiderByte{}
+			coinPrice = sbyteDisplay.SBYTE{}
+			coinWallet = sbyte.SpiderByte{}
+			walletRefreshDifficulty = sbyteDisplay.SBYTE{}
+			walletRefreshNetwork = sbyteDisplay.SBYTE{}
+			walletRefreshTransactions = sbyteDisplay.SBYTE{}
+			walletSecurityState = sbyte.SpiderByte{}
 		case models.PTTrezarcoin:
 			coin = tzc.Trezarcoin{}
 			coinBlockchainIsSynced = tzc.Trezarcoin{}
@@ -1402,13 +1421,7 @@ func init() {
 }
 
 func confirmWalletReady(coinAuth *models.CoinAuth, coinName string, wallet wallet.Wallet) (bool, error) {
-	// cliConf, err := be.GetConfigStruct("", true)
-	// if err != nil {
-	// 	return false, "", fmt.Errorf("unable to determine coin type. Please run "+be.CAppFilename+" coin: %v", err.Error())
-	// }
-	// sCoinName, err := be.GetCoinName(be.APPTCLI)
-
-	// Lets make sure that we have a running daemon
+	// Let's make sure that we have a running daemon
 	cfg := yacspin.Config{
 		Frequency:       250 * time.Millisecond,
 		CharSet:         yacspin.CharSets[43],
