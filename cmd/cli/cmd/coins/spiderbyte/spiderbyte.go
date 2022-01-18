@@ -794,6 +794,9 @@ func (s SpiderByte) WalletLoadingStatus(auth *models.CoinAuth) models.WLSType {
 			return models.WLSTWaitingForResponse
 		}
 
+		if bytes.Contains(bodyResp, []byte("loading")) {
+			return models.WLSTLoading
+		}
 		if bytes.Contains(bodyResp, []byte("Loading")) {
 			return models.WLSTLoading
 		}
@@ -810,6 +813,7 @@ func (s SpiderByte) WalletLoadingStatus(auth *models.CoinAuth) models.WLSType {
 			return models.WLSTCalculatingMoneySupply
 		}
 	}
+
 	return models.WLSTReady
 }
 
@@ -899,6 +903,7 @@ func (s SpiderByte) WalletUnlockFS(coinAuth *models.CoinAuth, pw string) error {
 	if err != nil || respStruct.Error != nil {
 		return err
 	}
+
 	return nil
 }
 
