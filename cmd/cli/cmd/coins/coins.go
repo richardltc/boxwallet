@@ -33,6 +33,10 @@ const (
 	CCoinNameVertcoin    string = "Vertcoin"
 )
 
+type BackupCoreFiles interface {
+	BackupCoreFiles(dir string) error
+}
+
 type CoinBlockchainIsSynced interface {
 	BlockchainIsSynced(coinAuth *models.CoinAuth) (bool, error)
 }
@@ -54,6 +58,10 @@ type CoinBlockchain interface {
 	UnarchiveBlockchainSnapshot() error
 }
 
+type CoinCLI interface {
+	CLIFilename() string
+}
+
 type CoinDaemon interface {
 	DaemonFilename() string
 	DaemonRunning() (bool, error)
@@ -63,6 +71,10 @@ type CoinDaemon interface {
 
 type CoinAnyAddresses interface {
 	AnyAddresses(auth *models.CoinAuth) (bool, error)
+}
+
+type RemoveCoreFiles interface {
+	RemoveCoreFiles(dir string) error
 }
 
 type CoinIsPOS interface {
@@ -332,5 +344,4 @@ func PopulateConfFile(confFile, homeDir, rpcUserCoin, rpcPortCoin string) (rpcUs
 	}
 
 	return rpcu, rpcpw, nil
-
 }
