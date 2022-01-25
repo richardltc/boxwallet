@@ -20,6 +20,7 @@ import (
 	"errors"
 	"fmt"
 	grs "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/groestlcoin"
+	ltc "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/litecoin"
 	ppc "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/peercoin"
 	pivx "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/pivx"
 	rdd "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/reddcoin"
@@ -28,6 +29,7 @@ import (
 	xbcDisplay "richardmace.co.uk/boxwallet/cmd/cli/cmd/display/bitcoinplus"
 	diviDisplay "richardmace.co.uk/boxwallet/cmd/cli/cmd/display/divi"
 	grsDisplay "richardmace.co.uk/boxwallet/cmd/cli/cmd/display/groestlcoin"
+	ltcDisplay "richardmace.co.uk/boxwallet/cmd/cli/cmd/display/litecoin"
 	sbyteDisplay "richardmace.co.uk/boxwallet/cmd/cli/cmd/display/spiderbyte"
 	tzcDisplay "richardmace.co.uk/boxwallet/cmd/cli/cmd/display/trezarcoin"
 	"time"
@@ -235,6 +237,23 @@ var dashCmd = &cobra.Command{
 			walletRefreshNetwork = grsDisplay.GRS{}
 			walletRefreshTransactions = grsDisplay.GRS{}
 			walletSecurityState = grs.Groestlcoin{}
+		case models.PTLitecoin:
+			coin = ltc.Litecoin{}
+			coinBlockchainIsSynced = ltc.Litecoin{}
+			coinDaemon = ltc.Litecoin{}
+			coinDispAbout = ltcDisplay.LTC{}
+			coinDispInitialBalance = ltcDisplay.LTC{}
+			coinDispInitialNetwork = ltcDisplay.LTC{}
+			coinDispLiveNetwork = ltcDisplay.LTC{}
+			coinDispLiveTransactions = ltcDisplay.LTC{}
+			coinDispLiveWallet = ltcDisplay.LTC{}
+			coinName = ltc.Litecoin{}
+			coinPrice = ltcDisplay.LTC{}
+			coinWallet = ltc.Litecoin{}
+			walletRefreshDifficulty = ltcDisplay.LTC{}
+			walletRefreshNetwork = ltcDisplay.LTC{}
+			walletRefreshTransactions = ltcDisplay.LTC{}
+			walletSecurityState = ltc.Litecoin{}
 		case models.PTPeercoin:
 			coin = ppc.Peercoin{}
 			coinBlockchainIsSynced = ppc.Peercoin{}
@@ -341,7 +360,6 @@ var dashCmd = &cobra.Command{
 			log.Fatal("Unable to determine ProjectType")
 		}
 
-		// sCoinName := coinName.CoinName()
 		sCoinDaemon := coinDaemon.DaemonFilename()
 
 		// Check to see if we are running the coin daemon locally, and if we are, make sure it's actually running
