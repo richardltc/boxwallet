@@ -46,7 +46,7 @@ const (
 	cDownloadURLBS string = "https://snapshots.diviproject.org/dist/"
 
 	cConfFile      string = "divi.conf"
-	cCliFile       string = "divi-cli"
+	cCliFileLin    string = "divi-cli"
 	cCliFileWin    string = "divi-cli.exe"
 	cDaemonFileLin string = "divid"
 	cDaemonFileWin string = "divid.exe"
@@ -171,7 +171,7 @@ func (d Divi) AllBinaryFilesExist(dir string) (bool, error) {
 			return false, nil
 		}
 	} else {
-		if !fileutils.FileExists(dir + cCliFile) {
+		if !fileutils.FileExists(dir + cCliFileLin) {
 			return false, nil
 		}
 		if !fileutils.FileExists(dir + cDaemonFileLin) {
@@ -195,6 +195,20 @@ func (d Divi) AnyAddresses(auth *models.CoinAuth) (bool, error) {
 	}
 
 	return false, nil
+}
+
+func (d Divi) BackupCoreFiles(dir string) error {
+	if err := fileutils.BackupFile(dir, cDaemonFileLin, dir, "", true); err != nil {
+		return err
+	}
+	if err := fileutils.BackupFile(dir, cCliFileLin, dir, "", true); err != nil {
+		return err
+	}
+	if err := fileutils.BackupFile(dir, cTxFile, dir, "", true); err != nil {
+		return err
+	}
+
+	return nil
 }
 
 // BlockchainDataExists - Returns true if the Blockchain data exists for the specified coin
@@ -434,7 +448,7 @@ func (d Divi) Install(location string) error {
 		switch runtime.GOARCH {
 		case "arm":
 			srcPath = location + cExtractedDirLinux + "bin/"
-			sfCLI = cCliFile
+			sfCLI = cCliFileLin
 			sfD = cDaemonFileLin
 			sfTX = cTxFile
 			dirToRemove = location + cExtractedDirLinux
@@ -442,7 +456,7 @@ func (d Divi) Install(location string) error {
 			return errors.New("arm64 is not currently supported by " + cCoinName)
 		case "amd64":
 			srcPath = location + cExtractedDirLinux + "bin/"
-			sfCLI = cCliFile
+			sfCLI = cCliFileLin
 			sfD = cDaemonFileLin
 			sfTX = cTxFile
 			dirToRemove = location + cExtractedDirLinux
@@ -830,21 +844,21 @@ func (d Divi) NewAddress(auth *models.CoinAuth) (models.DiviGetNewAddress, error
 	return respStruct, nil
 }
 
-//func GetNetworkDifficultyTxtDivi(difficulty float64) string {
-//	var s string
-//	if difficulty > 1000 {
-//		s = humanize.FormatFloat("#.#", difficulty/1000) + "k"
-//	} else {
-//		s = humanize.Ftoa(difficulty)
-//	}
-//	if difficulty > 6000 {
-//		return "Difficulty:  [" + s + "](fg:green)"
-//	} else if difficulty > 3000 {
-//		return "[Difficulty:  " + s + "](fg:yellow)"
-//	} else {
-//		return "[Difficulty:  " + s + "](fg:red)"
-//	}
-//}
+func (d Divi) RemoveCoreFiles(dir string) error {
+	srcFolder := fileutils.AddTrailingSlash(dir)
+
+	if err := os.Remove(srcFolder + cDaemonFileLin); err != nil {
+		return err
+	}
+	if err := os.Remove(srcFolder + cCliFileLin); err != nil {
+		return err
+	}
+	if err := os.Remove(srcFolder + cTxFile); err != nil {
+		return err
+	}
+
+	return nil
+}
 
 func (d Divi) RPCDefaultUsername() string {
 	return cRPCUser
