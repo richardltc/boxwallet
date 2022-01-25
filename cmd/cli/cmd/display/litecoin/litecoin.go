@@ -33,7 +33,7 @@ func (l LTC) About(coinAuth *models.CoinAuth) string {
 	}
 
 	return "  [" + a.Name() + "        v" + a.Version() + "](fg:white)\n" +
-		"  [" + ltc.CoinName() + " Core " + sCoreVersion + "](fg:white)\n\n"
+		"  [" + ltc.CoinName() + " Core    " + sCoreVersion + "](fg:white)\n\n"
 }
 
 func balanceTxt() string {
@@ -191,7 +191,6 @@ func (l LTC) RefreshNetwork(coinAuth *models.CoinAuth) {
 
 	blockChainInfo, _ = ltc.BlockchainInfo(coinAuth)
 	networkInfo, _ = ltc.NetworkInfo(coinAuth)
-	//stakingInfo, _ = xbc.StakingInfo(coinAuth)
 	walletInfo, _ = ltc.WalletInfo(coinAuth)
 }
 
