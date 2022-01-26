@@ -2,6 +2,7 @@ package divi
 
 import (
 	"github.com/dustin/go-humanize"
+	"math"
 	"richardmace.co.uk/boxwallet/cmd/cli/cmd/app"
 	diviImport "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/divi"
 	"richardmace.co.uk/boxwallet/cmd/cli/cmd/currencyconvert"
@@ -118,6 +119,77 @@ func blockchainSyncTxt() string {
 		s = s + "%"
 	}
 	return s
+}
+
+func plural(count int, singular string) (result string) {
+	if (count == 1) || (count == 0) {
+		result = strconv.Itoa(count) + " " + singular + " "
+	} else {
+		result = strconv.Itoa(count) + " " + singular + "s "
+	}
+	return
+}
+
+func secondsToHuman(input int) (result string) {
+	years := math.Floor(float64(input) / 60 / 60 / 24 / 7 / 30 / 12)
+	seconds := input % (60 * 60 * 24 * 7 * 30 * 12)
+	months := math.Floor(float64(seconds) / 60 / 60 / 24 / 7 / 30)
+	seconds = input % (60 * 60 * 24 * 7 * 30)
+	weeks := math.Floor(float64(seconds) / 60 / 60 / 24 / 7)
+	seconds = input % (60 * 60 * 24 * 7)
+	days := math.Floor(float64(seconds) / 60 / 60 / 24)
+	seconds = input % (60 * 60 * 24)
+	hours := math.Floor(float64(seconds) / 60 / 60)
+	seconds = input % (60 * 60)
+	minutes := math.Floor(float64(seconds) / 60)
+	seconds = input % 60
+
+	if years > 0 {
+		result = plural(int(years), "year") + plural(int(months), "month") + plural(int(weeks), "week") + plural(int(days), "day") + plural(int(hours), "hour") + plural(int(minutes), "minute") + plural(int(seconds), "second")
+	} else if months > 0 {
+		result = plural(int(months), "month") + plural(int(weeks), "week") + plural(int(days), "day") + plural(int(hours), "hour") + plural(int(minutes), "minute") + plural(int(seconds), "second")
+	} else if weeks > 0 {
+		result = plural(int(weeks), "week") + plural(int(days), "day") + plural(int(hours), "hour") + plural(int(minutes), "minute") + plural(int(seconds), "second")
+	} else if days > 0 {
+		result = plural(int(days), "day") + plural(int(hours), "hour") + plural(int(minutes), "minute") + plural(int(seconds), "second")
+	} else if hours > 0 {
+		result = plural(int(hours), "hour") + plural(int(minutes), "minute") + plural(int(seconds), "second")
+	} else if minutes > 0 {
+		result = plural(int(minutes), "minute") + plural(int(seconds), "second")
+	} else {
+		result = plural(int(seconds), "second")
+	}
+
+	return
+}
+
+func calculateNextLottery() string {
+	var latestBlock, blocksLeft, secsUntilNextLottery int
+	var sDateTime string
+	latestBlock = blockChainInfo.Result.Blocks
+
+	// Let's see if we can work this out from the data we already have.
+
+	blocksLeft = latestBlock
+	for i := 0; i <= 10; i-- {
+		blocksLeft = blocksLeft - 10080
+		if blocksLeft <= 10080 {
+			// Calculate the seconds left.
+			secsUntilNextLottery = blocksLeft * 60
+		}
+
+	}
+
+	// If we get the latest block info, then
+	// keep on removing 10080 from the latest block count, until we have less then 10080 blocks left,
+	// then we can work out when the next lottery block will be by adding that number to our latest.
+
+	// We then know that each block happens roughly every 60 seconds, so we can then add up the amount of seconds
+	// that we have until the next block.
+
+	sDateTime = secondsToHuman(secsUntilNextLottery)
+
+	return sDateTime
 }
 
 func getNextLotteryTxtDIVI() string {
@@ -318,17 +390,19 @@ func mnSyncTxt(mns bool) string {
 }
 
 func nextLottery() string {
-	if nextLotteryCounter > (60*30) || nextLotteryStored == "" {
-		nextLotteryCounter = 0
-		//lrs, _ := getDiviLotteryInfo(conf)
-		if lottery.Lottery.Countdown.Humanized != "" {
-			return "Next Lottery:     [" + lottery.Lottery.Countdown.Humanized + "](fg:white)"
-		} else {
-			return "Next Lottery:     [" + nextLotteryStored + "](fg:white)"
-		}
-	} else {
-		return "Next Lottery:     [" + nextLotteryStored + "](fg:white)"
-	}
+	//if nextLotteryCounter > (60*30) || nextLotteryStored == "" {
+	//	nextLotteryCounter = 0
+	//	//lrs, _ := getDiviLotteryInfo(conf)
+	//	if lottery.Lottery.Countdown.Humanized != "" {
+	//		return "Next Lottery:     [" + lottery.Lottery.Countdown.Humanized + "](fg:white)"
+	//	} else {
+	//		return "Next Lottery:     [" + nextLotteryStored + "](fg:white)"
+	//	}
+	//} else {
+	//	return "Next Lottery:     [" + nextLotteryStored + "](fg:white)"
+	//}
+
+	return "Next Lottery:     [" + calculateNextLottery() + "](fg:white)"
 }
 
 func (d DIVI) RefreshDifficulty() {
@@ -342,7 +416,6 @@ func (d DIVI) RefreshNetwork(coinAuth *models.CoinAuth) {
 
 	blockChainInfo, _ = divi.BlockchainInfo(coinAuth)
 	currConvert.Refresh()
-	//networkInfo, _ = xbc.NetworkInfo(coinAuth)
 	info, _, _ = divi.Info(coinAuth)
 	lottery, _ = divi.LotteryInfo()
 	stakingInfo, _ = divi.StakingStatus(coinAuth)
