@@ -2,6 +2,12 @@ package models
 
 import "time"
 
+type DiviAddNodes struct {
+	Subver   string   `json:"subver"`
+	Protocol int      `json:"protocol"`
+	Nodes    []string `json:"nodes"`
+}
+
 type DiviBlockchainInfo struct {
 	Result struct {
 		Chain                string  `json:"chain"`
