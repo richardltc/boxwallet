@@ -53,7 +53,7 @@ const (
 	cTxFile        string = "divi-tx"
 	cTxFileWin     string = "divi-tx.exe"
 
-	// divi.conf file constants.
+	// divi.conf file constants
 	cRPCUser string = "divirpc"
 	cRPCPort string = "51473"
 
@@ -106,8 +106,13 @@ func (d Divi) AbbreviatedCoinName() string {
 
 func (d Divi) addNodesAlreadyExist() (bool, error) {
 	var exists bool
+	file, err := d.HomeDirFullPath()
+	if err != nil {
+		return false, err
+	}
+	file = file + cConfFile
 
-	exists, err := fileutils.StringExistsInFile("addnode=", d.HomeDir()+cConfFile)
+	exists, err = fileutils.StringExistsInFile("addnode=", file)
 	if err != nil {
 		return false, nil
 	}
