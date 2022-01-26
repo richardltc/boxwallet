@@ -157,7 +157,7 @@ func FileExists(filename string) bool {
 
 func StringExistsInFile(str, file string) (bool, error) {
 	if !FileExists(file) {
-		return false, nil
+		return false, errors.New("unable to find the file: " + file)
 	}
 
 	data, err := ioutil.ReadFile(file)
