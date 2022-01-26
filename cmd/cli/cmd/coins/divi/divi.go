@@ -10,7 +10,6 @@ import (
 	"os"
 	"os/exec"
 	"os/user"
-
 	"richardmace.co.uk/boxwallet/cmd/cli/cmd/coins"
 	"richardmace.co.uk/boxwallet/cmd/cli/cmd/fileutils"
 	"runtime"
@@ -593,6 +592,25 @@ func getDiviAddNodes() ([]byte, error) {
 	}
 
 	return body, nil
+}
+
+func (d Divi) getDiviAddNodesNew() (addnodes models.DiviAddNodes, err error) {
+	resp, err := http.Get("https://chainz.cryptoid.info/" + strings.ToLower(d.CoinNameAbbrev()) + "/api.dws?q=nodes")
+	if err != nil {
+		return addnodes, err
+	}
+	defer resp.Body.Close()
+
+	body, err := ioutil.ReadAll(resp.Body)
+	if err != nil {
+		return addnodes, err
+	}
+	err = json.Unmarshal(body, &addnodes)
+	if err != nil {
+		return addnodes, err
+	}
+
+	return addnodes, nil
 }
 
 func (d Divi) DumpHDInfo(coinAuth *models.CoinAuth, pw string) (string, error) {
