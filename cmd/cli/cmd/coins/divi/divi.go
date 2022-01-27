@@ -137,10 +137,10 @@ func (d Divi) AddAddNodesIfRequired() error {
 			return fmt.Errorf("unable to make directory - %v", err)
 		}
 
-		var addnodes []byte
+		var addnodes []models.DiviAddNodes
 		var sAddnodes string
 
-		addnodes, err = getDiviAddNodes()
+		addnodes, err = d.getDiviAddNodes()
 		if err != nil {
 			return fmt.Errorf("unable to getDiviAddNodes - %v", err)
 		}
@@ -149,7 +149,15 @@ func (d Divi) AddAddNodesIfRequired() error {
 			return fmt.Errorf("unable to write addnodes to file - %v", err)
 		}
 
-		sAddnodes = string(addnodes[:])
+		for _, addnode := range addnodes {
+			for _, node := range addnode.Nodes {
+				// Build up sAddnodes to contain every IP address that's been found...
+				sAddnodes = sAddnodes + "addnode=" + node + "\n"
+			}
+			//sAddnodes = sAddnodes + addnode.Nodes
+		}
+
+		// If sAddnodes doesn't contain the string "addnode" then...
 		if !strings.Contains(sAddnodes, "addnode") {
 			return fmt.Errorf("unable to retrieve addnodes, please try again")
 		}
@@ -569,7 +577,7 @@ func (d Divi) IsPOS() bool {
 //	}
 //}
 
-func getDiviAddNodes() ([]byte, error) {
+func getDiviAddNodesOld() ([]byte, error) {
 	addNodesClient := http.Client{
 		Timeout: time.Second * 3, // Maximum of 3 secs.
 	}
@@ -594,7 +602,9 @@ func getDiviAddNodes() ([]byte, error) {
 	return body, nil
 }
 
-func (d Divi) getDiviAddNodesNew() (addnodes models.DiviAddNodes, err error) {
+func (d Divi) getDiviAddNodes() (addnodes []models.DiviAddNodes, err error) {
+	//var aNodes []models.DiviAddNodes
+
 	resp, err := http.Get("https://chainz.cryptoid.info/" + strings.ToLower(d.CoinNameAbbrev()) + "/api.dws?q=nodes")
 	if err != nil {
 		return addnodes, err
