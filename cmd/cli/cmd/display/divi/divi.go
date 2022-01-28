@@ -18,7 +18,7 @@ type DIVI struct {
 var blockChainInfo models.DiviBlockchainInfo
 var info models.DiviGetInfo
 
-var lottery models.DiviLottery
+//var lottery models.DiviLottery
 
 var stakingInfo models.DiviStakingStatus
 var ticker models.DiviTicker
@@ -29,8 +29,8 @@ var lastBCSyncStatus = ""
 var lastMNSyncStatus = ""
 
 // var gDiviLottery be.DiviLotteryRespStruct
-var nextLotteryStored string
-var nextLotteryCounter int
+//var nextLotteryStored string
+//var nextLotteryCounter int
 
 var localCurrency string
 var currConvert currencyconvert.CurrencyConvert
@@ -131,9 +131,9 @@ func plural(count int, singular string) (result string) {
 }
 
 func secondsToHuman(input int) (result string) {
-	years := math.Floor(float64(input) / 60 / 60 / 24 / 7 / 30 / 12)
+	//years := math.Floor(float64(input) / 60 / 60 / 24 / 7 / 30 / 12)
 	seconds := input % (60 * 60 * 24 * 7 * 30 * 12)
-	months := math.Floor(float64(seconds) / 60 / 60 / 24 / 7 / 30)
+	//months := math.Floor(float64(seconds) / 60 / 60 / 24 / 7 / 30)
 	seconds = input % (60 * 60 * 24 * 7 * 30)
 	weeks := math.Floor(float64(seconds) / 60 / 60 / 24 / 7)
 	seconds = input % (60 * 60 * 24 * 7)
@@ -144,20 +144,14 @@ func secondsToHuman(input int) (result string) {
 	minutes := math.Floor(float64(seconds) / 60)
 	seconds = input % 60
 
-	if years > 0 {
-		result = plural(int(years), "year") + plural(int(months), "month") + plural(int(weeks), "week") + plural(int(days), "day") + plural(int(hours), "hour") + plural(int(minutes), "minute") + plural(int(seconds), "second")
-	} else if months > 0 {
-		result = plural(int(months), "month") + plural(int(weeks), "week") + plural(int(days), "day") + plural(int(hours), "hour") + plural(int(minutes), "minute") + plural(int(seconds), "second")
-	} else if weeks > 0 {
-		result = plural(int(weeks), "week") + plural(int(days), "day") + plural(int(hours), "hour") + plural(int(minutes), "minute") + plural(int(seconds), "second")
+	if weeks > 0 {
+		result = plural(int(weeks), "week") + plural(int(days), "day") + plural(int(hours), "hour") + plural(int(minutes), "minute")
 	} else if days > 0 {
-		result = plural(int(days), "day") + plural(int(hours), "hour") + plural(int(minutes), "minute") + plural(int(seconds), "second")
+		result = plural(int(days), "day") + plural(int(hours), "hour") + plural(int(minutes), "minute")
 	} else if hours > 0 {
-		result = plural(int(hours), "hour") + plural(int(minutes), "minute") + plural(int(seconds), "second")
-	} else if minutes > 0 {
-		result = plural(int(minutes), "minute") + plural(int(seconds), "second")
+		result = plural(int(hours), "hour") + plural(int(minutes), "minute")
 	} else {
-		result = plural(int(seconds), "second")
+		result = plural(int(minutes), "minute")
 	}
 
 	return
@@ -168,46 +162,40 @@ func calculateNextLottery() string {
 	var sDateTime string
 	latestBlock = blockChainInfo.Result.Blocks
 
-	// Let's see if we can work this out from the data we already have.
+	//for i := 0; i <= 10; i-- {
+	//	lastLotteryBlock = lastLotteryBlock + 10080
+	//	if lastLotteryBlock > latestBlock {
+	//		lastLotteryBlock = lastLotteryBlock - 10080
+	//		break
+	//	}
+	//}
 
-	blocksLeft = latestBlock
-	for i := 0; i <= 10; i-- {
-		blocksLeft = blocksLeft - 10080
-		if blocksLeft <= 10080 {
-			// Calculate the seconds left.
-			secsUntilNextLottery = blocksLeft * 60
-		}
-
-	}
-
-	// If we get the latest block info, then
-	// keep on removing 10080 from the latest block count, until we have less then 10080 blocks left,
-	// then we can work out when the next lottery block will be by adding that number to our latest.
-
-	// We then know that each block happens roughly every 60 seconds, so we can then add up the amount of seconds
-	// that we have until the next block.
+	blocksLeft = (lastLotteryBlock() + 10080) - latestBlock
+	// Calculate the seconds left.
+	secsUntilNextLottery = blocksLeft * 60
 
 	sDateTime = secondsToHuman(secsUntilNextLottery)
 
 	return sDateTime
 }
 
-func getNextLotteryTxtDIVI() string {
-	if nextLotteryCounter > (60*30) || nextLotteryStored == "" {
-		nextLotteryCounter = 0
-		//lrs, _ := getDiviLotteryInfo(conf)
-		if lottery.Lottery.Countdown.Humanized != "" {
-			return "Next Lottery:     [" + lottery.Lottery.Countdown.Humanized + "](fg:white)"
-		} else {
-			return "Next Lottery:     [" + nextLotteryStored + "](fg:white)"
-		}
-	} else {
-		return "Next Lottery:     [" + nextLotteryStored + "](fg:white)"
-	}
-}
+//func getNextLotteryTxtDIVI() string {
+//	if nextLotteryCounter > (60*30) || nextLotteryStored == "" {
+//		nextLotteryCounter = 0
+//		//lrs, _ := getDiviLotteryInfo(conf)
+//		if lottery.Lottery.Countdown.Humanized != "" {
+//			return "Next Lottery:     [" + lottery.Lottery.Countdown.Humanized + "](fg:white)"
+//		} else {
+//			return "Next Lottery:     [" + nextLotteryStored + "](fg:white)"
+//		}
+//	} else {
+//		return "Next Lottery:     [" + nextLotteryStored + "](fg:white)"
+//	}
+//}
 
 func lotteryTickets() string {
 	iTotalTickets := 0
+	currentBlock := blockChainInfo.Result.Blocks
 
 	for i := len(transactions.Result) - 1; i >= 0; i-- {
 		// If this transaction is not a stake, we're not interested in it.
@@ -220,8 +208,8 @@ func lotteryTickets() string {
 			continue
 		}
 
-		prevBlock := lottery.Lottery.NextLotteryBlock - 10080
-		numBlocksSpread := lottery.Lottery.CurrentBlock - prevBlock
+		//lastLotteryBlockBlock := lottery.Lottery.NextLotteryBlock - 10080
+		numBlocksSpread := currentBlock - lastLotteryBlock()
 
 		// If the stake block is less than the next lottery block - 10080 then it's not in this weeks lottery
 		if transactions.Result[i].Confirmations > numBlocksSpread {
@@ -251,6 +239,21 @@ func (d DIVI) InitialNetwork() string {
 		"  Blockchain:  [checking...](fg:yellow)\n" +
 		"  Masternodes: [checking...](fg:yellow)" +
 		"  Connections:  [checking...](fg:yellow)\n"
+}
+
+func lastLotteryBlock() int {
+	var lastLotteryBlock, latestBlock int
+	latestBlock = blockChainInfo.Result.Blocks
+
+	for i := 0; i <= 10; i-- {
+		lastLotteryBlock = lastLotteryBlock + 10080
+		if lastLotteryBlock > latestBlock {
+			lastLotteryBlock = lastLotteryBlock - 10080
+			break
+		}
+	}
+
+	return lastLotteryBlock
 }
 
 func (d DIVI) LiveNetwork() string {
@@ -377,17 +380,17 @@ func (d DIVI) LiveWallet() string {
 		"  " + lotteryTickets()
 }
 
-func mnSyncTxt(mns bool) string {
-	if stakingInfo.Result.Mnsync == true {
-		return "[synced " + display.CUTFTickBold + "](fg:green)"
-	} else {
-		if mns {
-			return "[" + display.NextProgBCIndicator(lastMNSyncStatus) + "syncing...](fg:yellow)"
-		} else {
-			return "[waiting...](fg:yellow)"
-		}
-	}
-}
+//func mnSyncTxt(mns bool) string {
+//	if stakingInfo.Result.Mnsync == true {
+//		return "[synced " + display.CUTFTickBold + "](fg:green)"
+//	} else {
+//		if mns {
+//			return "[" + display.NextProgBCIndicator(lastMNSyncStatus) + "syncing...](fg:yellow)"
+//		} else {
+//			return "[waiting...](fg:yellow)"
+//		}
+//	}
+//}
 
 func nextLottery() string {
 	//if nextLotteryCounter > (60*30) || nextLotteryStored == "" {
@@ -417,7 +420,7 @@ func (d DIVI) RefreshNetwork(coinAuth *models.CoinAuth) {
 	blockChainInfo, _ = divi.BlockchainInfo(coinAuth)
 	currConvert.Refresh()
 	info, _, _ = divi.Info(coinAuth)
-	lottery, _ = divi.LotteryInfo()
+	//lottery, _ = divi.LotteryInfo()
 	stakingInfo, _ = divi.StakingStatus(coinAuth)
 	walletInfo, _ = divi.WalletInfo(coinAuth)
 }
