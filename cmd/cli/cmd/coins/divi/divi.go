@@ -774,26 +774,26 @@ func (d Divi) ListTransactions(auth *models.CoinAuth) (models.DiviListTransactio
 	return respStruct, nil
 }
 
-func (d Divi) LotteryInfo() (models.DiviLottery, error) {
-	var respStruct models.DiviLottery
-
-	resp, err := http.Get("https://statbot.neist.io/api/v1/statbot")
-	if err != nil {
-		return respStruct, err
-	}
-	defer resp.Body.Close()
-
-	body, err := ioutil.ReadAll(resp.Body)
-	if err != nil {
-		return respStruct, err
-	}
-	err = json.Unmarshal(body, &respStruct)
-	if err != nil {
-		return respStruct, err
-	}
-
-	return respStruct, errors.New("unable to LotteryInfo")
-}
+//func (d Divi) LotteryInfo() (models.DiviLottery, error) {
+//	var respStruct models.DiviLottery
+//
+//	resp, err := http.Get("https://statbot.neist.io/api/v1/statbot")
+//	if err != nil {
+//		return respStruct, err
+//	}
+//	defer resp.Body.Close()
+//
+//	body, err := ioutil.ReadAll(resp.Body)
+//	if err != nil {
+//		return respStruct, err
+//	}
+//	err = json.Unmarshal(body, &respStruct)
+//	if err != nil {
+//		return respStruct, err
+//	}
+//
+//	return respStruct, errors.New("unable to LotteryInfo")
+//}
 
 func (d *Divi) MNSyncStatus(auth *models.CoinAuth) (models.DiviMNSyncStatus, error) {
 	var respStruct models.DiviMNSyncStatus
