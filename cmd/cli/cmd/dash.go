@@ -521,28 +521,6 @@ var dashCmd = &cobra.Command{
 		// 			log.Fatalf("Unable to SetCLIConfStruct(): failed with %s\n", err)
 		// 		}
 		// 	case be.PTPhore:
-		// 	case be.PTPIVX:
-		// 		wet, err := be.GetWalletEncryptionStatus()
-		// 		if err != nil {
-		// 			log.Fatalf("Unable to determine wallet encryption status")
-		// 		}
-		// 		if wet == be.WETLocked {
-		// 			pw = be.GetWalletEncryptionPassword()
-		// 		}
-		// 	case be.PTReddCoin:
-		// 		wet, err := be.GetWalletEncryptionStatus()
-		// 		if err != nil {
-		// 			log.Fatalf("Unable to determine wallet encryption status")
-		// 		}
-		// 		if wet == be.WETLocked {
-		// 			pw = be.GetWalletEncryptionPassword()
-		// 		}
-		// 		bConfirmedBU, err := HandleWalletBURDD(pw)
-		// 		cliConf.UserConfirmedWalletBU = bConfirmedBU
-		// 		if err := be.SetConfigStruct("", cliConf); err != nil {
-		// 			log.Fatalf("Unable to SetCLIConfStruct(): failed with %s\n", err)
-		// 		}
-		// 	case be.PTTrezarcoin:
 		// 	case be.PTVertcoin:
 		// 		wet, err := be.GetWalletEncryptionStatus()
 		// 		if err != nil {
@@ -622,42 +600,6 @@ var dashCmd = &cobra.Command{
 		// 	if wi.Result.UnlockedUntil < 0 {
 		// 		bWalletNeedsEncrypting = true
 		// 	}
-		// case be.PTPIVX:
-		// 	wi, err := be.GetWalletInfoPIVX(&cliConf)
-		// 	if err != nil {
-		// 		log.Fatal("Unable to perform GetWalletInfoPIVX " + err.Error())
-		// 	}
-
-		// 	if wi.Result.UnlockedUntil < 0 {
-		// 		bWalletNeedsEncrypting = true
-		// 	}
-		// case be.PTRapids:
-		// 	wi, err := be.GetWalletInfoRapids(&cliConf)
-		// 	if err != nil {
-		// 		log.Fatal("Unable to perform GetWalletInfoRapids " + err.Error())
-		// 	}
-
-		// 	if wi.Result.UnlockedUntil < 0 {
-		// 		bWalletNeedsEncrypting = true
-		// 	}
-		// case be.PTReddCoin:
-		// 	wi, err := be.GetWalletInfoRDD(&cliConf)
-		// 	if err != nil {
-		// 		log.Fatal("Unable to perform GetWalletInfoDVT " + err.Error())
-		// 	}
-
-		// 	if wi.Result.UnlockedUntil < 0 {
-		// 		bWalletNeedsEncrypting = true
-		// 	}
-		// case be.PTTrezarcoin:
-		// 	wi, err := be.GetWalletInfoTrezarcoin(&cliConf)
-		// 	if err != nil {
-		// 		log.Fatal("Unable to perform GetWalletInfoTrezarcoin " + err.Error())
-		// 	}
-
-		// 	if wi.Result.UnlockedUntil < 0 {
-		// 		bWalletNeedsEncrypting = true
-		// 	}
 		// case be.PTVertcoin:
 		// 	wi, err := be.GetWalletInfoVTC(&cliConf)
 		// 	if err != nil {
@@ -720,21 +662,7 @@ var dashCmd = &cobra.Command{
 		// case be.PTFeathercoin:
 		// 	pWallet.Text = "  Balance:          [waiting for sync...](fg:yellow)\n" +
 		// 		"  Security:         [waiting for sync...](fg:yellow)\n"
-		// case be.PTGroestlcoin:
-		// 	pWallet.Text = "  Balance:          [waiting for sync...](fg:yellow)\n" +
-		// 		"  Security:         [waiting for sync...](fg:yellow)\n"
 		// case be.PTPhore:
-		// 	pWallet.Text = "  Balance:          [waiting for sync...](fg:yellow)\n" +
-		// 		"  Security:         [waiting for sync...](fg:yellow)\n" +
-		// 		"  Actively Staking: [waiting for sync...](fg:yellow)\n"
-		// case be.PTPIVX:
-		// 	pWallet.Text = "  Balance:          [waiting for sync...](fg:yellow)\n" +
-		// 		"  Security:         [waiting for sync...](fg:yellow)\n" +
-		// 		"  Actively Staking: [waiting for sync...](fg:yellow)\n"
-		// case be.PTReddCoin:
-		// 	pWallet.Text = "  Balance:          [waiting for sync...](fg:yellow)\n" +
-		// 		"  Security:         [waiting for sync...](fg:yellow)\n"
-		// case be.PTTrezarcoin:
 		// 	pWallet.Text = "  Balance:          [waiting for sync...](fg:yellow)\n" +
 		// 		"  Security:         [waiting for sync...](fg:yellow)\n" +
 		// 		"  Actively Staking: [waiting for sync...](fg:yellow)\n"
@@ -808,27 +736,6 @@ var dashCmd = &cobra.Command{
 		// 		"  Blockchain:  [checking...](fg:yellow)\n" +
 		// 		"  Masternodes: [checking...](fg:yellow)" +
 		// 		"  Peers:  [checking...](fg:yellow)\n"
-		// case be.PTPIVX:
-		// 	pNetwork.Text = "  Blocks:      [checking...](fg:yellow)\n" +
-		// 		"  Difficulty:  [checking...](fg:yellow)\n" +
-		// 		"  Blockchain:  [checking...](fg:yellow)\n" +
-		// 		"  Masternodes: [checking...](fg:yellow)" +
-		// 		"  Peers:  [checking...](fg:yellow)\n"
-
-		// case be.PTReddCoin:
-		// 	pNetwork.Text = "  Headers:     [checking...](fg:yellow)\n" +
-		// 		"  Blocks:      [checking...](fg:yellow)\n" +
-		// 		"  Difficulty:  [checking...](fg:yellow)\n" +
-		// 		"  Blockchain:  [checking...](fg:yellow)\n" +
-		// 		"  Peers:  [checking...](fg:yellow)\n"
-
-		// case be.PTTrezarcoin:
-		// 	pNetwork.Text = "  Blocks:      [checking...](fg:yellow)\n" +
-		// 		"  Difficulty:  [checking...](fg:yellow)\n" +
-		// 		"  Blockchain:  [checking...](fg:yellow)\n" +
-		// 		"  Masternodes: [checking...](fg:yellow)" +
-		// 		"  Peers:  [checking...](fg:yellow)\n"
-
 		// case be.PTVertcoin:
 		// 	pNetwork.Text = "  Headers:     [checking...](fg:yellow)\n" +
 		// 		"  Blocks:      [checking...](fg:yellow)\n" +
