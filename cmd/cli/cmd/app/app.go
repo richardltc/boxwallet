@@ -10,14 +10,14 @@ import (
 const (
 	cAppName        string = "BoxWallet"
 	CUpdaterAppName string = "bwupdater"
-	CAppVersion     string = "0.50.8"
+	CAppVersion     string = "0.51.0"
 	CAppFilename    string = "boxwallet"
 	CAppFilenameWin string = "boxwallet.exe"
 	CAppLogfile     string = "boxwallet.log"
 
 	cAppWorkingDirLin string = ".boxwallet"
 	cAppWorkingDirWin string = "BoxWallet"
-	// CCommandEncryptWallet - Needed by dash command
+	// CCommandEncryptWallet - Needed by dash command.
 	CCommandEncryptWallet  string = "encryptwallet"    // ./divi-cli encryptwallet “a_strong_password”
 	cCommandRestoreWallet  string = "-hdseed="         // ./divid -debug-hdseed=the_seed -rescan (stop divid, rename wallet.dat, then run command)
 	cCommandUnlockWallet   string = "walletpassphrase" // ./divi-cli walletpassphrase “password” 0
