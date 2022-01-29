@@ -142,10 +142,10 @@ var resyncCmd = &cobra.Command{
 			}
 			survey.AskOne(prompt, &ans)
 			if ans {
+				fmt.Println("Removing existing Blockchain data...")
 				if err := coinRemoveBCD.RemoveBlockchainData(); err != nil {
 					log.Fatal("Unable to remove existing Blockchain data: " + err.Error())
 				}
-
 				fmt.Println("Downloading blockchain snapshot...")
 				if err := coinBC.DownloadBlockchain(); err != nil {
 					log.Fatal("Unable to download blockchain snapshot: " + err.Error())
@@ -160,13 +160,17 @@ var resyncCmd = &cobra.Command{
 				resyncStillRequired = true
 			}
 		}
+
 		if resyncStillRequired {
 			if err := wallet.WalletResync(appHomeDir); err != nil {
 				log.Fatal("Unable to perform resync: " + err.Error())
 			}
+			fmt.Println("Your " + coinName.CoinName() + " wallet is now syncing again. Please use ./boxwallet dash to view")
+		} else {
+			// All is done, but the user needs to start the Daemon again
+			fmt.Println("Your " + coinName.CoinName() + " wallet has now been re-synced. Please use ./boxwallet start and ./boxwallet dash to view")
 		}
 
-		fmt.Println("Your " + coinName.CoinName() + " wallet is now syncing again. Please use ./boxwallet dash to view")
 	},
 }
 
