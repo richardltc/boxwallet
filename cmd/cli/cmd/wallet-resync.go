@@ -111,7 +111,7 @@ var resyncCmd = &cobra.Command{
 			log.Fatal("Error using survey: " + err.Error())
 		}
 		if !ans {
-			log.Fatal("reindex not attempted.")
+			log.Fatal("resync not attempted.")
 		}
 		if err := wallet.WalletResync(appHomeDir); err != nil {
 			log.Fatal("Unable to perform resync: " + err.Error())
