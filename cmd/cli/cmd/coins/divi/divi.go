@@ -877,6 +877,26 @@ func (d Divi) NewAddress(auth *models.CoinAuth) (models.DiviGetNewAddress, error
 	return respStruct, nil
 }
 
+// RemoveBlockchainData - Returns true if the Blockchain data exists for the specified coin
+func (d Divi) RemoveBlockchainData() error {
+	coinDir, err := d.HomeDirFullPath()
+	if err != nil {
+		return errors.New("unable to HomeDirFullPath - RemoveBlockchainData")
+	}
+
+	// If the "blocks" directory exists, remove it.
+	if err := os.RemoveAll(coinDir + "blocks"); err != nil {
+		return err
+	}
+
+	// If the "chainstate" directory exists, remove it
+	if err := os.RemoveAll(coinDir + "chainstate"); err != nil {
+		return err
+	}
+
+	return nil
+}
+
 func (d Divi) RemoveCoreFiles(dir string) error {
 	srcFolder := fileutils.AddTrailingSlash(dir)
 
