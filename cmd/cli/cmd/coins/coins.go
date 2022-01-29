@@ -73,6 +73,10 @@ type CoinAnyAddresses interface {
 	AnyAddresses(auth *models.CoinAuth) (bool, error)
 }
 
+type RemoveBlockchainData interface {
+	RemoveBlockchainData() error
+}
+
 type RemoveCoreFiles interface {
 	RemoveCoreFiles(dir string) error
 }
