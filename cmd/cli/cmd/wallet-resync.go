@@ -113,32 +113,60 @@ var resyncCmd = &cobra.Command{
 		if !ans {
 			log.Fatal("resync not attempted.")
 		}
-		if err := wallet.WalletResync(appHomeDir); err != nil {
-			log.Fatal("Unable to perform resync: " + err.Error())
+
+		// Now, before performing a resync, see if we can download a snapshot to speed things up.
+		coinSupportsBCSnapshot := false
+		var coinBC coins.CoinBlockchain
+		var coinRemoveBCD coins.RemoveBlockchainData
+		switch confDB.ProjectType {
+		case models.PTDenarius:
+			//coinSupportsBCSnapshot = true
+			//coinBC = denarius.Denarius{}
+		case models.PTDivi:
+			coinSupportsBCSnapshot = true
+			coinBC = divi.Divi{}
+			coinRemoveBCD = divi.Divi{}
+		case models.PTReddCoin:
+			//coinSupportsBCSnapshot = true
+			//coinBC = rdd.ReddCoin{}
+		}
+		resyncStillRequired := true
+		if coinSupportsBCSnapshot {
+			// Ask if the user wants to download the snapshot to speed up the resync.
+			// If they do, download it, if not, just perform a resync.
+
+			ans := true
+			prompt := &survey.Confirm{
+				Message: "\nWould you like to download the Blockchain snapshot, to speed up the resync process?:",
+				Default: true,
+			}
+			survey.AskOne(prompt, &ans)
+			if ans {
+				if err := coinRemoveBCD.RemoveBlockchainData(); err != nil {
+					log.Fatal("Unable to remove existing Blockchain data: " + err.Error())
+				}
+
+				fmt.Println("Downloading blockchain snapshot...")
+				if err := coinBC.DownloadBlockchain(); err != nil {
+					log.Fatal("Unable to download blockchain snapshot: " + err.Error())
+				}
+				fmt.Println("Unarchiving blockchain snapshot...")
+				if err := coinBC.UnarchiveBlockchainSnapshot(); err != nil {
+					log.Fatal("Unable to unarchive blockchain snapshot: " + err.Error())
+				}
+
+				resyncStillRequired = false
+			} else {
+				resyncStillRequired = true
+			}
+		}
+		if resyncStillRequired {
+			if err := wallet.WalletResync(appHomeDir); err != nil {
+				log.Fatal("Unable to perform resync: " + err.Error())
+			}
 		}
 
 		fmt.Println("Your " + coinName.CoinName() + " wallet is now syncing again. Please use ./boxwallet dash to view")
-
-		// cn, err := be.GetCoinName(be.APPTCLI)
-		// if err != nil {
-		// 	log.Fatal("Unable to GetCoinName " + err.Error())
-		// }
-
-		// ans := false
-		// prompt := &survey.Confirm{
-		// 	Message: `Are you sure? Perform a resync on your ` + cn + ` wallet?:`,
-		// }
-		// if err := survey.AskOne(prompt, &ans); err != nil {
-		// 	log.Fatal("Error using survey: " + err.Error())
-		// }
-		// if !ans {
-		// 	log.Fatal("reindex not attempted.")
-		// }
-		// if err := be.WalletFix(be.WFTReSync, bwConf.ProjectType); err != nil {
-		// 	log.Fatal("Unable to perform resync: " + err.Error())
-		// }
-
-		// fmt.Println("Your " + cn + " wallet is now syncing again. Please use ./boxwallet dash to view").
 	},
 }
 
