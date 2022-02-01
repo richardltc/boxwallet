@@ -7,6 +7,8 @@ import (
 	"os"
 	"richardmace.co.uk/boxwallet/cmd/cli/cmd/app"
 	divi "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/divi"
+	ppc "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/peercoin"
+	pivx "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/pivx"
 	"richardmace.co.uk/boxwallet/cmd/cli/cmd/conf"
 	"richardmace.co.uk/boxwallet/cmd/cli/cmd/models"
 
@@ -60,11 +62,23 @@ var updatecoreCmd = &cobra.Command{
 			coinDaemon = divi.Divi{}
 			coinName = divi.Divi{}
 			rmCoreFiles = divi.Divi{}
+		case models.PTPeercoin:
+			buCoreFiles = ppc.Peercoin{}
+			coin = ppc.Peercoin{}
+			coinDaemon = ppc.Peercoin{}
+			coinName = ppc.Peercoin{}
+			rmCoreFiles = ppc.Peercoin{}
+		case models.PTPIVX:
+			buCoreFiles = pivx.PIVX{}
+			coin = pivx.PIVX{}
+			coinDaemon = pivx.PIVX{}
+			coinName = pivx.PIVX{}
+			rmCoreFiles = pivx.PIVX{}
 		default:
 			log.Fatal("Unable to determine ProjectType")
 		}
 
-		// Confirm that they wish to update t coin's files, and display what version they will be upgrading to.
+		// Confirm that they wish to update the coin's files, and display what version they will be upgrading to.
 		ans := true
 		prompt := &survey.Confirm{
 			Message: "\nAre you sure. Update the " + coinName.CoinName() + " core wallet files?:",
@@ -86,7 +100,7 @@ var updatecoreCmd = &cobra.Command{
 				log.Fatal("Unable to backup core files: " + err.Error())
 			}
 
-			// Remove existing coin files now that they're backed up...
+			// Remove existing coin files now that they're backed up..
 			fmt.Println("Removing existing coin files...")
 			// Backup existing coin files that are in the ~/.boxwallet dir
 			if err := rmCoreFiles.RemoveCoreFiles(appHomeDir); err != nil {
