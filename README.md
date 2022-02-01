@@ -34,12 +34,15 @@ BoxWallet is a single binary multi-coin CLI tool, that gets your coin-of-choice 
 * Divi
 * Groestlcoin
 * Feathercoin
+* Litecoin
 * Peercoin
-* Phore
 * PIVX
+* Primecoin (coming soon)
 * Rapids
 * ReddCoin
 * Scala (coming soon)
+* SpiderByte
+* Syscoin (coming soon)
 * Trezarcoin
 * Vertcoin
 
@@ -60,11 +63,11 @@ However, if you're running on a Raspberry Pi, you'll probably want the file endi
 `
 
 
-In your browser, right click on the correct file you need and choose "copy link", then, in your Linux terminal, type `wget ` then paste the link after it.
+In your browser, right-click on the correct file you need and choose "copy link", then, in your Linux terminal, type `wget ` then paste the link after it.
 
-If the version of BoxWallet was `0.41.1` you should now have a line of text that looks like the following:
+If the version of BoxWallet was `0.51.1` you should now have a line of text that looks like the following:
 
-`wget https://github.com/richardltc/boxwallet/releases/download/0.41.1/boxwallet_0.41.1_Linux_64bit.tar.gz`
+`wget https://github.com/richardltc/boxwallet/releases/download/0.51.1/boxwallet_0.51.1_Linux_64bit.tar.gz`
 
 Press return, and the command `wget` should now download that file to you current directory.
 
@@ -73,13 +76,13 @@ Next, enter the command:
 `tar -xf ./boxwallet` then, without a space, press the tab key to auto-complete the command line.
 You should then have a line that says:
 
-`tar -xf ./boxwallet_0.41.1_Linux_64bit.tar.gz`
+`tar -xf ./boxwallet_0.51.1_Linux_64bit.tar.gz`
 
 Press return, and you should then have the following files:
 
 `boxwallet` - The BoxWallet application.
 
-`bwupdater` - The tool that you can run, to keep BoxWallet up-to-date.
+`bwupdater` - The tool that you can run to keep BoxWallet up-to-date.
 
 `README.md` - This file.
 
@@ -105,6 +108,8 @@ Then  `./boxwallet dash`, where you will be greeted with an initial wizard to ge
 
 * `boxwallet send` - Send your crypto.
 
+* `boxwallet updatecore` - Allows you to update the projects core files.
+
 * `boxwallet wallet backup` - Creates a backup of your `wallet.dat` file, based on today's dates, and names it based on the days date.
 
 * `boxwallet wallet encrypt/unlock/unlockfs` - Allows the encryption and unlocking of the wallet for safe staking.
@@ -113,7 +118,7 @@ Then  `./boxwallet dash`, where you will be greeted with an initial wizard to ge
 
 * `boxwallet wallet reindex` - re-indexes your local copy of the Blockchain
 
-* `boxwallet wallet resync` - Performs a complete, from scratch, resync of the Blockchain.
+* `boxwallet wallet resync` - Performs a complete, from scratch, resync of the Blockchain, whilst also allowing to auto download a Blockchain snapshot, if available.
 
 
 * Allows you to "web enable" your existing wallet (coming soon).
