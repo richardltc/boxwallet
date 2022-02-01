@@ -125,6 +125,20 @@ func (p PIVX) AnyAddresses(auth *models.CoinAuth) (bool, error) {
 	return false, nil
 }
 
+func (p PIVX) BackupCoreFiles(dir string) error {
+	if err := fileutils.BackupFile(dir, cDaemonFileLin, dir, "", true); err != nil {
+		return err
+	}
+	if err := fileutils.BackupFile(dir, cCliFileLin, dir, "", true); err != nil {
+		return err
+	}
+	if err := fileutils.BackupFile(dir, cTxFileLin, dir, "", true); err != nil {
+		return err
+	}
+
+	return nil
+}
+
 // BlockchainDataExists - Returns true if the Blockchain data exists for the specified coin
 func (p PIVX) BlockchainDataExists() (bool, error) {
 	coinDir, err := p.HomeDirFullPath()
@@ -627,6 +641,22 @@ func (p PIVX) NewAddress(auth *models.CoinAuth) (models.PIVXGetNewAddress, error
 	return respStruct, nil
 }
 
+func (p PIVX) RemoveCoreFiles(dir string) error {
+	srcFolder := fileutils.AddTrailingSlash(dir)
+
+	if err := os.Remove(srcFolder + cDaemonFileLin); err != nil {
+		return err
+	}
+	if err := os.Remove(srcFolder + cCliFileLin); err != nil {
+		return err
+	}
+	if err := os.Remove(srcFolder + cTxFileLin); err != nil {
+		return err
+	}
+
+	return nil
+}
+
 func (p PIVX) RPCDefaultUsername() string {
 	return cRPCUser
 }
@@ -774,6 +804,7 @@ func (p PIVX) SendToAddress(coinAuth *models.CoinAuth, address string, amount fl
 	if err != nil {
 		return respStruct, err
 	}
+
 	return respStruct, nil
 }
 
