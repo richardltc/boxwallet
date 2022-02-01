@@ -68,6 +68,20 @@ type Peercoin struct {
 	Port        string
 }
 
+func (p Peercoin) BackupCoreFiles(dir string) error {
+	if err := fileutils.BackupFile(dir, cDaemonFileLin, dir, "", true); err != nil {
+		return err
+	}
+	if err := fileutils.BackupFile(dir, cCliFileLin, dir, "", true); err != nil {
+		return err
+	}
+	if err := fileutils.BackupFile(dir, cTxFileLin, dir, "", true); err != nil {
+		return err
+	}
+
+	return nil
+}
+
 func (p Peercoin) Bootstrap(rpcUser, rpcPassword, ip, port string) {
 	p.RPCUser = rpcUser
 	p.RPCPassword = rpcPassword
@@ -101,6 +115,7 @@ func (p Peercoin) AllBinaryFilesExist(dir string) (bool, error) {
 			return false, nil
 		}
 	}
+
 	return true, nil
 }
 
@@ -472,6 +487,22 @@ func (p Peercoin) NewAddress(auth *models.CoinAuth) (models.PPCNewAddress, error
 	}
 
 	return respStruct, nil
+}
+
+func (p Peercoin) RemoveCoreFiles(dir string) error {
+	srcFolder := fileutils.AddTrailingSlash(dir)
+
+	if err := os.Remove(srcFolder + cDaemonFileLin); err != nil {
+		return err
+	}
+	if err := os.Remove(srcFolder + cCliFileLin); err != nil {
+		return err
+	}
+	if err := os.Remove(srcFolder + cTxFileLin); err != nil {
+		return err
+	}
+
+	return nil
 }
 
 func (p Peercoin) RPCDefaultUsername() string {
