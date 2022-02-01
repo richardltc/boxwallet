@@ -555,52 +555,30 @@ func (d Divi) IsPOS() bool {
 // 	}
 // }
 
-//func GetBlockchainSyncTxtDivi(synced bool, bci *DiviBlockchainInfoRespStruct) string {
-//	s := ConvertBCVerification(bci.Result.Verificationprogress)
-//	if s == "0.0" {
-//		s = ""
-//	} else {
-//		s = s + "%"
+//func getDiviAddNodesOld() ([]byte, error) {
+//	addNodesClient := http.Client{
+//		Timeout: time.Second * 3, // Maximum of 3 secs.
 //	}
 //
-//	if !synced {
-//		return "Blockchain: [" + getNextProgBCIndicator(gLastBCSyncStatus) + "syncing " + sProg + " ](fg:yellow)"
-//		if bci.Result.Verificationprogress > gLastBCSyncPos {
-//			gLastBCSyncPos = bci.Result.Verificationprogress
-//			return "Blockchain:  [syncing " + s + " ](fg:yellow)"
-//		} else {
-//			gLastBCSyncPos = bci.Result.Verificationprogress
-//			return "Blockchain:  [waiting " + s + " ](fg:yellow)"
-//		}
-//	} else {
-//		return "Blockchain:  [synced " + CUtfTickBold + "](fg:green)"
+//	req, err := http.NewRequest(http.MethodGet, cAddNodeURL, nil)
+//	if err != nil {
+//		return nil, err
 //	}
+//
+//	req.Header.Set("User-Agent", "boxwallet")
+//
+//	res, getErr := addNodesClient.Do(req)
+//	if getErr != nil {
+//		return nil, err
+//	}
+//
+//	body, readErr := ioutil.ReadAll(res.Body)
+//	if readErr != nil {
+//		return nil, err
+//	}
+//
+//	return body, nil
 //}
-
-func getDiviAddNodesOld() ([]byte, error) {
-	addNodesClient := http.Client{
-		Timeout: time.Second * 3, // Maximum of 3 secs.
-	}
-
-	req, err := http.NewRequest(http.MethodGet, cAddNodeURL, nil)
-	if err != nil {
-		return nil, err
-	}
-
-	req.Header.Set("User-Agent", "boxwallet")
-
-	res, getErr := addNodesClient.Do(req)
-	if getErr != nil {
-		return nil, err
-	}
-
-	body, readErr := ioutil.ReadAll(res.Body)
-	if readErr != nil {
-		return nil, err
-	}
-
-	return body, nil
-}
 
 func (d Divi) getDiviAddNodes() (addnodes []models.DiviAddNodes, err error) {
 	//var aNodes []models.DiviAddNodes
@@ -615,6 +593,10 @@ func (d Divi) getDiviAddNodes() (addnodes []models.DiviAddNodes, err error) {
 	if err != nil {
 		return addnodes, err
 	}
+	if bytes.Contains(body, []byte("Error")) {
+		return addnodes, errors.New("error response from api")
+	}
+
 	err = json.Unmarshal(body, &addnodes)
 	if err != nil {
 		return addnodes, err
