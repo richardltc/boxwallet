@@ -20,6 +20,7 @@ const (
 	CCoinNameFeathercoin string = "Feathercoin"
 	CCoinNameGroestlcoin string = "Groestlcoin"
 	CCoinNameLitecoin    string = "Litecoin"
+	CCoinNameNavcoin     string = "Navcoin"
 	CCoinNameSpiderByte  string = "SpiderByte"
 	CCoinNamePeercoin    string = "Peercoin"
 	CCoinNamePhore       string = "Phore"
@@ -322,7 +323,7 @@ func PopulateConfFile(confFile, homeDir, rpcUserCoin, rpcPortCoin string) (rpcUs
 		}
 	}
 
-	// Add rpcport= info if required
+	// Add rpcport= info if required.
 	bNeedToWriteStr = true
 	if fileutils.FileExists(homeDir + confFile) {
 		bStrFound, err := fileutils.StringExistsInFile("rpcport=", homeDir+confFile)
