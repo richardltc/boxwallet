@@ -31,6 +31,7 @@ import (
 	ftc "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/feathercoin"
 	grs "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/groestlcoin"
 	ltc "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/litecoin"
+	nav "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/navcoin"
 	ppc "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/peercoin"
 	phr "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/phore"
 	pivx "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/pivx"
@@ -86,6 +87,7 @@ var coinCmd = &cobra.Command{
 				coins.CCoinNameFeathercoin,
 				coins.CCoinNameGroestlcoin,
 				coins.CCoinNameLitecoin,
+				coins.CCoinNameNavcoin,
 				coins.CCoinNamePeercoin,
 				//coins.CCoinNamePhore,
 				coins.CCoinNamePIVX,
@@ -153,6 +155,11 @@ var coinCmd = &cobra.Command{
 			coinName = ltc.Litecoin{}
 			coinRPC = ltc.Litecoin{}
 			coinType = models.PTLitecoin
+		case coins.CCoinNameNavcoin:
+			coin = nav.Navcoin{}
+			coinName = nav.Navcoin{}
+			coinRPC = nav.Navcoin{}
+			coinType = models.PTNavcoin
 		case coins.CCoinNamePeercoin:
 			coin = ppc.Peercoin{}
 			coinName = ppc.Peercoin{}
@@ -224,7 +231,7 @@ var coinCmd = &cobra.Command{
 			log.Fatal("Unable to PopulateConfFile: ", err.Error())
 		}
 
-		// ...because it's possible that the conf file for this coin has already been created, we need to store the
+		// ..because it's possible that the conf file for this coin has already been created, we need to store the
 		// returned user and password so, effectively, will either be storing the existing info, or
 		// the freshly generated info.
 		cliConf.ProjectType = coinType
@@ -286,6 +293,9 @@ var coinCmd = &cobra.Command{
 		case models.PTDivi:
 			coinSupportsBCSnapshot = true
 			coinBC = divi.Divi{}
+		case models.PTNavcoin:
+			coinSupportsBCSnapshot = true
+			coinBC = nav.Navcoin{}
 		case models.PTReddCoin:
 			coinSupportsBCSnapshot = true
 			coinBC = rdd.ReddCoin{}
@@ -315,6 +325,8 @@ var coinCmd = &cobra.Command{
 		}
 		fmt.Println("\nAll done!")
 		fmt.Println("\nYou can now run './boxwallet start' and then './boxwallet dash' to view your " + sCoinName + " Dashboard")
+		fmt.Println("\nIf you'd like to fully support the " + sCoinName + " network, please make sure that port " + dfRPCPort +
+			" is opened on your router, and is being directed to this box.")
 
 		sInfo := "Thank you for using " + app.Name() + " to run your " + sCoinName + " wallet/node." + "\n\n" +
 			app.Name() + " is FREE to use, however, all donations are most welcome at the " + sCoinName + " address below:" + "\n\n" +
