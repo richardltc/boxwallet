@@ -52,6 +52,7 @@ const (
 	PTPrimecoin
 	PTSpiderByte
 	PTLitecoin
+	PTNavcoin
 )
 
 type GenericResponse struct {
