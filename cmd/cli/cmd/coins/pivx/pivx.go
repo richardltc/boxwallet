@@ -27,23 +27,23 @@ const (
 	cCoinName       string = "PIVX"
 	cCoinNameAbbrev string = "PIVX"
 
-	cCoreVersion           string = "5.4.0"
-	cDownloadFileArm32            = "pivx-" + cCoreVersion + "-arm-linux-gnueabihf.tar.gz"
-	cDownloadFileArm64            = "pivx-" + cCoreVersion + "-aarch64-linux-gnu.tar.gz"
-	cDownloadFileLin              = "pivx-" + cCoreVersion + "-x86_64-linux-gnu.tar.gz"
-	cDownloadFileFilemacOS        = "pivx-" + cCoreVersion + "-osx64.tar.gz"
-	cDownloadFileWin              = "pivx-" + cCoreVersion + "-win64.zip"
+	//cCoreVersion           string = "5.4.0"
+	//cDownloadFileArm32            = "pivx-" + cCoreVersion + "-arm-linux-gnueabihf.tar.gz"
+	//cDownloadFileArm64            = "pivx-" + cCoreVersion + "-aarch64-linux-gnu.tar.gz"
+	//cDownloadFileLin              = "pivx-" + cCoreVersion + "-x86_64-linux-gnu.tar.gz"
+	//cDownloadFileFilemacOS        = "pivx-" + cCoreVersion + "-osx64.tar.gz"
+	//cDownloadFileWin              = "pivx-" + cCoreVersion + "-win64.zip"
 
 	// Directory const.
-	cExtractedDirArm string = "pivx-" + cCoreVersion + "/"
-	cExtractedDirLin string = "pivx-" + cCoreVersion + "/"
-	cExtractedDirWin string = "pivx-" + cCoreVersion + "\\"
-	cSaplingDirArm   string = ".pivx-params" + "/"
-	cSaplingDirLinux string = ".pivx-params" + "/"
-	cSaplingDirWin   string = "PIVXParams" + "\\"
+	//cExtractedDirArm string = "pivx-" + cCoreVersion + "/"
+	//cExtractedDirLin string = "pivx-" + cCoreVersion + "/"
+	//cExtractedDirWin string = "pivx-" + cCoreVersion + "\\"
+	cSaplingDirArm string = ".pivx-params" + "/"
+	cSaplingDirLin string = ".pivx-params" + "/"
+	cSaplingDirWin string = "PIVXParams" + "\\"
 
-	cAPIURL      string = "https://api.github.com/repos/PIVX-Project/PIVX/releases/latest"
-	cDownloadURL string = "https://github.com/PIVX-Project/PIVX/releases/download/v" + cCoreVersion + "/"
+	cAPIURL string = "https://api.github.com/repos/PIVX-Project/PIVX/releases/latest"
+	//cDownloadURL string = "https://github.com/PIVX-Project/PIVX/releases/download/v" + cCoreVersion + "/"
 
 	// PIVX Wallet Constants
 	cHomeDirLin string = ".pivx"
@@ -287,11 +287,32 @@ func (p PIVX) DownloadCoin(location string) error {
 	}
 
 	// Unarchive the files
-	if err := p.unarchiveFile(fullFilePath, location); err != nil {
+	if err := p.unarchiveFile(fullFilePath, location, downloadFile); err != nil {
 		return err
 	}
 
 	return nil
+}
+
+func (p PIVX) extractedDir() (string, error) {
+	ghInfo, err := latestAssets()
+	if err != nil {
+		return "", err
+	}
+
+	var s string
+	switch runtime.GOOS {
+	case "windows":
+		tn := strings.ReplaceAll(ghInfo.TagName, "v", "")
+		s = strings.ToLower(cCoinName) + "-" + tn + "\\"
+	case "linux":
+		tn := strings.ReplaceAll(ghInfo.TagName, "v", "")
+		s = strings.ToLower(cCoinName) + "-" + tn + "/"
+	default:
+		return "", errors.New("unable to determine runtime.GOOS")
+	}
+
+	return s, nil
 }
 
 func (p PIVX) HomeDir() string {
@@ -371,26 +392,27 @@ func (p PIVX) Install(location string) error {
 	// Copy files to correct location
 	var srcPath, srcFileCLI, srcFileDaemon, srcFileTX, dirToRemove string
 
+	extractedDir, _ := p.extractedDir()
 	switch runtime.GOOS {
 	case "windows":
-		srcPath = location + cDownloadFileWin
+		srcPath = location + extractedDir
 		srcFileCLI = cCliFileWin
 		srcFileDaemon = cDaemonFileWin
 		srcFileTX = cTxFileWin
 	case "linux":
 		switch runtime.GOARCH {
 		case "arm", "arm64":
-			srcPath = location + cExtractedDirLin + "bin/"
+			srcPath = location + extractedDir + "bin/"
 			srcFileCLI = cCliFileLin
 			srcFileDaemon = cDaemonFileLin
 			srcFileTX = cTxFileLin
-			dirToRemove = location + cExtractedDirLin
+			dirToRemove = location + extractedDir
 		case "amd64":
-			srcPath = location + cExtractedDirLin + "bin/"
+			srcPath = location + extractedDir + "bin/"
 			srcFileCLI = cCliFileLin
 			srcFileDaemon = cDaemonFileLin
 			srcFileTX = cTxFileLin
-			dirToRemove = location + cExtractedDirLin
+			dirToRemove = location + extractedDir
 		default:
 			return errors.New("unable to determine runtime.GOARCH " + runtime.GOARCH)
 		}
@@ -398,7 +420,7 @@ func (p PIVX) Install(location string) error {
 		return errors.New("unable to determine runtime.GOOS")
 	}
 
-	// If the coin-cli file doesn't already exists the copy it.
+	// If the coin-cli file doesn't exist the copy it.
 	if _, err := os.Stat(location + srcFileCLI); os.IsNotExist(err) {
 		if err := fileutils.FileCopy(srcPath+srcFileCLI, location+srcFileCLI, false); err != nil {
 			return fmt.Errorf("unable to copyFile from: %v to %v - %v", srcPath+srcFileCLI, location+srcFileCLI, err)
@@ -408,7 +430,7 @@ func (p PIVX) Install(location string) error {
 		return fmt.Errorf("unable to chmod file: %v - %v", location+srcFileCLI, err)
 	}
 
-	// If the coind file doesn't already exists the copy it.
+	// If the coind file doesn't exist the copy it.
 	if _, err := os.Stat(location + srcFileDaemon); os.IsNotExist(err) {
 		if err := fileutils.FileCopy(srcPath+srcFileDaemon, location+srcFileDaemon, false); err != nil {
 			return fmt.Errorf("unable to copyFile from: %v to %v - %v", srcPath+srcFileDaemon, location+srcFileDaemon, err)
@@ -418,7 +440,7 @@ func (p PIVX) Install(location string) error {
 		return fmt.Errorf("unable to chmod file: %v - %v", location+srcFileDaemon, err)
 	}
 
-	// If the coitx file doesn't already exists the copy it.
+	// If the cointx file doesn't exist the copy it.
 	if _, err := os.Stat(location + srcFileTX); os.IsNotExist(err) {
 		if err := fileutils.FileCopy(srcPath+srcFileTX, location+srcFileTX, false); err != nil {
 			return fmt.Errorf("unable to copyFile from: %v to %v - %v", srcPath+srcFileTX, location+srcFileTX, err)
@@ -428,6 +450,7 @@ func (p PIVX) Install(location string) error {
 		return fmt.Errorf("unable to chmod file: %v - %v", location+srcFileTX, err)
 	}
 
+	srcSapDir := location + extractedDir + "share/pivx/"
 	dstSapDir, err := p.SaplingDir()
 	if err != nil {
 		return errors.New("unable to get SaplingDir: " + err.Error())
@@ -438,7 +461,7 @@ func (p PIVX) Install(location string) error {
 	}
 	// Sapling1
 	if !fileutils.FileExists(dstSapDir + cSapling1) {
-		if err := fileutils.FileCopy(location+cSapling1, dstSapDir+cSapling1, false); err != nil {
+		if err := fileutils.FileCopy(srcSapDir+cSapling1, dstSapDir+cSapling1, false); err != nil {
 			return errors.New("unable to copyFile from: " + location + cSapling1 + " to: " + dstSapDir + cSapling1 + ": " + err.Error())
 		}
 	}
@@ -448,7 +471,7 @@ func (p PIVX) Install(location string) error {
 
 	// Sapling2
 	if !fileutils.FileExists(dstSapDir + cSapling2) {
-		if err := fileutils.FileCopy(location+cSapling2, dstSapDir+cSapling2, false); err != nil {
+		if err := fileutils.FileCopy(srcSapDir+cSapling2, dstSapDir+cSapling2, false); err != nil {
 			return errors.New("unable to copyFile from: " + location + cSapling2 + " to: " + dstSapDir + cSapling2 + ": " + err.Error())
 		}
 	}
@@ -509,11 +532,6 @@ func latestDownloadFile(ghInfo *models.GithubInfo) (string, error) {
 }
 
 func latestDownloadFileURL(ghInfo *models.GithubInfo) (string, error) {
-	//ghInfo, err := latestAssets()
-	//if err != nil {
-	//	return "", err
-	//}
-	//
 	var sURL string
 	switch runtime.GOOS {
 	case "windows":
@@ -702,9 +720,9 @@ func (p PIVX) ListReceivedByAddress(coinAuth *models.CoinAuth, includeZero bool)
 
 	var s string
 	if includeZero {
-		s = "{\"jsonrpc\":\"1.0\",\"id\":\"curltext\",\"method\":\"listreceivedbyaddress\",\"params\":[1, true]}"
+		s = "{\"jsonrpc\":\"1.0\",\"id\":\"boxwallet\",\"method\":\"listreceivedbyaddress\",\"params\":[1, true]}"
 	} else {
-		s = "{\"jsonrpc\":\"1.0\",\"id\":\"curltext\",\"method\":\"listreceivedbyaddress\",\"params\":[1, false]}"
+		s = "{\"jsonrpc\":\"1.0\",\"id\":\"boxwallet\",\"method\":\"listreceivedbyaddress\",\"params\":[1, false]}"
 	}
 	body := strings.NewReader(s)
 	req, err := http.NewRequest("POST", "http://"+p.IPAddress+":"+p.Port, body)
@@ -772,7 +790,7 @@ func (p PIVX) SaplingDir() (string, error) {
 		// add the "appdata\roaming" part.
 		s = fileutils.AddTrailingSlash(hd) + "appdata\\roaming\\" + fileutils.AddTrailingSlash(cSaplingDirWin)
 	} else {
-		s = fileutils.AddTrailingSlash(hd) + fileutils.AddTrailingSlash(cSaplingDirLinux)
+		s = fileutils.AddTrailingSlash(hd) + fileutils.AddTrailingSlash(cSaplingDirLin)
 	}
 
 	return s, nil
@@ -1236,25 +1254,27 @@ func (p PIVX) WalletUnlockFS(coinAuth *models.CoinAuth, pw string) error {
 //	return !info.IsDir()
 //}
 
-func (p *PIVX) unarchiveFile(fullFilePath, location string) error {
+func (p *PIVX) unarchiveFile(fullFilePath, location, downloadFile string) error {
 	if err := archiver.Unarchive(fullFilePath, location); err != nil {
 		return fmt.Errorf("unable to unarchive file: %v - %v", fullFilePath, err)
 	}
-	switch runtime.GOOS {
-	case "windows":
-		defer os.RemoveAll(location + cDownloadFileWin)
-	case "linux":
-		switch runtime.GOARCH {
-		case "arm":
-			defer os.RemoveAll(location + cDownloadFileArm32)
-		case "arm64":
-			defer os.RemoveAll(location + cDownloadFileArm64)
-		case "386":
-			return errors.New("linux 386 is not currently supported for :" + cCoinName)
-		case "amd64":
-			defer os.RemoveAll(location + cDownloadFileLin)
-		}
-	}
+	//switch runtime.GOOS {
+	//case "windows":
+	//	defer os.RemoveAll(location + cDownloadFileWin)
+	//case "linux":
+	//	switch runtime.GOARCH {
+	//	case "arm":
+	//		defer os.RemoveAll(location + cDownloadFileArm32)
+	//	case "arm64":
+	//		defer os.RemoveAll(location + cDownloadFileArm64)
+	//	case "386":
+	//		return errors.New("linux 386 is not currently supported for :" + cCoinName)
+	//	case "amd64":
+	//		defer os.RemoveAll(location + cDownloadFileLin)
+	//	}
+	//}
+
+	defer os.RemoveAll(location + downloadFile)
 
 	defer os.Remove(fullFilePath)
 
