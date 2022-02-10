@@ -111,7 +111,6 @@ func FindProcess(key string) (int, string, error) {
 	process, _ := ps.Processes()
 
 	for i := range process {
-		//fmt.Print(process[i].Executable()+"\n")
 		if process[i].Executable() == key {
 			pid = process[i].Pid()
 			pname = process[i].Executable()
@@ -207,7 +206,7 @@ func PopulateConfFile(confFile, homeDir, rpcUserCoin, rpcPortCoin string) (rpcUs
 	}
 	if bNeedToWriteStr {
 		rpcu = rpcUserCoin
-		if err := fileutils.WriteTextToFile(homeDir+confFile, models.CRPCUser+"="+rpcu); err != nil {
+		if err := fileutils.WriteTextToFile(homeDir+confFile, "\n"+models.CRPCUser+"="+rpcu); err != nil {
 			return "", "", err
 		}
 	}
