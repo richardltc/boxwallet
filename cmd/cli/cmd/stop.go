@@ -33,6 +33,7 @@ import (
 	divi "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/divi"
 	grs "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/groestlcoin"
 	ltc "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/litecoin"
+	nav "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/navcoin"
 	ppc "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/peercoin"
 	pivx "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/pivx"
 	xpm "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/primecoin"
@@ -96,6 +97,8 @@ var stopCmd = &cobra.Command{
 			coinDaemon = grs.Groestlcoin{}
 		case models.PTLitecoin:
 			coinDaemon = ltc.Litecoin{}
+		case models.PTNavcoin:
+			coinDaemon = nav.Navcoin{}
 		case models.PTPeercoin:
 			coinDaemon = ppc.Peercoin{}
 		case models.PTPhore:
@@ -149,33 +152,6 @@ var stopCmd = &cobra.Command{
 				break
 			}
 		}
-
-		// switch cliConf.ProjectType {
-		// case be.PTScala:
-		// 	resp, err := be.StopDaemonMonero(&cliConf)
-		// 	if err != nil {
-		// 		log.Fatal("Unable to StopDaemon " + err.Error())
-		// 	}
-		// 	fmt.Println(resp.Status)
-		// 	fmt.Println("daemon stopping")
-		// default:
-		// 	fmt.Println("Stopping the " + sCoinDaemonName + " server...")
-		// 	_, err := be.StopDaemon(&cliConf)
-		// 	if err != nil {
-		// 		log.Fatal("Unable to StopDaemon " + err.Error())
-		// 	}
-		// 	for i := 0; i < 600; i++ {
-		// 		bStillRunning, _, _ := be.IsCoinDaemonRunning(cliConf.ProjectType)
-		// 		if bStillRunning {
-		// 			_, _ = be.StopDaemon(&cliConf)
-		// 			fmt.Printf("\r" + "Waiting for " + sCoinDaemonName + " to stop. This could take a long time on slower devices... " + strconv.Itoa(i+1))
-		// 			time.Sleep(1 * time.Second)
-		// 		} else {
-		// 			fmt.Println("\n" + sCoinDaemonName + " server stopped.")
-		// 			break
-		// 		}
-		// 	}
-		// }
 
 	},
 }
