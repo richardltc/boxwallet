@@ -243,8 +243,8 @@ func (n Navcoin) BlockchainDataExists() (bool, error) {
 	return false, nil
 }
 
-func (n Navcoin) BlockchainInfo(auth *models.CoinAuth) (models.DiviBlockchainInfo, error) {
-	var respStruct models.DiviBlockchainInfo
+func (n Navcoin) BlockchainInfo(auth *models.CoinAuth) (models.NAVBlockchainInfo, error) {
+	var respStruct models.NAVBlockchainInfo
 
 	body := strings.NewReader("{\"jsonrpc\":\"1.0\",\"id\":\"curltext\",\"method\":\"getblockchaininfo\",\"params\":[]}")
 	req, err := http.NewRequest("POST", "http://"+auth.IPAddress+":"+auth.Port, body)
@@ -413,8 +413,8 @@ func (n Navcoin) HomeDirFullPath() (string, error) {
 	}
 }
 
-func (n Navcoin) Info(auth *models.CoinAuth) (models.DiviGetInfo, string, error) {
-	var respStruct models.DiviGetInfo
+func (n Navcoin) Info(auth *models.CoinAuth) (models.NAVGetInfo, string, error) {
+	var respStruct models.NAVGetInfo
 
 	for i := 1; i < 50; i++ {
 		body := strings.NewReader("{\"jsonrpc\":\"1.0\",\"id\":\"curltext\",\"method\":\"getinfo\",\"params\":[]}")
@@ -571,8 +571,6 @@ func (n Navcoin) IsPOS() bool {
 // }
 
 func (n Navcoin) getNavcoinAddNodes() (addnodes []models.DiviAddNodes, err error) {
-	//var aNodes []models.DiviAddNodes
-
 	resp, err := http.Get("https://chainz.cryptoid.info/" + strings.ToLower(n.CoinNameAbbrev()) + "/api.dws?q=nodes")
 	if err != nil {
 		return addnodes, err
@@ -622,64 +620,6 @@ func (n Navcoin) DumpHDInfo(coinAuth *models.CoinAuth, pw string) (string, error
 
 	return respStruct.Result.Mnemonic, nil
 }
-
-//func (d *Divi) InfoUI(spin *yacspin.Spinner) (models.DiviGetInfo, string, error) {
-//	var respStruct models.DiviGetInfo
-//
-//	for i := 1; i < 600; i++ {
-//		body := strings.NewReader("{\"jsonrpc\":\"1.0\",\"id\":\"boxwallet\",\"method\":\"" + cCommandGetInfo + "\",\"params\":[]}")
-//		req, err := http.NewRequest("POST", "http://"+d.IPAddress+":"+d.Port, body)
-//		if err != nil {
-//			return respStruct, "", err
-//		}
-//		req.SetBasicAuth(d.RPCUser, d.RPCPassword)
-//		req.Header.Set("Content-Type", "text/plain;")
-//
-//		resp, err := http.DefaultClient.Do(req)
-//		if err != nil {
-//			spin.Message(" waiting for your " + cCoinName + " wallet to respond, this could take several minutes (ctrl-c to cancel)...")
-//			time.Sleep(1 * time.Second)
-//		} else {
-//			defer resp.Body.Close()
-//			bodyResp, err := ioutil.ReadAll(resp.Body)
-//			if err != nil {
-//				return respStruct, "", err
-//			}
-//
-//			// Check to make sure we are not loading the wallet
-//			if bytes.Contains(bodyResp, []byte("Loading")) ||
-//				bytes.Contains(bodyResp, []byte("Rescanning")) ||
-//				bytes.Contains(bodyResp, []byte("Rewinding")) ||
-//				bytes.Contains(bodyResp, []byte("RPC in warm-up: Calculating money supply")) ||
-//				bytes.Contains(bodyResp, []byte("Verifying")) {
-//				// The wallet is still loading, so print message, and sleep for 1 second and try again..
-//				var errStruct models.GenericResponse
-//				err = json.Unmarshal(bodyResp, &errStruct)
-//				if err != nil {
-//					return respStruct, "", err
-//				}
-//
-//				if bytes.Contains(bodyResp, []byte("Loading")) {
-//					spin.Message(" Your " + cCoinName + " wallet is *Loading*, this could take a while...")
-//				} else if bytes.Contains(bodyResp, []byte("Rescanning")) {
-//					spin.Message(" Your " + cCoinName + " wallet is *Rescanning*, this could take a while...")
-//				} else if bytes.Contains(bodyResp, []byte("Rewinding")) {
-//					spin.Message(" Your " + cCoinName + " wallet is *Rewinding*, this could take a while...")
-//				} else if bytes.Contains(bodyResp, []byte("Verifying")) {
-//					spin.Message(" Your " + cCoinName + " wallet is *Verifying*, this could take a while...")
-//				} else if bytes.Contains(bodyResp, []byte("Calculating money supply")) {
-//					spin.Message(" Your " + cCoinName + " wallet is *Calculating money supply*, this could take a while...")
-//				}
-//				time.Sleep(1 * time.Second)
-//			} else {
-//				_ = json.Unmarshal(bodyResp, &respStruct)
-//				return respStruct, string(bodyResp), err
-//			}
-//		}
-//	}
-//
-//	return respStruct, "", nil
-//}
 
 func archStrToFile(arch string, ghInfo *models.GithubInfo) (fileName string) {
 	for _, a := range ghInfo.Assets {
@@ -777,8 +717,8 @@ func latestAssets() (models.GithubInfo, error) {
 	return ghInfo, nil
 }
 
-func (n Navcoin) ListReceivedByAddress(coinAuth *models.CoinAuth, includeZero bool) (models.DiviListReceivedByAddress, error) {
-	var respStruct models.DiviListReceivedByAddress
+func (n Navcoin) ListReceivedByAddress(coinAuth *models.CoinAuth, includeZero bool) (models.NAVListReceivedByAddress, error) {
+	var respStruct models.NAVListReceivedByAddress
 
 	var s string
 	if includeZero {
@@ -812,8 +752,8 @@ func (n Navcoin) ListReceivedByAddress(coinAuth *models.CoinAuth, includeZero bo
 	return respStruct, nil
 }
 
-func (n Navcoin) ListTransactions(auth *models.CoinAuth) (models.DiviListTransactions, error) {
-	var respStruct models.DiviListTransactions
+func (n Navcoin) ListTransactions(auth *models.CoinAuth) (models.NAVListTransactions, error) {
+	var respStruct models.NAVListTransactions
 
 	//body := strings.NewReader("{\"jsonrpc\":\"1.0\",\"id\":\"boxwallet\",\"method\":\"" + models.CCommandListTransactions + "\",\"params\":[]}")
 	body := strings.NewReader("{\"jsonrpc\":\"1.0\",\"id\":\"boxwallet\",\"method\":\"" + models.CCommandListTransactions + "\",\"params\":[\"*\",25,0]}")
@@ -842,33 +782,33 @@ func (n Navcoin) ListTransactions(auth *models.CoinAuth) (models.DiviListTransac
 	return respStruct, nil
 }
 
-func (n *Navcoin) MNSyncStatus(auth *models.CoinAuth) (models.DiviMNSyncStatus, error) {
-	var respStruct models.DiviMNSyncStatus
-
-	body := strings.NewReader("{\"jsonrpc\":\"1.0\",\"id\":\"curltext\",\"method\":\"mnsync\",\"params\":[\"status\"]}")
-	req, err := http.NewRequest("POST", "http://"+auth.IPAddress+":"+auth.Port, body)
-	if err != nil {
-		return respStruct, err
-	}
-	req.SetBasicAuth(auth.RPCUser, auth.RPCPassword)
-	req.Header.Set("Content-Type", "text/plain;")
-
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		return respStruct, err
-	}
-	defer resp.Body.Close()
-	bodyResp, err := ioutil.ReadAll(resp.Body)
-	if err != nil {
-		return respStruct, err
-	}
-	err = json.Unmarshal(bodyResp, &respStruct)
-	if err != nil {
-		return respStruct, err
-	}
-
-	return respStruct, nil
-}
+//func (n *Navcoin) MNSyncStatus(auth *models.CoinAuth) (models.DiviMNSyncStatus, error) {
+//	var respStruct models.DiviMNSyncStatus
+//
+//	body := strings.NewReader("{\"jsonrpc\":\"1.0\",\"id\":\"curltext\",\"method\":\"mnsync\",\"params\":[\"status\"]}")
+//	req, err := http.NewRequest("POST", "http://"+auth.IPAddress+":"+auth.Port, body)
+//	if err != nil {
+//		return respStruct, err
+//	}
+//	req.SetBasicAuth(auth.RPCUser, auth.RPCPassword)
+//	req.Header.Set("Content-Type", "text/plain;")
+//
+//	resp, err := http.DefaultClient.Do(req)
+//	if err != nil {
+//		return respStruct, err
+//	}
+//	defer resp.Body.Close()
+//	bodyResp, err := ioutil.ReadAll(resp.Body)
+//	if err != nil {
+//		return respStruct, err
+//	}
+//	err = json.Unmarshal(bodyResp, &respStruct)
+//	if err != nil {
+//		return respStruct, err
+//	}
+//
+//	return respStruct, nil
+//}
 
 func (n Navcoin) NetworkDifficultyInfo() (float64, float64, error) {
 	// https://chainz.cryptoid.info/ftc/api.dws?q=getdifficulty
@@ -895,8 +835,8 @@ func (n Navcoin) NetworkDifficultyInfo() (float64, float64, error) {
 	return fGood, fWarning, nil
 }
 
-func (n Navcoin) NewAddress(auth *models.CoinAuth) (models.DiviGetNewAddress, error) {
-	var respStruct models.DiviGetNewAddress
+func (n Navcoin) NewAddress(auth *models.CoinAuth) (models.NAVGetNewAddress, error) {
+	var respStruct models.NAVGetNewAddress
 
 	body := strings.NewReader("{\"jsonrpc\":\"1.0\",\"id\":\"curltext\",\"method\":\"getnewaddress\",\"params\":[]}")
 	req, err := http.NewRequest("POST", "http://"+auth.IPAddress+":"+auth.Port, body)
@@ -1256,33 +1196,33 @@ func (n Navcoin) WalletEncrypt(coinAuth *models.CoinAuth, pw string) (models.Gen
 	return respStruct, nil
 }
 
-func (n Navcoin) WalletInfo(auth *models.CoinAuth) (models.DiviWalletInfo, error) {
-	var respStruct models.DiviWalletInfo
-
-	body := strings.NewReader("{\"jsonrpc\":\"1.0\",\"id\":\"boxwallet\",\"method\":\"" + cCommandGetWalletInfo + "\",\"params\":[]}")
-	req, err := http.NewRequest("POST", "http://"+auth.IPAddress+":"+auth.Port, body)
-	if err != nil {
-		return respStruct, err
-	}
-	req.SetBasicAuth(auth.RPCUser, auth.RPCPassword)
-	req.Header.Set("Content-Type", "text/plain;")
-
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		return respStruct, err
-	}
-	defer resp.Body.Close()
-	bodyResp, err := ioutil.ReadAll(resp.Body)
-	if err != nil {
-		return respStruct, err
-	}
-	err = json.Unmarshal(bodyResp, &respStruct)
-	if err != nil {
-		return respStruct, err
-	}
-
-	return respStruct, nil
-}
+//func (n Navcoin) WalletInfo(auth *models.CoinAuth) (models.DiviWalletInfo, error) {
+//	var respStruct models.DiviWalletInfo
+//
+//	body := strings.NewReader("{\"jsonrpc\":\"1.0\",\"id\":\"boxwallet\",\"method\":\"" + cCommandGetWalletInfo + "\",\"params\":[]}")
+//	req, err := http.NewRequest("POST", "http://"+auth.IPAddress+":"+auth.Port, body)
+//	if err != nil {
+//		return respStruct, err
+//	}
+//	req.SetBasicAuth(auth.RPCUser, auth.RPCPassword)
+//	req.Header.Set("Content-Type", "text/plain;")
+//
+//	resp, err := http.DefaultClient.Do(req)
+//	if err != nil {
+//		return respStruct, err
+//	}
+//	defer resp.Body.Close()
+//	bodyResp, err := ioutil.ReadAll(resp.Body)
+//	if err != nil {
+//		return respStruct, err
+//	}
+//	err = json.Unmarshal(bodyResp, &respStruct)
+//	if err != nil {
+//		return respStruct, err
+//	}
+//
+//	return respStruct, nil
+//}
 
 func (n Navcoin) WalletLoadingStatus(auth *models.CoinAuth) models.WLSType {
 	body := strings.NewReader("{\"jsonrpc\":\"1.0\",\"id\":\"boxwallet\",\"method\":\"" + models.CCommandGetInfo + "\",\"params\":[]}")
@@ -1324,12 +1264,12 @@ func (n Navcoin) WalletLoadingStatus(auth *models.CoinAuth) models.WLSType {
 }
 
 func (n Navcoin) WalletNeedsEncrypting(coinAuth *models.CoinAuth) (bool, error) {
-	wi, err := n.WalletInfo(coinAuth)
+	wi, _, err := n.Info(coinAuth)
 	if err != nil {
 		return true, errors.New("Unable to perform WalletInfo " + err.Error())
 	}
 
-	if wi.Result.EncryptionStatus == CWalletESUnencrypted {
+	if wi.Result.UnlockedUntil < 0 {
 		return true, nil
 	}
 
@@ -1365,19 +1305,17 @@ func (n Navcoin) WalletResync(appFolder string) error {
 }
 
 func (n Navcoin) WalletSecurityState(coinAuth *models.CoinAuth) (models.WEType, error) {
-	wi, err := n.WalletInfo(coinAuth)
+	wi, _, err := n.Info(coinAuth)
 	if err != nil {
 		return models.WETUnknown, errors.New("Unable to GetWalletSecurityState: " + err.Error())
 	}
 
-	if wi.Result.EncryptionStatus == CWalletESLocked {
+	if wi.Result.UnlockedUntil == 0 {
 		return models.WETLocked, nil
-	} else if wi.Result.EncryptionStatus == CWalletESUnlocked {
-		return models.WETUnlocked, nil
-	} else if wi.Result.EncryptionStatus == CWalletESUnlockedForStaking {
-		return models.WETUnlockedForStaking, nil
-	} else if wi.Result.EncryptionStatus == CWalletESUnencrypted {
+	} else if wi.Result.UnlockedUntil == -1 {
 		return models.WETUnencrypted, nil
+	} else if wi.Result.UnlockedUntil > 0 {
+		return models.WETUnlockedForStaking, nil
 	} else {
 		return models.WETUnknown, nil
 	}
