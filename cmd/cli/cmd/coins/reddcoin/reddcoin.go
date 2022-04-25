@@ -929,7 +929,7 @@ func (r ReddCoin) UnarchiveBlockchainSnapshot() error {
 func (r *ReddCoin) UnlockWallet(pw string) error {
 	var respStruct models.GenericResponse
 
-	body := strings.NewReader("{\"jsonrpc\":\"1.0\",\"id\":\"curltext\",\"method\":\"walletpassphrase\",\"params\":[\"" + pw + "\",0]}")
+	body := strings.NewReader("{\"jsonrpc\":\"1.0\",\"id\":\"curltext\",\"method\":\"walletpassphrase\",\"params\":[\"" + pw + "\",600]}")
 	req, err := http.NewRequest("POST", "http://"+r.IPAddress+":"+r.Port, body)
 	if err != nil {
 		return err
