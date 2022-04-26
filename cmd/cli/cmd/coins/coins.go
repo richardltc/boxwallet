@@ -17,6 +17,7 @@ const (
 	CCoinNameDenarius    string = "Denarius"
 	CCoinNameDeVault     string = "DeVault"
 	CCoinNameDigiByte    string = "DigiByte"
+	CCoinNameDogeCash    string = "DogeCash"
 	CCoinNameFeathercoin string = "Feathercoin"
 	CCoinNameGroestlcoin string = "Groestlcoin"
 	CCoinNameLitecoin    string = "Litecoin"
