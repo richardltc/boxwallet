@@ -22,6 +22,7 @@ import (
 	"richardmace.co.uk/boxwallet/cmd/cli/cmd/coins"
 	xbc "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/bitcoinplus"
 	divi "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/divi"
+	"richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/dogecash"
 	ltc "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/litecoin"
 	ppc "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/peercoin"
 	rpd "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/rapids"
@@ -94,6 +95,11 @@ var encryptCmd = &cobra.Command{
 			daemonRunning = divi.Divi{}
 			walletSecurityState = divi.Divi{}
 			walletEncrypt = divi.Divi{}
+		case models.PTDogeCash:
+			coinName = dogecash.DogeCash{}
+			daemonRunning = dogecash.DogeCash{}
+			walletSecurityState = dogecash.DogeCash{}
+			walletEncrypt = dogecash.DogeCash{}
 		case models.PTFeathercoin:
 		case models.PTGroestlcoin:
 		case models.PTLitecoin:
