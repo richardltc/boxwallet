@@ -28,6 +28,7 @@ import (
 	dvt "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/devault"
 	dgb "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/digibyte"
 	divi "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/divi"
+	"richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/dogecash"
 	ftc "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/feathercoin"
 	grs "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/groestlcoin"
 	ltc "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/litecoin"
@@ -84,6 +85,7 @@ var coinCmd = &cobra.Command{
 				coins.CCoinNameDenarius,
 				coins.CCoinNameDeVault,
 				coins.CCoinNameDigiByte,
+				coins.CCoinNameDogeCash,
 				coins.CCoinNameFeathercoin,
 				coins.CCoinNameGroestlcoin,
 				coins.CCoinNameLitecoin,
@@ -135,6 +137,11 @@ var coinCmd = &cobra.Command{
 			coinName = dgb.DigiByte{}
 			coinRPC = dgb.DigiByte{}
 			coinType = models.PTDigiByte
+		case coins.CCoinNameDogeCash:
+			coin = dogecash.DogeCash{}
+			coinName = dogecash.DogeCash{}
+			coinRPC = dogecash.DogeCash{}
+			coinType = models.PTDogeCash
 		case coins.CCoinNameDivi:
 			coin = divi.Divi{}
 			coinName = divi.Divi{}
@@ -232,7 +239,7 @@ var coinCmd = &cobra.Command{
 		}
 
 		// ..because it's possible that the conf file for this coin has already been created, we need to store the
-		// returned user and password so, effectively, will either be storing the existing info, or
+		// returned user and password so, effectively, will either be storing the existing info or
 		// the freshly generated info.
 		cliConf.ProjectType = coinType
 		cliConf.RPCuser = rpcUser
