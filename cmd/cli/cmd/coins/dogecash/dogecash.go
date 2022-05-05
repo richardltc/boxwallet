@@ -481,13 +481,13 @@ func latestDownloadFile(ghInfo *models.GithubInfo) (string, error) {
 	case "linux":
 		switch runtime.GOARCH {
 		case "arm":
-			sFile = archStrToFile("arm", ghInfo)
+			sFile = archStrToFile("arm-linux-gnueabihf.tar", ghInfo)
 		case "arm64":
-			sFile = archStrToFile("aarch64", ghInfo)
+			sFile = archStrToFile("aarch64-linux-gnu.tar", ghInfo)
 		case "386":
 			return "", errors.New("linux 386 is not currently supported for :" + cCoinName)
 		case "amd64":
-			sFile = archStrToFile("x86_64", ghInfo)
+			sFile = archStrToFile("x86_64-linux-gnu.tar", ghInfo)
 		}
 	}
 
@@ -506,13 +506,13 @@ func latestDownloadFileURL(ghInfo *models.GithubInfo) (string, error) {
 	case "linux":
 		switch runtime.GOARCH {
 		case "arm":
-			sURL = archStrToFileDownloadURL("arm", ghInfo)
+			sURL = archStrToFileDownloadURL("arm-linux-gnueabihf.tar", ghInfo)
 		case "arm64":
-			sURL = archStrToFileDownloadURL("aarch64", ghInfo)
+			sURL = archStrToFileDownloadURL("aarch64-linux-gnu.tar", ghInfo)
 		case "386":
 			return "", errors.New("linux 386 is not currently supported for :" + cCoinName)
 		case "amd64":
-			sURL = archStrToFileDownloadURL("x86_64", ghInfo)
+			sURL = archStrToFileDownloadURL("x86_64-linux-gnu.tar", ghInfo)
 		}
 	}
 
@@ -873,7 +873,7 @@ func (d DogeCash) StopDaemon(auth *models.CoinAuth) error {
 func (d *DogeCash) UnlockWallet(pw string) error {
 	var respStruct models.GenericResponse
 
-	body := strings.NewReader("{\"jsonrpc\":\"1.0\",\"id\":\"curltext\",\"method\":\"walletpassphrase\",\"params\":[\"" + pw + "\",0]}")
+	body := strings.NewReader("{\"jsonrpc\":\"1.0\",\"id\":\"curltext\",\"method\":\"walletpassphrase\",\"params\":[\"" + pw + "\",300]}")
 	req, err := http.NewRequest("POST", "http://"+d.IPAddress+":"+d.Port, body)
 	if err != nil {
 		return err
