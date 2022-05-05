@@ -21,6 +21,7 @@ import (
 	"log"
 	"os"
 	divi "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/divi"
+	"richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/dogecash"
 	grs "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/groestlcoin"
 	ltc "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/litecoin"
 	nav "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/navcoin"
@@ -96,6 +97,9 @@ var startCmd = &cobra.Command{
 			if err := d.AddAddNodesIfRequired(); err != nil {
 				log.Fatal("Unable to add AddNodes" + err.Error())
 			}
+		case models.PTDogeCash:
+			coinDaemon = dogecash.DogeCash{}
+			coinName = dogecash.DogeCash{}
 		case models.PTFeathercoin:
 		case models.PTGroestlcoin:
 			coinDaemon = grs.Groestlcoin{}
