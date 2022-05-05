@@ -31,6 +31,7 @@ import (
 	"richardmace.co.uk/boxwallet/cmd/cli/cmd/coins"
 	xbc "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/bitcoinplus"
 	divi "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/divi"
+	"richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/dogecash"
 	grs "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/groestlcoin"
 	ltc "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/litecoin"
 	nav "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/navcoin"
@@ -92,6 +93,8 @@ var stopCmd = &cobra.Command{
 		case models.PTDigiByte:
 		case models.PTDivi:
 			coinDaemon = divi.Divi{}
+		case models.PTDogeCash:
+			coinDaemon = dogecash.DogeCash{}
 		case models.PTFeathercoin:
 		case models.PTGroestlcoin:
 			coinDaemon = grs.Groestlcoin{}
