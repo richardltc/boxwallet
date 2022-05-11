@@ -24,6 +24,7 @@ import (
 	"richardmace.co.uk/boxwallet/cmd/cli/cmd/app"
 	xbc "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/bitcoinplus"
 	divi "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/divi"
+	"richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/dogecash"
 	ppc "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/peercoin"
 	pivx "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/pivx"
 	rpd "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/rapids"
@@ -91,6 +92,9 @@ var unlockfsCmd = &cobra.Command{
 		case models.PTDivi:
 			walletSecurityState = divi.Divi{}
 			walletUnlockFS = divi.Divi{}
+		case models.PTDogeCash:
+			walletSecurityState = dogecash.DogeCash{}
+			walletUnlockFS = dogecash.DogeCash{}
 		case models.PTFeathercoin:
 		case models.PTGroestlcoin:
 		case models.PTLitecoin:
