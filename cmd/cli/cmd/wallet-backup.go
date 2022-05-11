@@ -23,6 +23,7 @@ import (
 	"richardmace.co.uk/boxwallet/cmd/cli/cmd/coins"
 	xbc "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/bitcoinplus"
 	"richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/divi"
+	"richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/dogecash"
 	grs "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/groestlcoin"
 	ltc "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/litecoin"
 	ppc "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/peercoin"
@@ -94,6 +95,11 @@ var backupCmd = &cobra.Command{
 			daemonRunning = divi.Divi{}
 			walletSecurityState = divi.Divi{}
 			walletBackup = divi.Divi{}
+		case models.PTDogeCash:
+			coinName = dogecash.DogeCash{}
+			daemonRunning = dogecash.DogeCash{}
+			walletSecurityState = dogecash.DogeCash{}
+			walletBackup = dogecash.DogeCash{}
 		case models.PTFeathercoin:
 		case models.PTGroestlcoin:
 			coinName = grs.Groestlcoin{}
