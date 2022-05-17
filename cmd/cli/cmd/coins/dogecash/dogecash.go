@@ -717,15 +717,15 @@ func (d DogeCash) ListReceivedByAddress(coinAuth *models.CoinAuth, includeZero b
 	return respStruct, nil
 }
 
-func (d *DogeCash) ListTransactions() (models.DOGECListTransactions, error) {
+func (d *DogeCash) ListTransactions(auth *models.CoinAuth) (models.DOGECListTransactions, error) {
 	var respStruct models.DOGECListTransactions
 
 	body := strings.NewReader("{\"jsonrpc\":\"1.0\",\"id\":\"boxwallet\",\"method\":\"" + models.CCommandListTransactions + "\",\"params\":[]}")
-	req, err := http.NewRequest("POST", "http://"+d.IPAddress+":"+d.Port, body)
+	req, err := http.NewRequest("POST", "http://"+auth.IPAddress+":"+auth.Port, body)
 	if err != nil {
 		return respStruct, err
 	}
-	req.SetBasicAuth(d.RPCUser, d.RPCPassword)
+	req.SetBasicAuth(auth.RPCUser, auth.RPCPassword)
 	req.Header.Set("Content-Type", "text/plain;")
 
 	resp, err := http.DefaultClient.Do(req)
