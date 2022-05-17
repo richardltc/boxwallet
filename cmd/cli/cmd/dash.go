@@ -19,6 +19,7 @@ package cmd
 import (
 	"errors"
 	"fmt"
+	"richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/dogecash"
 	grs "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/groestlcoin"
 	ltc "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/litecoin"
 	ppc "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/peercoin"
@@ -28,6 +29,7 @@ import (
 	tzc "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/trezarcoin"
 	xbcDisplay "richardmace.co.uk/boxwallet/cmd/cli/cmd/display/bitcoinplus"
 	diviDisplay "richardmace.co.uk/boxwallet/cmd/cli/cmd/display/divi"
+	dogecDisplay "richardmace.co.uk/boxwallet/cmd/cli/cmd/display/dogecash"
 	grsDisplay "richardmace.co.uk/boxwallet/cmd/cli/cmd/display/groestlcoin"
 	ltcDisplay "richardmace.co.uk/boxwallet/cmd/cli/cmd/display/litecoin"
 	sbyteDisplay "richardmace.co.uk/boxwallet/cmd/cli/cmd/display/spiderbyte"
@@ -220,6 +222,23 @@ var dashCmd = &cobra.Command{
 			walletRefreshNetwork = diviDisplay.DIVI{}
 			walletRefreshTransactions = diviDisplay.DIVI{}
 			walletSecurityState = divi.Divi{}
+		case models.PTDogeCash:
+			coin = dogecash.DogeCash{}
+			coinBlockchainIsSynced = dogecash.DogeCash{}
+			coinDaemon = dogecash.DogeCash{}
+			coinDispAbout = dogecDisplay.DOGEC{}
+			coinDispInitialBalance = dogecDisplay.DOGEC{}
+			coinDispInitialNetwork = dogecDisplay.DOGEC{}
+			coinDispLiveNetwork = dogecDisplay.DOGEC{}
+			coinDispLiveTransactions = dogecDisplay.DOGEC{}
+			coinDispLiveWallet = dogecDisplay.DOGEC{}
+			coinName = dogecash.DogeCash{}
+			coinPrice = dogecDisplay.DOGEC{}
+			coinWallet = dogecash.DogeCash{}
+			walletRefreshDifficulty = dogecDisplay.DOGEC{}
+			walletRefreshNetwork = dogecDisplay.DOGEC{}
+			walletRefreshTransactions = dogecDisplay.DOGEC{}
+			walletSecurityState = dogecash.DogeCash{}
 		case models.PTGroestlcoin:
 			coin = grs.Groestlcoin{}
 			coinBlockchainIsSynced = grs.Groestlcoin{}
@@ -431,20 +450,6 @@ var dashCmd = &cobra.Command{
 		// 	}
 		// case be.PTPhore:
 		// 	gi, err := be.GetInfoPhore(&cliConf)
-		// 	if err != nil {
-		// 		sCoreVersion = "Unknown"
-		// 	} else {
-		// 		sCoreVersion = strconv.Itoa(gi.Result.Version)
-		// 	}
-		// case be.PTPIVX:
-		// 	gi, _, err := be.GetInfoPIVX(&cliConf)
-		// 	if err != nil {
-		// 		sCoreVersion = "Unknown"
-		// 	} else {
-		// 		sCoreVersion = strconv.Itoa(gi.Result.Version)
-		// 	}
-		// case be.PTTrezarcoin:
-		// 	gi, err := be.GetInfoTrezarcoin(&cliConf)
 		// 	if err != nil {
 		// 		sCoreVersion = "Unknown"
 		// 	} else {
