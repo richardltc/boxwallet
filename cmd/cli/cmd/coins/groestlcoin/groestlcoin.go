@@ -26,7 +26,7 @@ const (
 	cCoinName       string = "Groestlcoin"
 	cCoinNameAbbrev string = "GRS"
 
-	cCoreVersion       string = "22.0"
+	cCoreVersion       string = "23.0"
 	cDownloadFileArm32 string = "groestlcoin-" + cCoreVersion + "-arm-linux-gnueabihf.tar.gz"
 	cDownloadFileLin   string = "groestlcoin-" + cCoreVersion + "-x86_64-linux-gnu.tar.gz"
 	cDownloadFileWin   string = "groestlcoin-" + cCoreVersion + "-win64.zip"
