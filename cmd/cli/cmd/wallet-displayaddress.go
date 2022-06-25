@@ -31,6 +31,7 @@ import (
 	"richardmace.co.uk/boxwallet/cmd/cli/cmd/coins"
 	xbc "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/bitcoinplus"
 	"richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/dogecash"
+	ftc "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/feathercoin"
 	grs "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/groestlcoin"
 	ltc "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/litecoin"
 	ppc "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/peercoin"
@@ -96,6 +97,8 @@ var displayaddressCmd = &cobra.Command{
 			coinName = dogecash.DogeCash{}
 			walletAddress = dogecash.DogeCash{}
 		case models.PTFeathercoin:
+			coinName = ftc.Feathercoin{}
+			walletAddress = ftc.Feathercoin{}
 		case models.PTGroestlcoin:
 			coinName = grs.Groestlcoin{}
 			walletAddress = grs.Groestlcoin{}
@@ -137,150 +140,6 @@ var displayaddressCmd = &cobra.Command{
 		}
 
 		fmt.Println("Your " + coinName.CoinName() + " address is: \n\n" + sAddress + "\n")
-
-		// apw, err := be.GetAppWorkingFolder()
-		// if err != nil {
-		// 	log.Fatal("Unable to GetAppWorkingFolder: " + err.Error())
-		// }
-
-		// // Make sure the config file exists, and if not, force user to use "coin" command first.
-		// if _, err := os.Stat(apw + be.CConfFile + be.CConfFileExt); os.IsNotExist(err) {
-		// 	log.Fatal("Unable to determine coin type. Please run " + be.CAppFilename + " coin first")
-		// }
-
-		// cliConf, err := be.GetConfigStruct("", true)
-		// if err != nil {
-		// 	log.Fatal("Unable to GetCLIConfStruct " + err.Error())
-		// }
-
-		// sAppFileCLIName, err := be.GetAppFileName()
-		// if err != nil {
-		// 	log.Fatal("Unable to GetAppFileCLIName " + err.Error())
-		// }
-
-		// coind, err := be.GetCoinDaemonFilename(be.APPTCLI, cliConf.ProjectType)
-		// if err != nil {
-		// 	log.Fatalf("Unable to GetCoinDaemonFilename - %v", err)
-		// }
-
-		// // Check to see if we are running the coin daemon locally, and if we are, make sure it's actually running
-		// // before attempting to connect to it.
-		// if cliConf.ServerIP == "127.0.0.1" {
-		// 	bCDRunning, _, err := be.IsCoinDaemonRunning(cliConf.ProjectType)
-		// 	if err != nil {
-		// 		log.Fatal("Unable to determine if coin daemon is running: " + err.Error())
-		// 	}
-		// 	if !bCDRunning {
-		// 		log.Fatal("Unable to communicate with the " + coind + " server. Please make sure the " + coind + " server is running, by running:\n\n" +
-		// 			"./" + sAppFileCLIName + " start\n\n")
-		// 	}
-		// }
-
-		// wRunning, _, err := confirmWalletReady()
-		// if err != nil {
-		// 	log.Fatal("Unable to determine if wallet is ready: " + err.Error())
-		// }
-
-		// if !wRunning {
-		// 	fmt.Println("")
-		// 	log.Fatal("Unable to communicate with the " + coind + " server. Please make sure the " + coind + " server is running, by running:\n\n" +
-		// 		"./" + sAppFileCLIName + " start\n\n")
-		// }
-
-		// var sAddress string
-		// switch cliConf.ProjectType {
-		// case be.PTDenarius:
-		// 	addresses, _ := be.ListReceivedByAddressDenarius(&cliConf, true)
-		// 	if len(addresses.Result) > 0 {
-		// 		sAddress = addresses.Result[0].Address
-		// 	} else {
-		// 		r, err := be.GetNewAddressDenarius(&cliConf)
-		// 		if err != nil {
-		// 			log.Fatalf("Unable to GetNewAddressDivi")
-		// 		}
-		// 		sAddress = r.Result
-		// 	}
-		// case be.PTDivi:
-		// 	addresses, _ := be.ListReceivedByAddressDivi(&cliConf, true)
-		// 	if len(addresses.Result) > 0 {
-		// 		sAddress = addresses.Result[0].Address
-		// 	} else {
-		// 		r, err := be.GetNewAddressDivi(&cliConf)
-		// 		if err != nil {
-		// 			log.Fatalf("Unable to GetNewAddressDivi")
-		// 		}
-		// 		sAddress = r.Result
-		// 	}
-		// case be.PTFeathercoin:
-		// 	addresses, _ := be.ListReceivedByAddressFeathercoin(&cliConf, true)
-		// 	if len(addresses.Result) > 0 {
-		// 		sAddress = addresses.Result[0].Address
-		// 	} else {
-		// 		r, err := be.GetNewAddressFeathercoin(&cliConf)
-		// 		if err != nil {
-		// 			log.Fatalf("Unable to GetNewAddressFeathercoin")
-		// 		}
-		// 		sAddress = r.Result
-		// 	}
-		// case be.PTGroestlcoin:
-		// 	addresses, _ := be.ListReceivedByAddressGRS(&cliConf, true)
-		// 	if len(addresses.Result) > 0 {
-		// 		sAddress = addresses.Result[0].Address
-		// 	} else {
-		// 		r, err := be.GetNewAddressGRS(&cliConf)
-		// 		if err != nil {
-		// 			log.Fatalf("Unable to GetNewAddressGRS")
-		// 		}
-		// 		sAddress = r.Result
-		// 	}
-		// case be.PTPhore:
-		// 	addresses, _ := be.ListReceivedByAddressPhore(&cliConf, true)
-		// 	if len(addresses.Result) > 0 {
-		// 		sAddress = addresses.Result[0].Address
-		// 	}
-		// case be.PTPIVX:
-		// 	addresses, _ := be.ListReceivedByAddressPIVX(&cliConf, true)
-		// 	if len(addresses.Result) > 0 {
-		// 		sAddress = addresses.Result[0].Address
-		// 	} else {
-		// 		r, err := be.GetNewAddressPIVX(&cliConf)
-		// 		if err != nil {
-		// 			log.Fatalf("Unable to GetNewAddressPIVX")
-		// 		}
-		// 		sAddress = r.Result
-		// 	}
-		// case be.PTRapids:
-		// 	addresses, _ := be.ListReceivedByAddressRapids(&cliConf, true)
-		// 	if len(addresses.Result) > 0 {
-		// 		sAddress = addresses.Result[0].Address
-		// 	}
-		// case be.PTReddCoin:
-		// 	addresses, _ := be.ListReceivedByAddressRDD(&cliConf, true)
-		// 	if len(addresses.Result) > 0 {
-		// 		sAddress = addresses.Result[0].Address
-		// 	} else {
-		// 		r, err := be.GetNewAddressRDD(&cliConf)
-		// 		if err != nil {
-		// 			log.Fatalf("Unable to call GetNewAddressRDD")
-		// 		}
-		// 		sAddress = r.Result[0].Address
-		// 	}
-		// case be.PTTrezarcoin:
-		// 	addresses, _ := be.ListReceivedByAddressTrezarcoin(&cliConf, true)
-		// 	if len(addresses.Result) > 0 {
-		// 		sAddress = addresses.Result[0].Address
-		// 	}
-		// default:
-		// 	log.Fatalf("Unable to determine project type")
-		// }
-
-		// cn, err := be.GetCoinName(be.APPTCLI)
-		// if err != nil {
-		// 	log.Fatalf("Unable to call GetCoinName")
-		// }
-
-		// fmt.Println("Your " + cn + " address is: \n\n" + sAddress + "\n")
-
 	},
 }
 
