@@ -20,6 +20,7 @@ import (
 	"errors"
 	"fmt"
 	"richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/dogecash"
+	ftc "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/feathercoin"
 	grs "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/groestlcoin"
 	ltc "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/litecoin"
 	ppc "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/peercoin"
@@ -30,6 +31,7 @@ import (
 	xbcDisplay "richardmace.co.uk/boxwallet/cmd/cli/cmd/display/bitcoinplus"
 	diviDisplay "richardmace.co.uk/boxwallet/cmd/cli/cmd/display/divi"
 	dogecDisplay "richardmace.co.uk/boxwallet/cmd/cli/cmd/display/dogecash"
+	ftcDisplay "richardmace.co.uk/boxwallet/cmd/cli/cmd/display/feathercoin"
 	grsDisplay "richardmace.co.uk/boxwallet/cmd/cli/cmd/display/groestlcoin"
 	ltcDisplay "richardmace.co.uk/boxwallet/cmd/cli/cmd/display/litecoin"
 	sbyteDisplay "richardmace.co.uk/boxwallet/cmd/cli/cmd/display/spiderbyte"
@@ -239,6 +241,23 @@ var dashCmd = &cobra.Command{
 			walletRefreshNetwork = dogecDisplay.DOGEC{}
 			walletRefreshTransactions = dogecDisplay.DOGEC{}
 			walletSecurityState = dogecash.DogeCash{}
+		case models.PTFeathercoin:
+			coin = ftc.Feathercoin{}
+			coinBlockchainIsSynced = ftc.Feathercoin{}
+			coinDaemon = ftc.Feathercoin{}
+			coinDispAbout = ftcDisplay.FTC{}
+			coinDispInitialBalance = ftcDisplay.FTC{}
+			coinDispInitialNetwork = ftcDisplay.FTC{}
+			coinDispLiveNetwork = ftcDisplay.FTC{}
+			coinDispLiveTransactions = ftcDisplay.FTC{}
+			coinDispLiveWallet = ftcDisplay.FTC{}
+			coinName = ftc.Feathercoin{}
+			coinPrice = ftcDisplay.FTC{}
+			coinWallet = ftc.Feathercoin{}
+			walletRefreshDifficulty = ftcDisplay.FTC{}
+			walletRefreshNetwork = ftcDisplay.FTC{}
+			walletRefreshTransactions = ftcDisplay.FTC{}
+			walletSecurityState = ftc.Feathercoin{}
 		case models.PTGroestlcoin:
 			coin = grs.Groestlcoin{}
 			coinBlockchainIsSynced = grs.Groestlcoin{}

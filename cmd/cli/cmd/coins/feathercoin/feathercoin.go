@@ -13,6 +13,7 @@ import (
 	"richardmace.co.uk/boxwallet/cmd/cli/cmd/coins"
 	"richardmace.co.uk/boxwallet/cmd/cli/cmd/fileutils"
 	"runtime"
+	"strconv"
 	"strings"
 	"time"
 
@@ -96,6 +97,18 @@ func (f Feathercoin) AllBinaryFilesExist(dir string) (bool, error) {
 	return true, nil
 }
 
+func (f Feathercoin) BlockchainIsSynced(coinAuth *models.CoinAuth) (bool, error) {
+	bci, err := f.BlockchainInfo(coinAuth)
+	if err != nil {
+		return false, err
+	}
+
+	if bci.Result.Verificationprogress > 0.99999 {
+		return true, nil
+	}
+
+	return false, nil
+}
 func (f Feathercoin) ConfFile() string {
 	return cConfFile
 }
@@ -169,15 +182,15 @@ func (f Feathercoin) DaemonFilename() string {
 	}
 }
 
-func (f *Feathercoin) BlockchainInfo() (models.FTCBlockchainInfo, error) {
+func (f *Feathercoin) BlockchainInfo(auth *models.CoinAuth) (models.FTCBlockchainInfo, error) {
 	var respStruct models.FTCBlockchainInfo
 
 	body := strings.NewReader("{\"jsonrpc\":\"1.0\",\"id\":\"curltext\",\"method\":\"getblockchaininfo\",\"params\":[]}")
-	req, err := http.NewRequest("POST", "http://"+f.IPAddress+":"+f.Port, body)
+	req, err := http.NewRequest("POST", "http://"+auth.IPAddress+":"+auth.Port, body)
 	if err != nil {
 		return respStruct, err
 	}
-	req.SetBasicAuth(f.RPCUser, f.RPCPassword)
+	req.SetBasicAuth(auth.RPCUser, auth.RPCPassword)
 	req.Header.Set("Content-Type", "text/plain;")
 
 	resp, err := http.DefaultClient.Do(req)
@@ -315,15 +328,15 @@ func (f *Feathercoin) ListReceivedByAddress(coinAuth *models.CoinAuth, includeZe
 	return respStruct, nil
 }
 
-func (f *Feathercoin) ListTransactions() (models.FTCListTransactions, error) {
+func (f *Feathercoin) ListTransactions(auth *models.CoinAuth) (models.FTCListTransactions, error) {
 	var respStruct models.FTCListTransactions
 
 	body := strings.NewReader("{\"jsonrpc\":\"1.0\",\"id\":\"boxwallet\",\"method\":\"" + models.CCommandListTransactions + "\",\"params\":[]}")
-	req, err := http.NewRequest("POST", "http://"+f.IPAddress+":"+f.Port, body)
+	req, err := http.NewRequest("POST", "http://"+auth.IPAddress+":"+auth.Port, body)
 	if err != nil {
 		return respStruct, err
 	}
-	req.SetBasicAuth(f.RPCUser, f.RPCPassword)
+	req.SetBasicAuth(auth.RPCUser, auth.RPCPassword)
 	req.Header.Set("Content-Type", "text/plain;")
 
 	resp, err := http.DefaultClient.Do(req)
@@ -344,17 +357,42 @@ func (f *Feathercoin) ListTransactions() (models.FTCListTransactions, error) {
 	return respStruct, nil
 }
 
-func (f *Feathercoin) NetworkInfo() (models.FTCNetworkInfo, error) {
+func (f Feathercoin) NetworkDifficultyInfo() (float64, float64, error) {
+	// https://chainz.cryptoid.info/ftc/api.dws?q=getdifficulty
+
+	resp, err := http.Get("https://chainz.cryptoid.info/" + strings.ToLower(f.CoinNameAbbrev()) + "/api.dws?q=getdifficulty")
+	if err != nil {
+		return 0, 0, err
+	}
+	defer resp.Body.Close()
+
+	body, err := ioutil.ReadAll(resp.Body)
+	if err != nil {
+		return 0, 0, err
+	}
+
+	var fGood float64
+	var fWarning float64
+	// Now calculate the correct levels...
+	if fDiff, err := strconv.ParseFloat(string(body), 32); err == nil {
+		fGood = fDiff * 0.75
+		fWarning = fDiff * 0.50
+	}
+
+	return fGood, fWarning, nil
+}
+
+func (f *Feathercoin) NetworkInfo(auth *models.CoinAuth) (models.FTCNetworkInfo, error) {
 	var respStruct models.FTCNetworkInfo
 
 	for i := 1; i < 50; i++ {
 		body := strings.NewReader("{\"jsonrpc\":\"1.0\",\"id\":\"curltext\",\"method\":\"getnetworkinfo\",\"params\":[]}")
 
-		req, err := http.NewRequest("POST", "http://"+f.IPAddress+":"+f.Port, body)
+		req, err := http.NewRequest("POST", "http://"+auth.IPAddress+":"+auth.Port, body)
 		if err != nil {
 			return respStruct, err
 		}
-		req.SetBasicAuth(f.RPCUser, f.RPCPassword)
+		req.SetBasicAuth(auth.RPCUser, auth.RPCPassword)
 		req.Header.Set("Content-Type", "text/plain;")
 
 		resp, err := http.DefaultClient.Do(req)
@@ -574,15 +612,15 @@ func (f Feathercoin) WalletEncrypt(coinAuth *models.CoinAuth, pw string) (models
 	return respStruct, nil
 }
 
-func (f *Feathercoin) WalletInfo() (models.FTCWalletInfo, error) {
+func (f *Feathercoin) WalletInfo(auth *models.CoinAuth) (models.FTCWalletInfo, error) {
 	var respStruct models.FTCWalletInfo
 
 	body := strings.NewReader("{\"jsonrpc\":\"1.0\",\"id\":\"curltext\",\"method\":\"getwalletinfo\",\"params\":[]}")
-	req, err := http.NewRequest("POST", "http://"+f.IPAddress+":"+f.Port, body)
+	req, err := http.NewRequest("POST", "http://"+auth.IPAddress+":"+auth.Port, body)
 	if err != nil {
 		return respStruct, err
 	}
-	req.SetBasicAuth(f.RPCUser, f.RPCPassword)
+	req.SetBasicAuth(auth.RPCUser, auth.RPCPassword)
 	req.Header.Set("Content-Type", "text/plain;")
 
 	resp, err := http.DefaultClient.Do(req)
@@ -609,8 +647,87 @@ func (f *Feathercoin) WalletInfo() (models.FTCWalletInfo, error) {
 	return respStruct, nil
 }
 
+func (f Feathercoin) WalletLoadingStatus(auth *models.CoinAuth) models.WLSType {
+	body := strings.NewReader("{\"jsonrpc\":\"1.0\",\"id\":\"boxwallet\",\"method\":\"" + models.CCommandGetInfo + "\",\"params\":[]}")
+	req, err := http.NewRequest("POST", "http://"+auth.IPAddress+":"+auth.Port, body)
+	if err != nil {
+		return models.WLSTUnknown
+	}
+	req.SetBasicAuth(auth.RPCUser, auth.RPCPassword)
+	req.Header.Set("Content-Type", "text/plain;")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return models.WLSTWaitingForResponse
+	} else {
+		defer resp.Body.Close()
+		bodyResp, err := ioutil.ReadAll(resp.Body)
+		if err != nil {
+			return models.WLSTWaitingForResponse
+		}
+
+		if bytes.Contains(bodyResp, []byte("Loading")) {
+			return models.WLSTLoading
+		}
+		if bytes.Contains(bodyResp, []byte("Rescanning")) {
+			return models.WLSTRescanning
+		}
+		if bytes.Contains(bodyResp, []byte("Rewinding")) {
+			return models.WLSTRewinding
+		}
+		if bytes.Contains(bodyResp, []byte("Verifying")) {
+			return models.WLSTVerifying
+		}
+		if bytes.Contains(bodyResp, []byte("Calculating money supply")) {
+			return models.WLSTCalculatingMoneySupply
+		}
+	}
+	return models.WLSTReady
+}
+
+func (f Feathercoin) WalletNeedsEncrypting(coinAuth *models.CoinAuth) (bool, error) {
+	wi, err := f.WalletInfo(coinAuth)
+	if err != nil {
+		return true, errors.New("Unable to perform WalletInfo " + err.Error())
+	}
+
+	if wi.Result.UnlockedUntil == -1 {
+		return true, nil
+	}
+
+	return false, nil
+}
+
+func (f Feathercoin) WalletResync(appFolder string) error {
+	daemonRunning, err := f.DaemonRunning()
+	if err != nil {
+		return errors.New("Unable to determine DaemonRunning: " + err.Error())
+	}
+	if daemonRunning {
+		return errors.New("daemon is still running, please stop first")
+	}
+
+	arg1 := "-resync"
+
+	if runtime.GOOS == "windows" {
+		fullPath := appFolder + cDaemonFileWin
+		cmd := exec.Command("cmd.exe", "/C", "start", "/b", fullPath, arg1)
+		if err := cmd.Run(); err != nil {
+			return err
+		}
+	} else {
+		fullPath := appFolder + cDaemonFileLin
+		cmdRun := exec.Command(fullPath, arg1)
+		if err := cmdRun.Run(); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
 func (f Feathercoin) WalletSecurityState(coinAuth *models.CoinAuth) (models.WEType, error) {
-	wi, err := f.WalletInfo()
+	wi, err := f.WalletInfo(coinAuth)
 	if err != nil {
 		return models.WETUnknown, errors.New("Unable to GetWalletSecurityState: " + err.Error())
 	}
