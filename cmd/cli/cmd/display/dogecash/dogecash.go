@@ -21,7 +21,8 @@ var stakingInfo models.DOGECStakingStatus
 var ticker models.DOGECTicker
 var transactions models.DOGECListTransactions
 var walletInfo models.DOGECWalletInfo
-var diffGood, diffWarning float64
+
+//var diffGood, diffWarning float64
 var lastBCSyncStatus = ""
 var lastMNSyncStatus = ""
 
@@ -212,6 +213,9 @@ func (d DOGEC) LiveTransactions() (containsZeroConfs bool, rows [][]string) {
 		if transactions.Result[i].Confirmations < 0 {
 			continue
 		}
+		if transactions.Result[i].Label == "" {
+			continue
+		}
 
 		if transactions.Result[i].Confirmations < 1 {
 			bZeroConfs = true
@@ -257,7 +261,7 @@ func mnSyncTxt(mns bool) string {
 	}
 }
 
-// RefreshDifficulty - DogeC is not currently supported.
+// RefreshDifficulty - DOGEC is not currently supported.
 func (d DOGEC) RefreshDifficulty() {
 	//var dogec dogecashImport.DogeCash
 	//
