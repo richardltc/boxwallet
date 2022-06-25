@@ -24,6 +24,7 @@ import (
 	xbc "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/bitcoinplus"
 	divi "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/divi"
 	"richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/dogecash"
+	ftc "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/feathercoin"
 	ltc "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/litecoin"
 	ppc "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/peercoin"
 	pivx "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/pivx"
@@ -97,6 +98,8 @@ var unlockCmd = &cobra.Command{
 			walletSecurityState = dogecash.DogeCash{}
 			walletUnlock = dogecash.DogeCash{}
 		case models.PTFeathercoin:
+			walletSecurityState = ftc.Feathercoin{}
+			walletUnlock = ftc.Feathercoin{}
 		case models.PTGroestlcoin:
 		case models.PTLitecoin:
 			walletSecurityState = ltc.Litecoin{}
@@ -147,29 +150,6 @@ var unlockCmd = &cobra.Command{
 		}
 
 		fmt.Println("Wallet unlocked!")
-
-		// cliConf, err := be.GetConfigStruct("", true)
-		// if err != nil {
-		// 	log.Fatal("Unable to GetCLIConfStruct " + err.Error())
-		// }
-
-		// // Check to make sure wallet is actually encrypted
-		// wi, err := be.GetWalletInfoDivi(&cliConf)
-		// if err != nil {
-		// 	log.Fatal("Unable to getWalletInfo " + err.Error())
-		// }
-
-		// if wi.Result.EncryptionStatus == be.CWalletESUnencrypted {
-		// 	log.Fatal("Wallet is not encrypted")
-		// }
-
-		// wep := be.GetWalletEncryptionPassword()
-		// r, err := unlockWallet(&cliConf, wep)
-		// if err != nil || r.Error != nil {
-		// 	log.Fatalf("failed to unlock wallet %s\n", err)
-		// }
-		// fmt.Println("Wallet unlocked")
-
 	},
 }
 
