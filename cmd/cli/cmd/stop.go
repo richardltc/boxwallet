@@ -32,6 +32,7 @@ import (
 	xbc "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/bitcoinplus"
 	divi "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/divi"
 	"richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/dogecash"
+	ftc "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/feathercoin"
 	grs "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/groestlcoin"
 	ltc "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/litecoin"
 	nav "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/navcoin"
@@ -79,7 +80,7 @@ var stopCmd = &cobra.Command{
 			log.Fatal("Unable to determine coin type. Please run " + appFileName + " coin  first")
 		}
 
-		// Now load our config file to see what coin choice the user made...
+		// Now load our config file to see what coin choice the user made....
 		confDB, err := conf.GetConfig(true)
 		if err != nil {
 			log.Fatal("Unable to determine coin type. Please run " + appFileName + " coin: " + err.Error())
@@ -96,6 +97,7 @@ var stopCmd = &cobra.Command{
 		case models.PTDogeCash:
 			coinDaemon = dogecash.DogeCash{}
 		case models.PTFeathercoin:
+			coinDaemon = ftc.Feathercoin{}
 		case models.PTGroestlcoin:
 			coinDaemon = grs.Groestlcoin{}
 		case models.PTLitecoin:
