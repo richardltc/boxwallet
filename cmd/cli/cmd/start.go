@@ -22,6 +22,7 @@ import (
 	"os"
 	divi "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/divi"
 	"richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/dogecash"
+	ftc "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/feathercoin"
 	grs "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/groestlcoin"
 	ltc "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/litecoin"
 	nav "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/navcoin"
@@ -70,7 +71,7 @@ var startCmd = &cobra.Command{
 			log.Fatal("Unable to get appFilename: " + err.Error())
 		}
 
-		// Make sure the config file exists, and if not, force user to use "coin" command first..
+		// Make sure the config file exists, and if not, force user to use "coin" command first.
 		if _, err := os.Stat(appHomeDir + conf.ConfFile()); os.IsNotExist(err) {
 			log.Fatal("Unable to determine coin type. Please run " + appFileName + " coin  first")
 		}
@@ -101,6 +102,8 @@ var startCmd = &cobra.Command{
 			coinDaemon = dogecash.DogeCash{}
 			coinName = dogecash.DogeCash{}
 		case models.PTFeathercoin:
+			coinDaemon = ftc.Feathercoin{}
+			coinName = ftc.Feathercoin{}
 		case models.PTGroestlcoin:
 			coinDaemon = grs.Groestlcoin{}
 			coinName = grs.Groestlcoin{}
