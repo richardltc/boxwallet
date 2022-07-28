@@ -24,6 +24,7 @@ import (
 	be "richardmace.co.uk/boxwallet/cmd/cli/cmd/bend"
 	"richardmace.co.uk/boxwallet/cmd/cli/cmd/coins"
 	xbc "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/bitcoinplus"
+	btcz "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/bitcoinz"
 	denarius "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/denarius"
 	dvt "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/devault"
 	dgb "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/digibyte"
@@ -82,6 +83,7 @@ var coinCmd = &cobra.Command{
 			Message: "Please choose your preferred coin:",
 			Options: []string{coins.CCoinNameDivi,
 				coins.CCoinNameBitcoinPlus,
+				coins.CCoinNameBitcoinZ,
 				coins.CCoinNameDenarius,
 				coins.CCoinNameDeVault,
 				coins.CCoinNameDigiByte,
@@ -89,7 +91,7 @@ var coinCmd = &cobra.Command{
 				coins.CCoinNameFeathercoin,
 				coins.CCoinNameGroestlcoin,
 				coins.CCoinNameLitecoin,
-				coins.CCoinNameNavcoin,
+				//coins.CCoinNameNavcoin,
 				coins.CCoinNamePeercoin,
 				//coins.CCoinNamePhore,
 				coins.CCoinNamePIVX,
@@ -122,6 +124,11 @@ var coinCmd = &cobra.Command{
 			coinType = models.PTBitcoinPlus
 			coinRPC = xbc.XBC{}
 			coinName = xbc.XBC{}
+		case coins.CCoinNameBitcoinZ:
+			coin = btcz.Bitcoinz{}
+			coinType = models.PTBitcoinZ
+			coinRPC = btcz.Bitcoinz{}
+			coinName = btcz.Bitcoinz{}
 		case coins.CCoinNameDenarius:
 			coin = denarius.Denarius{}
 			coinName = denarius.Denarius{}
@@ -238,7 +245,7 @@ var coinCmd = &cobra.Command{
 			log.Fatal("Unable to PopulateConfFile: ", err.Error())
 		}
 
-		// ..because it's possible that the conf file for this coin has already been created, we need to store the
+		// ...because it's possible that the conf file for this coin has already been created, we need to store the
 		// returned user and password so, effectively, will either be storing the existing info or
 		// the freshly generated info.
 		cliConf.ProjectType = coinType
