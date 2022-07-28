@@ -1,6 +1,6 @@
 # What is BoxWallet? #
 
-BoxWallet is a single binary multi-coin CLI tool, that gets your coin-of-choice wallet/node set-up ***fast***, with just a few commands:
+BoxWallet is a multi-coin CLI tool, that gets your coin-of-choice wallet/node set-up ***fast***, with just a few commands:
 
 `./boxwallet coin` - allows you to choose your coin of choice, which then downloads the project's core files from their official website, and installs them automatically.
 
@@ -28,6 +28,7 @@ BoxWallet is a single binary multi-coin CLI tool, that gets your coin-of-choice 
 ## What coins does BoxWallet currently support?
 
 * BitcoinPlus
+* BitcoinZ (coming soon)
 * Denarius
 * DeVault
 * DigiByte
