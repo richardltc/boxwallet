@@ -21,10 +21,6 @@ const (
 	CCommandSetTxFee              string = "settxfee"
 	CCommandStop                  string = "stop"
 
-	//CCommandMNSyncStatus1 string = "mnsync"
-	//CCommandMNSyncStatus2 string = "status"
-	//CCommandDumpHDInfo    string = "dumphdinfo" // ./divi-cli dumphdinfo
-
 	CRPCUser     string = "rpcuser"
 	CRPCPassword string = "rpcpassword"
 )
@@ -54,6 +50,7 @@ const (
 	PTLitecoin
 	PTNavcoin
 	PTDogeCash
+	PTBitcoinZ
 )
 
 type GenericResponse struct {
