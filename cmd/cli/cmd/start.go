@@ -36,6 +36,8 @@ import (
 	"github.com/spf13/cobra"
 	"richardmace.co.uk/boxwallet/cmd/cli/cmd/app"
 	"richardmace.co.uk/boxwallet/cmd/cli/cmd/coins"
+	btcz "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/bitcoinz"
+
 	xbc "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/bitcoinplus"
 	d "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/denarius"
 	xpm "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/primecoin"
@@ -76,7 +78,7 @@ var startCmd = &cobra.Command{
 			log.Fatal("Unable to determine coin type. Please run " + appFileName + " coin  first")
 		}
 
-		// Now load our config file to see what coin choice the user made...
+		// Now load our config file to see what coin choice the user made.
 		confDB, err := conf.GetConfig(true)
 		if err != nil {
 			log.Fatal("Unable to determine coin type. Please run " + appFileName + " coin: " + err.Error())
@@ -86,6 +88,9 @@ var startCmd = &cobra.Command{
 		case models.PTBitcoinPlus:
 			coinDaemon = xbc.XBC{}
 			coinName = xbc.XBC{}
+		case models.PTBitcoinZ:
+			coinDaemon = btcz.Bitcoinz{}
+			coinName = btcz.Bitcoinz{}
 		case models.PTDenarius:
 			coinDaemon = d.Denarius{}
 			coinName = d.Denarius{}
