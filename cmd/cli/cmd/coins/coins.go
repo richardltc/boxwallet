@@ -13,6 +13,7 @@ import (
 
 const (
 	CCoinNameDivi        string = "Divi"
+	CCoinNameBitcoinZ    string = "BitcoinZ"
 	CCoinNameBitcoinPlus string = "BitcoinPlus"
 	CCoinNameDenarius    string = "Denarius"
 	CCoinNameDeVault     string = "DeVault"
