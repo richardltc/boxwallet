@@ -9,6 +9,7 @@ require (
 	github.com/frankban/quicktest v1.13.0 // indirect
 	github.com/fsnotify/fsnotify v1.4.9 // indirect
 	github.com/gizak/termui/v3 v3.1.0
+	github.com/go-cmd/cmd v1.4.1
 	github.com/gookit/color v1.3.7
 	github.com/magiconair/properties v1.8.2 // indirect
 	github.com/mholt/archiver v3.1.1+incompatible
