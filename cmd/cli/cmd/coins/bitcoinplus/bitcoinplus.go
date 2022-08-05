@@ -292,64 +292,6 @@ func (x XBC) Info(auth *models.CoinAuth) (models.XBCGetInfo, string, error) {
 	return respStruct, "", nil
 }
 
-//func (x *XBC) InfoUI(auth *models.CoinAuth, spin *yacspin.Spinner) (models.XBCGetInfo, string, error) {
-//	var respStruct models.XBCGetInfo
-//
-//	for i := 1; i < 600; i++ {
-//		body := strings.NewReader("{\"jsonrpc\":\"1.0\",\"id\":\"boxwallet\",\"method\":\"" + models.CCommandGetInfo + "\",\"params\":[]}")
-//		req, err := http.NewRequest("POST", "http://"+x.IPAddress+":"+x.Port, body)
-//		if err != nil {
-//			return respStruct, "", err
-//		}
-//		req.SetBasicAuth(x.RPCUser, x.RPCPassword)
-//		req.Header.Set("Content-Type", "text/plain;")
-//
-//		resp, err := http.DefaultClient.Do(req)
-//		//defer resp.Body.Close()
-//		if err != nil {
-//			spin.Message(" waiting for your " + cCoinName + " wallet to respond, this could take several minutes (ctrl-c to cancel)...")
-//			time.Sleep(1 * time.Second)
-//		} else {
-//			defer resp.Body.Close()
-//			bodyResp, err := ioutil.ReadAll(resp.Body)
-//			if err != nil {
-//				return respStruct, "", err
-//			}
-//
-//			// Check to make sure we are not loading the wallet
-//			if bytes.Contains(bodyResp, []byte("Loading")) ||
-//				bytes.Contains(bodyResp, []byte("Rescanning")) ||
-//				bytes.Contains(bodyResp, []byte("Rewinding")) ||
-//				bytes.Contains(bodyResp, []byte("RPC in warm-up: Calculating money supply")) ||
-//				bytes.Contains(bodyResp, []byte("Verifying")) {
-//				// The wallet is still loading, so print message, and sleep for 1 second and try again..
-//				var errStruct models.GenericResponse
-//				err = json.Unmarshal(bodyResp, &errStruct)
-//				if err != nil {
-//					return respStruct, "", err
-//				}
-//
-//				if bytes.Contains(bodyResp, []byte("Loading")) {
-//					spin.Message(" Your " + cCoinName + " wallet is *Loading*, this could take a while...")
-//				} else if bytes.Contains(bodyResp, []byte("Rescanning")) {
-//					spin.Message(" Your " + cCoinName + " wallet is *Rescanning*, this could take a while...")
-//				} else if bytes.Contains(bodyResp, []byte("Rewinding")) {
-//					spin.Message(" Your " + cCoinName + " wallet is *Rewinding*, this could take a while...")
-//				} else if bytes.Contains(bodyResp, []byte("Verifying")) {
-//					spin.Message(" Your " + cCoinName + " wallet is *Verifying*, this could take a while...")
-//				} else if bytes.Contains(bodyResp, []byte("Calculating money supply")) {
-//					spin.Message(" Your " + cCoinName + " wallet is *Calculating money supply*, this could take a while...")
-//				}
-//				time.Sleep(1 * time.Second)
-//			} else {
-//				_ = json.Unmarshal(bodyResp, &respStruct)
-//				return respStruct, string(bodyResp), err
-//			}
-//		}
-//	}
-//	return respStruct, "", nil
-//}
-
 // Install - Puts the freshly downloaded files into their correct location.
 // "location" should just be the AppBinaryFolder ~/.boxwallet
 func (x XBC) Install(location string) error {
@@ -493,6 +435,7 @@ func (x XBC) NetworkDifficultyInfo() (float64, float64, error) {
 
 	var fGood float64
 	var fWarning float64
+
 	// Now calculate the correct levels...
 	if fDiff, err := strconv.ParseFloat(string(body), 32); err == nil {
 		fGood = fDiff * 0.75
@@ -640,10 +583,6 @@ func (x XBC) StartDaemon(displayOutput bool, appFolder string) error {
 	if b {
 		return nil
 	}
-	//path, err := x.HomeDirFullPath()
-	//if err != nil {
-	//	return errors.New("Unable to get HomeDirFullPath: " + err.Error())
-	//}
 
 	if runtime.GOOS == "windows" {
 		fp := appFolder + cDaemonFileWin
