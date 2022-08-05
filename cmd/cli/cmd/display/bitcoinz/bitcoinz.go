@@ -4,7 +4,7 @@ import (
 	"github.com/dustin/go-humanize"
 	"richardmace.co.uk/boxwallet/cmd/cli/cmd/app"
 	btczImport "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/bitcoinz"
-	ltcImport "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/litecoin"
+	//ltcImport "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/litecoin"
 	"richardmace.co.uk/boxwallet/cmd/cli/cmd/display"
 	"richardmace.co.uk/boxwallet/cmd/cli/cmd/models"
 	"strconv"
@@ -177,9 +177,9 @@ func (b BTCZ) LiveWallet() string {
 }
 
 func (b BTCZ) RefreshDifficulty() {
-	var ltc ltcImport.Litecoin
+	var btcz btczImport.Bitcoinz
 
-	diffGood, diffWarning, _ = ltc.NetworkDifficultyInfo()
+	diffGood, diffWarning, _ = btcz.NetworkDifficultyInfo()
 }
 
 func (b BTCZ) RefreshNetwork(coinAuth *models.CoinAuth) {
