@@ -142,6 +142,19 @@ func (b Bitcoinz) BlockchainInfo(coinAuth *models.CoinAuth) (models.BTCZBlockcha
 	return respStruct, nil
 }
 
+func (b Bitcoinz) BlockchainIsSynced(coinAuth *models.CoinAuth) (bool, error) {
+	bci, err := b.BlockchainInfo(coinAuth)
+	if err != nil {
+		return false, err
+	}
+
+	if bci.Result.Verificationprogress > 0.99999 {
+		return true, nil
+	}
+
+	return false, nil
+}
+
 func (b Bitcoinz) ConfFile() string {
 	return cConfFile
 }
@@ -711,4 +724,91 @@ func (b *Bitcoinz) WalletInfo(coinAuth *models.CoinAuth) (models.BTCZWalletInfo,
 	}
 
 	return respStruct, nil
+}
+
+func (b Bitcoinz) WalletLoadingStatus(auth *models.CoinAuth) models.WLSType {
+	body := strings.NewReader("{\"jsonrpc\":\"1.0\",\"id\":\"boxwallet\",\"method\":\"" + models.CCommandGetInfo + "\",\"params\":[]}")
+	req, err := http.NewRequest("POST", "http://"+auth.IPAddress+":"+auth.Port, body)
+	if err != nil {
+		return models.WLSTUnknown
+	}
+	req.SetBasicAuth(auth.RPCUser, auth.RPCPassword)
+	req.Header.Set("Content-Type", "text/plain;")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return models.WLSTWaitingForResponse
+	} else {
+		defer resp.Body.Close()
+		bodyResp, err := ioutil.ReadAll(resp.Body)
+		if err != nil {
+			return models.WLSTWaitingForResponse
+		}
+
+		if bytes.Contains(bodyResp, []byte("Loading")) {
+			return models.WLSTLoading
+		}
+		if bytes.Contains(bodyResp, []byte("Rescanning")) {
+			return models.WLSTRescanning
+		}
+		if bytes.Contains(bodyResp, []byte("Rewinding")) {
+			return models.WLSTRewinding
+		}
+		if bytes.Contains(bodyResp, []byte("Verifying")) {
+			return models.WLSTVerifying
+		}
+		if bytes.Contains(bodyResp, []byte("Calculating money supply")) {
+			return models.WLSTCalculatingMoneySupply
+		}
+	}
+	return models.WLSTReady
+}
+
+func (b Bitcoinz) WalletNeedsEncrypting(coinAuth *models.CoinAuth) (bool, error) {
+	wi, err := b.WalletInfo(coinAuth)
+	if err != nil {
+		return true, errors.New("Unable to perform WalletInfo " + err.Error())
+	}
+
+	if wi.Result.UnlockedUntil == -1 {
+		return true, nil
+	}
+
+	return false, nil
+}
+
+func (b Bitcoinz) WalletResync(appFolder string) error {
+	daemonRunning, err := b.DaemonRunning()
+	if err != nil {
+		return errors.New("Unable to determine DaemonRunning: " + err.Error())
+	}
+	if daemonRunning {
+		return errors.New("daemon is still running, please stop first")
+	}
+
+	arg1 := "-resync"
+
+	cRun := exec.Command(appFolder+cDaemonFileLin, arg1)
+	if err := cRun.Run(); err != nil {
+		return fmt.Errorf("unable to run "+cDaemonFileLin+" "+arg1+": %v", err)
+	}
+
+	return nil
+}
+
+func (b Bitcoinz) WalletSecurityState(coinAuth *models.CoinAuth) (models.WEType, error) {
+	wi, err := b.WalletInfo(coinAuth)
+	if err != nil {
+		return models.WETUnknown, errors.New("Unable to determine WalletSecurityState: " + err.Error())
+	}
+
+	if wi.Result.UnlockedUntil == 0 {
+		return models.WETLocked, nil
+	} else if wi.Result.UnlockedUntil == -1 {
+		return models.WETUnencrypted, nil
+	} else if wi.Result.UnlockedUntil > 0 {
+		return models.WETUnlockedForStaking, nil
+	} else {
+		return models.WETUnknown, nil
+	}
 }
