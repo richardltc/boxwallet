@@ -19,6 +19,7 @@ package cmd
 import (
 	"errors"
 	"fmt"
+	btcz "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/bitcoinz"
 	"richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/dogecash"
 	ftc "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/feathercoin"
 	grs "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/groestlcoin"
@@ -29,6 +30,7 @@ import (
 	sbyte "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/spiderbyte"
 	tzc "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/trezarcoin"
 	xbcDisplay "richardmace.co.uk/boxwallet/cmd/cli/cmd/display/bitcoinplus"
+	btczDisplay "richardmace.co.uk/boxwallet/cmd/cli/cmd/display/bitcoinz"
 	diviDisplay "richardmace.co.uk/boxwallet/cmd/cli/cmd/display/divi"
 	dogecDisplay "richardmace.co.uk/boxwallet/cmd/cli/cmd/display/dogecash"
 	ftcDisplay "richardmace.co.uk/boxwallet/cmd/cli/cmd/display/feathercoin"
@@ -207,6 +209,23 @@ var dashCmd = &cobra.Command{
 			walletRefreshNetwork = xbcDisplay.XBC{}
 			walletRefreshTransactions = xbcDisplay.XBC{}
 			walletSecurityState = xbc.XBC{}
+		case models.PTBitcoinZ:
+			coin = btcz.Bitcoinz{}
+			coinBlockchainIsSynced = btcz.Bitcoinz{}
+			coinDaemon = btcz.Bitcoinz{}
+			coinDispAbout = btczDisplay.BTCZ{}
+			coinDispInitialBalance = btczDisplay.BTCZ{}
+			coinDispInitialNetwork = btczDisplay.BTCZ{}
+			coinDispLiveNetwork = btczDisplay.BTCZ{}
+			coinDispLiveTransactions = btczDisplay.BTCZ{}
+			coinDispLiveWallet = btczDisplay.BTCZ{}
+			coinName = btcz.Bitcoinz{}
+			coinPrice = btczDisplay.BTCZ{}
+			coinWallet = btcz.Bitcoinz{}
+			walletRefreshDifficulty = btczDisplay.BTCZ{}
+			walletRefreshNetwork = btczDisplay.BTCZ{}
+			walletRefreshTransactions = btczDisplay.BTCZ{}
+			walletSecurityState = btcz.Bitcoinz{}
 		case models.PTDivi:
 			coin = divi.Divi{}
 			coinBlockchainIsSynced = divi.Divi{}
