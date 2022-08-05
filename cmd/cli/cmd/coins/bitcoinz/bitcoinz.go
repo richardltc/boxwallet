@@ -14,6 +14,7 @@ import (
 	"richardmace.co.uk/boxwallet/cmd/cli/cmd/coins"
 	"richardmace.co.uk/boxwallet/cmd/cli/cmd/fileutils"
 	"runtime"
+	"strconv"
 	"strings"
 	"time"
 
@@ -462,6 +463,32 @@ func (b Bitcoinz) ListTransactions(auth *models.CoinAuth) (models.BTCZListTransa
 	}
 
 	return respStruct, nil
+}
+
+func (b Bitcoinz) NetworkDifficultyInfo() (float64, float64, error) {
+	// https://chainz.cryptoid.info/ftc/api.dws?q=getdifficulty
+
+	resp, err := http.Get("https://chainz.cryptoid.info/" + strings.ToLower(b.CoinNameAbbrev()) + "/api.dws?q=getdifficulty")
+	if err != nil {
+		return 0, 0, err
+	}
+	defer resp.Body.Close()
+
+	body, err := ioutil.ReadAll(resp.Body)
+	if err != nil {
+		return 0, 0, err
+	}
+
+	var fGood float64
+	var fWarning float64
+
+	// Now calculate the correct levels...
+	if fDiff, err := strconv.ParseFloat(string(body), 32); err == nil {
+		fGood = fDiff * 0.75
+		fWarning = fDiff * 0.50
+	}
+
+	return fGood, fWarning, nil
 }
 
 func (b Bitcoinz) NetworkInfo(coinAuth *models.CoinAuth) (models.BTCZNetworkInfo, error) {
