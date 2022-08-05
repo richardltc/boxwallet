@@ -1,7 +1,8 @@
-package bend
+package bitcoinz
 
 import (
 	"bufio"
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -14,7 +15,9 @@ import (
 	"richardmace.co.uk/boxwallet/cmd/cli/cmd/fileutils"
 	"runtime"
 	"strings"
+	"time"
 
+	"github.com/go-cmd/cmd"
 	"github.com/mholt/archiver"
 	"richardmace.co.uk/boxwallet/cmd/cli/cmd/models"
 	"richardmace.co.uk/boxwallet/cmd/cli/cmd/rjminternet"
@@ -42,6 +45,8 @@ const (
 	// bitcoinz.conf file constants
 	cRPCUser string = "bitcoinzrpc"
 	cRPCPort string = "1979"
+
+	cFetchParams string = "fetch-params.sh"
 )
 
 type Bitcoinz struct {
@@ -106,6 +111,34 @@ func archStrToFileDownloadURL(arch string, ghInfo *models.GithubInfo) string {
 	}
 
 	return ""
+}
+
+func (b Bitcoinz) BlockchainInfo(coinAuth *models.CoinAuth) (models.BTCZBlockchainInfo, error) {
+	var respStruct models.BTCZBlockchainInfo
+
+	body := strings.NewReader("{\"jsonrpc\":\"1.0\",\"id\":\"boxwallet\",\"method\":\"" + models.CCommandGetBCInfo + "\",\"params\":[]}")
+	req, err := http.NewRequest("POST", "http://"+coinAuth.IPAddress+":"+coinAuth.Port, body)
+	if err != nil {
+		return respStruct, err
+	}
+	req.SetBasicAuth(coinAuth.RPCUser, coinAuth.RPCPassword)
+	req.Header.Set("Content-Type", "text/plain;")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return respStruct, err
+	}
+	defer resp.Body.Close()
+	bodyResp, err := ioutil.ReadAll(resp.Body)
+	if err != nil {
+		return respStruct, err
+	}
+	err = json.Unmarshal(bodyResp, &respStruct)
+	if err != nil {
+		return respStruct, err
+	}
+
+	return respStruct, nil
 }
 
 func (b Bitcoinz) ConfFile() string {
@@ -286,6 +319,48 @@ func (b Bitcoinz) Install(location string) error {
 		return fmt.Errorf("unable to chmod file: %v - %v", location+srcFileTX, err)
 	}
 
+	// If the fetch-params.sh file doesn't exist the copy it.
+	if _, err := os.Stat(location + cFetchParams); os.IsNotExist(err) {
+		if err := fileutils.FileCopy(srcPath+cFetchParams, location+cFetchParams, false); err != nil {
+			return fmt.Errorf("unable to copyFile from: %v to %v - %v", srcPath+cFetchParams, location+cFetchParams, err)
+		}
+	}
+	if err := os.Chmod(location+cFetchParams, 0777); err != nil {
+		return fmt.Errorf("unable to chmod file: %v - %v", location+cFetchParams, err)
+	}
+
+	// run the fetch-params.sh script
+	if runtime.GOOS == "windows" {
+		fp := location + cFetchParams
+		cmd := exec.Command("cmd.exe", "/C", "/b", fp)
+		if err := cmd.Run(); err != nil {
+			return err
+		}
+	} else {
+		fp := location + cFetchParams
+		if err := smartRun(fp); err != nil {
+			return err
+		}
+
+		//cmd := exec.Command(fp)
+		//stdout, err := cmd.StdoutPipe()
+		//if err != nil {
+		//	return err
+		//}
+		//cmd.Start()
+		//
+		//buf := bufio.NewReader(stdout) // Notice that this is not in a loop
+		//num := 1
+		//for {
+		//	line, _, _ := buf.ReadLine()
+		//	if num > 100 {
+		//		os.Exit(0)
+		//	}
+		//	num += 1
+		//	fmt.Println(string(line))
+		//}
+	}
+
 	return nil
 }
 
@@ -360,12 +435,116 @@ func latestDownloadFileURL(ghInfo *models.GithubInfo) (string, error) {
 	return sURL, nil
 }
 
+func (b Bitcoinz) ListTransactions(auth *models.CoinAuth) (models.BTCZListTransactions, error) {
+	var respStruct models.BTCZListTransactions
+
+	body := strings.NewReader("{\"jsonrpc\":\"1.0\",\"id\":\"boxwallet\",\"method\":\"" + models.CCommandListTransactions + "\",\"params\":[\"*\",25,0]}")
+	req, err := http.NewRequest("POST", "http://"+auth.IPAddress+":"+auth.Port, body)
+	if err != nil {
+		return respStruct, err
+	}
+	req.SetBasicAuth(auth.RPCUser, auth.RPCPassword)
+	req.Header.Set("Content-Type", "text/plain;")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return respStruct, err
+	}
+	defer resp.Body.Close()
+	bodyResp, err := ioutil.ReadAll(resp.Body)
+	if err != nil {
+		return respStruct, err
+	}
+
+	err = json.Unmarshal(bodyResp, &respStruct)
+	if err != nil {
+		return respStruct, err
+	}
+
+	return respStruct, nil
+}
+
+func (b Bitcoinz) NetworkInfo(coinAuth *models.CoinAuth) (models.BTCZNetworkInfo, error) {
+	var respStruct models.BTCZNetworkInfo
+
+	for i := 1; i < 50; i++ {
+		body := strings.NewReader("{\"jsonrpc\":\"1.0\",\"id\":\"boxwallet\",\"method\":\"" + models.CCommandGetNetworkInfo + "\",\"params\":[]}")
+
+		req, err := http.NewRequest("POST", "http://"+coinAuth.IPAddress+":"+coinAuth.Port, body)
+		if err != nil {
+			return respStruct, err
+		}
+		req.SetBasicAuth(coinAuth.RPCUser, coinAuth.RPCPassword)
+		req.Header.Set("Content-Type", "text/plain;")
+
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			return respStruct, err
+		}
+		defer resp.Body.Close()
+		bodyResp, err := ioutil.ReadAll(resp.Body)
+		if err != nil {
+			return respStruct, err
+		}
+
+		// Check to make sure we are not loading the wallet
+		if bytes.Contains(bodyResp, []byte("Loading")) ||
+			bytes.Contains(bodyResp, []byte("Rescanning")) ||
+			bytes.Contains(bodyResp, []byte("Rewinding")) ||
+			bytes.Contains(bodyResp, []byte("Verifying")) {
+			// The wallet is still loading, so print message, and sleep for 3 seconds and try again
+			time.Sleep(5 * time.Second)
+		} else {
+			_ = json.Unmarshal(bodyResp, &respStruct)
+			return respStruct, err
+		}
+	}
+
+	return respStruct, nil
+}
+
 func (b Bitcoinz) RPCDefaultUsername() string {
 	return cRPCUser
 }
 
 func (b Bitcoinz) RPCDefaultPort() string {
 	return cRPCPort
+}
+
+func smartRun(cmdStr string) error {
+	// Start a long-running process, capture stdout and stderr
+	runCmd := cmd.NewCmd(cmdStr)
+	statusChan := runCmd.Start() // non-blocking
+
+	ticker := time.NewTicker(2 * time.Second)
+
+	// Print last line of stdout every 2s
+	go func() {
+		for range ticker.C {
+			status := runCmd.Status()
+			n := len(status.Stdout)
+			fmt.Println(status.Stdout[n-1])
+		}
+	}()
+
+	// Stop command after 1 hour
+	go func() {
+		<-time.After(1 * time.Hour)
+		runCmd.Stop()
+	}()
+
+	// Check if command is done
+	select {
+	case finalStatus := <-statusChan:
+		return finalStatus.Error
+	default:
+		// no, still running
+	}
+
+	// Block waiting for command to exit, be stopped, or be killed
+	finalStatus := <-statusChan
+
+	return finalStatus.Error
 }
 
 func (b Bitcoinz) StartDaemon(displayOutput bool, appFolder string) error {
@@ -451,4 +630,58 @@ func (b *Bitcoinz) unarchiveFile(fullFilePath, location, downloadFile string) er
 	defer os.Remove(fullFilePath)
 
 	return nil
+}
+
+func (b Bitcoinz) UpdateTickerInfo() (ticker models.BTCZTicker, err error) {
+	resp, err := http.Get("https://ticker.neist.io/BTCZ")
+	if err != nil {
+		return ticker, err
+	}
+	defer resp.Body.Close()
+
+	body, err := ioutil.ReadAll(resp.Body)
+	if err != nil {
+		return ticker, err
+	}
+	err = json.Unmarshal(body, &ticker)
+	if err != nil {
+		return ticker, err
+	}
+
+	return ticker, nil
+}
+
+func (b *Bitcoinz) WalletInfo(coinAuth *models.CoinAuth) (models.BTCZWalletInfo, error) {
+	var respStruct models.BTCZWalletInfo
+
+	body := strings.NewReader("{\"jsonrpc\":\"1.0\",\"id\":\"boxwallet\",\"method\":\"" + models.CCommandGetWalletInfo + "\",\"params\":[]}")
+	req, err := http.NewRequest("POST", "http://"+coinAuth.IPAddress+":"+coinAuth.Port, body)
+	if err != nil {
+		return respStruct, err
+	}
+	req.SetBasicAuth(coinAuth.RPCUser, coinAuth.RPCPassword)
+	req.Header.Set("Content-Type", "text/plain;")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return respStruct, err
+	}
+	defer resp.Body.Close()
+	bodyResp, err := ioutil.ReadAll(resp.Body)
+	if err != nil {
+		return respStruct, err
+	}
+
+	err = json.Unmarshal(bodyResp, &respStruct)
+	if err != nil {
+		return respStruct, err
+	}
+
+	// Check to see if the json response contains "unlocked_until"
+	s := string(bodyResp)
+	if !strings.Contains(s, "unlocked_until") {
+		respStruct.Result.UnlockedUntil = -1
+	}
+
+	return respStruct, nil
 }
