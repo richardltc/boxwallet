@@ -91,7 +91,7 @@ var coinCmd = &cobra.Command{
 				coins.CCoinNameFeathercoin,
 				coins.CCoinNameGroestlcoin,
 				coins.CCoinNameLitecoin,
-				//coins.CCoinNameNavcoin,
+				coins.CCoinNameNavcoin,
 				coins.CCoinNamePeercoin,
 				//coins.CCoinNamePhore,
 				coins.CCoinNamePIVX,
@@ -246,8 +246,8 @@ var coinCmd = &cobra.Command{
 		}
 
 		// ...because it's possible that the conf file for this coin has already been created, we need to store the
-		// returned user and password so, effectively, will either be storing the existing info or
-		// the freshly generated info.
+		// returned user and password so, effectively, will either be storing the existing info
+		// or the freshly generated info.
 		cliConf.ProjectType = coinType
 		cliConf.RPCuser = rpcUser
 		cliConf.RPCpassword = rpcPassword
