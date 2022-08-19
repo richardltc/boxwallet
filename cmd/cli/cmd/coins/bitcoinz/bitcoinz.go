@@ -43,7 +43,7 @@ const (
 
 	cTipAddress string = "t1RQxnbaAQW88evTHtFGvfSywyE9tNA24ym"
 
-	// bitcoinz.conf file constants
+	// bitcoinz.conf file constants.
 	cRPCUser string = "bitcoinzrpc"
 	cRPCPort string = "1979"
 
@@ -689,6 +689,34 @@ func (b Bitcoinz) UpdateTickerInfo() (ticker models.BTCZTicker, err error) {
 	}
 
 	return ticker, nil
+}
+
+func (b Bitcoinz) WalletEncrypt(coinAuth *models.CoinAuth, pw string) (models.GenericResponse, error) {
+	var respStruct models.GenericResponse
+
+	body := strings.NewReader("{\"jsonrpc\":\"1.0\",\"id\":\"boxwallet\",\"method\":\"" + models.CCommandEncryptWallet + "\",\"params\":[\"" + pw + "\"]}")
+	req, err := http.NewRequest("POST", "http://"+coinAuth.IPAddress+":"+coinAuth.Port, body)
+	if err != nil {
+		return respStruct, err
+	}
+	req.SetBasicAuth(coinAuth.RPCUser, coinAuth.RPCPassword)
+	req.Header.Set("Content-Type", "text/plain;")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return respStruct, err
+	}
+	defer resp.Body.Close()
+	bodyResp, err := ioutil.ReadAll(resp.Body)
+	if err != nil {
+		return respStruct, err
+	}
+	err = json.Unmarshal(bodyResp, &respStruct)
+	if err != nil {
+		return respStruct, err
+	}
+
+	return respStruct, nil
 }
 
 func (b *Bitcoinz) WalletInfo(coinAuth *models.CoinAuth) (models.BTCZWalletInfo, error) {
