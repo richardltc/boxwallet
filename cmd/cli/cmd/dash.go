@@ -24,6 +24,7 @@ import (
 	ftc "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/feathercoin"
 	grs "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/groestlcoin"
 	ltc "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/litecoin"
+	nav "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/navcoin"
 	ppc "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/peercoin"
 	pivx "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/pivx"
 	rdd "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/reddcoin"
@@ -36,6 +37,7 @@ import (
 	ftcDisplay "richardmace.co.uk/boxwallet/cmd/cli/cmd/display/feathercoin"
 	grsDisplay "richardmace.co.uk/boxwallet/cmd/cli/cmd/display/groestlcoin"
 	ltcDisplay "richardmace.co.uk/boxwallet/cmd/cli/cmd/display/litecoin"
+	navDisplay "richardmace.co.uk/boxwallet/cmd/cli/cmd/display/navcoin"
 	sbyteDisplay "richardmace.co.uk/boxwallet/cmd/cli/cmd/display/spiderbyte"
 	tzcDisplay "richardmace.co.uk/boxwallet/cmd/cli/cmd/display/trezarcoin"
 	"time"
@@ -120,7 +122,6 @@ var g10SecTickerCounter int = 0
 var g30SecTickerCounter int = 0
 var gCheckWalletHealthCounter int = 0
 
-// var gDiviLottery be.DiviLotteryRespStruct
 var NextLotteryStored string = ""
 var NextLotteryCounter int = 0
 
@@ -311,6 +312,23 @@ var dashCmd = &cobra.Command{
 			walletRefreshNetwork = ltcDisplay.LTC{}
 			walletRefreshTransactions = ltcDisplay.LTC{}
 			walletSecurityState = ltc.Litecoin{}
+		case models.PTNavcoin:
+			coin = nav.Navcoin{}
+			coinBlockchainIsSynced = nav.Navcoin{}
+			coinDaemon = nav.Navcoin{}
+			coinDispAbout = navDisplay.NAV{}
+			coinDispInitialBalance = navDisplay.NAV{}
+			coinDispInitialNetwork = navDisplay.NAV{}
+			coinDispLiveNetwork = navDisplay.NAV{}
+			coinDispLiveTransactions = navDisplay.NAV{}
+			coinDispLiveWallet = navDisplay.NAV{}
+			coinName = nav.Navcoin{}
+			coinPrice = navDisplay.NAV{}
+			coinWallet = nav.Navcoin{}
+			walletRefreshDifficulty = navDisplay.NAV{}
+			walletRefreshNetwork = navDisplay.NAV{}
+			walletRefreshTransactions = navDisplay.NAV{}
+			walletSecurityState = nav.Navcoin{}
 		case models.PTPeercoin:
 			coin = ppc.Peercoin{}
 			coinBlockchainIsSynced = ppc.Peercoin{}
