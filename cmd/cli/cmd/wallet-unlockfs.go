@@ -25,6 +25,7 @@ import (
 	xbc "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/bitcoinplus"
 	divi "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/divi"
 	"richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/dogecash"
+	nav "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/navcoin"
 	ppc "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/peercoin"
 	pivx "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/pivx"
 	rpd "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/rapids"
@@ -76,7 +77,7 @@ var unlockfsCmd = &cobra.Command{
 			log.Fatal("Unable to determine coin type. Please run " + appFileName + " coin  first")
 		}
 
-		// Now load our config file to see what coin choice the user made...
+		// Now load our config file to see what coin choice the user made.
 		confDB, err := conf.GetConfig(true)
 		if err != nil {
 			log.Fatal("Unable to determine coin type. Please run " + appFileName + " coin: " + err.Error())
@@ -98,6 +99,9 @@ var unlockfsCmd = &cobra.Command{
 		case models.PTFeathercoin:
 		case models.PTGroestlcoin:
 		case models.PTLitecoin:
+		case models.PTNavcoin:
+			walletSecurityState = nav.Navcoin{}
+			walletUnlockFS = nav.Navcoin{}
 		case models.PTPhore:
 		case models.PTPeercoin:
 			walletSecurityState = ppc.Peercoin{}
