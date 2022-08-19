@@ -63,13 +63,6 @@ const (
 	CWalletESUnencrypted        = "unencrypted"
 
 	// General CLI command constants
-	// cCommandGetBCInfo             string = "getblockchaininfo"
-	//cCommandGetInfo string = "getinfo"
-	// cCommandGetStakingInfo        string = "getstakinginfo"
-	// cCommandListReceivedByAddress string = "listreceivedbyaddress"
-	// cCommandListTransactions      string = "listtransactions"
-	// cCommandGetNetworkInfo        string = "getnetworkinfo"
-	// cCommandGetNewAddress         string = "getnewaddress"
 	cCommandGetWalletInfo string = "getwalletinfo"
 	// cCommandSendToAddress         string = "sendtoaddress"
 	// cCommandMNSyncStatus1         string = "mnsync"
@@ -1196,33 +1189,33 @@ func (n Navcoin) WalletEncrypt(coinAuth *models.CoinAuth, pw string) (models.Gen
 	return respStruct, nil
 }
 
-//func (n Navcoin) WalletInfo(auth *models.CoinAuth) (models.DiviWalletInfo, error) {
-//	var respStruct models.DiviWalletInfo
-//
-//	body := strings.NewReader("{\"jsonrpc\":\"1.0\",\"id\":\"boxwallet\",\"method\":\"" + cCommandGetWalletInfo + "\",\"params\":[]}")
-//	req, err := http.NewRequest("POST", "http://"+auth.IPAddress+":"+auth.Port, body)
-//	if err != nil {
-//		return respStruct, err
-//	}
-//	req.SetBasicAuth(auth.RPCUser, auth.RPCPassword)
-//	req.Header.Set("Content-Type", "text/plain;")
-//
-//	resp, err := http.DefaultClient.Do(req)
-//	if err != nil {
-//		return respStruct, err
-//	}
-//	defer resp.Body.Close()
-//	bodyResp, err := ioutil.ReadAll(resp.Body)
-//	if err != nil {
-//		return respStruct, err
-//	}
-//	err = json.Unmarshal(bodyResp, &respStruct)
-//	if err != nil {
-//		return respStruct, err
-//	}
-//
-//	return respStruct, nil
-//}
+func (n Navcoin) WalletInfo(auth *models.CoinAuth) (models.NAVWalletInfo, error) {
+	var respStruct models.NAVWalletInfo
+
+	body := strings.NewReader("{\"jsonrpc\":\"1.0\",\"id\":\"boxwallet\",\"method\":\"" + cCommandGetWalletInfo + "\",\"params\":[]}")
+	req, err := http.NewRequest("POST", "http://"+auth.IPAddress+":"+auth.Port, body)
+	if err != nil {
+		return respStruct, err
+	}
+	req.SetBasicAuth(auth.RPCUser, auth.RPCPassword)
+	req.Header.Set("Content-Type", "text/plain;")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return respStruct, err
+	}
+	defer resp.Body.Close()
+	bodyResp, err := ioutil.ReadAll(resp.Body)
+	if err != nil {
+		return respStruct, err
+	}
+	err = json.Unmarshal(bodyResp, &respStruct)
+	if err != nil {
+		return respStruct, err
+	}
+
+	return respStruct, nil
+}
 
 func (n Navcoin) WalletLoadingStatus(auth *models.CoinAuth) models.WLSType {
 	body := strings.NewReader("{\"jsonrpc\":\"1.0\",\"id\":\"boxwallet\",\"method\":\"" + models.CCommandGetInfo + "\",\"params\":[]}")
