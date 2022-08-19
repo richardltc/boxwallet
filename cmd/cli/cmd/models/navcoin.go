@@ -254,3 +254,24 @@ type NAVListTransactions struct {
 	Error interface{} `json:"error"`
 	Id    string      `json:"id"`
 }
+
+type NAVWalletInfo struct {
+	Result struct {
+		Walletversion         int     `json:"walletversion"`
+		Balance               float64 `json:"balance"`
+		PrivateBalance        float64 `json:"private_balance"`
+		ColdstakingBalance    float64 `json:"coldstaking_balance"`
+		UnconfirmedBalance    float64 `json:"unconfirmed_balance"`
+		PrivateBalancePending float64 `json:"private_balance_pending"`
+		ImmatureBalance       float64 `json:"immature_balance"`
+		Txcount               int     `json:"txcount"`
+		Keypoololdest         int     `json:"keypoololdest"`
+		Keypoolsize           int     `json:"keypoolsize"`
+		UnlockedUntil         int     `json:"unlocked_until"`
+		UnlockedForStaking    bool    `json:"unlocked_for_staking"`
+		Paytxfee              float64 `json:"paytxfee"`
+		Hdmasterkeyid         string  `json:"hdmasterkeyid"`
+	} `json:"result"`
+	Error interface{} `json:"error"`
+	Id    string      `json:"id"`
+}
