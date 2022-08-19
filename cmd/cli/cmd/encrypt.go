@@ -21,6 +21,7 @@ import (
 	"log"
 	"richardmace.co.uk/boxwallet/cmd/cli/cmd/coins"
 	xbc "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/bitcoinplus"
+	btcz "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/bitcoinz"
 	divi "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/divi"
 	"richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/dogecash"
 	ftc "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/feathercoin"
@@ -76,7 +77,7 @@ var encryptCmd = &cobra.Command{
 			log.Fatal("Unable to determine coin type. Please run " + appFileName + " coin  first")
 		}
 
-		// Now load our config file to see what coin choice the user made...
+		// Now load our config file to see what coin choice the user made.
 		confDB, err := conf.GetConfig(true)
 		if err != nil {
 			log.Fatal("Unable to determine coin type. Please run " + appFileName + " coin: " + err.Error())
@@ -88,6 +89,11 @@ var encryptCmd = &cobra.Command{
 			daemonRunning = xbc.XBC{}
 			walletSecurityState = xbc.XBC{}
 			walletEncrypt = xbc.XBC{}
+		case models.PTBitcoinZ:
+			coinName = btcz.Bitcoinz{}
+			daemonRunning = btcz.Bitcoinz{}
+			walletSecurityState = btcz.Bitcoinz{}
+			walletEncrypt = btcz.Bitcoinz{}
 		case models.PTDenarius:
 		case models.PTDeVault:
 		case models.PTDigiByte:
