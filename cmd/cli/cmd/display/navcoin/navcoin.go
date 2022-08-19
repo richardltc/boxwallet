@@ -4,14 +4,13 @@ import (
 	"github.com/dustin/go-humanize"
 	"richardmace.co.uk/boxwallet/cmd/cli/cmd/app"
 	navImport "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/navcoin"
-	ppcImport "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/peercoin"
 	"richardmace.co.uk/boxwallet/cmd/cli/cmd/display"
 	"richardmace.co.uk/boxwallet/cmd/cli/cmd/models"
 	"strconv"
 	"time"
 )
 
-type PPC struct {
+type NAV struct {
 }
 
 var gCoinAuth *models.CoinAuth
@@ -23,11 +22,11 @@ var getInfo models.NAVGetInfo
 //var stakingInfo models.PPCStakingInfo
 //var ticker models.PPCTicker
 var transactions models.NAVListTransactions
-var walletInfo models.PPCWalletInfo
+var walletInfo models.NAVWalletInfo
 var diffGood, diffWarning float64
 var lastBCSyncStatus string = ""
 
-func (p PPC) About(coinAuth *models.CoinAuth) string {
+func (n NAV) About(coinAuth *models.CoinAuth) string {
 	gCoinAuth = coinAuth
 	var a app.App
 	var nav navImport.Navcoin
@@ -40,12 +39,12 @@ func (p PPC) About(coinAuth *models.CoinAuth) string {
 	}
 
 	return "  [" + a.Name() + "     v" + a.Version() + "](fg:white)\n" +
-		"  [" + nav.CoinName() + " Core " + sCoreVersion + "](fg:white)\n\n"
+		"  [" + nav.CoinName() + " Core  " + sCoreVersion + "](fg:white)\n\n"
 }
 
 func activelyStakingTxt() string {
-	var ppc ppcImport.Peercoin
-	wss, _ := ppc.WalletSecurityState(gCoinAuth)
+	var nav navImport.Navcoin
+	wss, _ := nav.WalletSecurityState(gCoinAuth)
 	if wss == models.WETUnlockedForStaking {
 		return "Actively Staking: [Yes](fg:green)"
 	} else {
@@ -74,16 +73,17 @@ func blockchainSyncTxt() string {
 	} else {
 		s = s + "%"
 	}
+
 	return s
 }
 
-func (p PPC) InitialBalance() string {
+func (n NAV) InitialBalance() string {
 	return "  Balance:          [waiting for sync...](fg:yellow)\n" +
 		"  Security:         [waiting for sync...](fg:yellow)\n" +
 		"  Actively Staking: [waiting for sync...](fg:yellow)\n"
 }
 
-func (p PPC) InitialNetwork() string {
+func (n NAV) InitialNetwork() string {
 	return "  Headers:     [checking...](fg:yellow)\n" +
 		"  Blocks:      [checking...](fg:yellow)\n" +
 		"  Difficulty:  [checking...](fg:yellow)\n" +
@@ -91,7 +91,7 @@ func (p PPC) InitialNetwork() string {
 		"  Connections: [checking...](fg:yellow)\n"
 }
 
-func (p PPC) LiveNetwork() string {
+func (n NAV) LiveNetwork() string {
 	var bcSynced bool
 	var sBlockchainSync, sConnections, sHeaders, sBlocks, sDiff, sDiffVal string
 
@@ -154,7 +154,7 @@ func (p PPC) LiveNetwork() string {
 		"  " + sConnections
 }
 
-func (p PPC) LiveTransactions() (containsZeroConfs bool, rows [][]string) {
+func (n NAV) LiveTransactions() (containsZeroConfs bool, rows [][]string) {
 	var sRows [][]string
 
 	// Record whether any of the transactions have 0 conf (so that we can display the boarder as yellow)
@@ -192,34 +192,34 @@ func (p PPC) LiveTransactions() (containsZeroConfs bool, rows [][]string) {
 	return bZeroConfs, sRows
 }
 
-func (p PPC) LiveWallet() string {
+func (n NAV) LiveWallet() string {
 	return "" + balanceTxt() + "\n" +
 		"  " + walletSecurityStatusTxt() + "\n" +
 		"  " + activelyStakingTxt() + "\n" //e.g. "15%" or "staking".
 
 }
 
-func (p PPC) RefreshDifficulty() {
+func (n NAV) RefreshDifficulty() {
 	var nav navImport.Navcoin
 
 	diffGood, diffWarning, _ = nav.NetworkDifficultyInfo()
 }
 
-func (p PPC) RefreshNetwork(coinAuth *models.CoinAuth) {
+func (n NAV) RefreshNetwork(coinAuth *models.CoinAuth) {
 	var nav navImport.Navcoin
 
 	blockChainInfo, _ = nav.BlockchainInfo(coinAuth)
 	getInfo, _, _ = nav.Info(coinAuth)
-	//walletInfo, _ = ppc.WalletInfo(coinAuth)
+	walletInfo, _ = nav.WalletInfo(coinAuth)
 }
 
-func (p PPC) RefreshPrice() {
+func (n NAV) RefreshPrice() {
 	//var ppc ppcImport.Peercoin
 	//
 	//ticker, _ = ppc.UpdateTickerInfo()
 }
 
-func (p PPC) RefreshTransactions(coinAuth *models.CoinAuth) {
+func (n NAV) RefreshTransactions(coinAuth *models.CoinAuth) {
 	var nav navImport.Navcoin
 
 	transactions, _ = nav.ListTransactions(coinAuth)
@@ -230,7 +230,7 @@ func walletSecurityStatusTxt() string {
 		return "Security:         [Locked](fg:green)"
 	} else if walletInfo.Result.UnlockedUntil == -1 {
 		return "Security:         [UNENCRYPTED](fg:red)"
-	} else if walletInfo.Result.UnlockedUntil > 0 && walletInfo.Result.UnlockedMintingOnly {
+	} else if walletInfo.Result.UnlockedUntil > 0 {
 		return "Security:         [Locked and Staking](fg:green)"
 	} else if walletInfo.Result.UnlockedUntil > 0 {
 		return "Security:         [Unlocked](fg:yellow)"
