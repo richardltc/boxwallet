@@ -19,6 +19,7 @@ const (
 	CCoinNameDeVault     string = "DeVault"
 	CCoinNameDigiByte    string = "DigiByte"
 	CCoinNameDogeCash    string = "DogeCash"
+	CCoinNameEPICCash    string = "EPICCash"
 	CCoinNameFeathercoin string = "Feathercoin"
 	CCoinNameGroestlcoin string = "Groestlcoin"
 	CCoinNameLitecoin    string = "Litecoin"
@@ -123,29 +124,6 @@ func FindProcess(key string) (int, string, error) {
 
 	return pid, pname, err
 }
-
-//func GetPasswordToEncryptWallet() string {
-//	for i := 0; i <= 2; i++ {
-//		epw1 := ""
-//		prompt := &survey.Password{
-//			Message: "Please enter a password to encrypt your wallet",
-//		}
-//		_ = survey.AskOne(prompt, &epw1)
-//
-//		epw2 := ""
-//		prompt2 := &survey.Password{
-//			Message: "Now please re-enter your password",
-//		}
-//		_ = survey.AskOne(prompt2, &epw2)
-//		if epw1 != epw2 {
-//			fmt.Print("\nThe passwords don't match, please try again...\n")
-//		} else {
-//			return epw1
-//		}
-//	}
-//
-//	return ""
-//}
 
 func GetWalletEncryptionPassword() string {
 	pw := ""
