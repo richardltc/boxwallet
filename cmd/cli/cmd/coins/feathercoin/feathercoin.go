@@ -1,4 +1,4 @@
-package bend
+package feathercoin
 
 import (
 	"bytes"
@@ -48,7 +48,7 @@ const (
 
 	cTipAddress string = "3KDuVDG31nh3mEMKANf7Fg9pUbKT1Ntk7F"
 
-	// feathercoin.conf file constants
+	// feathercoin.conf file constants.
 	cRPCUser string = "feathercoinrpc"
 	cRPCPort string = "18332"
 )
