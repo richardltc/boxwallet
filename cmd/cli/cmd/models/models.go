@@ -3,7 +3,7 @@ package models
 import "time"
 
 const (
-	// General CLI command constants.
+	// General RPC command constants.
 
 	CCommandBackupWallet          string = "backupwallet"
 	CCommandCreateWallet          string = "createwallet"
@@ -51,6 +51,7 @@ const (
 	PTNavcoin
 	PTDogeCash
 	PTBitcoinZ
+	PTEPICCash
 )
 
 type GenericResponse struct {
