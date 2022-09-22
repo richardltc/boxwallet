@@ -30,6 +30,7 @@ import (
 	dgb "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/digibyte"
 	divi "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/divi"
 	"richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/dogecash"
+	epic "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/epic"
 	ftc "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/feathercoin"
 	grs "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/groestlcoin"
 	ltc "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/litecoin"
@@ -88,6 +89,7 @@ var coinCmd = &cobra.Command{
 				coins.CCoinNameDeVault,
 				coins.CCoinNameDigiByte,
 				coins.CCoinNameDogeCash,
+				coins.CCoinNameEPICCash,
 				coins.CCoinNameFeathercoin,
 				coins.CCoinNameGroestlcoin,
 				coins.CCoinNameLitecoin,
@@ -154,6 +156,11 @@ var coinCmd = &cobra.Command{
 			coinName = divi.Divi{}
 			coinRPC = divi.Divi{}
 			coinType = models.PTDivi
+		case coins.CCoinNameEPICCash:
+			coin = epic.EPIC{}
+			coinName = epic.EPIC{}
+			coinRPC = epic.EPIC{}
+			coinType = models.PTEPICCash
 		case coins.CCoinNameFeathercoin:
 			coin = ftc.Feathercoin{}
 			coinName = ftc.Feathercoin{}
@@ -238,11 +245,14 @@ var coinCmd = &cobra.Command{
 		dfRPCUser := coinRPC.RPCDefaultUsername()
 		dfRPCPort := coinRPC.RPCDefaultPort()
 
-		rpcUser, rpcPassword, err = coins.PopulateConfFile(coin.ConfFile(),
-			coinHomeDir,
-			dfRPCUser, dfRPCPort)
-		if err != nil {
-			log.Fatal("Unable to PopulateConfFile: ", err.Error())
+		// Whilst we're attempting to get EPIC working, I'm checking for it here...
+		if coinType != models.PTEPICCash {
+			rpcUser, rpcPassword, err = coins.PopulateConfFile(coin.ConfFile(),
+				coinHomeDir,
+				dfRPCUser, dfRPCPort)
+			if err != nil {
+				log.Fatal("Unable to PopulateConfFile: ", err.Error())
+			}
 		}
 
 		// ...because it's possible that the conf file for this coin has already been created, we need to store the
@@ -278,7 +288,7 @@ var coinCmd = &cobra.Command{
 			log.Fatal(err)
 		}
 		if !b {
-			// Need check if the project is Denarius now, as that's only installable via snap
+			// Need check if the project is Denarius now, as that's only installable via snap.
 			if coinType == models.PTDenarius {
 				log.Fatal(coins.CCoinNameDenarius + " needs to be manually installed, via the following command:" +
 					"\n\n snap install denarius" + "\n\n Then run " + be.CAppFilename + " coin again")
@@ -307,6 +317,9 @@ var coinCmd = &cobra.Command{
 		case models.PTDivi:
 			coinSupportsBCSnapshot = true
 			coinBC = divi.Divi{}
+		case models.PTEPICCash:
+			coinSupportsBCSnapshot = true
+			coinBC = epic.EPIC{}
 		case models.PTNavcoin:
 			coinSupportsBCSnapshot = true
 			coinBC = nav.Navcoin{}
