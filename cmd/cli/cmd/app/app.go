@@ -10,7 +10,7 @@ import (
 const (
 	cAppName        string = "BoxWallet"
 	CUpdaterAppName string = "bwupdater"
-	CAppVersion     string = "0.53.2"
+	CAppVersion     string = "0.53.5"
 	CAppFilename    string = "boxwallet"
 	CAppFilenameWin string = "boxwallet.exe"
 	//CAppLogfile     string = "boxwallet.log"
@@ -57,7 +57,7 @@ func (a App) HomeFolder() (string, error) {
 	}
 	hd := u.HomeDir
 	if runtime.GOOS == "windows" {
-		// add the "appdata\roaming" part.
+		// add the "appdata\roaming" part..
 		s = fileutils.AddTrailingSlash(hd) + "appdata\\roaming\\" + fileutils.AddTrailingSlash(cAppWorkingDirWin)
 	} else {
 		s = fileutils.AddTrailingSlash(hd) + fileutils.AddTrailingSlash(cAppWorkingDirLin)
