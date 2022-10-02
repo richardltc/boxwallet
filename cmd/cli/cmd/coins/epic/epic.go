@@ -29,7 +29,7 @@ const (
 	cExtractedDirLin = "epiccash_E3_node-server_ubuntu/"
 	cExtractedDirWin = "epiccash_E3_node-server\\"
 
-	cDownloadURL string = "https://dl.epic.tech/" //+ cCoreVersion + "/"
+	cDownloadURL string = "https://dl.epic.tech/"
 	//cDownloadURLBS string = "https://51pool.online/downloads/"
 	cDownloadURLBS string = "https://epiccash.s3.sa-east-1.amazonaws.com/"
 
@@ -90,7 +90,7 @@ func (e EPIC) BlockchainDataExists() (bool, error) {
 	}
 
 	// If the "chain_data" directory already exists, return
-	if _, err := os.Stat(coinDir + "chains_data"); !os.IsNotExist(err) {
+	if _, err := os.Stat(coinDir + "chain_data"); !os.IsNotExist(err) {
 		err := errors.New("The directory: " + coinDir + "chain_data already exists")
 		return true, err
 	}
