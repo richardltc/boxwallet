@@ -28,11 +28,12 @@ BoxWallet is a multi-coin CLI tool, that gets your coin-of-choice wallet/node se
 ## What coins does BoxWallet currently support?
 
 * BitcoinPlus
-* BitcoinZ (coming soon)
+* BitcoinZ
 * Denarius
 * DeVault
 * DigiByte
 * Divi
+* EPIC Cash (coin command only at present)
 * Groestlcoin
 * Feathercoin
 * Litecoin
@@ -66,9 +67,9 @@ However, if you're running on a Raspberry Pi, you'll probably want the file endi
 
 In your browser, right-click on the correct file you need and choose "copy link", then, in your Linux terminal, type `wget ` then paste the link after it.
 
-If the version of BoxWallet was `0.51.1` you should now have a line of text that looks like the following:
+If the version of BoxWallet was `0.53.6` you should now have a line of text that looks like the following:
 
-`wget https://github.com/richardltc/boxwallet/releases/download/0.51.1/boxwallet_0.51.1_Linux_64bit.tar.gz`
+`wget https://github.com/richardltc/boxwallet/releases/download/0.53.6/boxwallet_0.53.6_Linux_64bit.tar.gz`
 
 Press return, and the command `wget` should now download that file to you current directory.
 
@@ -77,7 +78,7 @@ Next, enter the command:
 `tar -xf ./boxwallet` then, without a space, press the tab key to auto-complete the command line.
 You should then have a line that says:
 
-`tar -xf ./boxwallet_0.51.1_Linux_64bit.tar.gz`
+`tar -xf ./boxwallet_0.53.6_Linux_64bit.tar.gz`
 
 Press return, and you should then have the following files:
 
