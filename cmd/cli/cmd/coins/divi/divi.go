@@ -5,7 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io/ioutil"
+	"io"
 	"net/http"
 	"os"
 	"os/exec"
@@ -259,7 +259,7 @@ func (d Divi) BlockchainInfo(auth *models.CoinAuth) (models.DiviBlockchainInfo, 
 		return respStruct, err
 	}
 	defer resp.Body.Close()
-	bodyResp, err := ioutil.ReadAll(resp.Body)
+	bodyResp, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return respStruct, err
 	}
@@ -414,7 +414,7 @@ func (d Divi) Info(auth *models.CoinAuth) (models.DiviGetInfo, string, error) {
 			return respStruct, "", err
 		}
 		defer resp.Body.Close()
-		bodyResp, err := ioutil.ReadAll(resp.Body)
+		bodyResp, err := io.ReadAll(resp.Body)
 		if err != nil {
 			return respStruct, "", err
 		}
@@ -587,7 +587,7 @@ func (d Divi) getDiviAddNodes() (addnodes []models.DiviAddNodes, err error) {
 	}
 	defer resp.Body.Close()
 
-	body, err := ioutil.ReadAll(resp.Body)
+	body, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return addnodes, err
 	}
@@ -619,7 +619,7 @@ func (d Divi) DumpHDInfo(coinAuth *models.CoinAuth, pw string) (string, error) {
 		return "", err
 	}
 	defer resp.Body.Close()
-	bodyResp, err := ioutil.ReadAll(resp.Body)
+	bodyResp, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return "", err
 	}
@@ -649,7 +649,7 @@ func (d *Divi) InfoUI(spin *yacspin.Spinner) (models.DiviGetInfo, string, error)
 			time.Sleep(1 * time.Second)
 		} else {
 			defer resp.Body.Close()
-			bodyResp, err := ioutil.ReadAll(resp.Body)
+			bodyResp, err := io.ReadAll(resp.Body)
 			if err != nil {
 				return respStruct, "", err
 			}
@@ -711,7 +711,7 @@ func (d Divi) ListReceivedByAddress(coinAuth *models.CoinAuth, includeZero bool)
 		return respStruct, err
 	}
 	defer resp.Body.Close()
-	bodyResp, err := ioutil.ReadAll(resp.Body)
+	bodyResp, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return respStruct, err
 	}
@@ -741,7 +741,7 @@ func (d Divi) ListTransactions(auth *models.CoinAuth) (models.DiviListTransactio
 		return respStruct, err
 	}
 	defer resp.Body.Close()
-	bodyResp, err := ioutil.ReadAll(resp.Body)
+	bodyResp, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return respStruct, err
 	}
@@ -791,7 +791,7 @@ func (d *Divi) MNSyncStatus(auth *models.CoinAuth) (models.DiviMNSyncStatus, err
 		return respStruct, err
 	}
 	defer resp.Body.Close()
-	bodyResp, err := ioutil.ReadAll(resp.Body)
+	bodyResp, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return respStruct, err
 	}
@@ -812,7 +812,7 @@ func (d Divi) NetworkDifficultyInfo() (float64, float64, error) {
 	}
 	defer resp.Body.Close()
 
-	body, err := ioutil.ReadAll(resp.Body)
+	body, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return 0, 0, err
 	}
@@ -844,7 +844,7 @@ func (d Divi) NewAddress(auth *models.CoinAuth) (models.DiviGetNewAddress, error
 		return respStruct, err
 	}
 	defer resp.Body.Close()
-	bodyResp, err := ioutil.ReadAll(resp.Body)
+	bodyResp, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return respStruct, err
 	}
@@ -917,7 +917,7 @@ func (d Divi) StakingStatus(auth *models.CoinAuth) (models.DiviStakingStatus, er
 		return respStruct, err
 	}
 	defer resp.Body.Close()
-	bodyResp, err := ioutil.ReadAll(resp.Body)
+	bodyResp, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return respStruct, err
 	}
@@ -947,7 +947,7 @@ func (d Divi) SendToAddress(coinAuth *models.CoinAuth, address string, amount fl
 		return respStruct, err
 	}
 	defer resp.Body.Close()
-	bodyResp, err := ioutil.ReadAll(resp.Body)
+	bodyResp, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return respStruct, err
 	}
@@ -1068,7 +1068,7 @@ func (d Divi) UpdateTickerInfo() (ticker models.DiviTicker, err error) {
 	}
 	defer resp.Body.Close()
 
-	body, err := ioutil.ReadAll(resp.Body)
+	body, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return ticker, err
 	}
@@ -1142,7 +1142,7 @@ func (d Divi) WalletBackup(coinAuth *models.CoinAuth, destDir string) (models.Ge
 		return respStruct, err
 	}
 	defer resp.Body.Close()
-	bodyResp, err := ioutil.ReadAll(resp.Body)
+	bodyResp, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return respStruct, err
 	}
@@ -1174,7 +1174,7 @@ func (d Divi) WalletEncrypt(coinAuth *models.CoinAuth, pw string) (models.Generi
 		return respStruct, err
 	}
 	defer resp.Body.Close()
-	bodyResp, err := ioutil.ReadAll(resp.Body)
+	bodyResp, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return respStruct, err
 	}
@@ -1202,7 +1202,7 @@ func (d Divi) WalletInfo(auth *models.CoinAuth) (models.DiviWalletInfo, error) {
 		return respStruct, err
 	}
 	defer resp.Body.Close()
-	bodyResp, err := ioutil.ReadAll(resp.Body)
+	bodyResp, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return respStruct, err
 	}
@@ -1228,7 +1228,7 @@ func (d Divi) WalletLoadingStatus(auth *models.CoinAuth) models.WLSType {
 		return models.WLSTWaitingForResponse
 	} else {
 		defer resp.Body.Close()
-		bodyResp, err := ioutil.ReadAll(resp.Body)
+		bodyResp, err := io.ReadAll(resp.Body)
 		if err != nil {
 			return models.WLSTWaitingForResponse
 		}
@@ -1329,7 +1329,7 @@ func (d Divi) WalletUnlock(coinAuth *models.CoinAuth, pw string) error {
 		return err
 	}
 	defer resp.Body.Close()
-	bodyResp, err := ioutil.ReadAll(resp.Body)
+	bodyResp, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return err
 	}
@@ -1363,7 +1363,7 @@ func (d Divi) WalletUnlockFS(coinAuth *models.CoinAuth, pw string) error {
 		return err
 	}
 	defer resp.Body.Close()
-	bodyResp, err := ioutil.ReadAll(resp.Body)
+	bodyResp, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return err
 	}
