@@ -24,8 +24,6 @@ import (
 )
 
 const (
-	cAddNodeURL string = "https://api.diviproject.org/v1/addnode"
-
 	cCoinName       string = "DIVI"
 	cCoinNameAbbrev string = "DIVI"
 
