@@ -32,10 +32,10 @@ const (
 	cHomeDir    string = ".divi"
 	cHomeDirWin string = "DIVI"
 
-	cCoreVersion         string = "2.5.1"
-	cDownloadFileArm32          = "divi-" + cCoreVersion + "-RPi2.tar.gz"
-	cDownloadFileLinux          = "divi-" + cCoreVersion + "-x86_64-linux.tar.gz"
-	cDownloadFileWindows        = "divi-" + cCoreVersion + "-win64.zip"
+	cCoreVersion         string = "3.0.0"
+	cDownloadFileArm32          = "divi-" + cCoreVersion + "-RPi2-9e2f76c.tar.gz"
+	cDownloadFileLinux          = "divi-" + cCoreVersion + "-x86_64-linux-gnu-9e2f76c.tar.gz"
+	cDownloadFileWindows        = "divi-" + cCoreVersion + "-win64-9e2f76c.zip"
 	cDownloadFileBS      string = "DIVI-snapshot.zip"
 
 	cExtractedDirLinux = "divi-" + cCoreVersion + "/"
@@ -882,13 +882,13 @@ func (d Divi) RemoveBlockchainData() error {
 func (d Divi) RemoveCoreFiles(dir string) error {
 	srcFolder := fileutils.AddTrailingSlash(dir)
 
-	if err := os.Remove(srcFolder + cDaemonFileLin); err != nil {
+	if err := os.RemoveAll(srcFolder + cDaemonFileLin); err != nil {
 		return err
 	}
-	if err := os.Remove(srcFolder + cCliFileLin); err != nil {
+	if err := os.RemoveAll(srcFolder + cCliFileLin); err != nil {
 		return err
 	}
-	if err := os.Remove(srcFolder + cTxFile); err != nil {
+	if err := os.RemoveAll(srcFolder + cTxFile); err != nil {
 		return err
 	}
 
@@ -1102,7 +1102,7 @@ func (d *Divi) unarchiveFile(fullFilePath, location string) error {
 		}
 	}
 
-	defer os.Remove(fullFilePath)
+	defer os.RemoveAll(fullFilePath)
 
 	return nil
 }
