@@ -18,8 +18,6 @@ type DIVI struct {
 var blockChainInfo models.DiviBlockchainInfo
 var info models.DiviGetInfo
 
-//var lottery models.DiviLottery
-
 var stakingInfo models.DiviStakingStatus
 var ticker models.DiviTicker
 var transactions models.DiviListTransactions
@@ -27,10 +25,6 @@ var walletInfo models.DiviWalletInfo
 var diffGood, diffWarning float64
 var lastBCSyncStatus = ""
 var lastMNSyncStatus = ""
-
-// var gDiviLottery be.DiviLotteryRespStruct
-//var nextLotteryStored string
-//var nextLotteryCounter int
 
 var localCurrency string
 var currConvert currencyconvert.CurrencyConvert
@@ -162,14 +156,6 @@ func calculateNextLottery() string {
 	var sDateTime string
 	latestBlock = blockChainInfo.Result.Blocks
 
-	//for i := 0; i <= 10; i-- {
-	//	lastLotteryBlock = lastLotteryBlock + 10080
-	//	if lastLotteryBlock > latestBlock {
-	//		lastLotteryBlock = lastLotteryBlock - 10080
-	//		break
-	//	}
-	//}
-
 	blocksLeft = (lastLotteryBlock() + 10080) - latestBlock
 	// Calculate the seconds left.
 	secsUntilNextLottery = blocksLeft * 60
@@ -178,20 +164,6 @@ func calculateNextLottery() string {
 
 	return sDateTime
 }
-
-//func getNextLotteryTxtDIVI() string {
-//	if nextLotteryCounter > (60*30) || nextLotteryStored == "" {
-//		nextLotteryCounter = 0
-//		//lrs, _ := getDiviLotteryInfo(conf)
-//		if lottery.Lottery.Countdown.Humanized != "" {
-//			return "Next Lottery:     [" + lottery.Lottery.Countdown.Humanized + "](fg:white)"
-//		} else {
-//			return "Next Lottery:     [" + nextLotteryStored + "](fg:white)"
-//		}
-//	} else {
-//		return "Next Lottery:     [" + nextLotteryStored + "](fg:white)"
-//	}
-//}
 
 func lotteryTickets() string {
 	iTotalTickets := 0
@@ -264,19 +236,6 @@ func (d DIVI) LiveNetwork() string {
 		bcSynced = true
 	}
 
-	//if stakingInfo.Result.Mnsync {
-	//	mnSynced = true
-	//}
-
-	// bci, _ := xBC.BlockchainInfo(coinAuth)
-
-	//headersStr := humanize.Comma(int64(blockChainInfo.Result.Headers))
-	//if blockChainInfo.Result.Headers > 1 {
-	//	sHeaders = "Headers:     [" + headersStr + "](fg:green)"
-	//} else {
-	//	sHeaders = "[Headers:     " + headersStr + "](fg:red)"
-	//}
-
 	blocksStr := humanize.Comma(int64(blockChainInfo.Result.Blocks))
 	if blocksStr == "0" {
 		sBlocks = "Blocks:      [waiting...](fg:white)"
@@ -307,14 +266,6 @@ func (d DIVI) LiveNetwork() string {
 	} else {
 		sBlockchainSync = "Blockchain:  [synced " + display.CUTFTickBold + "](fg:green)"
 	}
-
-	//if !mnSynced {
-	//	nextMNSyncIndicator := display.NextProgBCIndicator(lastMNSyncStatus)
-	//	sMNSync = "Masternodes:[" + display.NextProgMNIndicator(nextMNSyncIndicator) + "syncing ](fg:yellow)"
-	//	lastMNSyncStatus = nextMNSyncIndicator
-	//} else {
-	//	sMNSync = "Masternodes: [synced " + display.CUTFTickBold + "](fg:green)"
-	//}
 
 	sNumCon := strconv.Itoa(info.Result.Connections)
 
@@ -359,10 +310,6 @@ func (d DIVI) LiveTransactions() (containsZeroConfs bool, rows [][]string) {
 			" [" + sCat + "](fg:" + sColour + ")",
 			" [" + tAmountStr + "](fg:" + sColour + ")",
 			" [" + strconv.Itoa(transactions.Result[i].Confirmations) + "](fg:" + sColour + ")"})
-
-		//if i > 25 {
-		//	break
-		//}
 	}
 
 	return bZeroConfs, sRows
@@ -378,31 +325,7 @@ func (d DIVI) LiveWallet() string {
 		"  " + lotteryTickets()
 }
 
-//func mnSyncTxt(mns bool) string {
-//	if stakingInfo.Result.Mnsync == true {
-//		return "[synced " + display.CUTFTickBold + "](fg:green)"
-//	} else {
-//		if mns {
-//			return "[" + display.NextProgBCIndicator(lastMNSyncStatus) + "syncing...](fg:yellow)"
-//		} else {
-//			return "[waiting...](fg:yellow)"
-//		}
-//	}
-//}
-
 func nextLottery() string {
-	//if nextLotteryCounter > (60*30) || nextLotteryStored == "" {
-	//	nextLotteryCounter = 0
-	//	//lrs, _ := getDiviLotteryInfo(conf)
-	//	if lottery.Lottery.Countdown.Humanized != "" {
-	//		return "Next Lottery:     [" + lottery.Lottery.Countdown.Humanized + "](fg:white)"
-	//	} else {
-	//		return "Next Lottery:     [" + nextLotteryStored + "](fg:white)"
-	//	}
-	//} else {
-	//	return "Next Lottery:     [" + nextLotteryStored + "](fg:white)"
-	//}
-
 	return "Next Lottery:     [" + calculateNextLottery() + "](fg:white)"
 }
 
@@ -418,7 +341,6 @@ func (d DIVI) RefreshNetwork(coinAuth *models.CoinAuth) {
 	blockChainInfo, _ = divi.BlockchainInfo(coinAuth)
 	currConvert.Refresh()
 	info, _, _ = divi.Info(coinAuth)
-	//lottery, _ = divi.LotteryInfo()
 	stakingInfo, _ = divi.StakingStatus(coinAuth)
 	walletInfo, _ = divi.WalletInfo(coinAuth)
 }
