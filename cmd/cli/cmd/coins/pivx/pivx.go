@@ -662,13 +662,13 @@ func (p PIVX) NewAddress(auth *models.CoinAuth) (models.PIVXGetNewAddress, error
 func (p PIVX) RemoveCoreFiles(dir string) error {
 	srcFolder := fileutils.AddTrailingSlash(dir)
 
-	if err := os.Remove(srcFolder + cDaemonFileLin); err != nil {
+	if err := os.RemoveAll(srcFolder + cDaemonFileLin); err != nil {
 		return err
 	}
-	if err := os.Remove(srcFolder + cCliFileLin); err != nil {
+	if err := os.RemoveAll(srcFolder + cCliFileLin); err != nil {
 		return err
 	}
-	if err := os.Remove(srcFolder + cTxFileLin); err != nil {
+	if err := os.RemoveAll(srcFolder + cTxFileLin); err != nil {
 		return err
 	}
 
@@ -1276,7 +1276,7 @@ func (p *PIVX) unarchiveFile(fullFilePath, location, downloadFile string) error 
 
 	defer os.RemoveAll(location + downloadFile)
 
-	defer os.Remove(fullFilePath)
+	defer os.RemoveAll(fullFilePath)
 
 	return nil
 }
