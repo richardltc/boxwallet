@@ -5,7 +5,7 @@ Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
 You may obtain a copy of the License at
 
-    http://www.apache.org/licenses/LICENSE-2.0
+	http://www.apache.org/licenses/LICENSE-2.0
 
 Unless required by applicable law or agreed to in writing, software
 distributed under the License is distributed on an "AS IS" BASIS,
@@ -16,18 +16,55 @@ limitations under the License.
 package cmd
 
 import (
-	"fmt"
+	"context"
+	"flag"
+	conf "github.com/ardanlabs/conf/v3"
+	"log"
+	"richardmace.co.uk/boxwallet/cmd/cli/cmd/api"
+	"time"
 
 	"github.com/spf13/cobra"
+)
+
+// build is the git version of this program. It is set using build flags in the makefile..
+var (
+	build = "develop"
+	Ctx   = context.TODO()
+
+	laddr = flag.String("addr", "127.0.0.1:3000", "Local address for the HTTP API")
 )
 
 // webserverCmd represents the webserver command
 var webserverCmd = &cobra.Command{
 	Use:   "webserver",
-	Short: "Turns BoxWallet into a web server",
+	Short: "Enables the BoxWallet web server",
 	Long:  ``,
 	Run: func(cmd *cobra.Command, args []string) {
-		fmt.Println("Not currently implemented.")
+		// =========================================================================
+		// Configuration
+
+		cfg := struct {
+			conf.Version
+			Web struct {
+				APIHost         string        `conf:"default:127.0.0.1:3000"`
+				ShutdownTimeout time.Duration `conf:"default:20s"`
+			}
+		}{
+			Version: conf.Version{
+				Build: build,
+				Desc:  "copyright information here",
+			},
+		}
+
+		// =========================================================================
+		// Start API Service
+
+		log.Println("startup", "status", "initializing V1 API support")
+
+		apiV1 := api.RESTApiV1{}
+		apiV1.Init()
+		log.Println("startup", "status", "api router started", "host", cfg.Web.APIHost)
+		apiV1.Serve(*laddr)
 
 	},
 }
