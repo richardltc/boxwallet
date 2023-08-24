@@ -56,7 +56,6 @@ const (
 
 	cTipAddress string = "DGvhjUXznuDyALk9zX4Y3ko4QQTmRhF7jZ"
 
-	// Wallet encryption status
 	CWalletESUnlockedForStaking = "unlocked-for-staking"
 	CWalletESLocked             = "locked"
 	CWalletESUnlocked           = "unlocked"
