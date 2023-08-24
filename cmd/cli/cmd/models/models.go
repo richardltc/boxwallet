@@ -25,6 +25,15 @@ const (
 	CRPCPassword string = "rpcpassword"
 )
 
+type CoinMethodType int
+
+const (
+	CMTcore_files_exist CoinMethodType = iota
+	CMTdownload_core_files
+	CMTstart_daemon
+	CMTstop_daemon
+)
+
 // ProjectType - To allow external to determine what kind of wallet we are working with.
 type ProjectType int
 
