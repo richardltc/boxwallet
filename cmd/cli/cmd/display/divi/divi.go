@@ -175,7 +175,7 @@ func lotteryTickets() string {
 
 	for i := len(transactions.Result) - 1; i >= 0; i-- {
 		// If this transaction is not a stake, we're not interested in it.
-		if transactions.Result[i].Category != "stake_reward" {
+		if transactions.Result[i].Category != "stake_reward+" {
 			continue
 		}
 
