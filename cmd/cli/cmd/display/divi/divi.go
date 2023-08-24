@@ -17,6 +17,7 @@ type DIVI struct {
 
 var blockChainInfo models.DiviBlockchainInfo
 var info models.DiviGetInfo
+var mnss models.DiviMNSyncStatus
 
 var stakingInfo models.DiviStakingStatus
 var ticker models.DiviTicker
@@ -106,13 +107,16 @@ func balanceInCurrency() string {
 }
 
 func blockchainSyncTxt() string {
-	s := display.ConvertBCVerification(blockChainInfo.Result.Verificationprogress)
-	if s == "0.0" {
-		s = ""
-	} else {
-		s = s + "%"
-	}
-	return s
+	//s := display.ConvertBCVerification(blockChainInfo.Result.Verificationprogress)
+	//if s == "0.0" {
+	//	s = ""
+	//} else {
+	//	s = s + "%"
+	//}
+	//
+	//return s
+
+	return ""
 }
 
 func plural(count int, singular string) (result string) {
@@ -232,8 +236,13 @@ func (d DIVI) LiveNetwork() string {
 	//var mnSynced bool
 	var sBlockchainSync, sConnections, sBlocks, sDiff, sDiffVal string
 
-	if blockChainInfo.Result.Verificationprogress > 0.99999 {
+	//if blockChainInfo.Result.Verificationprogress > 0.99999 {
+	//	bcSynced = true
+	//}
+	if mnss.Result.IsBlockchainSynced == true {
 		bcSynced = true
+	} else {
+		bcSynced = false
 	}
 
 	blocksStr := humanize.Comma(int64(blockChainInfo.Result.Blocks))
@@ -341,6 +350,7 @@ func (d DIVI) RefreshNetwork(coinAuth *models.CoinAuth) {
 	blockChainInfo, _ = divi.BlockchainInfo(coinAuth)
 	currConvert.Refresh()
 	info, _, _ = divi.Info(coinAuth)
+	mnss, _ = divi.MNSyncStatus(coinAuth)
 	stakingInfo, _ = divi.StakingStatus(coinAuth)
 	walletInfo, _ = divi.WalletInfo(coinAuth)
 }
