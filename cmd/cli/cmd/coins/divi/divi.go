@@ -34,13 +34,13 @@ const (
 	cDownloadFileArm32          = "divi-" + cCoreVersion + "-RPi2-9e2f76c.tar.gz"
 	cDownloadFileLinux          = "divi-" + cCoreVersion + "-x86_64-linux-gnu-9e2f76c.tar.gz"
 	cDownloadFileWindows        = "divi-" + cCoreVersion + "-win64-9e2f76c.zip"
-	cDownloadFileBS      string = "DIVI-snapshot.zip"
+	cDownloadFileBS      string = "primer.zip"
 
 	cExtractedDirLinux = "divi-" + cCoreVersion + "/"
 	// cExtractedDirWindows = "divi-" + cCoreVersion + "\\"
 
 	cDownloadURL          = "https://github.com/DiviProject/Divi/releases/download/v" + cCoreVersion + "/"
-	cDownloadURLBS string = "https://snapshots.diviproject.org/dist/"
+	cDownloadURLBS string = "https://divi-primer-snapshot.s3.us-east-2.amazonaws.com/snapshot/"
 
 	cConfFile      string = "divi.conf"
 	cCliFileLin    string = "divi-cli"
@@ -83,8 +83,6 @@ type Divi struct {
 	IPAddress   string
 	Port        string
 }
-
-// var gLastBCSyncPos float64 = 0
 
 func (d Divi) Bootstrap(rpcUser, rpcPassword, ip, port string) {
 	d.RPCUser = rpcUser
@@ -272,14 +270,23 @@ func (d Divi) BlockchainInfo(auth *models.CoinAuth) (models.DiviBlockchainInfo, 
 }
 
 func (d Divi) BlockchainIsSynced(coinAuth *models.CoinAuth) (bool, error) {
-	bci, err := d.BlockchainInfo(coinAuth)
+	mnss, err := d.MNSyncStatus(coinAuth)
 	if err != nil {
 		return false, err
 	}
 
-	if bci.Result.Verificationprogress > 0.99999 {
+	//bci, err := d.BlockchainInfo(coinAuth)
+	//if err != nil {
+	//	return false, err
+	//}
+
+	if mnss.Result.IsBlockchainSynced == true {
 		return true, nil
 	}
+
+	//if bci.Result.Verificationprogress > 0.99999 {
+	//	return true, nil
+	//}
 
 	return false, nil
 }
