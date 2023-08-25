@@ -313,12 +313,18 @@ func (d DIVI) LiveTransactions() (containsZeroConfs bool, rows [][]string) {
 		tm := time.Unix(iTime, 0)
 		sCat := display.GetCategorySymbol(transactions.Result[i].Category)
 		tAmountStr := humanize.FormatFloat("#,###.########", transactions.Result[i].Amount)
+		sConfirmationsStr := ""
+		if transactions.Result[i].Confirmations > 5 {
+			sConfirmationsStr = "Confirmed"
+		} else {
+			sConfirmationsStr = strconv.Itoa(transactions.Result[i].Confirmations)
+		}
 		sColour := display.GetCategoryColour(transactions.Result[i].Category)
 		sRows = append(sRows, []string{
 			" [" + tm.Format("2006-01-02 15:04"+"](fg:"+sColour+")"),
 			" [" + sCat + "](fg:" + sColour + ")",
 			" [" + tAmountStr + "](fg:" + sColour + ")",
-			" [" + strconv.Itoa(transactions.Result[i].Confirmations) + "](fg:" + sColour + ")"})
+			" [" + sConfirmationsStr + "](fg:" + sColour + ")"})
 	}
 
 	return bZeroConfs, sRows
