@@ -429,7 +429,7 @@ func (d Divi) Info(auth *models.CoinAuth) (models.DiviGetInfo, string, error) {
 		if bytes.Contains(bodyResp, []byte("Loading")) ||
 			bytes.Contains(bodyResp, []byte("Rewinding")) ||
 			bytes.Contains(bodyResp, []byte("Verifying")) {
-			// The wallet is still loading, so print message, and sleep for 3 seconds and try again..
+			// The wallet is still loading, so print message, and sleep for 3 seconds and try again...
 			var errStruct models.GenericResponse
 			err = json.Unmarshal(bodyResp, &errStruct)
 			if err != nil {
@@ -524,66 +524,6 @@ func (d Divi) IsPOS() bool {
 	return true
 }
 
-// func GetBalanceInCurrencyTxtDivi(currency string, wi *DiviWalletInfoRespStruct) string {
-// 	tBalance := wi.Result.ImmatureBalance + wi.Result.UnconfirmedBalance + wi.Result.Balance
-// 	var pricePerCoin float64
-// 	var symbol string
-
-// 	// Work out what currency
-// 	switch currency {
-// 	case "AUD":
-// 		symbol = "$"
-// 		pricePerCoin = gTicker.DIVI.Quote.USD.Price * gPricePerCoinAUD.Rates.AUD
-// 	case "USD":
-// 		symbol = "$"
-// 		pricePerCoin = gTicker.DIVI.Quote.USD.Price
-// 	case "GBP":
-// 		symbol = "£"
-// 		pricePerCoin = gTicker.DIVI.Quote.USD.Price * gPricePerCoinGBP.Rates.GBP
-// 	default:
-// 		symbol = "$"
-// 		pricePerCoin = gTicker.DIVI.Quote.USD.Price
-// 	}
-
-// 	tBalanceCurrency := pricePerCoin * tBalance
-
-// 	tBalanceCurrencyStr := humanize.FormatFloat("###,###.##", tBalanceCurrency) //humanize.Commaf(tBalanceCurrency) //FormatFloat("#,###.####", tBalanceCurrency)
-
-// 	// Work out balance
-// 	if wi.Result.ImmatureBalance > 0 {
-// 		return "Incoming......... [" + symbol + tBalanceCurrencyStr + "](fg:cyan)"
-// 	} else if wi.Result.UnconfirmedBalance > 0 {
-// 		return "Confirming....... [" + symbol + tBalanceCurrencyStr + "](fg:yellow)"
-// 	} else {
-// 		return "Currency:         [" + symbol + tBalanceCurrencyStr + "](fg:green)"
-// 	}
-// }
-
-//func getDiviAddNodesOld() ([]byte, error) {
-//	addNodesClient := http.Client{
-//		Timeout: time.Second * 3, // Maximum of 3 secs.
-//	}
-//
-//	req, err := http.NewRequest(http.MethodGet, cAddNodeURL, nil)
-//	if err != nil {
-//		return nil, err
-//	}
-//
-//	req.Header.Set("User-Agent", "boxwallet")
-//
-//	res, getErr := addNodesClient.Do(req)
-//	if getErr != nil {
-//		return nil, err
-//	}
-//
-//	body, readErr := ioutil.ReadAll(res.Body)
-//	if readErr != nil {
-//		return nil, err
-//	}
-//
-//	return body, nil
-//}
-
 func (d Divi) getDiviAddNodes() (addnodes []models.DiviAddNodes, err error) {
 	//var aNodes []models.DiviAddNodes
 
@@ -637,7 +577,7 @@ func (d Divi) DumpHDInfo(coinAuth *models.CoinAuth, pw string) (string, error) {
 	return respStruct.Result.Mnemonic, nil
 }
 
-func (d *Divi) InfoUI(spin *yacspin.Spinner) (models.DiviGetInfo, string, error) {
+func (d Divi) InfoUI(spin *yacspin.Spinner) (models.DiviGetInfo, string, error) {
 	var respStruct models.DiviGetInfo
 
 	for i := 1; i < 600; i++ {
@@ -760,28 +700,7 @@ func (d Divi) ListTransactions(auth *models.CoinAuth) (models.DiviListTransactio
 	return respStruct, nil
 }
 
-//func (d Divi) LotteryInfo() (models.DiviLottery, error) {
-//	var respStruct models.DiviLottery
-//
-//	resp, err := http.Get("https://statbot.neist.io/api/v1/statbot")
-//	if err != nil {
-//		return respStruct, err
-//	}
-//	defer resp.Body.Close()
-//
-//	body, err := ioutil.ReadAll(resp.Body)
-//	if err != nil {
-//		return respStruct, err
-//	}
-//	err = json.Unmarshal(body, &respStruct)
-//	if err != nil {
-//		return respStruct, err
-//	}
-//
-//	return respStruct, errors.New("unable to LotteryInfo")
-//}
-
-func (d *Divi) MNSyncStatus(auth *models.CoinAuth) (models.DiviMNSyncStatus, error) {
+func (d Divi) MNSyncStatus(auth *models.CoinAuth) (models.DiviMNSyncStatus, error) {
 	var respStruct models.DiviMNSyncStatus
 
 	body := strings.NewReader("{\"jsonrpc\":\"1.0\",\"id\":\"curltext\",\"method\":\"mnsync\",\"params\":[\"status\"]}")
@@ -1086,7 +1005,7 @@ func (d Divi) UpdateTickerInfo() (ticker models.DiviTicker, err error) {
 	return ticker, nil
 }
 
-func (d *Divi) unarchiveFile(fullFilePath, location string) error {
+func (d Divi) unarchiveFile(fullFilePath, location string) error {
 	if err := archiver.Unarchive(fullFilePath, location); err != nil {
 		return fmt.Errorf("unable to unarchive file: %v - %v", fullFilePath, err)
 	}
