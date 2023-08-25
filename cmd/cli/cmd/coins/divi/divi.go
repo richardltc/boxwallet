@@ -54,7 +54,7 @@ const (
 	cRPCUser string = "divirpc"
 	cRPCPort string = "51473"
 
-	cTipAddress string = "DGvhjUXznuDyALk9zX4Y3ko4QQTmRhF7jZ"
+	cTipAddress string = "DM5XJbB6kpyDXpbnYcb1ZidrNpubf2gmSN"
 
 	CWalletESUnlockedForStaking = "unlocked-for-staking"
 	CWalletESLocked             = "locked"
