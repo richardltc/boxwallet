@@ -25,7 +25,8 @@ var transactions models.DiviListTransactions
 var walletInfo models.DiviWalletInfo
 var diffGood, diffWarning float64
 var lastBCSyncStatus = ""
-var lastMNSyncStatus = ""
+
+//var lastMNSyncStatus = ""
 
 var localCurrency string
 var currConvert currencyconvert.CurrencyConvert
@@ -187,7 +188,7 @@ func lotteryTickets() string {
 		//lastLotteryBlockBlock := lottery.Lottery.NextLotteryBlock - 10080
 		numBlocksSpread := currentBlock - lastLotteryBlock()
 
-		// If the stake block is less than the next lottery block - 10080 then it's not in this weeks lottery
+		// If the stake block is less than the next lottery block - 10080 then it's not in this week's lottery
 		if transactions.Result[i].Confirmations > numBlocksSpread {
 			continue
 		}
