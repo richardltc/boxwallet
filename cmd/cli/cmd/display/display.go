@@ -7,9 +7,9 @@ import (
 )
 
 const (
-	cStakeReceived   string = "\u2607" + "\u2607" + "\u2607"
-	cPaymentReceived string = "<--"
-	cPaymentSent     string = "-->"
+	cStakeReceived   string = "* Stake Reward *" //"\u2607" + "\u2607" + "\u2607"
+	cPaymentReceived string = "Received"         //"<--"
+	cPaymentSent     string = "Sent"             //"-->"
 
 	cProg1 string = "|"
 	cProg2 string = "/"
