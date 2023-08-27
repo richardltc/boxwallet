@@ -1200,7 +1200,7 @@ func (d Divi) WalletResync(appFolder string) error {
 		return errors.New("daemon is still running, please stop first")
 	}
 
-	arg1 := "-resync"
+	arg1 := "-force_rescan=1" //"-resync"
 
 	if runtime.GOOS == "windows" {
 		fullPath := appFolder + cDaemonFileWin
