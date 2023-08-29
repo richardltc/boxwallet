@@ -130,7 +130,7 @@ func GetWalletEncryptionPassword() string {
 	prompt := &survey.Password{
 		Message: "Please enter your wallet password",
 	}
-	survey.AskOne(prompt, &pw)
+	_ = survey.AskOne(prompt, &pw)
 
 	return pw
 }
