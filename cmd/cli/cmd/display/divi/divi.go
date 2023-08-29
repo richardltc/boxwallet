@@ -193,7 +193,7 @@ func lotteryTickets() string {
 			continue
 		}
 
-		// We've got here, so count the stake...
+		// We've got here, so count the stake.
 		iTotalTickets = iTotalTickets + 1
 	}
 
@@ -293,6 +293,8 @@ func (d DIVI) LiveNetwork() string {
 
 func (d DIVI) LiveTransactions() (containsZeroConfs bool, rows [][]string) {
 	var sRows [][]string
+	var amount float64
+	var tAmountStr string
 
 	// Record whether any of the transactions have 0 conf (so that we can display the boarder as yellow)
 	bZeroConfs := false
@@ -313,7 +315,15 @@ func (d DIVI) LiveTransactions() (containsZeroConfs bool, rows [][]string) {
 		}
 		tm := time.Unix(iTime, 0)
 		sCat := display.GetCategorySymbol(transactions.Result[i].Category)
-		tAmountStr := humanize.FormatFloat("#,###.########", transactions.Result[i].Amount)
+
+		amount = transactions.Result[i].Amount
+		if amount == float64(int64(amount)) {
+			tAmountStr = humanize.FormatFloat("###,###.", amount)
+		} else {
+			tAmountStr = humanize.FormatFloat("#,###.########", amount)
+		}
+
+		//tAmountStr := humanize.FormatFloat("#,###.########", transactions.Result[i].Amount)
 		sConfirmationsStr := ""
 		if transactions.Result[i].Confirmations > 5 {
 			sConfirmationsStr = "Confirmed"
