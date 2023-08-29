@@ -330,11 +330,30 @@ func (d Divi) DaemonRunning() (bool, error) {
 }
 
 func (d Divi) DownloadBlockchain() error {
+	var b, k, m int64
 	coinDir, err := d.HomeDirFullPath()
 	if err != nil {
 		return errors.New("unable to get HomeDirFullPath: " + err.Error())
 	}
+
 	bcsFileExists := fileutils.FileExists(coinDir + cDownloadFileBS)
+
+	if bcsFileExists {
+		info, err := os.Stat(coinDir + cDownloadFileBS)
+		if err != nil {
+			return err
+		}
+		b = info.Size()
+		k = b / 1024
+		m = k / 1024
+
+		// If the primer file is less than 2GB then it's too small, so delete it.
+		if m < 2048 {
+			bcsFileExists = false
+			os.RemoveAll(coinDir + cDownloadFileBS)
+		}
+	}
+
 	if !bcsFileExists {
 		// Then download the file.
 		if err := rjminternet.DownloadFile(coinDir, cDownloadURLBS+cDownloadFileBS); err != nil {
@@ -345,7 +364,7 @@ func (d Divi) DownloadBlockchain() error {
 	return nil
 }
 
-// DownloadCoin - Downloads the Syscoin files into the spcified location.
+// DownloadCoin - Downloads the Divi files into the specified location.
 // "location" should just be the AppBinaryFolder ~/.boxwallet
 func (d Divi) DownloadCoin(location string) error {
 	var fullFilePath, fullFileDLURL string
