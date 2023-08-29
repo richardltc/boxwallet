@@ -185,7 +185,6 @@ func lotteryTickets() string {
 			continue
 		}
 
-		//lastLotteryBlockBlock := lottery.Lottery.NextLotteryBlock - 10080
 		numBlocksSpread := currentBlock - lastLotteryBlock()
 
 		// If the stake block is less than the next lottery block - 10080 then it's not in this week's lottery
@@ -204,7 +203,7 @@ func (d DIVI) InitialBalance() string {
 	return "  Balance:          [waiting for sync...](fg:yellow)\n" +
 		"  Currency:         [waiting for sync...](fg:yellow)\n" +
 		"  Security:         [waiting for sync...](fg:yellow)\n" +
-		"  Staking %:	        [waiting for sync...](fg:yellow)\n" +
+		"  Lottery Staking:  [waiting for sync...](fg:yellow)\n" +
 		"  Actively Staking: [waiting for sync...](fg:yellow)\n" +
 		"  Next Lottery:     [waiting for sync...](fg:yellow)\n" +
 		"  Lottery tickets:	  [waiting for sync...](fg:yellow)"
@@ -406,12 +405,12 @@ func walletStaking() string {
 		fPercent = (walletInfo.Result.Balance / 10000) * 100
 	}
 
-	fPercentStr := humanize.FormatFloat("###.##", fPercent)
+	fPercentStr := humanize.FormatFloat("###.##", fPercent) + "%"
 	if fPercent < 75 {
-		return "Staking %:        [" + fPercentStr + "](fg:red)"
+		return "Lottery Staking:  [" + fPercentStr + "](fg:red)"
 	} else if (fPercent >= 76) && (fPercent <= 99) {
-		return "Staking %:        [" + fPercentStr + "](fg:yellow)"
+		return "Lottery Staking:  [" + fPercentStr + "](fg:yellow)"
 	} else {
-		return "Staking %:        [" + fPercentStr + "](fg:green)"
+		return "Lottery Staking:  [" + fPercentStr + "](fg:green)"
 	}
 }
