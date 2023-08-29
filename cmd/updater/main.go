@@ -18,13 +18,6 @@ import (
 	"richardmace.co.uk/boxwallet/cmd/cli/cmd/rjminternet"
 )
 
-const (
-// cAppName = "bwupdater"
-// cAppCLIFileWinBoxDivi = "boxwallet.exe"
-// cAppCLIFileBoxDivi    = "boxwallet"
-// cAppVersion = be.CBWAppVersion
-)
-
 type githubInfo struct {
 	URL       string `json:"url"`
 	AssetsURL string `json:"assets_url"`
@@ -99,46 +92,8 @@ type githubInfo struct {
 }
 
 func main() {
-	//sAppName, err := gwc.GetAppName(gwc.APPTCLI)
-	//if err != nil {
-	//	log.Fatal("Unable to GetAppName " + err.Error())
-	//}
-
-	//sAppCLIName, err := gwc.GetAppCLIName(gwc.APPTCLI)
-	//if err != nil {
-	//	log.Fatal("Unable to GetAppCLIName " + err.Error())
-	//}
-	//
-	//sAppCLIFilename, err := gwc.GetAppFileName(gwc.APPTCLI) //GetAppCLIFileName()
-	//if err != nil {
-	//	log.Fatal("Unable to GetAppFileName " + err.Error())
-	//}
-	//sAppInstallerFn, err := gwc.GetAppFileName(gwc.APPTInstaller)
-	//if err != nil {
-	//	log.Fatal("Unable to GetAppInstallerFileName " + err.Error())
-	//}
-	//sAppUpdaterName, err := gwc.GetAppFileName(gwc.APPTUpdater)
-	//if err != nil {
-	//	log.Fatal("Unable to GetAppFileName " + err.Error())
-	//}
-
 	fmt.Println(be.CUpdaterAppName + " v" + be.CBWAppVersion + " Started...")
 
-	// Check to make sure that the app (BoxWallet) is not currently running
-	// bbwRunning, _, err := isBoxWalletRunning()
-	// if err != nil {
-	// 	log.Fatal("Unable to determine if " + be.CAppName + " is running - " + err.Error())
-	// }
-	// if bbwRunning {
-	// 	log.Fatal(be.CAppName + " is currently running.  Please close " + be.CAppName + " and then run " + be.CUpdaterAppName + " again.")
-	// }
-	// fmt.Println(be.CAppName + " is not running, so checking online for latest version...")
-
-	//dbf, _ := gwc.GetAppsBinFolder(gwc.APPTCLI)
-	//dir, err := gwc.GetRunningDir()
-	//if err != nil {
-	//	log.Fatal("Unable to GetRunningDir " + err.Error())
-	//}
 	ex, err := os.Executable()
 	if err != nil {
 		log.Fatal("unable to retrieve running binary: ", err)
@@ -156,9 +111,8 @@ func main() {
 
 	fmt.Println("Latest release detected is: " + sTag)
 
-	// example link https://github.com/richardltc/boxwallet/releases/download/0.36.10/boxwallet_0.36.10_Linux_64bit.tar.gz
+	// example link https://github.com/richardltc/boxwallet/releases/download/0.61.0/boxwallet_0.61.0_Linux_64bit.tar.gz
 	url = "https://github.com/richardltc/boxwallet/releases/download/" + sTag + "/"
-	//compressedFN = "boxwallet_" + sTag + "_Linux_64bit.tar.gz"
 
 	switch runtime.GOOS {
 	case "darwin":
@@ -196,10 +150,6 @@ func main() {
 	}
 	defer os.RemoveAll(tmpDir)
 
-	//// Remove the existing README.md file
-	//fmt.Println("Attempting to delete old README.md file...")
-	//_ = os.Remove(dir + "README.md")
-
 	// Copy README.md
 	if err := be.FileCopy(tmpDir+"README.md", dir+"README.md", false); err != nil {
 		log.Fatal("Unable to copy "+tmpDir+"README.md"+" to "+dir+"README.md"+": ", err)
@@ -210,12 +160,6 @@ func main() {
 	if err := be.BackupFile(dir, bwFile, dir, "", false); err != nil {
 		log.Fatal("Unable to copy to backup : ", err)
 	}
-
-	//// Remove the old boxwallet binary file
-	//fmt.Println("Attempting to delete old "  + be.CAppName + " file...")
-	//if err := os.Remove(dir + bwFile); err != nil {
-	//	log.Fatal("Unable to delete old "+ be.CAppName + " file...", err)
-	//}
 
 	// Copy boxwallet
 	if err := be.FileCopy(tmpDir+bwFile, dir+bwFile, false); err != nil {
@@ -230,16 +174,6 @@ func main() {
 
 	fmt.Println(be.CAppName + " has been successfully updated to the latest version: " + sTag)
 }
-
-// func createEndpoint(args *args, path string) string {
-// 	uri := "//" + *args.ipAddress + ":" + strconv.Itoa(*args.portNumber)
-// 	myURL, err := url.Parse(uri)
-// 	if err != nil {
-// 		log.Fatal(err)
-// 	}
-
-// 	return "http://" + myURL.Host + path
-// }
 
 func getLatestVersionTag() (string, error) {
 	var ghInfo githubInfo
@@ -260,21 +194,3 @@ func getLatestVersionTag() (string, error) {
 	}
 	return ghInfo.TagName, nil
 }
-
-// func isBoxWalletRunning() (bool, int, error) {
-// 	var pid int
-// 	var err error
-// 	if runtime.GOOS == "windows" {
-// 		pid, _, err = be.FindProcess(be.CAppFilenameWin)
-// 	} else {
-// 		pid, _, err = be.FindProcess(be.CAppFilename)
-// 	}
-
-// 	if err == nil {
-// 		return true, pid, nil
-// 	} else if err.Error() == "not found" {
-// 		return false, 0, nil
-// 	} else {
-// 		return false, 0, err
-// 	}
-// }
