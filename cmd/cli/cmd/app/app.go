@@ -10,7 +10,7 @@ import (
 const (
 	cAppName        string = "BoxWallet"
 	CUpdaterAppName string = "bwupdater"
-	CAppVersion     string = "0.6.0"
+	CAppVersion     string = "0.6.1"
 	CAppFilename    string = "boxwallet"
 	CAppFilenameWin string = "boxwallet.exe"
 	//CAppLogfile     string = "boxwallet.log"
@@ -23,8 +23,6 @@ const (
 	//cCommandUnlockWallet   string = "walletpassphrase" // ./divi-cli walletpassphrase “password” 0
 	//cCommandUnlockWalletFS string = "walletpassphrase" // ./divi-cli walletpassphrase “password” 0 true
 	//cCommandLockWallet     string = "walletlock"       // ./divi-cli walletlock
-
-	cUtfLock string = "\u1F512"
 
 	BUWWalletDat     string = "Backup wallet.dat"
 	BUWDisplayHDSeed string = "Display recovery seed"
