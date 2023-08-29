@@ -135,19 +135,19 @@ func GetWalletEncryptionPassword() string {
 	return pw
 }
 
-func GetWalletEncryptionResp() bool {
-	ans := false
-	prompt := &survey.Confirm{
-		Message: `Your wallet is currently UNENCRYPTED!
-
-It is *highly* recommended that you encrypt your wallet before proceeding any further.
-
-Encrypt it now?:`,
-	}
-	survey.AskOne(prompt, &ans)
-
-	return ans
-}
+//func GetWalletEncryptionResp() bool {
+//	ans := false
+//	prompt := &survey.Confirm{
+//		Message: `Your wallet is currently UNENCRYPTED!
+//
+//It is *highly* recommended that you encrypt your wallet before proceeding any further.
+//
+//Encrypt it now?:`,
+//	}
+//	survey.AskOne(prompt, &ans)
+//
+//	return ans
+//}
 
 func PopulateConfFile(confFile, homeDir, rpcUserCoin, rpcPortCoin string) (rpcUser, rpcPassword string, err error) {
 	// Add rpcuser info if required, or retrieve the existing one
