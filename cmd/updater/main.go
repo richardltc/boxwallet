@@ -20,10 +20,10 @@ import (
 )
 
 const (
-//cAppName = "bwupdater"
-//cAppCLIFileWinBoxDivi = "boxwallet.exe"
-//cAppCLIFileBoxDivi    = "boxwallet"
-//cAppVersion = be.CBWAppVersion
+// cAppName = "bwupdater"
+// cAppCLIFileWinBoxDivi = "boxwallet.exe"
+// cAppCLIFileBoxDivi    = "boxwallet"
+// cAppVersion = be.CBWAppVersion
 )
 
 type githubInfo struct {
@@ -190,7 +190,7 @@ func main() {
 	if err := rjminternet.DownloadFile(dir, url+compressedFN); err != nil {
 		log.Fatal("unable to download compressedFN: ", url+compressedFN, err)
 	}
-	defer os.Remove(dir + compressedFN)
+	defer os.RemoveAll(dir + compressedFN)
 
 	if err := archiver.Unarchive(dir+compressedFN, tmpDir); err != nil {
 		log.Fatal("unable to un-archive compressedFN: ", err)
