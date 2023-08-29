@@ -3,11 +3,10 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 
 	"github.com/mholt/archiver/v3"
 
-	//gwc "github.com/richardltc/gwcommon"
-	"io/ioutil"
 	"log"
 	"net/http"
 	"os"
@@ -142,7 +141,7 @@ func main() {
 	//}
 	ex, err := os.Executable()
 	if err != nil {
-		log.Fatal("unable to retrieve running binary: %v ", err)
+		log.Fatal("unable to retrieve running binary: ", err)
 	}
 	dir := be.AddTrailingSlash(filepath.Dir(ex))
 	tmpDir := dir + be.AddTrailingSlash("tmp")
@@ -251,7 +250,7 @@ func getLatestVersionTag() (string, error) {
 	}
 	defer resp.Body.Close()
 
-	body, err := ioutil.ReadAll(resp.Body)
+	body, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return "", err
 	}
