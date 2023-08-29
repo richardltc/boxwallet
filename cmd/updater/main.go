@@ -139,7 +139,11 @@ func main() {
 		log.Fatal("Unable to determine OS type")
 	}
 
-	// Download the compressedFN
+	// Remove downloaded file, or tmp dir if they already exists.
+	_ = os.RemoveAll(dir + compressedFN)
+	_ = os.RemoveAll(tmpDir)
+
+	// Download the compressedFN.
 	if err := rjminternet.DownloadFile(dir, url+compressedFN); err != nil {
 		log.Fatal("unable to download compressedFN: ", url+compressedFN, err)
 	}
