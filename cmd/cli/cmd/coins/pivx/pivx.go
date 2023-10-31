@@ -750,15 +750,15 @@ func (p PIVX) ListReceivedByAddress(coinAuth *models.CoinAuth, includeZero bool)
 	return respStruct, nil
 }
 
-func (p *PIVX) ListTransactions() (models.PIVXListTransactions, error) {
+func (p *PIVX) ListTransactions(auth *models.CoinAuth) (models.PIVXListTransactions, error) {
 	var respStruct models.PIVXListTransactions
 
 	body := strings.NewReader("{\"jsonrpc\":\"1.0\",\"id\":\"boxwallet\",\"method\":\"" + models.CCommandListTransactions + "\",\"params\":[]}")
-	req, err := http.NewRequest("POST", "http://"+p.IPAddress+":"+p.Port, body)
+	req, err := http.NewRequest("POST", "http://"+auth.IPAddress+":"+auth.Port, body)
 	if err != nil {
 		return respStruct, err
 	}
-	req.SetBasicAuth(p.RPCUser, p.RPCPassword)
+	req.SetBasicAuth(auth.RPCUser, auth.RPCPassword)
 	req.Header.Set("Content-Type", "text/plain;")
 
 	resp, err := http.DefaultClient.Do(req)
