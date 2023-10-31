@@ -290,7 +290,7 @@ func (p PIVX) RefreshPrice() {
 func (p PIVX) RefreshTransactions(coinAuth *models.CoinAuth) {
 	var pivx pivxImport.PIVX
 
-	transactions, _ = pivx.ListTransactions()
+	transactions, _ = pivx.ListTransactions(coinAuth)
 }
 
 func walletSecurityStatusTxt() string {
