@@ -207,6 +207,8 @@ func (p PIVX) LiveNetwork() string {
 }
 
 func (p PIVX) LiveTransactions() (containsZeroConfs bool, rows [][]string) {
+	var amount float64
+	var tAmountStr string
 	var sRows [][]string
 
 	// Record whether any of the transactions have 0 conf (so that we can display the boarder as yellow)
@@ -228,7 +230,15 @@ func (p PIVX) LiveTransactions() (containsZeroConfs bool, rows [][]string) {
 		}
 		tm := time.Unix(iTime, 0)
 		sCat := display.GetCategorySymbol(transactions.Result[i].Category)
-		tAmountStr := humanize.FormatFloat("#,###.########", transactions.Result[i].Amount)
+
+		amount = transactions.Result[i].Amount
+		if amount == float64(int64(amount)) {
+			tAmountStr = humanize.FormatFloat("###,###.", amount)
+		} else {
+			tAmountStr = humanize.FormatFloat("#,###.########", amount)
+		}
+
+		//tAmountStr := humanize.FormatFloat("#,###.########", transactions.Result[i].Amount)
 		sColour := display.GetCategoryColour(transactions.Result[i].Category)
 		sRows = append(sRows, []string{
 			" [" + tm.Format("2006-01-02 15:04"+"](fg:"+sColour+")"),
