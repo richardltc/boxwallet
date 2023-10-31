@@ -239,12 +239,19 @@ func (p PIVX) LiveTransactions() (containsZeroConfs bool, rows [][]string) {
 		}
 
 		//tAmountStr := humanize.FormatFloat("#,###.########", transactions.Result[i].Amount)
+		sConfirmationsStr := ""
+		if transactions.Result[i].Confirmations > 6 {
+			sConfirmationsStr = "Confirmed"
+		} else {
+			sConfirmationsStr = strconv.Itoa(transactions.Result[i].Confirmations)
+		}
+
 		sColour := display.GetCategoryColour(transactions.Result[i].Category)
 		sRows = append(sRows, []string{
 			" [" + tm.Format("2006-01-02 15:04"+"](fg:"+sColour+")"),
 			" [" + sCat + "](fg:" + sColour + ")",
 			" [" + tAmountStr + "](fg:" + sColour + ")",
-			" [" + strconv.Itoa(transactions.Result[i].Confirmations) + "](fg:" + sColour + ")"})
+			" [" + sConfirmationsStr + "](fg:" + sColour + ")"})
 
 		if i > 25 {
 			break
