@@ -56,13 +56,13 @@ archives:
       - goos: windows
         format: zip
     name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
-    replacements:
-      #darwin: macOS
-      linux: Linux
-      windows: Windows
-      386: 32bit
-      amd64: 64bit
-      arm: arm32bit
+#    replacements:
+#      #darwin: macOS
+#      linux: Linux
+#      windows: Windows
+#      386: 32bit
+#      amd64: 64bit
+#      arm: arm32bit
     files:
       - README.md
 checksum:
