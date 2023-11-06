@@ -683,15 +683,15 @@ func (p PIVX) RPCDefaultPort() string {
 	return cRPCPort
 }
 
-func (p *PIVX) StakingStatus() (models.PIVXStakingStatus, error) {
+func (p *PIVX) StakingStatus(coinAuth *models.CoinAuth) (models.PIVXStakingStatus, error) {
 	var respStruct models.PIVXStakingStatus
 
 	body := strings.NewReader("{\"jsonrpc\":\"1.0\",\"id\":\"curltext\",\"method\":\"getstakingstatus\",\"params\":[]}")
-	req, err := http.NewRequest("POST", "http://"+p.IPAddress+":"+p.Port, body)
+	req, err := http.NewRequest("POST", "http://"+coinAuth.IPAddress+":"+coinAuth.Port, body)
 	if err != nil {
 		return respStruct, err
 	}
-	req.SetBasicAuth(p.RPCUser, p.RPCPassword)
+	req.SetBasicAuth(coinAuth.RPCUser, coinAuth.RPCPassword)
 	req.Header.Set("Content-Type", "text/plain;")
 
 	resp, err := http.DefaultClient.Do(req)
