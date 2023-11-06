@@ -294,7 +294,7 @@ func (p PIVX) RefreshNetwork(coinAuth *models.CoinAuth) {
 	//networkInfo, _ = xbc.NetworkInfo(coinAuth)
 	info, _, _ = pivx.Info(coinAuth)
 	mnSyncStatus, _ = pivx.MNSyncStatus(coinAuth)
-	stakingInfo, _ = pivx.StakingStatus()
+	stakingInfo, _ = pivx.StakingStatus(coinAuth)
 	walletInfo, _ = pivx.WalletInfo(coinAuth)
 }
 
