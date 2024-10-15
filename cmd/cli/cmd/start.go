@@ -26,6 +26,7 @@ import (
 	grs "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/groestlcoin"
 	ltc "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/litecoin"
 	nav "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/navcoin"
+	nexa "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/nexa"
 	ppc "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/peercoin"
 	pivx "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/pivx"
 	rdd "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/reddcoin"
@@ -118,6 +119,9 @@ var startCmd = &cobra.Command{
 		case models.PTNavcoin:
 			coinDaemon = nav.Navcoin{}
 			coinName = nav.Navcoin{}
+		case models.PTNexa:
+			coinDaemon = nexa.Nexa{}
+			coinName = nexa.Nexa{}
 		case models.PTPeercoin:
 			coinDaemon = ppc.Peercoin{}
 			coinName = ppc.Peercoin{}
