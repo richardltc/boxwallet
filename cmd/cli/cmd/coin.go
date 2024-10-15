@@ -5,7 +5,7 @@ Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
 You may obtain a copy of the License at
 
-    http://www.apache.org/licenses/LICENSE-2.0
+	http://www.apache.org/licenses/LICENSE-2.0
 
 Unless required by applicable law or agreed to in writing, software
 distributed under the License is distributed on an "AS IS" BASIS,
@@ -35,6 +35,7 @@ import (
 	grs "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/groestlcoin"
 	ltc "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/litecoin"
 	nav "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/navcoin"
+	nexa "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/nexa"
 	ppc "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/peercoin"
 	phr "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/phore"
 	pivx "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/pivx"
@@ -89,11 +90,12 @@ var coinCmd = &cobra.Command{
 				coins.CCoinNameDeVault,
 				coins.CCoinNameDigiByte,
 				coins.CCoinNameDogeCash,
-				coins.CCoinNameEPICCash,
+				//coins.CCoinNameEPICCash,
 				coins.CCoinNameFeathercoin,
 				coins.CCoinNameGroestlcoin,
 				coins.CCoinNameLitecoin,
 				coins.CCoinNameNavcoin,
+				coins.CCoinNameNexa,
 				coins.CCoinNamePeercoin,
 				//coins.CCoinNamePhore,
 				coins.CCoinNamePIVX,
@@ -103,7 +105,7 @@ var coinCmd = &cobra.Command{
 				coins.CCoinNameScala,
 				coins.CCoinNameSpiderByte,
 				coins.CCoinNameSyscoin,
-				coins.CCoinNameTrezarcoin,
+				//coins.CCoinNameTrezarcoin,
 				coins.CCoinNameVertcoin},
 		}
 		survey.AskOne(prompt, &selectedCoin)
@@ -181,6 +183,11 @@ var coinCmd = &cobra.Command{
 			coinName = nav.Navcoin{}
 			coinRPC = nav.Navcoin{}
 			coinType = models.PTNavcoin
+		case coins.CCoinNameNexa:
+			coin = nexa.Nexa{}
+			coinName = nexa.Nexa{}
+			coinRPC = nexa.Nexa{}
+			coinType = models.PTNexa
 		case coins.CCoinNamePeercoin:
 			coin = ppc.Peercoin{}
 			coinName = ppc.Peercoin{}
@@ -256,7 +263,7 @@ var coinCmd = &cobra.Command{
 		}
 
 		// ...because it's possible that the conf file for this coin has already been created, we need to store the
-		// returned user and password so, effectively, will either be storing the existing info
+		// returned user and password so, effectively, will either be storing the existing info.
 		// or the freshly generated info.
 		cliConf.ProjectType = coinType
 		cliConf.RPCuser = rpcUser
