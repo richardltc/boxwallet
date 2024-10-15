@@ -61,6 +61,7 @@ const (
 	PTDogeCash
 	PTBitcoinZ
 	PTEPICCash
+	PTNexa
 )
 
 type GenericResponse struct {
