@@ -6,7 +6,7 @@ Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
 You may obtain a copy of the License at
 
-    http://www.apache.org/licenses/LICENSE-2.0
+	http://www.apache.org/licenses/LICENSE-2.0
 
 Unless required by applicable law or agreed to in writing, software
 distributed under the License is distributed on an "AS IS" BASIS,
@@ -37,6 +37,7 @@ import (
 	grs "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/groestlcoin"
 	ltc "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/litecoin"
 	nav "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/navcoin"
+	nexa "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/nexa"
 	ppc "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/peercoin"
 	pivx "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/pivx"
 	xpm "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/primecoin"
@@ -107,6 +108,8 @@ var stopCmd = &cobra.Command{
 			coinDaemon = ltc.Litecoin{}
 		case models.PTNavcoin:
 			coinDaemon = nav.Navcoin{}
+		case models.PTNexa:
+			coinDaemon = nexa.Nexa{}
 		case models.PTPeercoin:
 			coinDaemon = ppc.Peercoin{}
 		case models.PTPhore:
