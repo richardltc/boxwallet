@@ -10,10 +10,9 @@ import (
 const (
 	cAppName        string = "BoxWallet"
 	CUpdaterAppName string = "bwupdater"
-	CAppVersion     string = "0.6.2"
+	CAppVersion     string = "0.6.3"
 	CAppFilename    string = "boxwallet"
 	CAppFilenameWin string = "boxwallet.exe"
-	//CAppLogfile     string = "boxwallet.log"
 
 	cAppWorkingDirLin string = ".boxwallet"
 	cAppWorkingDirWin string = "BoxWallet"
