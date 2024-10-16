@@ -432,6 +432,44 @@ func (n Nexa) NetworkDifficultyInfo() (float64, float64, error) {
 	return fGood, fWarning, nil
 }
 
+func (n Nexa) NetworkInfo(coinAuth *models.CoinAuth) (models.NEXANetworkInfo, error) {
+	var respStruct models.NEXANetworkInfo
+
+	for i := 1; i < 50; i++ {
+		body := strings.NewReader("{\"jsonrpc\":\"1.0\",\"id\":\"boxwallet\",\"method\":\"" + models.CCommandGetNetworkInfo + "\",\"params\":[]}")
+
+		req, err := http.NewRequest("POST", "http://"+coinAuth.IPAddress+":"+coinAuth.Port, body)
+		if err != nil {
+			return respStruct, err
+		}
+		req.SetBasicAuth(coinAuth.RPCUser, coinAuth.RPCPassword)
+		req.Header.Set("Content-Type", "text/plain;")
+
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			return respStruct, err
+		}
+		defer resp.Body.Close()
+		bodyResp, err := ioutil.ReadAll(resp.Body)
+		if err != nil {
+			return respStruct, err
+		}
+
+		// Check to make sure we are not loading the wallet
+		if bytes.Contains(bodyResp, []byte("Loading")) ||
+			bytes.Contains(bodyResp, []byte("Rewinding")) ||
+			bytes.Contains(bodyResp, []byte("Verifying")) {
+			// The wallet is still loading, so print message, and sleep for 3 seconds and try again..
+			time.Sleep(5 * time.Second)
+		} else {
+			_ = json.Unmarshal(bodyResp, &respStruct)
+			return respStruct, err
+		}
+	}
+
+	return respStruct, nil
+}
+
 func (n Nexa) RPCDefaultUsername() string {
 	return cRPCUser
 }
