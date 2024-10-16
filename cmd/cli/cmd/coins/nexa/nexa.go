@@ -160,7 +160,7 @@ func (n Nexa) BlockchainDataExists() (bool, error) {
 	return false, nil
 }
 
-func (n Nexa) BlockchainInfo(auth *models.CoinAuth) (models.DiviBlockchainInfo, error) {
+func (n Nexa) BlockchainInfo(auth *models.CoinAuth) (models.NEXABlockchainInfo, error) {
 	var respStruct models.DiviBlockchainInfo
 
 	body := strings.NewReader("{\"jsonrpc\":\"1.0\",\"id\":\"curltext\",\"method\":\"getblockchaininfo\",\"params\":[]}")
