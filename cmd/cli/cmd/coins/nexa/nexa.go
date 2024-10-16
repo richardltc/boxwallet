@@ -557,6 +557,24 @@ func (n Nexa) unarchiveFile(fullFilePath, location string) error {
 	return nil
 }
 
+func (n Nexa) UpdateTickerInfo() (ticker models.NEXATicker, err error) {
+	resp, err := http.Get("https://ticker.neist.io/nexa")
+	if err != nil {
+		return ticker, err
+	}
+	defer resp.Body.Close()
+
+	body, err := ioutil.ReadAll(resp.Body)
+	if err != nil {
+		return ticker, err
+	}
+	err = json.Unmarshal(body, &ticker)
+	if err != nil {
+		return ticker, err
+	}
+	return ticker, nil
+}
+
 func (n Nexa) WalletInfo(coinAuth *models.CoinAuth) (models.NEXAWalletInfo, error) {
 	var respStruct models.GRSWalletInfo
 
