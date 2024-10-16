@@ -557,7 +557,7 @@ func (n Nexa) unarchiveFile(fullFilePath, location string) error {
 	return nil
 }
 
-func (n Nexa) WalletInfo(coinAuth *models.CoinAuth) (models.GRSWalletInfo, error) {
+func (n Nexa) WalletInfo(coinAuth *models.CoinAuth) (models.NEXAWalletInfo, error) {
 	var respStruct models.GRSWalletInfo
 
 	body := strings.NewReader("{\"jsonrpc\":\"1.0\",\"id\":\"boxwallet\",\"method\":\"" + models.CCommandGetWalletInfo + "\",\"params\":[]}")
