@@ -59,6 +59,29 @@ type NEXAInfo struct {
 	ID    string      `json:"id"`
 }
 
+type NEXAListTransactions struct {
+	Result []struct {
+		InvolvesWatchonly int           `json:"involvesWatchonly"`
+		Address           string        `json:"address"`
+		Amount            float64       `json:"amount"`
+		Vout              int           `json:"vout"`
+		Category          string        `json:"category"`
+		Account           string        `json:"account"`
+		Confirmations     int           `json:"confirmations"`
+		Bcconfirmations   int           `json:"bcconfirmations"`
+		Generated         bool          `json:"generated"`
+		Txid              string        `json:"txid"`
+		Walletconflicts   []interface{} `json:"walletconflicts"`
+		Time              int           `json:"time"`
+		Timereceived      int           `json:"timereceived"`
+		Blockhash         string        `json:"blockhash,omitempty"`
+		Blockindex        int           `json:"blockindex,omitempty"`
+		Blocktime         int           `json:"blocktime,omitempty"`
+	} `json:"result"`
+	Error interface{} `json:"error"`
+	ID    string      `json:"id"`
+}
+
 type NEXANetworkInfo struct {
 	Result struct {
 		Version            int      `json:"version"`
