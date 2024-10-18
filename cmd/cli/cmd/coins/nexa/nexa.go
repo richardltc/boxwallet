@@ -420,6 +420,35 @@ func (n Nexa) Install(location string) error {
 	return nil
 }
 
+func (n Nexa) ListTransactions(auth *models.CoinAuth) (models.NEXAListTransactions, error) {
+	var respStruct models.NEXAListTransactions
+
+	body := strings.NewReader("{\"jsonrpc\":\"1.0\",\"id\":\"boxwallet\",\"method\":\"" + models.CCommandListTransactions + "\",\"params\":[]}")
+	req, err := http.NewRequest("POST", "http://"+auth.IPAddress+":"+auth.Port, body)
+	if err != nil {
+		return respStruct, err
+	}
+	req.SetBasicAuth(auth.RPCUser, auth.RPCPassword)
+	req.Header.Set("Content-Type", "text/plain;")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return respStruct, err
+	}
+	defer resp.Body.Close()
+	bodyResp, err := ioutil.ReadAll(resp.Body)
+	if err != nil {
+		return respStruct, err
+	}
+
+	err = json.Unmarshal(bodyResp, &respStruct)
+	if err != nil {
+		return respStruct, err
+	}
+
+	return respStruct, nil
+}
+
 func (n Nexa) NetworkDifficultyInfo() (float64, float64, error) {
 	// https://chainz.cryptoid.info/ftc/api.dws?q=getdifficulty
 
