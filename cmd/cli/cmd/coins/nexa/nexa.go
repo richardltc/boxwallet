@@ -161,7 +161,7 @@ func (n Nexa) BlockchainDataExists() (bool, error) {
 }
 
 func (n Nexa) BlockchainInfo(auth *models.CoinAuth) (models.NEXABlockchainInfo, error) {
-	var respStruct models.DiviBlockchainInfo
+	var respStruct models.NEXABlockchainInfo
 
 	body := strings.NewReader("{\"jsonrpc\":\"1.0\",\"id\":\"curltext\",\"method\":\"getblockchaininfo\",\"params\":[]}")
 	req, err := http.NewRequest("POST", "http://"+auth.IPAddress+":"+auth.Port, body)
@@ -186,6 +186,19 @@ func (n Nexa) BlockchainInfo(auth *models.CoinAuth) (models.NEXABlockchainInfo, 
 	}
 
 	return respStruct, nil
+}
+
+func (n Nexa) BlockchainIsSynced(coinAuth *models.CoinAuth) (bool, error) {
+	bci, err := n.BlockchainInfo(coinAuth)
+	if err != nil {
+		return false, err
+	}
+
+	if bci.Result.Verificationprogress > 0.99999 {
+		return true, nil
+	}
+
+	return false, nil
 }
 
 func (n Nexa) ConfFile() string {
@@ -390,7 +403,7 @@ func (n Nexa) Install(location string) error {
 		return fmt.Errorf("unable to chmod file: %v - %v", location+sfD, err)
 	}
 
-	// If the cointx file doesn't already exists the copy it.
+	// If the cointx file doesn't already exist the copy it.
 	if _, err := os.Stat(location + sfTX); os.IsNotExist(err) {
 		if err := fileutils.FileCopy(srcPath+sfTX, location+sfTX, false); err != nil {
 			return fmt.Errorf("unable to copyFile from: %v to %v - %v", srcPath+sfTX, location+sfTX, err)
@@ -576,7 +589,7 @@ func (n Nexa) UpdateTickerInfo() (ticker models.NEXATicker, err error) {
 }
 
 func (n Nexa) WalletInfo(coinAuth *models.CoinAuth) (models.NEXAWalletInfo, error) {
-	var respStruct models.GRSWalletInfo
+	var respStruct models.NEXAWalletInfo
 
 	body := strings.NewReader("{\"jsonrpc\":\"1.0\",\"id\":\"boxwallet\",\"method\":\"" + models.CCommandGetWalletInfo + "\",\"params\":[]}")
 	req, err := http.NewRequest("POST", "http://"+coinAuth.IPAddress+":"+coinAuth.Port, body)
@@ -647,4 +660,62 @@ func (n Nexa) WalletLoadingStatus(auth *models.CoinAuth) models.WLSType {
 	}
 
 	return models.WLSTReady
+}
+
+func (n Nexa) WalletNeedsEncrypting(coinAuth *models.CoinAuth) (bool, error) {
+	wi, err := n.WalletInfo(coinAuth)
+	if err != nil {
+		return true, errors.New("Unable to perform WalletInfo " + err.Error())
+	}
+
+	if wi.Result.UnlockedUntil == -1 {
+		return true, nil
+	}
+
+	return false, nil
+}
+
+func (n Nexa) WalletResync(appFolder string) error {
+	daemonRunning, err := n.DaemonRunning()
+	if err != nil {
+		return errors.New("Unable to determine DaemonRunning: " + err.Error())
+	}
+	if daemonRunning {
+		return errors.New("daemon is still running, please stop first")
+	}
+
+	arg1 := "-resync"
+
+	if runtime.GOOS == "windows" {
+		fullPath := appFolder + cDaemonFileWin
+		cmd := exec.Command("cmd.exe", "/C", "start", "/b", fullPath, arg1)
+		if err := cmd.Run(); err != nil {
+			return err
+		}
+	} else {
+		fullPath := appFolder + cDaemonFileLin
+		cmdRun := exec.Command(fullPath, arg1)
+		if err := cmdRun.Run(); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+func (n Nexa) WalletSecurityState(coinAuth *models.CoinAuth) (models.WEType, error) {
+	wi, err := n.WalletInfo(coinAuth)
+	if err != nil {
+		return models.WETUnknown, errors.New("Unable to GetWalletSecurityState: " + err.Error())
+	}
+
+	if wi.Result.UnlockedUntil == 0 {
+		return models.WETLocked, nil
+	} else if wi.Result.UnlockedUntil == -1 {
+		return models.WETUnencrypted, nil
+	} else if wi.Result.UnlockedUntil > 0 {
+		return models.WETUnlockedForStaking, nil
+	} else {
+		return models.WETUnknown, nil
+	}
 }
