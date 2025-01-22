@@ -1,5 +1,6 @@
 package models
 
+// DVTBlockchainInfo
 type DVTBlockchainInfo struct {
 	Result struct {
 		Chain                string  `json:"chain"`
@@ -19,7 +20,7 @@ type DVTBlockchainInfo struct {
 	ID    string      `json:"id"`
 }
 
-type DeVaultGetInfo struct {
+type DVTGetInfo struct {
 	Result struct {
 		Version         int     `json:"version"`
 		Protocolversion int     `json:"protocolversion"`
