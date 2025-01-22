@@ -62,6 +62,7 @@ const (
 	PTBitcoinZ
 	PTEPICCash
 	PTNexa
+	PTZano
 )
 
 type GenericResponse struct {
@@ -160,7 +161,7 @@ const (
 	WETUnknown
 )
 
-// WLSType - Wallet loading status type, calculated at different stages as the wallet loads?
+// WLSType - Wallet loading status type, calculated at different stages as the wallet loads
 type WLSType int
 
 const (
