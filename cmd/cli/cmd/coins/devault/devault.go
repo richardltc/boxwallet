@@ -5,11 +5,13 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"io/ioutil"
 	"net/http"
 	"os"
 	"os/exec"
 	"os/user"
+	"richardmace.co.uk/boxwallet/cmd/cli/cmd/coins"
 	"richardmace.co.uk/boxwallet/cmd/cli/cmd/fileutils"
 	"runtime"
 	"strings"
@@ -43,7 +45,7 @@ const (
 	cConfFile      string = "devault.conf"
 	cCliFile       string = "devault-cli"
 	cCliFileWin    string = "devault-cli.exe"
-	cDaemonFile    string = "devaultd"
+	cDaemonFileLin string = "devaultd"
 	cDaemonFileWin string = "devaultd.exe"
 	cTxFile        string = "devault-tx"
 	cTxFileWin     string = "devault-tx.exe"
@@ -85,7 +87,7 @@ func (d DeVault) AllBinaryFilesExist(dir string) (bool, error) {
 		if !fileutils.FileExists(dir + cCliFile) {
 			return false, nil
 		}
-		if !fileutils.FileExists(dir + cDaemonFile) {
+		if !fileutils.FileExists(dir + cDaemonFileLin) {
 			return false, nil
 		}
 		if !fileutils.FileExists(dir + cTxFile) {
@@ -147,19 +149,38 @@ func (d DeVault) DaemonFilename() string {
 	if runtime.GOOS == "windows" {
 		return cDaemonFileWin
 	} else {
-		return cDaemonFile
+		return cDaemonFileLin
 	}
 }
 
-func (d *DeVault) GetBlockchainInfo() (models.DVTBlockchainInfo, error) {
+func (d DeVault) DaemonRunning() (bool, error) {
+	var err error
+
+	if runtime.GOOS == "windows" {
+		_, _, err = coins.FindProcess(cDaemonFileWin)
+	} else {
+		_, _, err = coins.FindProcess(cDaemonFileLin)
+	}
+
+	if err == nil {
+		return true, nil
+	}
+	if err.Error() == "not found" {
+		return false, nil
+	} else {
+		return false, err
+	}
+}
+
+func (d DeVault) BlockchainInfo(auth *models.CoinAuth) (models.DVTBlockchainInfo, error) {
 	var respStruct models.DVTBlockchainInfo
 
 	body := strings.NewReader("{\"jsonrpc\":\"1.0\",\"id\":\"curltext\",\"method\":\"getblockchaininfo\",\"params\":[]}")
-	req, err := http.NewRequest("POST", "http://"+d.IPAddress+":"+d.Port, body)
+	req, err := http.NewRequest("POST", "http://"+auth.IPAddress+":"+auth.Port, body)
 	if err != nil {
 		return respStruct, err
 	}
-	req.SetBasicAuth(d.RPCUser, d.RPCPassword)
+	req.SetBasicAuth(auth.RPCUser, auth.RPCPassword)
 	req.Header.Set("Content-Type", "text/plain;")
 
 	resp, err := http.DefaultClient.Do(req)
@@ -167,7 +188,7 @@ func (d *DeVault) GetBlockchainInfo() (models.DVTBlockchainInfo, error) {
 		return respStruct, err
 	}
 	defer resp.Body.Close()
-	bodyResp, err := ioutil.ReadAll(resp.Body)
+	bodyResp, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return respStruct, err
 	}
@@ -178,9 +199,22 @@ func (d *DeVault) GetBlockchainInfo() (models.DVTBlockchainInfo, error) {
 	return respStruct, nil
 }
 
-func (d *DeVault) GetInfo() (models.DeVaultGetInfo, error) {
+func (d DeVault) BlockchainIsSynced(coinAuth *models.CoinAuth) (bool, error) {
+	bci, err := d.BlockchainInfo(coinAuth)
+	if err != nil {
+		return false, err
+	}
 
-	var respStruct models.DeVaultGetInfo
+	if bci.Result.Verificationprogress > 0.99999 {
+		return true, nil
+	}
+
+	return false, nil
+}
+
+func (d *DeVault) GetInfo() (models.DVTGetInfo, error) {
+
+	var respStruct models.DVTGetInfo
 
 	for i := 1; i < 50; i++ {
 		//fmt.Printf("\r"+waitingStr+" %d/"+strconv.Itoa(attempts), i)
@@ -345,13 +379,13 @@ func (d DeVault) Install(location string) error {
 		case "arm", "arm64":
 			srcPath = location + cExtractedDirLin + "bin/"
 			sfCLI = cCliFile
-			sfD = cDaemonFile
+			sfD = cDaemonFileLin
 			sfTX = cTxFile
 			dirToRemove = location + cExtractedDirLin
 		case "amd64":
 			srcPath = location + cExtractedDirLin + "bin/"
 			sfCLI = cCliFile
-			sfD = cDaemonFile
+			sfD = cDaemonFileLin
 			sfTX = cTxFile
 			dirToRemove = location + cExtractedDirLin
 		default:
@@ -398,6 +432,44 @@ func (d DeVault) Install(location string) error {
 	return nil
 }
 
+func (d *DeVault) NetworkInfo(auth *models.CoinAuth) (models.DVTNetworkInfo, error) {
+	var respStruct models.DVTNetworkInfo
+
+	for i := 1; i < 50; i++ {
+		body := strings.NewReader("{\"jsonrpc\":\"1.0\",\"id\":\"boxwallet\",\"method\":\"" + models.CCommandGetNetworkInfo + "\",\"params\":[]}")
+
+		req, err := http.NewRequest("POST", "http://"+auth.IPAddress+":"+auth.Port, body)
+		if err != nil {
+			return respStruct, err
+		}
+		req.SetBasicAuth(auth.RPCUser, auth.RPCPassword)
+		req.Header.Set("Content-Type", "text/plain;")
+
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			return respStruct, err
+		}
+		defer resp.Body.Close()
+		bodyResp, err := ioutil.ReadAll(resp.Body)
+		if err != nil {
+			return respStruct, err
+		}
+
+		// Check to make sure we are not loading the wallet.
+		if bytes.Contains(bodyResp, []byte("Loading")) ||
+			bytes.Contains(bodyResp, []byte("Rewinding")) ||
+			bytes.Contains(bodyResp, []byte("Verifying")) {
+			// The wallet is still loading, so print message, and sleep for 3 seconds and try again...
+			time.Sleep(5 * time.Second)
+		} else {
+			_ = json.Unmarshal(bodyResp, &respStruct)
+			return respStruct, err
+		}
+	}
+
+	return respStruct, nil
+}
+
 func (d *DeVault) ListReceivedByAddress(includeZero bool) (models.DVTListReceivedByAddress, error) {
 	var respStruct models.DVTListReceivedByAddress
 
@@ -441,10 +513,10 @@ func (d DeVault) RPCDefaultPort() string {
 	return cRPCPort
 }
 
-func (d DeVault) StartDaemon(displayOutput bool) error {
+func (d DeVault) StartDaemon(displayOutput bool, appFolder string) error {
 	if runtime.GOOS == "windows" {
 		//_ = exec.Command(GetAppsBinFolder() + cDiviDFileWin)
-		fp := cHomeDirWin + cDaemonFileWin
+		fp := appFolder + cDaemonFileWin
 		cmd := exec.Command("cmd.exe", "/C", "start", "/b", fp)
 		if err := cmd.Run(); err != nil {
 			return err
@@ -455,7 +527,7 @@ func (d DeVault) StartDaemon(displayOutput bool) error {
 		}
 
 		args := []string{"-bypasspassword"}
-		cmdRun := exec.Command(cHomeDirLin+cDaemonFile, args...)
+		cmdRun := exec.Command(appFolder+cDaemonFileLin, args...)
 		err := cmdRun.Start()
 		if err != nil {
 			return err
@@ -465,31 +537,31 @@ func (d DeVault) StartDaemon(displayOutput bool) error {
 	return nil
 }
 
-func (d *DeVault) StopDaemon(displayOut bool) (models.GenericResponse, error) {
+func (d DeVault) StopDaemon(auth *models.CoinAuth) error {
 	var respStruct models.GenericResponse
 
 	body := strings.NewReader("{\"jsonrpc\":\"1.0\",\"id\":\"curltext\",\"method\":\"stop\",\"params\":[]}")
-	req, err := http.NewRequest("POST", "http://"+d.IPAddress+":"+d.Port, body)
+	req, err := http.NewRequest("POST", "http://"+auth.IPAddress+":"+auth.Port, body)
 	if err != nil {
-		return respStruct, err
+		return err
 	}
-	req.SetBasicAuth(d.RPCUser, d.RPCPassword)
+	req.SetBasicAuth(auth.RPCUser, auth.RPCPassword)
 	req.Header.Set("Content-Type", "text/plain;")
 
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
-		return respStruct, err
+		return err
 	}
 	defer resp.Body.Close()
 	bodyResp, err := ioutil.ReadAll(resp.Body)
 	if err != nil {
-		return respStruct, err
+		return err
 	}
 	err = json.Unmarshal(bodyResp, &respStruct)
 	if err != nil {
-		return respStruct, err
+		return err
 	}
-	return respStruct, nil
+	return nil
 }
 
 func (d DeVault) TipAddress() string {
@@ -523,7 +595,114 @@ func (d *DeVault) UnlockWallet(pw string) error {
 	return nil
 }
 
-func (d *DeVault) WalletSecurityState() (models.WEType, error) {
+func (d DeVault) WalletInfo(auth *models.CoinAuth) (models.DVTWalletInfo, error) {
+	var respStruct models.DVTWalletInfo
+
+	body := strings.NewReader("{\"jsonrpc\":\"1.0\",\"id\":\"boxwallet\",\"method\":\"" + models.CCommandGetWalletInfo + "\",\"params\":[]}")
+	req, err := http.NewRequest("POST", "http://"+auth.IPAddress+":"+auth.Port, body)
+	if err != nil {
+		return respStruct, err
+	}
+	req.SetBasicAuth(auth.RPCUser, auth.RPCPassword)
+	req.Header.Set("Content-Type", "text/plain;")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return respStruct, err
+	}
+	defer resp.Body.Close()
+	bodyResp, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return respStruct, err
+	}
+	err = json.Unmarshal(bodyResp, &respStruct)
+	if err != nil {
+		return respStruct, err
+	}
+
+	return respStruct, nil
+}
+
+func (d DeVault) WalletLoadingStatus(auth *models.CoinAuth) models.WLSType {
+	body := strings.NewReader("{\"jsonrpc\":\"1.0\",\"id\":\"boxwallet\",\"method\":\"" + models.CCommandGetInfo + "\",\"params\":[]}")
+	req, err := http.NewRequest("POST", "http://"+auth.IPAddress+":"+auth.Port, body)
+	if err != nil {
+		return models.WLSTUnknown
+	}
+	req.SetBasicAuth(auth.RPCUser, auth.RPCPassword)
+	req.Header.Set("Content-Type", "text/plain;")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return models.WLSTWaitingForResponse
+	} else {
+		defer resp.Body.Close()
+		bodyResp, err := ioutil.ReadAll(resp.Body)
+		if err != nil {
+			return models.WLSTWaitingForResponse
+		}
+
+		if bytes.Contains(bodyResp, []byte("Loading")) {
+			return models.WLSTLoading
+		}
+		if bytes.Contains(bodyResp, []byte("Rescanning")) {
+			return models.WLSTRescanning
+		}
+		if bytes.Contains(bodyResp, []byte("Rewinding")) {
+			return models.WLSTRewinding
+		}
+		if bytes.Contains(bodyResp, []byte("Verifying")) {
+			return models.WLSTVerifying
+		}
+		if bytes.Contains(bodyResp, []byte("Calculating money supply")) {
+			return models.WLSTCalculatingMoneySupply
+		}
+	}
+	return models.WLSTReady
+}
+
+func (d DeVault) WalletNeedsEncrypting(coinAuth *models.CoinAuth) (bool, error) {
+	wi, err := d.WalletInfo(coinAuth)
+	if err != nil {
+		return true, errors.New("Unable to perform WalletInfo " + err.Error())
+	}
+
+	if wi.Result.UnlockedUntil == -1 {
+		return true, nil
+	}
+
+	return false, nil
+}
+
+func (d DeVault) WalletResync(appFolder string) error {
+	daemonRunning, err := d.DaemonRunning()
+	if err != nil {
+		return errors.New("Unable to determine DaemonRunning: " + err.Error())
+	}
+	if daemonRunning {
+		return errors.New("daemon is still running, please stop first")
+	}
+
+	arg1 := "-resync"
+
+	if runtime.GOOS == "windows" {
+		fullPath := appFolder + cDaemonFileWin
+		cmd := exec.Command("cmd.exe", "/C", "start", "/b", fullPath, arg1)
+		if err := cmd.Run(); err != nil {
+			return err
+		}
+	} else {
+		fullPath := appFolder + cDaemonFileLin
+		cmdRun := exec.Command(fullPath, arg1)
+		if err := cmdRun.Run(); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+func (d DeVault) WalletSecurityState(coinAuth *models.CoinAuth) (models.WEType, error) {
 	wi, err := d.GetWalletInfo()
 	if err != nil {
 		return models.WETUnknown, errors.New("Unable to GetWalletSecurityState: " + err.Error())
@@ -560,7 +739,7 @@ func (d *DeVault) unarchiveFile(fullFilePath, location string) error {
 		}
 	}
 
-	defer os.Remove(fullFilePath)
+	defer os.RemoveAll(fullFilePath)
 
 	return nil
 }
