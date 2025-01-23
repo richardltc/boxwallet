@@ -26,23 +26,23 @@ const (
 	cCoinName       string = "SpiderByte"
 	cCoinNameAbbrev string = "SBYTE"
 
-	cHomeDir    string = ".LitecoinPlus"
-	cHomeDirWin string = "litecoinplus"
+	cHomeDir    string = ".SpiderByte"
+	cHomeDirWin string = "SpiderByte"
 
-	cCoreVersion         string = "5.1.2.1"
-	cDownloadFileLinux          = "linux-packed.zip"
-	cDownloadFileWindows        = "litecoinplus-qt.zip"
+	cCoreVersion         string = "6.1.0.1"
+	cDownloadFileLinux          = "spb-linux-packed.zip"
+	cDownloadFileWindows        = "spiderbyte-qt.zip"
 
-	cExtractedDirLinux   = "linux-packed/"
+	cExtractedDirLinux   = "Ubuntu 22.04/"
 	cExtractedDirWindows = "divi-" + cCoreVersion + "\\"
 
-	cDownloadURL = "https://litecoinplus.co/downloads/"
+	cDownloadURL = "https://spiderbyte.co/downloads/"
 
 	cConfFile string = "LitecoinPlus.conf"
-	//cCliFile       string = "divi-cli"
-	//cCliFileWin    string = "divi-cli.exe"
-	cDaemonFileLin string = "litecoinplusd"
-	cDaemonFileWin string = "litecoinplusd.exe"
+	//cCliFile       string = "spiderbyte-cli"
+	//cCliFileWin    string = "spiderbyte-cli.exe"
+	cDaemonFileLin string = "spiderbyted"
+	cDaemonFileWin string = "spiderbyted.exe"
 	//cTxFile        string = "divi-tx"
 	//cTxFileWin     string = "divi-tx.exe"
 
@@ -372,11 +372,11 @@ func (s SpiderByte) Install(location string) error {
 	case "linux":
 		switch runtime.GOARCH {
 		case "arm", "arm64":
-			srcPath = location + cExtractedDirLinux + "Ubuntu 20.04 64 bits SSL1.1/"
+			srcPath = location + cExtractedDirLinux
 			sfD = cDaemonFileLin
 			dirToRemove = location + cExtractedDirLinux
 		case "amd64":
-			srcPath = location + cExtractedDirLinux + "Ubuntu 20.04 64 bits SSL1.1/"
+			srcPath = location + cExtractedDirLinux
 			sfD = cDaemonFileLin
 			dirToRemove = location + cExtractedDirLinux
 		default:
@@ -972,7 +972,7 @@ func (s *SpiderByte) unarchiveFile(fullFilePath, location string) error {
 		}
 	}
 
-	defer os.Remove(fullFilePath)
+	defer os.RemoveAll(fullFilePath)
 
 	return nil
 }
