@@ -36,6 +36,7 @@ const (
 	CCoinNameSyscoin     string = "Syscoin"
 	CCoinNameTrezarcoin  string = "Trezarcoin"
 	CCoinNameVertcoin    string = "Vertcoin"
+	CCoinNameZano        string = "Zano"
 )
 
 type BackupCoreFiles interface {
@@ -178,7 +179,7 @@ func PopulateConfFile(confFile, homeDir, rpcUserCoin, rpcPortCoin string) (rpcUs
 		}
 	}
 
-	// Add rpcpassword info if required, or retrieve the existing one
+	// Add rpcpassword info if required, or retrieve the existing one.
 	bNeedToWriteStr = true
 	if fileutils.FileExists(homeDir + confFile) {
 		bStrFound, err := fileutils.StringExistsInFile(models.CRPCPassword+"=", homeDir+confFile)
