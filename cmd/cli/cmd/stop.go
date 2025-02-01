@@ -31,6 +31,7 @@ import (
 	"richardmace.co.uk/boxwallet/cmd/cli/cmd/coins"
 	xbc "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/bitcoinplus"
 	btcz "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/bitcoinz"
+	dvt "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/devault"
 	divi "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/divi"
 	"richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/dogecash"
 	ftc "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/feathercoin"
@@ -46,13 +47,14 @@ import (
 	sbyte "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/spiderbyte"
 	sys "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/syscoin"
 	tzc "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/trezarcoin"
+	zano "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/zano"
 	"richardmace.co.uk/boxwallet/cmd/cli/cmd/conf"
 	"richardmace.co.uk/boxwallet/cmd/cli/cmd/models"
 	"strconv"
 	"time"
 )
 
-// stopCmd represents the stop command
+// stopCmd represents the stop command.
 var stopCmd = &cobra.Command{
 	Use:   "stop",
 	Short: "Stops your chosen coin's daemon server",
@@ -95,6 +97,7 @@ var stopCmd = &cobra.Command{
 			coinDaemon = btcz.Bitcoinz{}
 		case models.PTDenarius:
 		case models.PTDeVault:
+			coinDaemon = dvt.DeVault{}
 		case models.PTDigiByte:
 		case models.PTDivi:
 			coinDaemon = divi.Divi{}
@@ -129,6 +132,8 @@ var stopCmd = &cobra.Command{
 		case models.PTTrezarcoin:
 			coinDaemon = tzc.Trezarcoin{}
 		case models.PTVertcoin:
+		case models.PTZano:
+			coinDaemon = zano.Zano{}
 		default:
 			log.Fatal("unable to determine ProjectType")
 		}
