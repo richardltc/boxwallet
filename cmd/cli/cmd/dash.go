@@ -6,7 +6,7 @@ Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
 You may obtain a copy of the License at
 
-    http://www.apache.org/licenses/LICENSE-2.0
+	http://www.apache.org/licenses/LICENSE-2.0
 
 Unless required by applicable law or agreed to in writing, software
 distributed under the License is distributed on an "AS IS" BASIS,
@@ -20,11 +20,13 @@ import (
 	"errors"
 	"fmt"
 	btcz "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/bitcoinz"
+	dvt "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/devault"
 	"richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/dogecash"
 	ftc "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/feathercoin"
 	grs "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/groestlcoin"
 	ltc "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/litecoin"
 	nav "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/navcoin"
+	nexa "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/nexa"
 	ppc "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/peercoin"
 	pivx "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/pivx"
 	rdd "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/reddcoin"
@@ -32,12 +34,14 @@ import (
 	tzc "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/trezarcoin"
 	xbcDisplay "richardmace.co.uk/boxwallet/cmd/cli/cmd/display/bitcoinplus"
 	btczDisplay "richardmace.co.uk/boxwallet/cmd/cli/cmd/display/bitcoinz"
+	dvtDisplay "richardmace.co.uk/boxwallet/cmd/cli/cmd/display/devault"
 	diviDisplay "richardmace.co.uk/boxwallet/cmd/cli/cmd/display/divi"
 	dogecDisplay "richardmace.co.uk/boxwallet/cmd/cli/cmd/display/dogecash"
 	ftcDisplay "richardmace.co.uk/boxwallet/cmd/cli/cmd/display/feathercoin"
 	grsDisplay "richardmace.co.uk/boxwallet/cmd/cli/cmd/display/groestlcoin"
 	ltcDisplay "richardmace.co.uk/boxwallet/cmd/cli/cmd/display/litecoin"
 	navDisplay "richardmace.co.uk/boxwallet/cmd/cli/cmd/display/navcoin"
+	nexaDisplay "richardmace.co.uk/boxwallet/cmd/cli/cmd/display/nexa"
 	sbyteDisplay "richardmace.co.uk/boxwallet/cmd/cli/cmd/display/spiderbyte"
 	tzcDisplay "richardmace.co.uk/boxwallet/cmd/cli/cmd/display/trezarcoin"
 	"time"
@@ -74,7 +78,7 @@ import (
 )
 
 const (
-	cStakeReceived   string = "\u2618"
+	//cStakeReceived   string = "\u2618"
 	cPaymentReceived string = "<--"
 	cPaymentSent     string = "-->" //"\u2771"
 
@@ -227,6 +231,23 @@ var dashCmd = &cobra.Command{
 			walletRefreshNetwork = btczDisplay.BTCZ{}
 			walletRefreshTransactions = btczDisplay.BTCZ{}
 			walletSecurityState = btcz.Bitcoinz{}
+		case models.PTDeVault:
+			coin = dvt.DeVault{}
+			coinBlockchainIsSynced = dvt.DeVault{}
+			coinDaemon = dvt.DeVault{}
+			coinDispAbout = dvtDisplay.DVT{}
+			coinDispInitialBalance = dvtDisplay.DVT{}
+			coinDispInitialNetwork = dvtDisplay.DVT{}
+			coinDispLiveNetwork = dvtDisplay.DVT{}
+			coinDispLiveTransactions = dvtDisplay.DVT{}
+			coinDispLiveWallet = dvtDisplay.DVT{}
+			coinName = dvt.DeVault{}
+			coinPrice = dvtDisplay.DVT{}
+			coinWallet = dvt.DeVault{}
+			walletRefreshDifficulty = dvtDisplay.DVT{}
+			walletRefreshNetwork = dvtDisplay.DVT{}
+			walletRefreshTransactions = dvtDisplay.DVT{}
+			walletSecurityState = dvt.DeVault{}
 		case models.PTDivi:
 			coin = divi.Divi{}
 			coinBlockchainIsSynced = divi.Divi{}
@@ -329,6 +350,23 @@ var dashCmd = &cobra.Command{
 			walletRefreshNetwork = navDisplay.NAV{}
 			walletRefreshTransactions = navDisplay.NAV{}
 			walletSecurityState = nav.Navcoin{}
+		case models.PTNexa:
+			coin = nexa.Nexa{}
+			coinBlockchainIsSynced = nexa.Nexa{}
+			coinDaemon = nexa.Nexa{}
+			coinDispAbout = nexaDisplay.Nexa{}
+			coinDispInitialBalance = nexaDisplay.Nexa{}
+			coinDispInitialNetwork = nexaDisplay.Nexa{}
+			coinDispLiveNetwork = nexaDisplay.Nexa{}
+			coinDispLiveTransactions = nexaDisplay.Nexa{}
+			coinDispLiveWallet = nexaDisplay.Nexa{}
+			coinName = nexa.Nexa{}
+			coinPrice = nexaDisplay.Nexa{}
+			coinWallet = nexa.Nexa{}
+			walletRefreshDifficulty = nexaDisplay.Nexa{}
+			walletRefreshNetwork = nexaDisplay.Nexa{}
+			walletRefreshTransactions = nexaDisplay.Nexa{}
+			walletSecurityState = nexa.Nexa{}
 		case models.PTPeercoin:
 			coin = ppc.Peercoin{}
 			coinBlockchainIsSynced = ppc.Peercoin{}
@@ -431,6 +469,23 @@ var dashCmd = &cobra.Command{
 			walletRefreshNetwork = tzcDisplay.TZC{}
 			walletRefreshTransactions = tzcDisplay.TZC{}
 			walletSecurityState = tzc.Trezarcoin{}
+		case models.PTZano:
+			//coin = zano.Zano{}
+			//coinBlockchainIsSynced = zano.Zano{}
+			//coinDaemon = zano.Zano{}
+			//coinDispAbout = zano.Zano{}
+			//coinDispInitialBalance = tzcDisplay.TZC{}
+			//coinDispInitialNetwork = tzcDisplay.TZC{}
+			//coinDispLiveNetwork = tzcDisplay.TZC{}
+			//coinDispLiveTransactions = tzcDisplay.TZC{}
+			//coinDispLiveWallet = tzcDisplay.TZC{}
+			//coinName = tzc.Trezarcoin{}
+			//coinPrice = tzcDisplay.TZC{}
+			//coinWallet = tzc.Trezarcoin{}
+			//walletRefreshDifficulty = tzcDisplay.TZC{}
+			//walletRefreshNetwork = tzcDisplay.TZC{}
+			//walletRefreshTransactions = tzcDisplay.TZC{}
+			//walletSecurityState = tzc.Trezarcoin{}
 		default:
 			log.Fatal("Unable to determine ProjectType")
 		}
@@ -709,30 +764,6 @@ var dashCmd = &cobra.Command{
 		pWallet.TextStyle.Fg = ui.ColorWhite
 		pWallet.BorderStyle.Fg = ui.ColorYellow
 		pWallet.Text = coinDispInitialBalance.InitialBalance()
-		// switch cliConf.ProjectType {
-		// case be.PTDenarius:
-		// 	pWallet.Text = "  Balance:          [waiting for sync...](fg:yellow)\n" +
-		// 		"  Security:         [waiting for sync...](fg:yellow)\n" +
-		// 		"  Actively Staking: [waiting for sync...](fg:yellow)\n"
-		// case be.PTDeVault:
-		// 	pWallet.Text = "  Balance:          [waiting for sync...](fg:yellow)\n" +
-		// 		"  Security:         [waiting for sync...](fg:yellow)\n"
-		// case be.PTDigiByte:
-		// 	pWallet.Text = "  Balance:          [waiting for sync...](fg:yellow)\n" +
-		// 		"  Security:         [waiting for sync...](fg:yellow)\n"
-		// case be.PTFeathercoin:
-		// 	pWallet.Text = "  Balance:          [waiting for sync...](fg:yellow)\n" +
-		// 		"  Security:         [waiting for sync...](fg:yellow)\n"
-		// case be.PTPhore:
-		// 	pWallet.Text = "  Balance:          [waiting for sync...](fg:yellow)\n" +
-		// 		"  Security:         [waiting for sync...](fg:yellow)\n" +
-		// 		"  Actively Staking: [waiting for sync...](fg:yellow)\n"
-		// case be.PTVertcoin:
-		// 	pWallet.Text = "  Balance:          [waiting for sync...](fg:yellow)\n" +
-		// 		"  Security:         [waiting for sync...](fg:yellow)\n"
-		// default:
-		// 	err = errors.New("unable to determine ProjectType")
-		// }
 
 		// *************************
 		// Populate the Ticker panel
@@ -1013,7 +1044,7 @@ var dashCmd = &cobra.Command{
 			pNetwork.Text = coinDispLiveNetwork.LiveNetwork()
 
 			// 	var sBlocks string
-			// 	var sDiff string
+			// 	var sDiff stringhttps://github.com/skeletonlabs/skeleton
 			// 	var sBlockchainSync string
 			// 	var sHeaders string
 			// 	var sMNSync string
