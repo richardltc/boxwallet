@@ -24,7 +24,7 @@ import (
 
 const (
 	cCoinName       string = "SpiderByte"
-	cCoinNameAbbrev string = "SBYTE"
+	cCoinNameAbbrev string = "SPB"
 
 	cHomeDir    string = ".SpiderByte"
 	cHomeDirWin string = "SpiderByte"
@@ -38,7 +38,7 @@ const (
 
 	cDownloadURL = "https://spiderbyte.co/downloads/"
 
-	cConfFile string = "LitecoinPlus.conf"
+	cConfFile string = "SpiderByte.conf"
 	//cCliFile       string = "spiderbyte-cli"
 	//cCliFileWin    string = "spiderbyte-cli.exe"
 	cDaemonFileLin string = "spiderbyted"
@@ -50,7 +50,7 @@ const (
 	cRPCUser string = "spiderbyterpc"
 	cRPCPort string = "44350"
 
-	cTipAddress string = "XSkTNFjTUA2fhexZH271GiPzkhJGknV38K"
+	cTipAddress string = "XNuNCX6dzK9pbnmjoJjtiuMUNHD4FQQcx3"
 
 	// Wallet encryption status
 	CWalletESUnlockedForStaking = "unlocked-for-staking"
@@ -59,8 +59,8 @@ const (
 	CWalletESUnencrypted        = "unencrypted"
 
 	// General CLI command constants
-	cCommandGetBCInfo             string = "getblockchaininfo"
-	cCommandGetInfo               string = "getinfo"
+	//cCommandGetBCInfo             string = "getblockchaininfo"
+	//cCommandGetInfo               string = "getinfo"
 	cCommandGetStakingInfo        string = "getstakinginfo"
 	cCommandListReceivedByAddress string = "listreceivedbyaddress"
 	cCommandListTransactions      string = "listtransactions"
@@ -188,7 +188,7 @@ func (s SpiderByte) BlockchainIsSynced(coinAuth *models.CoinAuth) (bool, error) 
 func (s SpiderByte) BlockCount() (int, error) {
 	// http://explorer.litecoinplus.co/api/getblockcount
 
-	resp, err := http.Get("http://explorer.litecoinplus.co/api/getblockcount")
+	resp, err := http.Get("http://explorer.spiderbyte.co/api/getblockcount")
 	if err != nil {
 		return 0, err
 	}
@@ -259,7 +259,7 @@ func (s SpiderByte) DaemonRunning() (bool, error) {
 //	return nil
 //}
 
-// DownloadCoin - Downloads the Syscoin files into the spcified location.
+// DownloadCoin - Downloads the SpiderByte files into the specified location.
 // "location" should just be the AppBinaryFolder ~/.boxwallet
 func (s SpiderByte) DownloadCoin(location string) error {
 	var fullFilePath, fullFileDLURL string
