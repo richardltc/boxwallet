@@ -20,6 +20,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	dvt "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/devault"
 	divi "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/divi"
 	"richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/dogecash"
 	ftc "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/feathercoin"
@@ -33,6 +34,7 @@ import (
 	sbyte "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/spiderbyte"
 	sys "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/syscoin"
 	tzc "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/trezarcoin"
+	zano "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/zano"
 
 	"github.com/spf13/cobra"
 	"richardmace.co.uk/boxwallet/cmd/cli/cmd/app"
@@ -79,7 +81,7 @@ var startCmd = &cobra.Command{
 			log.Fatal("Unable to determine coin type. Please run " + appFileName + " coin  first")
 		}
 
-		// Now load our config file to see what coin choice the user made.
+		// Now, load our config file to see what coin choice the user made.
 		confDB, err := conf.GetConfig(true)
 		if err != nil {
 			log.Fatal("Unable to determine coin type. Please run " + appFileName + " coin: " + err.Error())
@@ -96,6 +98,8 @@ var startCmd = &cobra.Command{
 			coinDaemon = d.Denarius{}
 			coinName = d.Denarius{}
 		case models.PTDeVault:
+			coinDaemon = dvt.DeVault{}
+			coinName = dvt.DeVault{}
 		case models.PTDigiByte:
 		case models.PTDivi:
 			coinDaemon = divi.Divi{}
@@ -149,6 +153,9 @@ var startCmd = &cobra.Command{
 			coinDaemon = tzc.Trezarcoin{}
 			coinName = tzc.Trezarcoin{}
 		case models.PTVertcoin:
+		case models.PTZano:
+			coinDaemon = zano.Zano{}
+			coinName = zano.Zano{}
 		default:
 			log.Fatal("unable to determine ProjectType")
 		}
