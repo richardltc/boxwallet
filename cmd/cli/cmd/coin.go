@@ -46,6 +46,7 @@ import (
 	sys "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/syscoin"
 	tzc "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/trezarcoin"
 	vtc "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/vertcoin"
+	zano "richardmace.co.uk/boxwallet/cmd/cli/cmd/coins/zano"
 	"richardmace.co.uk/boxwallet/cmd/cli/cmd/conf"
 	"richardmace.co.uk/boxwallet/cmd/cli/cmd/database"
 	"richardmace.co.uk/boxwallet/cmd/cli/cmd/models"
@@ -94,19 +95,20 @@ var coinCmd = &cobra.Command{
 				coins.CCoinNameFeathercoin,
 				coins.CCoinNameGroestlcoin,
 				coins.CCoinNameLitecoin,
-				coins.CCoinNameNavcoin,
 				coins.CCoinNameNexa,
 				coins.CCoinNamePeercoin,
 				//coins.CCoinNamePhore,
 				coins.CCoinNamePIVX,
 				coins.CCoinNamePrimecoin,
-				coins.CCoinNameRapids,
+				//coins.CCoinNameRapids,
 				coins.CCoinNameReddCoin,
 				coins.CCoinNameScala,
 				coins.CCoinNameSpiderByte,
 				coins.CCoinNameSyscoin,
 				//coins.CCoinNameTrezarcoin,
-				coins.CCoinNameVertcoin},
+				coins.CCoinNameVertcoin,
+				coins.CCoinNameZano,
+			},
 		}
 		survey.AskOne(prompt, &selectedCoin)
 
@@ -240,6 +242,11 @@ var coinCmd = &cobra.Command{
 			coinName = vtc.Vertcoin{}
 			coinRPC = vtc.Vertcoin{}
 			coinType = models.PTVertcoin
+		case coins.CCoinNameZano:
+			coin = zano.Zano{}
+			coinName = zano.Zano{}
+			coinRPC = zano.Zano{}
+			coinType = models.PTZano
 		default:
 			log.Fatal("Unable to determine coin choice")
 		}
