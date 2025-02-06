@@ -67,8 +67,8 @@ archives:
       - README.md
 checksum:
   name_template: 'checksums.txt'
-snapshot:
-  name_template: "{{ .Tag }}-next"
+#snapshot:
+#  name_template: "{{ .Tag }}-next"
 changelog:
   sort: asc
   filters:
