@@ -16,23 +16,43 @@ limitations under the License.
 package cmd
 
 import (
-	"context"
-	"flag"
-	conf "github.com/ardanlabs/conf/v3"
-	"log"
-	"richardmace.co.uk/boxwallet/cmd/cli/cmd/api"
-	"time"
-
+	_ "embed"
+	"fmt"
+	"github.com/a-h/templ"
 	"github.com/spf13/cobra"
+	"gitlab.com/go-htmx/go-htmx/pkg/htmx"
+	"net/http"
 )
 
-// build is the git version of this program. It is set using build flags in the makefile..
-var (
-	build = "develop"
-	Ctx   = context.TODO()
+//go:embed stylesheet.css
+var stylesheet string
 
-	laddr = flag.String("addr", "127.0.0.1:3000", "Local address for the HTTP API")
-)
+//go:embed template.html
+var template string
+
+// BOILERPLATE code
+// This way of making a handler allows to use templates, and provide other parameters, e.g. database connection parameters.
+func makehandler(page func() htmx.RequestProcessor) func(w http.ResponseWriter, r *http.Request) {
+	return func(w http.ResponseWriter, r *http.Request) {
+		fmt.Println("Incoming HTTP request", r.Method, r.URL.String())
+		ctx := htmx.NewContext(r)
+		ctx.HxTarget = "#main" // Which part of the template is replaced by HTMX, by default
+		if ctx.IsHtmxRequest {
+			ctx.RequestHandler(w, page())
+		} else {
+			htmlstr := fmt.Sprintf(template, stylesheet,
+				`<script src="https://unpkg.com/htmx.org@2.0.1" integrity="sha384-QWGpdj554B4ETpJJC9z+ZHJcA/i59TyjxEPXiiUgN2WmTyV5OEZWCD6gQhgkdpB/" crossorigin="anonymous"></script>`,
+				ctx.RequestHandlerForTemplate(page()))
+			w.Header().Set("Content-Type", "text/html; charset=utf-8")
+			_, err := w.Write([]byte(htmlstr))
+			if err != nil {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				fmt.Println("Incoming HTTP request completed with error")
+				return
+			}
+		}
+	}
+}
 
 // webserverCmd represents the webserver command
 var webserverCmd = &cobra.Command{
@@ -40,32 +60,21 @@ var webserverCmd = &cobra.Command{
 	Short: "Enables the BoxWallet web server",
 	Long:  ``,
 	Run: func(cmd *cobra.Command, args []string) {
-		// =========================================================================
-		// Configuration
+		component := headerTemplate("John")
+		http.Handle("/", templ.Handler(component))
 
-		cfg := struct {
-			conf.Version
-			Web struct {
-				APIHost         string        `conf:"default:127.0.0.1:3000"`
-				ShutdownTimeout time.Duration `conf:"default:20s"`
-			}
-		}{
-			Version: conf.Version{
-				Build: build,
-				Desc:  "copyright information here",
-			},
-		}
+		fmt.Println("Listening on :7070")
+		http.ListenAndServe(":7070", nil)
+		//component.Render(context.Background(), os.Stdout)
 
-		// =========================================================================
-		// Start API Service
-
-		log.Println("startup", "status", "initializing V1 API support")
-
-		apiV1 := api.RESTApiV1{}
-		apiV1.Init()
-		log.Println("startup", "status", "api router started", "host", cfg.Web.APIHost)
-		apiV1.Serve(*laddr)
-
+		//r := mux.NewRouter()
+		//r.HandleFunc("/dash/", makehandler(WebDash))
+		//
+		//fmt.Println("Starting server at port 7070")
+		//fmt.Println("Try http://127.0.0.1:7070/dash")
+		//if err := http.ListenAndServe(":7070", r); err != nil {
+		//	fmt.Println("Failed to start server:", err)
+		//}
 	},
 }
 
