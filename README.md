@@ -50,11 +50,6 @@ BoxWallet is a multi-coin CLI tool, that gets your coin-of-choice wallet/node se
 
 ## How can I install BoxWallet?
 
-### Windows
-
-Download the file `boxwallet_XXX_Windows_64bit.zip` where `XXX` represents the latest version number.
-Extract the files, open a command prompt, then run `boxwallet coin`
-
 ### Linux
 
 I'm going to assume that you've got a basic CLI Linux installation, and have SSH access.
