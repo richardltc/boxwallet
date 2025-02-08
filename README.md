@@ -125,5 +125,6 @@ Then  `./boxwallet dash`, where you will be greeted with an initial wizard to ge
 Yes! BoxWallet is FREE to use, however, if you'd like to send a tip, please feel free:
 
 DIVI: DSniZmeSr62wiQXzooWk7XN4wospZdqePt
+NEXA: nexa:nqtsq5g5sqta9meu9wul4s4lffj7djqc9j3ly3f6w9mjx5ls
 
 ## Thank you for trying and supporting BoxWallet
