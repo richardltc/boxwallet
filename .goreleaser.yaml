@@ -1,0 +1,73 @@
+version: 2
+
+before:
+  hooks:
+    # You may remove this if you don't use go modules.
+    - go mod download
+    # you may remove this if you don't need go generate
+    - go generate ./...
+
+builds:
+  - env:
+      - CGO_ENABLED=0
+    id: "boxwallet"
+    main: ./cmd/cli/main.go
+    goos:
+      - linux
+      #- darwin
+    goarch:
+      - amd64
+      - arm64
+      - arm
+      - 386
+    ignore:
+    #- goos: darwin
+    #  goarch: 386
+    #- goos: linux
+    #  goarch: 386
+
+  - id: "bwupdater"
+    main: ./cmd/updater/main.go
+    binary: "bwupdater"
+    goos:
+      - linux
+      #- darwin
+    goarch:
+      - amd64
+      - arm64
+      - arm
+      - 386
+    ignore:
+    #- goos: darwin
+    #  goarch: 386
+    #- goos: linux
+    #  goarch: 386
+
+archives:
+  - format: tar.gz
+    format_overrides:
+      - goos: windows
+        format: zip
+    name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    # replacements:
+    #   #darwin: macOS
+    #   linux: Linux
+    #   windows: Windows
+    #   386: 32bit
+    #   amd64: 64bit
+    #   arm: arm32bit
+    files:
+      - README.md
+
+checksum:
+  name_template: 'checksums.txt'
+
+# snapshot:
+#   name_template: "{{ .Tag }}-next"
+
+changelog:
+  sort: asc
+  filters:
+    exclude:
+      - '^docs:'
+      - '^test:'
