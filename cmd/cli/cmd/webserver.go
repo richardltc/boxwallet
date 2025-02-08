@@ -18,7 +18,6 @@ package cmd
 import (
 	_ "embed"
 	"fmt"
-	"github.com/a-h/templ"
 	"github.com/spf13/cobra"
 	"gitlab.com/go-htmx/go-htmx/pkg/htmx"
 	"net/http"
@@ -60,11 +59,11 @@ var webserverCmd = &cobra.Command{
 	Short: "Enables the BoxWallet web server",
 	Long:  ``,
 	Run: func(cmd *cobra.Command, args []string) {
-		component := headerTemplate("John")
-		http.Handle("/", templ.Handler(component))
-
-		fmt.Println("Listening on :7070")
-		http.ListenAndServe(":7070", nil)
+		//component := headerTemplate("John")
+		//http.Handle("/", templ.Handler(component))
+		//
+		//fmt.Println("Listening on :7070")
+		//http.ListenAndServe(":7070", nil)
 		//component.Render(context.Background(), os.Stdout)
 
 		//r := mux.NewRouter()
