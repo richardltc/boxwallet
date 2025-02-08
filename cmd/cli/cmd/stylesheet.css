@@ -1,0 +1,166 @@
+
+:root,
+::backdrop {
+  /* Set sans-serif & mono fonts */
+  --sans-font: -apple-system, "Segoe UI", BlinkMacSystemFont, "Avenir Next", Avenir,
+    "Nimbus Sans L", Roboto, "Noto Sans", "Segoe UI", Arial, Helvetica,
+    "Helvetica Neue", sans-serif;
+  --mono-font: Consolas, Menlo, Monaco, "Andale Mono", "Ubuntu Mono", monospace;
+  --standard-border-radius: 5px;
+
+  /* Palette */
+  --palette1: #DCDCDD;
+  --palette2: #C5C3C6;
+  --palette3: #46494C;
+  --palette4: #4C5C68;
+  --palette5: #1985A1;
+}
+
+
+html {
+  margin: 0;
+  padding: 0;
+  height: 100%;
+  max-height: 100vh;
+  overflow: hidden;
+  box-sizing: content-box;
+}
+
+/* Various generic HTML */
+
+h1 {
+  margin-top: 0;
+  margin-bottom: 1px;
+  padding-top: 0;
+  padding-bottom: 0;
+  font-family: var(--sans-font);
+  font-size: 32pt;
+}
+
+h2 {
+  margin-top: 0;
+  margin-bottom: 1px;
+  padding-top: 0;
+  padding-bottom: 0;
+  font-family: var(--sans-font);
+  font-size: 14pt;
+}
+
+p,ul,ol {
+  margin-top: 1px;
+  margin-bottom: 1px;
+  padding-top: 0;
+  padding-bottom: 0;
+}
+
+/* HTMX component GTab */
+
+.GTabs {
+  display: flex;
+  gap: 0px;
+  padding-top: 0;
+  padding-bottom: 0;
+  margin-top: 2px;
+  margin-bottom: 10px;
+  cursor: pointer;
+}
+
+.GTabsButton {
+  padding: 5px 15px 5px 15px;
+}
+
+.GTabsButtonSelected {
+  padding: 5px 15px 5px 15px;
+  background-color: black;
+  color: white;
+}
+
+select.htmx-request {
+  background-color: lightgray;
+  color: gray;
+}
+
+/* HTMX component Form */
+
+Form {
+  background-color: white;
+}
+
+@keyframes GFormFadeIn {
+  from {
+      opacity: 0;
+  }
+  to {
+      opacity: 1;
+  }
+}
+
+.GFormError {
+  opacity: 0;
+  animation: GFormFadeIn 1.0s ease forwards; /* Apply the fadeIn animation */
+}
+
+/* HTMX component Table */
+
+.Table {
+  border-collapse: separate; /* Ensure borders can be separate */
+  padding: 0;
+  margin-left: 0;
+  margin-right: 0;
+  margin-top: 1px;
+  margin-bottom: 1px;
+  border-spacing: 1px 0; /* Maintain horizontal spacing but no vertical spacing */
+}
+
+.Table th,
+.Table td {
+  padding: 4px 15px;
+  text-align: left;
+  border-bottom: 1px solid #ddd;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  border-right: 1px solid #fff;
+}
+
+.Table th:last-child,
+.Table td:last-child {
+  border-right: none; /* Remove right border for the last cell in the row */
+}
+
+.Table th {
+  background-color: white;
+  color: #696969;
+  font-weight: bold;
+}
+
+.Table tr:nth-child(odd) {
+  background-color: var(--palette1);
+}
+
+.Table tr:nth-child(even) {
+  background-color: white;
+}
+
+.Table tr:hover {
+  background-color: var(--palette2);
+}
+
+.Table tr.GTableRowSelected {
+  background-color: #b6b7e9;
+  color: black;
+}
+
+.Table tfoot {
+  color: black; 
+  background-color: white;
+}
+
+.Table tr.GTableRowFooter {
+  background-color: white; 
+  color: #696969;
+}
+
+p.GTableFooter {
+  font-size: 7pt;
+}
