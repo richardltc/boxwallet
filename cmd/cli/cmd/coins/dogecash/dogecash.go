@@ -918,7 +918,6 @@ func (d DogeCash) UpdateTickerInfo() (ticker models.DOGECTicker, err error) {
 }
 
 func (d DogeCash) ValidateAddress(ad string) bool {
-	// First, work out what the coin type is
 	// If the length of the address is not exactly 34 characters...
 	if len(ad) != 34 {
 		return false
@@ -926,7 +925,7 @@ func (d DogeCash) ValidateAddress(ad string) bool {
 	sFirst := ad[0]
 
 	// 44 = UTF for D
-	if sFirst != 44 {
+	if sFirst != 'D' {
 		return false
 	}
 
