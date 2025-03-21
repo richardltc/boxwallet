@@ -30,7 +30,7 @@ const (
 	cHomeDir    string = ".nexa"
 	cHomeDirWin string = "NEXA"
 
-	cCoreVersion         string = "1.4.0.1"
+	cCoreVersion         string = "2.0.0.0"
 	cDownloadFileArm32          = "nexa-" + cCoreVersion + "-arm32.tar.gz"
 	cDownloadFileArm64          = "nexa-" + cCoreVersion + "-arm64.tar.gz"
 	cDownloadFileLinux          = "nexa-" + cCoreVersion + "-linux64.tar.gz"
@@ -151,7 +151,7 @@ func (n Nexa) BlockchainDataExists() (bool, error) {
 		return true, err
 	}
 
-	// If the "chainstate" directory already exists, return
+	// If the "chainstate" directory already exists, return.
 	if _, err := os.Stat(coinDir + "chainstate"); !os.IsNotExist(err) {
 		err := errors.New("The directory: " + coinDir + "chainstate already exists")
 		return true, err
@@ -615,6 +615,34 @@ func (n Nexa) UpdateTickerInfo() (ticker models.NEXATicker, err error) {
 		return ticker, err
 	}
 	return ticker, nil
+}
+
+func (n Nexa) WalletEncrypt(coinAuth *models.CoinAuth, pw string) (models.GenericResponse, error) {
+	var respStruct models.GenericResponse
+
+	body := strings.NewReader("{\"jsonrpc\":\"1.0\",\"id\":\"boxwallet\",\"method\":\"" + models.CCommandEncryptWallet + "\",\"params\":[\"" + pw + "\"]}")
+	req, err := http.NewRequest("POST", "http://"+coinAuth.IPAddress+":"+coinAuth.Port, body)
+	if err != nil {
+		return respStruct, err
+	}
+	req.SetBasicAuth(coinAuth.RPCUser, coinAuth.RPCPassword)
+	req.Header.Set("Content-Type", "text/plain;")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return respStruct, err
+	}
+	defer resp.Body.Close()
+	bodyResp, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return respStruct, err
+	}
+	err = json.Unmarshal(bodyResp, &respStruct)
+	if err != nil {
+		return respStruct, err
+	}
+
+	return respStruct, nil
 }
 
 func (n Nexa) WalletInfo(coinAuth *models.CoinAuth) (models.NEXAWalletInfo, error) {
