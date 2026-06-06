@@ -4,49 +4,53 @@ const rpc = @import("../rpc.zig");
 const install_mod = @import("../install.zig");
 const Coin = @import("../coin.zig").Coin;
 
-/// Nexa backend. Constants lifted from
-/// `cmd/cli/cmd/coins/nexa/nexa.go`.
-pub const Nexa = struct {
-    pub const coin_name = "NEXA";
-    pub const coin_name_abbrev = "NEXA";
-    pub const conf_file = "nexa.conf";
-    pub const home_dir = ".nexa";
-    pub const home_dir_win = "NEXA";
-    pub const rpc_default_username = "nexarpc";
-    pub const rpc_default_port = "7227";
-    pub const core_version = "2.0.0.0";
-    pub const daemon_file_lin = "nexad";
-    pub const daemon_file_win = "nexad.exe";
-    pub const cli_file_lin = "nexa-cli";
-    pub const tx_file_lin = "nexa-tx";
+/// Divi backend. Constants lifted from
+/// `cmd/cli/cmd/coins/divi/divi.go`.
+pub const Divi = struct {
+    pub const coin_name = "DIVI";
+    pub const coin_name_abbrev = "DIVI";
+    pub const conf_file = "divi.conf";
+    pub const home_dir = ".divi";
+    pub const home_dir_win = "DIVI";
+    pub const rpc_default_username = "divirpc";
+    pub const rpc_default_port = "51473";
+    pub const core_version = "3.0.0";
+    pub const daemon_file_lin = "divid";
+    pub const daemon_file_win = "divid.exe";
+    pub const cli_file_lin = "divi-cli";
+    pub const tx_file_lin = "divi-tx";
 
-    // Download location (Linux). The tarball wraps everything in `nexa-<ver>/`,
-    // with the executables under `nexa-<ver>/bin/`.
-    const download_base = "https://bitcoinunlimited.info/nexa/" ++ core_version ++ "/";
-    const download_file_linux = "nexa-" ++ core_version ++ "-linux64.tar.gz";
+    // Download location (Linux). Divi ships GitHub release tarballs whose
+    // filename carries an arch/commit suffix, but the archive still wraps
+    // everything in the plain `divi-<ver>/` dir with binaries under `bin/`.
+    const download_base = "https://github.com/DiviProject/Divi/releases/download/v" ++ core_version ++ "/";
+    const download_file_linux = "divi-" ++ core_version ++ "-x86_64-linux-gnu-9e2f76c.tar.gz";
     pub const download_url_linux = download_base ++ download_file_linux;
 
-    // Layout inside the archive. BoxWallet keeps only the daemon/cli/tx binaries
-    // (from `bin/`) at the install root and discards the rest of the extracted
-    // tree — the GUI/miner/rostrum, `lib/`, `share/`, the bundled `INSTALL.md`.
-    // `nexad` links only against system libraries, so dropping `lib/libnexa.so`
-    // is safe. Matches the Go installer.
-    const extracted_dir = "nexa-" ++ core_version;
+    // Layout inside the archive: keep only the daemon/cli/tx binaries (from
+    // `bin/`) at the install root; the whole `divi-<ver>/` tree is discarded
+    // afterwards. Matches the Go installer.
+    const extracted_dir = "divi-" ++ core_version;
     const bin_subdir = "bin";
     const promote_files = [_][]const u8{ daemon_file_lin, cli_file_lin, tx_file_lin };
 
     /// Build the type-erased `Coin` handle for this instance.
-    pub fn coin(self: *Nexa) Coin {
+    pub fn coin(self: *Divi) Coin {
         return .{ .ptr = self, .vtable = &vtable };
     }
 
     /// Live `getblockchaininfo`, normalized for a frontend.
-    /// `BlockchainIsSynced` in Go is the `synced` field here.
+    ///
+    /// Go's `BlockchainIsSynced` reads `mnsync status`'s `IsBlockchainSynced`,
+    /// but the same file keeps a commented-out `verificationprogress > 0.99999`
+    /// fallback. We use that single-call form here (as Nexa does) so every coin
+    /// maps to the shared `BlockchainState` the same way; the masternode-sync
+    /// signal can be layered on later if needed.
     pub fn blockchainState(
         allocator: std.mem.Allocator,
         auth: models.CoinAuth,
     ) !models.BlockchainState {
-        var parsed = try rpc.callParsed(models.NexaBlockchainInfo, allocator, auth, "getblockchaininfo");
+        var parsed = try rpc.callParsed(models.DiviBlockchainInfo, allocator, auth, "getblockchaininfo");
         defer parsed.deinit();
 
         const r = parsed.value.result orelse return error.EmptyRpcResult;
@@ -55,22 +59,21 @@ pub const Nexa = struct {
             .blocks = r.blocks,
             .headers = r.headers,
             .verification_progress = r.verificationprogress,
-            // Matches Go: BlockchainIsSynced => verificationprogress > 0.99999
             .synced = r.verificationprogress > 0.99999,
         };
     }
 
-    /// True if `nexad` is already present under `install_root`.
+    /// True if `divid` is already present under `install_root`.
     pub fn isInstalled(allocator: std.mem.Allocator, install_root: []const u8) bool {
         return install_mod.fileExists(allocator, install_root, daemon_file_lin);
     }
 
-    /// Download + unarchive the Nexa daemon files into `install_root`,
+    /// Download + unarchive the Divi daemon files into `install_root`,
     /// optionally reporting download/extract progress.
     ///
     /// Extracts the versioned wrapper dir intact, then `promoteAndTidy` lifts the
     /// daemon/cli/tx binaries to the install root and removes the wrapper,
-    /// leaving `nexad` exactly where `isInstalled` looks for it.
+    /// leaving `divid` exactly where `isInstalled` looks for it.
     pub fn install(
         allocator: std.mem.Allocator,
         install_root: []const u8,
@@ -135,18 +138,17 @@ pub const Nexa = struct {
 test "parses getblockchaininfo into normalized BlockchainState" {
     const allocator = std.testing.allocator;
 
-    // Canned daemon reply — proves parse + map without a running nexad.
+    // Canned daemon reply — proves parse + map without a running divid.
     const raw =
-        \\{"result":{"chain":"nexa","blocks":1234567,"headers":1234567,
-        \\"bestblockhash":"deadbeef","difficulty":12345.678,
-        \\"verificationprogress":0.999995,"initialblockdownload":false,
-        \\"size_on_disk":987654321,"pruned":false,
-        \\"softforks":[],"bip9_softforks":{},"bip135_forks":{}},
+        \\{"result":{"chain":"main","blocks":2345678,"headers":2345678,
+        \\"bestblockhash":"cafebabe","difficulty":98765.4321,
+        \\"verificationprogress":0.9999995,
+        \\"chainwork":"00000000000000000000000000000000000000000000abcdef0123456789abcd"},
         \\"error":null,"id":"boxwallet"}
     ;
 
     var parsed = try std.json.parseFromSlice(
-        models.JsonRpcResponse(models.NexaBlockchainInfo),
+        models.JsonRpcResponse(models.DiviBlockchainInfo),
         allocator,
         raw,
         .{ .ignore_unknown_fields = true },
@@ -163,15 +165,16 @@ test "parses getblockchaininfo into normalized BlockchainState" {
     };
     defer state.deinit(allocator);
 
-    try std.testing.expectEqualStrings("nexa", state.chain);
-    try std.testing.expectEqual(@as(i64, 1234567), state.blocks);
+    try std.testing.expectEqualStrings("main", state.chain);
+    try std.testing.expectEqual(@as(i64, 2345678), state.blocks);
     try std.testing.expect(state.synced);
 }
 
-test "coin vtable dispatches to Nexa metadata" {
-    var nexa: Nexa = .{};
-    const c = nexa.coin();
-    try std.testing.expectEqualStrings("NEXA", c.coinName());
-    try std.testing.expectEqualStrings("nexa.conf", c.confFile());
-    try std.testing.expectEqualStrings("7227", c.rpcDefaultPort());
+test "coin vtable dispatches to Divi metadata" {
+    var divi: Divi = .{};
+    const c = divi.coin();
+    try std.testing.expectEqualStrings("DIVI", c.coinName());
+    try std.testing.expectEqualStrings("divi.conf", c.confFile());
+    try std.testing.expectEqualStrings("divid", c.daemonFile());
+    try std.testing.expectEqualStrings("51473", c.rpcDefaultPort());
 }

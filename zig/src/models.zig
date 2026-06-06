@@ -41,6 +41,19 @@ pub const NexaGetInfo = struct {
     balance: f64 = 0,
 };
 
+/// Raw `getblockchaininfo` result for Divi (subset). Same standard fields as
+/// other bitcoin-derived daemons, with `chainwork` in place of Nexa's
+/// pruning/IBD fields. Defaults keep parsing resilient to omitted fields.
+pub const DiviBlockchainInfo = struct {
+    chain: []const u8 = "",
+    blocks: i64 = 0,
+    headers: i64 = 0,
+    bestblockhash: []const u8 = "",
+    difficulty: f64 = 0,
+    verificationprogress: f64 = 0,
+    chainwork: []const u8 = "",
+};
+
 /// Coin-agnostic view of chain sync state. This is what a frontend (the
 /// ZigZag TUI) renders — it never touches per-coin JSON shapes.
 ///

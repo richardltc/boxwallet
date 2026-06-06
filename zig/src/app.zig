@@ -3,22 +3,25 @@ const zz = @import("zigzag");
 const models = @import("models.zig");
 const install_mod = @import("install.zig");
 const Nexa = @import("coins/nexa.zig").Nexa;
+const Divi = @import("coins/divi.zig").Divi;
 
-/// Where daemon binaries get installed. A real version would derive
-/// ~/.boxwallet from HOME (available via `init.environ_map`); the slice uses a
-/// fixed relative dir.
-const install_root = "boxwallet-coins";
+/// Fallback install root used only if the home-dir-based path can't be built
+/// (e.g. allocation failure at startup). Normally `App.install_root` is the
+/// per-platform `~/.boxwallet` dir resolved in `init`.
+const fallback_install_root = "boxwallet-coins";
 
-/// Left-column entries. Index 0 is Home; the rest are coins. Adding a coin to
-/// the port is (eventually) a matter of extending this list + the dispatch in
-/// `selectedCoin`.
-const Entry = enum { home, nexa };
-const entries = [_]Entry{ .home, .nexa };
+/// Left-column entries. Index 0 is Home; the rest are coins. Adding a coin is a
+/// matter of extending this list, the `App` field + `init`, and the dispatch in
+/// `selectedCoin` — the detail pane renders generically through the `Coin`
+/// interface, so it needs no per-coin code.
+const Entry = enum { home, nexa, divi };
+const entries = [_]Entry{ .home, .nexa, .divi };
 
 fn entryLabel(e: Entry) []const u8 {
     return switch (e) {
         .home => "Home",
         .nexa => Nexa.coin_name,
+        .divi => Divi.coin_name,
     };
 }
 
@@ -26,8 +29,17 @@ fn entryLabel(e: Entry) []const u8 {
 /// coins), a detail pane on the right. `up`/`down` move the selection, `i`
 /// installs the selected coin's daemon, `q` quits.
 pub const App = struct {
+    /// Persistent (model-lifetime) allocator. Owns `install_root` and backs the
+    /// transient work in `isInstalled`. Not the per-frame `ctx.allocator`.
     allocator: std.mem.Allocator,
+    /// Per-platform `~/.boxwallet` dir where coin daemons are extracted.
+    /// Resolved once in `init` from `ctx.home_dir`; lives for the program.
+    install_root: []const u8,
+    /// True when `install_root` is heap-allocated (and so must be freed in
+    /// `deinit`); false when it's the static `fallback_install_root`.
+    install_root_owned: bool,
     nexa: Nexa,
+    divi: Divi,
     selected: usize,
     installed: bool,
     status: []const u8,
@@ -35,14 +47,35 @@ pub const App = struct {
     pub const Msg = union(enum) { key: zz.KeyEvent };
 
     pub fn init(self: *App, ctx: *zz.Context) zz.Cmd(Msg) {
+        // Resolve ~/.boxwallet (or %USERPROFILE%\AppData\Roaming\BoxWallet on
+        // Windows) from the home dir ZigZag captured at startup. Held on the
+        // persistent allocator so it outlives the per-frame arena (and is freed
+        // in `deinit`); on the unlikely allocation failure, fall back to a
+        // relative dir that we don't own.
+        var install_root: []const u8 = fallback_install_root;
+        var install_root_owned = false;
+        if (install_mod.installRoot(ctx.persistent_allocator, ctx.home_dir)) |root| {
+            install_root = root;
+            install_root_owned = true;
+        } else |_| {}
+
         self.* = .{
-            .allocator = ctx.allocator,
+            .allocator = ctx.persistent_allocator,
+            .install_root = install_root,
+            .install_root_owned = install_root_owned,
             .nexa = .{},
+            .divi = .{},
             .selected = 0,
             .installed = false,
             .status = "use up/down to navigate",
         };
         return .none;
+    }
+
+    /// Called by ZigZag's `Program.deinit` at shutdown. Frees the model's
+    /// owned allocations.
+    pub fn deinit(self: *App) void {
+        if (self.install_root_owned) self.allocator.free(self.install_root);
     }
 
     pub fn update(self: *App, msg: Msg, ctx: *zz.Context) zz.Cmd(Msg) {
@@ -72,17 +105,23 @@ pub const App = struct {
     }
 
     /// The coin at the current selection, or null on Home.
-    fn selectedCoin(self: *App) ?@import("coin.zig").Coin {
+    ///
+    /// Takes `*const App` so the read-only `view`/`renderDetail` path can use it.
+    /// The `coin()` builders want a mutable `*Coin`, but the resulting vtable
+    /// only ever reads coin metadata here, and the backing `App` is never const
+    /// (it lives mutably inside ZigZag's `Program`), so the `@constCast` is sound.
+    fn selectedCoin(self: *const App) ?@import("coin.zig").Coin {
         return switch (entries[self.selected]) {
             .home => null,
-            .nexa => self.nexa.coin(),
+            .nexa => @constCast(&self.nexa).coin(),
+            .divi => @constCast(&self.divi).coin(),
         };
     }
 
     fn refreshInstalledState(self: *App) void {
         if (self.selectedCoin()) |coin| {
-            self.installed = coin.isInstalled(self.allocator, install_root);
-            self.status = if (self.installed) "installed — press i to reinstall" else "press i to install";
+            self.installed = coin.isInstalled(self.allocator, self.install_root);
+            self.status = if (self.installed) "installed — press i to update" else "press i to install";
         } else {
             self.status = "use up/down to navigate";
         }
@@ -94,12 +133,16 @@ pub const App = struct {
         // Synchronous — this blocks the UI event loop for the duration of the
         // install. Rather than freeze, `InstallRender` paints download/extract
         // progress bars straight to the terminal as the work reports in.
-        var render: InstallRender = .{ .ctx = ctx, .name = coin.coinName() };
+        const was_installed = self.installed;
+        var render: InstallRender = .{ .ctx = ctx, .name = coin.coinName(), .updating = was_installed };
         const progress: install_mod.Progress = .{ .ctx = &render, .func = InstallRender.onProgress };
 
-        if (coin.install(ctx.persistent_allocator, install_root, progress)) {
-            self.installed = coin.isInstalled(self.allocator, install_root);
-            self.status = if (self.installed) "install complete" else "install ran but daemon not found";
+        if (coin.install(ctx.persistent_allocator, self.install_root, progress)) {
+            self.installed = coin.isInstalled(self.allocator, self.install_root);
+            self.status = if (self.installed)
+                (if (was_installed) "update complete" else "install complete")
+            else
+                "install ran but daemon not found";
         } else |err| {
             self.status = @errorName(err);
         }
@@ -112,49 +155,50 @@ pub const App = struct {
         return renderTwoPane(a, self.selected, right) catch "render error";
     }
 
-    /// Builds the right-hand detail block for the current selection.
+    /// Builds the right-hand detail block for the current selection. The coin
+    /// pane is rendered generically through the `Coin` interface, so no per-coin
+    /// code lives here — a newly registered coin renders for free.
     fn renderDetail(self: *const App, a: std.mem.Allocator) []const u8 {
         const title = (zz.Style{}).bold(true).fg(.cyan);
-        switch (entries[self.selected]) {
-            .home => {
-                const head = title.render(a, "BoxWallet") catch "BoxWallet";
-                return std.fmt.allocPrint(a,
-                    \\{s}
-                    \\
-                    \\Select a coin on the left to manage it.
-                    \\
-                    \\  up/down  navigate
-                    \\  i        install selected coin
-                    \\  q        quit
-                , .{head}) catch "alloc error";
-            },
-            .nexa => {
-                const head = title.render(a, "NEXA") catch "NEXA";
-                const yn: []const u8 = if (self.installed) "yes" else "no";
-                const button = if (self.installed)
-                    "[ Reinstall ]"
-                else
-                    "[ Install ]";
-                return std.fmt.allocPrint(a,
-                    \\{s}
-                    \\
-                    \\daemon   : {s}
-                    \\rpc port : {s}
-                    \\installed: {s}
-                    \\
-                    \\{s}   (press i)
-                    \\
-                    \\status: {s}
-                , .{
-                    head,
-                    Nexa.daemon_file_lin,
-                    Nexa.rpc_default_port,
-                    yn,
-                    button,
-                    self.status,
-                }) catch "alloc error";
-            },
-        }
+
+        const coin = self.selectedCoin() orelse {
+            const head = title.render(a, "BoxWallet") catch "BoxWallet";
+            return std.fmt.allocPrint(a,
+                \\{s}
+                \\
+                \\Select a coin on the left to manage it.
+                \\
+                \\  up/down  navigate
+                \\  i        install selected coin
+                \\  q        quit
+            , .{head}) catch "alloc error";
+        };
+
+        const head = title.render(a, coin.coinName()) catch coin.coinName();
+        const yn: []const u8 = if (self.installed) "yes" else "no";
+        // When the daemon is already present, the action updates it in place
+        // rather than doing a first-time install.
+        const button = if (self.installed) "[ Update ]" else "[ Install ]";
+        return std.fmt.allocPrint(a,
+            \\{s}
+            \\
+            \\daemon   : {s}
+            \\rpc port : {s}
+            \\location : {s}
+            \\installed: {s}
+            \\
+            \\{s}   (press i)
+            \\
+            \\status: {s}
+        , .{
+            head,
+            coin.daemonFile(),
+            coin.rpcDefaultPort(),
+            self.install_root,
+            yn,
+            button,
+            self.status,
+        }) catch "alloc error";
     }
 
     /// Joins the left nav column and the right detail block side by side.
@@ -192,6 +236,9 @@ pub const App = struct {
 const InstallRender = struct {
     ctx: *zz.Context,
     name: []const u8,
+    /// True when re-installing over an existing daemon, so the heading reads
+    /// "Updating" rather than "Installing".
+    updating: bool = false,
     dl_cur: u64 = 0,
     dl_total: u64 = 0,
     ex_cur: u64 = 0,
@@ -250,7 +297,8 @@ const InstallRender = struct {
     }
 
     fn render(self: *InstallRender, a: std.mem.Allocator) ![]const u8 {
-        const heading = try std.fmt.allocPrint(a, "Installing {s}", .{self.name});
+        const verb: []const u8 = if (self.updating) "Updating" else "Installing";
+        const heading = try std.fmt.allocPrint(a, "{s} {s}", .{ verb, self.name });
         const title = (zz.Style{}).bold(true).fg(.cyan).render(a, heading) catch heading;
 
         const dl_bar = try bar(a, self.dl_cur, self.dl_total);
@@ -277,3 +325,54 @@ const InstallRender = struct {
         return p.view(a);
     }
 };
+
+test "App.init resolves install_root from home dir and deinit frees it" {
+    if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
+    const allocator = std.testing.allocator;
+
+    var threaded: std.Io.Threaded = .init(allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    // Minimal context: the home dir drives install_root and the persistent
+    // allocator owns it. std.testing.allocator fails the test if `deinit`
+    // doesn't free what `init` allocated.
+    const env: zz.Environment = .{ .home_dir = "/home/tester" };
+    var ctx = zz.Context.init(allocator, allocator, io, &env);
+
+    var app: App = undefined;
+    _ = app.init(&ctx);
+    defer app.deinit();
+
+    try std.testing.expectEqualStrings("/home/tester/.boxwallet", app.install_root);
+    try std.testing.expect(app.install_root_owned);
+}
+
+test "renderDetail renders the selected coin generically through the Coin interface" {
+    if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
+    const allocator = std.testing.allocator;
+
+    var threaded: std.Io.Threaded = .init(allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    const env: zz.Environment = .{ .home_dir = "/home/tester" };
+    var ctx = zz.Context.init(allocator, allocator, io, &env);
+
+    var app: App = undefined;
+    _ = app.init(&ctx);
+    defer app.deinit();
+
+    // Select Divi and render its detail pane. Nothing in renderDetail is Divi-
+    // specific — the coin's name/daemon/port come through the Coin vtable.
+    app.selected = std.mem.indexOfScalar(Entry, &entries, .divi).?;
+
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+    const out = app.renderDetail(arena.allocator());
+
+    try std.testing.expect(std.mem.indexOf(u8, out, Divi.coin_name) != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, Divi.daemon_file_lin) != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, Divi.rpc_default_port) != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "/home/tester/.boxwallet") != null);
+}

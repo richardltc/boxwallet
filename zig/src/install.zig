@@ -1,5 +1,21 @@
 const std = @import("std");
+const builtin = @import("builtin");
 const flate = std.compress.flate;
+
+/// Resolve the BoxWallet data directory that coin daemons are extracted into,
+/// matching the Go app's `HomeFolder`:
+///   - POSIX:   `<home>/.boxwallet`
+///   - Windows: `<home>/AppData/Roaming/BoxWallet`
+///
+/// `home_dir` is the process home directory (ZigZag captures this as
+/// `ctx.home_dir` from `$HOME` / `%USERPROFILE%`). The caller owns the returned
+/// slice. The directory itself is created lazily by `downloadAndExtract`.
+pub fn installRoot(allocator: std.mem.Allocator, home_dir: []const u8) ![]const u8 {
+    return if (comptime builtin.os.tag == .windows)
+        std.fs.path.join(allocator, &.{ home_dir, "AppData", "Roaming", "BoxWallet" })
+    else
+        std.fs.path.join(allocator, &.{ home_dir, ".boxwallet" });
+}
 
 /// Archive format a coin's daemon bundle ships in.
 pub const Format = enum { tar_gz, zip };
@@ -145,6 +161,57 @@ pub fn extractArchive(
     }
 }
 
+/// Flatten an extracted coin bundle in place.
+///
+/// Coin tarballs wrap everything in a versioned directory and nest their
+/// executables in a `bin/` subdirectory — e.g. `root/nexa-2.0.0.0/bin/nexad`,
+/// alongside `lib/`, `share/`, etc. BoxWallet keeps just the daemon/cli/tx
+/// binaries at the top of `~/.boxwallet` (where `isInstalled` and the daemon
+/// launcher look for them) and discards everything else.
+///
+/// Moves each name in `binaries` from `root/<extracted_dir>/<bin_subdir>/` up to
+/// `root/`, then deletes the whole `root/<extracted_dir>` tree. Removing the
+/// versioned wrapper wholesale means a coin doesn't have to enumerate the
+/// archive's other top-level entries (`lib/`, `share/`, `include/`, READMEs, …)
+/// — whatever shape the bundle has, only the promoted binaries survive. Mirrors
+/// the Go installer's `Install`.
+///
+/// A rename whose source is missing — a binary already promoted by a prior run —
+/// is skipped rather than failing, and a missing `extracted_dir` is ignored, so
+/// re-running over an already-flattened layout is a no-op.
+pub fn promoteAndTidy(
+    allocator: std.mem.Allocator,
+    root: []const u8,
+    extracted_dir: []const u8,
+    bin_subdir: []const u8,
+    binaries: []const []const u8,
+) !void {
+    var threaded: std.Io.Threaded = .init(allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    var dir = try std.Io.Dir.cwd().openDir(io, root, .{});
+    defer dir.close(io);
+
+    const bin_path = try std.fs.path.join(allocator, &.{ extracted_dir, bin_subdir });
+    defer allocator.free(bin_path);
+
+    // Promote the wanted binaries up to the root. rename replaces an existing
+    // destination, so an update overwrites the old binary.
+    for (binaries) |name| {
+        const src = try std.fs.path.join(allocator, &.{ bin_path, name });
+        defer allocator.free(src);
+        dir.rename(src, dir, name, io) catch |err| switch (err) {
+            error.FileNotFound => {},
+            else => return err,
+        };
+    }
+
+    // Discard the entire extracted tree. deleteTree tolerates a missing path,
+    // so a re-run over an already-flattened layout cleans up without erroring.
+    dir.deleteTree(io, extracted_dir) catch {};
+}
+
 /// True if `sub_path` exists under `dest_root` (used to detect an installed
 /// daemon binary).
 pub fn fileExists(allocator: std.mem.Allocator, dest_root: []const u8, sub_path: []const u8) bool {
@@ -156,6 +223,53 @@ pub fn fileExists(allocator: std.mem.Allocator, dest_root: []const u8, sub_path:
     defer dir.close(io);
     dir.access(io, sub_path, .{}) catch return false;
     return true;
+}
+
+test "installRoot builds ~/.boxwallet under the home dir (posix)" {
+    if (builtin.os.tag == .windows) return error.SkipZigTest;
+    const allocator = std.testing.allocator;
+    const root = try installRoot(allocator, "/home/alice");
+    defer allocator.free(root);
+    try std.testing.expectEqualStrings("/home/alice/.boxwallet", root);
+}
+
+test "promoteAndTidy lifts bin/ binaries to root and removes the extracted tree" {
+    const allocator = std.testing.allocator;
+
+    var threaded: std.Io.Threaded = .init(allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    const root = "test-promote-out";
+    std.Io.Dir.cwd().deleteTree(io, root) catch {};
+    defer std.Io.Dir.cwd().deleteTree(io, root) catch {};
+
+    // Simulate a strip=0 extraction: the versioned wrapper dir with bin/{daemon,
+    // cli,tx,qt}, plus lib/ and a top-level README inside it.
+    const wrapper = "nexa-9.9.9";
+    inline for (.{ "bin", "lib" }) |sub| {
+        var d = try std.Io.Dir.cwd().createDirPathOpen(io, root ++ "/" ++ wrapper ++ "/" ++ sub, .{});
+        d.close(io);
+    }
+    var dir = try std.Io.Dir.cwd().openDir(io, root, .{});
+    defer dir.close(io);
+    try dir.writeFile(io, .{ .sub_path = wrapper ++ "/bin/nexad", .data = "DAEMON" });
+    try dir.writeFile(io, .{ .sub_path = wrapper ++ "/bin/nexa-cli", .data = "CLI" });
+    try dir.writeFile(io, .{ .sub_path = wrapper ++ "/bin/nexa-qt", .data = "GUI" }); // discarded
+    try dir.writeFile(io, .{ .sub_path = wrapper ++ "/lib/libnexa.so", .data = "LIB" });
+    try dir.writeFile(io, .{ .sub_path = wrapper ++ "/INSTALL.md", .data = "docs" });
+
+    try promoteAndTidy(allocator, root, wrapper, "bin", &.{ "nexad", "nexa-cli" });
+
+    // Wanted binaries promoted to the root.
+    try std.testing.expect(fileExists(allocator, root, "nexad"));
+    try std.testing.expect(fileExists(allocator, root, "nexa-cli"));
+    // The whole extracted wrapper (incl. the unwanted nexa-qt, lib/, README) is gone.
+    try std.testing.expect(!fileExists(allocator, root, wrapper));
+
+    // Idempotent: a second run over the already-flattened layout is a no-op.
+    try promoteAndTidy(allocator, root, wrapper, "bin", &.{ "nexad", "nexa-cli" });
+    try std.testing.expect(fileExists(allocator, root, "nexad"));
 }
 
 test "extractArchive gunzips + untars a real .tar.gz with strip_components" {
