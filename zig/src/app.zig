@@ -1,6 +1,7 @@
 const std = @import("std");
 const zz = @import("zigzag");
 const models = @import("models.zig");
+const install_mod = @import("install.zig");
 const Nexa = @import("coins/nexa.zig").Nexa;
 
 /// Where daemon binaries get installed. A real version would derive
@@ -44,12 +45,12 @@ pub const App = struct {
         return .none;
     }
 
-    pub fn update(self: *App, msg: Msg, _: *zz.Context) zz.Cmd(Msg) {
+    pub fn update(self: *App, msg: Msg, ctx: *zz.Context) zz.Cmd(Msg) {
         switch (msg) {
             .key => |k| switch (k.key) {
                 .char => |c| switch (c) {
                     'q' => return .quit,
-                    'i' => self.tryInstall(),
+                    'i' => self.tryInstall(ctx),
                     'k' => self.move(-1),
                     'j' => self.move(1),
                     else => {},
@@ -87,11 +88,16 @@ pub const App = struct {
         }
     }
 
-    fn tryInstall(self: *App) void {
+    fn tryInstall(self: *App, ctx: *zz.Context) void {
         const coin = self.selectedCoin() orelse return;
-        // NOTE: synchronous — this blocks the UI thread during download. A real
-        // version would dispatch it as a Cmd and stream progress.
-        if (coin.install(self.allocator, install_root)) {
+
+        // Synchronous — this blocks the UI event loop for the duration of the
+        // install. Rather than freeze, `InstallRender` paints download/extract
+        // progress bars straight to the terminal as the work reports in.
+        var render: InstallRender = .{ .ctx = ctx, .name = coin.coinName() };
+        const progress: install_mod.Progress = .{ .ctx = &render, .func = InstallRender.onProgress };
+
+        if (coin.install(ctx.persistent_allocator, install_root, progress)) {
             self.installed = coin.isInstalled(self.allocator, install_root);
             self.status = if (self.installed) "install complete" else "install ran but daemon not found";
         } else |err| {
@@ -175,5 +181,99 @@ pub const App = struct {
         }
 
         return out.toOwnedSlice();
+    }
+};
+
+/// Draws live download + extract progress bars to the terminal while a
+/// (blocking) install runs. The normal event-loop render is paused for the
+/// duration of the install, so this paints straight to the terminal in
+/// response to each progress callback; the next frame after install repaints
+/// the regular two-pane view over the top.
+const InstallRender = struct {
+    ctx: *zz.Context,
+    name: []const u8,
+    dl_cur: u64 = 0,
+    dl_total: u64 = 0,
+    ex_cur: u64 = 0,
+    ex_total: u64 = 0,
+    /// Once extraction starts the download is complete; peg its bar to full.
+    extract_started: bool = false,
+
+    /// `install_mod.Progress` callback. Records the latest byte counts for the
+    /// reported phase and repaints.
+    fn onProgress(opaque_ctx: *anyopaque, phase: install_mod.Phase, current: u64, total: u64) void {
+        const self: *InstallRender = @ptrCast(@alignCast(opaque_ctx));
+        switch (phase) {
+            .download => {
+                self.dl_cur = current;
+                self.dl_total = total;
+            },
+            .extract => {
+                if (!self.extract_started) {
+                    self.extract_started = true;
+                    if (self.dl_total > 0) self.dl_cur = self.dl_total;
+                }
+                self.ex_cur = current;
+                self.ex_total = total;
+            },
+        }
+        self.paint();
+    }
+
+    fn paint(self: *InstallRender) void {
+        const term = self.ctx._terminal orelse return;
+
+        // A fresh arena per paint, freed on return, so repeated repaints during
+        // a long install don't accumulate. Backed by the persistent allocator
+        // (the per-frame arena isn't reset while we're blocking the loop).
+        var arena = std.heap.ArenaAllocator.init(self.ctx.persistent_allocator);
+        defer arena.deinit();
+        const a = arena.allocator();
+
+        const screen = self.render(a) catch return;
+
+        const w = term.writer();
+        w.writeAll(zz.ansi.sync_start) catch {};
+        w.writeAll(zz.ansi.cursor_home) catch {};
+        var lines = std.mem.splitScalar(u8, screen, '\n');
+        var first = true;
+        while (lines.next()) |line| {
+            if (!first) w.writeAll("\r\n") catch {};
+            first = false;
+            w.writeAll(line) catch {};
+            w.writeAll(zz.ansi.line_clear_right) catch {};
+        }
+        // Wipe anything the taller two-pane view left below us.
+        w.writeAll(zz.ansi.screen_clear_below) catch {};
+        w.writeAll(zz.ansi.sync_end) catch {};
+        term.flush() catch {};
+    }
+
+    fn render(self: *InstallRender, a: std.mem.Allocator) ![]const u8 {
+        const heading = try std.fmt.allocPrint(a, "Installing {s}", .{self.name});
+        const title = (zz.Style{}).bold(true).fg(.cyan).render(a, heading) catch heading;
+
+        const dl_bar = try bar(a, self.dl_cur, self.dl_total);
+        const ex_bar = try bar(a, self.ex_cur, self.ex_total);
+
+        return std.fmt.allocPrint(a,
+            \\{s}
+            \\
+            \\  Downloading  {s}
+            \\  Extracting   {s}
+            \\
+            \\  please wait…
+        , .{ title, dl_bar, ex_bar });
+    }
+
+    /// Render a single ZigZag progress bar for `current`/`total` bytes.
+    fn bar(a: std.mem.Allocator, current: u64, total: u64) ![]const u8 {
+        var p = zz.Progress.init();
+        p.setWidth(30);
+        // Guard against a zero total (unknown length) so the bar sits at 0%
+        // rather than dividing by zero.
+        p.setTotal(@floatFromInt(@max(total, 1)));
+        p.setValue(@floatFromInt(current));
+        return p.view(a);
     }
 };

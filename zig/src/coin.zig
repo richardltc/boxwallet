@@ -1,5 +1,6 @@
 const std = @import("std");
 const models = @import("models.zig");
+const install_mod = @import("install.zig");
 
 /// Runtime-polymorphic handle to a coin backend — the Zig equivalent of the
 /// Go `Coin` interface in `coins.go`. A frontend (the ZigZag TUI) holds a
@@ -31,11 +32,13 @@ pub const Coin = struct {
             allocator: std.mem.Allocator,
             install_root: []const u8,
         ) bool,
-        /// Download + unarchive the daemon files into `install_root`.
+        /// Download + unarchive the daemon files into `install_root`,
+        /// optionally reporting download/extract progress.
         install: *const fn (
             ptr: *anyopaque,
             allocator: std.mem.Allocator,
             install_root: []const u8,
+            progress: ?install_mod.Progress,
         ) anyerror!void,
     };
 
@@ -64,7 +67,12 @@ pub const Coin = struct {
     pub fn isInstalled(self: Coin, allocator: std.mem.Allocator, install_root: []const u8) bool {
         return self.vtable.is_installed(self.ptr, allocator, install_root);
     }
-    pub fn install(self: Coin, allocator: std.mem.Allocator, install_root: []const u8) !void {
-        return self.vtable.install(self.ptr, allocator, install_root);
+    pub fn install(
+        self: Coin,
+        allocator: std.mem.Allocator,
+        install_root: []const u8,
+        progress: ?install_mod.Progress,
+    ) !void {
+        return self.vtable.install(self.ptr, allocator, install_root, progress);
     }
 };

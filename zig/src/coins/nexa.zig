@@ -54,9 +54,14 @@ pub const Nexa = struct {
         return install_mod.fileExists(allocator, install_root, daemon_file_lin);
     }
 
-    /// Download + unarchive the Nexa daemon files into `install_root`.
-    pub fn install(allocator: std.mem.Allocator, install_root: []const u8) !void {
-        try install_mod.downloadAndExtract(allocator, download_url_linux, .tar_gz, install_root, 1);
+    /// Download + unarchive the Nexa daemon files into `install_root`,
+    /// optionally reporting download/extract progress.
+    pub fn install(
+        allocator: std.mem.Allocator,
+        install_root: []const u8,
+        progress: ?install_mod.Progress,
+    ) !void {
+        try install_mod.downloadAndExtract(allocator, download_url_linux, .tar_gz, install_root, 1, progress);
     }
 
     // --- vtable plumbing -------------------------------------------------
@@ -97,8 +102,13 @@ pub const Nexa = struct {
     fn vtIsInstalled(_: *anyopaque, allocator: std.mem.Allocator, install_root: []const u8) bool {
         return isInstalled(allocator, install_root);
     }
-    fn vtInstall(_: *anyopaque, allocator: std.mem.Allocator, install_root: []const u8) anyerror!void {
-        return install(allocator, install_root);
+    fn vtInstall(
+        _: *anyopaque,
+        allocator: std.mem.Allocator,
+        install_root: []const u8,
+        progress: ?install_mod.Progress,
+    ) anyerror!void {
+        return install(allocator, install_root, progress);
     }
 };
 
