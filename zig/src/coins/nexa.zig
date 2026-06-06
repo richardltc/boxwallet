@@ -17,12 +17,23 @@ pub const Nexa = struct {
     pub const core_version = "2.0.0.0";
     pub const daemon_file_lin = "nexad";
     pub const daemon_file_win = "nexad.exe";
+    pub const cli_file_lin = "nexa-cli";
+    pub const tx_file_lin = "nexa-tx";
 
-    // Download location (Linux). The tarball unpacks into `nexa-<ver>/`,
-    // so install strips one path component.
+    // Download location (Linux). The tarball wraps everything in `nexa-<ver>/`,
+    // with the executables under `nexa-<ver>/bin/`.
     const download_base = "https://bitcoinunlimited.info/nexa/" ++ core_version ++ "/";
     const download_file_linux = "nexa-" ++ core_version ++ "-linux64.tar.gz";
     pub const download_url_linux = download_base ++ download_file_linux;
+
+    // Layout inside the archive. BoxWallet keeps only the daemon/cli/tx binaries
+    // (from `bin/`) at the install root and discards the rest of the extracted
+    // tree — the GUI/miner/rostrum, `lib/`, `share/`, the bundled `INSTALL.md`.
+    // `nexad` links only against system libraries, so dropping `lib/libnexa.so`
+    // is safe. Matches the Go installer.
+    const extracted_dir = "nexa-" ++ core_version;
+    const bin_subdir = "bin";
+    const promote_files = [_][]const u8{ daemon_file_lin, cli_file_lin, tx_file_lin };
 
     /// Build the type-erased `Coin` handle for this instance.
     pub fn coin(self: *Nexa) Coin {
@@ -56,12 +67,17 @@ pub const Nexa = struct {
 
     /// Download + unarchive the Nexa daemon files into `install_root`,
     /// optionally reporting download/extract progress.
+    ///
+    /// Extracts the versioned wrapper dir intact, then `promoteAndTidy` lifts the
+    /// daemon/cli/tx binaries to the install root and removes the wrapper,
+    /// leaving `nexad` exactly where `isInstalled` looks for it.
     pub fn install(
         allocator: std.mem.Allocator,
         install_root: []const u8,
         progress: ?install_mod.Progress,
     ) !void {
-        try install_mod.downloadAndExtract(allocator, download_url_linux, .tar_gz, install_root, 1, progress);
+        try install_mod.downloadAndExtract(allocator, download_url_linux, .tar_gz, install_root, 0, progress);
+        try install_mod.promoteAndTidy(allocator, install_root, extracted_dir, bin_subdir, &promote_files);
     }
 
     // --- vtable plumbing -------------------------------------------------
@@ -70,6 +86,7 @@ pub const Nexa = struct {
         .coin_name = vtCoinName,
         .coin_name_abbrev = vtCoinNameAbbrev,
         .conf_file = vtConfFile,
+        .daemon_file = vtDaemonFile,
         .rpc_default_port = vtRpcDefaultPort,
         .rpc_default_username = vtRpcDefaultUsername,
         .blockchain_state = vtBlockchainState,
@@ -85,6 +102,9 @@ pub const Nexa = struct {
     }
     fn vtConfFile(_: *anyopaque) []const u8 {
         return conf_file;
+    }
+    fn vtDaemonFile(_: *anyopaque) []const u8 {
+        return daemon_file_lin;
     }
     fn vtRpcDefaultPort(_: *anyopaque) []const u8 {
         return rpc_default_port;

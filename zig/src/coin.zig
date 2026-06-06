@@ -17,6 +17,8 @@ pub const Coin = struct {
         coin_name: *const fn (ptr: *anyopaque) []const u8,
         coin_name_abbrev: *const fn (ptr: *anyopaque) []const u8,
         conf_file: *const fn (ptr: *anyopaque) []const u8,
+        /// Daemon binary filename for the host OS (e.g. `nexad`, `divid`).
+        daemon_file: *const fn (ptr: *anyopaque) []const u8,
         rpc_default_port: *const fn (ptr: *anyopaque) []const u8,
         rpc_default_username: *const fn (ptr: *anyopaque) []const u8,
         /// Live call: returns normalized chain state. Returned value owns its
@@ -50,6 +52,9 @@ pub const Coin = struct {
     }
     pub fn confFile(self: Coin) []const u8 {
         return self.vtable.conf_file(self.ptr);
+    }
+    pub fn daemonFile(self: Coin) []const u8 {
+        return self.vtable.daemon_file(self.ptr);
     }
     pub fn rpcDefaultPort(self: Coin) []const u8 {
         return self.vtable.rpc_default_port(self.ptr);
