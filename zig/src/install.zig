@@ -7,8 +7,8 @@ const flate = std.compress.flate;
 ///   - POSIX:   `<home>/.boxwallet`
 ///   - Windows: `<home>/AppData/Roaming/BoxWallet`
 ///
-/// `home_dir` is the process home directory (ZigZag captures this as
-/// `ctx.home_dir` from `$HOME` / `%USERPROFILE%`). The caller owns the returned
+/// `home_dir` is the process home directory (the caller reads it from `$HOME` /
+/// `%USERPROFILE%` via ZigZag's `ctx.environ_map`). The caller owns the returned
 /// slice. The directory itself is created lazily by `downloadAndExtract`.
 pub fn installRoot(allocator: std.mem.Allocator, home_dir: []const u8) ![]const u8 {
     return if (comptime builtin.os.tag == .windows)
@@ -128,26 +128,26 @@ pub fn downloadAndExtract(
     defer scratch.close(io);
     var read_buffer: [32 * 1024]u8 = undefined;
     var scratch_reader = scratch.reader(io, &read_buffer);
-    try extractArchive(io, &scratch_reader.interface, total, format, dest_root, strip, progress);
+    try extractArchive(io, &scratch_reader.interface, format, dest_root, strip, progress);
 }
 
 /// Extract an already-downloaded archive, read from `archive`, into `dest_root`
 /// (created if missing). Split out from the download so the gunzip+untar path is
 /// unit-testable from an in-memory fixture without a network round trip.
 ///
-/// `compressed_total` is the archive's size in bytes, used only for the progress
-/// report (pass 0 when unknown).
-///
 /// The decompressor pulls compressed bytes from `archive` on demand and the tar
 /// extractor writes each entry to disk as it is produced, so the pipeline runs
 /// in constant memory: neither the compressed archive nor the decompressed tree
-/// is ever fully resident — only the gzip window. Because extraction streams in
-/// a single pass, the extract phase reports 0% then 100% rather than animating;
-/// the byte-by-byte download bar is the long pole on a slow link anyway.
+/// is ever fully resident — only the gzip window.
+///
+/// `std.tar.extract` is a single opaque call that would otherwise report nothing
+/// between start and finish, so a `TallyReader` is spliced between the
+/// decompressor and the extractor to emit `.extract` progress as bytes flow.
+/// That lets a frontend animate a spinner during the pass; the extract byte
+/// counts are indeterminate, so `total` is reported as 0.
 pub fn extractArchive(
     io: std.Io,
     archive: *std.Io.Reader,
-    compressed_total: u64,
     format: Format,
     dest_root: []const u8,
     strip: u32,
@@ -161,18 +161,70 @@ pub fn extractArchive(
             var window: [flate.max_window_len]u8 = undefined;
             var dz = flate.Decompress.init(archive, .gzip, &window);
 
-            report(progress, .extract, 0, compressed_total);
-            std.tar.extract(io, dest, &dz.reader, .{
+            // Signal that extraction has begun (a frontend pegs the download bar
+            // full and starts its spinner here), then stream gunzip → tally →
+            // untar. The tally fires a report per chunk the extractor pulls.
+            report(progress, .extract, 0, 0);
+            var tally: TallyReader = .init(&dz.reader, progress);
+            std.tar.extract(io, dest, &tally.interface, .{
                 .strip_components = strip,
                 .mode_mode = .executable_bit_only,
             }) catch return error.ExtractFailed;
-            report(progress, .extract, compressed_total, compressed_total);
         },
         // Windows bundles ship as .zip; Linux/macOS use tar.gz, which is all
         // this slice targets. std.zip can fill this in later.
         .zip => return error.ZipNotYetSupported,
     }
 }
+
+/// A pass-through `std.Io.Reader` that reports throughput as bytes flow through
+/// it, buffering nothing of its own.
+///
+/// Wrapped around the decompressor's reader so the otherwise-opaque
+/// `std.tar.extract` pass emits periodic `.extract` progress (one report per
+/// chunk the extractor pulls), letting the UI animate a spinner instead of
+/// sitting frozen. tar reads its source only via `stream`/`readVec`/`discard`
+/// and supplies its own destination buffers, so this reader keeps an empty
+/// buffer and forwards every call straight to `inner` — no copy, no extra
+/// memory. (`readVec` is left to the default, which routes through `stream`.)
+const TallyReader = struct {
+    inner: *std.Io.Reader,
+    progress: ?Progress,
+    count: u64 = 0,
+    interface: std.Io.Reader,
+
+    fn init(inner: *std.Io.Reader, progress: ?Progress) TallyReader {
+        return .{
+            .inner = inner,
+            .progress = progress,
+            .interface = .{
+                .vtable = &.{ .stream = stream, .discard = discard },
+                .buffer = &.{},
+                .seek = 0,
+                .end = 0,
+            },
+        };
+    }
+
+    fn stream(r: *std.Io.Reader, w: *std.Io.Writer, limit: std.Io.Limit) std.Io.Reader.StreamError!usize {
+        const self: *TallyReader = @fieldParentPtr("interface", r);
+        const n = try self.inner.stream(w, limit);
+        self.bump(n);
+        return n;
+    }
+
+    fn discard(r: *std.Io.Reader, limit: std.Io.Limit) std.Io.Reader.Error!usize {
+        const self: *TallyReader = @fieldParentPtr("interface", r);
+        const n = try self.inner.discard(limit);
+        self.bump(n);
+        return n;
+    }
+
+    fn bump(self: *TallyReader, n: usize) void {
+        self.count += n;
+        report(self.progress, .extract, self.count, 0);
+    }
+};
 
 /// Flatten an extracted coin bundle in place.
 ///
@@ -301,8 +353,43 @@ test "extractArchive gunzips + untars a real .tar.gz with strip_components" {
     defer std.Io.Dir.cwd().deleteTree(io, dest) catch {};
 
     var in = std.Io.Reader.fixed(archive);
-    try extractArchive(io, &in, archive.len, .tar_gz, dest, 1, null);
+    try extractArchive(io, &in, .tar_gz, dest, 1, null);
 
     try std.testing.expect(fileExists(allocator, dest, "nexad"));
     try std.testing.expect(fileExists(allocator, dest, "nexa-cli"));
+}
+
+test "extractArchive reports extract progress periodically (drives the UI spinner)" {
+    const allocator = std.testing.allocator;
+
+    var threaded: std.Io.Threaded = .init(allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    const archive = @embedFile("testdata/fixture.tar.gz");
+    const dest = "test-extract-progress-out";
+    std.Io.Dir.cwd().deleteTree(io, dest) catch {};
+    defer std.Io.Dir.cwd().deleteTree(io, dest) catch {};
+
+    // Count `.extract` reports. A streaming extract fires the initial report
+    // plus one per chunk the tar reader pulls, so we expect several — unlike a
+    // non-streaming extract, which could only report a single "done".
+    const Counter = struct {
+        extract_reports: usize = 0,
+        fn onProgress(ctx: *anyopaque, phase: Phase, current: u64, total: u64) void {
+            _ = current;
+            _ = total;
+            if (phase == .extract) {
+                const self: *@This() = @ptrCast(@alignCast(ctx));
+                self.extract_reports += 1;
+            }
+        }
+    };
+    var counter: Counter = .{};
+    const progress: Progress = .{ .ctx = &counter, .func = Counter.onProgress };
+
+    var in = std.Io.Reader.fixed(archive);
+    try extractArchive(io, &in, .tar_gz, dest, 1, progress);
+
+    try std.testing.expect(counter.extract_reports >= 2);
 }

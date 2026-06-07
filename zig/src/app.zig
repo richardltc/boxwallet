@@ -33,7 +33,8 @@ pub const App = struct {
     /// transient work in `isInstalled`. Not the per-frame `ctx.allocator`.
     allocator: std.mem.Allocator,
     /// Per-platform `~/.boxwallet` dir where coin daemons are extracted.
-    /// Resolved once in `init` from `ctx.home_dir`; lives for the program.
+    /// Resolved once in `init` from the process environment ($HOME, or
+    /// %USERPROFILE% on Windows); lives for the program.
     install_root: []const u8,
     /// True when `install_root` is heap-allocated (and so must be freed in
     /// `deinit`); false when it's the static `fallback_install_root`.
@@ -48,13 +49,18 @@ pub const App = struct {
 
     pub fn init(self: *App, ctx: *zz.Context) zz.Cmd(Msg) {
         // Resolve ~/.boxwallet (or %USERPROFILE%\AppData\Roaming\BoxWallet on
-        // Windows) from the home dir ZigZag captured at startup. Held on the
-        // persistent allocator so it outlives the per-frame arena (and is freed
-        // in `deinit`); on the unlikely allocation failure, fall back to a
-        // relative dir that we don't own.
+        // Windows) from the home dir in the process environment. ZigZag 0.1.5
+        // exposes the raw env map rather than a captured home dir, so read
+        // $HOME (%USERPROFILE% on Windows) ourselves. Held on the persistent
+        // allocator so it outlives the per-frame arena (and is freed in
+        // `deinit`); on the unlikely allocation failure, fall back to a relative
+        // dir that we don't own.
+        const home_key = if (@import("builtin").os.tag == .windows) "USERPROFILE" else "HOME";
+        const home_dir = ctx.environ_map.get(home_key) orelse "";
+
         var install_root: []const u8 = fallback_install_root;
         var install_root_owned = false;
-        if (install_mod.installRoot(ctx.persistent_allocator, ctx.home_dir)) |root| {
+        if (install_mod.installRoot(ctx.persistent_allocator, home_dir)) |root| {
             install_root = root;
             install_root_owned = true;
         } else |_| {}
@@ -134,7 +140,12 @@ pub const App = struct {
         // install. Rather than freeze, `InstallRender` paints download/extract
         // progress bars straight to the terminal as the work reports in.
         const was_installed = self.installed;
-        var render: InstallRender = .{ .ctx = ctx, .name = coin.coinName(), .updating = was_installed };
+        var render: InstallRender = .{
+            .ctx = ctx,
+            .name = coin.coinName(),
+            .updating = was_installed,
+            .spinner = zz.Spinner.init(),
+        };
         const progress: install_mod.Progress = .{ .ctx = &render, .func = InstallRender.onProgress };
 
         if (coin.install(ctx.persistent_allocator, self.install_root, progress)) {
@@ -241,30 +252,42 @@ const InstallRender = struct {
     updating: bool = false,
     dl_cur: u64 = 0,
     dl_total: u64 = 0,
-    ex_cur: u64 = 0,
-    ex_total: u64 = 0,
-    /// Once extraction starts the download is complete; peg its bar to full.
+    /// Extraction has no meaningful percentage (it streams in a single pass), so
+    /// it's shown as a spinner instead of a bar. Set in `tryInstall`.
+    spinner: zz.Spinner,
+    /// Once extraction starts the download is complete; peg its bar to full and
+    /// begin animating the spinner.
     extract_started: bool = false,
+    /// Monotonic timestamp captured when extraction begins, used to advance the
+    /// spinner at its own fps across the (many) byte-flow reports.
+    extract_start: std.Io.Clock.Timestamp = undefined,
 
-    /// `install_mod.Progress` callback. Records the latest byte counts for the
-    /// reported phase and repaints.
+    /// `install_mod.Progress` callback. Updates the reported phase and repaints.
     fn onProgress(opaque_ctx: *anyopaque, phase: install_mod.Phase, current: u64, total: u64) void {
         const self: *InstallRender = @ptrCast(@alignCast(opaque_ctx));
         switch (phase) {
             .download => {
                 self.dl_cur = current;
                 self.dl_total = total;
+                self.paint();
             },
             .extract => {
+                // First extract report: download is done. Peg its bar full and
+                // start the spinner clock. Later reports stream in faster than
+                // is worth repainting, so advance the spinner on its own fps and
+                // only repaint when the frame actually changes.
                 if (!self.extract_started) {
                     self.extract_started = true;
                     if (self.dl_total > 0) self.dl_cur = self.dl_total;
+                    self.extract_start = .now(self.ctx.io, .awake);
+                    self.paint();
+                    return;
                 }
-                self.ex_cur = current;
-                self.ex_total = total;
+                const now: std.Io.Clock.Timestamp = .now(self.ctx.io, .awake);
+                const elapsed_ns: i64 = @intCast(self.extract_start.durationTo(now).raw.nanoseconds);
+                if (self.spinner.update(elapsed_ns)) self.paint();
             },
         }
-        self.paint();
     }
 
     fn paint(self: *InstallRender) void {
@@ -302,7 +325,12 @@ const InstallRender = struct {
         const title = (zz.Style{}).bold(true).fg(.cyan).render(a, heading) catch heading;
 
         const dl_bar = try bar(a, self.dl_cur, self.dl_total);
-        const ex_bar = try bar(a, self.ex_cur, self.ex_total);
+        // Extraction streams in one pass with no percentage, so once it begins
+        // show an animated spinner; before that, a dim placeholder.
+        const ex_view: []const u8 = if (self.extract_started)
+            try self.spinner.view(a)
+        else
+            "·";
 
         return std.fmt.allocPrint(a,
             \\{s}
@@ -311,7 +339,7 @@ const InstallRender = struct {
             \\  Extracting   {s}
             \\
             \\  please wait…
-        , .{ title, dl_bar, ex_bar });
+        , .{ title, dl_bar, ex_view });
     }
 
     /// Render a single ZigZag progress bar for `current`/`total` bytes.
@@ -337,7 +365,9 @@ test "App.init resolves install_root from home dir and deinit frees it" {
     // Minimal context: the home dir drives install_root and the persistent
     // allocator owns it. std.testing.allocator fails the test if `deinit`
     // doesn't free what `init` allocated.
-    const env: zz.Environment = .{ .home_dir = "/home/tester" };
+    var env = std.process.Environ.Map.init(allocator);
+    defer env.deinit();
+    try env.put("HOME", "/home/tester");
     var ctx = zz.Context.init(allocator, allocator, io, &env);
 
     var app: App = undefined;
@@ -356,7 +386,9 @@ test "renderDetail renders the selected coin generically through the Coin interf
     defer threaded.deinit();
     const io = threaded.io();
 
-    const env: zz.Environment = .{ .home_dir = "/home/tester" };
+    var env = std.process.Environ.Map.init(allocator);
+    defer env.deinit();
+    try env.put("HOME", "/home/tester");
     var ctx = zz.Context.init(allocator, allocator, io, &env);
 
     var app: App = undefined;
