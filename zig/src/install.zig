@@ -50,9 +50,11 @@ fn report(progress: ?Progress, phase: Phase, current: u64, total: u64) void {
 /// `progress`, when supplied, is fed the download then extract byte counts so a
 /// caller can render a progress bar.
 ///
-/// Runs synchronously on its own blocking io. The whole archive is buffered in
-/// memory (coin bundles are tens of MB — acceptable), then gunzipped and
-/// untarred straight to disk.
+/// Runs synchronously on its own blocking io. **Memory stays flat regardless of
+/// bundle size:** the archive is streamed to a scratch file on disk (never held
+/// in RAM), then gunzip → untar runs as a streaming pipeline straight to disk.
+/// Only small fixed buffers and the gzip window are resident at any point —
+/// which matters because BoxWallet targets low-spec machines.
 pub fn downloadAndExtract(
     allocator: std.mem.Allocator,
     url: []const u8,
@@ -65,8 +67,6 @@ pub fn downloadAndExtract(
     defer threaded.deinit();
     const io = threaded.io();
 
-    // 1. Download the whole archive into memory, streaming in chunks so we can
-    //    report how many bytes have arrived against the content length.
     var client: std.http.Client = .{ .allocator = allocator, .io = io };
     defer client.deinit();
 
@@ -86,38 +86,68 @@ pub fn downloadAndExtract(
 
     const total = response.head.content_length orelse 0;
 
-    var transfer_buffer: [4096]u8 = undefined;
-    const reader = response.reader(&transfer_buffer);
+    // Open the destination and a scratch file to stream the download into.
+    // Buffering on disk rather than in memory is the whole point: a coin bundle
+    // is tens of MB compressed and several times that decompressed, none of
+    // which we want resident on a low-spec box.
+    var dest = try std.Io.Dir.cwd().createDirPathOpen(io, dest_root, .{});
+    defer dest.close(io);
 
-    var body: std.Io.Writer.Allocating = .init(allocator);
-    defer body.deinit();
+    const scratch_name = ".boxwallet-download.tmp";
+    {
+        // 1. Stream the archive to the scratch file in bounded chunks, reporting
+        //    bytes arrived against the content length.
+        var scratch = try dest.createFile(io, scratch_name, .{});
+        defer scratch.close(io);
 
-    var received: u64 = 0;
-    report(progress, .download, 0, total);
-    while (true) {
-        const n = reader.stream(&body.writer, .limited(256 * 1024)) catch |err| switch (err) {
-            error.EndOfStream => break,
-            else => return error.DownloadFailed,
-        };
-        received += n;
-        report(progress, .download, received, total);
+        var transfer_buffer: [32 * 1024]u8 = undefined;
+        const reader = response.reader(&transfer_buffer);
+
+        var write_buffer: [32 * 1024]u8 = undefined;
+        var scratch_writer = scratch.writer(io, &write_buffer);
+
+        var received: u64 = 0;
+        report(progress, .download, 0, total);
+        while (true) {
+            const n = reader.stream(&scratch_writer.interface, .limited(256 * 1024)) catch |err| switch (err) {
+                error.EndOfStream => break,
+                else => return error.DownloadFailed,
+            };
+            received += n;
+            report(progress, .download, received, total);
+        }
+        try scratch_writer.interface.flush();
     }
+    // The scratch file is consumed by extraction below, then discarded. Closing
+    // the read handle (registered after this) runs first, so the delete is safe
+    // on Windows too.
+    defer dest.deleteFile(io, scratch_name) catch {};
 
-    // 2. Extract the in-memory archive to disk.
-    try extractArchive(allocator, io, body.written(), format, dest_root, strip, progress);
+    // 2. Stream-extract the on-disk archive: no intermediate copy in memory.
+    var scratch = try dest.openFile(io, scratch_name, .{});
+    defer scratch.close(io);
+    var read_buffer: [32 * 1024]u8 = undefined;
+    var scratch_reader = scratch.reader(io, &read_buffer);
+    try extractArchive(io, &scratch_reader.interface, total, format, dest_root, strip, progress);
 }
 
-/// Extract an in-memory archive into `dest_root` (created if missing).
-/// Split out from the download so the gunzip+untar path is unit-testable
-/// without a network round trip.
+/// Extract an already-downloaded archive, read from `archive`, into `dest_root`
+/// (created if missing). Split out from the download so the gunzip+untar path is
+/// unit-testable from an in-memory fixture without a network round trip.
 ///
-/// Progress is reported against the compressed input consumed: the archive is
-/// gunzipped into memory first (the CPU-bound bulk of the work, which drives
-/// the bar), then untarred to disk.
+/// `compressed_total` is the archive's size in bytes, used only for the progress
+/// report (pass 0 when unknown).
+///
+/// The decompressor pulls compressed bytes from `archive` on demand and the tar
+/// extractor writes each entry to disk as it is produced, so the pipeline runs
+/// in constant memory: neither the compressed archive nor the decompressed tree
+/// is ever fully resident — only the gzip window. Because extraction streams in
+/// a single pass, the extract phase reports 0% then 100% rather than animating;
+/// the byte-by-byte download bar is the long pole on a slow link anyway.
 pub fn extractArchive(
-    allocator: std.mem.Allocator,
     io: std.Io,
-    bytes: []const u8,
+    archive: *std.Io.Reader,
+    compressed_total: u64,
     format: Format,
     dest_root: []const u8,
     strip: u32,
@@ -128,32 +158,15 @@ pub fn extractArchive(
 
     switch (format) {
         .tar_gz => {
-            // Gunzip the whole archive into memory, reporting progress by how
-            // much of the compressed input the decompressor has consumed.
-            var in = std.Io.Reader.fixed(bytes);
             var window: [flate.max_window_len]u8 = undefined;
-            var dz = flate.Decompress.init(&in, .gzip, &window);
+            var dz = flate.Decompress.init(archive, .gzip, &window);
 
-            var tar_bytes: std.Io.Writer.Allocating = .init(allocator);
-            defer tar_bytes.deinit();
-
-            report(progress, .extract, 0, bytes.len);
-            while (true) {
-                _ = dz.reader.stream(&tar_bytes.writer, .limited(256 * 1024)) catch |err| switch (err) {
-                    error.EndOfStream => break,
-                    else => return error.ExtractFailed,
-                };
-                report(progress, .extract, in.seek, bytes.len);
-            }
-
-            // Untar the decompressed bytes to disk. This is comparatively quick,
-            // so the bar is left pegged at 100% for it.
-            var tar_in = std.Io.Reader.fixed(tar_bytes.written());
-            try std.tar.extract(io, dest, &tar_in, .{
+            report(progress, .extract, 0, compressed_total);
+            std.tar.extract(io, dest, &dz.reader, .{
                 .strip_components = strip,
                 .mode_mode = .executable_bit_only,
-            });
-            report(progress, .extract, bytes.len, bytes.len);
+            }) catch return error.ExtractFailed;
+            report(progress, .extract, compressed_total, compressed_total);
         },
         // Windows bundles ship as .zip; Linux/macOS use tar.gz, which is all
         // this slice targets. std.zip can fill this in later.
@@ -287,7 +300,8 @@ test "extractArchive gunzips + untars a real .tar.gz with strip_components" {
     std.Io.Dir.cwd().deleteTree(io, dest) catch {};
     defer std.Io.Dir.cwd().deleteTree(io, dest) catch {};
 
-    try extractArchive(allocator, io, archive, .tar_gz, dest, 1, null);
+    var in = std.Io.Reader.fixed(archive);
+    try extractArchive(io, &in, archive.len, .tar_gz, dest, 1, null);
 
     try std.testing.expect(fileExists(allocator, dest, "nexad"));
     try std.testing.expect(fileExists(allocator, dest, "nexa-cli"));
