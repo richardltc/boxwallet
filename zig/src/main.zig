@@ -7,7 +7,7 @@ const App = @import("app.zig").App;
 /// 0.16 hands `main` a `std.process.Init` carrying the allocator, io, and
 /// environment — exactly what ZigZag's `Program` needs.
 pub fn main(init: std.process.Init) !void {
-    var program = zz.Program(App).init(init.gpa, init.io, init.environ_map);
+    var program = try zz.Program(App).init(init.gpa, init.io, init.environ_map);
     defer program.deinit();
     try program.run();
 }
