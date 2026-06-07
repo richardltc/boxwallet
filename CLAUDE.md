@@ -7,6 +7,26 @@ and uses [ZigZag](https://github.com/meszmate/zigzag) for its TUI — there is *
 web frontend**. The end goal is a complete, idiomatic **Zig 0.16** port of the Go
 application, one coin at a time.
 
+## Memory is a first-class constraint
+
+BoxWallet is likely to run on **low-spec machines** (single-board computers, old
+hardware, low-RAM VPSes), so **keeping peak memory small is a priority on par
+with correctness.** When a design choice trades RAM against disk or CPU, prefer
+the one that holds less in memory unless told otherwise.
+
+- **Stream, don't buffer.** Process data in bounded chunks straight from source
+  to destination rather than reading whole files / HTTP responses / archives
+  into memory. The install path is the worked example: it streams the download
+  to a scratch file and pipes gunzip → untar straight to disk, so neither the
+  compressed archive nor the decompressed tree is ever fully resident (see
+  `zig/src/install.zig`). Peak install memory is a few fixed buffers plus the
+  gzip window — flat regardless of bundle size.
+- Prefer fixed, modest stack/heap buffers over `Allocating` writers that grow to
+  hold an entire payload.
+- Free as you go; don't keep large slices alive longer than needed.
+- New code (RPC bodies, JSON parsing, UI state, future coins) should follow the
+  same rule: bound the working set, don't slurp.
+
 ## Default working mode — read this first
 
 - **Work in `zig/`. The Go code is reference only.** All new work happens under
@@ -41,7 +61,7 @@ modules below, and coins call into them with their own parameters:
 | Module | Holds |
 |---|---|
 | `zig/src/coin.zig` | The polymorphic `Coin` vtable interface (Go's `Coin` interface). |
-| `zig/src/install.zig` | Generic download → gunzip+untar, `promoteAndTidy`, and `installRoot` (cross-platform `~/.boxwallet`). |
+| `zig/src/install.zig` | Generic streaming download → gunzip+untar (constant memory), `promoteAndTidy`, and `installRoot` (cross-platform `~/.boxwallet`). |
 | `zig/src/rpc.zig` | JSON-RPC transport over `std.http.Client` (basic auth). |
 | `zig/src/models.zig` | Shared/normalized models (`CoinAuth`, `BlockchainState`). Per-coin raw RPC structs may live here or in the coin file. |
 | `zig/src/app.zig` | The ZigZag TUI (master/detail). The one place coins are wired into the UI. |
@@ -89,10 +109,12 @@ ZIG_GLOBAL_CACHE_DIR=zig-pkg zig build run     # launch the TUI
 - Install destination: per-platform `~/.boxwallet` (Windows
   `%USERPROFILE%\AppData\Roaming\BoxWallet`), resolved via
   `install.installRoot(ctx.home_dir)` — ZigZag captures the home dir for us.
-- Install flow: `downloadAndExtract` then `promoteAndTidy` — coin archives nest
-  binaries in `bin/`, so the daemon/cli/tx binaries are lifted to the install
-  root and the rest of the extracted tree is discarded. Each coin declares its
-  own promote/cleanup lists.
+- Install flow: `downloadAndExtract` then `promoteAndTidy` — the archive is
+  streamed to a scratch file on disk and gunzip → untar runs as a streaming
+  pipeline straight to disk (constant memory, no whole-archive buffer in RAM).
+  Coin archives nest binaries in `bin/`, so the daemon/cli/tx binaries are
+  lifted to the install root and the rest of the extracted tree is discarded.
+  Each coin declares its own promote/cleanup lists.
 - Match the surrounding code's comment density, naming, and idioms.
 
 ## Go → Zig reference map
