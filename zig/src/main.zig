@@ -17,6 +17,7 @@ test {
     std.testing.refAllDecls(@This());
     _ = @import("rpc.zig");
     _ = @import("install.zig");
+    _ = @import("conf.zig");
     _ = @import("coins/nexa.zig");
     _ = @import("coins/divi.zig");
     _ = @import("app.zig");

@@ -65,11 +65,16 @@ pub fn callParsed(
     const raw = try call(allocator, auth, method);
     defer allocator.free(raw);
 
+    // `.alloc_always` is essential here: we free `raw` on return, so the parsed
+    // string fields must be copied into the `Parsed` arena rather than left
+    // referencing `raw`. The slice-input default (`.alloc_if_needed`) would leave
+    // unescaped strings pointing into the freed buffer — a use-after-free the
+    // caller can't see (integer fields survive, strings dangle).
     return std.json.parseFromSlice(
         models.JsonRpcResponse(T),
         allocator,
         raw,
-        .{ .ignore_unknown_fields = true },
+        .{ .ignore_unknown_fields = true, .allocate = .alloc_always },
     );
 }
 
@@ -84,6 +89,33 @@ fn basicAuthHeader(allocator: std.mem.Allocator, user: []const u8, password: []c
     _ = enc.encode(b64, creds);
 
     return std.fmt.allocPrint(allocator, "Basic {s}", .{b64});
+}
+
+test "callParsed's alloc_always keeps strings valid after the source is freed" {
+    // Regression guard: `callParsed` frees the raw HTTP body before returning the
+    // parsed value, so the parse must copy strings into the `Parsed` arena. With
+    // the slice default (`.alloc_if_needed`) an unescaped string would dangle
+    // into the freed body — integer fields survive, strings read as garbage. We
+    // reproduce that lifetime here (dupe → parse → scribble + free → read).
+    const allocator = std.testing.allocator;
+    const Body = struct { name: []const u8 = "", n: i64 = 0 };
+
+    const raw = try allocator.dupe(u8, "{\"result\":{\"name\":\"Staking Active\",\"n\":29}}");
+    var parsed = try std.json.parseFromSlice(
+        models.JsonRpcResponse(Body),
+        allocator,
+        raw,
+        .{ .ignore_unknown_fields = true, .allocate = .alloc_always },
+    );
+    defer parsed.deinit();
+
+    // Overwrite then free the source: a copy in the arena is unaffected; a
+    // reference into `raw` would now read 'X's.
+    @memset(raw, 'X');
+    allocator.free(raw);
+
+    try std.testing.expectEqualStrings("Staking Active", parsed.value.result.?.name);
+    try std.testing.expectEqual(@as(i64, 29), parsed.value.result.?.n);
 }
 
 test "basic auth header is correctly base64-encoded" {

@@ -41,6 +41,30 @@ pub const NexaGetInfo = struct {
     balance: f64 = 0,
 };
 
+/// Raw `getinfo` result for Divi (subset BoxWallet uses). Divi reports staking
+/// through a `"staking status"` string — note the literal space, bound here with
+/// an `@""` identifier so `std.json` matches it — that reads "Staking Active"
+/// when the wallet is staking. Defaults keep parsing resilient to omitted fields.
+pub const DiviGetInfo = struct {
+    version: []const u8 = "",
+    blocks: i64 = 0,
+    connections: i64 = 0,
+    difficulty: f64 = 0,
+    balance: f64 = 0,
+    @"staking status": []const u8 = "",
+};
+
+/// Coin-agnostic snapshot from a daemon's `getinfo` — the live "is it healthy"
+/// numbers a frontend shows alongside chain sync (peer count, block height,
+/// whether the wallet is staking). Scalar-only, so it owns no memory and needs
+/// no `deinit`.
+pub const DaemonInfo = struct {
+    blocks: i64,
+    connections: i64,
+    /// Wallet actively staking. Proof-of-stake coins only; always false for PoW.
+    staking_active: bool,
+};
+
 /// Raw `getblockchaininfo` result for Divi (subset). Same standard fields as
 /// other bitcoin-derived daemons, with `chainwork` in place of Nexa's
 /// pruning/IBD fields. Defaults keep parsing resilient to omitted fields.

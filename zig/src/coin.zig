@@ -33,6 +33,20 @@ pub const Coin = struct {
             allocator: std.mem.Allocator,
             auth: models.CoinAuth,
         ) anyerror!models.BlockchainState,
+        /// Live call: returns a normalized `getinfo` snapshot (peer count, block
+        /// height, staking). Scalar-only — no cleanup needed.
+        daemon_info: *const fn (
+            ptr: *anyopaque,
+            allocator: std.mem.Allocator,
+            auth: models.CoinAuth,
+        ) anyerror!models.DaemonInfo,
+        /// Resolve the coin daemon's default data directory (where its `.conf`
+        /// lives) under the process `home_dir`. Caller owns the returned slice.
+        data_dir: *const fn (
+            ptr: *anyopaque,
+            allocator: std.mem.Allocator,
+            home_dir: []const u8,
+        ) anyerror![]const u8,
         /// True if the daemon binary is present under `install_root`.
         is_installed: *const fn (
             ptr: *anyopaque,
@@ -81,6 +95,20 @@ pub const Coin = struct {
         auth: models.CoinAuth,
     ) !models.BlockchainState {
         return self.vtable.blockchain_state(self.ptr, allocator, auth);
+    }
+    pub fn daemonInfo(
+        self: Coin,
+        allocator: std.mem.Allocator,
+        auth: models.CoinAuth,
+    ) !models.DaemonInfo {
+        return self.vtable.daemon_info(self.ptr, allocator, auth);
+    }
+    pub fn dataDir(
+        self: Coin,
+        allocator: std.mem.Allocator,
+        home_dir: []const u8,
+    ) ![]const u8 {
+        return self.vtable.data_dir(self.ptr, allocator, home_dir);
     }
     pub fn isInstalled(self: Coin, allocator: std.mem.Allocator, install_root: []const u8) bool {
         return self.vtable.is_installed(self.ptr, allocator, install_root);
