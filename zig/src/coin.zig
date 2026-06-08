@@ -16,6 +16,11 @@ pub const Coin = struct {
     pub const VTable = struct {
         coin_name: *const fn (ptr: *anyopaque) []const u8,
         coin_name_abbrev: *const fn (ptr: *anyopaque) []const u8,
+        /// The coin's brand colour as a `#RRGGBB` hex string, for the frontend.
+        coin_color: *const fn (ptr: *anyopaque) []const u8,
+        /// True for proof-of-stake coins (which expose a staking status); false
+        /// for proof-of-work coins.
+        proof_of_stake: *const fn (ptr: *anyopaque) bool,
         conf_file: *const fn (ptr: *anyopaque) []const u8,
         /// Daemon binary filename for the host OS (e.g. `nexad`, `divid`).
         daemon_file: *const fn (ptr: *anyopaque) []const u8,
@@ -49,6 +54,14 @@ pub const Coin = struct {
     }
     pub fn coinNameAbbrev(self: Coin) []const u8 {
         return self.vtable.coin_name_abbrev(self.ptr);
+    }
+    /// The coin's brand colour as a `#RRGGBB` hex string.
+    pub fn coinColor(self: Coin) []const u8 {
+        return self.vtable.coin_color(self.ptr);
+    }
+    /// True for proof-of-stake coins (which expose a staking status).
+    pub fn isProofOfStake(self: Coin) bool {
+        return self.vtable.proof_of_stake(self.ptr);
     }
     pub fn confFile(self: Coin) []const u8 {
         return self.vtable.conf_file(self.ptr);

@@ -9,6 +9,10 @@ const Coin = @import("../coin.zig").Coin;
 pub const Nexa = struct {
     pub const coin_name = "NEXA";
     pub const coin_name_abbrev = "NEXA";
+    /// Nexa brand colour (`#RRGGBB`), for tinting the coin in the frontend.
+    pub const coin_color = "#FEE043";
+    /// Nexa is proof-of-work — no wallet staking.
+    pub const proof_of_stake = false;
     pub const conf_file = "nexa.conf";
     pub const home_dir = ".nexa";
     pub const home_dir_win = "NEXA";
@@ -34,6 +38,11 @@ pub const Nexa = struct {
     const extracted_dir = "nexa-" ++ core_version;
     const bin_subdir = "bin";
     const promote_files = [_][]const u8{ daemon_file_lin, cli_file_lin, tx_file_lin };
+
+    // Temp file the download streams to. Keyed off the daemon name so a
+    // concurrent install of another coin into the same `~/.boxwallet` root uses
+    // a different scratch file and the two never collide.
+    pub const scratch_file = ".boxwallet-" ++ daemon_file_lin ++ ".part";
 
     /// Build the type-erased `Coin` handle for this instance.
     pub fn coin(self: *Nexa) Coin {
@@ -76,7 +85,7 @@ pub const Nexa = struct {
         install_root: []const u8,
         progress: ?install_mod.Progress,
     ) !void {
-        try install_mod.downloadAndExtract(allocator, download_url_linux, .tar_gz, install_root, 0, progress);
+        try install_mod.downloadAndExtract(allocator, download_url_linux, .tar_gz, install_root, scratch_file, 0, progress);
         try install_mod.promoteAndTidy(allocator, install_root, extracted_dir, bin_subdir, &promote_files);
     }
 
@@ -85,6 +94,8 @@ pub const Nexa = struct {
     const vtable: Coin.VTable = .{
         .coin_name = vtCoinName,
         .coin_name_abbrev = vtCoinNameAbbrev,
+        .coin_color = vtCoinColor,
+        .proof_of_stake = vtProofOfStake,
         .conf_file = vtConfFile,
         .daemon_file = vtDaemonFile,
         .rpc_default_port = vtRpcDefaultPort,
@@ -99,6 +110,12 @@ pub const Nexa = struct {
     }
     fn vtCoinNameAbbrev(_: *anyopaque) []const u8 {
         return coin_name_abbrev;
+    }
+    fn vtCoinColor(_: *anyopaque) []const u8 {
+        return coin_color;
+    }
+    fn vtProofOfStake(_: *anyopaque) bool {
+        return proof_of_stake;
     }
     fn vtConfFile(_: *anyopaque) []const u8 {
         return conf_file;
@@ -172,6 +189,8 @@ test "coin vtable dispatches to Nexa metadata" {
     var nexa: Nexa = .{};
     const c = nexa.coin();
     try std.testing.expectEqualStrings("NEXA", c.coinName());
+    try std.testing.expectEqualStrings("#FEE043", c.coinColor());
+    try std.testing.expect(!c.isProofOfStake());
     try std.testing.expectEqualStrings("nexa.conf", c.confFile());
     try std.testing.expectEqualStrings("7227", c.rpcDefaultPort());
 }

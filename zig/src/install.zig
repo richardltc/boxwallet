@@ -50,6 +50,13 @@ fn report(progress: ?Progress, phase: Phase, current: u64, total: u64) void {
 /// `progress`, when supplied, is fed the download then extract byte counts so a
 /// caller can render a progress bar.
 ///
+/// `scratch_name` is the temporary file the archive is streamed to inside
+/// `dest_root`. It **must be unique per concurrent install** — BoxWallet runs a
+/// coin's install on its own thread, and several can target the same
+/// `~/.boxwallet` root at once, so each coin passes a name derived from its own
+/// daemon (e.g. `.boxwallet-nexad.part`). A shared name would have two downloads
+/// clobbering one file.
+///
 /// Runs synchronously on its own blocking io. **Memory stays flat regardless of
 /// bundle size:** the archive is streamed to a scratch file on disk (never held
 /// in RAM), then gunzip → untar runs as a streaming pipeline straight to disk.
@@ -60,6 +67,7 @@ pub fn downloadAndExtract(
     url: []const u8,
     format: Format,
     dest_root: []const u8,
+    scratch_name: []const u8,
     strip: u32,
     progress: ?Progress,
 ) !void {
@@ -93,7 +101,6 @@ pub fn downloadAndExtract(
     var dest = try std.Io.Dir.cwd().createDirPathOpen(io, dest_root, .{});
     defer dest.close(io);
 
-    const scratch_name = ".boxwallet-download.tmp";
     {
         // 1. Stream the archive to the scratch file in bounded chunks, reporting
         //    bytes arrived against the content length.

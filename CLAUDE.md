@@ -77,8 +77,10 @@ generic, parameterized helper belongs in the shared module.
 2. Port constants, download/install flow, and RPC mapping from
    `cmd/cli/cmd/coins/<coin>/<coin>.go`.
 3. Wire the coin's vtable.
-4. Register it in `src/app.zig`: add to the `Entry` enum, the `entries` array,
-   the `App` struct field, and the `selectedCoin` dispatch.
+4. Register it in `src/app.zig`: add to the `Entry` enum, the `coin_entries`
+   list (position doesn't matter — the left bar is sorted alphabetically at
+   comptime, with Home pinned on top), the `App` struct field, and the
+   `selectedCoin` dispatch.
 5. Add it to the `test { ... }` import block in `src/main.zig`.
 6. Add **offline** unit tests (RPC parse/map; install path logic). No daemon, no
    terminal, no network.
@@ -115,6 +117,10 @@ ZIG_GLOBAL_CACHE_DIR=zig-pkg zig build run     # launch the TUI
   Coin archives nest binaries in `bin/`, so the daemon/cli/tx binaries are
   lifted to the install root and the rest of the extracted tree is discarded.
   Each coin declares its own promote/cleanup lists.
+- Left nav order: **Home is pinned to the top** of the left column; coins follow
+  in **alphabetical order by label**. `app.zig` builds `entries` by
+  comptime-sorting `coin_entries`, so registering a coin doesn't require placing
+  it by hand — add it anywhere in `coin_entries` and it sorts into place.
 - Match the surrounding code's comment density, naming, and idioms.
 
 ## Go → Zig reference map

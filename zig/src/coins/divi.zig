@@ -9,6 +9,10 @@ const Coin = @import("../coin.zig").Coin;
 pub const Divi = struct {
     pub const coin_name = "DIVI";
     pub const coin_name_abbrev = "DIVI";
+    /// Divi brand colour (`#RRGGBB`), for tinting the coin in the frontend.
+    pub const coin_color = "#ED295A";
+    /// Divi is proof-of-stake — the wallet can stake.
+    pub const proof_of_stake = true;
     pub const conf_file = "divi.conf";
     pub const home_dir = ".divi";
     pub const home_dir_win = "DIVI";
@@ -33,6 +37,11 @@ pub const Divi = struct {
     const extracted_dir = "divi-" ++ core_version;
     const bin_subdir = "bin";
     const promote_files = [_][]const u8{ daemon_file_lin, cli_file_lin, tx_file_lin };
+
+    // Temp file the download streams to. Keyed off the daemon name so a
+    // concurrent install of another coin into the same `~/.boxwallet` root uses
+    // a different scratch file and the two never collide.
+    pub const scratch_file = ".boxwallet-" ++ daemon_file_lin ++ ".part";
 
     /// Build the type-erased `Coin` handle for this instance.
     pub fn coin(self: *Divi) Coin {
@@ -79,7 +88,7 @@ pub const Divi = struct {
         install_root: []const u8,
         progress: ?install_mod.Progress,
     ) !void {
-        try install_mod.downloadAndExtract(allocator, download_url_linux, .tar_gz, install_root, 0, progress);
+        try install_mod.downloadAndExtract(allocator, download_url_linux, .tar_gz, install_root, scratch_file, 0, progress);
         try install_mod.promoteAndTidy(allocator, install_root, extracted_dir, bin_subdir, &promote_files);
     }
 
@@ -88,6 +97,8 @@ pub const Divi = struct {
     const vtable: Coin.VTable = .{
         .coin_name = vtCoinName,
         .coin_name_abbrev = vtCoinNameAbbrev,
+        .coin_color = vtCoinColor,
+        .proof_of_stake = vtProofOfStake,
         .conf_file = vtConfFile,
         .daemon_file = vtDaemonFile,
         .rpc_default_port = vtRpcDefaultPort,
@@ -102,6 +113,12 @@ pub const Divi = struct {
     }
     fn vtCoinNameAbbrev(_: *anyopaque) []const u8 {
         return coin_name_abbrev;
+    }
+    fn vtCoinColor(_: *anyopaque) []const u8 {
+        return coin_color;
+    }
+    fn vtProofOfStake(_: *anyopaque) bool {
+        return proof_of_stake;
     }
     fn vtConfFile(_: *anyopaque) []const u8 {
         return conf_file;
@@ -174,6 +191,8 @@ test "coin vtable dispatches to Divi metadata" {
     var divi: Divi = .{};
     const c = divi.coin();
     try std.testing.expectEqualStrings("DIVI", c.coinName());
+    try std.testing.expectEqualStrings("#ED295A", c.coinColor());
+    try std.testing.expect(c.isProofOfStake());
     try std.testing.expectEqualStrings("divi.conf", c.confFile());
     try std.testing.expectEqualStrings("divid", c.daemonFile());
     try std.testing.expectEqualStrings("51473", c.rpcDefaultPort());
