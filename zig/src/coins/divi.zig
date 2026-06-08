@@ -2,6 +2,7 @@ const std = @import("std");
 const models = @import("../models.zig");
 const rpc = @import("../rpc.zig");
 const install_mod = @import("../install.zig");
+const conf = @import("../conf.zig");
 const Coin = @import("../coin.zig").Coin;
 
 /// Divi backend. Constants lifted from
@@ -72,6 +73,29 @@ pub const Divi = struct {
         };
     }
 
+    /// Live `getinfo`, normalized for a frontend. Divi exposes staking through a
+    /// `"staking status"` string; we map the daemon's "Staking Active" to a bool
+    /// so the frontend never sees the per-coin wording.
+    pub fn daemonInfo(
+        allocator: std.mem.Allocator,
+        auth: models.CoinAuth,
+    ) !models.DaemonInfo {
+        var parsed = try rpc.callParsed(models.DiviGetInfo, allocator, auth, "getinfo");
+        defer parsed.deinit();
+
+        const r = parsed.value.result orelse return error.EmptyRpcResult;
+        return .{
+            .blocks = r.blocks,
+            .connections = r.connections,
+            .staking_active = std.mem.eql(u8, r.@"staking status", "Staking Active"),
+        };
+    }
+
+    /// The daemon's default data directory (`~/.divi`), where `divi.conf` lives.
+    pub fn dataDir(allocator: std.mem.Allocator, home: []const u8) ![]const u8 {
+        return conf.dataDir(allocator, home, home_dir, home_dir_win);
+    }
+
     /// True if `divid` is already present under `install_root`.
     pub fn isInstalled(allocator: std.mem.Allocator, install_root: []const u8) bool {
         return install_mod.fileExists(allocator, install_root, daemon_file_lin);
@@ -104,6 +128,8 @@ pub const Divi = struct {
         .rpc_default_port = vtRpcDefaultPort,
         .rpc_default_username = vtRpcDefaultUsername,
         .blockchain_state = vtBlockchainState,
+        .daemon_info = vtDaemonInfo,
+        .data_dir = vtDataDir,
         .is_installed = vtIsInstalled,
         .install = vtInstall,
     };
@@ -138,6 +164,20 @@ pub const Divi = struct {
         auth: models.CoinAuth,
     ) anyerror!models.BlockchainState {
         return blockchainState(allocator, auth);
+    }
+    fn vtDaemonInfo(
+        _: *anyopaque,
+        allocator: std.mem.Allocator,
+        auth: models.CoinAuth,
+    ) anyerror!models.DaemonInfo {
+        return daemonInfo(allocator, auth);
+    }
+    fn vtDataDir(
+        _: *anyopaque,
+        allocator: std.mem.Allocator,
+        home: []const u8,
+    ) anyerror![]const u8 {
+        return dataDir(allocator, home);
     }
     fn vtIsInstalled(_: *anyopaque, allocator: std.mem.Allocator, install_root: []const u8) bool {
         return isInstalled(allocator, install_root);
@@ -185,6 +225,61 @@ test "parses getblockchaininfo into normalized BlockchainState" {
     try std.testing.expectEqualStrings("main", state.chain);
     try std.testing.expectEqual(@as(i64, 2345678), state.blocks);
     try std.testing.expect(state.synced);
+}
+
+test "maps getinfo into normalized DaemonInfo, decoding staking status" {
+    const allocator = std.testing.allocator;
+
+    // Canned reply mirroring a live divid getinfo — note the `"staking status"`
+    // field carries a literal space and the human-readable "Staking Active".
+    const raw =
+        \\{"result":{"version":"3.0.0.0","protocolversion":70915,
+        \\"walletversion":120200,"balance":3139364.85688449,"blocks":4071089,
+        \\"timeoffset":0,"connections":29,"proxy":"","difficulty":54392.69715429,
+        \\"testnet":false,"moneysupply":4678085823.73950005,"relayfee":0.00010000,
+        \\"staking status":"Staking Active","errors":""},
+        \\"error":null,"id":"boxwallet"}
+    ;
+
+    var parsed = try std.json.parseFromSlice(
+        models.JsonRpcResponse(models.DiviGetInfo),
+        allocator,
+        raw,
+        .{ .ignore_unknown_fields = true },
+    );
+    defer parsed.deinit();
+
+    const r = parsed.value.result.?;
+    const info: models.DaemonInfo = .{
+        .blocks = r.blocks,
+        .connections = r.connections,
+        .staking_active = std.mem.eql(u8, r.@"staking status", "Staking Active"),
+    };
+
+    try std.testing.expectEqual(@as(i64, 4071089), info.blocks);
+    try std.testing.expectEqual(@as(i64, 29), info.connections);
+    try std.testing.expect(info.staking_active);
+}
+
+test "getinfo without active staking maps staking_active false" {
+    const allocator = std.testing.allocator;
+
+    const raw =
+        \\{"result":{"blocks":4071089,"connections":8,
+        \\"staking status":"Staking Not Active"},"error":null,"id":"boxwallet"}
+    ;
+
+    var parsed = try std.json.parseFromSlice(
+        models.JsonRpcResponse(models.DiviGetInfo),
+        allocator,
+        raw,
+        .{ .ignore_unknown_fields = true },
+    );
+    defer parsed.deinit();
+
+    const r = parsed.value.result.?;
+    try std.testing.expect(!std.mem.eql(u8, r.@"staking status", "Staking Active"));
+    try std.testing.expectEqual(@as(i64, 8), r.connections);
 }
 
 test "coin vtable dispatches to Divi metadata" {

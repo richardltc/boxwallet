@@ -2,6 +2,7 @@ const std = @import("std");
 const zz = @import("zigzag");
 const models = @import("models.zig");
 const install_mod = @import("install.zig");
+const conf = @import("conf.zig");
 const Coin = @import("coin.zig").Coin;
 const Nexa = @import("coins/nexa.zig").Nexa;
 const Divi = @import("coins/divi.zig").Divi;
@@ -133,6 +134,26 @@ const Activity = struct {
     // --- worker inputs: set by the UI before spawn, read by the worker -----
     coin: Coin = undefined,
     install_root: []const u8 = "",
+    /// Process home dir, copied in before a poll spawns so the worker can find
+    /// the coin's conf (e.g. `~/.divi/divi.conf`) for its RPC credentials.
+    home_dir: []const u8 = "",
+
+    // --- live getinfo poll (shared with the poll worker) -------------------
+    // A short-lived worker fires one `getinfo` and publishes the result. Like
+    // `phase`, `poll_done` carries the synchronization edge: the worker stores
+    // it with release, the UI loads it with acquire, and that pairing publishes
+    // `poll_ok` and the counter stores alongside it.
+    /// One-shot `getinfo` poll worker, reaped on a later tick.
+    poll_thread: ?std.Thread = null,
+    /// Set true (release) by the worker when the poll finishes; the UI folds the
+    /// result in and joins the thread on its next tick.
+    poll_done: std.atomic.Value(bool) = .init(false),
+    /// Whether the finished poll reached the daemon. Plain field, published by
+    /// the `poll_done` release/acquire pairing.
+    poll_ok: bool = false,
+    /// Latest polled peer count / staking flag (1/0).
+    poll_peers: std.atomic.Value(u32) = .init(0),
+    poll_staking: std.atomic.Value(u8) = .init(0),
 
     // --- UI-thread-only ----------------------------------------------------
     thread: ?std.Thread = null,
@@ -237,6 +258,55 @@ const Activity = struct {
         }
     }
 
+    /// Fold a finished poll's published values into the display fields the pane
+    /// renders. Returns whether the poll reached the daemon, so the caller can
+    /// also flip the daemon state to running. A failed poll leaves the last good
+    /// values in place rather than zeroing them on a transient blip.
+    fn applyPoll(self: *Activity) bool {
+        if (!self.poll_ok) return false;
+        self.peers = self.poll_peers.load(.monotonic);
+        self.staking = self.poll_staking.load(.monotonic) != 0;
+        return true;
+    }
+
+    /// Live `getinfo` poll worker. One RPC round-trip publishing the peer count
+    /// and staking flag into the shared atomics, then `poll_done`. Runs on a
+    /// private arena so its working set is bounded and isolated (per the memory
+    /// constraint), and is reaped by the UI once `poll_done` is observed.
+    fn runPoll(self: *Activity) void {
+        var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+        defer arena.deinit();
+        const a = arena.allocator();
+
+        if (self.fetchInfo(a)) |info| {
+            self.poll_peers.store(@as(u32, @intCast(@max(info.connections, 0))), .monotonic);
+            self.poll_staking.store(@intFromBool(info.staking_active), .monotonic);
+            self.poll_ok = true;
+        } else |_| {
+            self.poll_ok = false;
+        }
+        self.poll_done.store(true, .release);
+    }
+
+    /// Resolve the coin's RPC credentials from its conf, then fetch a normalized
+    /// `getinfo` snapshot. Everything allocates on the caller's arena.
+    fn fetchInfo(self: *Activity, a: std.mem.Allocator) !models.DaemonInfo {
+        var threaded: std.Io.Threaded = .init(a, .{});
+        defer threaded.deinit();
+        const io = threaded.io();
+
+        const data_dir = try self.coin.dataDir(a, self.home_dir);
+        const auth = try conf.readAuth(
+            a,
+            io,
+            data_dir,
+            self.coin.confFile(),
+            self.coin.rpcDefaultUsername(),
+            self.coin.rpcDefaultPort(),
+        );
+        return self.coin.daemonInfo(a, auth);
+    }
+
     /// Spawn the daemon binary with `-daemon` and wait for the launcher to
     /// return (it daemonizes, so the wait is brief). Errors on a missing binary
     /// or a non-zero exit. `argv[0]` carries a path separator, so it's resolved
@@ -271,16 +341,17 @@ const LogLine = struct {
     len: usize = 0,
 };
 
-/// Default / clamp bounds for the resizable log pane height (in rows).
-const log_height_default = 6;
-const log_height_min = 1;
-const log_height_max = 30;
+/// How many of the most recent log entries the bottom pane shows at once
+/// (toggled on/off with `l`). The pane is this many lines plus the separator
+/// row above them; older entries scroll off the top.
+const log_visible_lines = 6;
 
 /// Outlook-style master/detail TUI: a navigation column on the left (Home +
 /// coins) is always visible, a detail pane on the right shows the selected
 /// coin. `up`/`down` move the selection, `i` installs/updates the selected
 /// coin's daemon (in the background — you can navigate away while it runs), `q`
-/// quits. A resizable action log runs along the bottom (`+`/`-` resize it).
+/// quits. An action log runs along the bottom, sized to ~20% of the terminal
+/// height and toggled on/off with `l`.
 pub const App = struct {
     /// Persistent (model-lifetime) allocator. Owns `install_root` and backs the
     /// transient work in `isInstalled`. Not the per-frame `ctx.allocator`.
@@ -292,6 +363,23 @@ pub const App = struct {
     /// True when `install_root` is heap-allocated (and so must be freed in
     /// `deinit`); false when it's the static `fallback_install_root`.
     install_root_owned: bool,
+    /// Process home dir ($HOME / %USERPROFILE%), duped onto the persistent
+    /// allocator at `init` and freed in `deinit`. Passed to poll workers so they
+    /// can locate each coin's conf for RPC credentials. Empty if unresolved.
+    home_dir: []const u8,
+    /// True when `home_dir` is heap-allocated (and so must be freed in `deinit`).
+    home_dir_owned: bool,
+    /// Monotonic timestamp (ns) of the last getinfo poll round, from the tick
+    /// clock. Drives the shared ~2s poll cadence across all installed coins.
+    last_poll_ns: i64 = 0,
+    /// The program's `std.Io` (captured from `ctx` in `init`). Used to read the
+    /// wall clock for log timestamps; the backing implementation outlives the
+    /// model, so holding the lightweight vtable handle is safe.
+    io: std.Io,
+    /// Local timezone's UTC offset in seconds, resolved once from the system
+    /// zoneinfo at `init` and applied to log timestamps. 0 (UTC) if it can't be
+    /// resolved. Fixed for the session — a mid-session DST change isn't tracked.
+    tz_offset_s: i32,
     nexa: Nexa,
     divi: Divi,
     selected: usize,
@@ -303,8 +391,8 @@ pub const App = struct {
     log_lines: [log_capacity]LogLine = [_]LogLine{.{}} ** log_capacity,
     /// Total messages ever logged; the live slot is `log_count % log_capacity`.
     log_count: usize = 0,
-    /// Current height (rows) of the bottom log pane; `+`/`-` adjust it.
-    log_height: u16 = log_height_default,
+    /// Whether the bottom log pane is shown; `l` toggles it.
+    log_visible: bool = true,
 
     pub const Msg = union(enum) {
         key: zz.KeyEvent,
@@ -331,10 +419,29 @@ pub const App = struct {
             install_root_owned = true;
         } else |_| {}
 
+        // Keep our own copy of the home dir: the env map's slice isn't ours to
+        // hold, and poll workers read it off another thread.
+        var home_owned: []const u8 = "";
+        var home_owned_flag = false;
+        if (home_dir.len > 0) {
+            if (ctx.persistent_allocator.dupe(u8, home_dir)) |h| {
+                home_owned = h;
+                home_owned_flag = true;
+            } else |_| {}
+        }
+
         self.* = .{
             .allocator = ctx.persistent_allocator,
             .install_root = install_root,
             .install_root_owned = install_root_owned,
+            .home_dir = home_owned,
+            .home_dir_owned = home_owned_flag,
+            .io = ctx.io,
+            .tz_offset_s = localOffsetSeconds(
+                ctx.persistent_allocator,
+                ctx.io,
+                std.Io.Timestamp.now(ctx.io, .real).toSeconds(),
+            ),
             .nexa = .{},
             .divi = .{},
             .selected = 0,
@@ -342,6 +449,10 @@ pub const App = struct {
         };
         for (&self.activities) |*act| act.* = .{ .spinner = zz.Spinner.init(), .daemon_spinner = zz.Spinner.init(), .sync_spinner = zz.Spinner.init() };
         self.refreshSelectedInstalled();
+
+        // Seed the action log so the pane starts with a line announcing the
+        // running build rather than an empty box.
+        self.logf("{s} v{s} started", .{ app_name, app_version });
 
         // A modest repeating tick so background installs animate and their
         // completions are noticed without waiting on a keypress. Idle ticks are
@@ -362,8 +473,13 @@ pub const App = struct {
                 t.join();
                 act.daemon_thread = null;
             }
+            if (act.poll_thread) |t| {
+                t.join();
+                act.poll_thread = null;
+            }
         }
         if (self.install_root_owned) self.allocator.free(self.install_root);
+        if (self.home_dir_owned) self.allocator.free(self.home_dir);
     }
 
     pub fn update(self: *App, msg: Msg, _: *zz.Context) zz.Cmd(Msg) {
@@ -375,8 +491,7 @@ pub const App = struct {
                     's' => self.tryStart(),
                     'k' => self.move(-1),
                     'j' => self.move(1),
-                    '+', '=' => self.resizeLog(1),
-                    '-', '_' => self.resizeLog(-1),
+                    'l' => self.log_visible = !self.log_visible,
                     else => {},
                 },
                 .up => self.move(-1),
@@ -392,6 +507,8 @@ pub const App = struct {
     /// spinner while extracting, and — once — reap a finished worker and refresh
     /// the cached installed flag from disk.
     fn onTick(self: *App, t: zz.msg.Tick) void {
+        // All installed coins are polled for live status on a shared ~2s cadence.
+        const poll_due = t.timestamp - self.last_poll_ns >= 2 * std.time.ns_per_s;
         for (&self.activities, 0..) |*act, i| {
             if (entries[i] == .home) continue;
             const p = act.phaseOf();
@@ -415,6 +532,32 @@ pub const App = struct {
             if (act.sync == .syncing) {
                 _ = act.sync_spinner.update(t.timestamp);
             }
+
+            // Fold in a finished getinfo poll: take the live peer count and
+            // staking flag, and — since a reply proves the daemon is up — mark it
+            // running (covers a daemon started outside BoxWallet).
+            if (act.poll_thread != null and act.poll_done.load(.acquire)) {
+                act.poll_thread.?.join();
+                act.poll_thread = null;
+                if (act.applyPoll() and act.daemonState() != .running)
+                    act.daemon.store(@intFromEnum(DaemonState.running), .release);
+            }
+
+            // Start the next poll for an installed, idle coin when the cadence is
+            // due and none is in flight. Skipped while an install or daemon-start
+            // worker is touching this activity, so `coin` isn't written under it.
+            if (poll_due and act.installed and act.poll_thread == null and
+                !act.busy() and act.daemon_thread == null)
+            {
+                if (self.coinAt(i)) |coin| {
+                    act.coin = coin;
+                    act.home_dir = self.home_dir;
+                    act.poll_ok = false;
+                    act.poll_done.store(false, .monotonic);
+                    act.poll_thread = std.Thread.spawn(.{}, Activity.runPoll, .{act}) catch null;
+                }
+            }
+
             if ((p == .done or p == .failed) and !act.acked) {
                 act.acked = true;
                 if (act.thread) |th| {
@@ -430,6 +573,7 @@ pub const App = struct {
                 }
             }
         }
+        if (poll_due) self.last_poll_ns = t.timestamp;
     }
 
     fn move(self: *App, delta: i32) void {
@@ -440,23 +584,62 @@ pub const App = struct {
         self.refreshSelectedInstalled();
     }
 
-    /// Append a formatted line to the action log. Formats straight into the ring
-    /// slot's fixed buffer (no allocation); an over-long line is truncated to the
-    /// buffer rather than dropped.
+    /// Append a formatted line to the action log, prefixed with a UTC timestamp.
+    /// Formats straight into the ring slot's fixed buffer (no allocation); an
+    /// over-long line is truncated to the buffer rather than dropped.
     fn logf(self: *App, comptime fmt: []const u8, args: anytype) void {
         const slot = &self.log_lines[self.log_count % log_capacity];
-        if (std.fmt.bufPrint(&slot.buf, fmt, args)) |s| {
-            slot.len = s.len;
+        const n = self.writeTimestamp(&slot.buf);
+        if (std.fmt.bufPrint(slot.buf[n..], fmt, args)) |s| {
+            slot.len = n + s.len;
         } else |_| {
             slot.len = slot.buf.len;
         }
         self.log_count +%= 1;
     }
 
-    /// Grow/shrink the bottom log pane by `delta` rows, clamped to sane bounds.
-    fn resizeLog(self: *App, delta: i32) void {
-        const v = @as(i32, self.log_height) + delta;
-        self.log_height = @intCast(std.math.clamp(v, log_height_min, log_height_max));
+    /// Write a "HH:MM:SS  " local-time timestamp into the front of `buf`,
+    /// returning the number of bytes written (0 if it somehow doesn't fit). The
+    /// wall clock is UTC; `tz_offset_s` shifts it to local time.
+    fn writeTimestamp(self: *App, buf: []u8) usize {
+        const unix = std.Io.Timestamp.now(self.io, .real).toSeconds() + self.tz_offset_s;
+        const secs: u64 = if (unix > 0) @intCast(unix) else 0;
+        const ds = (std.time.epoch.EpochSeconds{ .secs = secs }).getDaySeconds();
+        const s = std.fmt.bufPrint(buf, "{d:0>2}:{d:0>2}:{d:0>2}  ", .{
+            ds.getHoursIntoDay(),
+            ds.getMinutesIntoHour(),
+            ds.getSecondsIntoMinute(),
+        }) catch return 0;
+        return s.len;
+    }
+
+    /// Resolve the local timezone's UTC offset (in seconds) in effect at `unix`,
+    /// read from the system zoneinfo (`/etc/localtime`). Falls back to 0 (UTC)
+    /// on any failure — Windows (no zoneinfo file), a missing/unreadable file,
+    /// or a malformed TZif. Parses once and retains nothing: the transition
+    /// tables are freed before returning, leaving only the resulting `i32`.
+    fn localOffsetSeconds(allocator: std.mem.Allocator, io: std.Io, unix: i64) i32 {
+        if (@import("builtin").os.tag == .windows) return 0;
+
+        var file = std.Io.Dir.openFileAbsolute(io, "/etc/localtime", .{}) catch return 0;
+        defer file.close(io);
+
+        // A modest streaming buffer: the reader refills it from the file as the
+        // parser advances, so it needn't hold the whole TZif.
+        var buf: [8 * 1024]u8 = undefined;
+        var fr = file.reader(io, &buf);
+        var tz = std.Tz.parse(allocator, &fr.interface) catch return 0;
+        defer tz.deinit();
+
+        // Transitions are sorted ascending by timestamp; the offset in effect at
+        // `unix` is the one named by the last transition at or before it. Before
+        // the first transition, fall back to the first timetype.
+        var offset: i32 = if (tz.timetypes.len > 0) tz.timetypes[0].offset else 0;
+        for (tz.transitions) |tr| {
+            if (tr.ts > unix) break;
+            offset = tr.timetype.offset;
+        }
+        return offset;
     }
 
     /// The coin at the current selection, or null on Home.
@@ -466,7 +649,15 @@ pub const App = struct {
     /// only ever reads coin metadata here, and the backing `App` is never const
     /// (it lives mutably inside ZigZag's `Program`), so the `@constCast` is sound.
     fn selectedCoin(self: *const App) ?Coin {
-        return switch (entries[self.selected]) {
+        return self.coinAt(self.selected);
+    }
+
+    /// The coin backing entry `idx`, or null for Home. The `@constCast` is sound
+    /// for the same reason as in `selectedCoin`: the resulting vtable is only
+    /// ever used to read coin metadata or drive RPC, and the backing `App` is
+    /// never actually const (it lives mutably inside ZigZag's `Program`).
+    fn coinAt(self: *const App, idx: usize) ?Coin {
+        return switch (entries[idx]) {
             .home => null,
             .nexa => @constCast(&self.nexa).coin(),
             .divi => @constCast(&self.divi).coin(),
@@ -553,24 +744,38 @@ pub const App = struct {
 
         const right = self.renderDetail(a);
         const top = renderTwoPane(a, self.selected, right) catch "render error";
-        return self.renderWithLog(a, ctx.width, top) catch top;
+        if (!self.log_visible) return top;
+        return self.renderWithLog(a, ctx.width, ctx.height, top) catch top;
     }
 
+    /// The bottom log pane is a separator bar plus `log_visible_lines` rows.
+    const log_pane_rows = log_visible_lines + 1;
+
     /// Append the bottom log pane below the main two-pane area: a full-width
-    /// brand-coloured separator (the "bar") followed by the last `log_height`
-    /// action lines, newest at the bottom. The section is padded to a fixed
-    /// height so growing/shrinking it via `+`/`-` is visible even when sparse.
-    fn renderWithLog(self: *const App, a: std.mem.Allocator, term_width: u16, top: []const u8) ![]const u8 {
+    /// brand-coloured separator (the "bar") followed by the most recent
+    /// `log_visible_lines` action lines, newest at the bottom. The lines are
+    /// padded out to that count so the pane keeps a steady footprint even when
+    /// sparse, and the area above it is padded so the pane is pinned to the
+    /// bottom of the terminal rather than floating up under a short detail pane.
+    fn renderWithLog(self: *const App, a: std.mem.Allocator, term_width: u16, term_height: u16, top: []const u8) ![]const u8 {
         var out: std.Io.Writer.Allocating = .init(a);
         errdefer out.deinit();
 
         try out.writer.writeAll(top);
         if (top.len == 0 or top[top.len - 1] != '\n') try out.writer.writeByte('\n');
 
+        // Pin the pane to the bottom: count the rows the top block occupies and
+        // fill the gap up to the terminal's last `log_pane_rows` rows with blank
+        // lines. Saturating, so a top block taller than the screen just scrolls.
+        var top_rows = std.mem.count(u8, top, "\n");
+        if (top.len == 0 or top[top.len - 1] != '\n') top_rows += 1;
+        const filler = @as(usize, term_height) -| log_pane_rows -| top_rows;
+        try out.writer.splatByteAll('\n', filler);
+
         // Separator bar: a heading, then box-drawing dashes out to the terminal
         // width, tinted in the app's brand colour.
         const width: usize = @max(@as(usize, term_width), 1);
-        const heading = "── Log  (+/- resize) ";
+        const heading = "── Log  (l: hide) ";
         var sep: std.Io.Writer.Allocating = .init(a);
         defer sep.deinit();
         try sep.writer.writeAll(heading);
@@ -579,19 +784,29 @@ pub const App = struct {
         const sep_styled = (zz.Style{}).fg(zz.Color.hex(app_color)).render(a, sep.written()) catch sep.written();
         try out.writer.print("{s}\n", .{sep_styled});
 
-        // The last `log_height` messages, oldest first so the newest sits at the
-        // bottom; then blank lines to fill the pane to its fixed height.
+        // The last `log_visible_lines` messages, oldest first so the newest sits
+        // on the pane's bottom row; blank lines fill the top when there aren't
+        // yet enough messages, so the live line always lands at the bottom.
         const available = @min(self.log_count, log_capacity);
-        const show = @min(available, @as(usize, self.log_height));
+        const show = @min(available, @as(usize, log_visible_lines));
         const start = self.log_count - show;
+        try out.writer.splatByteAll('\n', log_visible_lines - show);
         var i: usize = 0;
         while (i < show) : (i += 1) {
             const slot = &self.log_lines[(start + i) % log_capacity];
             try out.writer.print("{s}\n", .{slot.buf[0..slot.len]});
         }
-        while (i < self.log_height) : (i += 1) try out.writer.writeByte('\n');
 
-        return out.toOwnedSlice();
+        // The renderer paints one terminal row per '\n'-separated segment from
+        // cursor-home, so the view must be *exactly* `term_height` rows. We just
+        // filled the screen and ended on a newline — that trailing newline would
+        // emit one row too many and scroll the top line (Home) off-screen. Drop
+        // it so the segment count matches the height.
+        const result = try out.toOwnedSlice();
+        return if (result.len > 0 and result[result.len - 1] == '\n')
+            result[0 .. result.len - 1]
+        else
+            result;
     }
 
     /// Builds the right-hand detail block for the current selection. The coin
@@ -611,7 +826,7 @@ pub const App = struct {
                 \\  up/down  navigate
                 \\  i        install selected coin
                 \\  s        start selected coin's daemon
-                \\  +/-      resize the log pane
+                \\  l        toggle the log pane
                 \\  q        quit
             , .{ head, app_version }) catch "alloc error";
         };
@@ -829,7 +1044,7 @@ fn bar(a: std.mem.Allocator, current: u64, total: u64) ![]const u8 {
     return p.view(a);
 }
 
-test "action log renders in the bottom pane and resizes within bounds" {
+test "action log renders in the bottom pane, sized to log_visible_lines" {
     if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
     const allocator = std.testing.allocator;
 
@@ -850,20 +1065,53 @@ test "action log renders in the bottom pane and resizes within bounds" {
 
     var arena = std.heap.ArenaAllocator.init(allocator);
     defer arena.deinit();
-    const out = try app.renderWithLog(arena.allocator(), 80, "TOP\n");
+    const term_height: u16 = 24;
+    const out = try app.renderWithLog(arena.allocator(), 80, term_height, "TOP\n");
 
     // The separator bar and the logged line both appear below the top content.
     try std.testing.expect(std.mem.indexOf(u8, out, "Log") != null);
     try std.testing.expect(std.mem.indexOf(u8, out, "NEXA: installing…") != null);
 
-    // Resize grows/shrinks the pane, clamped to the configured bounds.
-    const h0 = app.log_height;
-    app.resizeLog(2);
-    try std.testing.expectEqual(@as(u16, h0 + 2), app.log_height);
-    app.resizeLog(-1000);
-    try std.testing.expectEqual(@as(u16, log_height_min), app.log_height);
-    app.resizeLog(1000);
-    try std.testing.expectEqual(@as(u16, log_height_max), app.log_height);
+    // The whole view is exactly `term_height` rows (no trailing newline, so the
+    // renderer doesn't scroll the top line off-screen): `term_height` segments
+    // means `term_height - 1` separators. The log pane (separator plus
+    // `log_visible_lines` rows) is pinned to the bottom.
+    try std.testing.expectEqual(@as(usize, term_height - 1), std.mem.count(u8, out, "\n"));
+    try std.testing.expect(out[out.len - 1] != '\n');
+    var lines = std.mem.splitScalar(u8, out, '\n');
+    var bar_idx: ?usize = null;
+    var idx: usize = 0;
+    while (lines.next()) |line| : (idx += 1) {
+        if (std.mem.indexOf(u8, line, "Log") != null) bar_idx = idx;
+    }
+    // The bar is the first of the pane's `log_pane_rows` rows, so it lands that
+    // many rows up from the terminal's last row.
+    try std.testing.expectEqual(@as(usize, term_height - App.log_pane_rows), bar_idx.?);
+
+    // `l` toggles the pane: while hidden, `view` returns the top content alone.
+    app.log_visible = false;
+    try std.testing.expect(!app.log_visible);
+}
+
+test "a successful poll folds peer count and staking into the display fields" {
+    // A finished poll publishes its result into the atomics; applyPoll copies it
+    // into the plain fields the pane renders. A failed poll is a no-op so a
+    // transient RPC blip doesn't zero a previously-good reading.
+    var act: Activity = .{};
+    act.poll_ok = true;
+    act.poll_peers.store(29, .monotonic);
+    act.poll_staking.store(1, .monotonic);
+    try std.testing.expect(act.applyPoll());
+    try std.testing.expectEqual(@as(u32, 29), act.peers);
+    try std.testing.expect(act.staking);
+
+    var stale: Activity = .{};
+    stale.peers = 7;
+    stale.staking = true;
+    stale.poll_ok = false;
+    try std.testing.expect(!stale.applyPoll());
+    try std.testing.expectEqual(@as(u32, 7), stale.peers);
+    try std.testing.expect(stale.staking);
 }
 
 test "Start button reflects install and daemon state" {

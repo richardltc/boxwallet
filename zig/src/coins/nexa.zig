@@ -2,6 +2,7 @@ const std = @import("std");
 const models = @import("../models.zig");
 const rpc = @import("../rpc.zig");
 const install_mod = @import("../install.zig");
+const conf = @import("../conf.zig");
 const Coin = @import("../coin.zig").Coin;
 
 /// Nexa backend. Constants lifted from
@@ -69,6 +70,28 @@ pub const Nexa = struct {
         };
     }
 
+    /// Live `getinfo`, normalized for a frontend. Nexa is proof-of-work, so
+    /// `staking_active` is always false.
+    pub fn daemonInfo(
+        allocator: std.mem.Allocator,
+        auth: models.CoinAuth,
+    ) !models.DaemonInfo {
+        var parsed = try rpc.callParsed(models.NexaGetInfo, allocator, auth, "getinfo");
+        defer parsed.deinit();
+
+        const r = parsed.value.result orelse return error.EmptyRpcResult;
+        return .{
+            .blocks = r.blocks,
+            .connections = r.connections,
+            .staking_active = false,
+        };
+    }
+
+    /// The daemon's default data directory (`~/.nexa`), where `nexa.conf` lives.
+    pub fn dataDir(allocator: std.mem.Allocator, home: []const u8) ![]const u8 {
+        return conf.dataDir(allocator, home, home_dir, home_dir_win);
+    }
+
     /// True if `nexad` is already present under `install_root`.
     pub fn isInstalled(allocator: std.mem.Allocator, install_root: []const u8) bool {
         return install_mod.fileExists(allocator, install_root, daemon_file_lin);
@@ -101,6 +124,8 @@ pub const Nexa = struct {
         .rpc_default_port = vtRpcDefaultPort,
         .rpc_default_username = vtRpcDefaultUsername,
         .blockchain_state = vtBlockchainState,
+        .daemon_info = vtDaemonInfo,
+        .data_dir = vtDataDir,
         .is_installed = vtIsInstalled,
         .install = vtInstall,
     };
@@ -135,6 +160,20 @@ pub const Nexa = struct {
         auth: models.CoinAuth,
     ) anyerror!models.BlockchainState {
         return blockchainState(allocator, auth);
+    }
+    fn vtDaemonInfo(
+        _: *anyopaque,
+        allocator: std.mem.Allocator,
+        auth: models.CoinAuth,
+    ) anyerror!models.DaemonInfo {
+        return daemonInfo(allocator, auth);
+    }
+    fn vtDataDir(
+        _: *anyopaque,
+        allocator: std.mem.Allocator,
+        home: []const u8,
+    ) anyerror![]const u8 {
+        return dataDir(allocator, home);
     }
     fn vtIsInstalled(_: *anyopaque, allocator: std.mem.Allocator, install_root: []const u8) bool {
         return isInstalled(allocator, install_root);
