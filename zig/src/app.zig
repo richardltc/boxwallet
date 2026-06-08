@@ -151,6 +151,10 @@ const Activity = struct {
     /// Whether the finished poll reached the daemon. Plain field, published by
     /// the `poll_done` release/acquire pairing.
     poll_ok: bool = false,
+    /// True once the first poll for this coin has been reaped (success or not).
+    /// Until then — from the moment the coin is selected/installed and a poll is
+    /// pending — the Running/Staking marks animate instead of showing a stale ✘.
+    poll_completed: bool = false,
     /// Latest polled peer count / staking flag (1/0).
     poll_peers: std.atomic.Value(u32) = .init(0),
     poll_staking: std.atomic.Value(u8) = .init(0),
@@ -256,6 +260,14 @@ const Activity = struct {
         } else |_| {
             self.daemon.store(@intFromEnum(DaemonState.stopped), .release);
         }
+    }
+
+    /// Whether the coin's live status is still being resolved: it's installed and
+    /// no poll has come back yet, with the daemon not already known to be
+    /// starting/running. During this window the Running/Staking marks animate so
+    /// the brief poll latency reads as "loading" rather than "stopped".
+    fn awaitingStatus(self: *const Activity) bool {
+        return self.installed and !self.poll_completed and self.daemonState() == .stopped;
     }
 
     /// Fold a finished poll's published values into the display fields the pane
@@ -516,9 +528,13 @@ pub const App = struct {
                 _ = act.spinner.update(t.timestamp);
             }
             const ds = act.daemonState();
-            if (ds == .starting) {
+            // The daemon spinner animates both while a start is in flight and
+            // during the brief pre-first-poll window, so Running/Staking read as
+            // "loading" until the first result lands.
+            if (ds == .starting or act.awaitingStatus()) {
                 _ = act.daemon_spinner.update(t.timestamp);
-            } else if (act.daemon_thread != null) {
+            }
+            if (ds != .starting and act.daemon_thread != null) {
                 // The worker has finished (state is no longer `.starting`); reap
                 // it. The store/return are back to back, so this never blocks.
                 act.daemon_thread.?.join();
@@ -539,6 +555,7 @@ pub const App = struct {
             if (act.poll_thread != null and act.poll_done.load(.acquire)) {
                 act.poll_thread.?.join();
                 act.poll_thread = null;
+                act.poll_completed = true;
                 if (act.applyPoll() and act.daemonState() != .running)
                     act.daemon.store(@intFromEnum(DaemonState.running), .release);
             }
@@ -852,12 +869,16 @@ pub const App = struct {
         const installed_label = label_style.render(a, "Installed") catch "Installed";
         const installed_mark = statusMark(a, is_installed);
 
+        // While the first poll is still pending, the daemon/staking status isn't
+        // known yet — animate rather than flash a misleading ✘.
+        const awaiting = act.awaitingStatus();
+
         // The daemon line is a tick/cross when stopped or up, or a spinner while
-        // it's starting.
+        // it's starting or while the first status poll is still in flight.
         const daemon_label = label_style.render(a, "Running") catch "Running";
         const daemon_mark: []const u8 = switch (act.daemonState()) {
             .running => statusMark(a, true),
-            .stopped => statusMark(a, false),
+            .stopped => if (awaiting) act.daemon_spinner.view(a) catch "…" else statusMark(a, false),
             .starting => act.daemon_spinner.view(a) catch "…",
         };
 
@@ -880,7 +901,8 @@ pub const App = struct {
         // entirely (empty string folds out of the status line).
         const staking_part: []const u8 = if (coin.isProofOfStake()) blk: {
             const staking_label = label_style.render(a, "Staking") catch "Staking";
-            break :blk std.fmt.allocPrint(a, "    {s}: {s}", .{ staking_label, statusMark(a, act.staking) }) catch "";
+            const staking_mark = if (awaiting) act.daemon_spinner.view(a) catch "…" else statusMark(a, act.staking);
+            break :blk std.fmt.allocPrint(a, "    {s}: {s}", .{ staking_label, staking_mark }) catch "";
         } else "";
 
         // Wallet status: text + colour come from the state itself.
@@ -1091,6 +1113,27 @@ test "action log renders in the bottom pane, sized to log_visible_lines" {
     // `l` toggles the pane: while hidden, `view` returns the top content alone.
     app.log_visible = false;
     try std.testing.expect(!app.log_visible);
+}
+
+test "awaitingStatus animates only before the first poll of an installed coin" {
+    var act: Activity = .{};
+
+    // Not installed → nothing to wait for (the daemon can't be running).
+    act.installed = false;
+    try std.testing.expect(!act.awaitingStatus());
+
+    // Installed, stopped, no poll yet → animate ("loading").
+    act.installed = true;
+    try std.testing.expect(act.awaitingStatus());
+
+    // First poll reaped → status resolved, animation stops.
+    act.poll_completed = true;
+    try std.testing.expect(!act.awaitingStatus());
+
+    // A daemon known to be running is never "awaiting", poll flag aside.
+    act.poll_completed = false;
+    act.daemon.store(@intFromEnum(DaemonState.running), .release);
+    try std.testing.expect(!act.awaitingStatus());
 }
 
 test "a successful poll folds peer count and staking into the display fields" {
