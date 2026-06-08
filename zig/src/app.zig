@@ -3,6 +3,7 @@ const zz = @import("zigzag");
 const models = @import("models.zig");
 const install_mod = @import("install.zig");
 const conf = @import("conf.zig");
+const rpc = @import("rpc.zig");
 const Coin = @import("coin.zig").Coin;
 const Nexa = @import("coins/nexa.zig").Nexa;
 const Divi = @import("coins/divi.zig").Divi;
@@ -64,10 +65,10 @@ const entries = blk: {
 /// to paint the coin's pane; the worker thread advances it.
 const Phase = enum(u8) { idle, downloading, extracting, done, failed };
 
-/// Whether a coin's daemon is up. `starting` shows a spinner in the pane; the
-/// actual start/stop wiring lands later — for now this is UI scaffolding that
-/// defaults to `stopped`.
-const DaemonState = enum { stopped, starting, running };
+/// Whether a coin's daemon is up. `starting`/`stopping` are the in-flight states
+/// while a start/stop worker runs (both animate a spinner in the pane), settling
+/// to `running` or `stopped` when the worker publishes its outcome.
+const DaemonState = enum { stopped, starting, running, stopping };
 
 /// Chain sync progress. `syncing` shows a spinner ("Syncing"), `synced` a green
 /// tick ("Synced"), `idle` a red cross. Live sync polling lands later — for now
@@ -137,6 +138,9 @@ const Activity = struct {
     /// Process home dir, copied in before a poll spawns so the worker can find
     /// the coin's conf (e.g. `~/.divi/divi.conf`) for its RPC credentials.
     home_dir: []const u8 = "",
+    /// Process environment, set before a daemon-start worker spawns so the
+    /// daemon inherits $HOME etc. and can resolve its datadir. Null until set.
+    environ_map: ?*const std.process.Environ.Map = null,
 
     // --- live getinfo poll (shared with the poll worker) -------------------
     // A short-lived worker fires one `getinfo` and publishes the result. Like
@@ -167,8 +171,11 @@ const Activity = struct {
 
     // --- UI-thread-only ----------------------------------------------------
     thread: ?std.Thread = null,
-    /// Joins the daemon-start worker once it has published its result.
+    /// Joins the daemon start/stop worker once it has published its result.
     daemon_thread: ?std.Thread = null,
+    /// Which daemon worker is in flight on `daemon_thread`, so the reap can log
+    /// the right outcome (started/failed-to-start vs stopped/failed-to-stop).
+    daemon_action: enum { start, stop } = .start,
     /// True when this run updates an existing daemon (heading reads "updating").
     updating: bool = false,
     /// Cleared when a run starts, set once its completion has been folded back
@@ -180,6 +187,14 @@ const Activity = struct {
     /// Written by the daemon-start worker (release) and read by the UI
     /// (acquire), so it's atomic like `phase`.
     daemon: std.atomic.Value(u8) = .init(@intFromEnum(DaemonState.stopped)),
+    /// Reason for the last failed daemon start — the daemon's own stderr when it
+    /// printed one (e.g. "Cannot obtain a lock on data directory …"), otherwise
+    /// the launcher error name. Published alongside the `.stopped` store in
+    /// `runDaemon`, so it's safe to read once the UI observes the daemon is no
+    /// longer `.starting`. Backed by `daemon_err_buf` (program-lifetime) because
+    /// the worker's arena is gone by the time the UI reads it.
+    daemon_err: []const u8 = "",
+    daemon_err_buf: [200]u8 = undefined,
     /// Connected peer count. Red at 0, green once any peer is connected.
     /// (Live peer polling lands later — for now this stays 0.)
     peers: u32 = 0,
@@ -263,8 +278,65 @@ const Activity = struct {
 
         if (self.launchDaemon(a)) {
             self.daemon.store(@intFromEnum(DaemonState.running), .release);
-        } else |_| {
+        } else |err| {
+            // Prefer the daemon's own stderr (set by launchDaemon); fall back to
+            // the launcher error name when it had nothing to say (e.g. the binary
+            // couldn't be spawned at all).
+            if (self.daemon_err.len == 0) self.daemon_err = @errorName(err);
             self.daemon.store(@intFromEnum(DaemonState.stopped), .release);
+        }
+    }
+
+    /// Daemon-stop worker. Asks the daemon to shut down via the JSON-RPC `stop`,
+    /// then publishes `.stopped`; on an RPC failure it reverts to `.running` and
+    /// records the reason. Runs on a private arena, reaped by the UI once the
+    /// state settles.
+    fn runStopDaemon(self: *Activity) void {
+        var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+        defer arena.deinit();
+        const a = arena.allocator();
+
+        if (self.requestStop(a)) {
+            self.daemon.store(@intFromEnum(DaemonState.stopped), .release);
+        } else |err| {
+            self.daemon_err = @errorName(err);
+            self.daemon.store(@intFromEnum(DaemonState.running), .release);
+        }
+    }
+
+    /// Resolve the coin's RPC credentials, issue `stop`, then wait (bounded) for
+    /// the daemon to actually exit — probing `getinfo` until it stops answering.
+    /// Holding this worker thread blocks the status poll, so a mid-shutdown reply
+    /// can't flip the daemon back to running once we've reported it stopped.
+    fn requestStop(self: *Activity, a: std.mem.Allocator) !void {
+        var threaded: std.Io.Threaded = .init(a, .{});
+        defer threaded.deinit();
+        const io = threaded.io();
+
+        const data_dir = try self.coin.dataDir(a, self.home_dir);
+        const auth = try conf.readAuth(
+            a,
+            io,
+            data_dir,
+            self.coin.confFile(),
+            self.coin.rpcDefaultUsername(),
+            self.coin.rpcDefaultPort(),
+        );
+
+        // The reply ("<coin> server stopping") is discarded; the arena frees it.
+        _ = try rpc.call(a, auth, "stop");
+
+        // Probe on a small arena reset each round so the wait stays flat in
+        // memory. The daemon drops its RPC port early in shutdown, so the first
+        // failed probe means it's on its way down; cap the wait so a wedged
+        // daemon doesn't pin the worker forever.
+        var probe = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+        defer probe.deinit();
+        var attempts: u8 = 0;
+        while (attempts < 40) : (attempts += 1) {
+            io.sleep(.fromMilliseconds(250), .awake) catch {};
+            _ = probe.reset(.retain_capacity);
+            _ = self.coin.daemonInfo(probe.allocator(), auth) catch return;
         }
     }
 
@@ -353,10 +425,22 @@ const Activity = struct {
         self.poll_synced.store(@intFromBool(state.synced), .monotonic);
     }
 
-    /// Spawn the daemon binary with `-daemon` and wait for the launcher to
-    /// return (it daemonizes, so the wait is brief). Errors on a missing binary
-    /// or a non-zero exit. `argv[0]` carries a path separator, so it's resolved
-    /// as a file path rather than via PATH.
+    /// Spawn the daemon binary with `-daemon` and decide whether it started,
+    /// capturing the launcher's stderr so a failure can report the reason.
+    /// `argv[0]` carries a path separator, so it's resolved as a file path
+    /// rather than via PATH.
+    ///
+    /// `-daemon` forks a detached daemon (a new pid) and the launcher exits:
+    /// cleanly after daemonizing, or non-zero (or on a signal) after a pre-fork
+    /// startup error — a datadir lock, a chain-params assertion, … — that it
+    /// prints to stderr. We wait only on the launcher, which is brief either way.
+    ///
+    /// Stderr goes to a throwaway file, not a pipe: the detached daemon inherits
+    /// these descriptors, and a pipe whose read end we then closed would hand the
+    /// daemon a SIGPIPE the next time it logs — killing it just after it came up
+    /// (some coin daemons don't redirect their descriptors on daemonize). A
+    /// regular file never SIGPIPEs and never blocks the wait. Stdout (the
+    /// "<coin> server starting" banner) is discarded.
     fn launchDaemon(self: *Activity, a: std.mem.Allocator) !void {
         const path = try std.fs.path.join(a, &.{ self.install_root, self.coin.daemonFile() });
 
@@ -364,24 +448,214 @@ const Activity = struct {
         defer threaded.deinit();
         const io = threaded.io();
 
+        // Make sure the conf has RPC creds (and server=1/daemon=1/rpcport) before
+        // the daemon reads it — otherwise it falls back to cookie auth we can't
+        // use, leaving the daemon unmanageable over RPC (poll/stop). Existing
+        // values are kept, so a coin already configured is untouched.
+        const data_dir = try self.coin.dataDir(a, self.home_dir);
+        _ = try conf.populate(
+            a,
+            io,
+            data_dir,
+            self.coin.confFile(),
+            self.coin.rpcDefaultUsername(),
+            self.coin.rpcDefaultPort(),
+        );
+
+        // Per-daemon name so coins starting at once don't share the scratch file.
+        const err_name = try std.fmt.allocPrint(a, ".{s}.startup", .{self.coin.daemonFile()});
+        const err_path = try std.fs.path.join(a, &.{ self.install_root, err_name });
+        var err_file = try std.Io.Dir.createFileAbsolute(io, err_path, .{ .read = true });
+        defer {
+            err_file.close(io);
+            // Unlink once read: the daemon still holds its own fd to the now
+            // anonymous inode, so its later writes are harmless rather than fatal.
+            std.Io.Dir.deleteFileAbsolute(io, err_path) catch {};
+        }
+
         var child = try std.process.spawn(io, .{
             .argv = &.{ path, "-daemon" },
+            .environ_map = self.environ_map,
             .stdin = .ignore,
             .stdout = .ignore,
-            .stderr = .ignore,
+            .stderr = .{ .file = err_file },
         });
         switch (try child.wait(io)) {
-            .exited => |code| if (code != 0) return error.DaemonStartFailed,
-            else => return error.DaemonStartFailed,
+            .exited => |code| if (code == 0) {
+                // The launcher daemonized. But some daemons (e.g. nexad) fork
+                // early and only then fail during init — a bad datadir, a
+                // corrupt block index — so the launcher exits 0 while the real
+                // daemon dies seconds later. Confirm it actually stayed up; if
+                // not, the reason is in its own debug.log (its daemonized stderr
+                // was redirected away from our scratch file), so surface that.
+                if (self.confirmAlive(io)) return;
+                self.setDaemonErrFromDebugLog(a, io);
+                return error.DaemonStartFailed;
+            },
+            else => {},
+        }
+        // The launcher itself exited non-zero / on a signal: a pre-fork failure
+        // (datadir lock, chain-params assertion) it printed to its stderr.
+        var buf: [8 * 1024]u8 = undefined;
+        const n = err_file.readPositionalAll(io, &buf, 0) catch 0;
+        self.setDaemonErr(buf[0..n]);
+        return error.DaemonStartFailed;
+    }
+
+    /// After the launcher daemonizes, confirm the daemon process actually stuck
+    /// around rather than forking and dying. Polls liveness over a short window
+    /// (a failed daemon is gone almost immediately; a healthy one's process is
+    /// present from the fork on). Returns false the moment it's seen gone.
+    ///
+    /// Liveness is by process name (like the Go `FindProcess`), so it needs no
+    /// RPC and works before the daemon opens its RPC port. On platforms without
+    /// `/proc` the check can't run, so it conservatively reports alive (we fall
+    /// back to trusting the launcher's exit code, the prior behaviour).
+    fn confirmAlive(self: *Activity, io: std.Io) bool {
+        const name = self.coin.daemonFile();
+        var i: u8 = 0;
+        while (i < 8) : (i += 1) {
+            io.sleep(.fromMilliseconds(250), .awake) catch {};
+            if (!processAlive(io, name)) return false;
+        }
+        return true;
+    }
+
+    /// Surface a failed start's reason from the coin's `<datadir>/debug.log` —
+    /// the daemonized child logs there, not to the stderr we captured. Reads only
+    /// the tail (bounded, the file grows unboundedly) and picks the most
+    /// error-like line. Best-effort: leaves `daemon_err` empty on any IO hiccup,
+    /// so the caller falls back to the generic launcher error name.
+    fn setDaemonErrFromDebugLog(self: *Activity, a: std.mem.Allocator, io: std.Io) void {
+        const data_dir = self.coin.dataDir(a, self.home_dir) catch return;
+        var dir = std.Io.Dir.cwd().openDir(io, data_dir, .{}) catch return;
+        defer dir.close(io);
+        var file = dir.openFile(io, "debug.log", .{}) catch return;
+        defer file.close(io);
+        const stat = file.stat(io) catch return;
+        // A modest tail keeps the read flat and biases toward the latest start
+        // attempt (the death burst is the last handful of lines), so an older
+        // session's errors further back don't get picked.
+        var buf: [4 * 1024]u8 = undefined;
+        const off = if (stat.size > buf.len) stat.size - buf.len else 0;
+        const n = file.readPositionalAll(io, &buf, off) catch return;
+
+        const pick = pickDebugLogError(buf[0..n]);
+        if (pick.len != 0) self.storeDaemonErr(pick);
+    }
+
+    /// Stash a daemon-start failure reason into the program-lifetime
+    /// `daemon_err_buf`. Prefers the first non-empty line of the daemon's stderr
+    /// (the actionable message); leaves `daemon_err` empty when stderr is blank so
+    /// `runDaemon` falls back to the launcher error name.
+    fn setDaemonErr(self: *Activity, stderr: []const u8) void {
+        var it = std.mem.splitScalar(u8, stderr, '\n');
+        while (it.next()) |raw| {
+            const t = std.mem.trim(u8, raw, " \t\r");
+            if (t.len != 0) return self.storeDaemonErr(t);
         }
     }
+
+    /// Copy `line` (trimmed/truncated to the buffer) into `daemon_err_buf` and
+    /// point `daemon_err` at it.
+    fn storeDaemonErr(self: *Activity, line: []const u8) void {
+        const n = @min(line.len, self.daemon_err_buf.len);
+        @memcpy(self.daemon_err_buf[0..n], line[0..n]);
+        self.daemon_err = self.daemon_err_buf[0..n];
+    }
 };
+
+/// Strip a bitcoin-style "YYYY-MM-DD HH:MM:SS " log prefix from `line` so the
+/// surfaced reason is just the message. Returns `line` unchanged if the prefix
+/// isn't there.
+fn stripLogTimestamp(line: []const u8) []const u8 {
+    if (line.len > 20 and line[4] == '-' and line[7] == '-' and
+        line[10] == ' ' and line[13] == ':' and line[16] == ':')
+        return std.mem.trim(u8, line[19..], " \t");
+    return line;
+}
+
+/// Choose the most informative line from a debug.log tail. A daemon's failure
+/// burst mixes the root cause with benign warnings and shutdown bookkeeping, so
+/// two tiers are used: a "root cause" line (a datadir/block-index/permission
+/// problem) wins over a generic error/abort line, which in turn wins over the
+/// last non-empty line. Within a tier the *last* match wins, since the fatal
+/// line lands late, just before the shutdown. Leading log timestamps are
+/// stripped. Returns a slice into `tail` (empty only if `tail` has no content).
+fn pickDebugLogError(tail: []const u8) []const u8 {
+    // Deliberately omits bare "lock" ("block" contains it) — the datadir-lock
+    // message carries "cannot" anyway.
+    const root_cause = [_][]const u8{
+        "incorrect", "corrupt", "no genesis", "wrong datadir",
+        "cannot",    "unable",  "denied",     "invalid",        "not found",
+    };
+    const generic = [_][]const u8{ "error", "abort", "fail", "exiting" };
+
+    var root_hit: []const u8 = "";
+    var generic_hit: []const u8 = "";
+    var fallback: []const u8 = "";
+    var it = std.mem.splitScalar(u8, tail, '\n');
+    while (it.next()) |raw| {
+        const line = stripLogTimestamp(std.mem.trim(u8, raw, " \t\r"));
+        if (line.len == 0) continue;
+        fallback = line;
+        if (matchesAny(line, &root_cause)) {
+            root_hit = line;
+        } else if (matchesAny(line, &generic)) {
+            generic_hit = line;
+        }
+    }
+    return if (root_hit.len != 0) root_hit else if (generic_hit.len != 0) generic_hit else fallback;
+}
+
+/// True if `line` contains any of `needles` (case-insensitive).
+fn matchesAny(line: []const u8, needles: []const []const u8) bool {
+    for (needles) |needle| if (containsIgnoreCase(line, needle)) return true;
+    return false;
+}
+
+/// Case-insensitive substring test (ASCII).
+fn containsIgnoreCase(haystack: []const u8, needle: []const u8) bool {
+    if (needle.len == 0 or needle.len > haystack.len) return needle.len == 0;
+    var i: usize = 0;
+    while (i + needle.len <= haystack.len) : (i += 1) {
+        if (std.ascii.eqlIgnoreCase(haystack[i .. i + needle.len], needle)) return true;
+    }
+    return false;
+}
+
+/// True if a process named `name` (matched against `/proc/<pid>/comm`, which is
+/// truncated to 15 bytes) is currently running. Linux-only; returns true where
+/// `/proc` isn't available so callers don't treat "can't check" as "dead".
+fn processAlive(io: std.Io, name: []const u8) bool {
+    var proc = std.Io.Dir.cwd().openDir(io, "/proc", .{ .iterate = true }) catch return true;
+    defer proc.close(io);
+
+    // comm is truncated to TASK_COMM_LEN-1 (15) bytes.
+    const want = if (name.len > 15) name[0..15] else name;
+
+    var it = proc.iterate();
+    while (it.next(io) catch null) |entry| {
+        if (entry.kind != .directory or entry.name.len == 0 or !std.ascii.isDigit(entry.name[0])) continue;
+        var path_buf: [32]u8 = undefined;
+        const comm_path = std.fmt.bufPrint(&path_buf, "{s}/comm", .{entry.name}) catch continue;
+        var f = proc.openFile(io, comm_path, .{}) catch continue;
+        defer f.close(io);
+        var cbuf: [64]u8 = undefined;
+        const n = f.readPositionalAll(io, &cbuf, 0) catch continue;
+        if (std.mem.eql(u8, std.mem.trim(u8, cbuf[0..n], " \t\r\n"), want)) return true;
+    }
+    return false;
+}
 
 /// Bounded action log. One fixed-capacity line per entry, kept in a ring so the
 /// log's memory is flat regardless of how long the session runs (per the
 /// project's memory constraint — no growing buffer).
 const log_capacity = 128;
-const log_line_max = 120;
+/// Wide enough to hold a full daemon-start failure reason (the daemon's own
+/// stderr line — assertions and lock errors run long) after the timestamp and
+/// "<coin>: daemon failed to start (…)" framing, rather than clipping its tail.
+const log_line_max = 256;
 const LogLine = struct {
     buf: [log_line_max]u8 = undefined,
     len: usize = 0,
@@ -415,6 +689,10 @@ pub const App = struct {
     home_dir: []const u8,
     /// True when `home_dir` is heap-allocated (and so must be freed in `deinit`).
     home_dir_owned: bool,
+    /// The process environment, handed to a daemon we spawn so it inherits $HOME
+    /// (and the rest) — without it the daemon can't resolve its datadir and some
+    /// coin daemons abort on startup. Borrowed from `ctx`; lives for the program.
+    environ_map: *const std.process.Environ.Map,
     /// Monotonic timestamp (ns) of the last getinfo poll round, from the tick
     /// clock. Drives the shared ~2s poll cadence across all installed coins.
     last_poll_ns: i64 = 0,
@@ -482,6 +760,7 @@ pub const App = struct {
             .install_root_owned = install_root_owned,
             .home_dir = home_owned,
             .home_dir_owned = home_owned_flag,
+            .environ_map = ctx.environ_map,
             .io = ctx.io,
             .tz_offset_s = localOffsetSeconds(
                 ctx.persistent_allocator,
@@ -535,6 +814,7 @@ pub const App = struct {
                     'q' => return .quit,
                     'i' => self.tryInstall(),
                     's' => self.tryStart(),
+                    'p' => self.tryStop(),
                     'k' => self.move(-1),
                     'j' => self.move(1),
                     'l' => self.log_visible = !self.log_visible,
@@ -562,21 +842,34 @@ pub const App = struct {
                 _ = act.spinner.update(t.timestamp);
             }
             const ds = act.daemonState();
-            // The daemon spinner animates both while a start is in flight and
+            // The daemon spinner animates while a start or stop is in flight, and
             // during the brief pre-first-poll window, so Running/Staking read as
             // "loading" until the first result lands.
-            if (ds == .starting or act.awaitingStatus()) {
+            if (ds == .starting or ds == .stopping or act.awaitingStatus()) {
                 _ = act.daemon_spinner.update(t.timestamp);
             }
-            if (ds != .starting and act.daemon_thread != null) {
-                // The worker has finished (state is no longer `.starting`); reap
-                // it. The store/return are back to back, so this never blocks.
+            if ((ds == .running or ds == .stopped) and act.daemon_thread != null) {
+                // The worker has settled on a terminal state; reap it. The
+                // store/return are back to back, so this never blocks.
                 act.daemon_thread.?.join();
                 act.daemon_thread = null;
-                if (ds == .running) {
-                    self.logf("{s}: daemon running", .{act.coin.coinName()});
-                } else {
-                    self.logf("{s}: daemon failed to start", .{act.coin.coinName()});
+                switch (act.daemon_action) {
+                    .start => if (ds == .running)
+                        self.logf("{s}: daemon running", .{act.coin.coinName()})
+                    else
+                        self.logf("{s}: daemon failed to start ({s})", .{ act.coin.coinName(), act.daemon_err }),
+                    .stop => if (ds == .stopped) {
+                        // Daemon is down — clear the live readings so the pane
+                        // doesn't keep showing stale peers/sync from when it ran.
+                        act.peers = 0;
+                        act.staking = false;
+                        act.sync = .idle;
+                        act.headers_cur = 0;
+                        act.headers_total = 0;
+                        act.blocks_cur = 0;
+                        act.blocks_total = 0;
+                        self.logf("{s}: daemon stopped", .{act.coin.coinName()});
+                    } else self.logf("{s}: daemon failed to stop ({s})", .{ act.coin.coinName(), act.daemon_err }),
                 }
             }
             if (act.sync == .syncing) {
@@ -595,10 +888,12 @@ pub const App = struct {
             }
 
             // Start the next poll for an installed, idle coin when the cadence is
-            // due and none is in flight. Skipped while an install or daemon-start
+            // due and none is in flight. Only the selected coin is polled — its
+            // dashboard is the only one on screen, so polling a coin we're not
+            // viewing buys nothing. Skipped while an install or daemon-start
             // worker is touching this activity, so `coin` isn't written under it.
-            if (poll_due and act.installed and act.poll_thread == null and
-                !act.busy() and act.daemon_thread == null)
+            if (i == self.selected and poll_due and act.installed and
+                act.poll_thread == null and !act.busy() and act.daemon_thread == null)
             {
                 if (self.coinAt(i)) |coin| {
                     act.coin = coin;
@@ -631,8 +926,13 @@ pub const App = struct {
         const n: i32 = @intCast(entries.len);
         var idx: i32 = @intCast(self.selected);
         idx = @max(0, @min(n - 1, idx + delta));
+        const moved = idx != @as(i32, @intCast(self.selected));
         self.selected = @intCast(idx);
         self.refreshSelectedInstalled();
+        // Only the selected coin is polled, so a switch should refresh the new
+        // coin promptly rather than wait out the shared cadence. Resetting the
+        // poll clock makes the next tick due immediately.
+        if (moved) self.last_poll_ns = 0;
     }
 
     /// Append a formatted line to the action log, prefixed with a UTC timestamp.
@@ -780,7 +1080,11 @@ pub const App = struct {
 
         act.coin = coin;
         act.install_root = self.install_root;
+        act.home_dir = self.home_dir;
+        act.environ_map = self.environ_map;
+        act.daemon_action = .start;
         act.daemon_spinner = zz.Spinner.init();
+        act.daemon_err = "";
         act.daemon.store(@intFromEnum(DaemonState.starting), .release);
 
         act.daemon_thread = std.Thread.spawn(.{}, Activity.runDaemon, .{act}) catch {
@@ -788,6 +1092,37 @@ pub const App = struct {
             return;
         };
         self.logf("{s}: starting daemon…", .{coin.coinName()});
+    }
+
+    /// Stop the selected coin's running daemon in the background (via the JSON-RPC
+    /// `stop`). Enabled only when installed and currently running — otherwise the
+    /// press is a no-op (matching the disabled button in the pane). Returns
+    /// immediately; the worker flips `daemon` to `.stopped` once it's down.
+    fn tryStop(self: *App) void {
+        const coin = self.selectedCoin() orelse return;
+        const act = &self.activities[self.selected];
+        if (!act.installed) return;
+        if (act.daemonState() != .running) return;
+
+        // A status poll for this coin may be in flight (only the selected coin is
+        // polled); reap it first so the stop worker doesn't race it on `coin`.
+        if (act.poll_thread) |t| {
+            t.join();
+            act.poll_thread = null;
+        }
+
+        act.coin = coin;
+        act.home_dir = self.home_dir;
+        act.daemon_action = .stop;
+        act.daemon_spinner = zz.Spinner.init();
+        act.daemon_err = "";
+        act.daemon.store(@intFromEnum(DaemonState.stopping), .release);
+
+        act.daemon_thread = std.Thread.spawn(.{}, Activity.runStopDaemon, .{act}) catch {
+            act.daemon.store(@intFromEnum(DaemonState.running), .release);
+            return;
+        };
+        self.logf("{s}: stopping daemon…", .{coin.coinName()});
     }
 
     pub fn view(self: *const App, ctx: *const zz.Context) []const u8 {
@@ -877,6 +1212,7 @@ pub const App = struct {
                 \\  up/down  navigate
                 \\  i        install selected coin
                 \\  s        start selected coin's daemon
+                \\  p        stop selected coin's daemon
                 \\  l        toggle the log pane
                 \\  q        quit
             , .{ head, app_version }) catch "alloc error";
@@ -913,7 +1249,7 @@ pub const App = struct {
         const daemon_mark: []const u8 = switch (act.daemonState()) {
             .running => statusMark(a, true),
             .stopped => if (awaiting) act.daemon_spinner.view(a) catch "…" else statusMark(a, false),
-            .starting => act.daemon_spinner.view(a) catch "…",
+            .starting, .stopping => act.daemon_spinner.view(a) catch "…",
         };
 
         // Peer count: red while 0, green once any peer is connected.
@@ -954,6 +1290,7 @@ pub const App = struct {
 
         const middle = try renderActivity(a, act, p);
         const start_button = renderStartButton(a, act);
+        const stop_button = renderStopButton(a, act);
 
         return std.fmt.allocPrint(a,
             \\{s}
@@ -966,6 +1303,7 @@ pub const App = struct {
             \\
             \\{s}
             \\
+            \\{s}
             \\{s}
         , .{
             head,
@@ -986,6 +1324,7 @@ pub const App = struct {
             blocks_bar,
             middle,
             start_button,
+            stop_button,
         });
     }
 
@@ -1012,6 +1351,28 @@ pub const App = struct {
             .running => blk: {
                 const b = (zz.Style{}).dim(true).render(a, "[ Start ]") catch "[ Start ]";
                 break :blk std.fmt.allocPrint(a, "{s}   (running)", .{b}) catch "[ Start ]";
+            },
+            .stopping => blk: {
+                const b = (zz.Style{}).dim(true).render(a, "[ Start ]") catch "[ Start ]";
+                break :blk std.fmt.allocPrint(a, "{s}   (stopping…)", .{b}) catch "[ Start ]";
+            },
+        };
+    }
+
+    /// The "Stop" button line. Enabled (and bound to `p`) only when the daemon is
+    /// running; otherwise it's dimmed with a reason. While stopping it shows the
+    /// in-progress label.
+    fn renderStopButton(a: std.mem.Allocator, act: *const Activity) []const u8 {
+        if (!act.installed) {
+            const b = (zz.Style{}).dim(true).render(a, "[ Stop ]") catch "[ Stop ]";
+            return std.fmt.allocPrint(a, "{s}   (install first)", .{b}) catch "[ Stop ]";
+        }
+        return switch (act.daemonState()) {
+            .running => "[ Stop ]   (press p)",
+            .stopping => "[ Stopping… ]",
+            .stopped, .starting => blk: {
+                const b = (zz.Style{}).dim(true).render(a, "[ Stop ]") catch "[ Stop ]";
+                break :blk std.fmt.allocPrint(a, "{s}   (not running)", .{b}) catch "[ Stop ]";
             },
         };
     }
@@ -1172,6 +1533,72 @@ test "awaitingStatus animates only before the first poll of an installed coin" {
     try std.testing.expect(!act.awaitingStatus());
 }
 
+test "setDaemonErr keeps the first non-empty stderr line, trimmed and bounded" {
+    var act: Activity = .{};
+
+    // A leading blank line is skipped; the actionable line is kept whole (it must
+    // survive intact, since assertion/lock messages carry their detail at the end).
+    act.setDaemonErr("\n  divid: chainparamsbase.cpp:91: BaseParams(): Assertion `globalChainBaseParams' failed.\nAborted\n");
+    try std.testing.expectEqualStrings(
+        "divid: chainparamsbase.cpp:91: BaseParams(): Assertion `globalChainBaseParams' failed.",
+        act.daemon_err,
+    );
+
+    // Blank stderr leaves the reason empty so runDaemon can fall back to the
+    // launcher error name.
+    var blank: Activity = .{};
+    blank.setDaemonErr("   \n\t\n");
+    try std.testing.expectEqual(@as(usize, 0), blank.daemon_err.len);
+
+    // An over-long line is truncated to the buffer, never overruns it.
+    var long: Activity = .{};
+    const huge = "x" ** (long.daemon_err_buf.len + 50);
+    long.setDaemonErr(huge);
+    try std.testing.expectEqual(long.daemon_err_buf.len, long.daemon_err.len);
+}
+
+test "debug.log helpers strip the timestamp and pick the root-cause line" {
+    // A real bitcoin-style timestamp prefix is stripped to the bare message.
+    try std.testing.expectEqualStrings(
+        ": Incorrect or no genesis block found. Wrong datadir for network?.",
+        stripLogTimestamp("2026-06-08 14:55:44 : Incorrect or no genesis block found. Wrong datadir for network?."),
+    );
+    // A line without the prefix is returned untouched.
+    try std.testing.expectEqualStrings("plain line", stripLogTimestamp("plain line"));
+
+    try std.testing.expect(containsIgnoreCase("the ABORTED run", "aborted"));
+    try std.testing.expect(!containsIgnoreCase("all good", "aborted"));
+
+    // The exact shape of nexad's failure tail: a benign electrum warning early,
+    // the genuine root cause mid-way, then the consequence + shutdown noise. The
+    // picker must skip the benign warning and the generic "Aborted… Exiting."
+    // line in favour of the datadir root cause.
+    const tail =
+        \\2026-06-08 14:55:44 Opened LevelDB successfully
+        \\2026-06-08 14:55:44 Electrum NOT STARTED: Error Cannot find electrum executable at /home/x/.boxwallet/rostrum.  On platforms unsupported by Rostrum this may be benign.
+        \\2026-06-08 14:55:44 init message: Loading block index...
+        \\2026-06-08 14:55:44 : Incorrect or no genesis block found. Wrong datadir for network?.
+        \\
+        \\Do you want to rebuild the block database now?
+        \\2026-06-08 14:55:44 Aborted block database rebuild. Exiting.
+        \\2026-06-08 14:55:44 Shutdown: In progress...
+        \\2026-06-08 14:55:44 Shutdown: done
+    ;
+    try std.testing.expectEqualStrings(
+        ": Incorrect or no genesis block found. Wrong datadir for network?.",
+        pickDebugLogError(tail),
+    );
+
+    // With no root-cause line, a generic error/abort line is picked over noise.
+    try std.testing.expectEqualStrings(
+        "Aborted. Exiting.",
+        pickDebugLogError("loading\nAborted. Exiting.\nShutdown: done\n"),
+    );
+
+    // Nothing error-like → last non-empty line as a fallback.
+    try std.testing.expectEqualStrings("all done", pickDebugLogError("starting\nall done\n"));
+}
+
 test "a successful poll folds peers, staking, heights and sync into the display" {
     // A finished poll publishes its result into the atomics; applyPoll copies it
     // into the plain fields the pane renders. A failed poll is a no-op so a
@@ -1264,6 +1691,31 @@ test "Start button reflects install and daemon state" {
     try std.testing.expect(std.mem.indexOf(u8, App.renderStartButton(a, &act), "running") != null);
 }
 
+test "Stop button reflects daemon state" {
+    const allocator = std.testing.allocator;
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    var act: Activity = .{};
+
+    // Disabled until installed.
+    act.installed = false;
+    try std.testing.expect(std.mem.indexOf(u8, App.renderStopButton(a, &act), "install first") != null);
+
+    // Installed but stopped → disabled (nothing to stop).
+    act.installed = true;
+    try std.testing.expect(std.mem.indexOf(u8, App.renderStopButton(a, &act), "not running") != null);
+
+    // Running → bound to `p`.
+    act.daemon.store(@intFromEnum(DaemonState.running), .release);
+    try std.testing.expect(std.mem.indexOf(u8, App.renderStopButton(a, &act), "press p") != null);
+
+    // Stopping → shows the in-progress label.
+    act.daemon.store(@intFromEnum(DaemonState.stopping), .release);
+    try std.testing.expect(std.mem.indexOf(u8, App.renderStopButton(a, &act), "Stopping") != null);
+}
+
 test "start is a no-op until the coin is installed" {
     if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
     const allocator = std.testing.allocator;
@@ -1287,6 +1739,35 @@ test "start is a no-op until the coin is installed" {
     // Not installed: pressing start spawns nothing and the daemon stays stopped.
     act.installed = false;
     app.tryStart();
+    try std.testing.expectEqual(DaemonState.stopped, act.daemonState());
+    try std.testing.expect(act.daemon_thread == null);
+}
+
+test "stop is a no-op unless the daemon is running" {
+    if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
+    const allocator = std.testing.allocator;
+
+    var threaded: std.Io.Threaded = .init(allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    var env = std.process.Environ.Map.init(allocator);
+    defer env.deinit();
+    try env.put("HOME", "/home/tester");
+    var ctx = zz.Context.init(allocator, allocator, io, &env);
+
+    var app: App = undefined;
+    _ = app.init(&ctx);
+    defer app.deinit();
+
+    app.selected = std.mem.indexOfScalar(Entry, &entries, .divi).?;
+    const act = &app.activities[app.selected];
+
+    // Installed but stopped: pressing stop spawns nothing and the state is left
+    // alone (it doesn't slip into `.stopping`).
+    act.installed = true;
+    act.daemon.store(@intFromEnum(DaemonState.stopped), .release);
+    app.tryStop();
     try std.testing.expectEqual(DaemonState.stopped, act.daemonState());
     try std.testing.expect(act.daemon_thread == null);
 }
