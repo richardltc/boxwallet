@@ -51,11 +51,14 @@ pub const Divi = struct {
 
     /// Live `getblockchaininfo`, normalized for a frontend.
     ///
-    /// Go's `BlockchainIsSynced` reads `mnsync status`'s `IsBlockchainSynced`,
-    /// but the same file keeps a commented-out `verificationprogress > 0.99999`
-    /// fallback. We use that single-call form here (as Nexa does) so every coin
-    /// maps to the shared `BlockchainState` the same way; the masternode-sync
-    /// signal can be layered on later if needed.
+    /// Unlike Nexa's daemon, Divi's `getblockchaininfo` does **not** report
+    /// `verificationprogress` (the field is absent, so it parses as 0). Go's
+    /// `BlockchainIsSynced` reads the masternode `mnsync status` instead, with a
+    /// commented-out progress fallback. Rather than take that single extra-field
+    /// path, we derive "synced" from the heights the call does return: the chain
+    /// is caught up once validated `blocks` have reached the header tip
+    /// (`blocks >= headers`, with at least one header seen). The header-vs-block
+    /// counts also drive the sync progress bars.
     pub fn blockchainState(
         allocator: std.mem.Allocator,
         auth: models.CoinAuth,
@@ -69,7 +72,10 @@ pub const Divi = struct {
             .blocks = r.blocks,
             .headers = r.headers,
             .verification_progress = r.verificationprogress,
-            .synced = r.verificationprogress > 0.99999,
+            .synced = r.headers > 0 and r.blocks >= r.headers,
+            // Network tip from peers, so the frontend's Headers bar can fill
+            // toward it. A getpeerinfo hiccup just leaves it 0 (unknown).
+            .network_height = rpc.networkHeight(allocator, auth) catch 0,
         };
     }
 
@@ -192,15 +198,17 @@ pub const Divi = struct {
     }
 };
 
-test "parses getblockchaininfo into normalized BlockchainState" {
+test "maps getblockchaininfo into BlockchainState, syncing on blocks vs headers" {
     const allocator = std.testing.allocator;
 
-    // Canned daemon reply — proves parse + map without a running divid.
+    // Canned reply mirroring a live divid getblockchaininfo — note there is no
+    // `verificationprogress` field (Divi's daemon omits it). blocks == headers
+    // here, so the chain reads as synced.
     const raw =
-        \\{"result":{"chain":"main","blocks":2345678,"headers":2345678,
-        \\"bestblockhash":"cafebabe","difficulty":98765.4321,
-        \\"verificationprogress":0.9999995,
-        \\"chainwork":"00000000000000000000000000000000000000000000abcdef0123456789abcd"},
+        \\{"result":{"chain":"main","blocks":4071165,"headers":4071165,
+        \\"bestblockhash":"322d04e1197d59ed4f47583f4accda109c4f7e32b38871c30b812d571355f171",
+        \\"difficulty":43135.79559493,
+        \\"chainwork":"000000000000000000000000000000000000000000000017f092768cd23927cb"},
         \\"error":null,"id":"boxwallet"}
     ;
 
@@ -218,13 +226,23 @@ test "parses getblockchaininfo into normalized BlockchainState" {
         .blocks = r.blocks,
         .headers = r.headers,
         .verification_progress = r.verificationprogress,
-        .synced = r.verificationprogress > 0.99999,
+        .synced = r.headers > 0 and r.blocks >= r.headers,
     };
     defer state.deinit(allocator);
 
     try std.testing.expectEqualStrings("main", state.chain);
-    try std.testing.expectEqual(@as(i64, 2345678), state.blocks);
+    try std.testing.expectEqual(@as(i64, 4071165), state.blocks);
+    try std.testing.expectEqual(@as(i64, 4071165), state.headers);
+    // No verificationprogress in the reply → parses as 0, but synced is derived
+    // from the heights (blocks have caught up to the header tip).
+    try std.testing.expectEqual(@as(f64, 0), state.verification_progress);
     try std.testing.expect(state.synced);
+}
+
+test "blocks behind the header tip read as not synced" {
+    // Mid-sync: headers race ahead of validated blocks.
+    const r: models.DiviBlockchainInfo = .{ .blocks = 2_000_000, .headers = 4_071_165 };
+    try std.testing.expect(!(r.headers > 0 and r.blocks >= r.headers));
 }
 
 test "maps getinfo into normalized DaemonInfo, decoding staking status" {

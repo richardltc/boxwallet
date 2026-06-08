@@ -78,6 +78,30 @@ pub fn callParsed(
     );
 }
 
+/// Estimate the network's best block height as the maximum `synced_headers`
+/// reported across connected peers (via `getpeerinfo`). This is the tip a
+/// syncing node is catching up to — `getblockchaininfo` reports only the local
+/// `headers`/`blocks`, not the target. Returns 0 when there are no peers (or
+/// none report a height), so callers can fall back to local heights.
+///
+/// The peer array is parsed into a minimal `[]PeerInfo` (every other field
+/// dropped via `ignore_unknown_fields`) and freed on return — only the single
+/// resulting height is kept, so memory stays flat regardless of peer count.
+pub fn networkHeight(
+    allocator: std.mem.Allocator,
+    auth: models.CoinAuth,
+) !i64 {
+    var parsed = try callParsed([]models.PeerInfo, allocator, auth, "getpeerinfo");
+    defer parsed.deinit();
+
+    const peers = parsed.value.result orelse return 0;
+    var max: i64 = 0;
+    for (peers) |p| {
+        if (p.synced_headers > max) max = p.synced_headers;
+    }
+    return max;
+}
+
 /// Build an `Authorization: Basic <base64(user:password)>` header value.
 fn basicAuthHeader(allocator: std.mem.Allocator, user: []const u8, password: []const u8) ![]u8 {
     const creds = try std.fmt.allocPrint(allocator, "{s}:{s}", .{ user, password });
@@ -116,6 +140,57 @@ test "callParsed's alloc_always keeps strings valid after the source is freed" {
 
     try std.testing.expectEqualStrings("Staking Active", parsed.value.result.?.name);
     try std.testing.expectEqual(@as(i64, 29), parsed.value.result.?.n);
+}
+
+test "network height is the max synced_headers across peers" {
+    // Canned getpeerinfo (subset of the real per-peer fields) — proves the parse
+    // + max that `networkHeight` performs, without a running daemon. Peers report
+    // differing heights; the highest is the network tip estimate.
+    const allocator = std.testing.allocator;
+    const raw =
+        \\{"result":[
+        \\{"id":1,"addr":"1.2.3.4:51472","startingheight":4034443,"synced_headers":4071170,"synced_blocks":4071170},
+        \\{"id":2,"addr":"5.6.7.8:51472","startingheight":4061479,"synced_headers":4071173,"synced_blocks":4071173},
+        \\{"id":3,"addr":"9.9.9.9:51472","synced_headers":4071168}
+        \\],"error":null,"id":"boxwallet"}
+    ;
+
+    var parsed = try std.json.parseFromSlice(
+        models.JsonRpcResponse([]models.PeerInfo),
+        allocator,
+        raw,
+        .{ .ignore_unknown_fields = true, .allocate = .alloc_always },
+    );
+    defer parsed.deinit();
+
+    const peers = parsed.value.result.?;
+    var max: i64 = 0;
+    for (peers) |p| {
+        if (p.synced_headers > max) max = p.synced_headers;
+    }
+    try std.testing.expectEqual(@as(usize, 3), peers.len);
+    try std.testing.expectEqual(@as(i64, 4071173), max);
+}
+
+test "no peers yields a zero network height" {
+    const allocator = std.testing.allocator;
+    const raw = "{\"result\":[],\"error\":null,\"id\":\"boxwallet\"}";
+
+    var parsed = try std.json.parseFromSlice(
+        models.JsonRpcResponse([]models.PeerInfo),
+        allocator,
+        raw,
+        .{ .ignore_unknown_fields = true, .allocate = .alloc_always },
+    );
+    defer parsed.deinit();
+
+    const peers = parsed.value.result.?;
+    var max: i64 = 0;
+    for (peers) |p| {
+        if (p.synced_headers > max) max = p.synced_headers;
+    }
+    try std.testing.expectEqual(@as(usize, 0), peers.len);
+    try std.testing.expectEqual(@as(i64, 0), max);
 }
 
 test "basic auth header is correctly base64-encoded" {

@@ -158,6 +158,12 @@ const Activity = struct {
     /// Latest polled peer count / staking flag (1/0).
     poll_peers: std.atomic.Value(u32) = .init(0),
     poll_staking: std.atomic.Value(u8) = .init(0),
+    /// Latest polled chain heights and sync flag, from `getblockchaininfo`.
+    poll_headers: std.atomic.Value(u64) = .init(0),
+    poll_blocks: std.atomic.Value(u64) = .init(0),
+    poll_synced: std.atomic.Value(u8) = .init(0),
+    /// Estimated network tip (max peer `synced_headers`), the Headers bar target.
+    poll_network: std.atomic.Value(u64) = .init(0),
 
     // --- UI-thread-only ----------------------------------------------------
     thread: ?std.Thread = null,
@@ -278,21 +284,36 @@ const Activity = struct {
         if (!self.poll_ok) return false;
         self.peers = self.poll_peers.load(.monotonic);
         self.staking = self.poll_staking.load(.monotonic) != 0;
+
+        // Two separate, accurate sync axes:
+        //   Headers  = local headers / network tip (download progress vs peers)
+        //   Blocks   = validated blocks / downloaded headers (validation catch-up)
+        // The header bar fills first as headers stream in from peers; the block
+        // bar then fills as those headers are validated into blocks. Each
+        // denominator is `max`-guarded so a momentary lead (we're ahead of peers,
+        // or blocks briefly past headers) can't push a bar over 100% or to 0/0.
+        const headers = self.poll_headers.load(.monotonic);
+        const blocks = self.poll_blocks.load(.monotonic);
+        const network = self.poll_network.load(.monotonic);
+        self.headers_cur = headers;
+        self.headers_total = @max(network, headers);
+        self.blocks_cur = blocks;
+        self.blocks_total = @max(headers, blocks);
+        self.sync = if (self.poll_synced.load(.monotonic) != 0) .synced else .syncing;
         return true;
     }
 
-    /// Live `getinfo` poll worker. One RPC round-trip publishing the peer count
-    /// and staking flag into the shared atomics, then `poll_done`. Runs on a
-    /// private arena so its working set is bounded and isolated (per the memory
-    /// constraint), and is reaped by the UI once `poll_done` is observed.
+    /// Live poll worker. Two RPC round-trips (`getinfo` for peers/staking,
+    /// `getblockchaininfo` for the sync heights) publishing into the shared
+    /// atomics, then `poll_done`. Runs on a private arena so its working set is
+    /// bounded and isolated (per the memory constraint), and is reaped by the UI
+    /// once `poll_done` is observed.
     fn runPoll(self: *Activity) void {
         var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
         defer arena.deinit();
         const a = arena.allocator();
 
-        if (self.fetchInfo(a)) |info| {
-            self.poll_peers.store(@as(u32, @intCast(@max(info.connections, 0))), .monotonic);
-            self.poll_staking.store(@intFromBool(info.staking_active), .monotonic);
+        if (self.fetchStatus(a)) {
             self.poll_ok = true;
         } else |_| {
             self.poll_ok = false;
@@ -300,9 +321,12 @@ const Activity = struct {
         self.poll_done.store(true, .release);
     }
 
-    /// Resolve the coin's RPC credentials from its conf, then fetch a normalized
-    /// `getinfo` snapshot. Everything allocates on the caller's arena.
-    fn fetchInfo(self: *Activity, a: std.mem.Allocator) !models.DaemonInfo {
+    /// Resolve the coin's RPC credentials from its conf, then fetch both the
+    /// `getinfo` and `getblockchaininfo` snapshots and publish them into the
+    /// shared atomics. Everything allocates on the caller's arena. Returns an
+    /// error (and publishes nothing) if any step fails — the daemon is treated as
+    /// unreachable for this round, leaving the last good values in place.
+    fn fetchStatus(self: *Activity, a: std.mem.Allocator) !void {
         var threaded: std.Io.Threaded = .init(a, .{});
         defer threaded.deinit();
         const io = threaded.io();
@@ -316,7 +340,17 @@ const Activity = struct {
             self.coin.rpcDefaultUsername(),
             self.coin.rpcDefaultPort(),
         );
-        return self.coin.daemonInfo(a, auth);
+
+        const info = try self.coin.daemonInfo(a, auth);
+        self.poll_peers.store(@as(u32, @intCast(@max(info.connections, 0))), .monotonic);
+        self.poll_staking.store(@intFromBool(info.staking_active), .monotonic);
+
+        const state = try self.coin.blockchainState(a, auth);
+        defer state.deinit(a);
+        self.poll_headers.store(@as(u64, @intCast(@max(state.headers, 0))), .monotonic);
+        self.poll_blocks.store(@as(u64, @intCast(@max(state.blocks, 0))), .monotonic);
+        self.poll_network.store(@as(u64, @intCast(@max(state.network_height, 0))), .monotonic);
+        self.poll_synced.store(@intFromBool(state.synced), .monotonic);
     }
 
     /// Spawn the daemon binary with `-daemon` and wait for the launcher to
@@ -891,7 +925,9 @@ pub const App = struct {
         // synced. The label itself reads "Synced" only when fully synced.
         const sync_text = if (act.sync == .synced) "Synced" else "Syncing";
         const sync_label = label_style.render(a, sync_text) catch sync_text;
-        const sync_mark: []const u8 = switch (act.sync) {
+        const sync_mark: []const u8 = if (awaiting)
+            act.daemon_spinner.view(a) catch "…"
+        else switch (act.sync) {
             .synced => statusMark(a, true),
             .idle => statusMark(a, false),
             .syncing => act.sync_spinner.view(a) catch "…",
@@ -1136,7 +1172,7 @@ test "awaitingStatus animates only before the first poll of an installed coin" {
     try std.testing.expect(!act.awaitingStatus());
 }
 
-test "a successful poll folds peer count and staking into the display fields" {
+test "a successful poll folds peers, staking, heights and sync into the display" {
     // A finished poll publishes its result into the atomics; applyPoll copies it
     // into the plain fields the pane renders. A failed poll is a no-op so a
     // transient RPC blip doesn't zero a previously-good reading.
@@ -1144,17 +1180,67 @@ test "a successful poll folds peer count and staking into the display fields" {
     act.poll_ok = true;
     act.poll_peers.store(29, .monotonic);
     act.poll_staking.store(1, .monotonic);
+    act.poll_synced.store(1, .monotonic);
+    act.poll_headers.store(4_071_165, .monotonic);
+    act.poll_blocks.store(4_071_165, .monotonic);
+    act.poll_network.store(4_071_165, .monotonic);
     try std.testing.expect(act.applyPoll());
     try std.testing.expectEqual(@as(u32, 29), act.peers);
     try std.testing.expect(act.staking);
+    try std.testing.expectEqual(SyncState.synced, act.sync);
+    // Synced: headers == network tip and blocks == headers → both bars full.
+    try std.testing.expectEqual(act.headers_total, act.headers_cur);
+    try std.testing.expectEqual(act.blocks_total, act.blocks_cur);
+
+    // Header-download phase: headers climbing toward the network tip while blocks
+    // lag far behind. Headers bar partial (headers/network), blocks bar tiny
+    // (blocks/headers).
+    var headers_phase: Activity = .{};
+    headers_phase.poll_ok = true;
+    headers_phase.poll_synced.store(0, .monotonic);
+    headers_phase.poll_network.store(4_071_165, .monotonic);
+    headers_phase.poll_headers.store(3_000_000, .monotonic);
+    headers_phase.poll_blocks.store(10_000, .monotonic);
+    try std.testing.expect(headers_phase.applyPoll());
+    try std.testing.expectEqual(SyncState.syncing, headers_phase.sync);
+    try std.testing.expectEqual(@as(u64, 4_071_165), headers_phase.headers_total);
+    try std.testing.expectEqual(@as(u64, 3_000_000), headers_phase.headers_cur);
+    try std.testing.expectEqual(@as(u64, 3_000_000), headers_phase.blocks_total);
+    try std.testing.expectEqual(@as(u64, 10_000), headers_phase.blocks_cur);
+
+    // Block-validation phase: headers complete (== network tip), blocks catching
+    // up to headers. Headers bar full, blocks bar partial and independent.
+    var blocks_phase: Activity = .{};
+    blocks_phase.poll_ok = true;
+    blocks_phase.poll_synced.store(0, .monotonic);
+    blocks_phase.poll_network.store(4_071_165, .monotonic);
+    blocks_phase.poll_headers.store(4_071_165, .monotonic);
+    blocks_phase.poll_blocks.store(2_000_000, .monotonic);
+    try std.testing.expect(blocks_phase.applyPoll());
+    try std.testing.expectEqual(blocks_phase.headers_total, blocks_phase.headers_cur);
+    try std.testing.expectEqual(@as(u64, 4_071_165), blocks_phase.blocks_total);
+    try std.testing.expectEqual(@as(u64, 2_000_000), blocks_phase.blocks_cur);
+
+    // We're ahead of every peer (stale peer heights): headers bar still pegs
+    // full rather than overflowing.
+    var ahead: Activity = .{};
+    ahead.poll_ok = true;
+    ahead.poll_network.store(4_071_160, .monotonic);
+    ahead.poll_headers.store(4_071_165, .monotonic);
+    ahead.poll_blocks.store(4_071_165, .monotonic);
+    try std.testing.expect(ahead.applyPoll());
+    try std.testing.expectEqual(@as(u64, 4_071_165), ahead.headers_total);
+    try std.testing.expectEqual(ahead.headers_total, ahead.headers_cur);
 
     var stale: Activity = .{};
     stale.peers = 7;
     stale.staking = true;
+    stale.sync = .synced;
     stale.poll_ok = false;
     try std.testing.expect(!stale.applyPoll());
     try std.testing.expectEqual(@as(u32, 7), stale.peers);
     try std.testing.expect(stale.staking);
+    try std.testing.expectEqual(SyncState.synced, stale.sync);
 }
 
 test "Start button reflects install and daemon state" {
