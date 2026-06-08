@@ -78,6 +78,15 @@ pub const DiviBlockchainInfo = struct {
     chainwork: []const u8 = "",
 };
 
+/// Subset of a `getpeerinfo` array entry: a peer's best header height. The max
+/// across connected peers estimates the network tip — the height a syncing node
+/// is catching up to, which `getblockchaininfo` alone doesn't report. All other
+/// per-peer fields are ignored at parse time. Shape is common to bitcoin-derived
+/// daemons (Bitcoin Core, PIVX/Divi, Bitcoin Unlimited/Nexa).
+pub const PeerInfo = struct {
+    synced_headers: i64 = 0,
+};
+
 /// Coin-agnostic view of chain sync state. This is what a frontend (the
 /// ZigZag TUI) renders — it never touches per-coin JSON shapes.
 ///
@@ -89,6 +98,10 @@ pub const BlockchainState = struct {
     headers: i64,
     verification_progress: f64,
     synced: bool,
+    /// Estimated network tip (max `synced_headers` across peers), or 0 when no
+    /// peer reported one. The Headers sync bar fills toward this; `blocks`/
+    /// `headers` only describe the local chain.
+    network_height: i64 = 0,
 
     pub fn deinit(self: BlockchainState, allocator: std.mem.Allocator) void {
         allocator.free(self.chain);

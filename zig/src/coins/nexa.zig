@@ -67,6 +67,9 @@ pub const Nexa = struct {
             .verification_progress = r.verificationprogress,
             // Matches Go: BlockchainIsSynced => verificationprogress > 0.99999
             .synced = r.verificationprogress > 0.99999,
+            // Network tip from peers, so the frontend's Headers bar can fill
+            // toward it. A getpeerinfo hiccup just leaves it 0 (unknown).
+            .network_height = rpc.networkHeight(allocator, auth) catch 0,
         };
     }
 
