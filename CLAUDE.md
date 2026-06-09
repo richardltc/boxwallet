@@ -159,7 +159,7 @@ ZIG_GLOBAL_CACHE_DIR=zig-pkg zig build run     # launch the TUI
 
 ## Port status
 
-- **Ported:** nexa, divi.
+- **Ported:** nexa, divi, ergo.
 - **Remaining (24):** badcoin, bitcoinplus, bitcoinz, denarius, devault,
   digibyte, dogecash, epic, feathercoin, groestlcoin, litecoin, navcoin,
   peercoin, phore, pivx, primecoin, rapids, reddcoin, scala, spiderbyte, syscoin,

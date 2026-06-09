@@ -3,10 +3,10 @@ const zz = @import("zigzag");
 const models = @import("models.zig");
 const install_mod = @import("install.zig");
 const conf = @import("conf.zig");
-const rpc = @import("rpc.zig");
 const Coin = @import("coin.zig").Coin;
 const Nexa = @import("coins/nexa.zig").Nexa;
 const Divi = @import("coins/divi.zig").Divi;
+const Ergo = @import("coins/ergo.zig").Ergo;
 
 /// The application's display name, version, and brand colour — the one place to
 /// change how BoxWallet identifies itself in the UI. `app_color` is the brand
@@ -25,25 +25,27 @@ const fallback_install_root = "boxwallet-coins";
 /// position. Adding a coin is a matter of extending this list, the `App` field +
 /// `init`, and the dispatch in `selectedCoin`; the detail pane renders
 /// generically through the `Coin` interface, so it needs no per-coin code.
-const Entry = enum { home, nexa, divi };
-const coin_entries = [_]Entry{ .nexa, .divi };
+const Entry = enum { home, nexa, divi, ergo };
+const coin_entries = [_]Entry{ .nexa, .divi, .ergo };
 
 fn entryLabel(e: Entry) []const u8 {
     return switch (e) {
-        .home => "Home",
+        .home => "HOME",
         .nexa => Nexa.coin_name,
         .divi => Divi.coin_name,
+        .ergo => Ergo.coin_name,
     };
 }
 
 /// The colour each entry is drawn in on the left nav. Coins use their own brand
-/// colour (parsed from the per-coin `coin_color` hex); Home has none and renders
-/// in the terminal default.
+/// colour (parsed from the per-coin `coin_color` hex); Home wears the app's
+/// brand colour.
 fn entryColor(e: Entry) zz.Color {
     return switch (e) {
-        .home => .none,
+        .home => zz.Color.hex(app_color),
         .nexa => zz.Color.hex(Nexa.coin_color),
         .divi => zz.Color.hex(Divi.coin_color),
+        .ergo => zz.Color.hex(Ergo.coin_color),
     };
 }
 
@@ -327,8 +329,10 @@ const Activity = struct {
             self.coin.rpcDefaultPort(),
         );
 
-        // The reply ("<coin> server stopping") is discarded; the arena frees it.
-        _ = try rpc.call(a, auth, "stop");
+        // Ask the daemon to shut down. Bitcoin coins issue the JSON-RPC `stop`;
+        // Ergo POSTs its REST `/node/shutdown`. The coin owns the request; the
+        // probe loop below confirms it actually went down.
+        try self.coin.requestStop(a, auth);
 
         // Probe on a small arena reset each round so the wait stays flat in
         // memory. The daemon drops its RPC port early in shutdown, so the first
@@ -372,7 +376,13 @@ const Activity = struct {
         const blocks = self.poll_blocks.load(.monotonic);
         const network = self.poll_network.load(.monotonic);
         self.headers_cur = headers;
-        self.headers_total = @max(network, headers);
+        // Until a peer reports a height the network tip is unknown (0). A node
+        // loads its local headers from disk before any peer connects, so anchoring
+        // the denominator to `headers` then would read a misleading 100% that
+        // collapses the instant a peer height arrives. Treat an unknown tip as an
+        // unknown total (0 → empty bar) instead, and only `max`-guard once it's
+        // known (so being ahead of stale peers pegs full rather than overflowing).
+        self.headers_total = if (network > 0) @max(network, headers) else 0;
         self.blocks_cur = blocks;
         self.blocks_total = @max(headers, blocks);
         self.sync = if (self.poll_synced.load(.monotonic) != 0) .synced else .syncing;
@@ -450,47 +460,47 @@ const Activity = struct {
     /// regular file never SIGPIPEs and never blocks the wait. Stdout (the
     /// "<coin> server starting" banner) is discarded.
     fn launchDaemon(self: *Activity, a: std.mem.Allocator) !void {
-        const path = try std.fs.path.join(a, &.{ self.install_root, self.coin.daemonFile() });
-
         var threaded: std.Io.Threaded = .init(a, .{});
         defer threaded.deinit();
         const io = threaded.io();
 
-        // Make sure the conf has RPC creds (and server=1/daemon=1/rpcport) before
-        // the daemon reads it — otherwise it falls back to cookie auth we can't
-        // use, leaving the daemon unmanageable over RPC (poll/stop). Existing
-        // values are kept, so a coin already configured is untouched.
-        const data_dir = try self.coin.dataDir(a, self.home_dir);
-        _ = try conf.populate(
-            a,
-            io,
-            data_dir,
-            self.coin.confFile(),
-            self.coin.rpcDefaultUsername(),
-            self.coin.rpcDefaultPort(),
-        );
+        // Make sure the coin's conf is ready before the daemon reads it — RPC
+        // creds (and server=1/daemon=1/rpcport) for a bitcoin-derived key=value
+        // conf, or an API-key HOCON for Ergo. Otherwise a bitcoin daemon falls
+        // back to cookie auth we can't use, leaving it unmanageable over RPC
+        // (poll/stop). The coin owns the format; existing values are kept.
+        try self.coin.prepareConf(a, io, self.home_dir);
 
-        // Windows daemons don't support `-daemon`: the binary runs in the
-        // foreground of its own process rather than forking and exiting, so the
-        // POSIX "wait for the launcher to daemonize" model below would block
-        // forever. Mirror Go's `cmd /C start /b`: spawn it detached and return
-        // without waiting. The process stays up on its own, and the getinfo poll
-        // flips the UI to "running" once it answers. A pre-start failure can't be
-        // surfaced here (there's no launcher exit/stderr to read), as in Go.
-        if (@import("builtin").os.tag == .windows) {
+        // The command to spawn — the bare daemon binary for fork coins, or a full
+        // command line (e.g. `java -jar … -c <conf>`) for foreground coins.
+        const argv = try self.coin.daemonArgv(a, self.install_root, self.home_dir);
+
+        // Foreground daemons run in their own process rather than forking and
+        // exiting — Windows `*coind` (no `-daemon` support) and JVM apps like
+        // Ergo's node. The POSIX "wait for the launcher to daemonize" model below
+        // would block forever on them, so mirror Go's `cmd /C start /b`: spawn
+        // detached and return without waiting. The process stays up on its own,
+        // and the status poll flips the UI to "running" once it answers. A
+        // pre-start failure can't be surfaced here (no launcher exit/stderr).
+        if (self.coin.launchMode() == .foreground) {
             var child = try std.process.spawn(io, .{
-                .argv = &.{path},
+                .argv = argv,
                 .environ_map = self.environ_map,
                 .stdin = .ignore,
                 .stdout = .ignore,
                 .stderr = .ignore,
-                // Don't pop a console window for the background daemon.
-                .create_no_window = true,
+                // Don't pop a console window for the background daemon (Windows).
+                .create_no_window = @import("builtin").os.tag == .windows,
             });
             // Detached: deliberately not waited on, so it outlives this call.
             _ = &child;
             return;
         }
+
+        // Fork path (bitcoin-derived, POSIX): append `-daemon` so the daemon forks
+        // itself into the background and the launcher exits, then wait on that
+        // brief launcher.
+        const forked = try std.mem.concat(a, []const u8, &.{ argv, &.{"-daemon"} });
 
         // Per-daemon name so coins starting at once don't share the scratch file.
         const err_name = try std.fmt.allocPrint(a, ".{s}.startup", .{self.coin.daemonFile()});
@@ -504,7 +514,7 @@ const Activity = struct {
         }
 
         var child = try std.process.spawn(io, .{
-            .argv = &.{ path, "-daemon" },
+            .argv = forked,
             .environ_map = self.environ_map,
             .stdin = .ignore,
             .stdout = .ignore,
@@ -737,6 +747,7 @@ pub const App = struct {
     tz_offset_s: i32,
     nexa: Nexa,
     divi: Divi,
+    ergo: Ergo,
     selected: usize,
     /// One per `entries` slot (index 0 / Home is unused), holding that coin's
     /// independent install state. Parallel to `entries` so the selected coin's
@@ -800,6 +811,7 @@ pub const App = struct {
             ),
             .nexa = .{},
             .divi = .{},
+            .ergo = .{},
             .selected = 0,
             .activities = undefined,
         };
@@ -844,8 +856,7 @@ pub const App = struct {
                 .char => |c| switch (c) {
                     'q' => return .quit,
                     'i' => self.tryInstall(),
-                    's' => self.tryStart(),
-                    'p' => self.tryStop(),
+                    's' => self.tryToggleDaemon(),
                     'k' => self.move(-1),
                     'j' => self.move(1),
                     'l' => self.log_visible = !self.log_visible,
@@ -1058,6 +1069,7 @@ pub const App = struct {
             .home => null,
             .nexa => @constCast(&self.nexa).coin(),
             .divi => @constCast(&self.divi).coin(),
+            .ergo => @constCast(&self.ergo).coin(),
         };
     }
 
@@ -1112,6 +1124,18 @@ pub const App = struct {
     /// daemon is installed and currently stopped — otherwise the press is a
     /// no-op (matching the disabled button in the pane). Returns immediately; the
     /// worker flips `daemon` to `.running` once the launcher returns.
+    /// `s` toggles the selected coin's daemon: start it when stopped, stop it when
+    /// running. Mid-transition (starting/stopping) presses are ignored, mirroring
+    /// the dimmed button — the one key always matches the label it shows.
+    fn tryToggleDaemon(self: *App) void {
+        const act = &self.activities[self.selected];
+        switch (act.daemonState()) {
+            .stopped => self.tryStart(),
+            .running => self.tryStop(),
+            .starting, .stopping => {},
+        }
+    }
+
     fn tryStart(self: *App) void {
         const coin = self.selectedCoin() orelse return;
         const act = &self.activities[self.selected];
@@ -1257,8 +1281,7 @@ pub const App = struct {
                 \\
                 \\  up/down  navigate
                 \\  i        install selected coin
-                \\  s        start selected coin's daemon
-                \\  p        stop selected coin's daemon
+                \\  s        start/stop selected coin's daemon
                 \\  l        toggle the log pane
                 \\  q        quit
             , .{ head, app_version }) catch "alloc error";
@@ -1335,8 +1358,7 @@ pub const App = struct {
         const blocks_bar = try bar(a, act.blocks_cur, act.blocks_total);
 
         const middle = try renderActivity(a, act, p);
-        const start_button = renderStartButton(a, act);
-        const stop_button = renderStopButton(a, act);
+        const daemon_button = renderDaemonButton(a, act);
 
         return std.fmt.allocPrint(a,
             \\{s}
@@ -1349,7 +1371,6 @@ pub const App = struct {
             \\
             \\{s}
             \\
-            \\{s}
             \\{s}
         , .{
             head,
@@ -1369,8 +1390,7 @@ pub const App = struct {
             blocks_label,
             blocks_bar,
             middle,
-            start_button,
-            stop_button,
+            daemon_button,
         });
     }
 
@@ -1382,11 +1402,11 @@ pub const App = struct {
         return style.render(a, glyph) catch glyph;
     }
 
-    /// The "Start" button line. Enabled (and bound to `s`) only when the daemon
-    /// is installed and stopped; otherwise it's dimmed with a reason. While the
-    /// daemon is starting it shows the in-progress label, and once up it reads as
-    /// running.
-    fn renderStartButton(a: std.mem.Allocator, act: *const Activity) []const u8 {
+    /// The daemon toggle button line, bound to `s`. It reads "[ Start ]" when the
+    /// daemon is stopped and "[ Stop ]" when it's running, so the single key always
+    /// matches the label. Dimmed with a reason until the coin is installed, and
+    /// shows the in-progress label while starting/stopping.
+    fn renderDaemonButton(a: std.mem.Allocator, act: *const Activity) []const u8 {
         if (!act.installed) {
             const b = (zz.Style{}).dim(true).render(a, "[ Start ]") catch "[ Start ]";
             return std.fmt.allocPrint(a, "{s}   (install first)", .{b}) catch "[ Start ]";
@@ -1394,32 +1414,8 @@ pub const App = struct {
         return switch (act.daemonState()) {
             .stopped => "[ Start ]   (press s)",
             .starting => "[ Starting… ]",
-            .running => blk: {
-                const b = (zz.Style{}).dim(true).render(a, "[ Start ]") catch "[ Start ]";
-                break :blk std.fmt.allocPrint(a, "{s}   (running)", .{b}) catch "[ Start ]";
-            },
-            .stopping => blk: {
-                const b = (zz.Style{}).dim(true).render(a, "[ Start ]") catch "[ Start ]";
-                break :blk std.fmt.allocPrint(a, "{s}   (stopping…)", .{b}) catch "[ Start ]";
-            },
-        };
-    }
-
-    /// The "Stop" button line. Enabled (and bound to `p`) only when the daemon is
-    /// running; otherwise it's dimmed with a reason. While stopping it shows the
-    /// in-progress label.
-    fn renderStopButton(a: std.mem.Allocator, act: *const Activity) []const u8 {
-        if (!act.installed) {
-            const b = (zz.Style{}).dim(true).render(a, "[ Stop ]") catch "[ Stop ]";
-            return std.fmt.allocPrint(a, "{s}   (install first)", .{b}) catch "[ Stop ]";
-        }
-        return switch (act.daemonState()) {
-            .running => "[ Stop ]   (press p)",
+            .running => "[ Stop ]   (press s)",
             .stopping => "[ Stopping… ]",
-            .stopped, .starting => blk: {
-                const b = (zz.Style{}).dim(true).render(a, "[ Stop ]") catch "[ Stop ]";
-                break :blk std.fmt.allocPrint(a, "{s}   (not running)", .{b}) catch "[ Stop ]";
-            },
         };
     }
 
@@ -1502,6 +1498,9 @@ pub const App = struct {
 fn bar(a: std.mem.Allocator, current: u64, total: u64) ![]const u8 {
     var p = zz.Progress.init();
     p.setWidth(30);
+    // Tint the filled portion in the app's brand colour so the bar matches the
+    // rest of the BoxWallet UI (ZigZag defaults the fill to cyan).
+    p.full_style = p.full_style.fg(zz.Color.hex(app_color));
     // Guard against a zero total (unknown length) so the bar sits at 0% rather
     // than dividing by zero.
     p.setTotal(@floatFromInt(@max(total, 1)));
@@ -1718,6 +1717,19 @@ test "a successful poll folds peers, staking, heights and sync into the display"
     try std.testing.expectEqual(@as(u64, 4_071_165), ahead.headers_total);
     try std.testing.expectEqual(ahead.headers_total, ahead.headers_cur);
 
+    // Tip unknown (no peer has reported a height yet): a node loads its local
+    // headers from disk before any peer connects, so without this guard the bar
+    // would read a false 100% (headers/headers) that collapses once a real tip
+    // arrives. An unknown tip means an unknown total — an empty bar, not full.
+    var no_tip: Activity = .{};
+    no_tip.poll_ok = true;
+    no_tip.poll_network.store(0, .monotonic);
+    no_tip.poll_headers.store(500_000, .monotonic);
+    no_tip.poll_blocks.store(500_000, .monotonic);
+    try std.testing.expect(no_tip.applyPoll());
+    try std.testing.expectEqual(@as(u64, 0), no_tip.headers_total);
+    try std.testing.expectEqual(@as(u64, 500_000), no_tip.headers_cur);
+
     var stale: Activity = .{};
     stale.peers = 7;
     stale.staking = true;
@@ -1729,7 +1741,7 @@ test "a successful poll folds peers, staking, heights and sync into the display"
     try std.testing.expectEqual(SyncState.synced, stale.sync);
 }
 
-test "Start button reflects install and daemon state" {
+test "daemon toggle button reflects install and daemon state" {
     const allocator = std.testing.allocator;
     var arena = std.heap.ArenaAllocator.init(allocator);
     defer arena.deinit();
@@ -1739,40 +1751,29 @@ test "Start button reflects install and daemon state" {
 
     // Disabled until installed.
     act.installed = false;
-    try std.testing.expect(std.mem.indexOf(u8, App.renderStartButton(a, &act), "install first") != null);
+    try std.testing.expect(std.mem.indexOf(u8, App.renderDaemonButton(a, &act), "install first") != null);
 
-    // Installed + stopped → bound to `s`.
+    // Installed + stopped → "Start", bound to `s`.
     act.installed = true;
-    try std.testing.expect(std.mem.indexOf(u8, App.renderStartButton(a, &act), "press s") != null);
+    {
+        const b = App.renderDaemonButton(a, &act);
+        try std.testing.expect(std.mem.indexOf(u8, b, "Start") != null);
+        try std.testing.expect(std.mem.indexOf(u8, b, "press s") != null);
+    }
 
-    // Up → reads as running.
+    // Running → flips to "Stop", still bound to `s`.
     act.daemon.store(@intFromEnum(DaemonState.running), .release);
-    try std.testing.expect(std.mem.indexOf(u8, App.renderStartButton(a, &act), "running") != null);
-}
+    {
+        const b = App.renderDaemonButton(a, &act);
+        try std.testing.expect(std.mem.indexOf(u8, b, "Stop") != null);
+        try std.testing.expect(std.mem.indexOf(u8, b, "press s") != null);
+    }
 
-test "Stop button reflects daemon state" {
-    const allocator = std.testing.allocator;
-    var arena = std.heap.ArenaAllocator.init(allocator);
-    defer arena.deinit();
-    const a = arena.allocator();
-
-    var act: Activity = .{};
-
-    // Disabled until installed.
-    act.installed = false;
-    try std.testing.expect(std.mem.indexOf(u8, App.renderStopButton(a, &act), "install first") != null);
-
-    // Installed but stopped → disabled (nothing to stop).
-    act.installed = true;
-    try std.testing.expect(std.mem.indexOf(u8, App.renderStopButton(a, &act), "not running") != null);
-
-    // Running → bound to `p`.
-    act.daemon.store(@intFromEnum(DaemonState.running), .release);
-    try std.testing.expect(std.mem.indexOf(u8, App.renderStopButton(a, &act), "press p") != null);
-
-    // Stopping → shows the in-progress label.
+    // Mid-transition shows the in-progress labels.
+    act.daemon.store(@intFromEnum(DaemonState.starting), .release);
+    try std.testing.expect(std.mem.indexOf(u8, App.renderDaemonButton(a, &act), "Starting") != null);
     act.daemon.store(@intFromEnum(DaemonState.stopping), .release);
-    try std.testing.expect(std.mem.indexOf(u8, App.renderStopButton(a, &act), "Stopping") != null);
+    try std.testing.expect(std.mem.indexOf(u8, App.renderDaemonButton(a, &act), "Stopping") != null);
 }
 
 test "start is a no-op until the coin is installed" {

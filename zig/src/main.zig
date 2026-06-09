@@ -20,5 +20,6 @@ test {
     _ = @import("conf.zig");
     _ = @import("coins/nexa.zig");
     _ = @import("coins/divi.zig");
+    _ = @import("coins/ergo.zig");
     _ = @import("app.zig");
 }
