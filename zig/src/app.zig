@@ -1388,7 +1388,11 @@ pub const App = struct {
     /// never disturbed.
     fn renderCoin(self: *const App, a: std.mem.Allocator, coin: Coin, act: *const Activity) ![]const u8 {
         const title = (zz.Style{}).bold(true).fg(zz.Color.hex(coin.coinColor()));
-        const head = title.render(a, coin.coinName()) catch coin.coinName();
+        const name = title.render(a, coin.coinName()) catch coin.coinName();
+        // The coin name wears its brand colour; its bundled core version rides
+        // alongside in the terminal default, mirroring "BoxWallet TUI v0.0.3" on
+        // the Home pane.
+        const head = std.fmt.allocPrint(a, "{s} v{s}", .{ name, coin.coreVersion() }) catch name;
 
         const p = act.phaseOf();
         // Status labels wear the coin's brand colour only while their status is
