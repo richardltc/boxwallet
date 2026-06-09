@@ -27,6 +27,9 @@ pub const Coin = struct {
         coin_name_abbrev: *const fn (ptr: *anyopaque) []const u8,
         /// The coin's brand colour as a `#RRGGBB` hex string, for the frontend.
         coin_color: *const fn (ptr: *anyopaque) []const u8,
+        /// The bundled core version this coin installs (e.g. "2.0.0.0"), shown on
+        /// the coin's pane the way the app version rides the Home pane.
+        core_version: *const fn (ptr: *anyopaque) []const u8,
         /// True for proof-of-stake coins (which expose a staking status); false
         /// for proof-of-work coins.
         proof_of_stake: *const fn (ptr: *anyopaque) bool,
@@ -113,6 +116,10 @@ pub const Coin = struct {
     /// The coin's brand colour as a `#RRGGBB` hex string.
     pub fn coinColor(self: Coin) []const u8 {
         return self.vtable.coin_color(self.ptr);
+    }
+    /// The bundled core version this coin installs (e.g. "2.0.0.0").
+    pub fn coreVersion(self: Coin) []const u8 {
+        return self.vtable.core_version(self.ptr);
     }
     /// True for proof-of-stake coins (which expose a staking status).
     pub fn isProofOfStake(self: Coin) bool {

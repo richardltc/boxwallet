@@ -180,6 +180,7 @@ pub const Divi = struct {
         .coin_name = vtCoinName,
         .coin_name_abbrev = vtCoinNameAbbrev,
         .coin_color = vtCoinColor,
+        .core_version = vtCoreVersion,
         .proof_of_stake = vtProofOfStake,
         .conf_file = vtConfFile,
         .daemon_file = vtDaemonFile,
@@ -204,6 +205,9 @@ pub const Divi = struct {
     }
     fn vtCoinColor(_: *anyopaque) []const u8 {
         return coin_color;
+    }
+    fn vtCoreVersion(_: *anyopaque) []const u8 {
+        return core_version;
     }
     fn vtProofOfStake(_: *anyopaque) bool {
         return proof_of_stake;
