@@ -7,6 +7,15 @@ and uses [ZigZag](https://github.com/meszmate/zigzag) for its TUI — there is *
 web frontend**. The end goal is a complete, idiomatic **Zig 0.16** port of the Go
 application, one coin at a time.
 
+BoxWallet is **cross-platform**: it must build and run on **Linux, Windows, and
+macOS**. Keep new code portable — no OS-specific assumptions about paths, line
+endings, binary names, or environment. Where behaviour genuinely differs per OS
+(e.g. install destination, daemon/cli/tx filenames), branch on the platform
+rather than hard-coding one OS, and follow the existing patterns (the install
+root resolves to a per-platform `~/.boxwallet`; coins declare their own binary
+filenames). Don't reach for POSIX-only or Windows-only APIs when a portable
+stdlib equivalent exists.
+
 ## Memory is a first-class constraint
 
 BoxWallet is likely to run on **low-spec machines** (single-board computers, old
@@ -112,11 +121,26 @@ ZIG_GLOBAL_CACHE_DIR=zig-pkg zig build run     # launch the TUI
   `%USERPROFILE%\AppData\Roaming\BoxWallet`), resolved via
   `install.installRoot(ctx.home_dir)` — ZigZag captures the home dir for us.
 - Install flow: `downloadAndExtract` then `promoteAndTidy` — the archive is
-  streamed to a scratch file on disk and gunzip → untar runs as a streaming
-  pipeline straight to disk (constant memory, no whole-archive buffer in RAM).
-  Coin archives nest binaries in `bin/`, so the daemon/cli/tx binaries are
-  lifted to the install root and the rest of the extracted tree is discarded.
-  Each coin declares its own promote/cleanup lists.
+  streamed to a scratch file on disk, then extracted straight to disk (constant
+  memory, no whole-archive buffer in RAM). Linux/macOS bundles are `.tar.gz` and
+  run a streaming gunzip → untar pipeline; Windows bundles are `.zip`, which
+  can't stream (its directory sits at EOF), so it's extracted via `std.zip` from
+  the seekable scratch file — still flat memory (a deflate window + read buffer).
+  Coin archives nest binaries in `bin/` identically on every platform, so the
+  daemon/cli/tx binaries are lifted to the install root and the rest of the
+  extracted tree is discarded. Each coin declares its own promote/cleanup lists.
+- Cross-platform downloads: each coin selects its download URL + archive format
+  at **comptime** from `builtin.os.tag`/`builtin.cpu.arch` (a nullable
+  `install.Download`; null = no upstream binary for that target, surfaced as
+  `error.UnsupportedPlatform` at install time). Binary names get a `.exe` suffix
+  on Windows. Match the Go installer's `runtime.GOOS`/`GOARCH` switch, and note
+  upstream gaps — e.g. Divi has no native Apple-Silicon build, so macOS arm64
+  uses the Intel `osx64` build (runs under Rosetta 2), and Divi linux-arm64 is
+  unsupported.
+- Starting the daemon (`app.zig` `launchDaemon`): POSIX uses `-daemon` (the
+  launcher forks + exits; we wait on it and confirm liveness). Windows daemons
+  don't support `-daemon`, so they're spawned **detached** without waiting
+  (mirrors Go's `cmd /C start /b`); the status poll confirms the daemon came up.
 - Left nav order: **Home is pinned to the top** of the left column; coins follow
   in **alphabetical order by label**. `app.zig` builds `entries` by
   comptime-sorting `coin_entries`, so registering a coin doesn't require placing
