@@ -77,6 +77,13 @@ const DaemonState = enum { stopped, starting, running, stopping };
 /// this defaults to `idle`.
 const SyncState = enum { idle, syncing, synced };
 
+/// Sync spinner frame orders. The default braille `dots` orbit one way
+/// ("clockwise"); the reversed list orbits the other. The sync line spins
+/// clockwise while connected (peers > 0) and anti-clockwise while it has no
+/// peers, so the direction signals connectivity at a glance.
+const sync_frames_cw = zz.Spinner.Styles.dots;
+const sync_frames_ccw = &[_][]const u8{ "⠏", "⠇", "⠧", "⠦", "⠴", "⠼", "⠸", "⠹", "⠙", "⠋" };
+
 /// Wallet encryption/lock status. Live wallet polling lands later — for now this
 /// defaults to `unknown`. Each state carries its own display text and colour.
 const WalletState = enum {
@@ -815,7 +822,9 @@ pub const App = struct {
             .selected = 0,
             .activities = undefined,
         };
-        for (&self.activities) |*act| act.* = .{ .spinner = zz.Spinner.init(), .daemon_spinner = zz.Spinner.init(), .sync_spinner = zz.Spinner.init() };
+        // Sync keeps the default braille dots; Running/Staking/Peers and the
+        // install progress use the heavier pulsing spinner (`makeSpinner`).
+        for (&self.activities) |*act| act.* = .{ .spinner = makeSpinner(), .daemon_spinner = makeSpinner(), .sync_spinner = zz.Spinner.init() };
         self.refreshSelectedInstalled();
 
         // Seed the action log so the pane starts with a line announcing the
@@ -884,10 +893,13 @@ pub const App = struct {
                 _ = act.spinner.update(t.timestamp);
             }
             const ds = act.daemonState();
-            // The daemon spinner animates while a start or stop is in flight, and
-            // during the brief pre-first-poll window, so Running/Staking read as
+            // The daemon spinner animates while a start or stop is in flight,
+            // during the brief pre-first-poll window, and while the daemon is up
+            // but no peer has connected yet — so Running/Staking/Peers read as
             // "loading" until the first result lands.
-            if (ds == .starting or ds == .stopping or act.awaitingStatus()) {
+            if (ds == .starting or ds == .stopping or act.awaitingStatus() or
+                (ds == .running and act.peers == 0))
+            {
                 _ = act.daemon_spinner.update(t.timestamp);
             }
             if ((ds == .running or ds == .stopped) and act.daemon_thread != null) {
@@ -915,6 +927,10 @@ pub const App = struct {
                 }
             }
             if (act.sync == .syncing) {
+                // Spin clockwise when connected, anti-clockwise with no peers.
+                // Assign `frames` directly (not `setFrames`, which would reset
+                // the index every tick and freeze the animation).
+                act.sync_spinner.frames = if (act.peers > 0) sync_frames_cw else sync_frames_ccw;
                 _ = act.sync_spinner.update(t.timestamp);
             }
 
@@ -1107,7 +1123,7 @@ pub const App = struct {
         act.acked = false;
         act.coin = coin;
         act.install_root = self.install_root;
-        act.spinner = zz.Spinner.init();
+        act.spinner = makeSpinner();
         // Publish the starting phase before the worker exists so the pane shows
         // activity immediately, even before the first download byte arrives.
         act.phase.store(@intFromEnum(Phase.downloading), .release);
@@ -1153,7 +1169,7 @@ pub const App = struct {
         act.home_dir = self.home_dir;
         act.environ_map = self.environ_map;
         act.daemon_action = .start;
-        act.daemon_spinner = zz.Spinner.init();
+        act.daemon_spinner = makeSpinner();
         act.daemon_err = "";
         act.daemon.store(@intFromEnum(DaemonState.starting), .release);
 
@@ -1184,7 +1200,7 @@ pub const App = struct {
         act.coin = coin;
         act.home_dir = self.home_dir;
         act.daemon_action = .stop;
-        act.daemon_spinner = zz.Spinner.init();
+        act.daemon_spinner = makeSpinner();
         act.daemon_err = "";
         act.daemon.store(@intFromEnum(DaemonState.stopping), .release);
 
@@ -1300,12 +1316,14 @@ pub const App = struct {
         const head = title.render(a, coin.coinName()) catch coin.coinName();
 
         const p = act.phaseOf();
-        // Labels wear the coin's brand colour; their status marks are bold
-        // green/red ticks (✔/✘) — the heavy glyphs read bolder than ✓/✗.
-        const label_style = (zz.Style{}).fg(zz.Color.hex(coin.coinColor()));
+        // Status labels wear the coin's brand colour only while their status is
+        // "live" — animating or positive (see `statusLabel`); otherwise they go
+        // grey. The progress-bar labels below keep the plain brand colour.
+        const brand = zz.Color.hex(coin.coinColor());
+        const label_style = (zz.Style{}).fg(brand);
 
         const is_installed = p == .done or act.installed;
-        const installed_label = label_style.render(a, "Installed") catch "Installed";
+        const installed_label = statusLabel(a, brand, "Installed", is_installed);
         const installed_mark = statusMark(a, is_installed);
 
         // While the first poll is still pending, the daemon/staking status isn't
@@ -1313,23 +1331,34 @@ pub const App = struct {
         const awaiting = act.awaitingStatus();
 
         // The daemon line is a tick/cross when stopped or up, or a spinner while
-        // it's starting or while the first status poll is still in flight.
-        const daemon_label = label_style.render(a, "Running") catch "Running";
+        // it's starting or while the first status poll is still in flight. The
+        // label is grey only when stopped and not awaiting (the red ✘ state).
+        const daemon_label = statusLabel(a, brand, "Running", act.daemonState() != .stopped or awaiting);
         const daemon_mark: []const u8 = switch (act.daemonState()) {
             .running => statusMark(a, true),
             .stopped => if (awaiting) act.daemon_spinner.view(a) catch "…" else statusMark(a, false),
             .starting, .stopping => act.daemon_spinner.view(a) catch "…",
         };
 
-        // Peer count: red while 0, green once any peer is connected.
-        const peers_label = label_style.render(a, "Peers") catch "Peers";
-        const peers_count = std.fmt.allocPrint(a, "{d}", .{act.peers}) catch "?";
-        const peers_value = (zz.Style{}).bold(true).fg(if (act.peers > 0) .green else .red).render(a, peers_count) catch peers_count;
+        // Peers: a dimmed dash while the daemon is down, an animating spinner
+        // while it's up but no peer has connected yet, and the green count once
+        // peers arrive. The label is live whenever the daemon is up (spinner or
+        // count), grey only for the dash.
+        const peers_label = statusLabel(a, brand, "Peers", act.daemonState() == .running);
+        const peers_value: []const u8 = if (act.daemonState() != .running)
+            (zz.Style{}).dim(true).render(a, "-") catch "-"
+        else if (act.peers == 0)
+            act.daemon_spinner.view(a) catch "…"
+        else blk: {
+            const peers_count = std.fmt.allocPrint(a, "{d}", .{act.peers}) catch "?";
+            break :blk (zz.Style{}).bold(true).fg(.green).render(a, peers_count) catch peers_count;
+        };
 
         // Sync line: red cross when idle, spinner while syncing, green tick once
-        // synced. The label itself reads "Synced" only when fully synced.
+        // synced. The label itself reads "Synced" only when fully synced, and is
+        // grey only in the idle (red ✘) state.
         const sync_text = if (act.sync == .synced) "Synced" else "Syncing";
-        const sync_label = label_style.render(a, sync_text) catch sync_text;
+        const sync_label = statusLabel(a, brand, sync_text, awaiting or act.sync != .idle);
         const sync_mark: []const u8 = if (awaiting)
             act.daemon_spinner.view(a) catch "…"
         else switch (act.sync) {
@@ -1339,15 +1368,17 @@ pub const App = struct {
         };
 
         // Staking only applies to proof-of-stake coins; PoW coins omit it
-        // entirely (empty string folds out of the status line).
+        // entirely (empty string folds out of the status line). Grey unless
+        // animating (awaiting) or staking (green tick).
         const staking_part: []const u8 = if (coin.isProofOfStake()) blk: {
-            const staking_label = label_style.render(a, "Staking") catch "Staking";
+            const staking_label = statusLabel(a, brand, "Staking", awaiting or act.staking);
             const staking_mark = if (awaiting) act.daemon_spinner.view(a) catch "…" else statusMark(a, act.staking);
             break :blk std.fmt.allocPrint(a, "    {s}: {s}", .{ staking_label, staking_mark }) catch "";
         } else "";
 
-        // Wallet status: text + colour come from the state itself.
-        const wallet_label = label_style.render(a, "Wallet") catch "Wallet";
+        // Wallet status: text + colour come from the state itself; the label is
+        // grey until the state is known (matching the "Unknown" value's grey).
+        const wallet_label = statusLabel(a, brand, "Wallet", act.wallet != .unknown);
         const wallet_value = (zz.Style{}).bold(true).fg(act.wallet.color()).render(a, act.wallet.text()) catch act.wallet.text();
 
         // Sync progress bars. Labels are padded to a common width before styling
@@ -1392,6 +1423,27 @@ pub const App = struct {
             middle,
             daemon_button,
         });
+    }
+
+    /// A loading spinner tuned to read boldly at a status mark's size: heavy
+    /// pulsing block frames (█▓▒░), bold, and a touch faster than the default.
+    /// Used for the Running/Staking/Peers/Sync "loading" states and the install
+    /// progress so the motion is obvious rather than the faint braille default.
+    fn makeSpinner() zz.Spinner {
+        var s = zz.Spinner.init();
+        s.setFrames(zz.Spinner.Styles.pulse);
+        s.setFps(12);
+        s.setStyle((zz.Style{}).bold(true).fg(.cyan).inline_style(true));
+        return s;
+    }
+
+    /// Renders a status label in the coin's brand colour when its status is
+    /// "live" — animating (a spinner) or positive (a green tick / count) — and
+    /// in grey (the same `brightBlack` as a wallet's "Unknown") otherwise, so a
+    /// stopped/idle/absent status reads as dimmed rather than fully coloured.
+    fn statusLabel(a: std.mem.Allocator, brand: zz.Color, text: []const u8, active: bool) []const u8 {
+        const c: zz.Color = if (active) brand else .brightBlack;
+        return (zz.Style{}).fg(c).render(a, text) catch text;
     }
 
     /// A bold tick (✔, green) or cross (✘, red). The heavy glyphs read bolder
