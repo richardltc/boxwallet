@@ -210,7 +210,12 @@ pub fn extractArchive(
             // full and starts its spinner here), then stream gunzip → tally →
             // untar. The tally fires a report per chunk the extractor pulls.
             report(progress, .extract, 0, 0);
-            var tally: TallyReader = .init(&dz.reader, progress);
+            // The tally needs a real buffer: archives produced with PAX/GNU
+            // extended headers (long paths, large file sizes — the JRE bundles
+            // use them) make `std.tar` do *buffered* source reads (`takeByte`),
+            // which a zero-length-buffer reader can't satisfy.
+            var tally_buffer: [64 * 1024]u8 = undefined;
+            var tally: TallyReader = .init(&dz.reader, &tally_buffer, progress);
             std.tar.extract(io, dest, &tally.interface, .{
                 .strip_components = strip,
                 .mode_mode = .executable_bit_only,
@@ -224,28 +229,34 @@ pub fn extractArchive(
 }
 
 /// A pass-through `std.Io.Reader` that reports throughput as bytes flow through
-/// it, buffering nothing of its own.
+/// it, holding nothing beyond the `buffer` it's handed.
 ///
 /// Wrapped around the decompressor's reader so the otherwise-opaque
 /// `std.tar.extract` pass emits periodic `.extract` progress (one report per
 /// chunk the extractor pulls), letting the UI animate a spinner instead of
-/// sitting frozen. tar reads its source only via `stream`/`readVec`/`discard`
-/// and supplies its own destination buffers, so this reader keeps an empty
-/// buffer and forwards every call straight to `inner` — no copy, no extra
-/// memory. (`readVec` is left to the default, which routes through `stream`.)
+/// sitting frozen. The `stream`/`discard` vtable forwards straight to `inner`,
+/// counting bytes as they pass.
+///
+/// It must be given a non-empty `buffer`: tar reads file content and padding via
+/// `stream`/`discard` (which forward fine), but archives carrying PAX/GNU
+/// extended headers — long paths, large file sizes, as the bundled-JRE tarballs
+/// do — make tar perform *buffered* source reads (`takeByte` while parsing the
+/// extended header). Those draw from this reader's own buffer, so a zero-length
+/// buffer would fail them with `ReadFailed`. (`readVec` is left to the default,
+/// which routes through `stream`.)
 const TallyReader = struct {
     inner: *std.Io.Reader,
     progress: ?Progress,
     count: u64 = 0,
     interface: std.Io.Reader,
 
-    fn init(inner: *std.Io.Reader, progress: ?Progress) TallyReader {
+    fn init(inner: *std.Io.Reader, buffer: []u8, progress: ?Progress) TallyReader {
         return .{
             .inner = inner,
             .progress = progress,
             .interface = .{
                 .vtable = &.{ .stream = stream, .discard = discard },
-                .buffer = &.{},
+                .buffer = buffer,
                 .seek = 0,
                 .end = 0,
             },
@@ -403,6 +414,35 @@ test "extractArchive gunzips + untars a real .tar.gz with strip_components" {
 
     try std.testing.expect(fileExists(allocator, dest, "nexad"));
     try std.testing.expect(fileExists(allocator, dest, "nexa-cli"));
+}
+
+test "extractArchive handles PAX/GNU extended headers (long paths)" {
+    const allocator = std.testing.allocator;
+
+    var threaded: std.Io.Threaded = .init(allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    // A regression guard for the bundled-JRE tarballs: they're written with PAX
+    // extended headers (for paths past the 100-byte ustar limit, and large file
+    // sizes), which make `std.tar` do *buffered* source reads while parsing the
+    // extended header. A tally reader with a zero-length buffer failed those,
+    // surfacing as `ExtractFailed`. This fixture carries a >100-byte path, so it
+    // exercises the PAX path the plain-ustar `fixture.tar.gz` never reaches.
+    const archive = @embedFile("testdata/fixture-pax.tar.gz");
+    const dest = "test-extract-pax-out";
+    std.Io.Dir.cwd().deleteTree(io, dest) catch {};
+    defer std.Io.Dir.cwd().deleteTree(io, dest) catch {};
+
+    var in = std.Io.Reader.fixed(archive);
+    try extractArchive(io, &in, .tar_gz, dest, 0, null);
+
+    try std.testing.expect(fileExists(allocator, dest, "pax-node/jre/bin/java"));
+    try std.testing.expect(fileExists(
+        allocator,
+        dest,
+        "pax-node/a-deliberately-long-path-that-exceeds-the-ustar-one-hundred-byte-name-limit-to-force-extended-headers.jar",
+    ));
 }
 
 test "extractArchive reports extract progress periodically (drives the UI spinner)" {
