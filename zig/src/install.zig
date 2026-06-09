@@ -20,6 +20,15 @@ pub fn installRoot(allocator: std.mem.Allocator, home_dir: []const u8) ![]const 
 /// Archive format a coin's daemon bundle ships in.
 pub const Format = enum { tar_gz, zip };
 
+/// A coin's download for one build target: where to fetch the bundle and the
+/// format it ships in. Coins build this at comptime from the OS/arch (a coin's
+/// platform matrix is its own data), and pass it to `downloadAndExtract`. A null
+/// `Download` means the coin publishes no binary for the target.
+pub const Download = struct {
+    url: []const u8,
+    format: Format,
+};
+
 /// Which stage of an install a progress report refers to.
 pub const Phase = enum { download, extract };
 
@@ -130,12 +139,41 @@ pub fn downloadAndExtract(
     // on Windows too.
     defer dest.deleteFile(io, scratch_name) catch {};
 
-    // 2. Stream-extract the on-disk archive: no intermediate copy in memory.
+    // 2. Extract the on-disk archive into dest_root — no intermediate copy in
+    //    memory. tar.gz streams straight through; zip needs random access to its
+    //    end-of-file central directory, so it reads from the seekable scratch
+    //    file directly (still constant memory: a deflate window plus this buffer).
     var scratch = try dest.openFile(io, scratch_name, .{});
     defer scratch.close(io);
     var read_buffer: [32 * 1024]u8 = undefined;
     var scratch_reader = scratch.reader(io, &read_buffer);
-    try extractArchive(io, &scratch_reader.interface, format, dest_root, strip, progress);
+    switch (format) {
+        .tar_gz => try extractArchive(io, &scratch_reader.interface, format, dest_root, strip, progress),
+        .zip => try extractZip(&scratch_reader, dest, progress),
+    }
+}
+
+/// Extract a zip archive (read from the seekable `archive`) into the already-open
+/// `dest` directory. Windows coin bundles ship as zip; unlike tar.gz, zip stores
+/// its directory at the end of the file, so extraction seeks rather than streams
+/// — hence the `*File.Reader` (backed by the on-disk scratch file) instead of a
+/// plain stream. Memory still stays flat: only a deflate window and the reader's
+/// buffer are resident.
+///
+/// `std.zip` has no `strip_components`, but coin zips nest their binaries under
+/// `<coin>-<ver>/bin/` exactly like the tarballs, and `promoteAndTidy` flattens
+/// that afterward — so no stripping is needed here. The pass is opaque (no
+/// per-byte callback), so progress is a single begin/end `.extract` pulse, enough
+/// for the frontend to animate its spinner. `allow_backslashes` tolerates zips
+/// that use `\` path separators.
+fn extractZip(
+    archive: *std.Io.File.Reader,
+    dest: std.Io.Dir,
+    progress: ?Progress,
+) !void {
+    report(progress, .extract, 0, 0);
+    std.zip.extract(dest, archive, .{ .allow_backslashes = true }) catch return error.ExtractFailed;
+    report(progress, .extract, 1, 0);
 }
 
 /// Extract an already-downloaded archive, read from `archive`, into `dest_root`
@@ -178,9 +216,10 @@ pub fn extractArchive(
                 .mode_mode = .executable_bit_only,
             }) catch return error.ExtractFailed;
         },
-        // Windows bundles ship as .zip; Linux/macOS use tar.gz, which is all
-        // this slice targets. std.zip can fill this in later.
-        .zip => return error.ZipNotYetSupported,
+        // This streaming path is tar.gz only. Zip can't stream — its central
+        // directory sits at EOF — so the download path routes zip to `extractZip`
+        // (seekable) instead and never reaches here.
+        .zip => return error.ZipNotStreamable,
     }
 }
 
@@ -399,4 +438,37 @@ test "extractArchive reports extract progress periodically (drives the UI spinne
     try extractArchive(io, &in, .tar_gz, dest, 1, progress);
 
     try std.testing.expect(counter.extract_reports >= 2);
+}
+
+test "extractZip unzips a real .zip preserving the nested bin/ layout" {
+    const allocator = std.testing.allocator;
+
+    var threaded: std.Io.Threaded = .init(allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    // Fixture layout: nexa-9.9.9/bin/{nexad,nexa-cli,nexa-qt}. Zip has no
+    // strip_components, so the wrapper is preserved here and promoteAndTidy
+    // flattens it afterward — same as the live Windows install path.
+    const archive = @embedFile("testdata/fixture.zip");
+    const dest = "test-zip-out";
+    std.Io.Dir.cwd().deleteTree(io, dest) catch {};
+    defer std.Io.Dir.cwd().deleteTree(io, dest) catch {};
+
+    var dir = try std.Io.Dir.cwd().createDirPathOpen(io, dest, .{});
+    defer dir.close(io);
+
+    // Zip seeks to its end-of-file central directory, so the source must be a
+    // real on-disk file (not an in-memory reader). Stage the fixture to a scratch
+    // file and extract from it, mirroring the download path.
+    try dir.writeFile(io, .{ .sub_path = "fixture.zip", .data = archive });
+    var f = try dir.openFile(io, "fixture.zip", .{});
+    defer f.close(io);
+    var buf: [4 * 1024]u8 = undefined;
+    var fr = f.reader(io, &buf);
+
+    try extractZip(&fr, dir, null);
+
+    try std.testing.expect(fileExists(allocator, dest, "nexa-9.9.9/bin/nexad"));
+    try std.testing.expect(fileExists(allocator, dest, "nexa-9.9.9/bin/nexa-cli"));
 }

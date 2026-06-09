@@ -1,4 +1,5 @@
 const std = @import("std");
+const builtin = @import("builtin");
 const models = @import("../models.zig");
 const rpc = @import("../rpc.zig");
 const install_mod = @import("../install.zig");
@@ -20,16 +21,40 @@ pub const Nexa = struct {
     pub const rpc_default_username = "nexarpc";
     pub const rpc_default_port = "7227";
     pub const core_version = "2.0.0.0";
-    pub const daemon_file_lin = "nexad";
-    pub const daemon_file_win = "nexad.exe";
-    pub const cli_file_lin = "nexa-cli";
-    pub const tx_file_lin = "nexa-tx";
 
-    // Download location (Linux). The tarball wraps everything in `nexa-<ver>/`,
-    // with the executables under `nexa-<ver>/bin/`.
+    // Binary names. Windows appends `.exe`; Linux/macOS use the bare names. The
+    // per-target name is what `isInstalled`, the daemon launcher, and the promote
+    // list all use, so a Windows build looks for `nexad.exe` and a POSIX build for
+    // `nexad`.
+    const exe_suffix = if (builtin.os.tag == .windows) ".exe" else "";
+    pub const daemon_file = "nexad" ++ exe_suffix;
+    pub const cli_file = "nexa-cli" ++ exe_suffix;
+    pub const tx_file = "nexa-tx" ++ exe_suffix;
+
+    // Download host. Every bundle wraps its executables in `nexa-<ver>/bin/`,
+    // identically across platforms (Linux/macOS tar.gz, Windows zip).
     const download_base = "https://bitcoinunlimited.info/nexa/" ++ core_version ++ "/";
-    const download_file_linux = "nexa-" ++ core_version ++ "-linux64.tar.gz";
-    pub const download_url_linux = download_base ++ download_file_linux;
+
+    /// The download URL + archive format for the build target, or null where Nexa
+    /// publishes no matching binary. Selected at comptime from the OS/arch so a
+    /// build only ever references its own platform's artifact. Mirrors the Go
+    /// installer's `runtime.GOOS`/`GOARCH` switch, plus the macOS builds the Go
+    /// app never wired (arm64 for Apple Silicon, x86 for Intel).
+    const download: ?install_mod.Download = switch (builtin.os.tag) {
+        .windows => .{ .url = download_base ++ "nexa-" ++ core_version ++ "-win64.zip", .format = .zip },
+        .macos => switch (builtin.cpu.arch) {
+            .aarch64 => .{ .url = download_base ++ "nexa-" ++ core_version ++ "-macos-arm64-unsigned.tar.gz", .format = .tar_gz },
+            .x86_64 => .{ .url = download_base ++ "nexa-" ++ core_version ++ "-macos-x86-unsigned.tar.gz", .format = .tar_gz },
+            else => null,
+        },
+        .linux => switch (builtin.cpu.arch) {
+            .x86_64 => .{ .url = download_base ++ "nexa-" ++ core_version ++ "-linux64.tar.gz", .format = .tar_gz },
+            .aarch64 => .{ .url = download_base ++ "nexa-" ++ core_version ++ "-arm64.tar.gz", .format = .tar_gz },
+            .arm => .{ .url = download_base ++ "nexa-" ++ core_version ++ "-arm32.tar.gz", .format = .tar_gz },
+            else => null,
+        },
+        else => null,
+    };
 
     // Layout inside the archive. BoxWallet keeps only the daemon/cli/tx binaries
     // (from `bin/`) at the install root and discards the rest of the extracted
@@ -38,12 +63,12 @@ pub const Nexa = struct {
     // is safe. Matches the Go installer.
     const extracted_dir = "nexa-" ++ core_version;
     const bin_subdir = "bin";
-    const promote_files = [_][]const u8{ daemon_file_lin, cli_file_lin, tx_file_lin };
+    const promote_files = [_][]const u8{ daemon_file, cli_file, tx_file };
 
     // Temp file the download streams to. Keyed off the daemon name so a
     // concurrent install of another coin into the same `~/.boxwallet` root uses
     // a different scratch file and the two never collide.
-    pub const scratch_file = ".boxwallet-" ++ daemon_file_lin ++ ".part";
+    pub const scratch_file = ".boxwallet-" ++ daemon_file ++ ".part";
 
     /// Build the type-erased `Coin` handle for this instance.
     pub fn coin(self: *Nexa) Coin {
@@ -95,9 +120,10 @@ pub const Nexa = struct {
         return conf.dataDir(allocator, home, home_dir, home_dir_win);
     }
 
-    /// True if `nexad` is already present under `install_root`.
+    /// True if `nexad` (`nexad.exe` on Windows) is already present under
+    /// `install_root`.
     pub fn isInstalled(allocator: std.mem.Allocator, install_root: []const u8) bool {
-        return install_mod.fileExists(allocator, install_root, daemon_file_lin);
+        return install_mod.fileExists(allocator, install_root, daemon_file);
     }
 
     /// Download + unarchive the Nexa daemon files into `install_root`,
@@ -111,7 +137,8 @@ pub const Nexa = struct {
         install_root: []const u8,
         progress: ?install_mod.Progress,
     ) !void {
-        try install_mod.downloadAndExtract(allocator, download_url_linux, .tar_gz, install_root, scratch_file, 0, progress);
+        const dl = download orelse return error.UnsupportedPlatform;
+        try install_mod.downloadAndExtract(allocator, dl.url, dl.format, install_root, scratch_file, 0, progress);
         try install_mod.promoteAndTidy(allocator, install_root, extracted_dir, bin_subdir, &promote_files);
     }
 
@@ -149,7 +176,7 @@ pub const Nexa = struct {
         return conf_file;
     }
     fn vtDaemonFile(_: *anyopaque) []const u8 {
-        return daemon_file_lin;
+        return daemon_file;
     }
     fn vtRpcDefaultPort(_: *anyopaque) []const u8 {
         return rpc_default_port;
@@ -251,6 +278,23 @@ test "parses getinfo with a numeric version field" {
     const r = parsed.value.result.?;
     try std.testing.expectEqual(@as(i64, 2000000), r.version);
     try std.testing.expectEqual(@as(i64, 2), r.connections);
+}
+
+test "platform selection resolves a download for the build target" {
+    // Nexa publishes binaries for every OS/arch BoxWallet builds for, so the
+    // current target must always resolve a download (and to the right format).
+    const dl = Nexa.download orelse return error.SkipZigTest;
+    switch (builtin.os.tag) {
+        .windows => try std.testing.expectEqual(install_mod.Format.zip, dl.format),
+        else => try std.testing.expectEqual(install_mod.Format.tar_gz, dl.format),
+    }
+
+    // Binary names carry `.exe` only on Windows.
+    if (builtin.os.tag == .windows) {
+        try std.testing.expectEqualStrings("nexad.exe", Nexa.daemon_file);
+    } else {
+        try std.testing.expectEqualStrings("nexad", Nexa.daemon_file);
+    }
 }
 
 test "coin vtable dispatches to Nexa metadata" {

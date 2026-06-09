@@ -1,4 +1,5 @@
 const std = @import("std");
+const builtin = @import("builtin");
 const models = @import("../models.zig");
 const rpc = @import("../rpc.zig");
 const install_mod = @import("../install.zig");
@@ -20,29 +21,48 @@ pub const Divi = struct {
     pub const rpc_default_username = "divirpc";
     pub const rpc_default_port = "51473";
     pub const core_version = "3.0.0";
-    pub const daemon_file_lin = "divid";
-    pub const daemon_file_win = "divid.exe";
-    pub const cli_file_lin = "divi-cli";
-    pub const tx_file_lin = "divi-tx";
 
-    // Download location (Linux). Divi ships GitHub release tarballs whose
-    // filename carries an arch/commit suffix, but the archive still wraps
-    // everything in the plain `divi-<ver>/` dir with binaries under `bin/`.
+    // Binary names. Windows appends `.exe`; Linux/macOS use the bare names. The
+    // per-target name is what `isInstalled`, the daemon launcher, and the promote
+    // list all use.
+    const exe_suffix = if (builtin.os.tag == .windows) ".exe" else "";
+    pub const daemon_file = "divid" ++ exe_suffix;
+    pub const cli_file = "divi-cli" ++ exe_suffix;
+    pub const tx_file = "divi-tx" ++ exe_suffix;
+
+    // Download host. Divi ships GitHub release archives whose filename carries an
+    // arch/commit suffix, but each still wraps everything in the plain
+    // `divi-<ver>/` dir with binaries under `bin/` — same shape on every platform.
     const download_base = "https://github.com/DiviProject/Divi/releases/download/v" ++ core_version ++ "/";
-    const download_file_linux = "divi-" ++ core_version ++ "-x86_64-linux-gnu-9e2f76c.tar.gz";
-    pub const download_url_linux = download_base ++ download_file_linux;
+
+    /// The download URL + archive format for the build target, or null where Divi
+    /// publishes no matching binary. Selected at comptime from OS/arch, mirroring
+    /// the Go installer's `runtime.GOOS`/`GOARCH` switch:
+    ///   - Linux arm64 and Linux 386 are unsupported upstream (null).
+    ///   - Divi ships no native Apple-Silicon build, so both macOS arches use the
+    ///     Intel `osx64` build — which runs on M1+ under Rosetta 2.
+    const download: ?install_mod.Download = switch (builtin.os.tag) {
+        .windows => .{ .url = download_base ++ "divi-" ++ core_version ++ "-win64-9e2f76c.zip", .format = .zip },
+        .macos => .{ .url = download_base ++ "divi-" ++ core_version ++ "-osx64-9e2f76c.tar.gz", .format = .tar_gz },
+        .linux => switch (builtin.cpu.arch) {
+            .x86_64 => .{ .url = download_base ++ "divi-" ++ core_version ++ "-x86_64-linux-gnu-9e2f76c.tar.gz", .format = .tar_gz },
+            .arm => .{ .url = download_base ++ "divi-" ++ core_version ++ "-RPi2-9e2f76c.tar.gz", .format = .tar_gz },
+            else => null,
+        },
+        else => null,
+    };
 
     // Layout inside the archive: keep only the daemon/cli/tx binaries (from
     // `bin/`) at the install root; the whole `divi-<ver>/` tree is discarded
     // afterwards. Matches the Go installer.
     const extracted_dir = "divi-" ++ core_version;
     const bin_subdir = "bin";
-    const promote_files = [_][]const u8{ daemon_file_lin, cli_file_lin, tx_file_lin };
+    const promote_files = [_][]const u8{ daemon_file, cli_file, tx_file };
 
     // Temp file the download streams to. Keyed off the daemon name so a
     // concurrent install of another coin into the same `~/.boxwallet` root uses
     // a different scratch file and the two never collide.
-    pub const scratch_file = ".boxwallet-" ++ daemon_file_lin ++ ".part";
+    pub const scratch_file = ".boxwallet-" ++ daemon_file ++ ".part";
 
     /// Build the type-erased `Coin` handle for this instance.
     pub fn coin(self: *Divi) Coin {
@@ -102,9 +122,10 @@ pub const Divi = struct {
         return conf.dataDir(allocator, home, home_dir, home_dir_win);
     }
 
-    /// True if `divid` is already present under `install_root`.
+    /// True if `divid` (`divid.exe` on Windows) is already present under
+    /// `install_root`.
     pub fn isInstalled(allocator: std.mem.Allocator, install_root: []const u8) bool {
-        return install_mod.fileExists(allocator, install_root, daemon_file_lin);
+        return install_mod.fileExists(allocator, install_root, daemon_file);
     }
 
     /// Download + unarchive the Divi daemon files into `install_root`,
@@ -118,7 +139,8 @@ pub const Divi = struct {
         install_root: []const u8,
         progress: ?install_mod.Progress,
     ) !void {
-        try install_mod.downloadAndExtract(allocator, download_url_linux, .tar_gz, install_root, scratch_file, 0, progress);
+        const dl = download orelse return error.UnsupportedPlatform;
+        try install_mod.downloadAndExtract(allocator, dl.url, dl.format, install_root, scratch_file, 0, progress);
         try install_mod.promoteAndTidy(allocator, install_root, extracted_dir, bin_subdir, &promote_files);
     }
 
@@ -156,7 +178,7 @@ pub const Divi = struct {
         return conf_file;
     }
     fn vtDaemonFile(_: *anyopaque) []const u8 {
-        return daemon_file_lin;
+        return daemon_file;
     }
     fn vtRpcDefaultPort(_: *anyopaque) []const u8 {
         return rpc_default_port;
@@ -298,6 +320,25 @@ test "getinfo without active staking maps staking_active false" {
     const r = parsed.value.result.?;
     try std.testing.expect(!std.mem.eql(u8, r.@"staking status", "Staking Active"));
     try std.testing.expectEqual(@as(i64, 8), r.connections);
+}
+
+test "platform selection resolves a download for supported targets" {
+    // Divi has no native Linux-arm64 build, so the download is allowed to be null
+    // there; when present, the format must match the OS (zip on Windows, else
+    // tar.gz — including the Intel osx64 build used for both macOS arches).
+    if (Divi.download) |dl| {
+        switch (builtin.os.tag) {
+            .windows => try std.testing.expectEqual(install_mod.Format.zip, dl.format),
+            else => try std.testing.expectEqual(install_mod.Format.tar_gz, dl.format),
+        }
+    }
+
+    // Binary names carry `.exe` only on Windows.
+    if (builtin.os.tag == .windows) {
+        try std.testing.expectEqualStrings("divid.exe", Divi.daemon_file);
+    } else {
+        try std.testing.expectEqualStrings("divid", Divi.daemon_file);
+    }
 }
 
 test "coin vtable dispatches to Divi metadata" {
