@@ -12,7 +12,7 @@ const Divi = @import("coins/divi.zig").Divi;
 /// change how BoxWallet identifies itself in the UI. `app_color` is the brand
 /// hex used for the "BoxWallet" wording on the Home pane.
 pub const app_name = "BoxWallet TUI";
-pub const app_version = "0.0.1";
+pub const app_version = "0.0.2";
 const app_color = "#7ca071";
 
 /// Fallback install root used only if the home-dir-based path can't be built
@@ -159,6 +159,10 @@ const Activity = struct {
     /// Until then — from the moment the coin is selected/installed and a poll is
     /// pending — the Running/Staking marks animate instead of showing a stale ✘.
     poll_completed: bool = false,
+    /// Whether the "checking/received" status log pair has been emitted for the
+    /// current selection. Reset each time the coin is (re)selected so a single
+    /// pair is logged per selection rather than on every ~2s poll.
+    status_logged: bool = false,
     /// Latest polled peer count / staking flag (1/0).
     poll_peers: std.atomic.Value(u32) = .init(0),
     poll_staking: std.atomic.Value(u8) = .init(0),
@@ -425,10 +429,14 @@ const Activity = struct {
         self.poll_synced.store(@intFromBool(state.synced), .monotonic);
     }
 
-    /// Spawn the daemon binary with `-daemon` and decide whether it started,
-    /// capturing the launcher's stderr so a failure can report the reason.
-    /// `argv[0]` carries a path separator, so it's resolved as a file path
-    /// rather than via PATH.
+    /// Spawn the daemon binary and decide whether it started. `argv[0]` carries a
+    /// path separator, so it's resolved as a file path rather than via PATH.
+    ///
+    /// Two strategies by platform. **Windows** daemons don't support `-daemon`
+    /// (they run in the foreground), so we spawn detached and return immediately,
+    /// letting the status poll confirm the daemon came up — see the branch below.
+    /// **POSIX** uses `-daemon` and waits on the brief launcher, capturing its
+    /// stderr so a failure can report the reason:
     ///
     /// `-daemon` forks a detached daemon (a new pid) and the launcher exits:
     /// cleanly after daemonizing, or non-zero (or on a signal) after a pre-fork
@@ -461,6 +469,28 @@ const Activity = struct {
             self.coin.rpcDefaultUsername(),
             self.coin.rpcDefaultPort(),
         );
+
+        // Windows daemons don't support `-daemon`: the binary runs in the
+        // foreground of its own process rather than forking and exiting, so the
+        // POSIX "wait for the launcher to daemonize" model below would block
+        // forever. Mirror Go's `cmd /C start /b`: spawn it detached and return
+        // without waiting. The process stays up on its own, and the getinfo poll
+        // flips the UI to "running" once it answers. A pre-start failure can't be
+        // surfaced here (there's no launcher exit/stderr to read), as in Go.
+        if (@import("builtin").os.tag == .windows) {
+            var child = try std.process.spawn(io, .{
+                .argv = &.{path},
+                .environ_map = self.environ_map,
+                .stdin = .ignore,
+                .stdout = .ignore,
+                .stderr = .ignore,
+                // Don't pop a console window for the background daemon.
+                .create_no_window = true,
+            });
+            // Detached: deliberately not waited on, so it outlives this call.
+            _ = &child;
+            return;
+        }
 
         // Per-daemon name so coins starting at once don't share the scratch file.
         const err_name = try std.fmt.allocPrint(a, ".{s}.startup", .{self.coin.daemonFile()});
@@ -587,7 +617,8 @@ fn pickDebugLogError(tail: []const u8) []const u8 {
     // message carries "cannot" anyway.
     const root_cause = [_][]const u8{
         "incorrect", "corrupt", "no genesis", "wrong datadir",
-        "cannot",    "unable",  "denied",     "invalid",        "not found",
+        "cannot",    "unable",  "denied",     "invalid",
+        "not found",
     };
     const generic = [_][]const u8{ "error", "abort", "fail", "exiting" };
 
@@ -885,6 +916,12 @@ pub const App = struct {
                 act.poll_completed = true;
                 if (act.applyPoll() and act.daemonState() != .running)
                     act.daemon.store(@intFromEnum(DaemonState.running), .release);
+                // Mark the just-reaped poll as received once per selection; the
+                // matching "checking" line was logged when this poll started.
+                if (i == self.selected and !act.status_logged) {
+                    act.status_logged = true;
+                    self.logf("{s}: status received", .{act.coin.coinName()});
+                }
             }
 
             // Start the next poll for an installed, idle coin when the cadence is
@@ -900,6 +937,10 @@ pub const App = struct {
                     act.home_dir = self.home_dir;
                     act.poll_ok = false;
                     act.poll_done.store(false, .monotonic);
+                    // Announce the first status check for this selection; the
+                    // matching "received" line follows when the poll is reaped.
+                    if (!act.status_logged)
+                        self.logf("{s}: checking status", .{coin.coinName()});
                     act.poll_thread = std.Thread.spawn(.{}, Activity.runPoll, .{act}) catch null;
                 }
             }
@@ -931,8 +972,13 @@ pub const App = struct {
         self.refreshSelectedInstalled();
         // Only the selected coin is polled, so a switch should refresh the new
         // coin promptly rather than wait out the shared cadence. Resetting the
-        // poll clock makes the next tick due immediately.
-        if (moved) self.last_poll_ns = 0;
+        // poll clock makes the next tick due immediately. Clearing the new coin's
+        // status-log flag emits a fresh "checking/received" pair for this
+        // selection.
+        if (moved) {
+            self.last_poll_ns = 0;
+            self.activities[self.selected].status_logged = false;
+        }
     }
 
     /// Append a formatted line to the action log, prefixed with a UTC timestamp.
