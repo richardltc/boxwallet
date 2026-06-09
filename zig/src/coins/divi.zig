@@ -144,6 +144,36 @@ pub const Divi = struct {
         try install_mod.promoteAndTidy(allocator, install_root, extracted_dir, bin_subdir, &promote_files);
     }
 
+    /// Ensure `divi.conf` carries the RPC creds (and `server=1`/`daemon=1`/
+    /// `rpcport`) BoxWallet needs before the daemon reads it; existing values are
+    /// kept. A standard bitcoin-derived `key=value` conf.
+    pub fn prepareConf(allocator: std.mem.Allocator, io: std.Io, home: []const u8) !void {
+        const data_dir = try dataDir(allocator, home);
+        defer allocator.free(data_dir);
+        _ = try conf.populate(allocator, io, data_dir, conf_file, rpc_default_username, rpc_default_port);
+    }
+
+    /// Divi is a bitcoin-derived daemon: it forks itself into the background with
+    /// `-daemon` on POSIX, but runs in the foreground on Windows.
+    pub fn launchMode() Coin.LaunchMode {
+        return if (builtin.os.tag == .windows) .foreground else .fork;
+    }
+
+    /// The daemon binary path. The launcher appends `-daemon` itself for the fork
+    /// path; on Windows it's spawned bare (detached).
+    pub fn daemonArgv(allocator: std.mem.Allocator, install_root: []const u8, _: []const u8) ![]const []const u8 {
+        const path = try std.fs.path.join(allocator, &.{ install_root, daemon_file });
+        const argv = try allocator.alloc([]const u8, 1);
+        argv[0] = path;
+        return argv;
+    }
+
+    /// Ask divid to shut down via the JSON-RPC `stop`.
+    pub fn requestStop(allocator: std.mem.Allocator, auth: models.CoinAuth) !void {
+        const reply = try rpc.call(allocator, auth, "stop");
+        allocator.free(reply);
+    }
+
     // --- vtable plumbing -------------------------------------------------
 
     const vtable: Coin.VTable = .{
@@ -160,6 +190,10 @@ pub const Divi = struct {
         .data_dir = vtDataDir,
         .is_installed = vtIsInstalled,
         .install = vtInstall,
+        .prepare_conf = vtPrepareConf,
+        .launch_mode = vtLaunchMode,
+        .daemon_argv = vtDaemonArgv,
+        .request_stop = vtRequestStop,
     };
 
     fn vtCoinName(_: *anyopaque) []const u8 {
@@ -217,6 +251,32 @@ pub const Divi = struct {
         progress: ?install_mod.Progress,
     ) anyerror!void {
         return install(allocator, install_root, progress);
+    }
+    fn vtPrepareConf(
+        _: *anyopaque,
+        allocator: std.mem.Allocator,
+        io: std.Io,
+        home: []const u8,
+    ) anyerror!void {
+        return prepareConf(allocator, io, home);
+    }
+    fn vtLaunchMode(_: *anyopaque) Coin.LaunchMode {
+        return launchMode();
+    }
+    fn vtDaemonArgv(
+        _: *anyopaque,
+        allocator: std.mem.Allocator,
+        install_root: []const u8,
+        home: []const u8,
+    ) anyerror![]const []const u8 {
+        return daemonArgv(allocator, install_root, home);
+    }
+    fn vtRequestStop(
+        _: *anyopaque,
+        allocator: std.mem.Allocator,
+        auth: models.CoinAuth,
+    ) anyerror!void {
+        return requestStop(allocator, auth);
     }
 };
 
