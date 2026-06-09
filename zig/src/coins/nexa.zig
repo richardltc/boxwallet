@@ -227,6 +227,32 @@ test "parses getblockchaininfo into normalized BlockchainState" {
     try std.testing.expect(state.synced);
 }
 
+test "parses getinfo with a numeric version field" {
+    const allocator = std.testing.allocator;
+
+    // nexad reports `version` as a number (e.g. 2000000), not a string — the
+    // struct must type it that way or the whole poll fails to parse and the
+    // daemon reads as "not running" even though it's up.
+    const raw =
+        \\{"result":{"version":2000000,"protocolversion":80006,
+        \\"walletversion":130000,"balance":0.00,"blocks":180763,
+        \\"connections":2,"difficulty":42315.13684998719,"testnet":false},
+        \\"error":null,"id":"boxwallet"}
+    ;
+
+    var parsed = try std.json.parseFromSlice(
+        models.JsonRpcResponse(models.NexaGetInfo),
+        allocator,
+        raw,
+        .{ .ignore_unknown_fields = true },
+    );
+    defer parsed.deinit();
+
+    const r = parsed.value.result.?;
+    try std.testing.expectEqual(@as(i64, 2000000), r.version);
+    try std.testing.expectEqual(@as(i64, 2), r.connections);
+}
+
 test "coin vtable dispatches to Nexa metadata" {
     var nexa: Nexa = .{};
     const c = nexa.coin();
