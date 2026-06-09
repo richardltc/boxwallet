@@ -1460,7 +1460,20 @@ fn bar(a: std.mem.Allocator, current: u64, total: u64) ![]const u8 {
     // than dividing by zero.
     p.setTotal(@floatFromInt(@max(total, 1)));
     p.setValue(@floatFromInt(current));
-    return p.view(a);
+    // Render our own percentage instead of ZigZag's whole-number "{d:.0}%": we
+    // want two decimal places (e.g. "42.37%") for in-progress values, but plain
+    // "0%"/"100%" at the endpoints so the common cases stay tidy.
+    p.show_percent = false;
+    const bar_str = try p.view(a);
+    const pct = p.percent();
+    const pct_str = if (pct <= 0)
+        try std.fmt.allocPrint(a, " 0%", .{})
+    else if (pct >= 100)
+        try std.fmt.allocPrint(a, " 100%", .{})
+    else
+        try std.fmt.allocPrint(a, " {d:.2}%", .{pct});
+    const pct_styled = try p.percent_style.render(a, pct_str);
+    return std.mem.concat(a, u8, &.{ bar_str, pct_styled });
 }
 
 test "action log renders in the bottom pane, sized to log_visible_lines" {
