@@ -2,6 +2,8 @@ const std = @import("std");
 const zz = @import("zigzag");
 const models = @import("models.zig");
 const install_mod = @import("install.zig");
+const disk = @import("disk.zig");
+const memory = @import("memory.zig");
 const conf = @import("conf.zig");
 const Coin = @import("coin.zig").Coin;
 const Nexa = @import("coins/nexa.zig").Nexa;
@@ -746,6 +748,23 @@ pub const App = struct {
     /// Monotonic timestamp (ns) of the last getinfo poll round, from the tick
     /// clock. Drives the shared ~2s poll cadence across all installed coins.
     last_poll_ns: i64 = 0,
+    /// Disk usage of the filesystem that holds the install root (where the
+    /// blockchains grow), refreshed on a slow ~30s cadence so the "Disk" bar
+    /// reflects current fill without the cost of a per-frame `statfs`. `total`
+    /// 0 means "not yet known / unavailable on this platform" → an empty bar.
+    disk_used: u64 = 0,
+    disk_total: u64 = 0,
+    /// Monotonic timestamp (ns) of the last disk-usage refresh; 0 forces the
+    /// first tick to sample immediately.
+    last_disk_ns: i64 = 0,
+    /// System physical-memory usage, sampled on a short (~3s) cadence and drawn
+    /// as a bar under the Disk bar. `mem_total` 0 means "not yet known /
+    /// unavailable on this platform" → an empty bar.
+    mem_used: u64 = 0,
+    mem_total: u64 = 0,
+    /// Monotonic timestamp (ns) of the last memory sample; the first sample is
+    /// taken in `init`, so this paces the refreshes thereafter.
+    last_mem_ns: i64 = 0,
     /// The program's `std.Io` (captured from `ctx` in `init`). Used to read the
     /// wall clock for log timestamps; the backing implementation outlives the
     /// model, so holding the lightweight vtable handle is safe.
@@ -829,6 +848,16 @@ pub const App = struct {
         for (&self.activities) |*act| act.* = .{ .spinner = makeSpinner(), .daemon_spinner = makeSpinner(), .sync_spinner = zz.Spinner.init() };
         self.refreshSelectedInstalled();
 
+        // Take the first disk-usage sample now, synchronously, so the bar is
+        // populated before the first frame is drawn rather than blank until the
+        // 30s refresh cadence first fires (the tick clock is elapsed-since-start,
+        // so a 0 `last_disk_ns` wouldn't come due for 30s). It's a single cheap
+        // `statfs` — microseconds, no disk scan — so it's fine at startup.
+        self.refreshDisk();
+        // Take the first memory sample now too, so its bar isn't empty until the
+        // ~3s refresh cadence first fires.
+        self.refreshMemory();
+
         // Seed the action log so the pane starts with a line announcing the
         // running build rather than an empty box.
         self.logf("{s} v{s} started", .{ app_name, app_version });
@@ -886,6 +915,24 @@ pub const App = struct {
     /// spinner while extracting, and — once — reap a finished worker and refresh
     /// the cached installed flag from disk.
     fn onTick(self: *App, t: zz.msg.Tick) void {
+        // Refresh the disk-usage figure on a slow ~30s cadence (the bar shows
+        // how full the volume holding the blockchains is). The very first sample
+        // is taken in `init`, so the bar is already populated here — this just
+        // keeps it current. The tick timestamp is elapsed-since-start, so the
+        // first refresh lands ~30s into the session.
+        if (t.timestamp - self.last_disk_ns >= 30 * std.time.ns_per_s) {
+            self.last_disk_ns = t.timestamp;
+            self.refreshDisk();
+        }
+
+        // Sample memory on a livelier ~3s cadence so the sparkline fills in a
+        // minute or two and reflects recent activity. Also seeded in `init`, so
+        // it's never empty; the query is a cheap inline read like the disk one.
+        if (t.timestamp - self.last_mem_ns >= 3 * std.time.ns_per_s) {
+            self.last_mem_ns = t.timestamp;
+            self.refreshMemory();
+        }
+
         // All installed coins are polled for live status on a shared ~2s cadence.
         const poll_due = t.timestamp - self.last_poll_ns >= 2 * std.time.ns_per_s;
         for (&self.activities, 0..) |*act, i| {
@@ -990,6 +1037,32 @@ pub const App = struct {
             }
         }
         if (poll_due) self.last_poll_ns = t.timestamp;
+    }
+
+    /// Sample the disk usage of the volume holding the install root (where the
+    /// blockchains grow) into `disk_used`/`disk_total`. `statfs` reads the
+    /// filesystem's in-memory block accounting — one cheap syscall, no disk scan
+    /// — so it's safe to call synchronously on the UI thread. Probes the install
+    /// root, falling back to the home dir before the root exists (its first
+    /// install hasn't run yet); both resolve to the same filesystem. A failed or
+    /// unsupported query leaves the last figure in place.
+    fn refreshDisk(self: *App) void {
+        const target = if (self.install_root.len > 0) self.install_root else self.home_dir;
+        if (disk.usage(target) orelse disk.usage(self.home_dir)) |u| {
+            self.disk_used = u.used;
+            self.disk_total = u.total;
+        }
+    }
+
+    /// Sample system memory usage into `mem_used`/`mem_total`. Like
+    /// `refreshDisk`, the read is a single cheap, non-blocking query, so it runs
+    /// inline on the UI thread. A failed/unsupported query leaves the last
+    /// figures in place.
+    fn refreshMemory(self: *App) void {
+        if (memory.usage()) |u| {
+            self.mem_used = u.used;
+            self.mem_total = u.total;
+        }
     }
 
     fn move(self: *App, delta: i32) void {
@@ -1313,7 +1386,7 @@ pub const App = struct {
     /// or a completed/failed result). All activity stays inside this pane, so
     /// the surrounding two-pane layout — and the coin list on the left — is
     /// never disturbed.
-    fn renderCoin(_: *const App, a: std.mem.Allocator, coin: Coin, act: *const Activity) ![]const u8 {
+    fn renderCoin(self: *const App, a: std.mem.Allocator, coin: Coin, act: *const Activity) ![]const u8 {
         const title = (zz.Style{}).bold(true).fg(zz.Color.hex(coin.coinColor()));
         const head = title.render(a, coin.coinName()) catch coin.coinName();
 
@@ -1391,6 +1464,20 @@ pub const App = struct {
         const headers_bar = try bar(a, act.headers_cur, act.headers_total);
         const blocks_bar = try bar(a, act.blocks_cur, act.blocks_total);
 
+        // Disk-usage bar: how full the volume holding the blockchains is. Sits
+        // apart from the sync bars (separated by a blank line) because it's a
+        // machine-level figure, not a coin's sync state — so it stays in the
+        // brand colour regardless of whether this coin's daemon is running. The
+        // label is space-padded to the sync labels' width so all three align.
+        const disk_label = statusLabel(a, brand, "Disk   ", true);
+        const disk_bar = try usageBar(a, self.disk_used, self.disk_total);
+
+        // Memory bar: system RAM used, drawn exactly like the Disk bar. Like
+        // Disk it's a machine-level reading, so it stays in the brand colour
+        // regardless of this coin's daemon state.
+        const mem_label = statusLabel(a, brand, "Memory ", true);
+        const mem_bar = try usageBar(a, self.mem_used, self.mem_total);
+
         const middle = try renderActivity(a, act, p);
         const daemon_button = renderDaemonButton(a, act);
 
@@ -1399,6 +1486,9 @@ pub const App = struct {
             \\
             \\{s}: {s}    {s}: {s}    {s}: {s}    {s}: {s}{s}
             \\{s}: {s}
+            \\
+            \\{s}  {s}
+            \\{s}  {s}
             \\
             \\{s}  {s}
             \\{s}  {s}
@@ -1423,6 +1513,10 @@ pub const App = struct {
             headers_bar,
             blocks_label,
             blocks_bar,
+            disk_label,
+            disk_bar,
+            mem_label,
+            mem_bar,
             middle,
             daemon_button,
         });
@@ -1549,13 +1643,43 @@ pub const App = struct {
     }
 };
 
-/// Render a single ZigZag progress bar for `current`/`total` bytes.
+/// Disk/memory "warning" threshold: at or above this used %, the capacity bar
+/// turns amber. `usage_red` is the more urgent step, turning it red.
+const usage_amber = 75.0;
+const usage_red = 90.0;
+
+/// The fill colour for a capacity bar at `current`/`total`: brand-green while
+/// there's comfortable headroom, amber from `usage_amber`%, red from
+/// `usage_red`%. An unknown total (0) reads as empty/0%, so it stays green.
+fn usageColor(current: u64, total: u64) zz.Color {
+    if (total == 0) return zz.Color.hex(app_color);
+    const pct = @as(f64, @floatFromInt(current)) / @as(f64, @floatFromInt(total)) * 100.0;
+    if (pct >= usage_red) return .red;
+    if (pct >= usage_amber) return .yellow;
+    return zz.Color.hex(app_color);
+}
+
+/// A progress bar in the app's brand colour — for "fuller is better" axes (the
+/// download progress and the headers/blocks sync).
 fn bar(a: std.mem.Allocator, current: u64, total: u64) ![]const u8 {
+    return coloredBar(a, current, total, zz.Color.hex(app_color));
+}
+
+/// A capacity bar whose fill warns as it fills — for "fuller is worse" axes
+/// (disk and memory). Green with headroom, amber past 75%, red past 90%, so a
+/// nearly-full disk or stressed machine reads at a glance.
+fn usageBar(a: std.mem.Allocator, current: u64, total: u64) ![]const u8 {
+    return coloredBar(a, current, total, usageColor(current, total));
+}
+
+/// Render a single ZigZag progress bar for `current`/`total`, tinting the
+/// filled portion `fill`. Shared by `bar` (brand colour) and `usageBar`
+/// (threshold colour).
+fn coloredBar(a: std.mem.Allocator, current: u64, total: u64, fill: zz.Color) ![]const u8 {
     var p = zz.Progress.init();
     p.setWidth(30);
-    // Tint the filled portion in the app's brand colour so the bar matches the
-    // rest of the BoxWallet UI (ZigZag defaults the fill to cyan).
-    p.full_style = p.full_style.fg(zz.Color.hex(app_color));
+    // Tint the filled portion as requested (ZigZag defaults the fill to cyan).
+    p.full_style = p.full_style.fg(fill);
     // Guard against a zero total (unknown length): clamp the denominator off zero
     // to avoid a divide, and force the value to 0 so the bar sits empty at 0%.
     // (Without zeroing the value, a non-zero `current` over the clamped-to-1
@@ -1576,6 +1700,20 @@ fn bar(a: std.mem.Allocator, current: u64, total: u64) ![]const u8 {
         try std.fmt.allocPrint(a, " {d:.2}%", .{pct});
     const pct_styled = try p.percent_style.render(a, pct_str);
     return std.mem.concat(a, u8, &.{ bar_str, pct_styled });
+}
+
+test "usageColor steps green → amber → red at the 75/90 thresholds" {
+    const green = zz.Color.hex(app_color);
+    // Comfortable headroom and the boundary just below warning stay brand-green.
+    try std.testing.expectEqual(green, usageColor(0, 100));
+    try std.testing.expectEqual(green, usageColor(74, 100));
+    // 75% and up (but below 90%) is amber; 90% and up is red.
+    try std.testing.expectEqual(zz.Color.yellow, usageColor(75, 100));
+    try std.testing.expectEqual(zz.Color.yellow, usageColor(89, 100));
+    try std.testing.expectEqual(zz.Color.red, usageColor(90, 100));
+    try std.testing.expectEqual(zz.Color.red, usageColor(100, 100));
+    // An unknown total (empty bar) is treated as 0% → green, never a false red.
+    try std.testing.expectEqual(green, usageColor(500, 0));
 }
 
 test "bar with an unknown total (0) renders empty, not a false 100%" {
@@ -1971,6 +2109,68 @@ test "renderDetail renders the selected coin generically through the Coin interf
     const out = app.renderDetail(arena.allocator());
 
     try std.testing.expect(std.mem.indexOf(u8, out, Divi.coin_name) != null);
+}
+
+test "coin pane renders a Disk bar from the app's disk-usage figure" {
+    if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
+    const allocator = std.testing.allocator;
+
+    var threaded: std.Io.Threaded = .init(allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    var env = std.process.Environ.Map.init(allocator);
+    defer env.deinit();
+    try env.put("HOME", "/home/tester");
+    var ctx = zz.Context.init(allocator, allocator, io, &env);
+
+    var app: App = undefined;
+    _ = app.init(&ctx);
+    defer app.deinit();
+
+    // A quarter-full volume renders the Disk label and its 25% figure in the
+    // pane, independent of any coin's sync/daemon state.
+    app.selected = std.mem.indexOfScalar(Entry, &entries, .divi).?;
+    app.disk_used = 1;
+    app.disk_total = 4;
+
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+    const out = app.renderDetail(arena.allocator());
+
+    try std.testing.expect(std.mem.indexOf(u8, out, "Disk") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "25.00%") != null);
+}
+
+test "coin pane renders a Memory line with the current used figure" {
+    if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
+    const allocator = std.testing.allocator;
+
+    var threaded: std.Io.Threaded = .init(allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    var env = std.process.Environ.Map.init(allocator);
+    defer env.deinit();
+    try env.put("HOME", "/home/tester");
+    var ctx = zz.Context.init(allocator, allocator, io, &env);
+
+    var app: App = undefined;
+    _ = app.init(&ctx);
+    defer app.deinit();
+
+    // Override the live reading with a half-used figure: the pane shows the
+    // Memory label and that 50% figure alongside the sparkline graph.
+    app.selected = std.mem.indexOfScalar(Entry, &entries, .divi).?;
+    app.mem_used = 2;
+    app.mem_total = 4;
+
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+    const out = app.renderDetail(arena.allocator());
+
+    try std.testing.expect(std.mem.indexOf(u8, out, "Memory") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "50.00%") != null);
 }
 
 test "left bar pins Home on top and lists coins alphabetically" {
