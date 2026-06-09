@@ -383,13 +383,15 @@ const Activity = struct {
         const blocks = self.poll_blocks.load(.monotonic);
         const network = self.poll_network.load(.monotonic);
         self.headers_cur = headers;
-        // Until a peer reports a height the network tip is unknown (0). A node
-        // loads its local headers from disk before any peer connects, so anchoring
-        // the denominator to `headers` then would read a misleading 100% that
-        // collapses the instant a peer height arrives. Treat an unknown tip as an
-        // unknown total (0 → empty bar) instead, and only `max`-guard once it's
-        // known (so being ahead of stale peers pegs full rather than overflowing).
-        self.headers_total = if (network > 0) @max(network, headers) else 0;
+        // The network tip is only meaningful once at least one peer is connected.
+        // A node loads its local headers from disk before any peer connects, and
+        // some daemons (e.g. Ergo) still report a stale/self `maxPeerHeight` with
+        // zero peers — anchoring the denominator to either then would read a
+        // misleading 100% that collapses the instant a real peer height arrives.
+        // So require a peer *and* a known tip; otherwise treat the total as
+        // unknown (0 → empty bar). Once both hold, `max`-guard against the tip so
+        // being briefly ahead of stale peers pegs full rather than overflowing.
+        self.headers_total = if (self.peers > 0 and network > 0) @max(network, headers) else 0;
         self.blocks_cur = blocks;
         self.blocks_total = @max(headers, blocks);
         self.sync = if (self.poll_synced.load(.monotonic) != 0) .synced else .syncing;
@@ -1318,9 +1320,8 @@ pub const App = struct {
         const p = act.phaseOf();
         // Status labels wear the coin's brand colour only while their status is
         // "live" — animating or positive (see `statusLabel`); otherwise they go
-        // grey. The progress-bar labels below keep the plain brand colour.
+        // grey.
         const brand = zz.Color.hex(coin.coinColor());
-        const label_style = (zz.Style{}).fg(brand);
 
         const is_installed = p == .done or act.installed;
         const installed_label = statusLabel(a, brand, "Installed", is_installed);
@@ -1382,9 +1383,11 @@ pub const App = struct {
         const wallet_value = (zz.Style{}).bold(true).fg(act.wallet.color()).render(a, act.wallet.text()) catch act.wallet.text();
 
         // Sync progress bars. Labels are padded to a common width before styling
-        // (ANSI codes are zero-width) so the two bars line up.
-        const headers_label = label_style.render(a, "Headers") catch "Headers";
-        const blocks_label = label_style.render(a, "Blocks ") catch "Blocks ";
+        // (ANSI codes are zero-width) so the two bars line up. Like the status
+        // labels above, they go grey unless the daemon is running.
+        const bars_active = act.daemonState() == .running;
+        const headers_label = statusLabel(a, brand, "Headers", bars_active);
+        const blocks_label = statusLabel(a, brand, "Blocks ", bars_active);
         const headers_bar = try bar(a, act.headers_cur, act.headers_total);
         const blocks_bar = try bar(a, act.blocks_cur, act.blocks_total);
 
@@ -1553,10 +1556,12 @@ fn bar(a: std.mem.Allocator, current: u64, total: u64) ![]const u8 {
     // Tint the filled portion in the app's brand colour so the bar matches the
     // rest of the BoxWallet UI (ZigZag defaults the fill to cyan).
     p.full_style = p.full_style.fg(zz.Color.hex(app_color));
-    // Guard against a zero total (unknown length) so the bar sits at 0% rather
-    // than dividing by zero.
+    // Guard against a zero total (unknown length): clamp the denominator off zero
+    // to avoid a divide, and force the value to 0 so the bar sits empty at 0%.
+    // (Without zeroing the value, a non-zero `current` over the clamped-to-1
+    // denominator reads as a huge percentage and renders a false 100%.)
     p.setTotal(@floatFromInt(@max(total, 1)));
-    p.setValue(@floatFromInt(current));
+    p.setValue(@floatFromInt(if (total == 0) 0 else current));
     // Render our own percentage instead of ZigZag's whole-number "{d:.0}%": we
     // want two decimal places (e.g. "42.37%") for in-progress values, but plain
     // "0%"/"100%" at the endpoints so the common cases stay tidy.
@@ -1571,6 +1576,21 @@ fn bar(a: std.mem.Allocator, current: u64, total: u64) ![]const u8 {
         try std.fmt.allocPrint(a, " {d:.2}%", .{pct});
     const pct_styled = try p.percent_style.render(a, pct_str);
     return std.mem.concat(a, u8, &.{ bar_str, pct_styled });
+}
+
+test "bar with an unknown total (0) renders empty, not a false 100%" {
+    // `bar` allocates intermediate strings and is called against an arena in the
+    // UI, so use one here too rather than leak-checking the throwaway pieces.
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    // A large `current` over an unknown (zero) total must read 0%, not 100%: a
+    // node loads its local headers from disk before the network tip is known, and
+    // the denominator is clamped off zero to avoid a divide — so the value has to
+    // be forced to 0 or the clamp would read as a huge (≥100%) percentage.
+    const out = try bar(a, 500_000, 0);
+    try std.testing.expect(std.mem.indexOf(u8, out, " 0%") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "100%") == null);
 }
 
 test "action log renders in the bottom pane, sized to log_visible_lines" {
@@ -1734,6 +1754,7 @@ test "a successful poll folds peers, staking, heights and sync into the display"
     // (blocks/headers).
     var headers_phase: Activity = .{};
     headers_phase.poll_ok = true;
+    headers_phase.poll_peers.store(8, .monotonic);
     headers_phase.poll_synced.store(0, .monotonic);
     headers_phase.poll_network.store(4_071_165, .monotonic);
     headers_phase.poll_headers.store(3_000_000, .monotonic);
@@ -1749,6 +1770,7 @@ test "a successful poll folds peers, staking, heights and sync into the display"
     // up to headers. Headers bar full, blocks bar partial and independent.
     var blocks_phase: Activity = .{};
     blocks_phase.poll_ok = true;
+    blocks_phase.poll_peers.store(8, .monotonic);
     blocks_phase.poll_synced.store(0, .monotonic);
     blocks_phase.poll_network.store(4_071_165, .monotonic);
     blocks_phase.poll_headers.store(4_071_165, .monotonic);
@@ -1762,6 +1784,7 @@ test "a successful poll folds peers, staking, heights and sync into the display"
     // full rather than overflowing.
     var ahead: Activity = .{};
     ahead.poll_ok = true;
+    ahead.poll_peers.store(8, .monotonic);
     ahead.poll_network.store(4_071_160, .monotonic);
     ahead.poll_headers.store(4_071_165, .monotonic);
     ahead.poll_blocks.store(4_071_165, .monotonic);
@@ -1781,6 +1804,20 @@ test "a successful poll folds peers, staking, heights and sync into the display"
     try std.testing.expect(no_tip.applyPoll());
     try std.testing.expectEqual(@as(u64, 0), no_tip.headers_total);
     try std.testing.expectEqual(@as(u64, 500_000), no_tip.headers_cur);
+
+    // No peers connected, yet the daemon still reports a tip (e.g. Ergo echoes a
+    // stale/self `maxPeerHeight` with zero peers). Without a peer to compare
+    // against the tip is untrustworthy, so the bar stays empty rather than
+    // reading a false 100% (headers >= the stale tip).
+    var no_peers: Activity = .{};
+    no_peers.poll_ok = true;
+    no_peers.poll_peers.store(0, .monotonic);
+    no_peers.poll_network.store(500_000, .monotonic);
+    no_peers.poll_headers.store(500_000, .monotonic);
+    no_peers.poll_blocks.store(500_000, .monotonic);
+    try std.testing.expect(no_peers.applyPoll());
+    try std.testing.expectEqual(@as(u64, 0), no_peers.headers_total);
+    try std.testing.expectEqual(@as(u64, 500_000), no_peers.headers_cur);
 
     var stale: Activity = .{};
     stale.peers = 7;
