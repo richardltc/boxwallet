@@ -34,7 +34,7 @@ pub const NexaBlockchainInfo = struct {
 
 /// Raw `getinfo` result for Nexa (subset).
 pub const NexaGetInfo = struct {
-    version: []const u8 = "",
+    version: i64 = 0,
     blocks: i64 = 0,
     connections: i64 = 0,
     difficulty: f64 = 0,
