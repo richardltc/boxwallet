@@ -150,6 +150,24 @@ pub fn populate(
     return wrote;
 }
 
+/// Rewrite `conf_file` under `data_dir` to exactly `body`, creating the dir if
+/// absent and replacing any existing file. Unlike `populate`'s careful append-
+/// only merge, this is a clobbering write for coins whose daemon parses the conf
+/// itself and owns it outright — there's nothing user-authored to preserve, and
+/// a stale/incompatible file is actively harmful (e.g. nervad rejecting bitcoin
+/// keys), so the canonical content must win. Self-healing: a bad conf is
+/// overwritten on the next prepare.
+pub fn writeConf(
+    io: std.Io,
+    data_dir: []const u8,
+    conf_file: []const u8,
+    body: []const u8,
+) !void {
+    var dir = try std.Io.Dir.cwd().createDirPathOpen(io, data_dir, .{});
+    defer dir.close(io);
+    try dir.writeFile(io, .{ .sub_path = conf_file, .data = body });
+}
+
 /// True if `content` has a non-comment line whose key (left of `=`) is `key`.
 fn hasKey(content: []const u8, key: []const u8) bool {
     var it = std.mem.splitScalar(u8, content, '\n');

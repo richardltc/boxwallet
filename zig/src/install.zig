@@ -1,6 +1,7 @@
 const std = @import("std");
 const builtin = @import("builtin");
 const flate = std.compress.flate;
+const bzip2 = @import("bzip2.zig");
 
 /// Resolve the BoxWallet data directory that coin daemons are extracted into,
 /// matching the Go app's `HomeFolder`:
@@ -18,7 +19,7 @@ pub fn installRoot(allocator: std.mem.Allocator, home_dir: []const u8) ![]const 
 }
 
 /// Archive format a coin's daemon bundle ships in.
-pub const Format = enum { tar_gz, zip };
+pub const Format = enum { tar_gz, zip, tar_bz2 };
 
 /// A coin's download for one build target: where to fetch the bundle and the
 /// format it ships in. Coins build this at comptime from the OS/arch (a coin's
@@ -80,60 +81,16 @@ pub fn downloadAndExtract(
     strip: u32,
     progress: ?Progress,
 ) !void {
+    // 1. Stream the archive to the scratch file on disk (flat memory — the body
+    //    is never held in RAM). Shared with the file-only `downloadFile` path.
+    try downloadFile(allocator, url, dest_root, scratch_name, progress);
+
     var threaded: std.Io.Threaded = .init(allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
 
-    var client: std.http.Client = .{ .allocator = allocator, .io = io };
-    defer client.deinit();
-
-    const uri = try std.Uri.parse(url);
-    var req = try client.request(.GET, uri, .{
-        // The archive is already gzip-compressed; ask the transport for the raw
-        // bytes (not a re-encoding) so the tarball is intact and the
-        // content-length we need for the progress bar is present.
-        .headers = .{ .accept_encoding = .{ .override = "identity" } },
-    });
-    defer req.deinit();
-    try req.sendBodiless();
-
-    var redirect_buffer: [8 * 1024]u8 = undefined;
-    var response = try req.receiveHead(&redirect_buffer);
-    if (response.head.status != .ok) return error.DownloadFailed;
-
-    const total = response.head.content_length orelse 0;
-
-    // Open the destination and a scratch file to stream the download into.
-    // Buffering on disk rather than in memory is the whole point: a coin bundle
-    // is tens of MB compressed and several times that decompressed, none of
-    // which we want resident on a low-spec box.
     var dest = try std.Io.Dir.cwd().createDirPathOpen(io, dest_root, .{});
     defer dest.close(io);
-
-    {
-        // 1. Stream the archive to the scratch file in bounded chunks, reporting
-        //    bytes arrived against the content length.
-        var scratch = try dest.createFile(io, scratch_name, .{});
-        defer scratch.close(io);
-
-        var transfer_buffer: [32 * 1024]u8 = undefined;
-        const reader = response.reader(&transfer_buffer);
-
-        var write_buffer: [32 * 1024]u8 = undefined;
-        var scratch_writer = scratch.writer(io, &write_buffer);
-
-        var received: u64 = 0;
-        report(progress, .download, 0, total);
-        while (true) {
-            const n = reader.stream(&scratch_writer.interface, .limited(256 * 1024)) catch |err| switch (err) {
-                error.EndOfStream => break,
-                else => return error.DownloadFailed,
-            };
-            received += n;
-            report(progress, .download, received, total);
-        }
-        try scratch_writer.interface.flush();
-    }
     // The scratch file is consumed by extraction below, then discarded. Closing
     // the read handle (registered after this) runs first, so the delete is safe
     // on Windows too.
@@ -150,7 +107,114 @@ pub fn downloadAndExtract(
     switch (format) {
         .tar_gz => try extractArchive(io, &scratch_reader.interface, format, dest_root, strip, progress),
         .zip => try extractZip(&scratch_reader, dest, progress),
+        .tar_bz2 => try extractTarBz2(allocator, io, dest, &scratch_reader, scratch_name, strip, progress),
     }
+}
+
+/// Extract a `.tar.bz2` (read from the seekable `scratch_reader`) into `dest`.
+///
+/// bzip2 has no stdlib streaming `Reader`, so the archive is first decompressed to
+/// a sibling `.tar` file on disk (our decoder is block-bounded, so memory stays
+/// flat — a few MB regardless of archive size), then untarred from that seekable
+/// file. This trades a temporary on-disk `.tar` for bounded RAM, per the project's
+/// memory rule. `scratch_name` is the on-disk `.tar.bz2`; the temp `.tar` is
+/// derived from it and removed afterward.
+fn extractTarBz2(
+    gpa: std.mem.Allocator,
+    io: std.Io,
+    dest: std.Io.Dir,
+    scratch_reader: *std.Io.File.Reader,
+    scratch_name: []const u8,
+    strip: u32,
+    progress: ?Progress,
+) !void {
+    // Signal extraction has begun (covers the decompress pass; the untar below
+    // then emits per-chunk progress through the TallyReader).
+    report(progress, .extract, 0, 0);
+    const tar_name = try std.fmt.allocPrint(gpa, "{s}.tar", .{scratch_name});
+    defer gpa.free(tar_name);
+
+    {
+        var tar_file = try dest.createFile(io, tar_name, .{});
+        defer tar_file.close(io);
+        var wbuf: [64 * 1024]u8 = undefined;
+        var tw = tar_file.writer(io, &wbuf);
+        try bzip2.decompress(gpa, &scratch_reader.interface, &tw.interface);
+        try tw.interface.flush();
+    }
+    defer dest.deleteFile(io, tar_name) catch {};
+
+    var tar_file = try dest.openFile(io, tar_name, .{});
+    defer tar_file.close(io);
+    var rbuf: [64 * 1024]u8 = undefined;
+    var tr = tar_file.reader(io, &rbuf);
+    try untar(io, dest, &tr.interface, strip, progress);
+}
+
+/// Stream `url` to `<dest_dir>/<dest_name>` (creating `dest_dir` if missing),
+/// reporting download progress, **without** extracting anything. Caller owns the
+/// resulting file (it is not deleted here).
+///
+/// `downloadAndExtract` uses this for its download phase; coins whose bundle the
+/// streaming extractor can't unpack use it directly — e.g. Zano, whose Linux
+/// build is a self-extracting AppImage that must land on disk as a file and then
+/// be run with `--appimage-extract`. Memory stays flat: the body is streamed to
+/// disk in bounded chunks, never held in RAM.
+pub fn downloadFile(
+    allocator: std.mem.Allocator,
+    url: []const u8,
+    dest_dir: []const u8,
+    dest_name: []const u8,
+    progress: ?Progress,
+) !void {
+    var threaded: std.Io.Threaded = .init(allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    var client: std.http.Client = .{ .allocator = allocator, .io = io };
+    defer client.deinit();
+
+    const uri = try std.Uri.parse(url);
+    var req = try client.request(.GET, uri, .{
+        // Ask the transport for the raw bytes (no re-encoding) so a compressed
+        // archive arrives intact and the content-length we need for the progress
+        // bar is present.
+        .headers = .{ .accept_encoding = .{ .override = "identity" } },
+    });
+    defer req.deinit();
+    try req.sendBodiless();
+
+    var redirect_buffer: [8 * 1024]u8 = undefined;
+    var response = try req.receiveHead(&redirect_buffer);
+    if (response.head.status != .ok) return error.DownloadFailed;
+
+    const total = response.head.content_length orelse 0;
+
+    // Buffering on disk rather than in memory is the whole point: a coin bundle is
+    // tens of MB, which we don't want resident on a low-spec box.
+    var dest = try std.Io.Dir.cwd().createDirPathOpen(io, dest_dir, .{});
+    defer dest.close(io);
+
+    var out = try dest.createFile(io, dest_name, .{});
+    defer out.close(io);
+
+    var transfer_buffer: [32 * 1024]u8 = undefined;
+    const reader = response.reader(&transfer_buffer);
+
+    var write_buffer: [32 * 1024]u8 = undefined;
+    var out_writer = out.writer(io, &write_buffer);
+
+    var received: u64 = 0;
+    report(progress, .download, 0, total);
+    while (true) {
+        const n = reader.stream(&out_writer.interface, .limited(256 * 1024)) catch |err| switch (err) {
+            error.EndOfStream => break,
+            else => return error.DownloadFailed,
+        };
+        received += n;
+        report(progress, .download, received, total);
+    }
+    try out_writer.interface.flush();
 }
 
 /// Extract a zip archive (read from the seekable `archive`) into the already-open
@@ -208,24 +272,39 @@ pub fn extractArchive(
 
             // Signal that extraction has begun (a frontend pegs the download bar
             // full and starts its spinner here), then stream gunzip → tally →
-            // untar. The tally fires a report per chunk the extractor pulls.
+            // untar.
             report(progress, .extract, 0, 0);
-            // The tally needs a real buffer: archives produced with PAX/GNU
-            // extended headers (long paths, large file sizes — the JRE bundles
-            // use them) make `std.tar` do *buffered* source reads (`takeByte`),
-            // which a zero-length-buffer reader can't satisfy.
-            var tally_buffer: [64 * 1024]u8 = undefined;
-            var tally: TallyReader = .init(&dz.reader, &tally_buffer, progress);
-            std.tar.extract(io, dest, &tally.interface, .{
-                .strip_components = strip,
-                .mode_mode = .executable_bit_only,
-            }) catch return error.ExtractFailed;
+            try untar(io, dest, &dz.reader, strip, progress);
         },
-        // This streaming path is tar.gz only. Zip can't stream — its central
-        // directory sits at EOF — so the download path routes zip to `extractZip`
-        // (seekable) instead and never reaches here.
+        // These streaming-from-a-Reader paths are tar.gz only. Zip can't stream
+        // (its central directory sits at EOF) and bzip2 has no stdlib streaming
+        // decoder, so the download path routes them to `extractZip` /
+        // `extractTarBz2` (both seekable, from the on-disk scratch file) and
+        // neither reaches here.
         .zip => return error.ZipNotStreamable,
+        .tar_bz2 => return error.Bzip2NotStreamable,
     }
+}
+
+/// Untar from `src` into the already-open `dest` directory, dropping `strip`
+/// leading path components. A `TallyReader` is spliced in so the otherwise-opaque
+/// `std.tar.extract` emits periodic `.extract` progress, and so tar has a real
+/// buffer for the *buffered* source reads (`takeByte`) that PAX/GNU extended
+/// headers (long paths, large file sizes) trigger — a zero-length buffer fails
+/// those. Shared by the tar.gz (post-gunzip) and tar.bz2 (post-bunzip2) paths.
+fn untar(
+    io: std.Io,
+    dest: std.Io.Dir,
+    src: *std.Io.Reader,
+    strip: u32,
+    progress: ?Progress,
+) !void {
+    var tally_buffer: [64 * 1024]u8 = undefined;
+    var tally: TallyReader = .init(src, &tally_buffer, progress);
+    std.tar.extract(io, dest, &tally.interface, .{
+        .strip_components = strip,
+        .mode_mode = .executable_bit_only,
+    }) catch return error.ExtractFailed;
 }
 
 /// A pass-through `std.Io.Reader` that reports throughput as bytes flow through
@@ -511,4 +590,51 @@ test "extractZip unzips a real .zip preserving the nested bin/ layout" {
 
     try std.testing.expect(fileExists(allocator, dest, "nexa-9.9.9/bin/nexad"));
     try std.testing.expect(fileExists(allocator, dest, "nexa-9.9.9/bin/nexa-cli"));
+}
+
+test "extractTarBz2 bunzips + untars a real .tar.bz2" {
+    // End-to-end over the install plumbing: build a tarball with a versioned
+    // wrapper (mirroring the Nerva bundles), bzip2 it via system `tar`, then run
+    // it through our bz2 path. Skips if `tar`/`bzip2` aren't installed.
+    const allocator = std.testing.allocator;
+
+    var threaded: std.Io.Threaded = .init(allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    const root = "test-bz2-out";
+    std.Io.Dir.cwd().deleteTree(io, root) catch {};
+    defer std.Io.Dir.cwd().deleteTree(io, root) catch {};
+
+    // Source tree: wrapper/{nervad,nerva-wallet-cli}.
+    var made = try std.Io.Dir.cwd().createDirPathOpen(io, root ++ "/src/wrapper", .{});
+    made.close(io);
+    var sdir = try std.Io.Dir.cwd().openDir(io, root ++ "/src", .{});
+    defer sdir.close(io);
+    try sdir.writeFile(io, .{ .sub_path = "wrapper/nervad", .data = "DAEMON" });
+    try sdir.writeFile(io, .{ .sub_path = "wrapper/nerva-wallet-cli", .data = "CLI" });
+
+    var dest = try std.Io.Dir.cwd().createDirPathOpen(io, root ++ "/dest", .{});
+    defer dest.close(io);
+
+    // tar + bzip2 it into the dest dir under a scratch name.
+    const scratch_name = "bundle.tar.bz2";
+    const child = std.process.run(allocator, io, .{
+        .argv = &.{ "tar", "cjf", root ++ "/dest/" ++ scratch_name, "-C", root ++ "/src", "wrapper" },
+    }) catch return error.SkipZigTest;
+    defer allocator.free(child.stdout);
+    defer allocator.free(child.stderr);
+    switch (child.term) {
+        .exited => |c| if (c != 0) return error.SkipZigTest,
+        else => return error.SkipZigTest,
+    }
+
+    var scratch = try dest.openFile(io, scratch_name, .{});
+    defer scratch.close(io);
+    var rbuf: [32 * 1024]u8 = undefined;
+    var sr = scratch.reader(io, &rbuf);
+    try extractTarBz2(allocator, io, dest, &sr, scratch_name, 0, null);
+
+    try std.testing.expect(fileExists(allocator, root ++ "/dest", "wrapper/nervad"));
+    try std.testing.expect(fileExists(allocator, root ++ "/dest", "wrapper/nerva-wallet-cli"));
 }

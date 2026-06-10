@@ -126,9 +126,16 @@ ZIG_GLOBAL_CACHE_DIR=zig-pkg zig build run     # launch the TUI
   run a streaming gunzip → untar pipeline; Windows bundles are `.zip`, which
   can't stream (its directory sits at EOF), so it's extracted via `std.zip` from
   the seekable scratch file — still flat memory (a deflate window + read buffer).
-  Coin archives nest binaries in `bin/` identically on every platform, so the
-  daemon/cli/tx binaries are lifted to the install root and the rest of the
-  extracted tree is discarded. Each coin declares its own promote/cleanup lists.
+  `.tar.bz2` is also supported (`Format.tar_bz2`) for coins like Nerva: Zig's
+  stdlib has no bzip2, so an in-tree pure-Zig decoder (`src/bzip2.zig`, block-
+  bounded memory) bunzips the scratch file to a sibling `.tar` on disk, which is
+  then untarred — trading temp disk for bounded RAM. Coin archives usually nest
+  binaries in `bin/` (so the daemon/cli/tx are lifted to the install root and the
+  rest of the extracted tree discarded), but the promote `bin_subdir` is
+  per-coin — Nerva's binaries sit directly under the versioned wrapper, so it
+  passes `""`. Each coin declares its own promote/cleanup lists. A coin whose
+  bundle isn't a plain `.tar.gz`/`.zip`/`.tar.bz2` (e.g. Zano's AppImage) uses
+  `install.downloadFile` (download-only) and unpacks it itself.
 - Cross-platform downloads: each coin selects its download URL + archive format
   at **comptime** from `builtin.os.tag`/`builtin.cpu.arch` (a nullable
   `install.Download`; null = no upstream binary for that target, surfaced as
@@ -159,8 +166,9 @@ ZIG_GLOBAL_CACHE_DIR=zig-pkg zig build run     # launch the TUI
 
 ## Port status
 
-- **Ported:** nexa, divi, ergo.
-- **Remaining (24):** badcoin, bitcoinplus, bitcoinz, denarius, devault,
-  digibyte, dogecash, epic, feathercoin, groestlcoin, litecoin, navcoin,
-  peercoin, phore, pivx, primecoin, rapids, reddcoin, scala, spiderbyte, syscoin,
-  trezarcoin, vertcoin, zano.
+- **Ported:** nexa, divi, ergo, digibyte, zano, nerva, reddcoin. (Nerva is a
+  fresh backend, not a Go port — it isn't in the list below.)
+- **Remaining (21):** badcoin, bitcoinplus, bitcoinz, denarius, devault,
+  dogecash, epic, feathercoin, groestlcoin, litecoin, navcoin,
+  peercoin, phore, pivx, primecoin, rapids, scala, spiderbyte, syscoin,
+  trezarcoin, vertcoin.

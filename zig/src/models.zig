@@ -30,6 +30,14 @@ pub const NexaBlockchainInfo = struct {
     initialblockdownload: bool = false,
     size_on_disk: i64 = 0,
     pruned: bool = false,
+    /// Tip block's own timestamp (unix seconds) — exact, preferred for the
+    /// "behind by …" estimate. Only newer Bitcoin Core bases report it in
+    /// `getblockchaininfo`; 0 if omitted, in which case `mediantime` is used.
+    time: i64 = 0,
+    /// Median timestamp (unix seconds) of the last 11 blocks. Always present on
+    /// bitcoin-derived daemons, so it's the fallback when `time` is absent. Lags
+    /// the true tip by ~5 blocks — negligible against a day-and-up readout.
+    mediantime: i64 = 0,
 };
 
 /// Raw `getinfo` result for Nexa (subset).
@@ -54,6 +62,103 @@ pub const DiviGetInfo = struct {
     @"staking status": []const u8 = "",
 };
 
+/// Raw `getblockchaininfo` result for DigiByte (subset BoxWallet uses).
+/// DigiByte reports `verificationprogress`, so sync is derived from it the same
+/// way as Nexa. Difficulty is nested per-algo under `difficulties` and unused
+/// here. Defaults keep parsing resilient to fields the daemon omits.
+pub const DgbBlockchainInfo = struct {
+    chain: []const u8 = "",
+    blocks: i64 = 0,
+    headers: i64 = 0,
+    bestblockhash: []const u8 = "",
+    verificationprogress: f64 = 0,
+    /// Tip block's own timestamp (unix seconds) — exact, preferred over
+    /// `mediantime`. 0 if omitted.
+    time: i64 = 0,
+    /// Median timestamp (unix seconds) of the last 11 blocks — fallback for the
+    /// "behind by …" estimate when `time` is absent. 0 if omitted.
+    mediantime: i64 = 0,
+};
+
+/// Raw `getnetworkinfo` result for DigiByte (subset). DigiByte dropped `getinfo`
+/// in core 6.16.0, so the live peer count comes from here instead. Defaults keep
+/// parsing resilient to omitted fields.
+pub const DgbNetworkInfo = struct {
+    version: i64 = 0,
+    connections: i64 = 0,
+};
+
+/// Raw `getblockchaininfo` result for ReddCoin (subset). ReddCoin 4.x is Bitcoin
+/// 22-based and reports `verificationprogress`, so sync is derived from it the
+/// same way as Nexa. Defaults keep parsing resilient to omitted fields.
+pub const RddBlockchainInfo = struct {
+    chain: []const u8 = "",
+    blocks: i64 = 0,
+    headers: i64 = 0,
+    bestblockhash: []const u8 = "",
+    verificationprogress: f64 = 0,
+    /// Tip block's own timestamp (unix seconds) — exact, preferred over
+    /// `mediantime`. 0 if omitted (ReddCoin's BTC-22 base may not report it).
+    time: i64 = 0,
+    /// Median timestamp (unix seconds) of the last 11 blocks — fallback for the
+    /// "behind by …" estimate when `time` is absent. 0 if omitted.
+    mediantime: i64 = 0,
+};
+
+/// Raw `getnetworkinfo` result for ReddCoin (subset). ReddCoin 4.x dropped
+/// `getinfo` (Bitcoin 22 base), so the live peer count comes from here. Defaults
+/// keep parsing resilient to omitted fields.
+pub const RddNetworkInfo = struct {
+    version: i64 = 0,
+    connections: i64 = 0,
+};
+
+/// A bitcoin-derived daemon's warm-up phase, read from the "-28 in warm-up" RPC
+/// reply it returns before its RPC is fully live. These daemons report only the
+/// qualitative phase (no percentage), so a frontend can show *what* it's doing
+/// while it comes up but not how far along it is. `none` means no warm-up phase
+/// was detected (the daemon is responsive, down, or not a bitcoin-style coin).
+pub const LoadingPhase = enum {
+    none,
+    loading,
+    rescanning,
+    rewinding,
+    verifying,
+    calculating,
+};
+
+/// Normalized wallet security state — the coin-agnostic view a frontend renders
+/// and the wallet menu keys its options off. Per-coin `getwalletinfo` shapes
+/// (Nexa's numeric `unlocked_until`, Divi's `encryption_status` string) map onto
+/// this. Mirrors Go's `models.WEType`.
+pub const WalletSecurity = enum {
+    /// State not yet known (no successful poll, or the coin exposes no wallet).
+    unknown,
+    /// Wallet has no passphrase set — it can be encrypted.
+    unencrypted,
+    /// Encrypted and locked — needs a passphrase to unlock.
+    locked,
+    /// Encrypted and unlocked for spending.
+    unlocked,
+    /// Encrypted and unlocked for staking only.
+    unlocked_for_staking,
+};
+
+/// Raw `getwalletinfo` result for Nexa (and other bitcoin-core-style daemons):
+/// security state is read from `unlocked_until`. The field is **absent** on an
+/// unencrypted wallet, so it's optional here — `null` distinguishes "no field"
+/// (unencrypted) from a present `0` (locked). `>0` is an unlock timestamp.
+pub const NexaWalletInfo = struct {
+    unlocked_until: ?i64 = null,
+};
+
+/// Raw `getwalletinfo` result for Divi (PIVX-derived): security state is a
+/// human-readable `encryption_status` string ("unencrypted" / "locked" /
+/// "unlocked" / "unlocked-for-staking"). Defaults keep parsing resilient.
+pub const DiviWalletInfo = struct {
+    encryption_status: []const u8 = "",
+};
+
 /// Coin-agnostic snapshot from a daemon's `getinfo` — the live "is it healthy"
 /// numbers a frontend shows alongside chain sync (peer count, block height,
 /// whether the wallet is staking). Scalar-only, so it owns no memory and needs
@@ -76,6 +181,12 @@ pub const DiviBlockchainInfo = struct {
     difficulty: f64 = 0,
     verificationprogress: f64 = 0,
     chainwork: []const u8 = "",
+    /// Tip block's own timestamp (unix seconds) — exact, preferred over
+    /// `mediantime`. 0 if omitted (Divi's PIVX base may not report it).
+    time: i64 = 0,
+    /// Median timestamp (unix seconds) of the last 11 blocks — fallback for the
+    /// "behind by …" estimate when `time` is absent. 0 if omitted.
+    mediantime: i64 = 0,
 };
 
 /// Subset of a `getpeerinfo` array entry: a peer's best header height. The max
@@ -102,6 +213,10 @@ pub const BlockchainState = struct {
     /// peer reported one. The Headers sync bar fills toward this; `blocks`/
     /// `headers` only describe the local chain.
     network_height: i64 = 0,
+    /// Timestamp (unix seconds) of the tip block, or 0 when the daemon doesn't
+    /// report one. Frontends derive "how far behind in time" from `now - tip_time`
+    /// while syncing — a wall-clock measure that needs no per-coin block interval.
+    tip_time: i64 = 0,
 
     pub fn deinit(self: BlockchainState, allocator: std.mem.Allocator) void {
         allocator.free(self.chain);

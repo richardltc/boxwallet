@@ -9,7 +9,7 @@ const Coin = @import("../coin.zig").Coin;
 /// Nexa backend. Constants lifted from
 /// `cmd/cli/cmd/coins/nexa/nexa.go`.
 pub const Nexa = struct {
-    pub const coin_name = "NEXA";
+    pub const coin_name = "Nexa";
     pub const coin_name_abbrev = "NEXA";
     /// Nexa brand colour (`#RRGGBB`), for tinting the coin in the frontend.
     pub const coin_color = "#FEE043";
@@ -95,6 +95,10 @@ pub const Nexa = struct {
             // Network tip from peers, so the frontend's Headers bar can fill
             // toward it. A getpeerinfo hiccup just leaves it 0 (unknown).
             .network_height = rpc.networkHeight(allocator, auth) catch 0,
+            // Tip block timestamp, so the frontend can show how far behind in
+            // wall-clock time the chain is while validating. Prefer the exact
+            // tip `time`; fall back to `mediantime` when the daemon omits it.
+            .tip_time = if (r.time > 0) r.time else r.mediantime,
         };
     }
 
@@ -172,6 +176,63 @@ pub const Nexa = struct {
         allocator.free(reply);
     }
 
+    /// Read the wallet's security state from `getwalletinfo`. Nexa is bitcoin-core
+    /// style: `unlocked_until` is **absent** on an unencrypted wallet, `0` when
+    /// locked, and a positive unlock timestamp otherwise. Mirrors Go's
+    /// `WalletSecurityState`.
+    pub fn walletSecurityState(
+        allocator: std.mem.Allocator,
+        auth: models.CoinAuth,
+    ) !models.WalletSecurity {
+        var parsed = try rpc.callParsed(models.NexaWalletInfo, allocator, auth, "getwalletinfo");
+        defer parsed.deinit();
+
+        const r = parsed.value.result orelse return error.EmptyRpcResult;
+        return securityFromUnlockedUntil(r.unlocked_until);
+    }
+
+    /// Map a bitcoin-core `unlocked_until` (absent/0/positive) to the normalized
+    /// `WalletSecurity`. Shared by the parse path and its unit test.
+    fn securityFromUnlockedUntil(unlocked_until: ?i64) models.WalletSecurity {
+        const u = unlocked_until orelse return .unencrypted;
+        if (u == 0) return .locked;
+        return .unlocked;
+    }
+
+    /// Encrypt the wallet with `passphrase`. nexad stops itself afterwards (the
+    /// caller restarts it). The passphrase is JSON-escaped before splicing.
+    pub fn walletEncrypt(allocator: std.mem.Allocator, auth: models.CoinAuth, passphrase: []const u8) !void {
+        const pw = try rpc.jsonQuote(allocator, passphrase);
+        defer allocator.free(pw);
+        const params = try std.fmt.allocPrint(allocator, "[{s}]", .{pw});
+        defer allocator.free(params);
+        return rpc.callExpectOk(allocator, auth, "encryptwallet", params);
+    }
+
+    /// Unlock the wallet via `walletpassphrase`. A plain unlock uses an indefinite
+    /// timeout (0); `staking` requests an unlock-for-staking with the long timeout
+    /// + `true` flag, mirroring the Go `WalletUnlockFS`.
+    pub fn walletUnlock(allocator: std.mem.Allocator, auth: models.CoinAuth, passphrase: []const u8, staking: bool) !void {
+        const pw = try rpc.jsonQuote(allocator, passphrase);
+        defer allocator.free(pw);
+        const params = if (staking)
+            try std.fmt.allocPrint(allocator, "[{s},9999999,true]", .{pw})
+        else
+            try std.fmt.allocPrint(allocator, "[{s},0]", .{pw});
+        defer allocator.free(params);
+        return rpc.callExpectOk(allocator, auth, "walletpassphrase", params);
+    }
+
+    /// Re-lock the wallet via `walletlock`.
+    pub fn walletLock(allocator: std.mem.Allocator, auth: models.CoinAuth) !void {
+        return rpc.callExpectOk(allocator, auth, "walletlock", "[]");
+    }
+
+    /// Nexa retains `getinfo`, so probe it for the daemon's warm-up phase.
+    pub fn warmupProbeMethod() []const u8 {
+        return "getinfo";
+    }
+
     // --- vtable plumbing -------------------------------------------------
 
     const vtable: Coin.VTable = .{
@@ -193,6 +254,11 @@ pub const Nexa = struct {
         .launch_mode = vtLaunchMode,
         .daemon_argv = vtDaemonArgv,
         .request_stop = vtRequestStop,
+        .wallet_security_state = vtWalletSecurityState,
+        .wallet_encrypt = vtWalletEncrypt,
+        .wallet_unlock = vtWalletUnlock,
+        .wallet_lock = vtWalletLock,
+        .warmup_probe_method = vtWarmupProbeMethod,
     };
 
     fn vtCoinName(_: *anyopaque) []const u8 {
@@ -280,6 +346,40 @@ pub const Nexa = struct {
     ) anyerror!void {
         return requestStop(allocator, auth);
     }
+    fn vtWalletSecurityState(
+        _: *anyopaque,
+        allocator: std.mem.Allocator,
+        auth: models.CoinAuth,
+    ) anyerror!models.WalletSecurity {
+        return walletSecurityState(allocator, auth);
+    }
+    fn vtWalletEncrypt(
+        _: *anyopaque,
+        allocator: std.mem.Allocator,
+        auth: models.CoinAuth,
+        passphrase: []const u8,
+    ) anyerror!void {
+        return walletEncrypt(allocator, auth, passphrase);
+    }
+    fn vtWalletUnlock(
+        _: *anyopaque,
+        allocator: std.mem.Allocator,
+        auth: models.CoinAuth,
+        passphrase: []const u8,
+        staking: bool,
+    ) anyerror!void {
+        return walletUnlock(allocator, auth, passphrase, staking);
+    }
+    fn vtWalletLock(
+        _: *anyopaque,
+        allocator: std.mem.Allocator,
+        auth: models.CoinAuth,
+    ) anyerror!void {
+        return walletLock(allocator, auth);
+    }
+    fn vtWarmupProbeMethod(_: *anyopaque) []const u8 {
+        return warmupProbeMethod();
+    }
 };
 
 test "parses getblockchaininfo into normalized BlockchainState" {
@@ -290,7 +390,7 @@ test "parses getblockchaininfo into normalized BlockchainState" {
         \\{"result":{"chain":"nexa","blocks":1234567,"headers":1234567,
         \\"bestblockhash":"deadbeef","difficulty":12345.678,
         \\"verificationprogress":0.999995,"initialblockdownload":false,
-        \\"size_on_disk":987654321,"pruned":false,
+        \\"size_on_disk":987654321,"pruned":false,"mediantime":1700000000,
         \\"softforks":[],"bip9_softforks":{},"bip135_forks":{}},
         \\"error":null,"id":"boxwallet"}
     ;
@@ -310,12 +410,14 @@ test "parses getblockchaininfo into normalized BlockchainState" {
         .headers = r.headers,
         .verification_progress = r.verificationprogress,
         .synced = r.verificationprogress > 0.99999,
+        .tip_time = r.mediantime,
     };
     defer state.deinit(allocator);
 
     try std.testing.expectEqualStrings("nexa", state.chain);
     try std.testing.expectEqual(@as(i64, 1234567), state.blocks);
     try std.testing.expect(state.synced);
+    try std.testing.expectEqual(@as(i64, 1700000000), state.tip_time);
 }
 
 test "parses getinfo with a numeric version field" {
@@ -364,9 +466,45 @@ test "platform selection resolves a download for the build target" {
 test "coin vtable dispatches to Nexa metadata" {
     var nexa: Nexa = .{};
     const c = nexa.coin();
-    try std.testing.expectEqualStrings("NEXA", c.coinName());
+    try std.testing.expectEqualStrings("Nexa", c.coinName());
     try std.testing.expectEqualStrings("#FEE043", c.coinColor());
     try std.testing.expect(!c.isProofOfStake());
     try std.testing.expectEqualStrings("nexa.conf", c.confFile());
     try std.testing.expectEqualStrings("7227", c.rpcDefaultPort());
+    // Nexa's daemon auto-creates its wallet, so no explicit ensure step.
+    try std.testing.expect(!c.needsWallet());
+    // But its wallet is manageable over RPC — the `w` menu is available.
+    try std.testing.expect(c.supportsWallet());
+}
+
+test "maps getwalletinfo unlocked_until to the wallet security state" {
+    // Bitcoin-core style: the field is absent on an unencrypted wallet, 0 when
+    // locked, and a positive unlock timestamp once unlocked.
+    try std.testing.expectEqual(models.WalletSecurity.unencrypted, Nexa.securityFromUnlockedUntil(null));
+    try std.testing.expectEqual(models.WalletSecurity.locked, Nexa.securityFromUnlockedUntil(0));
+    try std.testing.expectEqual(models.WalletSecurity.unlocked, Nexa.securityFromUnlockedUntil(1893456000));
+
+    // The absent field really does parse to null (so it reads as unencrypted),
+    // while a present 0 stays 0 (locked) — the optional is what distinguishes them.
+    const allocator = std.testing.allocator;
+    {
+        var parsed = try std.json.parseFromSlice(
+            models.JsonRpcResponse(models.NexaWalletInfo),
+            allocator,
+            "{\"result\":{\"walletversion\":130000,\"balance\":0.0},\"error\":null,\"id\":\"boxwallet\"}",
+            .{ .ignore_unknown_fields = true },
+        );
+        defer parsed.deinit();
+        try std.testing.expectEqual(models.WalletSecurity.unencrypted, Nexa.securityFromUnlockedUntil(parsed.value.result.?.unlocked_until));
+    }
+    {
+        var parsed = try std.json.parseFromSlice(
+            models.JsonRpcResponse(models.NexaWalletInfo),
+            allocator,
+            "{\"result\":{\"unlocked_until\":0},\"error\":null,\"id\":\"boxwallet\"}",
+            .{ .ignore_unknown_fields = true },
+        );
+        defer parsed.deinit();
+        try std.testing.expectEqual(models.WalletSecurity.locked, Nexa.securityFromUnlockedUntil(parsed.value.result.?.unlocked_until));
+    }
 }
