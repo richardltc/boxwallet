@@ -149,11 +149,19 @@ pub fn callParsed(
     );
 }
 
-/// Estimate the network's best block height as the maximum `synced_headers`
-/// reported across connected peers (via `getpeerinfo`). This is the tip a
-/// syncing node is catching up to — `getblockchaininfo` reports only the local
-/// `headers`/`blocks`, not the target. Returns 0 when there are no peers (or
-/// none report a height), so callers can fall back to local heights.
+/// Estimate the network's best block height across connected peers (via
+/// `getpeerinfo`). This is the tip a syncing node is catching up to —
+/// `getblockchaininfo` reports only the local `headers`/`blocks`, not the
+/// target. Returns 0 when there are no peers (or none report a height), so
+/// callers can fall back to local heights.
+///
+/// Per peer we take the max of `startingheight` (its tip when it connected) and
+/// `synced_headers` (our header progress against it), then the max across peers.
+/// `startingheight` is what keeps the estimate honest on a *fresh* sync:
+/// `synced_headers` tracks our own download, so early on it equals our local
+/// header count and would peg the Headers bar at 100%. `synced_headers` is still
+/// folded in because it eventually climbs past the connect-time tip as the chain
+/// grows during a long sync.
 ///
 /// The peer array is parsed into a minimal `[]PeerInfo` (every other field
 /// dropped via `ignore_unknown_fields`) and freed on return — only the single
@@ -168,7 +176,7 @@ pub fn networkHeight(
     const peers = parsed.value.result orelse return 0;
     var max: i64 = 0;
     for (peers) |p| {
-        if (p.synced_headers > max) max = p.synced_headers;
+        max = @max(max, @max(p.startingheight, p.synced_headers));
     }
     return max;
 }
@@ -255,10 +263,11 @@ test "callParsed's alloc_always keeps strings valid after the source is freed" {
     try std.testing.expectEqual(@as(i64, 29), parsed.value.result.?.n);
 }
 
-test "network height is the max synced_headers across peers" {
+test "network height is the max of startingheight/synced_headers across peers" {
     // Canned getpeerinfo (subset of the real per-peer fields) — proves the parse
     // + max that `networkHeight` performs, without a running daemon. Peers report
-    // differing heights; the highest is the network tip estimate.
+    // differing heights; the highest is the network tip estimate. Here the chain
+    // is fully synced so `synced_headers` has overtaken each `startingheight`.
     const allocator = std.testing.allocator;
     const raw =
         \\{"result":[
@@ -279,10 +288,39 @@ test "network height is the max synced_headers across peers" {
     const peers = parsed.value.result.?;
     var max: i64 = 0;
     for (peers) |p| {
-        if (p.synced_headers > max) max = p.synced_headers;
+        max = @max(max, @max(p.startingheight, p.synced_headers));
     }
     try std.testing.expectEqual(@as(usize, 3), peers.len);
     try std.testing.expectEqual(@as(i64, 4071173), max);
+}
+
+test "fresh sync: network tip comes from startingheight, not lagging synced_headers" {
+    // A node that just started from an empty datadir: peers advertise a tip near
+    // 18.65M via `startingheight`, but `synced_headers` still tracks our own near-
+    // zero header download. Using `synced_headers` alone would peg the Headers bar
+    // at ~100% from the first poll; the peer's `startingheight` is the real target.
+    const allocator = std.testing.allocator;
+    const raw =
+        \\{"result":[
+        \\{"id":1,"addr":"1.2.3.4:12024","startingheight":18650123,"synced_headers":1042,"synced_blocks":1040},
+        \\{"id":2,"addr":"5.6.7.8:12024","startingheight":18650118,"synced_headers":1042,"synced_blocks":1040}
+        \\],"error":null,"id":"boxwallet"}
+    ;
+
+    var parsed = try std.json.parseFromSlice(
+        models.JsonRpcResponse([]models.PeerInfo),
+        allocator,
+        raw,
+        .{ .ignore_unknown_fields = true, .allocate = .alloc_always },
+    );
+    defer parsed.deinit();
+
+    const peers = parsed.value.result.?;
+    var max: i64 = 0;
+    for (peers) |p| {
+        max = @max(max, @max(p.startingheight, p.synced_headers));
+    }
+    try std.testing.expectEqual(@as(i64, 18650123), max);
 }
 
 test "no peers yields a zero network height" {
@@ -300,7 +338,7 @@ test "no peers yields a zero network height" {
     const peers = parsed.value.result.?;
     var max: i64 = 0;
     for (peers) |p| {
-        if (p.synced_headers > max) max = p.synced_headers;
+        max = @max(max, @max(p.startingheight, p.synced_headers));
     }
     try std.testing.expectEqual(@as(usize, 0), peers.len);
     try std.testing.expectEqual(@as(i64, 0), max);

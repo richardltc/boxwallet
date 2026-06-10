@@ -220,7 +220,15 @@ fn statusFromDaemon(a: std.mem.Allocator, act: *const Activity, brand: zz.Color)
             text = "Waiting for peers…";
             col = .yellow;
         } else if (act.sync == .syncing) {
-            text = "Syncing…";
+            // Headers stream in first, then blocks validate against them. While
+            // the Headers bar is still filling we're downloading headers;
+            // otherwise we're catching the blocks up. (A 0 header total means the
+            // tip isn't known yet — treat that as block catch-up rather than
+            // claiming a headers phase we can't measure.)
+            text = if (act.headers_total > 0 and act.headers_cur < act.headers_total)
+                "Syncing headers…"
+            else
+                "Syncing blocks…";
             col = .cyan;
         } else if (act.sync == .synced) {
             text = "Synced";
@@ -415,6 +423,10 @@ const Activity = struct {
     /// -1 means unknown (the daemon reports no tip timestamp). Drives the
     /// "behind by …" estimate on the Blocks line.
     poll_behind: std.atomic.Value(i64) = .init(-1),
+    /// Tip block's own timestamp (unix seconds), for showing the date/time of
+    /// the block being synced beside the Blocks bar. 0 when the daemon reports
+    /// no usable tip timestamp.
+    poll_tip_time: std.atomic.Value(i64) = .init(0),
 
     // --- wallet action worker (the `w` menu) -------------------------------
     // A short-lived worker runs one encrypt/unlock/lock RPC so the UI never
@@ -485,6 +497,9 @@ const Activity = struct {
     /// Seconds behind the chain tip, or -1 when unknown. How far behind in
     /// wall-clock time the chain is while syncing.
     behind_secs: i64 = -1,
+    /// Tip block's own timestamp (unix seconds), or 0 when unknown. Drives the
+    /// "date/time of the block being synced" hint beside the Blocks bar.
+    tip_time: i64 = 0,
     spinner: zz.Spinner = undefined,
     /// Animates the "daemon running" line while `daemon` is `.starting`.
     daemon_spinner: zz.Spinner = undefined,
@@ -701,6 +716,7 @@ const Activity = struct {
         self.blocks_cur = blocks;
         self.blocks_total = @max(headers, blocks);
         self.behind_secs = self.poll_behind.load(.monotonic);
+        self.tip_time = self.poll_tip_time.load(.monotonic);
         self.sync = if (self.poll_synced.load(.monotonic) != 0) .synced else .syncing;
         return true;
     }
@@ -812,11 +828,32 @@ const Activity = struct {
         self.poll_headers.store(@as(u64, @intCast(@max(state.headers, 0))), .monotonic);
         self.poll_blocks.store(@as(u64, @intCast(@max(state.blocks, 0))), .monotonic);
         self.poll_network.store(@as(u64, @intCast(@max(state.network_height, 0))), .monotonic);
-        // Seconds behind = wall-clock now − tip block timestamp. The real-time
+        // Seconds behind the tip. A coin that can't report a tip timestamp gives
+        // the figure directly (`seconds_behind` >= 0; e.g. Nerva from its block
+        // gap); otherwise it's wall-clock now − tip block timestamp. The real-time
         // clock is reachable here (in the poll worker) but not in the render path,
-        // so derive it now; -1 when the daemon reports no timestamp.
+        // so derive it now; -1 when neither is available.
+        const now_secs = std.Io.Clock.real.now(io).toSeconds();
         self.poll_behind.store(
-            if (state.tip_time > 0) std.Io.Clock.real.now(io).toSeconds() - state.tip_time else -1,
+            if (state.seconds_behind >= 0)
+                state.seconds_behind
+            else if (state.tip_time > 0)
+                now_secs - state.tip_time
+            else
+                -1,
+            .monotonic,
+        );
+        // Tip block's own timestamp, for the "date/time of the block being synced"
+        // hint. Reported directly by most daemons; for a coin that only gives a
+        // `seconds_behind` gap (no tip timestamp), reconstruct it from now − gap.
+        // 0 when neither is available.
+        self.poll_tip_time.store(
+            if (state.tip_time > 0)
+                state.tip_time
+            else if (state.seconds_behind >= 0)
+                now_secs - state.seconds_behind
+            else
+                0,
             .monotonic,
         );
         self.poll_synced.store(@intFromBool(state.synced), .monotonic);
@@ -2084,15 +2121,20 @@ pub const App = struct {
         const headers_bar = try bar(a, act.headers_cur, act.headers_total);
         const blocks_bar = try bar(a, act.blocks_cur, act.blocks_total);
 
-        // How far behind in wall-clock time the validated tip is, derived from the
-        // tip block's timestamp at poll time. Only while syncing and when the
-        // daemon reports a timestamp (bitcoin-derived coins do); folds out to ""
-        // otherwise. Dimmed so it reads as a hint next to the Blocks bar rather
+        // Sync annotation beside the Blocks bar: the tip block's own date/time
+        // (UTC — the moment the block being synced was mined), then how far behind
+        // in wall-clock time that puts us. Both come from the tip timestamp at poll
+        // time; either folds out to "" when unavailable, and the whole thing is
+        // empty unless syncing. Dimmed so it reads as a hint next to the bar rather
         // than competing with it.
-        const behind_text: []const u8 = if (act.sync == .syncing and act.behind_secs > 0) blk: {
-            const s = formatBehind(a, act.behind_secs) catch "";
-            if (s.len == 0) break :blk "";
-            const styled = (zz.Style{}).dim(true).render(a, s) catch s;
+        const behind_text: []const u8 = if (act.sync == .syncing) blk: {
+            const when = formatBlockTime(a, act.tip_time) catch "";
+            const behind = if (act.behind_secs > 0) (formatBehind(a, act.behind_secs) catch "") else "";
+            if (when.len == 0 and behind.len == 0) break :blk "";
+            const joined = if (when.len > 0 and behind.len > 0)
+                std.fmt.allocPrint(a, "{s}  {s}", .{ when, behind }) catch when
+            else if (when.len > 0) when else behind;
+            const styled = (zz.Style{}).dim(true).render(a, joined) catch joined;
             break :blk std.fmt.allocPrint(a, "  {s}", .{styled}) catch "";
         } else "";
 
@@ -2213,13 +2255,13 @@ pub const App = struct {
         switch (p) {
             .idle => {
                 // When the daemon is already present, the action updates in
-                // place rather than doing a first-time install.
+                // place rather than doing a first-time install. A status line
+                // only adds anything in the not-yet-installed case; once
+                // installed the "[ Update ]   (press i)" button already says it.
                 const button = if (act.installed) "[ Update ]" else "[ Install ]";
-                const status = if (act.installed)
-                    "installed — press i to update"
-                else
-                    "press i to install";
-                return std.fmt.allocPrint(a, "{s}   (press i)\n\nstatus: {s}", .{ button, status });
+                if (act.installed)
+                    return std.fmt.allocPrint(a, "{s}   (press i)", .{button});
+                return std.fmt.allocPrint(a, "{s}   (press i)\n\nstatus: press i to install", .{button});
             },
             .downloading, .extracting => {
                 const verb: []const u8 = if (act.updating) "updating" else "installing";
@@ -2512,6 +2554,27 @@ fn formatBehind(a: std.mem.Allocator, secs: i64) ![]const u8 {
     return std.fmt.allocPrint(a, "{s} behind", .{primary});
 }
 
+/// Human date/time of the block at unix timestamp `unix_secs`, as
+/// "YYYY-MM-DD HH:MM UTC". Returns "" when the timestamp is unknown
+/// (`<= 0`). UTC, not local time: a block timestamp is a UTC moment and the
+/// stdlib has no timezone database, so a fixed, unambiguous zone is correct
+/// and portable across Linux/Windows/macOS.
+fn formatBlockTime(a: std.mem.Allocator, unix_secs: i64) ![]const u8 {
+    if (unix_secs <= 0) return "";
+    const epoch = std.time.epoch.EpochSeconds{ .secs = @intCast(unix_secs) };
+    const day = epoch.getEpochDay();
+    const day_secs = epoch.getDaySeconds();
+    const year_day = day.calculateYearDay();
+    const month_day = year_day.calculateMonthDay();
+    return std.fmt.allocPrint(a, "{d:0>4}-{d:0>2}-{d:0>2} {d:0>2}:{d:0>2} UTC", .{
+        year_day.year,
+        month_day.month.numeric(),
+        @as(u32, month_day.day_index) + 1,
+        day_secs.getHoursIntoDay(),
+        day_secs.getMinutesIntoHour(),
+    });
+}
+
 /// A capacity bar whose fill warns as it fills — for "fuller is worse" axes
 /// (disk and memory). Green with headroom, amber past 75%, red past 90%, so a
 /// nearly-full disk or stressed machine reads at a glance.
@@ -2585,6 +2648,22 @@ test "formatBehind picks the top two contiguous units, pluralizing correctly" {
     // day with zero hours drops the trailing minutes rather than skipping hours.
     try std.testing.expectEqualStrings("2 years behind", try formatBehind(a, 2 * 365 * day));
     try std.testing.expectEqualStrings("1 day behind", try formatBehind(a, day + 5 * minute));
+}
+
+test "formatBlockTime renders the tip block timestamp as UTC date/time" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    // Unknown timestamp folds out to empty.
+    try std.testing.expectEqualStrings("", try formatBlockTime(a, 0));
+    try std.testing.expectEqualStrings("", try formatBlockTime(a, -1));
+
+    // A known later instant.
+    try std.testing.expectEqualStrings("2026-06-02 14:32 UTC", try formatBlockTime(a, 1_780_410_720));
+    // Zero-padding on every field (Bitcoin's genesis block, single-digit
+    // month/day).
+    try std.testing.expectEqualStrings("2009-01-03 18:15 UTC", try formatBlockTime(a, 1_231_006_505));
 }
 
 test "usageColor steps green → amber → red at the 75/90 thresholds" {
