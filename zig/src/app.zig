@@ -163,85 +163,64 @@ fn loadingPhaseText(p: models.LoadingPhase) []const u8 {
 /// off. The wording alone carries the state — no spinner icon — and refreshes
 /// each poll/tick.
 fn renderStatus(a: std.mem.Allocator, act: *const Activity, brand: zz.Color) []const u8 {
-    var text: []const u8 = undefined;
-    var col: zz.Color = undefined;
-    // An install is always an active state, so the label is brand-coloured.
-    const active = true;
-
-    // An install/update in flight outranks everything: it runs before the daemon
-    // exists (and before `installed` flips), so check it first.
-    switch (act.phaseOf()) {
-        .downloading => {
-            text = "Downloading…";
-            col = .cyan;
-        },
-        .extracting => {
-            text = "Extracting…";
-            col = .cyan;
-        },
-        else => return statusFromDaemon(a, act, brand),
-    }
-
-    const label = App.statusLabel(a, brand, "Status", active);
-    const value = (zz.Style{}).bold(true).fg(col).render(a, text) catch text;
+    const r = statusReadout(act);
+    const label = App.statusLabel(a, brand, "Status", r.active);
+    const value = (zz.Style{}).bold(true).fg(r.col).render(a, r.text) catch r.text;
     return std.fmt.allocPrint(a, "{s}: {s}", .{ label, value }) catch value;
 }
 
-/// The non-install half of `renderStatus`: the daemon/poll-driven status, used
-/// whenever no install is in flight.
-fn statusFromDaemon(a: std.mem.Allocator, act: *const Activity, brand: zz.Color) []const u8 {
-    var text: []const u8 = "Idle";
-    var col: zz.Color = .brightBlack;
-    var active = true;
+/// A coin's live status as plain data: the word(s) shown on the Status line, the
+/// colour they're painted, and whether the state counts as "active" (so the
+/// label brightens). `text` is a static, program-lifetime string — `renderStatus`
+/// styles it and the live log records it verbatim on change, so the two can't
+/// drift apart.
+const StatusReadout = struct { text: []const u8, col: zz.Color, active: bool };
 
-    if (!act.installed) {
-        text = "Not installed";
-        active = false;
-    } else switch (act.daemonState()) {
-        .starting => {
-            text = "Starting…";
-            col = .cyan;
-        },
-        .stopping => {
-            text = "Stopping…";
-            col = .cyan;
-        },
-        .stopped => if (act.awaitingStatus()) {
-            text = "Checking…";
-            col = .cyan;
-        } else {
-            text = "Idle";
-            active = false;
-        },
-        .running => if (act.loading_phase != .none) {
-            text = loadingPhaseText(act.loading_phase);
-            col = .yellow;
-        } else if (act.peers == 0) {
-            text = "Waiting for peers…";
-            col = .yellow;
-        } else if (act.sync == .syncing) {
+/// Resolve a coin's current status. Priority, highest first: installing
+/// (downloading/extracting) → not installed → starting/stopping → checking
+/// (first poll pending) → warm-up phase (Loading/Verifying/…) → waiting for peers
+/// → syncing → synced; "Idle" when the daemon is installed but off.
+fn statusReadout(act: *const Activity) StatusReadout {
+    // An install/update in flight outranks everything: it runs before the daemon
+    // exists (and before `installed` flips), so check it first.
+    switch (act.phaseOf()) {
+        .downloading => return .{ .text = "Downloading…", .col = .cyan, .active = true },
+        .extracting => return .{ .text = "Extracting…", .col = .cyan, .active = true },
+        else => {},
+    }
+
+    if (!act.installed) return .{ .text = "Not installed", .col = .brightBlack, .active = false };
+
+    return switch (act.daemonState()) {
+        .starting => .{ .text = "Starting…", .col = .cyan, .active = true },
+        .stopping => .{ .text = "Stopping…", .col = .cyan, .active = true },
+        .stopped => if (act.awaitingStatus())
+            .{ .text = "Checking…", .col = .cyan, .active = true }
+        else
+            .{ .text = "Idle", .col = .brightBlack, .active = false },
+        .running => if (act.loading_phase != .none)
+            .{ .text = loadingPhaseText(act.loading_phase), .col = .yellow, .active = true }
+        else if (act.peers == 0)
+            .{ .text = "Waiting for peers…", .col = .yellow, .active = true }
+        else if (act.sync == .syncing)
             // Headers stream in first, then blocks validate against them. While
             // the Headers bar is still filling we're downloading headers;
             // otherwise we're catching the blocks up. (A 0 header total means the
             // tip isn't known yet — treat that as block catch-up rather than
             // claiming a headers phase we can't measure.)
-            text = if (act.headers_total > 0 and act.headers_cur < act.headers_total)
-                "Syncing headers…"
-            else
-                "Syncing blocks…";
-            col = .cyan;
-        } else if (act.sync == .synced) {
-            text = "Synced";
-            col = .green;
-        } else {
-            text = "Running";
-            col = .green;
-        },
-    }
-
-    const label = App.statusLabel(a, brand, "Status", active);
-    const value = (zz.Style{}).bold(true).fg(col).render(a, text) catch text;
-    return std.fmt.allocPrint(a, "{s}: {s}", .{ label, value }) catch value;
+            .{
+                .text = if (act.headers_total > 0 and act.headers_cur < act.headers_total)
+                    "Syncing headers…"
+                else
+                    "Syncing blocks…",
+                .col = .cyan,
+                .active = true,
+            }
+        else if (act.sync == .synced)
+            .{ .text = "Synced", .col = .green, .active = true }
+        else
+            .{ .text = "Running", .col = .green, .active = true },
+    };
 }
 
 /// A wallet operation the `w` menu can run against the daemon.
@@ -400,6 +379,10 @@ const Activity = struct {
     /// current selection. Reset each time the coin is (re)selected so a single
     /// pair is logged per selection rather than on every ~2s poll.
     status_logged: bool = false,
+    /// The Status word last written to the live log for this coin, so a line is
+    /// emitted only when the status actually changes (not every tick). Empty
+    /// until the first status is logged; holds a static `StatusReadout.text`.
+    last_status: []const u8 = "",
     /// Latest polled peer count / staking flag (1/0).
     poll_peers: std.atomic.Value(u32) = .init(0),
     poll_staking: std.atomic.Value(u8) = .init(0),
@@ -1584,6 +1567,24 @@ pub const App = struct {
                     self.logf("{s}: {s} complete", .{ act.coin.coinName(), verb });
                 } else {
                     self.logf("{s}: {s} failed ({s})", .{ act.coin.coinName(), verb, act.err_name });
+                }
+            }
+
+            // Mirror the selected coin's Status line into the live log, but only
+            // when it changes — so each state the coin passes through (Starting →
+            // Syncing headers → Syncing blocks → Synced, …) lands once instead of
+            // on every ~2s tick. All the state it reads has been folded in above.
+            // Restricted to the selected coin: it's the only one polling, so it's
+            // the only one whose status moves, and it avoids dumping a line per
+            // coin on the first tick. `text` is static, so storing the slice is
+            // safe and the compare is a cheap content check.
+            if (i == self.selected) {
+                if (self.coinAt(i)) |coin| {
+                    const status = statusReadout(act).text;
+                    if (!std.mem.eql(u8, status, act.last_status)) {
+                        act.last_status = status;
+                        self.logf("{s}: {s}", .{ coin.coinName(), status });
+                    }
                 }
             }
         }
