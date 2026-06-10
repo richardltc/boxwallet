@@ -189,12 +189,22 @@ pub const DiviBlockchainInfo = struct {
     mediantime: i64 = 0,
 };
 
-/// Subset of a `getpeerinfo` array entry: a peer's best header height. The max
-/// across connected peers estimates the network tip — the height a syncing node
-/// is catching up to, which `getblockchaininfo` alone doesn't report. All other
-/// per-peer fields are ignored at parse time. Shape is common to bitcoin-derived
-/// daemons (Bitcoin Core, PIVX/Divi, Bitcoin Unlimited/Nexa).
+/// Subset of a `getpeerinfo` array entry, used to estimate the network tip —
+/// the height a syncing node is catching up to, which `getblockchaininfo` alone
+/// doesn't report. The estimate is the max across peers of both fields below;
+/// all other per-peer fields are ignored at parse time. Shape is common to
+/// bitcoin-derived daemons (Bitcoin Core, PIVX/Divi, Bitcoin Unlimited/Nexa).
 pub const PeerInfo = struct {
+    /// The peer's own best block height, advertised when it connected. A stable
+    /// estimate of the network tip from the first poll — unlike `synced_headers`
+    /// it doesn't move with our own progress, so it's what makes the Headers bar
+    /// start near 0% on a fresh sync instead of pinned at 100%.
+    startingheight: i64 = 0,
+    /// The last header height we have *in common* with this peer — i.e. our own
+    /// header-download progress against it, not the peer's tip. Equals our local
+    /// header count early on (hence useless alone as a target), but eventually
+    /// climbs past `startingheight` as the chain grows during a long sync, so the
+    /// max of the two keeps the target correct late as well as early.
     synced_headers: i64 = 0,
 };
 
@@ -217,6 +227,13 @@ pub const BlockchainState = struct {
     /// report one. Frontends derive "how far behind in time" from `now - tip_time`
     /// while syncing — a wall-clock measure that needs no per-coin block interval.
     tip_time: i64 = 0,
+    /// Seconds the local tip is behind the chain, supplied directly when a coin
+    /// can't give a `tip_time` (e.g. Monero's daemon reports no tip timestamp and
+    /// refuses `get_last_block_header` mid-sync, so Nerva derives this from the
+    /// block gap × its block target). -1 means "not supplied" — frontends then
+    /// fall back to the `now - tip_time` derivation. Takes precedence over
+    /// `tip_time` when >= 0, since it's the coin's own answer.
+    seconds_behind: i64 = -1,
 
     pub fn deinit(self: BlockchainState, allocator: std.mem.Allocator) void {
         allocator.free(self.chain);

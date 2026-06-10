@@ -165,6 +165,26 @@ pub const Nerva = struct {
         );
     }
 
+    /// Nerva's block-target interval (seconds). A CryptoNote 60-second block —
+    /// ~4.3M blocks since the 2018 launch confirm the cadence. Used only to turn
+    /// the block gap into a "behind by" estimate; the daemon never reports a tip
+    /// timestamp we could use directly.
+    const block_target_seconds: i64 = 60;
+
+    /// Estimate how many seconds the local tip is behind the chain from the block
+    /// gap. Monero's `get_info` carries no tip timestamp, and
+    /// `get_last_block_header` returns `BUSY` mid-sync — exactly when the
+    /// "behind by …" hint matters — so we approximate: each block still to fetch
+    /// (`tip − height`) is about one block-target of chain time. Returns 0 when
+    /// caught up, so the frontend shows no hint. Pure, so it's unit-testable; the
+    /// frontend uses it directly (`BlockchainState.seconds_behind`) since the coin
+    /// has no clock to synthesise a `tip_time`.
+    fn estimateSecondsBehind(tip: i64, height: i64, synced: bool) i64 {
+        const behind_blocks = @max(tip - height, 0);
+        if (synced or behind_blocks == 0) return 0;
+        return behind_blocks * block_target_seconds;
+    }
+
     /// Live `get_info`, normalized for a frontend. Monero has no
     /// `verificationprogress`; sync is the `synchronized` flag, or `height`
     /// reaching the network `target_height` (which is 0 once caught up).
@@ -178,6 +198,7 @@ pub const Nerva = struct {
         const r = parsed.value.result orelse return error.EmptyRpcResult;
         const tip = @max(r.target_height, r.height);
         const chain = if (r.testnet) "testnet" else if (r.stagenet) "stagenet" else "mainnet";
+        const synced = r.synchronized or (r.height > 0 and (r.target_height == 0 or r.height >= r.target_height));
         return .{
             .chain = try allocator.dupe(u8, chain),
             .blocks = r.height,
@@ -186,8 +207,11 @@ pub const Nerva = struct {
                 @as(f64, @floatFromInt(r.height)) / @as(f64, @floatFromInt(tip))
             else
                 0,
-            .synced = r.synchronized or (r.height > 0 and (r.target_height == 0 or r.height >= r.target_height)),
+            .synced = synced,
             .network_height = tip,
+            // Monero gives no tip timestamp, so report how far behind the tip is
+            // from the block gap — drives the shared "behind by …" sync readout.
+            .seconds_behind = estimateSecondsBehind(tip, r.height, synced),
         };
     }
 
@@ -448,6 +472,17 @@ test "parses get_info into a synced BlockchainState" {
     try std.testing.expectEqualStrings("mainnet", state.chain);
     try std.testing.expectEqual(@as(i64, 1500000), state.blocks);
     try std.testing.expect(state.synced);
+}
+
+test "estimateSecondsBehind turns the block gap into a behind-by estimate" {
+    // 100 blocks behind at 60s/block → ~6000s behind.
+    try std.testing.expectEqual(@as(i64, 6000), Nerva.estimateSecondsBehind(1000, 900, false));
+
+    // Synced → 0, so the frontend shows no "behind by" hint.
+    try std.testing.expectEqual(@as(i64, 0), Nerva.estimateSecondsBehind(1000, 1000, true));
+
+    // Caught up by height (target reached) even if the flag lags → still 0.
+    try std.testing.expectEqual(@as(i64, 0), Nerva.estimateSecondsBehind(1000, 1000, false));
 }
 
 test "a daemon still catching up reads as not synced" {
