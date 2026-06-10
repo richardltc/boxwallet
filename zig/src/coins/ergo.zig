@@ -27,7 +27,7 @@ const Coin = @import("../coin.zig").Coin;
 ///   * **Units** — balances are in nanoERG (1 ERG = 1e9 nanoERG); not surfaced by
 ///     the current status-only TUI.
 pub const Ergo = struct {
-    pub const coin_name = "ERGO";
+    pub const coin_name = "Ergo";
     pub const coin_name_abbrev = "ERG";
     /// Ergo brand colour (`#RRGGBB`), for tinting the coin in the frontend.
     pub const coin_color = "#FF5E18";
@@ -699,7 +699,7 @@ test "findFile locates the jar and the java launcher under bin/" {
 test "coin vtable dispatches to Ergo metadata" {
     var ergo: Ergo = .{};
     const c = ergo.coin();
-    try std.testing.expectEqualStrings("ERGO", c.coinName());
+    try std.testing.expectEqualStrings("Ergo", c.coinName());
     try std.testing.expectEqualStrings("ERG", c.coinNameAbbrev());
     try std.testing.expectEqualStrings("#FF5E18", c.coinColor());
     try std.testing.expect(!c.isProofOfStake());

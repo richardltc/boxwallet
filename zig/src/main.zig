@@ -23,5 +23,10 @@ test {
     _ = @import("coins/nexa.zig");
     _ = @import("coins/divi.zig");
     _ = @import("coins/ergo.zig");
+    _ = @import("coins/digibyte.zig");
+    _ = @import("coins/zano.zig");
+    _ = @import("coins/nerva.zig");
+    _ = @import("coins/reddcoin.zig");
+    _ = @import("bzip2.zig");
     _ = @import("app.zig");
 }

@@ -9,7 +9,7 @@ const Coin = @import("../coin.zig").Coin;
 /// Divi backend. Constants lifted from
 /// `cmd/cli/cmd/coins/divi/divi.go`.
 pub const Divi = struct {
-    pub const coin_name = "DIVI";
+    pub const coin_name = "Divi";
     pub const coin_name_abbrev = "DIVI";
     /// Divi brand colour (`#RRGGBB`), for tinting the coin in the frontend.
     pub const coin_color = "#ED295A";
@@ -96,6 +96,10 @@ pub const Divi = struct {
             // Network tip from peers, so the frontend's Headers bar can fill
             // toward it. A getpeerinfo hiccup just leaves it 0 (unknown).
             .network_height = rpc.networkHeight(allocator, auth) catch 0,
+            // Tip block timestamp, so the frontend can show how far behind in
+            // wall-clock time the chain is while validating. Prefer the exact
+            // tip `time`; fall back to `mediantime` when the daemon omits it.
+            .tip_time = if (r.time > 0) r.time else r.mediantime,
         };
     }
 
@@ -174,6 +178,66 @@ pub const Divi = struct {
         allocator.free(reply);
     }
 
+    /// Read the wallet's security state from `getwalletinfo`. Divi (PIVX-derived)
+    /// reports a human-readable `encryption_status` string rather than a numeric
+    /// `unlocked_until`. Mirrors Go's `WalletSecurityState`.
+    pub fn walletSecurityState(
+        allocator: std.mem.Allocator,
+        auth: models.CoinAuth,
+    ) !models.WalletSecurity {
+        var parsed = try rpc.callParsed(models.DiviWalletInfo, allocator, auth, "getwalletinfo");
+        defer parsed.deinit();
+
+        const r = parsed.value.result orelse return error.EmptyRpcResult;
+        return securityFromStatus(r.encryption_status);
+    }
+
+    /// Map Divi's `encryption_status` string to the normalized `WalletSecurity`.
+    /// Shared by the parse path and its unit test. An unrecognized value reads as
+    /// `unknown`.
+    fn securityFromStatus(status: []const u8) models.WalletSecurity {
+        if (std.mem.eql(u8, status, "unencrypted")) return .unencrypted;
+        if (std.mem.eql(u8, status, "locked")) return .locked;
+        if (std.mem.eql(u8, status, "unlocked")) return .unlocked;
+        if (std.mem.eql(u8, status, "unlocked-for-staking")) return .unlocked_for_staking;
+        return .unknown;
+    }
+
+    /// Encrypt the wallet with `passphrase`. divid stops itself afterwards (the
+    /// caller restarts it). The passphrase is JSON-escaped before splicing.
+    pub fn walletEncrypt(allocator: std.mem.Allocator, auth: models.CoinAuth, passphrase: []const u8) !void {
+        const pw = try rpc.jsonQuote(allocator, passphrase);
+        defer allocator.free(pw);
+        const params = try std.fmt.allocPrint(allocator, "[{s}]", .{pw});
+        defer allocator.free(params);
+        return rpc.callExpectOk(allocator, auth, "encryptwallet", params);
+    }
+
+    /// Unlock the wallet via `walletpassphrase`. A plain unlock uses an indefinite
+    /// timeout (0, matching Go's `WalletUnlock`); `staking` requests an
+    /// unlock-for-staking with the long timeout + `true` flag (Go's
+    /// `WalletUnlockFS`).
+    pub fn walletUnlock(allocator: std.mem.Allocator, auth: models.CoinAuth, passphrase: []const u8, staking: bool) !void {
+        const pw = try rpc.jsonQuote(allocator, passphrase);
+        defer allocator.free(pw);
+        const params = if (staking)
+            try std.fmt.allocPrint(allocator, "[{s},9999999,true]", .{pw})
+        else
+            try std.fmt.allocPrint(allocator, "[{s},0]", .{pw});
+        defer allocator.free(params);
+        return rpc.callExpectOk(allocator, auth, "walletpassphrase", params);
+    }
+
+    /// Re-lock the wallet via `walletlock`.
+    pub fn walletLock(allocator: std.mem.Allocator, auth: models.CoinAuth) !void {
+        return rpc.callExpectOk(allocator, auth, "walletlock", "[]");
+    }
+
+    /// Divi retains `getinfo`, so probe it for the daemon's warm-up phase.
+    pub fn warmupProbeMethod() []const u8 {
+        return "getinfo";
+    }
+
     // --- vtable plumbing -------------------------------------------------
 
     const vtable: Coin.VTable = .{
@@ -195,6 +259,11 @@ pub const Divi = struct {
         .launch_mode = vtLaunchMode,
         .daemon_argv = vtDaemonArgv,
         .request_stop = vtRequestStop,
+        .wallet_security_state = vtWalletSecurityState,
+        .wallet_encrypt = vtWalletEncrypt,
+        .wallet_unlock = vtWalletUnlock,
+        .wallet_lock = vtWalletLock,
+        .warmup_probe_method = vtWarmupProbeMethod,
     };
 
     fn vtCoinName(_: *anyopaque) []const u8 {
@@ -281,6 +350,40 @@ pub const Divi = struct {
         auth: models.CoinAuth,
     ) anyerror!void {
         return requestStop(allocator, auth);
+    }
+    fn vtWalletSecurityState(
+        _: *anyopaque,
+        allocator: std.mem.Allocator,
+        auth: models.CoinAuth,
+    ) anyerror!models.WalletSecurity {
+        return walletSecurityState(allocator, auth);
+    }
+    fn vtWalletEncrypt(
+        _: *anyopaque,
+        allocator: std.mem.Allocator,
+        auth: models.CoinAuth,
+        passphrase: []const u8,
+    ) anyerror!void {
+        return walletEncrypt(allocator, auth, passphrase);
+    }
+    fn vtWalletUnlock(
+        _: *anyopaque,
+        allocator: std.mem.Allocator,
+        auth: models.CoinAuth,
+        passphrase: []const u8,
+        staking: bool,
+    ) anyerror!void {
+        return walletUnlock(allocator, auth, passphrase, staking);
+    }
+    fn vtWalletLock(
+        _: *anyopaque,
+        allocator: std.mem.Allocator,
+        auth: models.CoinAuth,
+    ) anyerror!void {
+        return walletLock(allocator, auth);
+    }
+    fn vtWarmupProbeMethod(_: *anyopaque) []const u8 {
+        return warmupProbeMethod();
     }
 };
 
@@ -408,10 +511,33 @@ test "platform selection resolves a download for supported targets" {
 test "coin vtable dispatches to Divi metadata" {
     var divi: Divi = .{};
     const c = divi.coin();
-    try std.testing.expectEqualStrings("DIVI", c.coinName());
+    try std.testing.expectEqualStrings("Divi", c.coinName());
     try std.testing.expectEqualStrings("#ED295A", c.coinColor());
     try std.testing.expect(c.isProofOfStake());
     try std.testing.expectEqualStrings("divi.conf", c.confFile());
     try std.testing.expectEqualStrings("divid", c.daemonFile());
     try std.testing.expectEqualStrings("51473", c.rpcDefaultPort());
+    // Divi's wallet is manageable over RPC — the `w` menu is available.
+    try std.testing.expect(c.supportsWallet());
+}
+
+test "maps getwalletinfo encryption_status to the wallet security state" {
+    // Divi reports the state as a string; each of the four values maps to its
+    // normalized state, and anything unexpected reads as unknown.
+    try std.testing.expectEqual(models.WalletSecurity.unencrypted, Divi.securityFromStatus("unencrypted"));
+    try std.testing.expectEqual(models.WalletSecurity.locked, Divi.securityFromStatus("locked"));
+    try std.testing.expectEqual(models.WalletSecurity.unlocked, Divi.securityFromStatus("unlocked"));
+    try std.testing.expectEqual(models.WalletSecurity.unlocked_for_staking, Divi.securityFromStatus("unlocked-for-staking"));
+    try std.testing.expectEqual(models.WalletSecurity.unknown, Divi.securityFromStatus("something-else"));
+
+    // The field parses out of a representative getwalletinfo reply.
+    const allocator = std.testing.allocator;
+    var parsed = try std.json.parseFromSlice(
+        models.JsonRpcResponse(models.DiviWalletInfo),
+        allocator,
+        "{\"result\":{\"walletversion\":120200,\"encryption_status\":\"locked\"},\"error\":null,\"id\":\"boxwallet\"}",
+        .{ .ignore_unknown_fields = true },
+    );
+    defer parsed.deinit();
+    try std.testing.expectEqual(models.WalletSecurity.locked, Divi.securityFromStatus(parsed.value.result.?.encryption_status));
 }

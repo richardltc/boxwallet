@@ -105,6 +105,61 @@ pub const Coin = struct {
             allocator: std.mem.Allocator,
             auth: models.CoinAuth,
         ) anyerror!void,
+        /// Optional: ensure the daemon has a usable wallet loaded. Bitcoin-Core
+        /// 0.21+ forks (DigiByte, ReddCoin) no longer auto-create a default
+        /// wallet, so a fresh daemon has none and wallet RPCs (staking,
+        /// addresses) fail until one is created. Coins that need it load-or-create
+        /// a "BoxWallet" wallet here; left null for coins whose daemon
+        /// auto-creates a wallet, that drive a separate wallet process
+        /// (Zano/Nerva), or that have no wallet (Ergo). Called once after the
+        /// daemon's RPC comes up.
+        ensure_wallet: ?*const fn (
+            ptr: *anyopaque,
+            allocator: std.mem.Allocator,
+            auth: models.CoinAuth,
+        ) anyerror!void = null,
+        /// Optional: read the wallet's security state (`getwalletinfo`), normalized
+        /// to `WalletSecurity`. Non-null marks a coin whose wallet BoxWallet can
+        /// manage (the `w` menu) — left null for coins with no manageable wallet
+        /// over RPC (Ergo, the external-wallet Zano/Nerva). `supportsWallet` keys
+        /// off this being non-null.
+        wallet_security_state: ?*const fn (
+            ptr: *anyopaque,
+            allocator: std.mem.Allocator,
+            auth: models.CoinAuth,
+        ) anyerror!models.WalletSecurity = null,
+        /// Optional: encrypt the (currently unencrypted) wallet with `passphrase`.
+        /// Bitcoin-derived daemons stop themselves after this — the caller restarts
+        /// them. Paired with `wallet_security_state`; null when unsupported.
+        wallet_encrypt: ?*const fn (
+            ptr: *anyopaque,
+            allocator: std.mem.Allocator,
+            auth: models.CoinAuth,
+            passphrase: []const u8,
+        ) anyerror!void = null,
+        /// Optional: unlock the wallet with `passphrase`. `staking` requests an
+        /// unlock-for-staking (proof-of-stake coins) rather than a full unlock.
+        /// Paired with `wallet_security_state`; null when unsupported.
+        wallet_unlock: ?*const fn (
+            ptr: *anyopaque,
+            allocator: std.mem.Allocator,
+            auth: models.CoinAuth,
+            passphrase: []const u8,
+            staking: bool,
+        ) anyerror!void = null,
+        /// Optional: re-lock an unlocked wallet (`walletlock`, no passphrase).
+        /// Paired with `wallet_security_state`; null when unsupported.
+        wallet_lock: ?*const fn (
+            ptr: *anyopaque,
+            allocator: std.mem.Allocator,
+            auth: models.CoinAuth,
+        ) anyerror!void = null,
+        /// Optional: the JSON-RPC method to probe for the daemon's warm-up phase
+        /// (the bitcoin-derived "-28 in warm-up" reply carries a phase string like
+        /// "Verifying blocks…"). Returns a method the daemon supports (`getinfo` /
+        /// `getnetworkinfo`); null for coins with no such warm-up (Ergo, Zano,
+        /// Nerva), whose loading phase is always reported as `none`.
+        warmup_probe_method: ?*const fn (ptr: *anyopaque) []const u8 = null,
     };
 
     pub fn coinName(self: Coin) []const u8 {
@@ -194,5 +249,81 @@ pub const Coin = struct {
         auth: models.CoinAuth,
     ) !void {
         return self.vtable.request_stop(self.ptr, allocator, auth);
+    }
+
+    /// Whether this coin needs an explicit wallet created/loaded after the daemon
+    /// starts (true for the Bitcoin-Core 0.21+ forks that don't auto-create one).
+    pub fn needsWallet(self: Coin) bool {
+        return self.vtable.ensure_wallet != null;
+    }
+
+    /// Ensure the coin's wallet is loaded (creating it on first run). A no-op for
+    /// coins that don't need it (`needsWallet` false).
+    pub fn ensureWallet(
+        self: Coin,
+        allocator: std.mem.Allocator,
+        auth: models.CoinAuth,
+    ) !void {
+        if (self.vtable.ensure_wallet) |f| return f(self.ptr, allocator, auth);
+    }
+
+    /// Whether this coin exposes a wallet BoxWallet can manage (drives the `w`
+    /// menu). True iff the coin wires `wallet_security_state`.
+    pub fn supportsWallet(self: Coin) bool {
+        return self.vtable.wallet_security_state != null;
+    }
+
+    /// Read the wallet's security state. `unknown` for coins without wallet
+    /// support (`supportsWallet` false).
+    pub fn walletSecurityState(
+        self: Coin,
+        allocator: std.mem.Allocator,
+        auth: models.CoinAuth,
+    ) !models.WalletSecurity {
+        if (self.vtable.wallet_security_state) |f| return f(self.ptr, allocator, auth);
+        return .unknown;
+    }
+
+    /// Encrypt the wallet with `passphrase`. Errors `error.Unsupported` if the
+    /// coin has no manageable wallet.
+    pub fn walletEncrypt(
+        self: Coin,
+        allocator: std.mem.Allocator,
+        auth: models.CoinAuth,
+        passphrase: []const u8,
+    ) !void {
+        const f = self.vtable.wallet_encrypt orelse return error.Unsupported;
+        return f(self.ptr, allocator, auth, passphrase);
+    }
+
+    /// Unlock the wallet with `passphrase` (`staking` for unlock-for-staking).
+    /// Errors `error.Unsupported` if the coin has no manageable wallet.
+    pub fn walletUnlock(
+        self: Coin,
+        allocator: std.mem.Allocator,
+        auth: models.CoinAuth,
+        passphrase: []const u8,
+        staking: bool,
+    ) !void {
+        const f = self.vtable.wallet_unlock orelse return error.Unsupported;
+        return f(self.ptr, allocator, auth, passphrase, staking);
+    }
+
+    /// Re-lock the wallet. Errors `error.Unsupported` if the coin has no
+    /// manageable wallet.
+    pub fn walletLock(
+        self: Coin,
+        allocator: std.mem.Allocator,
+        auth: models.CoinAuth,
+    ) !void {
+        const f = self.vtable.wallet_lock orelse return error.Unsupported;
+        return f(self.ptr, allocator, auth);
+    }
+
+    /// The RPC method to probe for a warm-up phase, or null for coins with no
+    /// bitcoin-style warm-up (their loading phase is always `none`).
+    pub fn warmupProbeMethod(self: Coin) ?[]const u8 {
+        if (self.vtable.warmup_probe_method) |f| return f(self.ptr);
+        return null;
     }
 };

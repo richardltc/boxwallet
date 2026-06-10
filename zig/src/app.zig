@@ -5,10 +5,15 @@ const install_mod = @import("install.zig");
 const disk = @import("disk.zig");
 const memory = @import("memory.zig");
 const conf = @import("conf.zig");
+const rpc = @import("rpc.zig");
 const Coin = @import("coin.zig").Coin;
 const Nexa = @import("coins/nexa.zig").Nexa;
 const Divi = @import("coins/divi.zig").Divi;
 const Ergo = @import("coins/ergo.zig").Ergo;
+const DigiByte = @import("coins/digibyte.zig").DigiByte;
+const Zano = @import("coins/zano.zig").Zano;
+const Nerva = @import("coins/nerva.zig").Nerva;
+const ReddCoin = @import("coins/reddcoin.zig").ReddCoin;
 
 /// The application's display name, version, and brand colour — the one place to
 /// change how BoxWallet identifies itself in the UI. `app_color` is the brand
@@ -27,8 +32,8 @@ const fallback_install_root = "boxwallet-coins";
 /// position. Adding a coin is a matter of extending this list, the `App` field +
 /// `init`, and the dispatch in `selectedCoin`; the detail pane renders
 /// generically through the `Coin` interface, so it needs no per-coin code.
-const Entry = enum { home, nexa, divi, ergo };
-const coin_entries = [_]Entry{ .nexa, .divi, .ergo };
+const Entry = enum { home, nexa, divi, ergo, digibyte, zano, nerva, reddcoin };
+const coin_entries = [_]Entry{ .nexa, .divi, .ergo, .digibyte, .zano, .nerva, .reddcoin };
 
 fn entryLabel(e: Entry) []const u8 {
     return switch (e) {
@@ -36,6 +41,10 @@ fn entryLabel(e: Entry) []const u8 {
         .nexa => Nexa.coin_name,
         .divi => Divi.coin_name,
         .ergo => Ergo.coin_name,
+        .digibyte => DigiByte.coin_name,
+        .zano => Zano.coin_name,
+        .nerva => Nerva.coin_name,
+        .reddcoin => ReddCoin.coin_name,
     };
 }
 
@@ -48,6 +57,10 @@ fn entryColor(e: Entry) zz.Color {
         .nexa => zz.Color.hex(Nexa.coin_color),
         .divi => zz.Color.hex(Divi.coin_color),
         .ergo => zz.Color.hex(Ergo.coin_color),
+        .digibyte => zz.Color.hex(DigiByte.coin_color),
+        .zano => zz.Color.hex(Zano.coin_color),
+        .nerva => zz.Color.hex(Nerva.coin_color),
+        .reddcoin => zz.Color.hex(ReddCoin.coin_color),
     };
 }
 
@@ -114,7 +127,207 @@ const WalletState = enum {
             .unlocked_for_staking => .green,
         };
     }
+
+    /// Map a coin's normalized `models.WalletSecurity` onto the UI's
+    /// `WalletState`. The two enums are intentionally parallel — the coin layer
+    /// owns the normalized state; this side owns its display text/colour.
+    fn fromSecurity(s: models.WalletSecurity) WalletState {
+        return switch (s) {
+            .unknown => .unknown,
+            .unencrypted => .unencrypted,
+            .locked => .locked,
+            .unlocked => .unlocked,
+            .unlocked_for_staking => .unlocked_for_staking,
+        };
+    }
 };
+
+/// Display text for a daemon warm-up phase. `none` has no text (the daemon is
+/// either responsive or down, so the phase isn't shown).
+fn loadingPhaseText(p: models.LoadingPhase) []const u8 {
+    return switch (p) {
+        .none => "",
+        .loading => "Loading…",
+        .rescanning => "Rescanning…",
+        .rewinding => "Rewinding…",
+        .verifying => "Verifying…",
+        .calculating => "Calculating money supply…",
+    };
+}
+
+/// Render the coin's one-line **Status** — a live readout of what the daemon is
+/// doing right now, distinct from the per-axis ticks below it. Priority, highest
+/// first: installing (downloading/extracting) → not installed → starting/stopping
+/// → checking (first poll pending) → warm-up phase (Loading/Verifying/…) →
+/// waiting for peers → syncing → synced; "Idle" when the daemon is installed but
+/// off. The wording alone carries the state — no spinner icon — and refreshes
+/// each poll/tick.
+fn renderStatus(a: std.mem.Allocator, act: *const Activity, brand: zz.Color) []const u8 {
+    var text: []const u8 = undefined;
+    var col: zz.Color = undefined;
+    // An install is always an active state, so the label is brand-coloured.
+    const active = true;
+
+    // An install/update in flight outranks everything: it runs before the daemon
+    // exists (and before `installed` flips), so check it first.
+    switch (act.phaseOf()) {
+        .downloading => {
+            text = "Downloading…";
+            col = .cyan;
+        },
+        .extracting => {
+            text = "Extracting…";
+            col = .cyan;
+        },
+        else => return statusFromDaemon(a, act, brand),
+    }
+
+    const label = App.statusLabel(a, brand, "Status", active);
+    const value = (zz.Style{}).bold(true).fg(col).render(a, text) catch text;
+    return std.fmt.allocPrint(a, "{s}: {s}", .{ label, value }) catch value;
+}
+
+/// The non-install half of `renderStatus`: the daemon/poll-driven status, used
+/// whenever no install is in flight.
+fn statusFromDaemon(a: std.mem.Allocator, act: *const Activity, brand: zz.Color) []const u8 {
+    var text: []const u8 = "Idle";
+    var col: zz.Color = .brightBlack;
+    var active = true;
+
+    if (!act.installed) {
+        text = "Not installed";
+        active = false;
+    } else switch (act.daemonState()) {
+        .starting => {
+            text = "Starting…";
+            col = .cyan;
+        },
+        .stopping => {
+            text = "Stopping…";
+            col = .cyan;
+        },
+        .stopped => if (act.awaitingStatus()) {
+            text = "Checking…";
+            col = .cyan;
+        } else {
+            text = "Idle";
+            active = false;
+        },
+        .running => if (act.loading_phase != .none) {
+            text = loadingPhaseText(act.loading_phase);
+            col = .yellow;
+        } else if (act.peers == 0) {
+            text = "Waiting for peers…";
+            col = .yellow;
+        } else if (act.sync == .syncing) {
+            text = "Syncing…";
+            col = .cyan;
+        } else if (act.sync == .synced) {
+            text = "Synced";
+            col = .green;
+        } else {
+            text = "Running";
+            col = .green;
+        },
+    }
+
+    const label = App.statusLabel(a, brand, "Status", active);
+    const value = (zz.Style{}).bold(true).fg(col).render(a, text) catch text;
+    return std.fmt.allocPrint(a, "{s}: {s}", .{ label, value }) catch value;
+}
+
+/// A wallet operation the `w` menu can run against the daemon.
+const WalletAction = enum {
+    encrypt,
+    unlock,
+    stake,
+    lock,
+
+    /// The menu label for the action.
+    fn label(self: WalletAction) []const u8 {
+        return switch (self) {
+            .encrypt => "Encrypt wallet",
+            .unlock => "Unlock",
+            .stake => "Unlock for staking",
+            .lock => "Lock wallet",
+        };
+    }
+
+    /// Whether the action needs a passphrase entered first (`lock` doesn't).
+    fn needsPassword(self: WalletAction) bool {
+        return self != .lock;
+    }
+};
+
+/// Which actions the `w` menu offers for a given wallet state, written into
+/// `buf` and returned by count. Unencrypted → encrypt; locked → unlock (plus
+/// unlock-for-staking on proof-of-stake coins); unlocked → lock; unknown → none.
+fn walletOptions(wallet: WalletState, pos: bool, buf: *[3]WalletAction) usize {
+    var n: usize = 0;
+    switch (wallet) {
+        .unencrypted => {
+            buf[n] = .encrypt;
+            n += 1;
+        },
+        .locked => {
+            buf[n] = .unlock;
+            n += 1;
+            if (pos) {
+                buf[n] = .stake;
+                n += 1;
+            }
+        },
+        .unlocked, .unlocked_for_staking => {
+            buf[n] = .lock;
+            n += 1;
+        },
+        .unknown => {},
+    }
+    return n;
+}
+
+/// The `w` wallet menu — a small modal drawn over the dashboard for managing the
+/// selected coin's wallet. It walks menu → passphrase entry → working → result;
+/// the chosen action runs against the daemon on a worker thread (so the UI never
+/// blocks), with the passphrase held only in the `App`'s `pw_input` and the
+/// worker's bounded buffer, both cleared once the action is sent.
+const Modal = struct {
+    const Stage = enum { menu, password, working, result };
+
+    stage: Stage = .menu,
+    /// Index into `options[0..option_count]`.
+    sel: usize = 0,
+    options: [3]WalletAction = undefined,
+    option_count: usize = 0,
+    /// The action chosen at the menu (valid from the password stage on).
+    action: WalletAction = .unlock,
+    /// The entry slot the modal acts on, so its worker writes the right Activity
+    /// even if the left-nav selection changes while it's open.
+    coin_idx: usize = 0,
+    /// Whether the finished action succeeded (tints the result line).
+    ok: bool = false,
+    /// Outcome text shown in the `result` stage (fixed buffer — no allocation).
+    msg_buf: [200]u8 = undefined,
+    msg_len: usize = 0,
+
+    fn setMsg(self: *Modal, ok: bool, text: []const u8) void {
+        self.ok = ok;
+        const n = @min(text.len, self.msg_buf.len);
+        @memcpy(self.msg_buf[0..n], text[0..n]);
+        self.msg_len = n;
+        self.stage = .result;
+    }
+};
+
+/// Upper bound on a wallet passphrase, sizing the worker's copy buffer and the
+/// modal input's char limit. Comfortably past any sane passphrase length while
+/// keeping the secret in a small fixed buffer (memory constraint).
+const wallet_pw_max = 256;
+
+/// Inner content width (columns) of the wallet modal box — the area between the
+/// `│ ` and ` │`. Sized to hold the longest menu label, the passphrase field,
+/// and the footer hints without wrapping, while fitting an 80-column terminal.
+const modal_inner_w = 42;
 
 /// Per-coin install activity.
 ///
@@ -160,6 +373,11 @@ const Activity = struct {
     // `poll_ok` and the counter stores alongside it.
     /// One-shot `getinfo` poll worker, reaped on a later tick.
     poll_thread: ?std.Thread = null,
+    /// For coins that need an explicit wallet (Bitcoin-Core 0.21+ forks): set once
+    /// the wallet has been loaded/created this daemon run, so the one-time
+    /// `ensureWallet` runs on the first successful poll and not every poll. Reset
+    /// when the daemon is (re)started, since a fresh daemon won't have it loaded.
+    wallet_ensured: bool = false,
     /// Set true (release) by the worker when the poll finishes; the UI folds the
     /// result in and joins the thread on its next tick.
     poll_done: std.atomic.Value(bool) = .init(false),
@@ -177,12 +395,46 @@ const Activity = struct {
     /// Latest polled peer count / staking flag (1/0).
     poll_peers: std.atomic.Value(u32) = .init(0),
     poll_staking: std.atomic.Value(u8) = .init(0),
+    /// Latest polled wallet security state (`@intFromEnum(WalletState)`), from
+    /// `getwalletinfo`. Only set for coins that expose a manageable wallet;
+    /// otherwise stays at `unknown`. Published by the `poll_done` edge.
+    poll_wallet: std.atomic.Value(u8) = .init(@intFromEnum(WalletState.unknown)),
+    /// Latest probed daemon warm-up phase (`@intFromEnum(models.LoadingPhase)`).
+    /// Set on every poll: `none` when the daemon answered normally, otherwise the
+    /// phase parsed from its "-28 in warm-up" reply. Published by the `poll_done`
+    /// edge.
+    poll_phase: std.atomic.Value(u8) = .init(@intFromEnum(models.LoadingPhase.none)),
     /// Latest polled chain heights and sync flag, from `getblockchaininfo`.
     poll_headers: std.atomic.Value(u64) = .init(0),
     poll_blocks: std.atomic.Value(u64) = .init(0),
     poll_synced: std.atomic.Value(u8) = .init(0),
     /// Estimated network tip (max peer `synced_headers`), the Headers bar target.
     poll_network: std.atomic.Value(u64) = .init(0),
+    /// Seconds behind the chain tip (wall clock now − tip block timestamp),
+    /// computed in the poll worker where the real-time clock is reachable.
+    /// -1 means unknown (the daemon reports no tip timestamp). Drives the
+    /// "behind by …" estimate on the Blocks line.
+    poll_behind: std.atomic.Value(i64) = .init(-1),
+
+    // --- wallet action worker (the `w` menu) -------------------------------
+    // A short-lived worker runs one encrypt/unlock/lock RPC so the UI never
+    // blocks on it. Like the poll, `wallet_done` carries the synchronization
+    // edge: the worker stores it with release, the UI loads it with acquire, and
+    // that pairing publishes `wallet_ok`/`wallet_err`.
+    wallet_thread: ?std.Thread = null,
+    wallet_action: WalletAction = .unlock,
+    /// The passphrase for the in-flight action, copied in before the worker is
+    /// spawned and zeroed once the worker has consumed it. Bounded so the secret
+    /// never lands in a growing buffer and memory stays flat.
+    wallet_pw_buf: [wallet_pw_max]u8 = undefined,
+    wallet_pw_len: usize = 0,
+    /// Set true (release) by the worker when the action finishes.
+    wallet_done: std.atomic.Value(bool) = .init(false),
+    /// Whether the finished action succeeded. Published by the `wallet_done` edge.
+    wallet_ok: bool = false,
+    /// Error name from a failed action (static, program-lifetime), published with
+    /// the `wallet_done` edge.
+    wallet_err: []const u8 = "",
 
     // --- UI-thread-only ----------------------------------------------------
     thread: ?std.Thread = null,
@@ -220,12 +472,19 @@ const Activity = struct {
     /// Whether the wallet is actively staking. Only shown for proof-of-stake
     /// coins; live staking polling lands later — for now this stays false.
     staking: bool = false,
+    /// The daemon's warm-up phase while it's coming up (Loading/Verifying/…), or
+    /// `none` once it's responsive. Folded in from `poll_phase` on each poll reap;
+    /// drives the Wallet line's "loading" readout.
+    loading_phase: models.LoadingPhase = .none,
     /// Headers/blocks sync progress (current vs total). Populated by the live
     /// sync poll later; 0/0 renders an empty bar.
     headers_cur: u64 = 0,
     headers_total: u64 = 0,
     blocks_cur: u64 = 0,
     blocks_total: u64 = 0,
+    /// Seconds behind the chain tip, or -1 when unknown. How far behind in
+    /// wall-clock time the chain is while syncing.
+    behind_secs: i64 = -1,
     spinner: zz.Spinner = undefined,
     /// Animates the "daemon running" line while `daemon` is `.starting`.
     daemon_spinner: zz.Spinner = undefined,
@@ -357,6 +616,50 @@ const Activity = struct {
         }
     }
 
+    /// Wallet-action worker. Runs the chosen encrypt/unlock/lock RPC on a private
+    /// arena (bounded, isolated) and publishes the outcome, reaped by the UI once
+    /// `wallet_done` is observed.
+    fn runWalletAction(self: *Activity) void {
+        var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+        defer arena.deinit();
+        const a = arena.allocator();
+
+        if (self.doWalletAction(a)) {
+            self.wallet_ok = true;
+        } else |err| {
+            self.wallet_err = @errorName(err);
+            self.wallet_ok = false;
+        }
+        self.wallet_done.store(true, .release);
+    }
+
+    /// Resolve the coin's RPC credentials and dispatch the in-flight wallet
+    /// action. The passphrase comes from `wallet_pw_buf` (the UI copied it in
+    /// before spawning); `lock` ignores it.
+    fn doWalletAction(self: *Activity, a: std.mem.Allocator) !void {
+        var threaded: std.Io.Threaded = .init(a, .{});
+        defer threaded.deinit();
+        const io = threaded.io();
+
+        const data_dir = try self.coin.dataDir(a, self.home_dir);
+        const auth = try conf.readAuth(
+            a,
+            io,
+            data_dir,
+            self.coin.confFile(),
+            self.coin.rpcDefaultUsername(),
+            self.coin.rpcDefaultPort(),
+        );
+
+        const pw = self.wallet_pw_buf[0..self.wallet_pw_len];
+        switch (self.wallet_action) {
+            .encrypt => try self.coin.walletEncrypt(a, auth, pw),
+            .unlock => try self.coin.walletUnlock(a, auth, pw, false),
+            .stake => try self.coin.walletUnlock(a, auth, pw, true),
+            .lock => try self.coin.walletLock(a, auth),
+        }
+    }
+
     /// Whether the coin's live status is still being resolved: it's installed and
     /// no poll has come back yet, with the daemon not already known to be
     /// starting/running. During this window the Running/Staking marks animate so
@@ -373,6 +676,7 @@ const Activity = struct {
         if (!self.poll_ok) return false;
         self.peers = self.poll_peers.load(.monotonic);
         self.staking = self.poll_staking.load(.monotonic) != 0;
+        self.wallet = @enumFromInt(self.poll_wallet.load(.monotonic));
 
         // Two separate, accurate sync axes:
         //   Headers  = local headers / network tip (download progress vs peers)
@@ -396,6 +700,7 @@ const Activity = struct {
         self.headers_total = if (self.peers > 0 and network > 0) @max(network, headers) else 0;
         self.blocks_cur = blocks;
         self.blocks_total = @max(headers, blocks);
+        self.behind_secs = self.poll_behind.load(.monotonic);
         self.sync = if (self.poll_synced.load(.monotonic) != 0) .synced else .syncing;
         return true;
     }
@@ -412,10 +717,49 @@ const Activity = struct {
 
         if (self.fetchStatus(a)) {
             self.poll_ok = true;
+            // The daemon answered normally, so it isn't warming up.
+            self.poll_phase.store(@intFromEnum(models.LoadingPhase.none), .monotonic);
         } else |_| {
             self.poll_ok = false;
+            // The daemon may be up but still warming up — probe its phase so the
+            // UI can show *what* it's doing (Loading/Verifying/…) rather than a
+            // bare spinner. Best-effort; a failure leaves it `none`.
+            self.probeLoadingPhase(a);
         }
         self.poll_done.store(true, .release);
+    }
+
+    /// Probe the daemon's warm-up phase after a failed status fetch. Only worth
+    /// doing while we believe the daemon is up (a stopped daemon would just refuse
+    /// the connection); coins with no bitcoin-style warm-up (`warmupProbeMethod`
+    /// null) always read `none`. Runs on the caller's poll arena.
+    fn probeLoadingPhase(self: *Activity, a: std.mem.Allocator) void {
+        const method = self.coin.warmupProbeMethod() orelse {
+            self.poll_phase.store(@intFromEnum(models.LoadingPhase.none), .monotonic);
+            return;
+        };
+        if (self.daemonState() == .stopped) {
+            self.poll_phase.store(@intFromEnum(models.LoadingPhase.none), .monotonic);
+            return;
+        }
+
+        var threaded: std.Io.Threaded = .init(a, .{});
+        defer threaded.deinit();
+        const io = threaded.io();
+
+        const phase: models.LoadingPhase = blk: {
+            const data_dir = self.coin.dataDir(a, self.home_dir) catch break :blk .none;
+            const auth = conf.readAuth(
+                a,
+                io,
+                data_dir,
+                self.coin.confFile(),
+                self.coin.rpcDefaultUsername(),
+                self.coin.rpcDefaultPort(),
+            ) catch break :blk .none;
+            break :blk rpc.loadingPhase(a, auth, method) catch .none;
+        };
+        self.poll_phase.store(@intFromEnum(phase), .monotonic);
     }
 
     /// Resolve the coin's RPC credentials from its conf, then fetch both the
@@ -438,15 +782,43 @@ const Activity = struct {
             self.coin.rpcDefaultPort(),
         );
 
+        // Bitcoin-Core 0.21+ forks (DigiByte, ReddCoin) don't auto-create a
+        // wallet, so wallet RPCs (staking, addresses) have none until one exists.
+        // Load-or-create it once, the first time the daemon answers — done before
+        // the status fetch below so the same poll's `staking` call already sees it.
+        // Best-effort: a failure (daemon still coming up) just retries next poll.
+        if (self.coin.needsWallet() and !self.wallet_ensured) {
+            if (self.coin.ensureWallet(a, auth)) {
+                self.wallet_ensured = true;
+            } else |_| {}
+        }
+
         const info = try self.coin.daemonInfo(a, auth);
         self.poll_peers.store(@as(u32, @intCast(@max(info.connections, 0))), .monotonic);
         self.poll_staking.store(@intFromBool(info.staking_active), .monotonic);
+
+        // Wallet security state, for coins whose wallet BoxWallet can manage —
+        // lights up the Wallet line and drives which `w` menu options apply.
+        // Best-effort: a hiccup (e.g. no wallet loaded yet) just leaves the last
+        // value, so a transient blip doesn't blank the line.
+        if (self.coin.supportsWallet()) {
+            if (self.coin.walletSecurityState(a, auth)) |sec| {
+                self.poll_wallet.store(@intFromEnum(WalletState.fromSecurity(sec)), .monotonic);
+            } else |_| {}
+        }
 
         const state = try self.coin.blockchainState(a, auth);
         defer state.deinit(a);
         self.poll_headers.store(@as(u64, @intCast(@max(state.headers, 0))), .monotonic);
         self.poll_blocks.store(@as(u64, @intCast(@max(state.blocks, 0))), .monotonic);
         self.poll_network.store(@as(u64, @intCast(@max(state.network_height, 0))), .monotonic);
+        // Seconds behind = wall-clock now − tip block timestamp. The real-time
+        // clock is reachable here (in the poll worker) but not in the render path,
+        // so derive it now; -1 when the daemon reports no timestamp.
+        self.poll_behind.store(
+            if (state.tip_time > 0) std.Io.Clock.real.now(io).toSeconds() - state.tip_time else -1,
+            .monotonic,
+        );
         self.poll_synced.store(@intFromBool(state.synced), .monotonic);
     }
 
@@ -776,6 +1148,10 @@ pub const App = struct {
     nexa: Nexa,
     divi: Divi,
     ergo: Ergo,
+    digibyte: DigiByte,
+    zano: Zano,
+    nerva: Nerva,
+    reddcoin: ReddCoin,
     selected: usize,
     /// One per `entries` slot (index 0 / Home is unused), holding that coin's
     /// independent install state. Parallel to `entries` so the selected coin's
@@ -787,6 +1163,13 @@ pub const App = struct {
     log_count: usize = 0,
     /// Whether the bottom log pane is shown; `l` toggles it.
     log_visible: bool = true,
+    /// The open `w` wallet modal, or null when no modal is up. While set, the
+    /// modal owns keyboard input and is composited over the dashboard.
+    modal: ?Modal = null,
+    /// Masked passphrase entry for the wallet modal. Persistent (its backing
+    /// buffer outlives a single modal), created in `init` and freed in `deinit`;
+    /// its value is cleared whenever the modal closes or an action is sent.
+    pw_input: zz.TextInput,
 
     pub const Msg = union(enum) {
         key: zz.KeyEvent,
@@ -840,9 +1223,18 @@ pub const App = struct {
             .nexa = .{},
             .divi = .{},
             .ergo = .{},
+            .digibyte = .{},
+            .zano = .{},
+            .nerva = .{},
+            .reddcoin = .{},
             .selected = 0,
             .activities = undefined,
+            .pw_input = zz.TextInput.init(ctx.persistent_allocator),
         };
+        // The wallet passphrase field masks its input and stays a fixed width.
+        self.pw_input.setEchoMode(.password);
+        self.pw_input.setWidth(24);
+        self.pw_input.setCharLimit(wallet_pw_max);
         // Sync keeps the default braille dots; Running/Staking/Peers and the
         // install progress use the heavier pulsing spinner (`makeSpinner`).
         for (&self.activities) |*act| act.* = .{ .spinner = makeSpinner(), .daemon_spinner = makeSpinner(), .sync_spinner = zz.Spinner.init() };
@@ -885,30 +1277,101 @@ pub const App = struct {
                 t.join();
                 act.poll_thread = null;
             }
+            if (act.wallet_thread) |t| {
+                t.join();
+                act.wallet_thread = null;
+            }
+            // The passphrase copy may still be resident if a worker was in flight
+            // at shutdown — clear it rather than leave the secret in freed memory.
+            @memset(&act.wallet_pw_buf, 0);
         }
+        self.pw_input.deinit();
         if (self.install_root_owned) self.allocator.free(self.install_root);
         if (self.home_dir_owned) self.allocator.free(self.home_dir);
     }
 
     pub fn update(self: *App, msg: Msg, _: *zz.Context) zz.Cmd(Msg) {
         switch (msg) {
-            .key => |k| switch (k.key) {
-                .char => |c| switch (c) {
-                    'q' => return .quit,
-                    'i' => self.tryInstall(),
-                    's' => self.tryToggleDaemon(),
-                    'k' => self.move(-1),
-                    'j' => self.move(1),
-                    'l' => self.log_visible = !self.log_visible,
+            // While the wallet modal is open it owns the keyboard — global keys
+            // (quit/install/navigate) are suppressed so typing a passphrase or
+            // walking the menu doesn't also drive the dashboard.
+            .key => |k| {
+                if (self.modal != null) {
+                    self.modalKey(k);
+                    return .none;
+                }
+                switch (k.key) {
+                    .char => |c| switch (c) {
+                        'q' => return .quit,
+                        'i' => self.tryInstall(),
+                        's' => self.tryToggleDaemon(),
+                        'w' => self.openWalletModal(),
+                        'k' => self.move(-1),
+                        'j' => self.move(1),
+                        'l' => self.log_visible = !self.log_visible,
+                        else => {},
+                    },
+                    .up => self.move(-1),
+                    .down => self.move(1),
                     else => {},
-                },
-                .up => self.move(-1),
-                .down => self.move(1),
-                else => {},
+                }
             },
             .tick => |t| self.onTick(t),
         }
         return .none;
+    }
+
+    /// Handle a keypress while the wallet modal is open. Drives the modal's small
+    /// state machine: walk the menu, type the passphrase, then `enter` fires the
+    /// action; `esc` cancels (or dismisses the result). Keys are swallowed here so
+    /// nothing reaches the dashboard.
+    fn modalKey(self: *App, k: zz.KeyEvent) void {
+        if (self.modal == null) return;
+        const m = &self.modal.?;
+        switch (m.stage) {
+            .menu => switch (k.key) {
+                .escape => self.closeWalletModal(),
+                .up => if (m.sel > 0) {
+                    m.sel -= 1;
+                },
+                .down => if (m.sel + 1 < m.option_count) {
+                    m.sel += 1;
+                },
+                .enter => {
+                    if (m.option_count == 0) return;
+                    m.action = m.options[m.sel];
+                    if (m.action.needsPassword()) {
+                        m.stage = .password;
+                        self.pw_input.setValue("") catch {};
+                        self.pw_input.focus();
+                    } else {
+                        self.submitWalletAction();
+                    }
+                },
+                .char => |c| switch (c) {
+                    'k' => if (m.sel > 0) {
+                        m.sel -= 1;
+                    },
+                    'j' => if (m.sel + 1 < m.option_count) {
+                        m.sel += 1;
+                    },
+                    else => {},
+                },
+                else => {},
+            },
+            .password => switch (k.key) {
+                .escape => self.closeWalletModal(),
+                // Submit only with a non-empty passphrase; an empty enter is a
+                // no-op (the daemon would just reject it).
+                .enter => if (self.pw_input.getValue().len > 0) self.submitWalletAction(),
+                // Everything else (chars, backspace, paste) edits the field.
+                else => self.pw_input.handleKey(k),
+            },
+            // While the RPC is in flight, ignore input — the reap moves us on.
+            .working => {},
+            // Any key dismisses the result.
+            .result => self.closeWalletModal(),
+        }
     }
 
     /// Per-tick housekeeping for every coin's activity: animate the extract
@@ -971,6 +1434,11 @@ pub const App = struct {
                         act.headers_total = 0;
                         act.blocks_cur = 0;
                         act.blocks_total = 0;
+                        act.behind_secs = -1;
+                        act.wallet = .unknown;
+                        act.poll_wallet.store(@intFromEnum(WalletState.unknown), .monotonic);
+                        act.loading_phase = .none;
+                        act.poll_phase.store(@intFromEnum(models.LoadingPhase.none), .monotonic);
                         self.logf("{s}: daemon stopped", .{act.coin.coinName()});
                     } else self.logf("{s}: daemon failed to stop ({s})", .{ act.coin.coinName(), act.daemon_err }),
                 }
@@ -990,6 +1458,9 @@ pub const App = struct {
                 act.poll_thread.?.join();
                 act.poll_thread = null;
                 act.poll_completed = true;
+                // The warm-up phase is published whether or not the poll reached
+                // the daemon, so fold it in regardless of `applyPoll`.
+                act.loading_phase = @enumFromInt(act.poll_phase.load(.monotonic));
                 if (act.applyPoll() and act.daemonState() != .running)
                     act.daemon.store(@intFromEnum(DaemonState.running), .release);
                 // Mark the just-reaped poll as received once per selection; the
@@ -1000,13 +1471,56 @@ pub const App = struct {
                 }
             }
 
+            // Settle a finished wallet action: clear the secret, update the modal,
+            // and log the outcome. A successful encrypt stops the daemon (bitcoin
+            // daemons shut down after encrypting), so reflect that.
+            if (act.wallet_thread != null and act.wallet_done.load(.acquire)) {
+                act.wallet_thread.?.join();
+                act.wallet_thread = null;
+                const action = act.wallet_action;
+                const ok = act.wallet_ok;
+                @memset(&act.wallet_pw_buf, 0);
+                act.wallet_pw_len = 0;
+
+                if (ok) {
+                    if (action == .encrypt) {
+                        act.daemon.store(@intFromEnum(DaemonState.stopped), .release);
+                        act.wallet = .unknown;
+                        act.poll_wallet.store(@intFromEnum(WalletState.unknown), .monotonic);
+                    }
+                    self.logf("{s}: {s} succeeded", .{ act.coin.coinName(), action.label() });
+                } else {
+                    self.logf("{s}: {s} failed ({s})", .{ act.coin.coinName(), action.label(), act.wallet_err });
+                }
+                // Re-poll promptly so the Wallet line reflects the change.
+                self.last_poll_ns = 0;
+
+                if (self.modal) |*m| {
+                    if (m.coin_idx == i and m.stage == .working) {
+                        if (ok) {
+                            m.setMsg(true, switch (action) {
+                                .encrypt => "Wallet encrypted. Restart the daemon (s), then unlock.",
+                                .unlock => "Wallet unlocked.",
+                                .stake => "Wallet unlocked for staking.",
+                                .lock => "Wallet locked.",
+                            });
+                        } else {
+                            var buf: [200]u8 = undefined;
+                            const text = std.fmt.bufPrint(&buf, "Failed: {s}", .{act.wallet_err}) catch action.label();
+                            m.setMsg(false, text);
+                        }
+                    }
+                }
+            }
+
             // Start the next poll for an installed, idle coin when the cadence is
             // due and none is in flight. Only the selected coin is polled — its
             // dashboard is the only one on screen, so polling a coin we're not
             // viewing buys nothing. Skipped while an install or daemon-start
             // worker is touching this activity, so `coin` isn't written under it.
             if (i == self.selected and poll_due and act.installed and
-                act.poll_thread == null and !act.busy() and act.daemon_thread == null)
+                act.poll_thread == null and !act.busy() and act.daemon_thread == null and
+                act.wallet_thread == null)
             {
                 if (self.coinAt(i)) |coin| {
                     act.coin = coin;
@@ -1161,6 +1675,10 @@ pub const App = struct {
             .nexa => @constCast(&self.nexa).coin(),
             .divi => @constCast(&self.divi).coin(),
             .ergo => @constCast(&self.ergo).coin(),
+            .digibyte => @constCast(&self.digibyte).coin(),
+            .zano => @constCast(&self.zano).coin(),
+            .nerva => @constCast(&self.nerva).coin(),
+            .reddcoin => @constCast(&self.reddcoin).coin(),
         };
     }
 
@@ -1246,6 +1764,10 @@ pub const App = struct {
         act.daemon_action = .start;
         act.daemon_spinner = makeSpinner();
         act.daemon_err = "";
+        // A freshly (re)started daemon won't have our named wallet loaded (Core
+        // only auto-loads the unnamed default), so re-run ensureWallet on the next
+        // poll for coins that need it.
+        act.wallet_ensured = false;
         act.daemon.store(@intFromEnum(DaemonState.starting), .release);
 
         act.daemon_thread = std.Thread.spawn(.{}, Activity.runDaemon, .{act}) catch {
@@ -1286,13 +1808,98 @@ pub const App = struct {
         self.logf("{s}: stopping daemon…", .{coin.coinName()});
     }
 
+    /// Open the `w` wallet menu for the selected coin. Gated: the coin must
+    /// expose a manageable wallet, be installed with a running daemon, and have a
+    /// resolved wallet state offering at least one action. When it can't open, the
+    /// reason is logged rather than popping an empty modal.
+    fn openWalletModal(self: *App) void {
+        const coin = self.selectedCoin() orelse return;
+        const act = &self.activities[self.selected];
+        if (!coin.supportsWallet()) {
+            self.logf("{s}: wallet management isn't supported", .{coin.coinName()});
+            return;
+        }
+        if (!act.installed or act.daemonState() != .running) {
+            self.logf("{s}: start the daemon first to manage the wallet", .{coin.coinName()});
+            return;
+        }
+        var opts: [3]WalletAction = undefined;
+        const n = walletOptions(act.wallet, coin.isProofOfStake(), &opts);
+        if (act.wallet == .unknown or n == 0) {
+            self.logf("{s}: wallet state not known yet — try again in a moment", .{coin.coinName()});
+            return;
+        }
+
+        var m: Modal = .{ .coin_idx = self.selected };
+        m.options = opts;
+        m.option_count = n;
+        self.pw_input.setValue("") catch {};
+        self.modal = m;
+    }
+
+    /// Dismiss the wallet modal, clearing the passphrase field.
+    fn closeWalletModal(self: *App) void {
+        self.pw_input.setValue("") catch {};
+        self.modal = null;
+    }
+
+    /// Fire the chosen wallet action on a worker thread. Copies the passphrase
+    /// into the activity's bounded buffer (clearing the input field), then spawns
+    /// `runWalletAction`; the modal advances to `working` and the reap in `onTick`
+    /// settles it to `result`.
+    fn submitWalletAction(self: *App) void {
+        if (self.modal == null) return;
+        const m = &self.modal.?;
+        const coin = self.coinAt(m.coin_idx) orelse return;
+        const act = &self.activities[m.coin_idx];
+
+        // Reap any in-flight poll / prior wallet worker so this one doesn't race
+        // them on `act.coin`/`home_dir`.
+        if (act.poll_thread) |t| {
+            t.join();
+            act.poll_thread = null;
+        }
+        if (act.wallet_thread) |t| {
+            t.join();
+            act.wallet_thread = null;
+        }
+
+        // Copy the passphrase into the worker's buffer, then clear the field so
+        // the secret isn't held in two places.
+        const pw = self.pw_input.getValue();
+        const n = @min(pw.len, wallet_pw_max);
+        @memcpy(act.wallet_pw_buf[0..n], pw[0..n]);
+        act.wallet_pw_len = n;
+        self.pw_input.setValue("") catch {};
+
+        act.coin = coin;
+        act.home_dir = self.home_dir;
+        act.wallet_action = m.action;
+        act.wallet_err = "";
+        act.wallet_ok = false;
+        act.wallet_done.store(false, .monotonic);
+
+        act.wallet_thread = std.Thread.spawn(.{}, Activity.runWalletAction, .{act}) catch {
+            @memset(&act.wallet_pw_buf, 0);
+            act.wallet_pw_len = 0;
+            m.setMsg(false, "couldn't start the wallet worker");
+            return;
+        };
+        m.stage = .working;
+        self.logf("{s}: {s}…", .{ coin.coinName(), m.action.label() });
+    }
+
     pub fn view(self: *const App, ctx: *const zz.Context) []const u8 {
         const a = ctx.allocator;
 
         const right = self.renderDetail(a);
         const top = renderTwoPane(a, self.selected, right) catch "render error";
-        if (!self.log_visible) return top;
-        return self.renderWithLog(a, ctx.width, ctx.height, top) catch top;
+        const screen = if (!self.log_visible)
+            top
+        else
+            (self.renderWithLog(a, ctx.width, ctx.height, top) catch top);
+        if (self.modal == null) return screen;
+        return self.renderModalOver(a, screen, ctx.width, ctx.height) catch screen;
     }
 
     /// The bottom log pane is a separator bar plus `log_visible_lines` rows.
@@ -1373,6 +1980,7 @@ pub const App = struct {
                 \\  up/down  navigate
                 \\  i        install selected coin
                 \\  s        start/stop selected coin's daemon
+                \\  w        wallet (encrypt / unlock / stake)
                 \\  l        toggle the log pane
                 \\  q        quit
             , .{ head, app_version }) catch "alloc error";
@@ -1458,6 +2066,14 @@ pub const App = struct {
         // grey until the state is known (matching the "Unknown" value's grey).
         const wallet_label = statusLabel(a, brand, "Wallet", act.wallet != .unknown);
         const wallet_value = (zz.Style{}).bold(true).fg(act.wallet.color()).render(a, act.wallet.text()) catch act.wallet.text();
+        // Advertise the `w` key the way the daemon button advertises `s` — but
+        // only when a press would actually open the menu (the coin has a
+        // manageable wallet, its daemon is up, and a state has been polled).
+        // Dimmed so it reads as a hint, not part of the status.
+        const wallet_hint: []const u8 = if (coin.supportsWallet() and act.daemonState() == .running and act.wallet != .unknown)
+            (zz.Style{}).dim(true).render(a, "   (press w)") catch "   (press w)"
+        else
+            "";
 
         // Sync progress bars. Labels are padded to a common width before styling
         // (ANSI codes are zero-width) so the two bars line up. Like the status
@@ -1467,6 +2083,18 @@ pub const App = struct {
         const blocks_label = statusLabel(a, brand, "Blocks ", bars_active);
         const headers_bar = try bar(a, act.headers_cur, act.headers_total);
         const blocks_bar = try bar(a, act.blocks_cur, act.blocks_total);
+
+        // How far behind in wall-clock time the validated tip is, derived from the
+        // tip block's timestamp at poll time. Only while syncing and when the
+        // daemon reports a timestamp (bitcoin-derived coins do); folds out to ""
+        // otherwise. Dimmed so it reads as a hint next to the Blocks bar rather
+        // than competing with it.
+        const behind_text: []const u8 = if (act.sync == .syncing and act.behind_secs > 0) blk: {
+            const s = formatBehind(a, act.behind_secs) catch "";
+            if (s.len == 0) break :blk "";
+            const styled = (zz.Style{}).dim(true).render(a, s) catch s;
+            break :blk std.fmt.allocPrint(a, "  {s}", .{styled}) catch "";
+        } else "";
 
         // Disk-usage bar: how full the volume holding the blockchains is. Sits
         // apart from the sync bars (separated by a blank line) because it's a
@@ -1485,14 +2113,18 @@ pub const App = struct {
         const middle = try renderActivity(a, act, p);
         const daemon_button = renderDaemonButton(a, act);
 
+        // Headline live status — what the daemon is doing right now.
+        const status_line = renderStatus(a, act, brand);
+
         return std.fmt.allocPrint(a,
             \\{s}
             \\
+            \\{s}
             \\{s}: {s}    {s}: {s}    {s}: {s}    {s}: {s}{s}
-            \\{s}: {s}
+            \\{s}: {s}{s}
             \\
             \\{s}  {s}
-            \\{s}  {s}
+            \\{s}  {s}{s}
             \\
             \\{s}  {s}
             \\{s}  {s}
@@ -1502,6 +2134,7 @@ pub const App = struct {
             \\{s}
         , .{
             head,
+            status_line,
             installed_label,
             installed_mark,
             daemon_label,
@@ -1513,10 +2146,12 @@ pub const App = struct {
             staking_part,
             wallet_label,
             wallet_value,
+            wallet_hint,
             headers_label,
             headers_bar,
             blocks_label,
             blocks_bar,
+            behind_text,
             disk_label,
             disk_bar,
             mem_label,
@@ -1611,6 +2246,130 @@ pub const App = struct {
         }
     }
 
+    /// Composite the wallet modal box centered over the already-rendered
+    /// dashboard `screen`. The box replaces whole rows of its vertical band
+    /// (padded left to centre it) — full-row replacement so we never have to
+    /// slice the styled background mid-row by visible column. Rows outside the
+    /// band pass through unchanged, and the overall row count is preserved (or
+    /// extended only if the box is taller than the screen).
+    fn renderModalOver(self: *const App, a: std.mem.Allocator, screen: []const u8, width: u16, height: u16) ![]const u8 {
+        var box_raw = try self.renderModal(a);
+        if (box_raw.len > 0 and box_raw[box_raw.len - 1] == '\n') box_raw = box_raw[0 .. box_raw.len - 1];
+
+        var box_lines = std.array_list.Managed([]const u8).init(a);
+        defer box_lines.deinit();
+        var box_w: usize = 0;
+        {
+            var it = std.mem.splitScalar(u8, box_raw, '\n');
+            while (it.next()) |line| {
+                try box_lines.append(line);
+                box_w = @max(box_w, zz.width(line));
+            }
+        }
+        const box_h = box_lines.items.len;
+
+        var screen_lines = std.array_list.Managed([]const u8).init(a);
+        defer screen_lines.deinit();
+        {
+            var it = std.mem.splitScalar(u8, screen, '\n');
+            while (it.next()) |line| try screen_lines.append(line);
+        }
+        const rows = screen_lines.items.len;
+
+        const w: usize = @max(@as(usize, width), 1);
+        const h: usize = @max(@as(usize, height), 1);
+        const top: usize = if (h > box_h) (h - box_h) / 2 else 0;
+        const left: usize = if (w > box_w) (w - box_w) / 2 else 0;
+        const total_rows = @max(rows, top + box_h);
+
+        var out: std.Io.Writer.Allocating = .init(a);
+        errdefer out.deinit();
+        var r: usize = 0;
+        while (r < total_rows) : (r += 1) {
+            if (r > 0) try out.writer.writeByte('\n');
+            if (r >= top and r < top + box_h) {
+                if (left > 0) try out.writer.splatByteAll(' ', left);
+                try out.writer.writeAll(box_lines.items[r - top]);
+            } else if (r < rows) {
+                try out.writer.writeAll(screen_lines.items[r]);
+            }
+        }
+        return out.toOwnedSlice();
+    }
+
+    /// Render the wallet modal box (border + title + the current stage's body +
+    /// footer hint) as a multi-line string, each row exactly `modal_inner_w + 4`
+    /// columns wide. The border wears the coin's brand colour.
+    fn renderModal(self: *const App, a: std.mem.Allocator) ![]const u8 {
+        const m = self.modal.?;
+        const coin = self.coinAt(m.coin_idx) orelse return error.NoCoin;
+        const brand = zz.Color.hex(coin.coinColor());
+        const inner_w = modal_inner_w;
+        const vbar = (zz.Style{}).fg(brand).render(a, "│") catch "│";
+
+        var out: std.Io.Writer.Allocating = .init(a);
+        errdefer out.deinit();
+
+        const title = try std.fmt.allocPrint(a, "{s} Wallet", .{coin.coinName()});
+        try modalRule(a, &out.writer, brand, inner_w, "┌", "┐", title);
+        try modalRow(&out.writer, vbar, inner_w, "", 0);
+
+        switch (m.stage) {
+            .menu, .password => {
+                var i: usize = 0;
+                while (i < m.option_count) : (i += 1) {
+                    const opt = m.options[i];
+                    const sel = i == m.sel;
+                    const plain = try std.fmt.allocPrint(a, "{s}{s}", .{ if (sel) "❯ " else "  ", opt.label() });
+                    const text = if (sel)
+                        ((zz.Style{}).bold(true).fg(brand).render(a, plain) catch plain)
+                    else
+                        plain;
+                    try modalRow(&out.writer, vbar, inner_w, text, zz.width(plain));
+                }
+                if (m.stage == .password) {
+                    try modalRow(&out.writer, vbar, inner_w, "", 0);
+                    const masked = try self.pw_input.view(a);
+                    const text = try std.fmt.allocPrint(a, "Passphrase: {s}", .{masked});
+                    try modalRow(&out.writer, vbar, inner_w, text, zz.width("Passphrase: ") + zz.width(masked));
+                }
+            },
+            .working => try modalRow(&out.writer, vbar, inner_w, "Working…", zz.width("Working…")),
+            .result => {
+                const sty = (zz.Style{}).fg(if (m.ok) .green else .red);
+                // Greedy word-wrap the outcome message into the inner width.
+                const msg = m.msg_buf[0..m.msg_len];
+                var start: usize = 0;
+                while (start < msg.len) {
+                    var end = @min(start + inner_w, msg.len);
+                    if (end < msg.len) {
+                        var b = end;
+                        while (b > start and msg[b] != ' ') b -= 1;
+                        if (b > start) end = b;
+                    }
+                    const seg = std.mem.trim(u8, msg[start..end], " ");
+                    const styled = sty.render(a, seg) catch seg;
+                    try modalRow(&out.writer, vbar, inner_w, styled, zz.width(seg));
+                    start = end;
+                    while (start < msg.len and msg[start] == ' ') start += 1;
+                }
+            },
+        }
+
+        try modalRow(&out.writer, vbar, inner_w, "", 0);
+        const hint = switch (m.stage) {
+            .menu => "enter: select   esc: close",
+            .password => "enter: confirm   esc: cancel",
+            .working => "please wait…",
+            .result => "press any key to close",
+        };
+        const hint_styled = (zz.Style{}).dim(true).render(a, hint) catch hint;
+        try modalRow(&out.writer, vbar, inner_w, hint_styled, zz.width(hint));
+        try modalRule(a, &out.writer, brand, inner_w, "└", "┘", "");
+
+        return out.toOwnedSlice();
+    }
+
     /// Joins the left nav column and the right detail block side by side. The
     /// left column lists every entry on every frame, so the coin list is always
     /// on screen regardless of what any coin is doing.
@@ -1628,7 +2387,13 @@ pub const App = struct {
 
             if (have_left) {
                 const e = entries[i];
-                const marker: []const u8 = if (i == selected) "> " else "  ";
+                // The selection marker is a bold, brand-coloured arrow so the
+                // current coin stands out at a glance; unselected rows get blank
+                // padding of the same visible width (2 cells) to keep alignment.
+                const marker: []const u8 = if (i == selected)
+                    (zz.Style{}).bold(true).fg(entryColor(e)).render(a, "❯ ") catch "❯ "
+                else
+                    "  ";
                 // Pad to the column width first, then colour the fixed-width
                 // label in the coin's brand colour. Padding before styling keeps
                 // the visible width at 12 (the ANSI codes are zero-width), so the
@@ -1646,6 +2411,40 @@ pub const App = struct {
         return out.toOwnedSlice();
     }
 };
+
+/// Write one content row of the wallet modal: `│ <text><pad> │`, where `text`
+/// occupies `vis` visible columns (it may carry zero-width ANSI styling) and is
+/// padded with spaces to `inner_w`. `vbar` is the pre-styled side bar.
+fn modalRow(w: *std.Io.Writer, vbar: []const u8, inner_w: usize, text: []const u8, vis: usize) !void {
+    try w.writeAll(vbar);
+    try w.writeByte(' ');
+    try w.writeAll(text);
+    if (inner_w > vis) try w.splatByteAll(' ', inner_w - vis);
+    try w.writeByte(' ');
+    try w.writeAll(vbar);
+    try w.writeByte('\n');
+}
+
+/// Write a top/bottom border row of the modal in the brand colour: the corner
+/// glyphs `left`/`right` with `inner_w + 2` box-drawing dashes between them. A
+/// non-empty `title` is inlined into the top rule (`┌─ Title ───┐`).
+fn modalRule(a: std.mem.Allocator, w: *std.Io.Writer, brand: zz.Color, inner_w: usize, left: []const u8, right: []const u8, title: []const u8) !void {
+    const total = inner_w + 2;
+    var line: std.Io.Writer.Allocating = .init(a);
+    defer line.deinit();
+    try line.writer.writeAll(left);
+    var used: usize = 0;
+    if (title.len > 0) {
+        try line.writer.print("─ {s} ", .{title});
+        used = 3 + zz.width(title);
+    }
+    while (used < total) : (used += 1) try line.writer.writeAll("─");
+    try line.writer.writeAll(right);
+
+    const styled = (zz.Style{}).fg(brand).render(a, line.written()) catch line.written();
+    try w.writeAll(styled);
+    try w.writeByte('\n');
+}
 
 /// Disk/memory "warning" threshold: at or above this used %, the capacity bar
 /// turns amber. `usage_red` is the more urgent step, turning it red.
@@ -1667,6 +2466,50 @@ fn usageColor(current: u64, total: u64) zz.Color {
 /// download progress and the headers/blocks sync).
 fn bar(a: std.mem.Allocator, current: u64, total: u64) ![]const u8 {
     return coloredBar(a, current, total, zz.Color.hex(app_color));
+}
+
+/// Human "behind by …" text from `secs` seconds behind the chain tip: the most
+/// significant non-zero unit among years/months/weeks/days/hours/minutes, plus
+/// the next unit down when it's also non-zero (e.g. "2 years 3 months behind",
+/// "5 days behind", "1 hour 30 minutes behind"). Returns "" when under a minute
+/// behind (effectively caught up) or when `secs <= 0`. The day-and-up units are
+/// calendar approximations (year = 365d, month = 30d, week = 7d); hours and
+/// minutes are exact — a "roughly how far back" readout, not a precise duration.
+fn formatBehind(a: std.mem.Allocator, secs: i64) ![]const u8 {
+    if (secs < std.time.s_per_min) return "";
+    var rem: u64 = @intCast(secs);
+
+    // Largest → smallest, each consuming its slice of the remainder.
+    const divisors = [_]u64{
+        365 * std.time.s_per_day, 30 * std.time.s_per_day, std.time.s_per_week,
+        std.time.s_per_day,       std.time.s_per_hour,     std.time.s_per_min,
+    };
+    const singular = [_][]const u8{ "year", "month", "week", "day", "hour", "minute" };
+    const plural = [_][]const u8{ "years", "months", "weeks", "days", "hours", "minutes" };
+
+    var counts: [divisors.len]u64 = undefined;
+    for (divisors, 0..) |d, idx| {
+        counts[idx] = rem / d;
+        rem %= d;
+    }
+
+    // Index of the most significant non-zero unit.
+    var i: usize = 0;
+    while (i < counts.len and counts[i] == 0) : (i += 1) {}
+    if (i == counts.len) return ""; // unreachable given the >= 1 minute guard
+
+    const primary = try std.fmt.allocPrint(a, "{d} {s}", .{
+        counts[i], if (counts[i] == 1) singular[i] else plural[i],
+    });
+    // Append the next unit down only when it's non-zero, so the readout stays
+    // contiguous ("3 months 1 week", never "2 years 1 day").
+    if (i + 1 < counts.len and counts[i + 1] != 0) {
+        const j = i + 1;
+        return std.fmt.allocPrint(a, "{s} {d} {s} behind", .{
+            primary, counts[j], if (counts[j] == 1) singular[j] else plural[j],
+        });
+    }
+    return std.fmt.allocPrint(a, "{s} behind", .{primary});
 }
 
 /// A capacity bar whose fill warns as it fills — for "fuller is worse" axes
@@ -1704,6 +2547,44 @@ fn coloredBar(a: std.mem.Allocator, current: u64, total: u64, fill: zz.Color) ![
         try std.fmt.allocPrint(a, " {d:.2}%", .{pct});
     const pct_styled = try p.percent_style.render(a, pct_str);
     return std.mem.concat(a, u8, &.{ bar_str, pct_styled });
+}
+
+test "formatBehind picks the top two contiguous units, pluralizing correctly" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    const minute = std.time.s_per_min;
+    const hour = std.time.s_per_hour;
+    const day = std.time.s_per_day;
+
+    // Under a minute behind reads as caught up (empty) — including non-positive.
+    try std.testing.expectEqualStrings("", try formatBehind(a, 0));
+    try std.testing.expectEqualStrings("", try formatBehind(a, -100));
+    try std.testing.expectEqualStrings("", try formatBehind(a, minute - 1));
+
+    // Minutes and hours, singular vs plural and contiguous pairs.
+    try std.testing.expectEqualStrings("1 minute behind", try formatBehind(a, minute));
+    try std.testing.expectEqualStrings("45 minutes behind", try formatBehind(a, 45 * minute));
+    try std.testing.expectEqualStrings("1 hour behind", try formatBehind(a, hour));
+    try std.testing.expectEqualStrings("1 hour 30 minutes behind", try formatBehind(a, hour + 30 * minute));
+    try std.testing.expectEqualStrings("2 days 3 hours behind", try formatBehind(a, 2 * day + 3 * hour));
+
+    // Single unit, singular vs plural.
+    try std.testing.expectEqualStrings("1 day behind", try formatBehind(a, day));
+    try std.testing.expectEqualStrings("5 days behind", try formatBehind(a, 5 * day));
+    try std.testing.expectEqualStrings("1 week behind", try formatBehind(a, 7 * day));
+
+    // Two contiguous units (year = 365d, month = 30d, week = 7d).
+    try std.testing.expectEqualStrings("1 week 2 days behind", try formatBehind(a, 9 * day));
+    try std.testing.expectEqualStrings("3 months 1 week behind", try formatBehind(a, (90 + 7) * day));
+    try std.testing.expectEqualStrings("2 years 3 months behind", try formatBehind(a, (2 * 365 + 90) * day));
+
+    // The second unit is shown only when non-zero, never skipping a zero unit:
+    // exactly two years has no months, so it stays a single unit. Likewise a
+    // day with zero hours drops the trailing minutes rather than skipping hours.
+    try std.testing.expectEqualStrings("2 years behind", try formatBehind(a, 2 * 365 * day));
+    try std.testing.expectEqualStrings("1 day behind", try formatBehind(a, day + 5 * minute));
 }
 
 test "usageColor steps green → amber → red at the 75/90 thresholds" {
@@ -2175,6 +3056,183 @@ test "coin pane renders a Memory line with the current used figure" {
 
     try std.testing.expect(std.mem.indexOf(u8, out, "Memory") != null);
     try std.testing.expect(std.mem.indexOf(u8, out, "50.00%") != null);
+}
+
+test "the Status line reflects the daemon's live activity" {
+    if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
+    const allocator = std.testing.allocator;
+
+    var threaded: std.Io.Threaded = .init(allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    var env = std.process.Environ.Map.init(allocator);
+    defer env.deinit();
+    try env.put("HOME", "/home/tester");
+    var ctx = zz.Context.init(allocator, allocator, io, &env);
+
+    var app: App = undefined;
+    _ = app.init(&ctx);
+    defer app.deinit();
+
+    app.selected = std.mem.indexOfScalar(Entry, &entries, .divi).?;
+    const act = &app.activities[app.selected];
+
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    // An install in flight outranks the daemon state: download then extract.
+    act.phase.store(@intFromEnum(Phase.downloading), .release);
+    try std.testing.expect(std.mem.indexOf(u8, app.renderDetail(a), "Downloading…") != null);
+    act.phase.store(@intFromEnum(Phase.extracting), .release);
+    try std.testing.expect(std.mem.indexOf(u8, app.renderDetail(a), "Extracting…") != null);
+    act.phase.store(@intFromEnum(Phase.idle), .release);
+
+    // Installed but stopped → Idle.
+    act.installed = true;
+    act.daemon.store(@intFromEnum(DaemonState.stopped), .release);
+    act.poll_completed = true; // not awaiting first poll
+    try std.testing.expect(std.mem.indexOf(u8, app.renderDetail(a), "Idle") != null);
+
+    // Running, still warming up (a phase was probed) → the phase is the status.
+    act.daemon.store(@intFromEnum(DaemonState.running), .release);
+    act.loading_phase = .verifying;
+    try std.testing.expect(std.mem.indexOf(u8, app.renderDetail(a), "Verifying…") != null);
+
+    // Warm-up done, no peers yet → waiting for peers.
+    act.loading_phase = .none;
+    act.peers = 0;
+    try std.testing.expect(std.mem.indexOf(u8, app.renderDetail(a), "Waiting for peers…") != null);
+
+    // Peers connected and caught up → Synced.
+    act.peers = 8;
+    act.sync = .synced;
+    const out = app.renderDetail(a);
+    try std.testing.expect(std.mem.indexOf(u8, out, "Synced") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "Verifying") == null);
+}
+
+test "the Wallet line advertises the w key once the wallet is manageable" {
+    if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
+    const allocator = std.testing.allocator;
+
+    var threaded: std.Io.Threaded = .init(allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    var env = std.process.Environ.Map.init(allocator);
+    defer env.deinit();
+    try env.put("HOME", "/home/tester");
+    var ctx = zz.Context.init(allocator, allocator, io, &env);
+
+    var app: App = undefined;
+    _ = app.init(&ctx);
+    defer app.deinit();
+
+    app.selected = std.mem.indexOfScalar(Entry, &entries, .divi).?;
+    const act = &app.activities[app.selected];
+
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    // Daemon down / wallet unknown → no hint (a `w` press would be a no-op).
+    act.daemon.store(@intFromEnum(DaemonState.stopped), .release);
+    act.wallet = .unknown;
+    try std.testing.expect(std.mem.indexOf(u8, app.renderDetail(a), "press w") == null);
+
+    // Daemon up with a known wallet state → the hint appears beside the Wallet line.
+    act.daemon.store(@intFromEnum(DaemonState.running), .release);
+    act.wallet = .locked;
+    try std.testing.expect(std.mem.indexOf(u8, app.renderDetail(a), "press w") != null);
+}
+
+test "wallet menu offers the actions that fit the wallet state" {
+    var buf: [3]WalletAction = undefined;
+
+    // Unencrypted → only Encrypt.
+    {
+        const n = walletOptions(.unencrypted, false, &buf);
+        try std.testing.expectEqual(@as(usize, 1), n);
+        try std.testing.expectEqual(WalletAction.encrypt, buf[0]);
+    }
+    // Locked on a proof-of-work coin → just Unlock.
+    {
+        const n = walletOptions(.locked, false, &buf);
+        try std.testing.expectEqual(@as(usize, 1), n);
+        try std.testing.expectEqual(WalletAction.unlock, buf[0]);
+    }
+    // Locked on a proof-of-stake coin → Unlock + Unlock-for-staking.
+    {
+        const n = walletOptions(.locked, true, &buf);
+        try std.testing.expectEqual(@as(usize, 2), n);
+        try std.testing.expectEqual(WalletAction.unlock, buf[0]);
+        try std.testing.expectEqual(WalletAction.stake, buf[1]);
+    }
+    // Unlocked (either flavour) → Lock.
+    {
+        try std.testing.expectEqual(@as(usize, 1), walletOptions(.unlocked, true, &buf));
+        try std.testing.expectEqual(WalletAction.lock, buf[0]);
+        try std.testing.expectEqual(@as(usize, 1), walletOptions(.unlocked_for_staking, true, &buf));
+        try std.testing.expectEqual(WalletAction.lock, buf[0]);
+    }
+    // Unknown → no actions (the menu won't open).
+    try std.testing.expectEqual(@as(usize, 0), walletOptions(.unknown, true, &buf));
+
+    // Only lock skips the passphrase prompt.
+    try std.testing.expect(WalletAction.encrypt.needsPassword());
+    try std.testing.expect(WalletAction.unlock.needsPassword());
+    try std.testing.expect(WalletAction.stake.needsPassword());
+    try std.testing.expect(!WalletAction.lock.needsPassword());
+}
+
+test "WalletState mirrors the normalized WalletSecurity" {
+    try std.testing.expectEqual(WalletState.unknown, WalletState.fromSecurity(.unknown));
+    try std.testing.expectEqual(WalletState.unencrypted, WalletState.fromSecurity(.unencrypted));
+    try std.testing.expectEqual(WalletState.locked, WalletState.fromSecurity(.locked));
+    try std.testing.expectEqual(WalletState.unlocked, WalletState.fromSecurity(.unlocked));
+    try std.testing.expectEqual(WalletState.unlocked_for_staking, WalletState.fromSecurity(.unlocked_for_staking));
+}
+
+test "the wallet modal renders its menu centered over the dashboard" {
+    if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
+    const allocator = std.testing.allocator;
+
+    var threaded: std.Io.Threaded = .init(allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    var env = std.process.Environ.Map.init(allocator);
+    defer env.deinit();
+    try env.put("HOME", "/home/tester");
+    var ctx = zz.Context.init(allocator, allocator, io, &env);
+
+    var app: App = undefined;
+    _ = app.init(&ctx);
+    defer app.deinit();
+
+    // Open a Divi (proof-of-stake) wallet modal on a locked wallet by hand — the
+    // open gate needs a running daemon, so set the modal up directly here.
+    app.selected = std.mem.indexOfScalar(Entry, &entries, .divi).?;
+    var m: Modal = .{ .coin_idx = app.selected };
+    m.option_count = walletOptions(.locked, true, &m.options);
+    app.modal = m;
+
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    const screen = try App.renderTwoPane(a, app.selected, "right pane\n");
+    const out = try app.renderModalOver(a, screen, 80, 24);
+
+    // The modal's title and both locked-state actions appear in the composited
+    // screen, framed by the box border.
+    try std.testing.expect(std.mem.indexOf(u8, out, "Divi Wallet") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "Unlock") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "Unlock for staking") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "┌") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "┘") != null);
 }
 
 test "left bar pins Home on top and lists coins alphabetically" {
