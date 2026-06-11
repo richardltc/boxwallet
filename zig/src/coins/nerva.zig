@@ -119,6 +119,18 @@ pub const Nerva = struct {
     // installer derives a sibling `.tar` from this name during decompression.
     pub const scratch_file = ".boxwallet-nerva.part";
 
+    /// Quicksync block-hash file. Nerva publishes a `quicksync.raw` (~130 MB)
+    /// alongside each release: a precomputed set of the chain's block hashes.
+    /// `nervad --quicksync <file>` validates blocks against these during the
+    /// initial sync instead of hashing every block itself, cutting a from-scratch
+    /// sync from hours to ~20 minutes. It's a pure *accelerator* — it never rewrites
+    /// the local DB — so it's safe to keep passing once caught up (the daemon simply
+    /// has nothing left to fast-validate). It's plain chain data, identical across
+    /// platforms, so unlike the binary bundle it isn't gated on the build target;
+    /// it lives at the same release base as the binaries.
+    pub const quicksync_file = "quicksync.raw";
+    const quicksync_url = release_base ++ quicksync_file;
+
     /// Build the type-erased `Coin` handle for this instance.
     pub fn coin(self: *Nerva) Coin {
         return .{ .ptr = self, .vtable = &vtable };
@@ -295,6 +307,83 @@ pub const Nerva = struct {
         cleanupAppleDouble(allocator, install_root);
     }
 
+    /// Download `quicksync.raw` into `install_root` so the next daemon start can
+    /// fast-sync (see `daemonArgv` and the `sync_accelerator` capability). Streamed
+    /// straight to disk like any other download — flat memory regardless of the
+    /// file's ~130 MB. This is the opt-in path: it runs only when the user accepts
+    /// the QuickSync prompt at daemon start, so its failure *is* surfaced (the user
+    /// asked for it) — but a *partial* file would be fed to nervad as if complete,
+    /// so any leftover is removed before the error propagates.
+    fn quicksyncDownload(
+        allocator: std.mem.Allocator,
+        install_root: []const u8,
+        progress: ?install_mod.Progress,
+    ) anyerror!void {
+        install_mod.downloadFile(allocator, quicksync_url, install_root, quicksync_file, progress) catch |err| {
+            deleteQuicksync(allocator, install_root);
+            return err;
+        };
+    }
+
+    /// Whether to offer QuickSync before launching nervad: only when the chain
+    /// hasn't reached a full sync yet (no `quicksync.done` marker — see
+    /// `vtOnSynced`) *and* the file isn't already present (a prior opt-in still
+    /// mid-sync, which `daemonArgv` picks up without re-prompting). A pure disk
+    /// check, so it runs with the daemon down.
+    fn quicksyncShouldOffer(allocator: std.mem.Allocator, install_root: []const u8, _: []const u8) bool {
+        if (syncedMarkerExists(allocator, install_root)) return false;
+        if (quicksyncExists(allocator, install_root)) return false;
+        return true;
+    }
+
+    /// The sync-accelerator capability wired into the vtable. `app.zig` calls
+    /// `should_offer` before a daemon start and, on the user's yes, runs `download`
+    /// on a worker thread, then launches (where `daemonArgv` passes `--quicksync`).
+    pub const sync_accelerator: Coin.SyncAccelerator = .{
+        .name = "QuickSync",
+        .prompt_detail = "Download ~130 MB of precomputed block hashes to sync in ~20 min instead of hours.",
+        .should_offer = quicksyncShouldOffer,
+        .download = quicksyncDownload,
+    };
+
+    /// Marker file written once the chain first reaches a full sync, so QuickSync is
+    /// no longer offered on later starts (the heavy lifting is done). It outlives the
+    /// quicksync file, which is deleted at the same moment.
+    pub const quicksync_done_file = "quicksync.done";
+
+    /// True once the full-sync marker has been written into `install_root`.
+    fn syncedMarkerExists(allocator: std.mem.Allocator, install_root: []const u8) bool {
+        return install_mod.fileExists(allocator, install_root, quicksync_done_file);
+    }
+
+    /// Record that the chain reached a full sync (best-effort). Leaves the marker so
+    /// `quicksyncShouldOffer` returns false from now on.
+    fn writeSyncedMarker(allocator: std.mem.Allocator, install_root: []const u8) void {
+        var threaded: std.Io.Threaded = .init(allocator, .{});
+        defer threaded.deinit();
+        const io = threaded.io();
+        var dir = std.Io.Dir.cwd().openDir(io, install_root, .{}) catch return;
+        defer dir.close(io);
+        dir.writeFile(io, .{ .sub_path = quicksync_done_file, .data = "synced\n" }) catch {};
+    }
+
+    /// True once `quicksync.raw` has been fetched into `install_root`.
+    fn quicksyncExists(allocator: std.mem.Allocator, install_root: []const u8) bool {
+        return install_mod.fileExists(allocator, install_root, quicksync_file);
+    }
+
+    /// Remove a (possibly partial) `quicksync.raw` from `install_root`. Best-effort:
+    /// a missing file is fine, and a failure just leaves the next start to fall back
+    /// to a normal sync.
+    fn deleteQuicksync(allocator: std.mem.Allocator, install_root: []const u8) void {
+        var threaded: std.Io.Threaded = .init(allocator, .{});
+        defer threaded.deinit();
+        const io = threaded.io();
+        var dir = std.Io.Dir.cwd().openDir(io, install_root, .{}) catch return;
+        defer dir.close(io);
+        dir.deleteFile(io, quicksync_file) catch {};
+    }
+
     /// Remove the `._<wrapper>` AppleDouble sibling that Nerva's macOS-built
     /// tarballs carry at the archive root (the matching ones inside the wrapper go
     /// with it when `promoteAndTidy` drops the tree). Best-effort; no-op on the
@@ -342,10 +431,27 @@ pub const Nerva = struct {
     }
 
     /// `nervad --non-interactive` (so it runs as a server rather than opening its
-    /// interactive console). Caller owns the returned slice and its strings.
+    /// interactive console), plus `--quicksync <file>` when the quicksync block-hash
+    /// file is present (fetched at install) so the first sync is fast. Passing
+    /// `--quicksync` once already caught up is harmless — it only ever skips
+    /// recomputing hashes the daemon already has — so it's keyed purely off the file
+    /// existing, with no sync-state check. Caller owns the returned slice and its
+    /// strings.
     pub fn daemonArgv(allocator: std.mem.Allocator, install_root: []const u8, _: []const u8) ![]const []const u8 {
         const path = try std.fs.path.join(allocator, &.{ install_root, daemon_file });
         errdefer allocator.free(path);
+
+        if (quicksyncExists(allocator, install_root)) {
+            const qs_path = try std.fs.path.join(allocator, &.{ install_root, quicksync_file });
+            errdefer allocator.free(qs_path);
+            const argv = try allocator.alloc([]const u8, 4);
+            argv[0] = path;
+            argv[1] = try allocator.dupe(u8, "--non-interactive");
+            argv[2] = try allocator.dupe(u8, "--quicksync");
+            argv[3] = qs_path;
+            return argv;
+        }
+
         const argv = try allocator.alloc([]const u8, 2);
         argv[0] = path;
         argv[1] = try allocator.dupe(u8, "--non-interactive");
@@ -810,6 +916,8 @@ pub const Nerva = struct {
         .daemon_argv = vtDaemonArgv,
         .request_stop = vtRequestStop,
         .external_wallet = &external_wallet,
+        .on_synced = vtOnSynced,
+        .sync_accelerator = &sync_accelerator,
     };
 
     fn vtCoinName(_: *anyopaque) []const u8 {
@@ -896,6 +1004,21 @@ pub const Nerva = struct {
         auth: models.CoinAuth,
     ) anyerror!void {
         return requestStop(allocator, auth);
+    }
+    fn vtOnSynced(
+        _: *anyopaque,
+        allocator: std.mem.Allocator,
+        install_root: []const u8,
+        _: []const u8,
+    ) anyerror!void {
+        // The sync is done, so (1) mark it so QuickSync is never offered again for
+        // this install, and (2) drop the ~130 MB quicksync file to reclaim the disk
+        // and stop `daemonArgv` passing `--quicksync` on later starts. The delete is
+        // safe even though the running daemon was launched with the file — it's
+        // finished consuming it by the time the chain reads as synced (and on POSIX
+        // an unlink leaves the daemon's own handle intact regardless).
+        writeSyncedMarker(allocator, install_root);
+        deleteQuicksync(allocator, install_root);
     }
 };
 
@@ -1004,6 +1127,116 @@ test "platform selection resolves a bundle for the build target" {
     } else {
         try std.testing.expectEqualStrings("nervad", Nerva.daemon_file);
     }
+}
+
+test "quicksync URL sits at the same release base as the binaries" {
+    // The quicksync file is plain chain data (not platform-gated), so it always
+    // resolves — carrying the pinned version and the canonical filename.
+    try std.testing.expect(std.mem.indexOf(u8, Nerva.quicksync_url, "/v" ++ Nerva.core_version ++ "/") != null);
+    try std.testing.expect(std.mem.endsWith(u8, Nerva.quicksync_url, "/quicksync.raw"));
+}
+
+test "daemonArgv adds --quicksync only when the file is present" {
+    const allocator = std.testing.allocator;
+
+    var threaded: std.Io.Threaded = .init(allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    const root = "test-nerva-quicksync-root";
+    std.Io.Dir.cwd().deleteTree(io, root) catch {};
+    defer std.Io.Dir.cwd().deleteTree(io, root) catch {};
+    var rd = try std.Io.Dir.cwd().createDirPathOpen(io, root, .{});
+    defer rd.close(io);
+
+    // No quicksync file → bare `--non-interactive`, no quicksync flag.
+    {
+        const argv = try Nerva.daemonArgv(allocator, root, "");
+        defer {
+            for (argv) |a| allocator.free(a);
+            allocator.free(argv);
+        }
+        try std.testing.expectEqual(@as(usize, 2), argv.len);
+        const joined = try std.mem.join(allocator, " ", argv);
+        defer allocator.free(joined);
+        try std.testing.expect(std.mem.indexOf(u8, joined, "--quicksync") == null);
+    }
+
+    // Lay down quicksync.raw and it's threaded in as `--quicksync <abs path>`.
+    try rd.writeFile(io, .{ .sub_path = Nerva.quicksync_file, .data = "RAW" });
+    {
+        const argv = try Nerva.daemonArgv(allocator, root, "");
+        defer {
+            for (argv) |a| allocator.free(a);
+            allocator.free(argv);
+        }
+        try std.testing.expectEqual(@as(usize, 4), argv.len);
+        try std.testing.expectEqualStrings("--quicksync", argv[2]);
+        // The flag's argument is the full path to the file under the install root.
+        try std.testing.expect(std.mem.startsWith(u8, argv[3], root));
+        try std.testing.expect(std.mem.endsWith(u8, argv[3], Nerva.quicksync_file));
+    }
+}
+
+test "onSynced removes quicksync, marks done, and stops offering it" {
+    const allocator = std.testing.allocator;
+
+    var threaded: std.Io.Threaded = .init(allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    const root = "test-nerva-onsynced-root";
+    std.Io.Dir.cwd().deleteTree(io, root) catch {};
+    defer std.Io.Dir.cwd().deleteTree(io, root) catch {};
+    var rd = try std.Io.Dir.cwd().createDirPathOpen(io, root, .{});
+    defer rd.close(io);
+    try rd.writeFile(io, .{ .sub_path = Nerva.quicksync_file, .data = "RAW" });
+    try std.testing.expect(Nerva.quicksyncExists(allocator, root));
+
+    // The post-sync hook (via the vtable, as the app calls it) drops the file and
+    // writes the done-marker.
+    var n: Nerva = .{};
+    try n.coin().onSynced(allocator, root, "");
+    try std.testing.expect(!Nerva.quicksyncExists(allocator, root));
+    try std.testing.expect(Nerva.syncedMarkerExists(allocator, root));
+
+    // A synced install never offers QuickSync again.
+    try std.testing.expect(!Nerva.quicksyncShouldOffer(allocator, root, ""));
+
+    // Idempotent: running again is a no-op, not an error.
+    try n.coin().onSynced(allocator, root, "");
+}
+
+test "quicksyncShouldOffer: only on a fresh, unsynced install without the file" {
+    const allocator = std.testing.allocator;
+
+    var threaded: std.Io.Threaded = .init(allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    const root = "test-nerva-offer-root";
+    std.Io.Dir.cwd().deleteTree(io, root) catch {};
+    defer std.Io.Dir.cwd().deleteTree(io, root) catch {};
+    var rd = try std.Io.Dir.cwd().createDirPathOpen(io, root, .{});
+    defer rd.close(io);
+
+    // Fresh install, never synced, no quicksync yet → offer it.
+    try std.testing.expect(Nerva.quicksyncShouldOffer(allocator, root, ""));
+
+    // Quicksync already downloaded (a prior opt-in still mid-sync) → don't re-ask;
+    // `daemonArgv` will use the existing file.
+    try rd.writeFile(io, .{ .sub_path = Nerva.quicksync_file, .data = "RAW" });
+    try std.testing.expect(!Nerva.quicksyncShouldOffer(allocator, root, ""));
+
+    // And once the chain is fully synced (marker present), never offer it.
+    try rd.deleteFile(io, Nerva.quicksync_file);
+    try rd.writeFile(io, .{ .sub_path = Nerva.quicksync_done_file, .data = "synced\n" });
+    try std.testing.expect(!Nerva.quicksyncShouldOffer(allocator, root, ""));
+
+    // The capability is wired so the app can reach it.
+    var n: Nerva = .{};
+    try std.testing.expect(n.coin().syncAccelerator() != null);
+    try std.testing.expectEqualStrings("QuickSync", n.coin().syncAccelerator().?.name);
 }
 
 test "coin vtable dispatches to Nerva metadata" {
