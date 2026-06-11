@@ -7,6 +7,13 @@ pub const CoinAuth = struct {
     rpc_password: []const u8,
     ip_address: []const u8,
     port: []const u8,
+    /// The coin's data directory — where its conf (and, for some coins, an
+    /// out-of-band credential file) lives. `readAuth` fills this in so a coin
+    /// whose secret isn't a `key=value` conf entry can locate it (Epic reads its
+    /// Owner-API secret from `<data_dir>/.api_secret`). Empty when the auth was
+    /// built without a data dir (e.g. the external-wallet auth); coins that don't
+    /// need it ignore it.
+    data_dir: []const u8 = "",
 };
 
 /// JSON-RPC response envelope. Daemons reply with
