@@ -45,6 +45,9 @@ pub fn readAuth(
         .rpc_password = try allocator.dupe(u8, ""),
         .ip_address = try allocator.dupe(u8, "127.0.0.1"),
         .port = try allocator.dupe(u8, default_port),
+        // Carry the data dir so a coin can locate an out-of-band credential file
+        // (e.g. Epic's `.api_secret`) that isn't part of the `key=value` conf.
+        .data_dir = try allocator.dupe(u8, data_dir),
     };
     errdefer freeAuth(allocator, auth);
 
@@ -204,6 +207,7 @@ pub fn freeAuth(allocator: std.mem.Allocator, auth: models.CoinAuth) void {
     allocator.free(auth.rpc_password);
     allocator.free(auth.ip_address);
     allocator.free(auth.port);
+    allocator.free(auth.data_dir);
 }
 
 test "dataDir builds the coin home under the process home (posix)" {

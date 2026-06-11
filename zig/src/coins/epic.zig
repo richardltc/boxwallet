@@ -24,12 +24,16 @@ const Coin = @import("../coin.zig").Coin;
 ///     `get_status` method drives the poll: it reports `sync_status`, peer
 ///     `connections`, the chain `tip`, and (while syncing) a `sync_info` with the
 ///     current/highest heights. The node binds the API to localhost only.
-///   * **Auth** — the Owner API requires HTTP basic auth (`epic:<secret>`, the
-///     secret read from `~/.epic/main/.api_secret`). BoxWallet pre-seeds that
-///     file with a fixed secret before first launch so the auth is deterministic
-///     (the daemon only generates a random secret when the file is absent).
-///     Shipping a fixed secret is acceptable for the same reason as Ergo's
-///     api_key: the API is bound to 127.0.0.1.
+///   * **Auth** — the Owner API requires HTTP basic auth (`epic:<secret>`). The
+///     secret lives in `~/.epic/main/.api_secret`: BoxWallet pre-seeds a fixed
+///     one before first launch (see `prepareConf`), but the daemon generates its
+///     own random secret if it ever runs without that seed. So each call *reads
+///     the secret from the file* (`apiSecret`) and authenticates with whatever is
+///     there, falling back to the built-in fixed value only if the file can't be
+///     read. Authenticating against the file — rather than assuming the fixed
+///     value — is what stops a daemon-owned random secret from 401-ing every
+///     status poll. Shipping a fixed fallback is acceptable for the same reason
+///     as Ergo's api_key: the API is bound to 127.0.0.1.
 ///   * **Consensus** — proof-of-work, so no staking.
 ///   * **Stop** — the Owner API exposes no shutdown method, so the node is
 ///     stopped by sending it SIGTERM (Linux-only, which is the only target Epic
@@ -61,10 +65,12 @@ pub const Epic = struct {
     /// shared paths that read it; the poll uses the fixed header below.
     pub const rpc_default_username = "epic";
 
-    // Fixed Owner-API secret BoxWallet seeds into `~/.epic/main/.api_secret` and
-    // authenticates with. Acceptable to ship because the API binds to 127.0.0.1
-    // only (same rationale as Ergo's fixed api_key). The daemon reads only the
-    // first line of the secret file.
+    // Fixed Owner-API secret BoxWallet pre-seeds into `~/.epic/main/.api_secret`
+    // when none exists (see `prepareConf`), and the fallback `apiSecret` uses if
+    // the file can't be read. The *live* auth secret is whatever the file holds —
+    // the daemon generates its own random one if it first ran unseeded. Acceptable
+    // to ship a fixed fallback because the API binds to 127.0.0.1 only (same
+    // rationale as Ergo's fixed api_key). The daemon reads only the first line.
     const api_secret = "BoxWalletEpicLocalApiSecret";
     const secret_file = ".api_secret";
 
@@ -177,10 +183,46 @@ pub const Epic = struct {
         };
     }
 
+    /// Parse the significant part of a `.api_secret` file: the trimmed first line.
+    /// The daemon reads only the first line, so a trailing newline (and anything
+    /// after it) is ignored. Pure, so the parse is unit-testable on its own.
+    fn parseSecret(bytes: []const u8) []const u8 {
+        const eol = std.mem.indexOfScalar(u8, bytes, '\n') orelse bytes.len;
+        return std.mem.trim(u8, bytes[0..eol], " \t\r");
+    }
+
+    /// Read the daemon's Owner-API secret from `<data_dir>/.api_secret`, returning
+    /// an owned copy of the first line. Errors if `data_dir` is empty or the file
+    /// is missing/unreadable/empty. Bounded to a small buffer (the secret is short
+    /// and only the first line matters).
+    fn readSecretAt(allocator: std.mem.Allocator, io: std.Io, data_dir: []const u8) ![]u8 {
+        if (data_dir.len == 0) return error.NoDataDir;
+
+        var dir = try std.Io.Dir.cwd().openDir(io, data_dir, .{});
+        defer dir.close(io);
+        var f = try dir.openFile(io, secret_file, .{});
+        defer f.close(io);
+
+        var buf: [256]u8 = undefined;
+        const n = try f.readPositionalAll(io, &buf, 0);
+        const line = parseSecret(buf[0..n]);
+        if (line.len == 0) return error.EmptySecret;
+        return allocator.dupe(u8, line);
+    }
+
+    /// The Owner-API secret to authenticate with: whatever `<data_dir>/.api_secret`
+    /// holds (the daemon's own random secret or BoxWallet's pre-seed), falling back
+    /// to the built-in fixed secret when the file can't be read. `data_dir` rides
+    /// in on `CoinAuth` (filled by `conf.readAuth`). Caller owns the returned slice.
+    fn apiSecret(allocator: std.mem.Allocator, io: std.Io, data_dir: []const u8) ![]u8 {
+        return readSecretAt(allocator, io, data_dir) catch try allocator.dupe(u8, api_secret);
+    }
+
     /// POST a JSON-RPC `method` (no params) at the local Owner API and return the
-    /// raw response body. Caller owns the returned slice. Carries the fixed basic-
-    /// auth header; a 401 surfaces as `error.AuthFailed`.
-    fn ownerCall(allocator: std.mem.Allocator, method: []const u8) ![]u8 {
+    /// raw response body. Caller owns the returned slice. Builds the basic-auth
+    /// header from the secret in `<data_dir>/.api_secret`; a 401 surfaces as
+    /// `error.AuthFailed`.
+    fn ownerCall(allocator: std.mem.Allocator, method: []const u8, data_dir: []const u8) ![]u8 {
         var threaded: std.Io.Threaded = .init(allocator, .{});
         defer threaded.deinit();
 
@@ -196,7 +238,9 @@ pub const Epic = struct {
         );
         defer allocator.free(payload);
 
-        const auth_header = try basicAuthHeader(allocator, rpc_default_username, api_secret);
+        const secret = try apiSecret(allocator, threaded.io(), data_dir);
+        defer allocator.free(secret);
+        const auth_header = try basicAuthHeader(allocator, rpc_default_username, secret);
         defer allocator.free(auth_header);
 
         var body: std.Io.Writer.Allocating = .init(allocator);
@@ -217,9 +261,10 @@ pub const Epic = struct {
         return body.toOwnedSlice();
     }
 
-    /// Fetch + parse `get_status`, returning the normalized `Derived` view.
-    fn fetchStatus(allocator: std.mem.Allocator) !Derived {
-        const raw = try ownerCall(allocator, "get_status");
+    /// Fetch + parse `get_status`, returning the normalized `Derived` view. Reads
+    /// the Owner-API secret from `auth.data_dir` (filled by `conf.readAuth`).
+    fn fetchStatus(allocator: std.mem.Allocator, data_dir: []const u8) !Derived {
+        const raw = try ownerCall(allocator, "get_status", data_dir);
         defer allocator.free(raw);
         var parsed = try std.json.parseFromSlice(StatusEnvelope, allocator, raw, .{
             .ignore_unknown_fields = true,
@@ -234,13 +279,13 @@ pub const Epic = struct {
 
     /// Live `get_status`, normalized for the frontend. Epic reports its sync phase
     /// and the network tip directly, so "synced" comes from the daemon rather than
-    /// a peer-height comparison. `auth` is unused — the Owner API auth is fixed.
+    /// a peer-height comparison. Only `auth.data_dir` is used — to locate the
+    /// Owner-API secret; the host/port are fixed at 127.0.0.1:3413.
     pub fn blockchainState(
         allocator: std.mem.Allocator,
         auth: models.CoinAuth,
     ) !models.BlockchainState {
-        _ = auth;
-        const d = try fetchStatus(allocator);
+        const d = try fetchStatus(allocator, auth.data_dir);
         return .{
             // BoxWallet runs mainnet only; the Owner API doesn't echo the chain.
             .chain = try allocator.dupe(u8, "mainnet"),
@@ -259,13 +304,13 @@ pub const Epic = struct {
     }
 
     /// Live `get_status`, normalized for the frontend. Epic is proof-of-work, so
-    /// `staking_active` is always false. `auth` is unused (fixed Owner API auth).
+    /// `staking_active` is always false. Only `auth.data_dir` is used — to locate
+    /// the Owner-API secret.
     pub fn daemonInfo(
         allocator: std.mem.Allocator,
         auth: models.CoinAuth,
     ) !models.DaemonInfo {
-        _ = auth;
-        const d = try fetchStatus(allocator);
+        const d = try fetchStatus(allocator, auth.data_dir);
         return .{
             .blocks = d.blocks,
             .connections = d.connections,
@@ -670,6 +715,51 @@ test "basicAuthHeader base64-encodes epic:<secret>" {
     defer allocator.free(header);
     // base64("epic:secret") == "ZXBpYzpzZWNyZXQ="
     try std.testing.expectEqualStrings("Basic ZXBpYzpzZWNyZXQ=", header);
+}
+
+test "parseSecret takes the trimmed first line of the secret file" {
+    // A daemon-written secret with a trailing newline — the common case the old
+    // hardcoded-secret path got wrong.
+    try std.testing.expectEqualStrings("nsJCAOlpo7yqPMWvwiPh", Epic.parseSecret("nsJCAOlpo7yqPMWvwiPh\n"));
+    // CRLF + a stray second line: only the first line counts, surrounding space trims.
+    try std.testing.expectEqualStrings("abc123", Epic.parseSecret("  abc123 \r\nignored second line\n"));
+    // No trailing newline at all is fine.
+    try std.testing.expectEqualStrings("solo", Epic.parseSecret("solo"));
+    // An empty/whitespace first line yields empty, so the caller falls back.
+    try std.testing.expectEqualStrings("", Epic.parseSecret("\nsomething"));
+    try std.testing.expectEqualStrings("", Epic.parseSecret("   \n"));
+}
+
+test "readSecretAt reads a daemon-generated secret from disk, errors when absent" {
+    if (builtin.os.tag == .windows) return error.SkipZigTest;
+    const allocator = std.testing.allocator;
+
+    var threaded: std.Io.Threaded = .init(allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    const data_dir = "test-epic-secret-dir";
+    std.Io.Dir.cwd().deleteTree(io, data_dir) catch {};
+    defer std.Io.Dir.cwd().deleteTree(io, data_dir) catch {};
+
+    // No data dir / file yet → an error (the caller falls back to the fixed one).
+    try std.testing.expectError(error.FileNotFound, Epic.readSecretAt(allocator, io, data_dir));
+    // An empty data dir short-circuits before touching the filesystem.
+    try std.testing.expectError(error.NoDataDir, Epic.readSecretAt(allocator, io, ""));
+
+    // Seed a daemon-style random secret (with a trailing newline) and read it back
+    // verbatim — this is the case the old hardcoded-secret path 401'd on.
+    var dir = try std.Io.Dir.cwd().createDirPathOpen(io, data_dir, .{});
+    defer dir.close(io);
+    try dir.writeFile(io, .{ .sub_path = Epic.secret_file, .data = "nsJCAOlpo7yqPMWvwiPh\n" });
+
+    const got = try Epic.readSecretAt(allocator, io, data_dir);
+    defer allocator.free(got);
+    try std.testing.expectEqualStrings("nsJCAOlpo7yqPMWvwiPh", got);
+
+    // An empty secret file is treated as unusable (the daemon would reject it too).
+    try dir.writeFile(io, .{ .sub_path = Epic.secret_file, .data = "\n" });
+    try std.testing.expectError(error.EmptySecret, Epic.readSecretAt(allocator, io, data_dir));
 }
 
 test "coin vtable dispatches to Epic metadata, no wallet" {
