@@ -26,7 +26,11 @@ pub const ReddCoin = struct {
     pub const coin_name = "ReddCoin";
     pub const coin_name_abbrev = "RDD";
     /// ReddCoin brand colour (`#RRGGBB`), for tinting the coin in the frontend.
-    pub const coin_color = "#ED1C24";
+    pub const coin_color = "#e30613";
+    /// Secondary brand colour for the "Coin" half of the wordmark — the nav draws
+    /// "Redd" in `coin_color` and "Coin" in this near-white. Split after "Redd".
+    pub const coin_color_alt = "#f0f0f0";
+    pub const wordmark_split = "Redd".len;
     /// ReddCoin is proof-of-stake (PoSV) — the wallet can stake.
     pub const proof_of_stake = true;
     pub const conf_file = "reddcoin.conf";
@@ -287,6 +291,7 @@ pub const ReddCoin = struct {
         .coin_name = vtCoinName,
         .coin_name_abbrev = vtCoinNameAbbrev,
         .coin_color = vtCoinColor,
+        .wordmark = vtWordmark,
         .core_version = vtCoreVersion,
         .proof_of_stake = vtProofOfStake,
         .conf_file = vtConfFile,
@@ -319,6 +324,10 @@ pub const ReddCoin = struct {
     }
     fn vtCoinColor(_: *anyopaque) []const u8 {
         return coin_color;
+    }
+    /// "Redd" in `coin_color`, "Coin" in `coin_color_alt`.
+    fn vtWordmark(_: *anyopaque) Coin.Wordmark {
+        return .{ .split = wordmark_split, .alt_color = coin_color_alt };
     }
     fn vtCoreVersion(_: *anyopaque) []const u8 {
         return core_version;
@@ -559,7 +568,7 @@ test "coin vtable dispatches to ReddCoin metadata" {
     const c = rdd.coin();
     try std.testing.expectEqualStrings("ReddCoin", c.coinName());
     try std.testing.expectEqualStrings("RDD", c.coinNameAbbrev());
-    try std.testing.expectEqualStrings("#ED1C24", c.coinColor());
+    try std.testing.expectEqualStrings("#e30613", c.coinColor());
     try std.testing.expect(c.isProofOfStake());
     try std.testing.expectEqualStrings("reddcoin.conf", c.confFile());
     try std.testing.expectEqualStrings("reddcoind", c.daemonFile());
