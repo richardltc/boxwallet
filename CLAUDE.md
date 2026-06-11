@@ -204,9 +204,10 @@ ZIG_GLOBAL_CACHE_DIR=zig-pkg zig build release # cross-build all release binarie
 
 ## Port status
 
-- **Ported:** nexa, divi, ergo, digibyte, zano, nerva, reddcoin. (Nerva is a
-  fresh backend, not a Go port — it isn't in the list below.)
-- **Remaining (21):** badcoin, bitcoinplus, bitcoinz, denarius, devault,
-  dogecash, epic, feathercoin, groestlcoin, litecoin, navcoin,
+- **Ported:** nexa, divi, ergo, digibyte, zano, nerva, reddcoin, epic. (Nerva is
+  a fresh backend, not a Go port; Epic is a fresh node-only backend against 4.0.3,
+  not the stale Go 3.x reference — neither is a Go port in the usual sense.)
+- **Remaining (20):** badcoin, bitcoinplus, bitcoinz, denarius, devault,
+  dogecash, feathercoin, groestlcoin, litecoin, navcoin,
   peercoin, phore, pivx, primecoin, rapids, scala, spiderbyte, syscoin,
   trezarcoin, vertcoin.

@@ -15,6 +15,7 @@ const DigiByte = @import("coins/digibyte.zig").DigiByte;
 const Zano = @import("coins/zano.zig").Zano;
 const Nerva = @import("coins/nerva.zig").Nerva;
 const ReddCoin = @import("coins/reddcoin.zig").ReddCoin;
+const Epic = @import("coins/epic.zig").Epic;
 
 /// The application's display name, version, and brand colour — the one place to
 /// change how BoxWallet identifies itself in the UI. `app_color` is the brand
@@ -33,8 +34,8 @@ const fallback_install_root = "boxwallet-coins";
 /// position. Adding a coin is a matter of extending this list, the `App` field +
 /// `init`, and the dispatch in `selectedCoin`; the detail pane renders
 /// generically through the `Coin` interface, so it needs no per-coin code.
-const Entry = enum { home, nexa, divi, ergo, digibyte, zano, nerva, reddcoin };
-const coin_entries = [_]Entry{ .nexa, .divi, .ergo, .digibyte, .zano, .nerva, .reddcoin };
+const Entry = enum { home, nexa, divi, ergo, digibyte, zano, nerva, reddcoin, epic };
+const coin_entries = [_]Entry{ .nexa, .divi, .ergo, .digibyte, .zano, .nerva, .reddcoin, .epic };
 
 fn entryLabel(e: Entry) []const u8 {
     return switch (e) {
@@ -46,7 +47,31 @@ fn entryLabel(e: Entry) []const u8 {
         .zano => Zano.coin_name,
         .nerva => Nerva.coin_name,
         .reddcoin => ReddCoin.coin_name,
+        .epic => Epic.coin_name,
     };
+}
+
+/// Dim grey for unselected left-nav rows, so only the selected entry shows its
+/// brand colour and the current coin stands out at a glance.
+const nav_dim_color = "#6b6b6b";
+
+/// The Home row's left-nav label, drawn in two colours: the app name in the
+/// brand colour and the version in the default colour (e.g. "BoxWallet v0.0.3").
+const home_brand_text = "BoxWallet";
+const home_version_text = " v" ++ app_version;
+
+/// Visible width of the nav label column — wide enough for the Home row's full
+/// "BoxWallet v<version>" (the longest label), so the `│` separator stays
+/// aligned across every row.
+const nav_label_w = @max(12, home_brand_text.len + home_version_text.len);
+
+/// The colour a left-nav row is drawn in: its brand colour when `selected`, else
+/// a dim grey — so only the current coin shows its colour and the selection pops
+/// without a marker alone. Home is exempt: it keeps its brand colour always, as a
+/// fixed anchor at the top of the column.
+fn navColor(e: Entry, selected: bool) zz.Color {
+    if (e == .home or selected) return entryColor(e);
+    return zz.Color.hex(nav_dim_color);
 }
 
 /// The colour each entry is drawn in on the left nav. Coins use their own brand
@@ -62,6 +87,7 @@ fn entryColor(e: Entry) zz.Color {
         .zano => zz.Color.hex(Zano.coin_color),
         .nerva => zz.Color.hex(Nerva.coin_color),
         .reddcoin => zz.Color.hex(ReddCoin.coin_color),
+        .epic => zz.Color.hex(Epic.coin_color),
     };
 }
 
@@ -1505,6 +1531,7 @@ pub const App = struct {
     zano: Zano,
     nerva: Nerva,
     reddcoin: ReddCoin,
+    epic: Epic,
     selected: usize,
     /// One per `entries` slot (index 0 / Home is unused), holding that coin's
     /// independent install state. Parallel to `entries` so the selected coin's
@@ -1613,6 +1640,7 @@ pub const App = struct {
             .zano = .{},
             .nerva = .{},
             .reddcoin = .{},
+            .epic = .{},
             .selected = 0,
             .activities = undefined,
             .pw_input = zz.TextInput.init(ctx.persistent_allocator),
@@ -2373,6 +2401,7 @@ pub const App = struct {
             .zano => @constCast(&self.zano).coin(),
             .nerva => @constCast(&self.nerva).coin(),
             .reddcoin => @constCast(&self.reddcoin).coin(),
+            .epic => @constCast(&self.epic).coin(),
         };
     }
 
@@ -2994,11 +3023,18 @@ pub const App = struct {
     /// the surrounding two-pane layout — and the coin list on the left — is
     /// never disturbed.
     fn renderCoin(self: *const App, a: std.mem.Allocator, coin: Coin, act: *const Activity) ![]const u8 {
-        const title = (zz.Style{}).bold(true).fg(zz.Color.hex(coin.coinColor()));
-        const name = title.render(a, coin.coinName()) catch coin.coinName();
-        // The coin name wears its brand colour; its bundled core version rides
-        // alongside in the terminal default, mirroring "BoxWallet TUI v0.0.3" on
-        // the Home pane.
+        const name_str = coin.coinName();
+        const head_color = zz.Color.hex(coin.coinColor());
+        // The coin name wears its brand colour — or, for a two-tone wordmark
+        // (ReddCoin: "Redd" red, "Coin" near-white), the head in `coin_color` and
+        // the tail in the wordmark's alt colour, matching the left-nav label.
+        const name = if (coin.wordmark()) |wm| blk: {
+            const h = (zz.Style{}).bold(true).fg(head_color).render(a, name_str[0..wm.split]) catch name_str[0..wm.split];
+            const t = (zz.Style{}).bold(true).fg(zz.Color.hex(wm.alt_color)).render(a, name_str[wm.split..]) catch name_str[wm.split..];
+            break :blk std.fmt.allocPrint(a, "{s}{s}", .{ h, t }) catch name_str;
+        } else (zz.Style{}).bold(true).fg(head_color).render(a, name_str) catch name_str;
+        // Its bundled core version rides alongside in the terminal default,
+        // mirroring "BoxWallet TUI v0.0.3" on the Home pane.
         const head = std.fmt.allocPrint(a, "{s} v{s}", .{ name, coin.coreVersion() }) catch name;
 
         const p = act.phaseOf();
@@ -3618,7 +3654,8 @@ pub const App = struct {
     /// left column lists every entry on every frame, so the coin list is always
     /// on screen regardless of what any coin is doing.
     fn renderTwoPane(a: std.mem.Allocator, selected: usize, right: []const u8) ![]const u8 {
-        const col_w = 14;
+        // Marker (2 cells) + the label column. Empty rows pad to this full width.
+        const col_w = 2 + nav_label_w;
         var out: std.Io.Writer.Allocating = .init(a);
         errdefer out.deinit();
 
@@ -3638,13 +3675,35 @@ pub const App = struct {
                     (zz.Style{}).bold(true).fg(entryColor(e)).render(a, "❯ ") catch "❯ "
                 else
                     "  ";
-                // Pad to the column width first, then colour the fixed-width
-                // label in the coin's brand colour. Padding before styling keeps
-                // the visible width at 12 (the ANSI codes are zero-width), so the
-                // `│` separator stays aligned regardless of label length.
-                const padded = try std.fmt.allocPrint(a, "{s: <12}", .{entryLabel(e)});
-                const label = (zz.Style{}).bold(i == selected).fg(entryColor(e)).render(a, padded) catch padded;
-                try out.writer.print("{s}{s}", .{ marker, label });
+                // Write the label, then pad to the fixed label width with trailing
+                // spaces so the `│` separator stays aligned regardless of label
+                // length (the colour ANSI codes are zero-width). Home is special:
+                // "BoxWallet" in the brand colour, the version in the default
+                // colour. Coins are one styled label (brand when selected, else
+                // grey).
+                var used: usize = undefined;
+                if (e == .home) {
+                    const brand = (zz.Style{}).bold(i == selected).fg(entryColor(.home)).render(a, home_brand_text) catch home_brand_text;
+                    try out.writer.print("{s}{s}{s}", .{ marker, brand, home_version_text });
+                    used = home_brand_text.len + home_version_text.len;
+                } else if (e == .reddcoin and i == selected) {
+                    // ReddCoin's two-tone wordmark when selected: "Redd" in the
+                    // brand red, "Coin" in near-white. Unselected, it greys out
+                    // like every other coin (handled by the generic branch below).
+                    const name = ReddCoin.coin_name;
+                    const head = name[0..ReddCoin.wordmark_split];
+                    const tail = name[ReddCoin.wordmark_split..];
+                    const redd = (zz.Style{}).bold(true).fg(zz.Color.hex(ReddCoin.coin_color)).render(a, head) catch head;
+                    const cn = (zz.Style{}).bold(true).fg(zz.Color.hex(ReddCoin.coin_color_alt)).render(a, tail) catch tail;
+                    try out.writer.print("{s}{s}{s}", .{ marker, redd, cn });
+                    used = name.len;
+                } else {
+                    const text = entryLabel(e);
+                    const label = (zz.Style{}).bold(i == selected).fg(navColor(e, i == selected)).render(a, text) catch text;
+                    try out.writer.print("{s}{s}", .{ marker, label });
+                    used = text.len;
+                }
+                if (nav_label_w > used) try out.writer.splatByteAll(' ', nav_label_w - used);
             } else {
                 try out.writer.splatByteAll(' ', col_w);
             }
@@ -4635,24 +4694,38 @@ test "left bar pins Home on top and lists coins alphabetically" {
     }
 }
 
-test "left bar paints each coin label in its brand colour" {
+test "left bar paints only the selected coin in its brand colour, the rest grey" {
     const allocator = std.testing.allocator;
     var arena = std.heap.ArenaAllocator.init(allocator);
     defer arena.deinit();
     const a = arena.allocator();
 
-    // The nav column is rebuilt every frame, so the coins' true-colour SGR
-    // sequences (38;2;r;g;b) must appear in the rendered screen. Derive the
-    // expected codes from each coin's hex so the test tracks the constant.
-    const screen = try App.renderTwoPane(a, 0, "");
+    // Locate two coins' rows in the sorted nav column so we can select one and
+    // leave the other unselected.
+    const nexa_idx = std.mem.indexOfScalar(Entry, &entries, .nexa).?;
+    const divi_idx = std.mem.indexOfScalar(Entry, &entries, .divi).?;
 
-    const nexa_rgb = zz.Color.hex(Nexa.coin_color).toRgb().?;
-    const divi_rgb = zz.Color.hex(Divi.coin_color).toRgb().?;
-    const nexa_seq = try std.fmt.allocPrint(a, "38;2;{d};{d};{d}m", .{ nexa_rgb.r, nexa_rgb.g, nexa_rgb.b });
-    const divi_seq = try std.fmt.allocPrint(a, "38;2;{d};{d};{d}m", .{ divi_rgb.r, divi_rgb.g, divi_rgb.b });
+    // True-colour SGR codes (38;2;r;g;b) the nav emits for each relevant colour.
+    const seq = struct {
+        fn of(al: std.mem.Allocator, color: zz.Color) ![]const u8 {
+            const rgb = color.toRgb().?;
+            return std.fmt.allocPrint(al, "38;2;{d};{d};{d}m", .{ rgb.r, rgb.g, rgb.b });
+        }
+    }.of;
+    const nexa_seq = try seq(a, zz.Color.hex(Nexa.coin_color));
+    const divi_seq = try seq(a, zz.Color.hex(Divi.coin_color));
+    const grey_seq = try seq(a, zz.Color.hex(nav_dim_color));
 
+    // Select Nexa: its brand colour shows, Divi (unselected) is greyed instead.
+    const screen = try App.renderTwoPane(a, nexa_idx, "");
     try std.testing.expect(std.mem.indexOf(u8, screen, nexa_seq) != null);
-    try std.testing.expect(std.mem.indexOf(u8, screen, divi_seq) != null);
+    try std.testing.expect(std.mem.indexOf(u8, screen, grey_seq) != null);
+    try std.testing.expect(std.mem.indexOf(u8, screen, divi_seq) == null);
+
+    // Switching the selection to Divi flips which one carries its brand colour.
+    const screen2 = try App.renderTwoPane(a, divi_idx, "");
+    try std.testing.expect(std.mem.indexOf(u8, screen2, divi_seq) != null);
+    try std.testing.expect(std.mem.indexOf(u8, screen2, nexa_seq) == null);
 }
 
 test "coins installing into one root use distinct download scratch files" {

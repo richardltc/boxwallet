@@ -146,11 +146,26 @@ pub const Coin = struct {
     ///     spawned detached and the status poll confirms it came up.
     pub const LaunchMode = enum { fork, foreground };
 
+    /// A **two-tone wordmark** — the coin's name drawn in two colours: the head
+    /// (`coin_name[0..split]`) in the coin's `coin_color`, the tail
+    /// (`coin_name[split..]`) in `alt_color`. Lets a coin brand its name with a
+    /// second colour (ReddCoin's "Redd"+"Coin"); single-colour coins leave the
+    /// `wordmark` vtable hook null.
+    pub const Wordmark = struct {
+        /// Byte index in `coin_name` where the `alt_color` half begins.
+        split: usize,
+        /// Hex `#RRGGBB` for the tail half.
+        alt_color: []const u8,
+    };
+
     pub const VTable = struct {
         coin_name: *const fn (ptr: *anyopaque) []const u8,
         coin_name_abbrev: *const fn (ptr: *anyopaque) []const u8,
         /// The coin's brand colour as a `#RRGGBB` hex string, for the frontend.
         coin_color: *const fn (ptr: *anyopaque) []const u8,
+        /// Optional: a two-tone wordmark for the coin's name (see `Wordmark`).
+        /// Null for coins whose name is drawn in a single colour.
+        wordmark: ?*const fn (ptr: *anyopaque) Wordmark = null,
         /// The bundled core version this coin installs (e.g. "2.0.0.0"), shown on
         /// the coin's pane the way the app version rides the Home pane.
         core_version: *const fn (ptr: *anyopaque) []const u8,
@@ -326,6 +341,11 @@ pub const Coin = struct {
     /// The coin's brand colour as a `#RRGGBB` hex string.
     pub fn coinColor(self: Coin) []const u8 {
         return self.vtable.coin_color(self.ptr);
+    }
+    /// The coin's two-tone wordmark, or null if its name is a single colour.
+    pub fn wordmark(self: Coin) ?Wordmark {
+        if (self.vtable.wordmark) |f| return f(self.ptr);
+        return null;
     }
     /// The bundled core version this coin installs (e.g. "2.0.0.0").
     pub fn coreVersion(self: Coin) []const u8 {
