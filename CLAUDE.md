@@ -16,6 +16,33 @@ root resolves to a per-platform `~/.boxwallet`; coins declare their own binary
 filenames). Don't reach for POSIX-only or Windows-only APIs when a portable
 stdlib equivalent exists.
 
+## Security is a first-class constraint
+
+BoxWallet manages **cryptocurrency wallets — real funds and the secrets that
+control them** (mnemonic seeds, private keys, wallet passwords). **Security is a
+priority on par with correctness.** When a design choice trades safety against
+convenience, prefer the safe one unless told otherwise.
+
+- **Guard the secrets.** Seeds, keys, and passwords live in **bounded buffers
+  that are wiped (`@memset(..., 0)`) the moment they're no longer needed**, and
+  are never held in two places longer than necessary (see how the wallet modal
+  copies a password into the worker's buffer, then clears the input). Don't log,
+  print, or write secrets to disk. Where a secret *must* touch disk (e.g. the
+  Nerva `--generate-from-json` restore spec), treat it as a temp: write it, use
+  it, then **overwrite and delete it in a `defer`** so it's gone on every path.
+- **Don't lose the user's money to a typo.** Anything that *sets* a new
+  credential confirms it (the create/restore flow asks for the password twice and
+  refuses to proceed unless they match) — a mistyped password on a fresh wallet
+  means the funds are unrecoverable. A wrong password when merely *opening* an
+  existing wallet just fails and is retried, so it isn't confirmed.
+- **Never create or unlock a wallet silently** — only ever with an explicit,
+  user-supplied password.
+- **Surface failures honestly.** Don't swallow a daemon/CLI error into a generic
+  "failed"; thread the real reason up (see the wallet-op error sink) so the user
+  can tell a typo from a stale file from an unreachable service.
+- **Bind local services to localhost only.** The daemon and wallet RPC are
+  127.0.0.1-bound; keep it that way.
+
 ## Memory is a first-class constraint
 
 BoxWallet is likely to run on **low-spec machines** (single-board computers, old
@@ -102,6 +129,7 @@ From the `zig/` directory:
 ZIG_GLOBAL_CACHE_DIR=zig-pkg zig build test   # offline unit tests
 ZIG_GLOBAL_CACHE_DIR=zig-pkg zig build         # build the binary
 ZIG_GLOBAL_CACHE_DIR=zig-pkg zig build run     # launch the TUI
+ZIG_GLOBAL_CACHE_DIR=zig-pkg zig build release # cross-build all release binaries + SHA256SUMS
 ```
 
 - The ZigZag dependency is vendored under `zig/zig-pkg/`;
@@ -110,6 +138,16 @@ ZIG_GLOBAL_CACHE_DIR=zig-pkg zig build run     # launch the TUI
 - Manage dependencies with `zig fetch --save …` plus the build.zig wiring.
   **Don't hand-edit anything under `zig-pkg/`.**
 - Treat work as **done only when `zig build` and `zig build test` both pass.**
+- **Releasing / auto-update:** `zig build release` cross-compiles every
+  distributable into `zig-out/release/` (Linux = static musl, all `ReleaseSafe`
+  + stripped), named `boxwallet-<os>-<arch>[.exe]` with a `SHA256SUMS`. The app
+  self-updates in-app (`src/update.zig` + apply/re-exec in `main.zig` + the
+  background check in `app.zig`): to cut a release, bump `app_version` in
+  `src/app.zig`, run `zig build release`, and upload all six files to the GitHub
+  release. Asset names + checksums come from one list in `build.zig`, so they
+  stay in lockstep with what the updater downloads. The swap targets the real
+  running executable wherever it lives — not `~/.boxwallet` (only the staging
+  cache). Don't rename assets by hand or the updater can't find them.
 
 ## Conventions
 

@@ -196,6 +196,69 @@ pub const DigiByte = struct {
         return rpc.ensureWallet(allocator, auth, "BoxWallet");
     }
 
+    /// Read the wallet's security state from `getwalletinfo`. DigiByte is
+    /// bitcoin-core style: `unlocked_until` is **absent** on an unencrypted wallet,
+    /// `0` when locked, and a positive unlock timestamp otherwise.
+    pub fn walletSecurityState(
+        allocator: std.mem.Allocator,
+        auth: models.CoinAuth,
+    ) !models.WalletSecurity {
+        var parsed = try rpc.callParsed(models.DgbWalletInfo, allocator, auth, "getwalletinfo");
+        defer parsed.deinit();
+
+        const r = parsed.value.result orelse return error.EmptyRpcResult;
+        return securityFromUnlockedUntil(r.unlocked_until);
+    }
+
+    /// Read the wallet's balances from `getwalletinfo`. `available` is the
+    /// confirmed spendable `balance`; `total` adds the mempool
+    /// (`unconfirmed_balance`) and maturing (`immature_balance`) funds, so it
+    /// reflects incoming money the moment it's seen.
+    pub fn walletBalance(
+        allocator: std.mem.Allocator,
+        auth: models.CoinAuth,
+    ) !models.WalletBalance {
+        var parsed = try rpc.callParsed(models.DgbWalletInfo, allocator, auth, "getwalletinfo");
+        defer parsed.deinit();
+
+        const r = parsed.value.result orelse return error.EmptyRpcResult;
+        return models.WalletBalance.fromParts(r.balance, r.unconfirmed_balance, r.immature_balance);
+    }
+
+    /// Map a bitcoin-core `unlocked_until` (absent/0/positive) to the normalized
+    /// `WalletSecurity`. Shared by the parse path and its unit test.
+    fn securityFromUnlockedUntil(unlocked_until: ?i64) models.WalletSecurity {
+        const u = unlocked_until orelse return .unencrypted;
+        if (u == 0) return .locked;
+        return .unlocked;
+    }
+
+    /// Encrypt the wallet with `passphrase`. digibyted stops itself afterwards (the
+    /// caller restarts it). The passphrase is JSON-escaped before splicing.
+    pub fn walletEncrypt(allocator: std.mem.Allocator, auth: models.CoinAuth, passphrase: []const u8) !void {
+        const pw = try rpc.jsonQuote(allocator, passphrase);
+        defer allocator.free(pw);
+        const params = try std.fmt.allocPrint(allocator, "[{s}]", .{pw});
+        defer allocator.free(params);
+        return rpc.callExpectOk(allocator, auth, "encryptwallet", params);
+    }
+
+    /// Unlock the wallet via `walletpassphrase`. DigiByte is proof-of-work, so the
+    /// `staking` flag is irrelevant — a plain unlock with an indefinite timeout (0)
+    /// is used either way.
+    pub fn walletUnlock(allocator: std.mem.Allocator, auth: models.CoinAuth, passphrase: []const u8, _: bool) !void {
+        const pw = try rpc.jsonQuote(allocator, passphrase);
+        defer allocator.free(pw);
+        const params = try std.fmt.allocPrint(allocator, "[{s},0]", .{pw});
+        defer allocator.free(params);
+        return rpc.callExpectOk(allocator, auth, "walletpassphrase", params);
+    }
+
+    /// Re-lock the wallet via `walletlock`.
+    pub fn walletLock(allocator: std.mem.Allocator, auth: models.CoinAuth) !void {
+        return rpc.callExpectOk(allocator, auth, "walletlock", "[]");
+    }
+
     /// DigiByte dropped `getinfo`, so probe `getnetworkinfo` for the daemon's
     /// warm-up phase (any supported method returns the "-28 in warm-up" reply).
     pub fn warmupProbeMethod() []const u8 {
@@ -224,6 +287,11 @@ pub const DigiByte = struct {
         .daemon_argv = vtDaemonArgv,
         .request_stop = vtRequestStop,
         .ensure_wallet = vtEnsureWallet,
+        .wallet_security_state = vtWalletSecurityState,
+        .wallet_balance = vtWalletBalance,
+        .wallet_encrypt = vtWalletEncrypt,
+        .wallet_unlock = vtWalletUnlock,
+        .wallet_lock = vtWalletLock,
         .warmup_probe_method = vtWarmupProbeMethod,
     };
 
@@ -318,6 +386,44 @@ pub const DigiByte = struct {
         auth: models.CoinAuth,
     ) anyerror!void {
         return ensureWallet(allocator, auth);
+    }
+    fn vtWalletSecurityState(
+        _: *anyopaque,
+        allocator: std.mem.Allocator,
+        auth: models.CoinAuth,
+    ) anyerror!models.WalletSecurity {
+        return walletSecurityState(allocator, auth);
+    }
+    fn vtWalletBalance(
+        _: *anyopaque,
+        allocator: std.mem.Allocator,
+        auth: models.CoinAuth,
+    ) anyerror!models.WalletBalance {
+        return walletBalance(allocator, auth);
+    }
+    fn vtWalletEncrypt(
+        _: *anyopaque,
+        allocator: std.mem.Allocator,
+        auth: models.CoinAuth,
+        passphrase: []const u8,
+    ) anyerror!void {
+        return walletEncrypt(allocator, auth, passphrase);
+    }
+    fn vtWalletUnlock(
+        _: *anyopaque,
+        allocator: std.mem.Allocator,
+        auth: models.CoinAuth,
+        passphrase: []const u8,
+        staking: bool,
+    ) anyerror!void {
+        return walletUnlock(allocator, auth, passphrase, staking);
+    }
+    fn vtWalletLock(
+        _: *anyopaque,
+        allocator: std.mem.Allocator,
+        auth: models.CoinAuth,
+    ) anyerror!void {
+        return walletLock(allocator, auth);
     }
     fn vtWarmupProbeMethod(_: *anyopaque) []const u8 {
         return warmupProbeMethod();
@@ -446,4 +552,37 @@ test "coin vtable dispatches to DigiByte metadata" {
     try std.testing.expectEqualStrings("14022", c.rpcDefaultPort());
     // Core-26 fork: needs an explicit wallet created/loaded after start.
     try std.testing.expect(c.needsWallet());
+    // Bitcoin-core wallet over RPC: the `w` menu and the balance lines are both on.
+    try std.testing.expect(c.supportsWallet());
+    try std.testing.expect(c.supportsBalance());
+}
+
+test "maps getwalletinfo unlocked_until to the wallet security state" {
+    // Bitcoin-core style: absent → unencrypted, 0 → locked, positive → unlocked.
+    try std.testing.expectEqual(models.WalletSecurity.unencrypted, DigiByte.securityFromUnlockedUntil(null));
+    try std.testing.expectEqual(models.WalletSecurity.locked, DigiByte.securityFromUnlockedUntil(0));
+    try std.testing.expectEqual(models.WalletSecurity.unlocked, DigiByte.securityFromUnlockedUntil(1893456000));
+}
+
+test "maps getwalletinfo balances to available + total" {
+    const allocator = std.testing.allocator;
+
+    const raw =
+        \\{"result":{"walletversion":169900,"balance":250.0,
+        \\"unconfirmed_balance":10.0,"immature_balance":5.0,"unlocked_until":0},
+        \\"error":null,"id":"boxwallet"}
+    ;
+    var parsed = try std.json.parseFromSlice(
+        models.JsonRpcResponse(models.DgbWalletInfo),
+        allocator,
+        raw,
+        .{ .ignore_unknown_fields = true },
+    );
+    defer parsed.deinit();
+
+    const r = parsed.value.result.?;
+    const bal = models.WalletBalance.fromParts(r.balance, r.unconfirmed_balance, r.immature_balance);
+    try std.testing.expectApproxEqAbs(@as(f64, 250.0), bal.available, 1e-9);
+    try std.testing.expectApproxEqAbs(@as(f64, 265.0), bal.total, 1e-9);
+    try std.testing.expect(bal.hasPending());
 }

@@ -6,6 +6,7 @@ const disk = @import("disk.zig");
 const memory = @import("memory.zig");
 const conf = @import("conf.zig");
 const rpc = @import("rpc.zig");
+const updater = @import("update.zig");
 const Coin = @import("coin.zig").Coin;
 const Nexa = @import("coins/nexa.zig").Nexa;
 const Divi = @import("coins/divi.zig").Divi;
@@ -246,6 +247,63 @@ const WalletAction = enum {
     }
 };
 
+/// A setup operation against a coin's *external* wallet process (Monero-style,
+/// e.g. Nerva) — distinct from the in-daemon `WalletAction`s above. Driven by the
+/// setup modal and run on the wallet-setup worker.
+const WalletSetupOp = enum {
+    /// Create a brand-new wallet (returns a mnemonic seed to display).
+    create,
+    /// Restore a wallet from a 25-word mnemonic seed.
+    restore_seed,
+    /// Import an existing wallet file browsed to with the file picker.
+    restore_file,
+    /// Open the existing managed wallet (unlock it for this session).
+    open,
+
+    fn verb(self: WalletSetupOp) []const u8 {
+        return switch (self) {
+            .create => "Create wallet",
+            .restore_seed => "Restore from seed",
+            .restore_file => "Restore from file",
+            .open => "Unlock wallet",
+        };
+    }
+
+    /// Whether this op *sets* a new wallet password (so the UI asks the user to
+    /// confirm it). `open` checks an existing password — a typo there just fails to
+    /// unlock and is retried, so no confirmation is needed.
+    fn setsNewPassword(self: WalletSetupOp) bool {
+        return self != .open;
+    }
+};
+
+/// The three choices on the external-wallet setup menu (shown when no wallet
+/// exists yet). Parallel to `WalletSetupOp` but only the user-pickable subset.
+const SetupChoice = enum {
+    create,
+    restore_seed,
+    restore_file,
+
+    fn label(self: SetupChoice) []const u8 {
+        return switch (self) {
+            .create => "Create a new wallet",
+            .restore_seed => "Restore from seed words",
+            .restore_file => "Restore from a wallet file",
+        };
+    }
+
+    fn op(self: SetupChoice) WalletSetupOp {
+        return switch (self) {
+            .create => .create,
+            .restore_seed => .restore_seed,
+            .restore_file => .restore_file,
+        };
+    }
+};
+
+/// The setup-menu choices, in display order.
+const setup_choices = [_]SetupChoice{ .create, .restore_seed, .restore_file };
+
 /// Which actions the `w` menu offers for a given wallet state, written into
 /// `buf` and returned by count. Unencrypted → encrypt; locked → unlock (plus
 /// unlock-for-staking on proof-of-stake coins); unlocked → lock; unknown → none.
@@ -279,7 +337,27 @@ fn walletOptions(wallet: WalletState, pos: bool, buf: *[3]WalletAction) usize {
 /// blocks), with the passphrase held only in the `App`'s `pw_input` and the
 /// worker's bounded buffer, both cleared once the action is sent.
 const Modal = struct {
-    const Stage = enum { menu, password, working, result };
+    /// The bitcoin in-daemon flow uses `menu`/`password`; the external-wallet
+    /// (Monero) flow adds `setup_*`. `working`/`result` are shared by both.
+    const Stage = enum {
+        menu,
+        password,
+        working,
+        result,
+        /// External-wallet setup: pick create / restore-seed / restore-file.
+        setup_menu,
+        /// External-wallet: enter the new/opening wallet password.
+        setup_password,
+        /// External-wallet: re-enter a *new* password to confirm it matches (so a
+        /// typo can't lock the user out of a wallet they can never reopen).
+        setup_password_confirm,
+        /// External-wallet: type/paste the 25-word restore seed.
+        setup_seed_input,
+        /// External-wallet: browse for a wallet file to import.
+        setup_file,
+        /// External-wallet: show the freshly-created seed to write down.
+        setup_seed_show,
+    };
 
     stage: Stage = .menu,
     /// Index into `options[0..option_count]`.
@@ -296,6 +374,22 @@ const Modal = struct {
     /// Outcome text shown in the `result` stage (fixed buffer — no allocation).
     msg_buf: [200]u8 = undefined,
     msg_len: usize = 0,
+
+    // --- external-wallet (setup) flow --------------------------------------
+    /// Cursor on the setup menu (`setup_choices`).
+    setup_sel: usize = 0,
+    /// The first entry of a new password, stashed while the confirm field is typed
+    /// so the two can be compared. Plaintext, so it's wiped as soon as it's used or
+    /// the modal closes (memory/secret hygiene, like the worker's copy).
+    pw_first_buf: [wallet_pw_max]u8 = undefined,
+    pw_first_len: usize = 0,
+    /// Set when a confirm entry didn't match, so the password prompt can say so.
+    pw_mismatch: bool = false,
+    /// The external-wallet op in flight (chosen at the setup menu, or `.open`).
+    setup_op: WalletSetupOp = .create,
+    /// The mnemonic to display at `setup_seed_show`, copied from the worker's
+    /// result when a create succeeds.
+    seed: models.Seed = .{},
 
     fn setMsg(self: *Modal, ok: bool, text: []const u8) void {
         self.ok = ok;
@@ -315,6 +409,10 @@ const wallet_pw_max = 256;
 /// `│ ` and ` │`. Sized to hold the longest menu label, the passphrase field,
 /// and the footer hints without wrapping, while fitting an 80-column terminal.
 const modal_inner_w = 42;
+
+/// Expected word count of an external-wallet recovery seed (Monero/CryptoNote
+/// deterministic mnemonic). Drives the seed-entry prompt and live word counter.
+const seed_word_target = 25;
 
 /// Per-coin install activity.
 ///
@@ -390,6 +488,14 @@ const Activity = struct {
     /// `getwalletinfo`. Only set for coins that expose a manageable wallet;
     /// otherwise stays at `unknown`. Published by the `poll_done` edge.
     poll_wallet: std.atomic.Value(u8) = .init(@intFromEnum(WalletState.unknown)),
+    /// Latest polled wallet balances, from `getwalletinfo` — only set for coins
+    /// that report a balance (`supportsBalance`). The two figures are `f64`s held
+    /// as their `u64` bit patterns (atomics take integers); `poll_has_balance`
+    /// gates them so a never-fetched balance reads as "unknown" rather than 0.
+    /// Published by the `poll_done` edge.
+    poll_balance_total: std.atomic.Value(u64) = .init(0),
+    poll_balance_avail: std.atomic.Value(u64) = .init(0),
+    poll_has_balance: std.atomic.Value(u8) = .init(0),
     /// Latest probed daemon warm-up phase (`@intFromEnum(models.LoadingPhase)`).
     /// Set on every poll: `none` when the daemon answered normally, otherwise the
     /// phase parsed from its "-28 in warm-up" reply. Published by the `poll_done`
@@ -431,6 +537,49 @@ const Activity = struct {
     /// the `wallet_done` edge.
     wallet_err: []const u8 = "",
 
+    // --- external wallet process (Monero-style coins, e.g. Nerva) -----------
+    // For `coin.hasExternalWallet()` coins the wallet is a *second* process
+    // (`nerva-wallet-rpc`) BoxWallet spawns alongside the daemon and tears down
+    // with it. The setup worker (below) creates/restores/opens a wallet through
+    // its RPC; balance polling reads it once open.
+    /// Handle to the spawned wallet-rpc child, so it can be killed when the daemon
+    /// stops (Monero wallet-rpc has no shutdown RPC). Null when not running. Owned
+    /// and touched only on the UI thread.
+    wallet_rpc_child: ?std.process.Child = null,
+    /// Whether we've tried to spawn the wallet-rpc this daemon run. Stops a missing
+    /// or broken binary from being retried (and re-logged) every tick; the failure
+    /// is reported once. Reset when the daemon is (re)started or the process killed.
+    wallet_rpc_attempted: bool = false,
+    /// Whether the managed wallet has been opened this session (create/restore/
+    /// open succeeded). Gates balance polling; read on the poll worker, written on
+    /// the UI thread, so it's atomic. Reset when the wallet-rpc is killed.
+    ext_wallet_open: std.atomic.Value(u8) = .init(0),
+    /// Whether a wallet file exists on disk (`externalWallet.exists`), refreshed
+    /// on the UI thread. Drives the "no wallet / locked / open" pane hint and which
+    /// setup flow `w` opens. UI-thread only.
+    ext_wallet_exists: bool = false,
+
+    // --- external-wallet setup worker --------------------------------------
+    // Mirrors the wallet-action worker: one create/restore/open RPC on a private
+    // arena, published via `wallet_setup_done` (release) and reaped in `onTick`.
+    wallet_setup_thread: ?std.Thread = null,
+    wallet_setup_op: WalletSetupOp = .create,
+    wallet_setup_done: std.atomic.Value(bool) = .init(false),
+    wallet_setup_ok: bool = false,
+    wallet_setup_err: []const u8 = "",
+    /// The daemon's own failure message (when it gave one), filled by the wallet op
+    /// via `wallet_setup_sink`. Logged alongside the error name and shown in the
+    /// modal so the user sees the real reason, not just a generic error.
+    wallet_setup_sink: Coin.WalletErrSink = .{},
+    /// Mnemonic produced by a successful `create`, read by the UI after the edge.
+    wallet_setup_seed: models.Seed = .{},
+    /// Restore-seed words, copied in before spawn (bounded; cleared after use).
+    wallet_seed_buf: [256]u8 = undefined,
+    wallet_seed_len: usize = 0,
+    /// Restore-file source path, copied in before spawn.
+    wallet_file_buf: [1024]u8 = undefined,
+    wallet_file_len: usize = 0,
+
     // --- UI-thread-only ----------------------------------------------------
     thread: ?std.Thread = null,
     /// Joins the daemon start/stop worker once it has published its result.
@@ -464,6 +613,14 @@ const Activity = struct {
     sync: SyncState = .idle,
     /// Wallet encryption/lock status. Drives the "Wallet" line.
     wallet: WalletState = .unknown,
+    /// Wallet balances, folded in from the poll for coins that report them.
+    /// `has_balance` gates the Total/Available lines — false until the first
+    /// successful balance fetch, so they stay hidden rather than flashing 0.
+    /// `total` updates the instant funds hit the mempool; `available` trails until
+    /// they confirm.
+    balance_total: f64 = 0,
+    balance_avail: f64 = 0,
+    has_balance: bool = false,
     /// Whether the wallet is actively staking. Only shown for proof-of-stake
     /// coins; live staking polling lands later — for now this stays false.
     staking: bool = false,
@@ -658,6 +815,48 @@ const Activity = struct {
         }
     }
 
+    /// The wallet *process*'s own RPC endpoint (127.0.0.1 + the capability's bound
+    /// port), keyless — distinct from the daemon's `CoinAuth`. Only valid for
+    /// `coin.hasExternalWallet()` coins.
+    fn extWalletAuth(self: *const Activity) models.CoinAuth {
+        const ew = self.coin.externalWallet().?;
+        return .{ .rpc_user = "", .rpc_password = "", .ip_address = "127.0.0.1", .port = ew.rpc_port() };
+    }
+
+    /// External-wallet setup worker. Runs the chosen create/restore/open RPC on a
+    /// private arena and publishes the outcome (a created wallet's seed included),
+    /// reaped by the UI once `wallet_setup_done` is observed.
+    fn runWalletSetup(self: *Activity) void {
+        var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+        defer arena.deinit();
+        const a = arena.allocator();
+
+        if (self.doWalletSetup(a)) {
+            self.wallet_setup_ok = true;
+        } else |err| {
+            self.wallet_setup_err = @errorName(err);
+            self.wallet_setup_ok = false;
+        }
+        self.wallet_setup_done.store(true, .release);
+    }
+
+    /// Dispatch the in-flight external-wallet op against the wallet process. The
+    /// password/seed/file inputs were copied into the activity's bounded buffers
+    /// before the worker was spawned. A successful `create` stashes the generated
+    /// mnemonic in `wallet_setup_seed` for the UI to display.
+    fn doWalletSetup(self: *Activity, a: std.mem.Allocator) !void {
+        const ew = self.coin.externalWallet() orelse return error.NoExternalWallet;
+        const auth = self.extWalletAuth();
+        const pw = self.wallet_pw_buf[0..self.wallet_pw_len];
+        const detail = &self.wallet_setup_sink;
+        switch (self.wallet_setup_op) {
+            .create => self.wallet_setup_seed = try ew.create(a, auth, pw, detail),
+            .restore_seed => try ew.restore_seed(a, auth, self.install_root, self.home_dir, pw, self.wallet_seed_buf[0..self.wallet_seed_len], detail),
+            .restore_file => try ew.restore_file(a, auth, self.home_dir, self.wallet_file_buf[0..self.wallet_file_len], pw, detail),
+            .open => try ew.open(a, auth, pw, detail),
+        }
+    }
+
     /// Whether the coin's live status is still being resolved: it's installed and
     /// no poll has come back yet, with the daemon not already known to be
     /// starting/running. During this window the Running/Staking marks animate so
@@ -675,6 +874,16 @@ const Activity = struct {
         self.peers = self.poll_peers.load(.monotonic);
         self.staking = self.poll_staking.load(.monotonic) != 0;
         self.wallet = @enumFromInt(self.poll_wallet.load(.monotonic));
+
+        // Wallet balances — `f64`s carried as their `u64` bit patterns. Only
+        // adopted once a balance has actually been fetched (`poll_has_balance`),
+        // so the lines stay hidden on coins that don't report one and don't flash
+        // a misleading 0 before the first fetch.
+        if (self.poll_has_balance.load(.monotonic) != 0) {
+            self.balance_total = @bitCast(self.poll_balance_total.load(.monotonic));
+            self.balance_avail = @bitCast(self.poll_balance_avail.load(.monotonic));
+            self.has_balance = true;
+        }
 
         // Two separate, accurate sync axes:
         //   Headers  = local headers / network tip (download progress vs peers)
@@ -803,6 +1012,32 @@ const Activity = struct {
         if (self.coin.supportsWallet()) {
             if (self.coin.walletSecurityState(a, auth)) |sec| {
                 self.poll_wallet.store(@intFromEnum(WalletState.fromSecurity(sec)), .monotonic);
+            } else |_| {}
+        }
+
+        // Wallet balance, for coins that report one — the Total/Available lines.
+        // `total` (confirmed + mempool + immature) tracks incoming funds the
+        // instant they're seen; `available` is the confirmed spendable figure. The
+        // `f64`s ride as `u64` bit patterns through the atomics. Best-effort: a
+        // hiccup just leaves the last value, so a blip doesn't blank the line.
+        if (self.coin.supportsBalance()) {
+            if (self.coin.walletBalance(a, auth)) |bal| {
+                self.poll_balance_total.store(@bitCast(bal.total), .monotonic);
+                self.poll_balance_avail.store(@bitCast(bal.available), .monotonic);
+                self.poll_has_balance.store(1, .monotonic);
+            } else |_| {}
+        }
+
+        // External-wallet (Monero-style) balance — read from the *wallet* process,
+        // not the daemon, and only once the wallet's been opened this session
+        // (`ext_wallet_open`). Same Total/Available split published into the same
+        // atomics. Best-effort: a hiccup leaves the last value.
+        if (self.coin.hasExternalWallet() and self.ext_wallet_open.load(.monotonic) != 0) {
+            const ew = self.coin.externalWallet().?;
+            if (ew.balance(a, self.extWalletAuth())) |bal| {
+                self.poll_balance_total.store(@bitCast(bal.total), .monotonic);
+                self.poll_balance_avail.store(@bitCast(bal.available), .monotonic);
+                self.poll_has_balance.store(1, .monotonic);
             } else |_| {}
         }
 
@@ -1190,6 +1425,35 @@ pub const App = struct {
     /// buffer outlives a single modal), created in `init` and freed in `deinit`;
     /// its value is cleared whenever the modal closes or an action is sent.
     pw_input: zz.TextInput,
+    /// Visible entry for a 25-word restore seed (external-wallet flow). Like
+    /// `pw_input`, persistent and cleared on close/submit.
+    seed_input: zz.TextInput,
+    /// File browser for the restore-from-file flow (external-wallet coins).
+    /// Persistent; navigated on demand, freed in `deinit`.
+    file_picker: zz.components.FilePicker,
+
+    // --- in-app self-update check (background) -----------------------------
+    // A one-shot worker asks GitHub for the latest release and, if it's newer,
+    // downloads + checksum-verifies it and stages it for next launch (the swap
+    // itself happens in `main` before the TUI starts). The Home pane shows a
+    // "restart to apply" notice once a build is staged.
+    /// Set true once the check has been kicked off, so it runs once per session.
+    update_started: bool = false,
+    /// The update-check worker handle, joined when `update_done` is observed.
+    update_thread: ?std.Thread = null,
+    /// Sync edge: stored with release by the worker when the check finishes; the
+    /// UI loads it with acquire, then reads the result fields and joins.
+    update_done: std.atomic.Value(bool) = .init(false),
+    /// Worker result, read by the UI only after the `update_done` edge — so
+    /// these plain fields need no atomics.
+    update_status: updater.CheckStatus = .up_to_date,
+    update_version: updater.VersionBuf = .{},
+    /// True once a newer build has been staged for next launch.
+    update_available: bool = false,
+    /// True when an update is staged but the executable's directory isn't
+    /// writable, so a restart wouldn't apply it — the Home pane says so instead
+    /// of a "restart to apply" that wouldn't take.
+    update_blocked: bool = false,
 
     pub const Msg = union(enum) {
         key: zz.KeyEvent,
@@ -1250,11 +1514,22 @@ pub const App = struct {
             .selected = 0,
             .activities = undefined,
             .pw_input = zz.TextInput.init(ctx.persistent_allocator),
+            .seed_input = zz.TextInput.init(ctx.persistent_allocator),
+            .file_picker = zz.components.FilePicker.init(ctx.persistent_allocator),
         };
         // The wallet passphrase field masks its input and stays a fixed width.
         self.pw_input.setEchoMode(.password);
         self.pw_input.setWidth(24);
         self.pw_input.setCharLimit(wallet_pw_max);
+        // The seed field shows its words (you're transcribing a known phrase) and
+        // is wide enough for a 25-word mnemonic.
+        self.seed_input.setWidth(modal_inner_w - 6);
+        self.seed_input.setCharLimit(256);
+        // The file browser only offers files (you're picking a wallet file), in a
+        // modest viewport that fits the centered modal.
+        self.file_picker.file_only = true;
+        self.file_picker.height = 12;
+        self.file_picker.blur();
         // Sync keeps the default braille dots; Running/Staking/Peers and the
         // install progress use the heavier pulsing spinner (`makeSpinner`).
         for (&self.activities) |*act| act.* = .{ .spinner = makeSpinner(), .daemon_spinner = makeSpinner(), .sync_spinner = zz.Spinner.init() };
@@ -1284,6 +1559,12 @@ pub const App = struct {
     /// install workers (so they don't outlive the state they write into), then
     /// frees the model's owned allocations.
     pub fn deinit(self: *App) void {
+        // Join the background update-check worker so it doesn't outlive the App
+        // fields it writes into.
+        if (self.update_thread) |t| {
+            t.join();
+            self.update_thread = null;
+        }
         for (&self.activities) |*act| {
             if (act.thread) |t| {
                 t.join();
@@ -1301,11 +1582,21 @@ pub const App = struct {
                 t.join();
                 act.wallet_thread = null;
             }
-            // The passphrase copy may still be resident if a worker was in flight
-            // at shutdown — clear it rather than leave the secret in freed memory.
+            if (act.wallet_setup_thread) |t| {
+                t.join();
+                act.wallet_setup_thread = null;
+            }
+            // Tear down the external wallet process so it doesn't outlive the app.
+            self.killWalletRpc(act);
+            // Secrets may still be resident if a worker was in flight at shutdown —
+            // clear them rather than leave them in freed memory.
             @memset(&act.wallet_pw_buf, 0);
+            @memset(&act.wallet_seed_buf, 0);
+            act.wallet_setup_seed = .{};
         }
         self.pw_input.deinit();
+        self.seed_input.deinit();
+        self.file_picker.deinit();
         if (self.install_root_owned) self.allocator.free(self.install_root);
         if (self.home_dir_owned) self.allocator.free(self.home_dir);
     }
@@ -1387,6 +1678,115 @@ pub const App = struct {
                 // Everything else (chars, backspace, paste) edits the field.
                 else => self.pw_input.handleKey(k),
             },
+            // --- external-wallet setup flow ---------------------------------
+            .setup_menu => switch (k.key) {
+                .escape => self.closeWalletModal(),
+                .up => if (m.setup_sel > 0) {
+                    m.setup_sel -= 1;
+                },
+                .down => if (m.setup_sel + 1 < setup_choices.len) {
+                    m.setup_sel += 1;
+                },
+                .enter => {
+                    const choice = setup_choices[m.setup_sel];
+                    m.setup_op = choice.op();
+                    // create → password; the restores collect their input first.
+                    switch (choice) {
+                        .create => {
+                            m.stage = .setup_password;
+                            self.pw_input.setValue("") catch {};
+                            self.pw_input.focus();
+                        },
+                        .restore_seed => {
+                            m.stage = .setup_seed_input;
+                            self.seed_input.setValue("") catch {};
+                            self.seed_input.focus();
+                        },
+                        .restore_file => {
+                            m.stage = .setup_file;
+                            self.startFilePicker();
+                        },
+                    }
+                },
+                .char => |c| switch (c) {
+                    'k' => if (m.setup_sel > 0) {
+                        m.setup_sel -= 1;
+                    },
+                    'j' => if (m.setup_sel + 1 < setup_choices.len) {
+                        m.setup_sel += 1;
+                    },
+                    else => {},
+                },
+                else => {},
+            },
+            // New-password ops go on to a confirm step; `open` (existing password)
+            // submits straight to the worker.
+            .setup_password => switch (k.key) {
+                .escape => self.closeWalletModal(),
+                .enter => if (self.pw_input.getValue().len > 0) {
+                    if (m.setup_op.setsNewPassword()) {
+                        // Stash this entry and ask for it again.
+                        const pw = self.pw_input.getValue();
+                        const n = @min(pw.len, m.pw_first_buf.len);
+                        @memcpy(m.pw_first_buf[0..n], pw[0..n]);
+                        m.pw_first_len = n;
+                        m.stage = .setup_password_confirm;
+                        self.pw_input.setValue("") catch {};
+                        self.pw_input.focus();
+                    } else {
+                        self.submitWalletSetup();
+                    }
+                },
+                // Typing dismisses a prior mismatch note.
+                else => {
+                    m.pw_mismatch = false;
+                    self.pw_input.handleKey(k);
+                },
+            },
+            // Confirm the new password matches; mismatch resets to the first entry.
+            .setup_password_confirm => switch (k.key) {
+                .escape => self.closeWalletModal(),
+                .enter => if (self.pw_input.getValue().len > 0) {
+                    if (std.mem.eql(u8, self.pw_input.getValue(), m.pw_first_buf[0..m.pw_first_len])) {
+                        self.submitWalletSetup();
+                    } else {
+                        // Wipe both entries and send them back to re-enter.
+                        @memset(&m.pw_first_buf, 0);
+                        m.pw_first_len = 0;
+                        m.pw_mismatch = true;
+                        m.stage = .setup_password;
+                        self.pw_input.setValue("") catch {};
+                        self.pw_input.focus();
+                    }
+                },
+                else => self.pw_input.handleKey(k),
+            },
+            // Seed words entered → on to the password step.
+            .setup_seed_input => switch (k.key) {
+                .escape => self.closeWalletModal(),
+                .enter => if (self.seed_input.getValue().len > 0) {
+                    m.stage = .setup_password;
+                    self.pw_input.setValue("") catch {};
+                    self.pw_input.focus();
+                },
+                else => self.seed_input.handleKey(k),
+            },
+            // The file picker owns navigation; a file selection advances to the
+            // password step.
+            .setup_file => switch (k.key) {
+                .escape => self.closeWalletModal(),
+                else => {
+                    const selected = self.file_picker.handleKey(self.io, self.environ_map, k) catch false;
+                    if (selected) {
+                        m.stage = .setup_password;
+                        self.pw_input.setValue("") catch {};
+                        self.pw_input.focus();
+                    }
+                },
+            },
+            // The freshly-created seed is on screen; any key closes (the wallet is
+            // already open at this point).
+            .setup_seed_show => self.closeWalletModal(),
             // While the RPC is in flight, ignore input — the reap moves us on.
             .working => {},
             // Any key dismisses the result.
@@ -1398,6 +1798,31 @@ pub const App = struct {
     /// spinner while extracting, and — once — reap a finished worker and refresh
     /// the cached installed flag from disk.
     fn onTick(self: *App, t: zz.msg.Tick) void {
+        // Kick off the one-shot background update check on the first tick —
+        // deferred off `init` so a network round-trip never delays startup.
+        if (!self.update_started) {
+            self.update_started = true;
+            self.update_thread = std.Thread.spawn(.{}, runUpdateCheck, .{self}) catch null;
+        }
+        // Reap a finished update check: fold the outcome in and log it once.
+        if (self.update_thread != null and self.update_done.load(.acquire)) {
+            self.update_thread.?.join();
+            self.update_thread = null;
+            switch (self.update_status) {
+                .staged => {
+                    self.update_available = true;
+                    if (self.update_blocked)
+                        self.logf("update v{s} downloaded, but BoxWallet's folder isn't writable — move it somewhere writable, then restart", .{self.update_version.slice()})
+                    else
+                        self.logf("update v{s} downloaded — restart to apply", .{self.update_version.slice()});
+                },
+                .up_to_date => self.logf("up to date (v{s})", .{app_version}),
+                // Quiet otherwise: no published binary for this target, or a
+                // best-effort network/verify miss that retries next launch.
+                .unsupported, .network_error, .verify_failed => {},
+            }
+        }
+
         // Refresh the disk-usage figure on a slow ~30s cadence (the bar shows
         // how full the volume holding the blockchains is). The very first sample
         // is taken in `init`, so the bar is already populated here — this just
@@ -1457,12 +1882,35 @@ pub const App = struct {
                         act.behind_secs = -1;
                         act.wallet = .unknown;
                         act.poll_wallet.store(@intFromEnum(WalletState.unknown), .monotonic);
+                        act.has_balance = false;
+                        act.poll_has_balance.store(0, .monotonic);
+                        // Zero the figures so the always-on header balance reads
+                        // "Total: 0" for a stopped daemon rather than a stale amount.
+                        act.balance_total = 0;
+                        act.balance_avail = 0;
                         act.loading_phase = .none;
                         act.poll_phase.store(@intFromEnum(models.LoadingPhase.none), .monotonic);
                         self.logf("{s}: daemon stopped", .{act.coin.coinName()});
                     } else self.logf("{s}: daemon failed to stop ({s})", .{ act.coin.coinName(), act.daemon_err }),
                 }
             }
+
+            // External wallet (Monero-style) process lifecycle: bring it up
+            // alongside a running daemon and tear it down once the daemon is gone.
+            // Applies to every external-wallet coin (so a wallet service started
+            // for one persists if you navigate away, and is reaped when you stop
+            // that coin's daemon), while the on-disk "wallet exists?" flag is
+            // refreshed only for the coin on screen.
+            if (self.coinAt(i)) |xcoin| {
+                if (xcoin.hasExternalWallet()) {
+                    if (act.daemonState() == .running)
+                        self.ensureWalletRpc(act, xcoin)
+                    else if (act.wallet_rpc_child != null)
+                        self.killWalletRpc(act);
+                    if (i == self.selected) self.refreshExtWalletExists(xcoin, act);
+                }
+            }
+
             if (act.sync == .syncing) {
                 // Spin clockwise when connected, anti-clockwise with no peers.
                 // Assign `frames` directly (not `setFrames`, which would reset
@@ -1533,6 +1981,59 @@ pub const App = struct {
                 }
             }
 
+            // Settle a finished external-wallet setup op (create/restore/open):
+            // clear the secrets we copied in, mark the wallet open on success, and
+            // advance the modal — to the seed display for a create, or a result
+            // line otherwise.
+            if (act.wallet_setup_thread != null and act.wallet_setup_done.load(.acquire)) {
+                act.wallet_setup_thread.?.join();
+                act.wallet_setup_thread = null;
+                const op = act.wallet_setup_op;
+                const ok = act.wallet_setup_ok;
+                @memset(&act.wallet_pw_buf, 0);
+                act.wallet_pw_len = 0;
+                @memset(&act.wallet_seed_buf, 0);
+                act.wallet_seed_len = 0;
+                act.wallet_file_len = 0;
+
+                const detail = act.wallet_setup_sink.slice();
+                if (ok) {
+                    act.ext_wallet_open.store(1, .monotonic);
+                    act.ext_wallet_exists = true;
+                    self.logf("{s}: {s} succeeded", .{ act.coin.coinName(), op.verb() });
+                } else if (detail.len > 0) {
+                    // The daemon told us why — log its raw message alongside the
+                    // mapped error name so the cause isn't lost.
+                    self.logf("{s}: {s} failed ({s}: {s})", .{ act.coin.coinName(), op.verb(), act.wallet_setup_err, detail });
+                } else {
+                    self.logf("{s}: {s} failed ({s})", .{ act.coin.coinName(), op.verb(), act.wallet_setup_err });
+                }
+                // Re-poll promptly so the balance lines appear.
+                self.last_poll_ns = 0;
+
+                if (self.modal) |*m| {
+                    if (m.coin_idx == i and m.stage == .working) {
+                        if (ok and op == .create) {
+                            // Hand the modal its own copy of the seed to display,
+                            // then clear the worker's copy.
+                            m.seed = act.wallet_setup_seed;
+                            m.stage = .setup_seed_show;
+                        } else if (ok) {
+                            m.setMsg(true, switch (op) {
+                                .restore_seed => "Wallet restored — your balance will appear after it rescans.",
+                                .restore_file => "Wallet imported — your balance will appear shortly.",
+                                .open => "Wallet unlocked.",
+                                .create => unreachable,
+                            });
+                        } else {
+                            m.setMsg(false, friendlyWalletError(act.wallet_setup_err, detail));
+                        }
+                    }
+                }
+                // Clear the worker's seed copy now the modal holds its own.
+                act.wallet_setup_seed = .{};
+            }
+
             // Start the next poll for an installed, idle coin when the cadence is
             // due and none is in flight. Only the selected coin is polled — its
             // dashboard is the only one on screen, so polling a coin we're not
@@ -1540,7 +2041,7 @@ pub const App = struct {
             // worker is touching this activity, so `coin` isn't written under it.
             if (i == self.selected and poll_due and act.installed and
                 act.poll_thread == null and !act.busy() and act.daemon_thread == null and
-                act.wallet_thread == null)
+                act.wallet_thread == null and act.wallet_setup_thread == null)
             {
                 if (self.coinAt(i)) |coin| {
                     act.coin = coin;
@@ -1615,6 +2116,28 @@ pub const App = struct {
             self.mem_used = u.used;
             self.mem_total = u.total;
         }
+    }
+
+    /// One-shot self-update worker. Runs on its own arena and blocking io, off
+    /// the UI thread, since it reaches the network. Asks GitHub for the latest
+    /// release and, if newer, downloads + checksum-verifies it and stages it for
+    /// next launch. Publishes its outcome through `update_done` (release), which
+    /// `onTick` reaps. Memory stays flat — the binary is streamed to disk by the
+    /// updater, never buffered here.
+    fn runUpdateCheck(self: *App) void {
+        var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+        defer arena.deinit();
+        const a = arena.allocator();
+
+        var threaded: std.Io.Threaded = .init(a, .{});
+        defer threaded.deinit();
+        const io = threaded.io();
+
+        const result = updater.checkAndStage(a, io, self.install_root, app_version);
+        self.update_status = result.status;
+        self.update_version = result.version;
+        self.update_blocked = result.blocked;
+        self.update_done.store(true, .release);
     }
 
     fn move(self: *App, delta: i32) void {
@@ -1806,6 +2329,9 @@ pub const App = struct {
         // only auto-loads the unnamed default), so re-run ensureWallet on the next
         // poll for coins that need it.
         act.wallet_ensured = false;
+        // Re-attempt the external wallet service for this daemon run (e.g. after a
+        // reinstall added the wallet-rpc binary).
+        act.wallet_rpc_attempted = false;
         act.daemon.store(@intFromEnum(DaemonState.starting), .release);
 
         act.daemon_thread = std.Thread.spawn(.{}, Activity.runDaemon, .{act}) catch {
@@ -1846,6 +2372,114 @@ pub const App = struct {
         self.logf("{s}: stopping daemon…", .{coin.coinName()});
     }
 
+    /// Spawn the coin's external wallet process (`nerva-wallet-rpc`) alongside its
+    /// running daemon, if it isn't up already. Detached like a foreground daemon —
+    /// it idles until a wallet is opened — and its `Child` handle is kept so it can
+    /// be killed when the daemon stops (Monero wallet-rpc has no shutdown RPC).
+    /// Best-effort; a spawn failure just leaves the wallet unavailable until retry.
+    fn ensureWalletRpc(self: *App, act: *Activity, coin: Coin) void {
+        if (!coin.hasExternalWallet() or act.wallet_rpc_child != null or act.wallet_rpc_attempted) return;
+        act.wallet_rpc_attempted = true;
+        const ew = coin.externalWallet().?;
+
+        var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+        defer arena.deinit();
+        const a = arena.allocator();
+        var threaded: std.Io.Threaded = .init(a, .{});
+        defer threaded.deinit();
+        const io = threaded.io();
+
+        // argv is consumed by spawn (fork/exec copies it), so the local arena can
+        // be freed right after — the returned `Child` holds only the pid/handle.
+        const argv = ew.process_argv(a, self.install_root, self.home_dir, ew.rpc_port()) catch |err| {
+            self.logf("{s}: couldn't build the wallet service command ({s})", .{ coin.coinName(), @errorName(err) });
+            return;
+        };
+        const child = std.process.spawn(io, .{
+            .argv = argv,
+            .environ_map = self.environ_map,
+            .stdin = .ignore,
+            .stdout = .ignore,
+            .stderr = .ignore,
+            .create_no_window = @import("builtin").os.tag == .windows,
+        }) catch |err| {
+            // Most likely the wallet-rpc binary isn't on disk (an install from
+            // before it was bundled) — tell the user how to fix it, once.
+            self.logf("{s}: wallet service failed to start ({s}) — press i to reinstall and add the wallet service", .{ coin.coinName(), @errorName(err) });
+            return;
+        };
+        act.wallet_rpc_child = child;
+        self.logf("{s}: wallet service started", .{coin.coinName()});
+    }
+
+    /// Kill the coin's external wallet process and mark its wallet closed. Uses a
+    /// fresh `Io` (the `Child` holds only the pid/handle, independent of the io it
+    /// was spawned under). Idempotent.
+    fn killWalletRpc(self: *App, act: *Activity) void {
+        _ = self;
+        act.ext_wallet_open.store(0, .monotonic);
+        act.wallet_rpc_attempted = false;
+        if (act.wallet_rpc_child) |*child| {
+            var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+            defer arena.deinit();
+            var threaded: std.Io.Threaded = .init(arena.allocator(), .{});
+            defer threaded.deinit();
+            child.kill(threaded.io());
+            act.wallet_rpc_child = null;
+        }
+    }
+
+    /// Refresh whether the coin's external wallet file exists on disk (drives the
+    /// pane hint and which `w` flow opens). A cheap stat; no-op for non-external
+    /// coins.
+    fn refreshExtWalletExists(self: *App, coin: Coin, act: *Activity) void {
+        if (!coin.hasExternalWallet()) return;
+        const ew = coin.externalWallet().?;
+        act.ext_wallet_exists = ew.exists(self.allocator, self.home_dir);
+    }
+
+    /// `w` for an external-wallet (Monero-style) coin: open the setup menu when no
+    /// wallet exists yet, the unlock prompt when one exists but isn't open this
+    /// session, or do nothing when it's already unlocked. Requires the daemon and
+    /// the wallet service to be up.
+    fn openExternalWalletModal(self: *App, coin: Coin, act: *Activity) void {
+        if (!act.installed or act.daemonState() != .running) {
+            self.logf("{s}: start the daemon first to set up the wallet", .{coin.coinName()});
+            return;
+        }
+        if (act.wallet_rpc_child == null) {
+            if (act.wallet_rpc_attempted)
+                self.logf("{s}: wallet service didn't start — press i to reinstall (adds the wallet service), then restart the daemon", .{coin.coinName()})
+            else
+                self.logf("{s}: wallet service still starting — try again in a moment", .{coin.coinName()});
+            return;
+        }
+        var m: Modal = .{ .coin_idx = self.selected };
+        if (!act.ext_wallet_exists) {
+            m.stage = .setup_menu;
+            m.setup_sel = 0;
+        } else if (act.ext_wallet_open.load(.monotonic) == 0) {
+            // A wallet exists but isn't open this session — unlock it.
+            m.stage = .setup_password;
+            m.setup_op = .open;
+        } else {
+            self.logf("{s}: wallet already unlocked", .{coin.coinName()});
+            return;
+        }
+        self.pw_input.setValue("") catch {};
+        self.seed_input.setValue("") catch {};
+        self.modal = m;
+    }
+
+    /// Point the file picker at the user's home dir and focus it, for the
+    /// restore-from-file flow.
+    fn startFilePicker(self: *App) void {
+        self.file_picker.focus();
+        self.file_picker.navigateHome(self.io, self.environ_map) catch {
+            self.file_picker.navigate(self.io, ".") catch {};
+        };
+    }
+
     /// Open the `w` wallet menu for the selected coin. Gated: the coin must
     /// expose a manageable wallet, be installed with a running daemon, and have a
     /// resolved wallet state offering at least one action. When it can't open, the
@@ -1853,6 +2487,9 @@ pub const App = struct {
     fn openWalletModal(self: *App) void {
         const coin = self.selectedCoin() orelse return;
         const act = &self.activities[self.selected];
+        // Monero-style coins manage an external wallet process instead of the
+        // in-daemon wallet hooks — route to its create/restore/unlock flow.
+        if (coin.hasExternalWallet()) return self.openExternalWalletModal(coin, act);
         if (!coin.supportsWallet()) {
             self.logf("{s}: wallet management isn't supported", .{coin.coinName()});
             return;
@@ -1875,9 +2512,16 @@ pub const App = struct {
         self.modal = m;
     }
 
-    /// Dismiss the wallet modal, clearing the passphrase field.
+    /// Dismiss the wallet modal, clearing the passphrase and seed input fields.
     fn closeWalletModal(self: *App) void {
         self.pw_input.setValue("") catch {};
+        self.seed_input.setValue("") catch {};
+        if (self.modal) |*m| {
+            @memset(&m.pw_first_buf, 0);
+            m.pw_first_len = 0;
+            m.pw_mismatch = false;
+        }
+        self.file_picker.blur();
         self.modal = null;
     }
 
@@ -1925,6 +2569,77 @@ pub const App = struct {
         };
         m.stage = .working;
         self.logf("{s}: {s}…", .{ coin.coinName(), m.action.label() });
+    }
+
+    /// Fire the chosen external-wallet setup op on a worker thread. Copies the
+    /// password (and, for restore, the seed words / file path) into the activity's
+    /// bounded buffers, clearing the inputs, then spawns `runWalletSetup`; the
+    /// modal advances to `working` and the reap in `onTick` settles it.
+    fn submitWalletSetup(self: *App) void {
+        if (self.modal == null) return;
+        const m = &self.modal.?;
+        const coin = self.coinAt(m.coin_idx) orelse return;
+        const act = &self.activities[m.coin_idx];
+
+        // Reap any in-flight poll / prior setup worker first.
+        if (act.poll_thread) |t| {
+            t.join();
+            act.poll_thread = null;
+        }
+        if (act.wallet_setup_thread) |t| {
+            t.join();
+            act.wallet_setup_thread = null;
+        }
+
+        // Password (cleared from the input once copied). The confirm copy is no
+        // longer needed, so wipe it too.
+        const pw = self.pw_input.getValue();
+        const pn = @min(pw.len, wallet_pw_max);
+        @memcpy(act.wallet_pw_buf[0..pn], pw[0..pn]);
+        act.wallet_pw_len = pn;
+        self.pw_input.setValue("") catch {};
+        @memset(&m.pw_first_buf, 0);
+        m.pw_first_len = 0;
+        m.pw_mismatch = false;
+
+        // Restore inputs, only for the ops that use them.
+        if (m.setup_op == .restore_seed) {
+            const sv = self.seed_input.getValue();
+            const sn = @min(sv.len, act.wallet_seed_buf.len);
+            @memcpy(act.wallet_seed_buf[0..sn], sv[0..sn]);
+            act.wallet_seed_len = sn;
+            self.seed_input.setValue("") catch {};
+        } else {
+            act.wallet_seed_len = 0;
+        }
+        if (m.setup_op == .restore_file) {
+            const fp = self.file_picker.getSelected() orelse "";
+            const fl = @min(fp.len, act.wallet_file_buf.len);
+            @memcpy(act.wallet_file_buf[0..fl], fp[0..fl]);
+            act.wallet_file_len = fl;
+        } else {
+            act.wallet_file_len = 0;
+        }
+
+        act.coin = coin;
+        act.home_dir = self.home_dir;
+        act.install_root = self.install_root;
+        act.wallet_setup_op = m.setup_op;
+        act.wallet_setup_err = "";
+        act.wallet_setup_sink.len = 0;
+        act.wallet_setup_ok = false;
+        act.wallet_setup_done.store(false, .monotonic);
+
+        act.wallet_setup_thread = std.Thread.spawn(.{}, Activity.runWalletSetup, .{act}) catch {
+            @memset(&act.wallet_pw_buf, 0);
+            act.wallet_pw_len = 0;
+            @memset(&act.wallet_seed_buf, 0);
+            act.wallet_seed_len = 0;
+            m.setMsg(false, "couldn't start the wallet worker");
+            return;
+        };
+        m.stage = .working;
+        self.logf("{s}: {s}…", .{ coin.coinName(), m.setup_op.verb() });
     }
 
     pub fn view(self: *const App, ctx: *const zz.Context) []const u8 {
@@ -2010,8 +2725,17 @@ pub const App = struct {
             // alongside it in the terminal default.
             const brand = (zz.Style{}).bold(true).fg(zz.Color.hex(app_color));
             const head = brand.render(a, app_name) catch app_name;
+            // Once a newer build is staged, sit a notice under the title: the
+            // normal "restart to apply", or — when the program's own folder
+            // isn't writable — a heads-up that a restart wouldn't take.
+            const notice = if (!self.update_available)
+                ""
+            else if (self.update_blocked)
+                std.fmt.allocPrint(a, "\n⚠ Update v{s} downloaded, but BoxWallet's folder isn't writable.\n  Move BoxWallet to a writable location, then restart.", .{self.update_version.slice()}) catch ""
+            else
+                std.fmt.allocPrint(a, "\n⬆ Update v{s} downloaded — restart to apply", .{self.update_version.slice()}) catch "";
             return std.fmt.allocPrint(a,
-                \\{s} v{s}
+                \\{s} v{s}{s}
                 \\
                 \\Select a coin on the left to manage it.
                 \\
@@ -2021,7 +2745,7 @@ pub const App = struct {
                 \\  w        wallet (encrypt / unlock / stake)
                 \\  l        toggle the log pane
                 \\  q        quit
-            , .{ head, app_version }) catch "alloc error";
+            , .{ head, app_version, notice }) catch "alloc error";
         };
 
         return self.renderCoin(a, coin, &self.activities[self.selected]) catch "alloc error";
@@ -2100,18 +2824,64 @@ pub const App = struct {
             break :blk std.fmt.allocPrint(a, "    {s}: {s}", .{ staking_label, staking_mark }) catch "";
         } else "";
 
-        // Wallet status: text + colour come from the state itself; the label is
-        // grey until the state is known (matching the "Unknown" value's grey).
-        const wallet_label = statusLabel(a, brand, "Wallet", act.wallet != .unknown);
-        const wallet_value = (zz.Style{}).bold(true).fg(act.wallet.color()).render(a, act.wallet.text()) catch act.wallet.text();
+        // Wallet status. Two shapes:
+        //   * In-daemon (bitcoin) coins: text + colour come from the polled
+        //     security state; the label greys until it's known.
+        //   * External-wallet (Monero-style) coins: the daemon RPC has no wallet,
+        //     so the line reflects the external wallet's setup state — "No wallet"
+        //     (with a set-up hint), "Locked" (with an unlock hint), or "Unlocked".
+        const ext = coin.hasExternalWallet();
+        const daemon_up = act.daemonState() == .running;
+        const ext_open = ext and act.ext_wallet_open.load(.monotonic) != 0;
+
+        const wallet_label = statusLabel(a, brand, "Wallet", if (ext) daemon_up else act.wallet != .unknown);
+        const wallet_value: []const u8 = if (ext) blk: {
+            if (!daemon_up) break :blk (zz.Style{}).fg(.brightBlack).render(a, "Unknown") catch "Unknown";
+            if (!act.ext_wallet_exists) break :blk (zz.Style{}).bold(true).fg(.yellow).render(a, "No wallet") catch "No wallet";
+            if (!ext_open) break :blk (zz.Style{}).bold(true).fg(.yellow).render(a, "Locked") catch "Locked";
+            break :blk (zz.Style{}).bold(true).fg(.green).render(a, "Unlocked") catch "Unlocked";
+        } else (zz.Style{}).bold(true).fg(act.wallet.color()).render(a, act.wallet.text()) catch act.wallet.text();
+
         // Advertise the `w` key the way the daemon button advertises `s` — but
-        // only when a press would actually open the menu (the coin has a
-        // manageable wallet, its daemon is up, and a state has been polled).
-        // Dimmed so it reads as a hint, not part of the status.
-        const wallet_hint: []const u8 = if (coin.supportsWallet() and act.daemonState() == .running and act.wallet != .unknown)
+        // only when a press would actually open the menu. Dimmed so it reads as a
+        // hint, not part of the status. External coins spell out the action ("set
+        // up" / "unlock"); in-daemon coins use the generic "(press w)".
+        const wallet_hint: []const u8 = if (ext and daemon_up) blk: {
+            const text = if (!act.ext_wallet_exists)
+                "   (press w to set up)"
+            else if (!ext_open)
+                "   (press w to unlock)"
+            else
+                "";
+            break :blk if (text.len == 0) "" else (zz.Style{}).dim(true).render(a, text) catch text;
+        } else if (!ext and coin.supportsWallet() and daemon_up and act.wallet != .unknown)
             (zz.Style{}).dim(true).render(a, "   (press w)") catch "   (press w)"
         else
             "";
+
+        // Balance — shown top-right of the pane header for any balance-capable coin,
+        // always (regardless of amount or whether one's been polled yet — 0 until
+        // then). The "Total"/"Available" labels and the coin abbrev wear the brand
+        // colour; only the figure is tinted by state. "Total" (confirmed + mempool +
+        // immature) is always shown with a green figure. "Available" (confirmed
+        // spendable) is appended *only* while it trails Total — funds still settling
+        // — with a yellow figure as a "not all spendable yet" caveat. Empty for coins
+        // that report no balance.
+        const corner: []const u8 = if (coin.supportsBalance() or coin.hasExternalWallet()) blk: {
+            const abbrev = coin.coinNameAbbrev();
+            const bal: models.WalletBalance = .{ .total = act.balance_total, .available = act.balance_avail };
+            const total = balanceCorner(a, brand, "Total", act.balance_total, abbrev, .green);
+            if (!bal.hasPending()) break :blk total;
+            const avail = balanceCorner(a, brand, "Available", act.balance_avail, abbrev, .yellow);
+            break :blk std.fmt.allocPrint(a, "{s}   {s}", .{ total, avail }) catch total;
+        } else "";
+
+        // Sit the balance just to the right of the coin/version on the header row,
+        // with a clear gap. Just the title when the coin reports no balance.
+        const head_line: []const u8 = if (corner.len == 0)
+            head
+        else
+            std.fmt.allocPrint(a, "{s}     {s}", .{ head, corner }) catch head;
 
         // Sync progress bars. Labels are padded to a common width before styling
         // (ANSI codes are zero-width) so the two bars line up. Like the status
@@ -2176,7 +2946,7 @@ pub const App = struct {
             \\
             \\{s}
         , .{
-            head,
+            head_line,
             status_line,
             installed_label,
             installed_mark,
@@ -2223,6 +2993,62 @@ pub const App = struct {
     fn statusLabel(a: std.mem.Allocator, brand: zz.Color, text: []const u8, active: bool) []const u8 {
         const c: zz.Color = if (active) brand else .brightBlack;
         return (zz.Style{}).fg(c).render(a, text) catch text;
+    }
+
+    /// Format a coin amount into `buf` as a trimmed decimal with thousands
+    /// separators, no abbrev (e.g. 1234567.5 → "1,234,567.5", 10 → "10", 0 → "0").
+    /// Renders up to 8 decimal places (coins are divisible to 8dp), strips trailing
+    /// zeros and a bare trailing dot, then groups the integer part in threes.
+    /// Returns a slice into `buf` — no allocation. `buf` need only be ~40 bytes for
+    /// any f64 in this notation; callers pass a `[64]u8`.
+    fn formatAmount(buf: []u8, value: f64) []const u8 {
+        var raw: [64]u8 = undefined;
+        const s = std.fmt.bufPrint(&raw, "{d:.8}", .{value}) catch return "?";
+        const dot = std.mem.indexOfScalar(u8, s, '.');
+        const int_part = if (dot) |d| s[0..d] else s;
+        var frac: []const u8 = if (dot) |d| s[d + 1 ..] else "";
+        var fend = frac.len;
+        while (fend > 0 and frac[fend - 1] == '0') fend -= 1;
+        frac = frac[0..fend];
+
+        // Group the integer digits in threes: a comma precedes digit `i` when the
+        // count of digits after it is a positive multiple of 3.
+        var gi: usize = 0;
+        var i: usize = 0;
+        while (i < int_part.len and gi < buf.len) : (i += 1) {
+            if (i != 0 and (int_part.len - i) % 3 == 0) {
+                buf[gi] = ',';
+                gi += 1;
+            }
+            buf[gi] = int_part[i];
+            gi += 1;
+        }
+        if (frac.len > 0 and gi + 1 + frac.len <= buf.len) {
+            buf[gi] = '.';
+            gi += 1;
+            @memcpy(buf[gi .. gi + frac.len], frac);
+            gi += frac.len;
+        }
+        return buf[0..gi];
+    }
+
+    /// Format a coin balance as `formatAmount` followed by the coin's abbrev
+    /// (e.g. "1,234.5 NEXA").
+    fn formatBalance(a: std.mem.Allocator, value: f64, abbrev: []const u8) []const u8 {
+        var buf: [64]u8 = undefined;
+        return std.fmt.allocPrint(a, "{s} {s}", .{ formatAmount(&buf, value), abbrev }) catch abbrev;
+    }
+
+    /// One styled balance figure for the header corner: `<label>: <amount> <abbrev>`
+    /// with the label and abbrev in the coin's brand colour and the amount tinted
+    /// by `num_color` (green for Total, yellow for a still-settling Available).
+    fn balanceCorner(a: std.mem.Allocator, brand: zz.Color, label: []const u8, value: f64, abbrev: []const u8, num_color: zz.Color) []const u8 {
+        var buf: [64]u8 = undefined;
+        const brand_sty = (zz.Style{}).bold(true).fg(brand);
+        const lbl = brand_sty.render(a, std.fmt.allocPrint(a, "{s}:", .{label}) catch label) catch label;
+        const num = (zz.Style{}).bold(true).fg(num_color).render(a, formatAmount(&buf, value)) catch "?";
+        const abbr = brand_sty.render(a, abbrev) catch abbrev;
+        return std.fmt.allocPrint(a, "{s} {s} {s}", .{ lbl, num, abbr }) catch lbl;
     }
 
     /// A bold tick (✔, green) or cross (✘, red). The heavy glyphs read bolder
@@ -2350,6 +3176,21 @@ pub const App = struct {
         const inner_w = modal_inner_w;
         const vbar = (zz.Style{}).fg(brand).render(a, "│") catch "│";
 
+        // The file picker brings its own (wider, multi-line) layout that doesn't
+        // fit the narrow bordered box, so this stage renders as its own titled
+        // block — `renderModalOver` centers whatever we return.
+        if (m.stage == .setup_file) {
+            var fout: std.Io.Writer.Allocating = .init(a);
+            errdefer fout.deinit();
+            const heading = (zz.Style{}).bold(true).fg(brand).render(a, "Select a wallet file to import") catch "Select a wallet file to import";
+            try fout.writer.print("{s}\n\n", .{heading});
+            const picker = try self.file_picker.view(a);
+            try fout.writer.writeAll(picker);
+            const fhint = (zz.Style{}).dim(true).render(a, "enter: open/select   backspace: up   ~: home   esc: cancel") catch "";
+            try fout.writer.print("\n{s}", .{fhint});
+            return fout.toOwnedSlice();
+        }
+
         var out: std.Io.Writer.Allocating = .init(a);
         errdefer out.deinit();
 
@@ -2377,32 +3218,88 @@ pub const App = struct {
                     try modalRow(&out.writer, vbar, inner_w, text, zz.width("Passphrase: ") + zz.width(masked));
                 }
             },
+            // External-wallet setup menu: the create / restore choices.
+            .setup_menu => {
+                var i: usize = 0;
+                while (i < setup_choices.len) : (i += 1) {
+                    const sel = i == m.setup_sel;
+                    const plain = try std.fmt.allocPrint(a, "{s}{s}", .{ if (sel) "❯ " else "  ", setup_choices[i].label() });
+                    const text = if (sel)
+                        ((zz.Style{}).bold(true).fg(brand).render(a, plain) catch plain)
+                    else
+                        plain;
+                    try modalRow(&out.writer, vbar, inner_w, text, zz.width(plain));
+                }
+            },
+            // External-wallet password entry (masked). The prompt names the action.
+            .setup_password => {
+                const prompt = if (m.setup_op == .open) "Password: " else "New password: ";
+                const masked = try self.pw_input.view(a);
+                const text = try std.fmt.allocPrint(a, "{s}{s}", .{ prompt, masked });
+                try modalRow(&out.writer, vbar, inner_w, text, zz.width(prompt) + zz.width(masked));
+                if (m.pw_mismatch) {
+                    const warn = "Passwords didn't match — please re-enter.";
+                    const styled = (zz.Style{}).fg(.red).render(a, warn) catch warn;
+                    try modalRow(&out.writer, vbar, inner_w, styled, zz.width(warn));
+                }
+            },
+            // Re-entry of a new password to confirm it matches before it's set.
+            .setup_password_confirm => {
+                const prompt = "Confirm password: ";
+                const masked = try self.pw_input.view(a);
+                const text = try std.fmt.allocPrint(a, "{s}{s}", .{ prompt, masked });
+                try modalRow(&out.writer, vbar, inner_w, text, zz.width(prompt) + zz.width(masked));
+            },
+            // External-wallet seed entry (visible — you're transcribing a phrase).
+            // The words are word-wrapped across rows with a live count so a long
+            // mnemonic stays inside the box instead of overrunning its right edge.
+            .setup_seed_input => {
+                const prompt = "Enter your 25-word recovery seed (type or paste):";
+                try wrapIntoRows(a, &out.writer, vbar, inner_w, prompt, (zz.Style{}));
+                try modalRow(&out.writer, vbar, inner_w, "", 0);
+
+                const val = self.seed_input.getValue();
+                if (val.len == 0) {
+                    const ph = (zz.Style{}).dim(true).render(a, "your words appear here as you type") catch "your words appear here as you type";
+                    try modalRow(&out.writer, vbar, inner_w, ph, zz.width("your words appear here as you type"));
+                } else {
+                    // A trailing block reads as the cursor; it rides along with the
+                    // word wrap so it sits right after the last character typed.
+                    const with_cursor = try std.fmt.allocPrint(a, "{s}\u{2588}", .{val});
+                    try wrapIntoRows(a, &out.writer, vbar, inner_w, with_cursor, (zz.Style{}).fg(brand));
+                }
+
+                try modalRow(&out.writer, vbar, inner_w, "", 0);
+                const n = countWords(val);
+                const counter = try std.fmt.allocPrint(a, "{d} / {d} words", .{ n, seed_word_target });
+                const cstyle = if (n == seed_word_target) (zz.Style{}).fg(.green) else (zz.Style{}).dim(true);
+                const counter_styled = cstyle.render(a, counter) catch counter;
+                try modalRow(&out.writer, vbar, inner_w, counter_styled, zz.width(counter));
+            },
+            // Show the freshly-created mnemonic for the user to write down.
+            .setup_seed_show => {
+                const note = (zz.Style{}).bold(true).fg(.yellow).render(a, "Write these words down and keep them safe:") catch "Write these words down and keep them safe:";
+                try modalRow(&out.writer, vbar, inner_w, note, zz.width("Write these words down and keep them safe:"));
+                try modalRow(&out.writer, vbar, inner_w, "", 0);
+                try wrapIntoRows(a, &out.writer, vbar, inner_w, m.seed.slice(), (zz.Style{}).fg(brand));
+            },
+            .setup_file => unreachable, // handled by the early return above
             .working => try modalRow(&out.writer, vbar, inner_w, "Working…", zz.width("Working…")),
             .result => {
                 const sty = (zz.Style{}).fg(if (m.ok) .green else .red);
-                // Greedy word-wrap the outcome message into the inner width.
-                const msg = m.msg_buf[0..m.msg_len];
-                var start: usize = 0;
-                while (start < msg.len) {
-                    var end = @min(start + inner_w, msg.len);
-                    if (end < msg.len) {
-                        var b = end;
-                        while (b > start and msg[b] != ' ') b -= 1;
-                        if (b > start) end = b;
-                    }
-                    const seg = std.mem.trim(u8, msg[start..end], " ");
-                    const styled = sty.render(a, seg) catch seg;
-                    try modalRow(&out.writer, vbar, inner_w, styled, zz.width(seg));
-                    start = end;
-                    while (start < msg.len and msg[start] == ' ') start += 1;
-                }
+                try wrapIntoRows(a, &out.writer, vbar, inner_w, m.msg_buf[0..m.msg_len], sty);
             },
         }
 
         try modalRow(&out.writer, vbar, inner_w, "", 0);
         const hint = switch (m.stage) {
-            .menu => "enter: select   esc: close",
+            .menu, .setup_menu => "enter: select   esc: close",
             .password => "enter: confirm   esc: cancel",
+            .setup_password => "enter: next   esc: cancel",
+            .setup_password_confirm => "enter: confirm   esc: cancel",
+            .setup_seed_input => "enter: next   esc: cancel",
+            .setup_seed_show => "press any key once you've saved it",
+            .setup_file => unreachable,
             .working => "please wait…",
             .result => "press any key to close",
         };
@@ -2466,6 +3363,53 @@ fn modalRow(w: *std.Io.Writer, vbar: []const u8, inner_w: usize, text: []const u
     try w.writeByte(' ');
     try w.writeAll(vbar);
     try w.writeByte('\n');
+}
+
+/// Greedy word-wrap `msg` into modal content rows of `inner_w` columns, each
+/// styled with `sty`. Used for the result message and the freshly-generated seed
+/// — both are plain text that may run past one row. No-op for an empty `msg`.
+fn wrapIntoRows(a: std.mem.Allocator, w: *std.Io.Writer, vbar: []const u8, inner_w: usize, msg: []const u8, sty: zz.Style) !void {
+    var start: usize = 0;
+    while (start < msg.len) {
+        var end = @min(start + inner_w, msg.len);
+        if (end < msg.len) {
+            // Back up to the last space so words aren't split mid-token.
+            var b = end;
+            while (b > start and msg[b] != ' ') b -= 1;
+            if (b > start) end = b;
+        }
+        const seg = std.mem.trim(u8, msg[start..end], " ");
+        const styled = sty.render(a, seg) catch seg;
+        try modalRow(w, vbar, inner_w, styled, zz.width(seg));
+        start = end;
+        while (start < msg.len and msg[start] == ' ') start += 1;
+    }
+}
+
+/// Turn a wallet-op error name (`@errorName`, e.g. from nerva's `walletRpcError`)
+/// into a sentence the user can act on. For errors we don't specifically map, show
+/// the daemon's own `detail` message when present (the real reason), falling back
+/// to the raw error name so nothing is silently swallowed.
+fn friendlyWalletError(name: []const u8, detail: []const u8) []const u8 {
+    const eql = std.mem.eql;
+    if (eql(u8, name, "WalletAlreadyExists"))
+        return "A wallet already exists for this coin — remove it before restoring, or open it instead.";
+    if (eql(u8, name, "SeedWordsInvalid") or eql(u8, name, "InvalidSeed"))
+        return "Those seed words weren't accepted. Check the spelling and that all 25 words are correct.";
+    if (eql(u8, name, "WrongPassword"))
+        return "That password didn't match this wallet.";
+    if (detail.len > 0) return detail;
+    return name;
+}
+
+/// Count whitespace-separated tokens in `s` — the live word count shown under the
+/// seed-entry field so the user can see how many of the expected words they've
+/// entered without counting by hand.
+fn countWords(s: []const u8) usize {
+    var it = std.mem.tokenizeAny(u8, s, " \t\r\n");
+    var n: usize = 0;
+    while (it.next()) |_| n += 1;
+    return n;
 }
 
 /// Write a top/bottom border row of the modal in the brand colour: the corner
@@ -3315,6 +4259,63 @@ test "the wallet modal renders its menu centered over the dashboard" {
     try std.testing.expect(std.mem.indexOf(u8, out, "┘") != null);
 }
 
+test "setup choices map to the right external-wallet ops" {
+    // The three pickable choices map onto their setup ops; `open` is reached
+    // directly (unlock flow), never from this menu.
+    try std.testing.expectEqual(WalletSetupOp.create, SetupChoice.create.op());
+    try std.testing.expectEqual(WalletSetupOp.restore_seed, SetupChoice.restore_seed.op());
+    try std.testing.expectEqual(WalletSetupOp.restore_file, SetupChoice.restore_file.op());
+    // Every choice has a non-empty menu label.
+    for (setup_choices) |c| try std.testing.expect(c.label().len > 0);
+    // Every op has a non-empty verb (used in logs and the working line).
+    for ([_]WalletSetupOp{ .create, .restore_seed, .restore_file, .open }) |op|
+        try std.testing.expect(op.verb().len > 0);
+}
+
+test "only password-setting ops ask for confirmation" {
+    // Creating/restoring sets a new password (confirm it — a typo would lock the
+    // user out); opening checks an existing one (a typo just fails and is retried).
+    try std.testing.expect(WalletSetupOp.create.setsNewPassword());
+    try std.testing.expect(WalletSetupOp.restore_seed.setsNewPassword());
+    try std.testing.expect(WalletSetupOp.restore_file.setsNewPassword());
+    try std.testing.expect(!WalletSetupOp.open.setsNewPassword());
+}
+
+test "the external-wallet setup menu renders its create/restore choices" {
+    if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
+    const allocator = std.testing.allocator;
+
+    var threaded: std.Io.Threaded = .init(allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    var env = std.process.Environ.Map.init(allocator);
+    defer env.deinit();
+    try env.put("HOME", "/home/tester");
+    var ctx = zz.Context.init(allocator, allocator, io, &env);
+
+    var app: App = undefined;
+    _ = app.init(&ctx);
+    defer app.deinit();
+
+    // Open Nerva's setup menu directly (the real gate needs a running daemon +
+    // wallet service).
+    app.selected = std.mem.indexOfScalar(Entry, &entries, .nerva).?;
+    app.modal = .{ .coin_idx = app.selected, .stage = .setup_menu };
+
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    const screen = try App.renderTwoPane(a, app.selected, "right pane\n");
+    const out = try app.renderModalOver(a, screen, 80, 24);
+
+    try std.testing.expect(std.mem.indexOf(u8, out, "Nerva Wallet") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "Create a new wallet") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "Restore from seed words") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "Restore from a wallet file") != null);
+}
+
 test "left bar pins Home on top and lists coins alphabetically" {
     // Home is always first; everything after it is sorted by label, regardless
     // of the order coins are registered in `coin_entries`.
@@ -3405,4 +4406,87 @@ test "per-coin activity is independent and stays inside the right pane" {
     try std.testing.expect(std.mem.indexOf(u8, screen, Nexa.coin_name) != null);
     try std.testing.expect(std.mem.indexOf(u8, screen, Divi.coin_name) != null);
     try std.testing.expect(std.mem.indexOf(u8, screen, "│") != null);
+}
+
+test "formatBalance trims trailing zeros and appends the coin abbrev" {
+    const a = std.testing.allocator;
+    // Whole amounts drop the fractional part entirely.
+    const whole = App.formatBalance(a, 10.0, "NEXA");
+    defer a.free(whole);
+    try std.testing.expectEqualStrings("10 NEXA", whole);
+    // Fractions keep only their significant digits.
+    const frac = App.formatBalance(a, 13.5, "DIVI");
+    defer a.free(frac);
+    try std.testing.expectEqualStrings("13.5 DIVI", frac);
+    // Zero is just "0", not a string of zeros.
+    const zero = App.formatBalance(a, 0.0, "NEXA");
+    defer a.free(zero);
+    try std.testing.expectEqualStrings("0 NEXA", zero);
+    // Large amounts get thousands separators on the integer part.
+    const big = App.formatBalance(a, 1234567.5, "XNV");
+    defer a.free(big);
+    try std.testing.expectEqualStrings("1,234,567.5 XNV", big);
+}
+
+test "the header balance shows Total always and Available only while funds settle" {
+    // renderCoin allocates many short-lived styled strings; like the other pane
+    // tests, run it on an arena rather than the testing allocator.
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    var nexa: Nexa = .{};
+    const coin = nexa.coin();
+
+    var act: Activity = .{
+        .coin = coin,
+        .home_dir = "",
+        .spinner = App.makeSpinner(),
+        .daemon_spinner = App.makeSpinner(),
+        .sync_spinner = zz.Spinner.init(),
+    };
+    act.installed = true;
+    act.daemon.store(@intFromEnum(DaemonState.running), .release);
+    act.poll_completed = true;
+
+    // renderCoin only touches the disk/memory gauge fields off `self`; the rest of
+    // the App is unused, so a minimal stand-in is enough.
+    var app: App = undefined;
+    app.disk_used = 0;
+    app.disk_total = 0;
+    app.mem_used = 0;
+    app.mem_total = 0;
+
+    // The label, figure and abbrev are independently styled, so they aren't a
+    // single contiguous substring — assert on each piece.
+
+    // Always shown for a balance-capable coin, even before a poll: Total label +
+    // abbrev present, no Available (nothing pending).
+    {
+        const pane = try App.renderCoin(&app, a, coin, &act);
+        try std.testing.expect(std.mem.indexOf(u8, pane, "Total:") != null);
+        try std.testing.expect(std.mem.indexOf(u8, pane, "NEXA") != null);
+        try std.testing.expect(std.mem.indexOf(u8, pane, "Available") == null);
+    }
+
+    // Funds in the mempool: Total is ahead of Available, so both show — with
+    // thousands separators on the figures.
+    act.has_balance = true;
+    act.balance_total = 1234.5;
+    act.balance_avail = 1000.0;
+    {
+        const pane = try App.renderCoin(&app, a, coin, &act);
+        try std.testing.expect(std.mem.indexOf(u8, pane, "Total:") != null);
+        try std.testing.expect(std.mem.indexOf(u8, pane, "1,234.5") != null);
+        try std.testing.expect(std.mem.indexOf(u8, pane, "Available:") != null);
+        try std.testing.expect(std.mem.indexOf(u8, pane, "1,000") != null);
+    }
+
+    // Settled (Available caught up to Total): only the Total remains.
+    act.balance_avail = 1234.5;
+    {
+        const pane = try App.renderCoin(&app, a, coin, &act);
+        try std.testing.expect(std.mem.indexOf(u8, pane, "1,234.5") != null);
+        try std.testing.expect(std.mem.indexOf(u8, pane, "Available") == null);
+    }
 }

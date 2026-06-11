@@ -62,6 +62,47 @@ download.
 The detail pane is rendered entirely through the `Coin` interface, so a newly
 registered coin appears and renders with no UI changes.
 
+## Releasing (and the in-app auto-updater)
+
+BoxWallet updates itself in-app — no separate updater. On launch it applies any
+update staged by a previous session (swapping the running binary and re-execing
+into it); while running, a background worker checks GitHub for a newer release,
+and if found downloads + SHA-256-verifies it and stages it for next launch. The
+swap targets the **actual running executable** (`std.process.executablePathAlloc`
+→ `/proc/self/exe` on Linux), wherever the user runs BoxWallet from, and keeps
+their chosen filename — `~/.boxwallet/updates/` is only the verified-download
+cache. See `src/update.zig`; the apply/re-exec is in `src/main.zig`, the
+background check + Home-pane notice in `src/app.zig`.
+
+Build all distributable binaries locally on one Linux host (Zig cross-compiles
+every target with no external toolchain):
+
+```sh
+ZIG_GLOBAL_CACHE_DIR=zig-pkg zig build release
+```
+
+This writes `zig-out/release/` with the binaries **named exactly as the updater
+downloads them** plus a `SHA256SUMS` it verifies against:
+
+```
+boxwallet-linux-x86_64        (static musl — runs on any glibc)
+boxwallet-linux-aarch64       (static musl)
+boxwallet-macos-x86_64
+boxwallet-macos-aarch64
+boxwallet-windows-x86_64.exe
+SHA256SUMS
+```
+
+Built `ReleaseSafe` + stripped (~1.5 MB each). To cut a release: bump
+`app_version` in `src/app.zig`, run `zig build release`, then upload **all six
+files** to the matching GitHub release (`tag_name` is compared against
+`app_version`). The asset names and `SHA256SUMS` are generated from one target
+list in `build.zig`, so they can't drift from the updater's expectations.
+
+If BoxWallet is installed where the user can't write (e.g. a root-owned
+`/usr/local/bin` run unprivileged), the swap can't happen; the Home pane says so
+rather than promising a restart that wouldn't take.
+
 ## What this validates
 
 - **ZigZag integrates on 0.16** — `Program(App).init(gpa, io, environ_map)` driven from `main(init: std.process.Init)`.
