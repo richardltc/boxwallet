@@ -400,6 +400,42 @@ const Modal = struct {
     }
 };
 
+/// The QuickSync prompt — a small modal shown when starting a daemon on a coin
+/// whose sync accelerator (Nerva's quicksync) is on offer (chain not yet synced,
+/// helper not already present). It walks confirm → downloading → (failed); on the
+/// user's yes the ~130 MB helper downloads on a worker thread, then the daemon
+/// starts. Distinct from the wallet `Modal` so the two flows don't entangle.
+const QuickSyncModal = struct {
+    const Stage = enum {
+        /// Yes/No: download the accelerator and sync fast, or sync normally.
+        confirm,
+        /// The accelerator is downloading (progress read from the Activity).
+        downloading,
+        /// The download failed; offer to start without it or cancel.
+        failed,
+    };
+
+    stage: Stage = .confirm,
+    /// The entry the prompt acts on, so the worker/reap target the right Activity
+    /// even if the left-nav selection moves while it's open.
+    coin_idx: usize = 0,
+    /// Cursor on the confirm menu (0 = Yes, 1 = No).
+    sel: usize = 0,
+    /// Accelerator name + one-line pitch, copied from the coin's capability.
+    name: []const u8 = "",
+    detail: []const u8 = "",
+    /// Failure reason shown on the `failed` stage (fixed buffer — no allocation).
+    msg_buf: [200]u8 = undefined,
+    msg_len: usize = 0,
+
+    fn setMsg(self: *QuickSyncModal, text: []const u8) void {
+        const n = @min(text.len, self.msg_buf.len);
+        @memcpy(self.msg_buf[0..n], text[0..n]);
+        self.msg_len = n;
+        self.stage = .failed;
+    }
+};
+
 /// Upper bound on a wallet passphrase, sizing the worker's copy buffer and the
 /// modal input's char limit. Comfortably past any sane passphrase length while
 /// keeping the secret in a small fixed buffer (memory constraint).
@@ -441,6 +477,19 @@ const Activity = struct {
     /// `.failed` via the acquire load.
     err_name: []const u8 = "",
 
+    // --- sync-accelerator (QuickSync) download worker ----------------------
+    // Reuses `dl_cur`/`dl_total` for the progress bar (no install runs for the
+    // same coin while its daemon is being started). `qs_done` carries the sync
+    // edge: the worker stores it release, the UI loads it acquire, publishing
+    // `qs_ok`/`qs_err` alongside.
+    /// The accelerator-download worker, reaped by the UI when `qs_done` is seen.
+    qs_thread: ?std.Thread = null,
+    qs_done: std.atomic.Value(bool) = .init(false),
+    /// Whether the download succeeded (read once `qs_done` is observed).
+    qs_ok: bool = false,
+    /// Static error name on failure (program-lifetime — `@errorName`).
+    qs_err: []const u8 = "",
+
     // --- worker inputs: set by the UI before spawn, read by the worker -----
     coin: Coin = undefined,
     install_root: []const u8 = "",
@@ -463,6 +512,11 @@ const Activity = struct {
     /// `ensureWallet` runs on the first successful poll and not every poll. Reset
     /// when the daemon is (re)started, since a fresh daemon won't have it loaded.
     wallet_ensured: bool = false,
+    /// Set once the coin's one-shot post-sync hook (`onSynced`) has been fired, so
+    /// it runs the first time the chain reads as fully synced and not every poll
+    /// thereafter. Unlike `wallet_ensured` it is *not* reset on daemon restart — the
+    /// cleanup (e.g. dropping Nerva's quicksync file) is permanent for the install.
+    synced_handled: bool = false,
     /// Set true (release) by the worker when the poll finishes; the UI folds the
     /// result in and joins the thread on its next tick.
     poll_done: std.atomic.Value(bool) = .init(false),
@@ -677,6 +731,41 @@ const Activity = struct {
                 self.phase.store(@intFromEnum(Phase.extracting), .monotonic);
             },
         }
+    }
+
+    /// `install_mod.Progress` sink for the QuickSync download. Only the byte
+    /// counters move (it's a single download, no extract phase), so — unlike
+    /// `onProgress` — it leaves `phase` alone, keeping the pane's install state
+    /// untouched while the prompt's own bar reads `dl_cur`/`dl_total`.
+    fn onQuicksyncProgress(ctx: *anyopaque, phase: install_mod.Phase, current: u64, total: u64) void {
+        _ = phase;
+        const self: *Activity = @ptrCast(@alignCast(ctx));
+        self.dl_total.store(total, .monotonic);
+        self.dl_cur.store(current, .monotonic);
+    }
+
+    /// Sync-accelerator download worker. Fetches the coin's accelerator (Nerva's
+    /// quicksync) on a private arena, publishing the outcome via `qs_done`; the UI
+    /// reaps it and, on success, starts the daemon.
+    fn runQuicksyncDownload(self: *Activity) void {
+        var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+        defer arena.deinit();
+        const a = arena.allocator();
+
+        const sa = self.coin.syncAccelerator() orelse {
+            self.qs_err = "Unsupported";
+            self.qs_ok = false;
+            self.qs_done.store(true, .release);
+            return;
+        };
+        const progress: install_mod.Progress = .{ .ctx = self, .func = onQuicksyncProgress };
+        if (sa.download(a, self.install_root, progress)) {
+            self.qs_ok = true;
+        } else |err| {
+            self.qs_err = @errorName(err);
+            self.qs_ok = false;
+        }
+        self.qs_done.store(true, .release);
     }
 
     /// Worker thread body. Installs the coin on a private arena (so memory is
@@ -1075,6 +1164,15 @@ const Activity = struct {
             .monotonic,
         );
         self.poll_synced.store(@intFromBool(state.synced), .monotonic);
+
+        // One-shot post-sync hook (Nerva reclaims its quicksync file here). Gated on
+        // a *real* sync — caught up AND with at least one peer — so a daemon that
+        // momentarily reads "synced" before it has any peers (a low height with no
+        // network height yet) can't trigger it early. Best-effort and fired once.
+        if (!self.synced_handled and state.synced and info.connections > 0) {
+            self.synced_handled = true;
+            self.coin.onSynced(a, self.install_root, self.home_dir) catch {};
+        }
     }
 
     /// Spawn the daemon binary and decide whether it started. `argv[0]` carries a
@@ -1421,6 +1519,10 @@ pub const App = struct {
     /// The open `w` wallet modal, or null when no modal is up. While set, the
     /// modal owns keyboard input and is composited over the dashboard.
     modal: ?Modal = null,
+    /// The open QuickSync (daemon-start) prompt, or null. Mutually exclusive with
+    /// `modal`; while set it owns keyboard input and is composited over the
+    /// dashboard, same as the wallet modal.
+    qs_modal: ?QuickSyncModal = null,
     /// Masked passphrase entry for the wallet modal. Persistent (its backing
     /// buffer outlives a single modal), created in `init` and freed in `deinit`;
     /// its value is cleared whenever the modal closes or an action is sent.
@@ -1574,6 +1676,10 @@ pub const App = struct {
                 t.join();
                 act.daemon_thread = null;
             }
+            if (act.qs_thread) |t| {
+                t.join();
+                act.qs_thread = null;
+            }
             if (act.poll_thread) |t| {
                 t.join();
                 act.poll_thread = null;
@@ -1607,6 +1713,12 @@ pub const App = struct {
             // (quit/install/navigate) are suppressed so typing a passphrase or
             // walking the menu doesn't also drive the dashboard.
             .key => |k| {
+                // The QuickSync prompt (daemon-start) and the wallet modal each own
+                // the keyboard while open; only one is ever open at a time.
+                if (self.qs_modal != null) {
+                    self.qsModalKey(k);
+                    return .none;
+                }
                 if (self.modal != null) {
                     self.modalKey(k);
                     return .none;
@@ -1892,6 +2004,27 @@ pub const App = struct {
                         act.poll_phase.store(@intFromEnum(models.LoadingPhase.none), .monotonic);
                         self.logf("{s}: daemon stopped", .{act.coin.coinName()});
                     } else self.logf("{s}: daemon failed to stop ({s})", .{ act.coin.coinName(), act.daemon_err }),
+                }
+            }
+
+            // Reap a finished QuickSync (sync-accelerator) download: on success
+            // close the prompt and start the daemon (now that the helper is on
+            // disk, `daemonArgv` will pass it); on failure flip the prompt to its
+            // `failed` stage so the user can start without it or cancel.
+            if (act.qs_thread != null and act.qs_done.load(.acquire)) {
+                act.qs_thread.?.join();
+                act.qs_thread = null;
+                const coin_opt = self.coinAt(i);
+                if (act.qs_ok) {
+                    self.qs_modal = null;
+                    if (coin_opt) |c| {
+                        self.logf("{s}: QuickSync ready — starting daemon", .{c.coinName()});
+                        self.beginDaemonStart(c, act);
+                    }
+                } else {
+                    if (self.qs_modal != null and self.qs_modal.?.coin_idx == i)
+                        self.qs_modal.?.setMsg(act.qs_err);
+                    if (coin_opt) |c| self.logf("{s}: QuickSync download failed ({s})", .{ c.coinName(), act.qs_err });
                 }
             }
 
@@ -2318,6 +2451,20 @@ pub const App = struct {
             act.daemon_thread = null;
         }
 
+        // Offer the coin's sync accelerator (Nerva's QuickSync) before the first
+        // synced start: a yes/no prompt that, on yes, downloads the helper then
+        // starts. On a synced chain — or a coin with no accelerator — this is false
+        // and we start straight away.
+        if (coin.offersSyncAccelerator(self.allocator, self.install_root, self.home_dir)) {
+            self.openQuickSyncModal(coin);
+            return;
+        }
+        self.beginDaemonStart(coin, act);
+    }
+
+    /// Spawn the selected coin's daemon-start worker. The actual launch, factored
+    /// out of `tryStart` so it can also run after a QuickSync download completes.
+    fn beginDaemonStart(self: *App, coin: Coin, act: *Activity) void {
         act.coin = coin;
         act.install_root = self.install_root;
         act.home_dir = self.home_dir;
@@ -2339,6 +2486,90 @@ pub const App = struct {
             return;
         };
         self.logf("{s}: starting daemon…", .{coin.coinName()});
+    }
+
+    /// Open the QuickSync prompt for `coin` (its sync accelerator is on offer).
+    fn openQuickSyncModal(self: *App, coin: Coin) void {
+        const sa = coin.syncAccelerator() orelse return;
+        self.qs_modal = .{
+            .stage = .confirm,
+            .coin_idx = self.selected,
+            .sel = 0,
+            .name = sa.name,
+            .detail = sa.prompt_detail,
+        };
+    }
+
+    /// Handle a keypress while the QuickSync prompt is open. `confirm` walks the
+    /// Yes/No choice (enter fires it; esc cancels the start). `downloading`
+    /// swallows keys. `failed` lets the user start without the accelerator (enter)
+    /// or cancel (esc).
+    fn qsModalKey(self: *App, k: zz.KeyEvent) void {
+        if (self.qs_modal == null) return;
+        const m = &self.qs_modal.?;
+        switch (m.stage) {
+            .confirm => switch (k.key) {
+                .escape => self.qs_modal = null,
+                .up => m.sel = 0,
+                .down => m.sel = 1,
+                .char => |c| switch (c) {
+                    'k' => m.sel = 0,
+                    'j' => m.sel = 1,
+                    'y' => self.startQuickSyncDownload(),
+                    'n' => self.declineQuickSync(),
+                    else => {},
+                },
+                .enter => if (m.sel == 0) self.startQuickSyncDownload() else self.declineQuickSync(),
+                else => {},
+            },
+            // No cancelling a download in flight — let it finish (or fail) and reap.
+            .downloading => {},
+            .failed => switch (k.key) {
+                .enter => self.declineQuickSync(),
+                .escape => self.qs_modal = null,
+                else => {},
+            },
+        }
+    }
+
+    /// User accepted QuickSync: kick off the accelerator download on a worker, then
+    /// the daemon starts when it finishes (reaped in `onTick`).
+    fn startQuickSyncDownload(self: *App) void {
+        const m = &self.qs_modal.?;
+        const coin = self.coinAt(m.coin_idx) orelse {
+            self.qs_modal = null;
+            return;
+        };
+        const act = &self.activities[m.coin_idx];
+        // Reap any earlier accelerator worker before reusing the slot.
+        if (act.qs_thread) |t| {
+            t.join();
+            act.qs_thread = null;
+        }
+        act.coin = coin;
+        act.install_root = self.install_root;
+        act.dl_cur.store(0, .monotonic);
+        act.dl_total.store(0, .monotonic);
+        act.qs_ok = false;
+        act.qs_err = "";
+        act.qs_done.store(false, .release);
+        m.stage = .downloading;
+
+        act.qs_thread = std.Thread.spawn(.{}, Activity.runQuicksyncDownload, .{act}) catch {
+            m.setMsg("couldn't start the download");
+            return;
+        };
+        self.logf("{s}: downloading {s}…", .{ coin.coinName(), m.name });
+    }
+
+    /// User declined QuickSync (or chose to start anyway after a failure): close the
+    /// prompt and start the daemon without the accelerator.
+    fn declineQuickSync(self: *App) void {
+        const m = &self.qs_modal.?;
+        const coin = self.coinAt(m.coin_idx);
+        const act = &self.activities[m.coin_idx];
+        self.qs_modal = null;
+        if (coin) |c| self.beginDaemonStart(c, act);
     }
 
     /// Stop the selected coin's running daemon in the background (via the JSON-RPC
@@ -2651,6 +2882,12 @@ pub const App = struct {
             top
         else
             (self.renderWithLog(a, ctx.width, ctx.height, top) catch top);
+        // The QuickSync prompt and the wallet modal are mutually exclusive; both
+        // are centred over the dashboard by the same compositor.
+        if (self.qs_modal != null) {
+            const box = self.renderQuickSyncModal(a) catch return screen;
+            return overlayBox(a, screen, box, ctx.width, ctx.height) catch screen;
+        }
         if (self.modal == null) return screen;
         return self.renderModalOver(a, screen, ctx.width, ctx.height) catch screen;
     }
@@ -3122,7 +3359,15 @@ pub const App = struct {
     /// band pass through unchanged, and the overall row count is preserved (or
     /// extended only if the box is taller than the screen).
     fn renderModalOver(self: *const App, a: std.mem.Allocator, screen: []const u8, width: u16, height: u16) ![]const u8 {
-        var box_raw = try self.renderModal(a);
+        const box = try self.renderModal(a);
+        return overlayBox(a, screen, box, width, height);
+    }
+
+    /// Composite a pre-rendered `box` centred over `screen` (full-row replacement,
+    /// so the styled background never needs slicing mid-row). Shared by the wallet
+    /// modal and the QuickSync prompt.
+    fn overlayBox(a: std.mem.Allocator, screen: []const u8, box_in: []const u8, width: u16, height: u16) ![]const u8 {
+        var box_raw = box_in;
         if (box_raw.len > 0 and box_raw[box_raw.len - 1] == '\n') box_raw = box_raw[0 .. box_raw.len - 1];
 
         var box_lines = std.array_list.Managed([]const u8).init(a);
@@ -3310,6 +3555,65 @@ pub const App = struct {
         return out.toOwnedSlice();
     }
 
+    /// Render the QuickSync prompt box (border + title + the current stage's body +
+    /// footer hint), each row `modal_inner_w + 4` columns wide, bordered in the
+    /// coin's brand colour — matching the wallet modal's look.
+    fn renderQuickSyncModal(self: *const App, a: std.mem.Allocator) ![]const u8 {
+        const m = self.qs_modal.?;
+        const coin = self.coinAt(m.coin_idx) orelse return error.NoCoin;
+        const act = &self.activities[m.coin_idx];
+        const brand = zz.Color.hex(coin.coinColor());
+        const inner_w = modal_inner_w;
+        const vbar = (zz.Style{}).fg(brand).render(a, "│") catch "│";
+
+        var out: std.Io.Writer.Allocating = .init(a);
+        errdefer out.deinit();
+
+        const title = try std.fmt.allocPrint(a, "{s} — {s}", .{ coin.coinName(), m.name });
+        try modalRule(a, &out.writer, brand, inner_w, "┌", "┐", title);
+        try modalRow(&out.writer, vbar, inner_w, "", 0);
+
+        switch (m.stage) {
+            .confirm => {
+                try wrapIntoRows(a, &out.writer, vbar, inner_w, m.detail, (zz.Style{}));
+                try modalRow(&out.writer, vbar, inner_w, "", 0);
+                const labels = [_][]const u8{ "Yes — use QuickSync", "No — sync normally" };
+                for (labels, 0..) |lbl, i| {
+                    const sel = i == m.sel;
+                    const plain = try std.fmt.allocPrint(a, "{s}{s}", .{ if (sel) "❯ " else "  ", lbl });
+                    const text = if (sel)
+                        ((zz.Style{}).bold(true).fg(brand).render(a, plain) catch plain)
+                    else
+                        plain;
+                    try modalRow(&out.writer, vbar, inner_w, text, zz.width(plain));
+                }
+            },
+            .downloading => {
+                try modalRow(&out.writer, vbar, inner_w, "Downloading…", zz.width("Downloading…"));
+                try modalRow(&out.writer, vbar, inner_w, "", 0);
+                const dlbar = try bar(a, act.dl_cur.load(.monotonic), act.dl_total.load(.monotonic));
+                try modalRow(&out.writer, vbar, inner_w, dlbar, zz.width(dlbar));
+            },
+            .failed => {
+                const lead = (zz.Style{}).fg(.red).render(a, "QuickSync download failed:") catch "QuickSync download failed:";
+                try modalRow(&out.writer, vbar, inner_w, lead, zz.width("QuickSync download failed:"));
+                try wrapIntoRows(a, &out.writer, vbar, inner_w, m.msg_buf[0..m.msg_len], (zz.Style{}).dim(true));
+            },
+        }
+
+        try modalRow(&out.writer, vbar, inner_w, "", 0);
+        const hint = switch (m.stage) {
+            .confirm => "enter: select   esc: cancel",
+            .downloading => "please wait…",
+            .failed => "enter: start without it   esc: cancel",
+        };
+        const hint_styled = (zz.Style{}).dim(true).render(a, hint) catch hint;
+        try modalRow(&out.writer, vbar, inner_w, hint_styled, zz.width(hint));
+        try modalRule(a, &out.writer, brand, inner_w, "└", "┘", "");
+
+        return out.toOwnedSlice();
+    }
+
     /// Joins the left nav column and the right detail block side by side. The
     /// left column lists every entry on every frame, so the coin list is always
     /// on screen regardless of what any coin is doing.
@@ -3457,8 +3761,9 @@ fn bar(a: std.mem.Allocator, current: u64, total: u64) ![]const u8 {
 
 /// Human "behind by …" text from `secs` seconds behind the chain tip: the most
 /// significant non-zero unit among years/months/weeks/days/hours/minutes, plus
-/// the next unit down when it's also non-zero (e.g. "2 years 3 months behind",
-/// "5 days behind", "1 hour 30 minutes behind"). Returns "" when under a minute
+/// the next unit down when it's also non-zero (e.g. "2 years and 3 months
+/// behind", "5 days behind", "1 hour and 30 minutes behind"). Returns "" when
+/// under a minute
 /// behind (effectively caught up) or when `secs <= 0`. The day-and-up units are
 /// calendar approximations (year = 365d, month = 30d, week = 7d); hours and
 /// minutes are exact — a "roughly how far back" readout, not a precise duration.
@@ -3489,10 +3794,10 @@ fn formatBehind(a: std.mem.Allocator, secs: i64) ![]const u8 {
         counts[i], if (counts[i] == 1) singular[i] else plural[i],
     });
     // Append the next unit down only when it's non-zero, so the readout stays
-    // contiguous ("3 months 1 week", never "2 years 1 day").
+    // contiguous ("3 months and 1 week", never "2 years and 1 day").
     if (i + 1 < counts.len and counts[i + 1] != 0) {
         const j = i + 1;
-        return std.fmt.allocPrint(a, "{s} {d} {s} behind", .{
+        return std.fmt.allocPrint(a, "{s} and {d} {s} behind", .{
             primary, counts[j], if (counts[j] == 1) singular[j] else plural[j],
         });
     }
@@ -3575,8 +3880,8 @@ test "formatBehind picks the top two contiguous units, pluralizing correctly" {
     try std.testing.expectEqualStrings("1 minute behind", try formatBehind(a, minute));
     try std.testing.expectEqualStrings("45 minutes behind", try formatBehind(a, 45 * minute));
     try std.testing.expectEqualStrings("1 hour behind", try formatBehind(a, hour));
-    try std.testing.expectEqualStrings("1 hour 30 minutes behind", try formatBehind(a, hour + 30 * minute));
-    try std.testing.expectEqualStrings("2 days 3 hours behind", try formatBehind(a, 2 * day + 3 * hour));
+    try std.testing.expectEqualStrings("1 hour and 30 minutes behind", try formatBehind(a, hour + 30 * minute));
+    try std.testing.expectEqualStrings("2 days and 3 hours behind", try formatBehind(a, 2 * day + 3 * hour));
 
     // Single unit, singular vs plural.
     try std.testing.expectEqualStrings("1 day behind", try formatBehind(a, day));
@@ -3584,9 +3889,9 @@ test "formatBehind picks the top two contiguous units, pluralizing correctly" {
     try std.testing.expectEqualStrings("1 week behind", try formatBehind(a, 7 * day));
 
     // Two contiguous units (year = 365d, month = 30d, week = 7d).
-    try std.testing.expectEqualStrings("1 week 2 days behind", try formatBehind(a, 9 * day));
-    try std.testing.expectEqualStrings("3 months 1 week behind", try formatBehind(a, (90 + 7) * day));
-    try std.testing.expectEqualStrings("2 years 3 months behind", try formatBehind(a, (2 * 365 + 90) * day));
+    try std.testing.expectEqualStrings("1 week and 2 days behind", try formatBehind(a, 9 * day));
+    try std.testing.expectEqualStrings("3 months and 1 week behind", try formatBehind(a, (90 + 7) * day));
+    try std.testing.expectEqualStrings("2 years and 3 months behind", try formatBehind(a, (2 * 365 + 90) * day));
 
     // The second unit is shown only when non-zero, never skipping a zero unit:
     // exactly two years has no months, so it stays a single unit. Likewise a

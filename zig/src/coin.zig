@@ -107,6 +107,36 @@ pub const Coin = struct {
         ) anyerror!models.WalletBalance,
     };
 
+    /// An optional **sync accelerator** — a large, opt-in helper file that makes a
+    /// coin's *initial* chain sync dramatically faster when present at daemon launch
+    /// (Nerva's quicksync: precomputed block hashes wired into `daemon_argv`).
+    /// Because it's a big download not everyone wants, BoxWallet offers it as a
+    /// yes/no choice when the daemon is started on a chain that isn't synced yet.
+    /// Coins with no such file leave `sync_accelerator` null.
+    pub const SyncAccelerator = struct {
+        /// Short name for the prompt (e.g. "QuickSync").
+        name: []const u8,
+        /// One-line pitch shown in the prompt (what it does, rough download size).
+        prompt_detail: []const u8,
+        /// Whether to offer it right now: true only when the chain isn't already
+        /// synced *and* the accelerator isn't already present/in use — so a synced
+        /// node (or one mid-accelerated-sync) is never prompted. A pure disk check,
+        /// so it runs before the daemon is up.
+        should_offer: *const fn (
+            allocator: std.mem.Allocator,
+            install_root: []const u8,
+            home_dir: []const u8,
+        ) bool,
+        /// Download the accelerator into `install_root` (blocking, reporting
+        /// progress), called on a worker thread when the user opts in. Surfaces
+        /// failures (the user asked for it) and must not leave a partial behind.
+        download: *const fn (
+            allocator: std.mem.Allocator,
+            install_root: []const u8,
+            progress: ?install_mod.Progress,
+        ) anyerror!void,
+    };
+
     /// How a coin's daemon is launched.
     ///   - `fork`: the daemon forks itself into the background and the launcher
     ///     exits (bitcoin-derived `*coind -daemon`); the launcher waits on it and
@@ -270,6 +300,21 @@ pub const Coin = struct {
         /// wallet is a separate RPC process). Null for coins with an in-daemon
         /// wallet or none. `hasExternalWallet` keys off this being non-null.
         external_wallet: ?*const ExternalWallet = null,
+        /// Optional: one-shot hook run the first time the chain is observed fully
+        /// synced (with at least one peer, so a momentary pre-peer "synced" read
+        /// doesn't fire it). Nerva uses it to delete its `quicksync.raw` once the
+        /// sync it accelerated is done, reclaiming ~130 MB; left null for coins with
+        /// nothing to clean up. Best-effort — a failure is ignored and not retried.
+        on_synced: ?*const fn (
+            ptr: *anyopaque,
+            allocator: std.mem.Allocator,
+            install_root: []const u8,
+            home_dir: []const u8,
+        ) anyerror!void = null,
+        /// Optional: the sync-accelerator capability (Nerva's quicksync). Null for
+        /// coins with no such helper. `syncAccelerator`/`offersSyncAccelerator` key
+        /// off this.
+        sync_accelerator: ?*const SyncAccelerator = null,
     };
 
     pub fn coinName(self: Coin) []const u8 {
@@ -464,5 +509,35 @@ pub const Coin = struct {
     /// (`hasExternalWallet` false). Callers use the fn pointers directly.
     pub fn externalWallet(self: Coin) ?*const ExternalWallet {
         return self.vtable.external_wallet;
+    }
+
+    /// Run the coin's post-sync hook (a no-op for coins that wire none). The caller
+    /// is responsible for invoking this only once, when the chain first reads as
+    /// fully synced.
+    pub fn onSynced(
+        self: Coin,
+        allocator: std.mem.Allocator,
+        install_root: []const u8,
+        home_dir: []const u8,
+    ) !void {
+        if (self.vtable.on_synced) |f| return f(self.ptr, allocator, install_root, home_dir);
+    }
+
+    /// The coin's sync-accelerator capability, or null when it has none.
+    pub fn syncAccelerator(self: Coin) ?*const SyncAccelerator {
+        return self.vtable.sync_accelerator;
+    }
+
+    /// Whether to offer the coin's sync accelerator before launching the daemon —
+    /// false for coins with none, or when the chain is already synced / the helper
+    /// is already in use.
+    pub fn offersSyncAccelerator(
+        self: Coin,
+        allocator: std.mem.Allocator,
+        install_root: []const u8,
+        home_dir: []const u8,
+    ) bool {
+        const sa = self.vtable.sync_accelerator orelse return false;
+        return sa.should_offer(allocator, install_root, home_dir);
     }
 };
