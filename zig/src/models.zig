@@ -148,15 +148,103 @@ pub const WalletSecurity = enum {
 /// security state is read from `unlocked_until`. The field is **absent** on an
 /// unencrypted wallet, so it's optional here — `null` distinguishes "no field"
 /// (unencrypted) from a present `0` (locked). `>0` is an unlock timestamp.
+///
+/// The three balance fields feed `WalletBalance`: `balance` is the confirmed,
+/// spendable amount; `unconfirmed_balance` is funds seen in the mempool but not
+/// yet in a block; `immature_balance` is mined coins still maturing. Defaults
+/// keep parsing resilient — a daemon that omits the mempool/immature fields just
+/// reads 0, so total falls back to the confirmed balance.
 pub const NexaWalletInfo = struct {
     unlocked_until: ?i64 = null,
+    balance: f64 = 0,
+    unconfirmed_balance: f64 = 0,
+    immature_balance: f64 = 0,
 };
 
 /// Raw `getwalletinfo` result for Divi (PIVX-derived): security state is a
 /// human-readable `encryption_status` string ("unencrypted" / "locked" /
-/// "unlocked" / "unlocked-for-staking"). Defaults keep parsing resilient.
+/// "unlocked" / "unlocked-for-staking"). The balance triplet feeds
+/// `WalletBalance` exactly as for Nexa. Defaults keep parsing resilient.
 pub const DiviWalletInfo = struct {
     encryption_status: []const u8 = "",
+    balance: f64 = 0,
+    unconfirmed_balance: f64 = 0,
+    immature_balance: f64 = 0,
+};
+
+/// Raw `getwalletinfo` result for DigiByte (Bitcoin Core 26 fork): same shape as
+/// Nexa — numeric `unlocked_until` for security (absent/0/positive) plus the
+/// balance triplet. Defaults keep parsing resilient to omitted fields.
+pub const DgbWalletInfo = struct {
+    unlocked_until: ?i64 = null,
+    balance: f64 = 0,
+    unconfirmed_balance: f64 = 0,
+    immature_balance: f64 = 0,
+};
+
+/// Raw `getwalletinfo` result for ReddCoin (Bitcoin 22 fork, proof-of-stake):
+/// numeric `unlocked_until` for security. ReddCoin's reply reports only the
+/// confirmed `balance` (no mempool/immature split), so those default to 0 and
+/// total collapses to the confirmed figure. Defaults keep parsing resilient.
+pub const RddWalletInfo = struct {
+    unlocked_until: ?i64 = null,
+    balance: f64 = 0,
+    unconfirmed_balance: f64 = 0,
+    immature_balance: f64 = 0,
+};
+
+/// A wallet mnemonic seed (the 25-word CryptoNote/Monero backup phrase),
+/// returned by an external wallet's `create` so the UI can show it for the user
+/// to write down. Held in a small fixed buffer — the secret never lands on the
+/// heap (memory constraint, and it's funds-sensitive), and the value lives only
+/// as long as the setup modal that displays it. 256 bytes comfortably holds a
+/// 25-word phrase (~200 chars).
+pub const Seed = struct {
+    buf: [256]u8 = undefined,
+    len: usize = 0,
+
+    /// Build a `Seed` from a phrase, truncating at the buffer cap (a real seed
+    /// never approaches it).
+    pub fn from(words: []const u8) Seed {
+        var s: Seed = .{};
+        const n = @min(words.len, s.buf.len);
+        @memcpy(s.buf[0..n], words[0..n]);
+        s.len = n;
+        return s;
+    }
+
+    pub fn slice(self: *const Seed) []const u8 {
+        return self.buf[0..self.len];
+    }
+};
+
+/// Normalized wallet balance — the coin-agnostic view a frontend renders. Per-coin
+/// `getwalletinfo` shapes map onto this.
+///
+///   - `available` — confirmed, spendable balance (`balance`).
+///   - `total` — `available` plus everything still settling: funds in the mempool
+///     (`unconfirmed_balance`) and mined coins still maturing (`immature_balance`).
+///     Because the mempool figure lands the instant a transaction is seen, `total`
+///     moves immediately — the headline figure feels responsive — while
+///     `available` only rises once those funds confirm.
+///
+/// Scalar-only, so it owns no memory and needs no `deinit`.
+pub const WalletBalance = struct {
+    total: f64,
+    available: f64,
+
+    /// Compose from the three `getwalletinfo` figures: available is the confirmed
+    /// balance, total adds the mempool and immature amounts on top.
+    pub fn fromParts(balance: f64, unconfirmed: f64, immature: f64) WalletBalance {
+        return .{ .available = balance, .total = balance + unconfirmed + immature };
+    }
+
+    /// Whether any funds are still settling (mempool/immature) — `total` is ahead
+    /// of `available`. Frontends tint `total` differently while this holds.
+    pub fn hasPending(self: WalletBalance) bool {
+        // A hair above zero to swallow float noise from the sum.
+        return self.total - self.available > 1e-12;
+    }
 };
 
 /// Coin-agnostic snapshot from a daemon's `getinfo` — the live "is it healthy"

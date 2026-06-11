@@ -234,6 +234,62 @@ pub const Ergo = struct {
         allocator.free(reply);
     }
 
+    // --- Wallet balance --------------------------------------------------
+
+    /// Subset of `GET /wallet/status` — whether the wallet exists and is unlocked.
+    /// Both must hold before the balance endpoints will answer with real figures.
+    const ErgoWalletStatus = struct {
+        isInitialized: bool = false,
+        isUnlocked: bool = false,
+    };
+
+    /// Subset of the `/wallet/balances*` endpoints: the Ergo amount in nanoErg
+    /// (1 ERG = 1e9 nanoErg). The `assets` array (native tokens) is ignored.
+    const ErgoWalletBalance = struct {
+        balance: i64 = 0,
+    };
+
+    /// nanoErg per ERG — Ergo's REST API reports balances in the base unit.
+    const nano_per_erg: f64 = 1_000_000_000;
+
+    /// Fetch + parse one `/wallet/balances*` endpoint, returning its nanoErg total.
+    fn fetchErgBalance(allocator: std.mem.Allocator, path: []const u8) !i64 {
+        const raw = try restRequest(allocator, .GET, path, api_key);
+        defer allocator.free(raw);
+        var parsed = try std.json.parseFromSlice(ErgoWalletBalance, allocator, raw, .{ .ignore_unknown_fields = true });
+        defer parsed.deinit();
+        return parsed.value.balance;
+    }
+
+    /// Read the wallet's balances over REST. `available` is the confirmed balance
+    /// (`/wallet/balances`); `total` is the confirmed-plus-unconfirmed projection
+    /// (`/wallet/balances/withUnconfirmed`), which already folds in mempool
+    /// transactions — so it moves the moment funds are seen. Both are nanoErg
+    /// integers, converted to whole ERG. Errors `WalletUnavailable` when the wallet
+    /// is missing or locked (so the frontend simply hides the lines rather than
+    /// reading a misleading 0). `auth` is unused — Ergo authenticates with its
+    /// fixed api_key.
+    pub fn walletBalance(allocator: std.mem.Allocator, auth: models.CoinAuth) !models.WalletBalance {
+        _ = auth;
+
+        // A locked or uninitialized wallet can't report a balance; the endpoints
+        // would 400. Gate on the status so we never surface a phantom 0.
+        {
+            const raw = try restRequest(allocator, .GET, "/wallet/status", api_key);
+            defer allocator.free(raw);
+            var st = try std.json.parseFromSlice(ErgoWalletStatus, allocator, raw, .{ .ignore_unknown_fields = true });
+            defer st.deinit();
+            if (!st.value.isInitialized or !st.value.isUnlocked) return error.WalletUnavailable;
+        }
+
+        const confirmed = try fetchErgBalance(allocator, "/wallet/balances");
+        const with_unconfirmed = try fetchErgBalance(allocator, "/wallet/balances/withUnconfirmed");
+        return .{
+            .available = @as(f64, @floatFromInt(confirmed)) / nano_per_erg,
+            .total = @as(f64, @floatFromInt(with_unconfirmed)) / nano_per_erg,
+        };
+    }
+
     // --- Files / paths ---------------------------------------------------
 
     /// The node's data directory, where `ergo.conf` and chain data live:
@@ -432,6 +488,7 @@ pub const Ergo = struct {
         .launch_mode = vtLaunchMode,
         .daemon_argv = vtDaemonArgv,
         .request_stop = vtRequestStop,
+        .wallet_balance = vtWalletBalance,
     };
 
     fn vtCoinName(_: *anyopaque) []const u8 {
@@ -520,6 +577,13 @@ pub const Ergo = struct {
         auth: models.CoinAuth,
     ) anyerror!void {
         return requestStop(allocator, auth);
+    }
+    fn vtWalletBalance(
+        _: *anyopaque,
+        allocator: std.mem.Allocator,
+        auth: models.CoinAuth,
+    ) anyerror!models.WalletBalance {
+        return walletBalance(allocator, auth);
     }
 };
 
@@ -706,4 +770,58 @@ test "coin vtable dispatches to Ergo metadata" {
     try std.testing.expectEqualStrings("ergo.conf", c.confFile());
     try std.testing.expectEqualStrings("9053", c.rpcDefaultPort());
     try std.testing.expectEqual(Coin.LaunchMode.foreground, c.launchMode());
+    // Ergo reports a balance over REST (no manageable-wallet menu, so no
+    // `supportsWallet`).
+    try std.testing.expect(c.supportsBalance());
+    try std.testing.expect(!c.supportsWallet());
+}
+
+test "parses /wallet/balances nanoErg into whole-ERG available/total" {
+    const allocator = std.testing.allocator;
+
+    // Confirmed 12 ERG; the with-unconfirmed projection adds 3 ERG of incoming
+    // mempool funds (15 ERG). Amounts arrive as nanoErg integers (1 ERG = 1e9).
+    var confirmed = try std.json.parseFromSlice(
+        Ergo.ErgoWalletBalance,
+        allocator,
+        "{\"height\":1000,\"balance\":12000000000,\"assets\":[]}",
+        .{ .ignore_unknown_fields = true },
+    );
+    defer confirmed.deinit();
+    var with_unconf = try std.json.parseFromSlice(
+        Ergo.ErgoWalletBalance,
+        allocator,
+        "{\"height\":1000,\"balance\":15000000000,\"assets\":[]}",
+        .{ .ignore_unknown_fields = true },
+    );
+    defer with_unconf.deinit();
+
+    const bal: models.WalletBalance = .{
+        .available = @as(f64, @floatFromInt(confirmed.value.balance)) / Ergo.nano_per_erg,
+        .total = @as(f64, @floatFromInt(with_unconf.value.balance)) / Ergo.nano_per_erg,
+    };
+    try std.testing.expectApproxEqAbs(@as(f64, 12.0), bal.available, 1e-9);
+    try std.testing.expectApproxEqAbs(@as(f64, 15.0), bal.total, 1e-9);
+    try std.testing.expect(bal.hasPending());
+}
+
+test "a locked or uninitialized wallet reports as unavailable" {
+    // The status gate: balances are only fetched when both flags are true.
+    const allocator = std.testing.allocator;
+    const cases = .{
+        .{ "{\"isInitialized\":false,\"isUnlocked\":false}", false },
+        .{ "{\"isInitialized\":true,\"isUnlocked\":false}", false },
+        .{ "{\"isInitialized\":true,\"isUnlocked\":true}", true },
+    };
+    inline for (cases) |c| {
+        var st = try std.json.parseFromSlice(
+            Ergo.ErgoWalletStatus,
+            allocator,
+            c[0],
+            .{ .ignore_unknown_fields = true },
+        );
+        defer st.deinit();
+        const usable = st.value.isInitialized and st.value.isUnlocked;
+        try std.testing.expectEqual(c[1], usable);
+    }
 }

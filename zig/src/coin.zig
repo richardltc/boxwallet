@@ -13,6 +13,100 @@ pub const Coin = struct {
     ptr: *anyopaque,
     vtable: *const VTable,
 
+    /// An **external wallet** capability — for Monero/CryptoNote coins (Nerva,
+    /// later Zano) whose wallet is a *separate* RPC process, not part of the
+    /// daemon. A coin that sets `external_wallet` in its vtable has BoxWallet
+    /// launch and manage that process (`process_argv`, bound to `rpc_port` on
+    /// localhost) alongside the daemon, and drives wallet setup/balance through
+    /// these hooks. Bitcoin-derived coins leave it null and use the in-daemon
+    /// wallet hooks instead (`ensure_wallet`/`wallet_security_state`/
+    /// `wallet_balance`).
+    ///
+    /// The `wallet_auth` passed to the RPC hooks is the wallet process's own
+    /// endpoint (127.0.0.1 + `rpc_port`), distinct from the daemon's `CoinAuth`.
+    /// Optional, bounded sink an external-wallet op fills with the daemon's own
+    /// failure message before returning an error, so the UI/log can show *why* a
+    /// create/restore/open failed rather than a bare error name. Pre-sized (no
+    /// allocation), reset by the caller before each op.
+    pub const WalletErrSink = struct {
+        buf: [256]u8 = undefined,
+        len: usize = 0,
+
+        pub fn set(self: *WalletErrSink, msg: []const u8) void {
+            const n = @min(msg.len, self.buf.len);
+            @memcpy(self.buf[0..n], msg[0..n]);
+            self.len = n;
+        }
+
+        pub fn slice(self: *const WalletErrSink) []const u8 {
+            return self.buf[0..self.len];
+        }
+    };
+
+    pub const ExternalWallet = struct {
+        /// Port BoxWallet binds the wallet-rpc process to (localhost only).
+        rpc_port: *const fn () []const u8,
+        /// argv to spawn the wallet-rpc process, bound to `port` and pointed at
+        /// the daemon. Caller owns the returned slice and its strings.
+        process_argv: *const fn (
+            allocator: std.mem.Allocator,
+            install_root: []const u8,
+            home_dir: []const u8,
+            port: []const u8,
+        ) anyerror![]const []const u8,
+        /// Whether the managed "BoxWallet" wallet already exists on disk (a file
+        /// check — no running process needed). False → the UI prompts to set one up.
+        exists: *const fn (allocator: std.mem.Allocator, home_dir: []const u8) bool,
+        /// Create a new wallet with `password`; returns its freshly-generated
+        /// mnemonic seed for the user to back up. `detail` receives the daemon's
+        /// failure message on error.
+        create: *const fn (
+            allocator: std.mem.Allocator,
+            wallet_auth: models.CoinAuth,
+            password: []const u8,
+            detail: *WalletErrSink,
+        ) anyerror!models.Seed,
+        /// Restore a wallet from a 25-word mnemonic `seed` under `password`.
+        /// `install_root`/`home_dir` are provided because the restore may shell out
+        /// to the coin's wallet CLI (older Monero forks lack an RPC seed-restore).
+        /// `detail` receives the daemon's/CLI's failure message on error.
+        restore_seed: *const fn (
+            allocator: std.mem.Allocator,
+            wallet_auth: models.CoinAuth,
+            install_root: []const u8,
+            home_dir: []const u8,
+            password: []const u8,
+            seed: []const u8,
+            detail: *WalletErrSink,
+        ) anyerror!void,
+        /// Import an existing wallet file (`src_path`, browsed to) into the managed
+        /// wallet dir and open it with `password`. Uses `home_dir` to resolve the
+        /// destination; may also need the wallet process (via `wallet_auth`) to open.
+        /// `detail` receives the daemon's failure message on error.
+        restore_file: *const fn (
+            allocator: std.mem.Allocator,
+            wallet_auth: models.CoinAuth,
+            home_dir: []const u8,
+            src_path: []const u8,
+            password: []const u8,
+            detail: *WalletErrSink,
+        ) anyerror!void,
+        /// Open the existing managed wallet with `password` (so its balance can be
+        /// read). Called when a wallet already exists at process start. `detail`
+        /// receives the daemon's failure message on error.
+        open: *const fn (
+            allocator: std.mem.Allocator,
+            wallet_auth: models.CoinAuth,
+            password: []const u8,
+            detail: *WalletErrSink,
+        ) anyerror!void,
+        /// Read the open wallet's balances over the wallet RPC.
+        balance: *const fn (
+            allocator: std.mem.Allocator,
+            wallet_auth: models.CoinAuth,
+        ) anyerror!models.WalletBalance,
+    };
+
     /// How a coin's daemon is launched.
     ///   - `fork`: the daemon forks itself into the background and the launcher
     ///     exits (bitcoin-derived `*coind -daemon`); the launcher waits on it and
@@ -128,6 +222,18 @@ pub const Coin = struct {
             allocator: std.mem.Allocator,
             auth: models.CoinAuth,
         ) anyerror!models.WalletSecurity = null,
+        /// Optional: read the wallet's balances (`getwalletinfo`), normalized to
+        /// `WalletBalance` — `available` is the confirmed spendable amount, `total`
+        /// adds the mempool + immature funds so it reflects incoming money the
+        /// instant it's seen. Non-null for coins whose daemon reports balances over
+        /// RPC; `supportsBalance` keys off this being non-null. Independent of
+        /// `wallet_security_state` — a coin can show a balance without exposing the
+        /// manageable-wallet menu.
+        wallet_balance: ?*const fn (
+            ptr: *anyopaque,
+            allocator: std.mem.Allocator,
+            auth: models.CoinAuth,
+        ) anyerror!models.WalletBalance = null,
         /// Optional: encrypt the (currently unencrypted) wallet with `passphrase`.
         /// Bitcoin-derived daemons stop themselves after this — the caller restarts
         /// them. Paired with `wallet_security_state`; null when unsupported.
@@ -160,6 +266,10 @@ pub const Coin = struct {
         /// `getnetworkinfo`); null for coins with no such warm-up (Ergo, Zano,
         /// Nerva), whose loading phase is always reported as `none`.
         warmup_probe_method: ?*const fn (ptr: *anyopaque) []const u8 = null,
+        /// Optional: the external-wallet capability (Monero-style coins whose
+        /// wallet is a separate RPC process). Null for coins with an in-daemon
+        /// wallet or none. `hasExternalWallet` keys off this being non-null.
+        external_wallet: ?*const ExternalWallet = null,
     };
 
     pub fn coinName(self: Coin) []const u8 {
@@ -284,6 +394,23 @@ pub const Coin = struct {
         return .unknown;
     }
 
+    /// Whether this coin reports a wallet balance over RPC (drives the
+    /// Total/Available lines). True iff the coin wires `wallet_balance`.
+    pub fn supportsBalance(self: Coin) bool {
+        return self.vtable.wallet_balance != null;
+    }
+
+    /// Read the wallet's balances. Errors `error.Unsupported` if the coin reports
+    /// no balance (`supportsBalance` false).
+    pub fn walletBalance(
+        self: Coin,
+        allocator: std.mem.Allocator,
+        auth: models.CoinAuth,
+    ) !models.WalletBalance {
+        const f = self.vtable.wallet_balance orelse return error.Unsupported;
+        return f(self.ptr, allocator, auth);
+    }
+
     /// Encrypt the wallet with `passphrase`. Errors `error.Unsupported` if the
     /// coin has no manageable wallet.
     pub fn walletEncrypt(
@@ -325,5 +452,17 @@ pub const Coin = struct {
     pub fn warmupProbeMethod(self: Coin) ?[]const u8 {
         if (self.vtable.warmup_probe_method) |f| return f(self.ptr);
         return null;
+    }
+
+    /// Whether this coin's wallet is a separate RPC process BoxWallet manages
+    /// (Monero-style). True iff the coin wires `external_wallet`.
+    pub fn hasExternalWallet(self: Coin) bool {
+        return self.vtable.external_wallet != null;
+    }
+
+    /// The external-wallet capability, or null when the coin has none
+    /// (`hasExternalWallet` false). Callers use the fn pointers directly.
+    pub fn externalWallet(self: Coin) ?*const ExternalWallet {
+        return self.vtable.external_wallet;
     }
 };

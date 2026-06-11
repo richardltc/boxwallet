@@ -192,6 +192,22 @@ pub const Divi = struct {
         return securityFromStatus(r.encryption_status);
     }
 
+    /// Read the wallet's balances from `getwalletinfo`. `available` is the
+    /// confirmed spendable `balance`; `total` adds the mempool
+    /// (`unconfirmed_balance`) and maturing (`immature_balance`) funds, so it
+    /// reflects incoming money the moment it's seen. Same `getwalletinfo` shape as
+    /// `walletSecurityState`.
+    pub fn walletBalance(
+        allocator: std.mem.Allocator,
+        auth: models.CoinAuth,
+    ) !models.WalletBalance {
+        var parsed = try rpc.callParsed(models.DiviWalletInfo, allocator, auth, "getwalletinfo");
+        defer parsed.deinit();
+
+        const r = parsed.value.result orelse return error.EmptyRpcResult;
+        return models.WalletBalance.fromParts(r.balance, r.unconfirmed_balance, r.immature_balance);
+    }
+
     /// Map Divi's `encryption_status` string to the normalized `WalletSecurity`.
     /// Shared by the parse path and its unit test. An unrecognized value reads as
     /// `unknown`.
@@ -260,6 +276,7 @@ pub const Divi = struct {
         .daemon_argv = vtDaemonArgv,
         .request_stop = vtRequestStop,
         .wallet_security_state = vtWalletSecurityState,
+        .wallet_balance = vtWalletBalance,
         .wallet_encrypt = vtWalletEncrypt,
         .wallet_unlock = vtWalletUnlock,
         .wallet_lock = vtWalletLock,
@@ -357,6 +374,13 @@ pub const Divi = struct {
         auth: models.CoinAuth,
     ) anyerror!models.WalletSecurity {
         return walletSecurityState(allocator, auth);
+    }
+    fn vtWalletBalance(
+        _: *anyopaque,
+        allocator: std.mem.Allocator,
+        auth: models.CoinAuth,
+    ) anyerror!models.WalletBalance {
+        return walletBalance(allocator, auth);
     }
     fn vtWalletEncrypt(
         _: *anyopaque,
@@ -519,6 +543,28 @@ test "coin vtable dispatches to Divi metadata" {
     try std.testing.expectEqualStrings("51473", c.rpcDefaultPort());
     // Divi's wallet is manageable over RPC — the `w` menu is available.
     try std.testing.expect(c.supportsWallet());
+    // And it reports a balance, so the Total/Available lines light up.
+    try std.testing.expect(c.supportsBalance());
+}
+
+test "maps getwalletinfo balances to available + total" {
+    const allocator = std.testing.allocator;
+
+    // 100 confirmed, 5 in the mempool: total moves to 105 immediately, available
+    // stays 100 until the mempool funds confirm.
+    var parsed = try std.json.parseFromSlice(
+        models.JsonRpcResponse(models.DiviWalletInfo),
+        allocator,
+        "{\"result\":{\"encryption_status\":\"unlocked\",\"balance\":100.0,\"unconfirmed_balance\":5.0},\"error\":null,\"id\":\"boxwallet\"}",
+        .{ .ignore_unknown_fields = true },
+    );
+    defer parsed.deinit();
+
+    const r = parsed.value.result.?;
+    const bal = models.WalletBalance.fromParts(r.balance, r.unconfirmed_balance, r.immature_balance);
+    try std.testing.expectApproxEqAbs(@as(f64, 100.0), bal.available, 1e-9);
+    try std.testing.expectApproxEqAbs(@as(f64, 105.0), bal.total, 1e-9);
+    try std.testing.expect(bal.hasPending());
 }
 
 test "maps getwalletinfo encryption_status to the wallet security state" {

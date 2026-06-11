@@ -208,6 +208,73 @@ pub const ReddCoin = struct {
         return rpc.ensureWallet(allocator, auth, "BoxWallet");
     }
 
+    /// Read the wallet's security state from `getwalletinfo`. ReddCoin is
+    /// bitcoin-core style: `unlocked_until` is **absent** on an unencrypted wallet,
+    /// `0` when locked, and a positive unlock timestamp otherwise (an unlock on a
+    /// proof-of-stake coin is typically for staking).
+    pub fn walletSecurityState(
+        allocator: std.mem.Allocator,
+        auth: models.CoinAuth,
+    ) !models.WalletSecurity {
+        var parsed = try rpc.callParsed(models.RddWalletInfo, allocator, auth, "getwalletinfo");
+        defer parsed.deinit();
+
+        const r = parsed.value.result orelse return error.EmptyRpcResult;
+        return securityFromUnlockedUntil(r.unlocked_until);
+    }
+
+    /// Read the wallet's balances from `getwalletinfo`. ReddCoin reports only the
+    /// confirmed `balance`, so `total` equals `available` (its reply carries no
+    /// mempool/immature split). The triplet is still summed via `fromParts` so the
+    /// behaviour matches the other coins if a future daemon adds those fields.
+    pub fn walletBalance(
+        allocator: std.mem.Allocator,
+        auth: models.CoinAuth,
+    ) !models.WalletBalance {
+        var parsed = try rpc.callParsed(models.RddWalletInfo, allocator, auth, "getwalletinfo");
+        defer parsed.deinit();
+
+        const r = parsed.value.result orelse return error.EmptyRpcResult;
+        return models.WalletBalance.fromParts(r.balance, r.unconfirmed_balance, r.immature_balance);
+    }
+
+    /// Map a bitcoin-core `unlocked_until` (absent/0/positive) to the normalized
+    /// `WalletSecurity`. Shared by the parse path and its unit test.
+    fn securityFromUnlockedUntil(unlocked_until: ?i64) models.WalletSecurity {
+        const u = unlocked_until orelse return .unencrypted;
+        if (u == 0) return .locked;
+        return .unlocked;
+    }
+
+    /// Encrypt the wallet with `passphrase`. reddcoind stops itself afterwards (the
+    /// caller restarts it). The passphrase is JSON-escaped before splicing.
+    pub fn walletEncrypt(allocator: std.mem.Allocator, auth: models.CoinAuth, passphrase: []const u8) !void {
+        const pw = try rpc.jsonQuote(allocator, passphrase);
+        defer allocator.free(pw);
+        const params = try std.fmt.allocPrint(allocator, "[{s}]", .{pw});
+        defer allocator.free(params);
+        return rpc.callExpectOk(allocator, auth, "encryptwallet", params);
+    }
+
+    /// Unlock the wallet via `walletpassphrase`. ReddCoin is proof-of-stake, so a
+    /// `staking` unlock uses the long timeout + the third `true` flag
+    /// (unlock-for-staking-only); a plain unlock uses an indefinite timeout (0).
+    pub fn walletUnlock(allocator: std.mem.Allocator, auth: models.CoinAuth, passphrase: []const u8, staking: bool) !void {
+        const pw = try rpc.jsonQuote(allocator, passphrase);
+        defer allocator.free(pw);
+        const params = if (staking)
+            try std.fmt.allocPrint(allocator, "[{s},9999999,true]", .{pw})
+        else
+            try std.fmt.allocPrint(allocator, "[{s},0]", .{pw});
+        defer allocator.free(params);
+        return rpc.callExpectOk(allocator, auth, "walletpassphrase", params);
+    }
+
+    /// Re-lock the wallet via `walletlock`.
+    pub fn walletLock(allocator: std.mem.Allocator, auth: models.CoinAuth) !void {
+        return rpc.callExpectOk(allocator, auth, "walletlock", "[]");
+    }
+
     /// ReddCoin dropped `getinfo`, so probe `getnetworkinfo` for the daemon's
     /// warm-up phase (any supported method returns the "-28 in warm-up" reply).
     pub fn warmupProbeMethod() []const u8 {
@@ -236,6 +303,11 @@ pub const ReddCoin = struct {
         .daemon_argv = vtDaemonArgv,
         .request_stop = vtRequestStop,
         .ensure_wallet = vtEnsureWallet,
+        .wallet_security_state = vtWalletSecurityState,
+        .wallet_balance = vtWalletBalance,
+        .wallet_encrypt = vtWalletEncrypt,
+        .wallet_unlock = vtWalletUnlock,
+        .wallet_lock = vtWalletLock,
         .warmup_probe_method = vtWarmupProbeMethod,
     };
 
@@ -330,6 +402,44 @@ pub const ReddCoin = struct {
         auth: models.CoinAuth,
     ) anyerror!void {
         return ensureWallet(allocator, auth);
+    }
+    fn vtWalletSecurityState(
+        _: *anyopaque,
+        allocator: std.mem.Allocator,
+        auth: models.CoinAuth,
+    ) anyerror!models.WalletSecurity {
+        return walletSecurityState(allocator, auth);
+    }
+    fn vtWalletBalance(
+        _: *anyopaque,
+        allocator: std.mem.Allocator,
+        auth: models.CoinAuth,
+    ) anyerror!models.WalletBalance {
+        return walletBalance(allocator, auth);
+    }
+    fn vtWalletEncrypt(
+        _: *anyopaque,
+        allocator: std.mem.Allocator,
+        auth: models.CoinAuth,
+        passphrase: []const u8,
+    ) anyerror!void {
+        return walletEncrypt(allocator, auth, passphrase);
+    }
+    fn vtWalletUnlock(
+        _: *anyopaque,
+        allocator: std.mem.Allocator,
+        auth: models.CoinAuth,
+        passphrase: []const u8,
+        staking: bool,
+    ) anyerror!void {
+        return walletUnlock(allocator, auth, passphrase, staking);
+    }
+    fn vtWalletLock(
+        _: *anyopaque,
+        allocator: std.mem.Allocator,
+        auth: models.CoinAuth,
+    ) anyerror!void {
+        return walletLock(allocator, auth);
     }
     fn vtWarmupProbeMethod(_: *anyopaque) []const u8 {
         return warmupProbeMethod();
@@ -456,4 +566,33 @@ test "coin vtable dispatches to ReddCoin metadata" {
     try std.testing.expectEqualStrings("45443", c.rpcDefaultPort());
     // Core-22 fork: needs an explicit wallet created/loaded after start.
     try std.testing.expect(c.needsWallet());
+    // Bitcoin-core wallet over RPC: the `w` menu and the balance lines are both on.
+    try std.testing.expect(c.supportsWallet());
+    try std.testing.expect(c.supportsBalance());
+}
+
+test "maps getwalletinfo unlocked_until to the wallet security state" {
+    // Bitcoin-core style: absent → unencrypted, 0 → locked, positive → unlocked.
+    try std.testing.expectEqual(models.WalletSecurity.unencrypted, ReddCoin.securityFromUnlockedUntil(null));
+    try std.testing.expectEqual(models.WalletSecurity.locked, ReddCoin.securityFromUnlockedUntil(0));
+    try std.testing.expectEqual(models.WalletSecurity.unlocked, ReddCoin.securityFromUnlockedUntil(1893456000));
+}
+
+test "maps getwalletinfo balance to available + total (no mempool split)" {
+    const allocator = std.testing.allocator;
+
+    // ReddCoin reports only `balance`; total collapses to the confirmed figure.
+    var parsed = try std.json.parseFromSlice(
+        models.JsonRpcResponse(models.RddWalletInfo),
+        allocator,
+        "{\"result\":{\"walletversion\":60000,\"balance\":42.5,\"unlocked_until\":0},\"error\":null,\"id\":\"boxwallet\"}",
+        .{ .ignore_unknown_fields = true },
+    );
+    defer parsed.deinit();
+
+    const r = parsed.value.result.?;
+    const bal = models.WalletBalance.fromParts(r.balance, r.unconfirmed_balance, r.immature_balance);
+    try std.testing.expectApproxEqAbs(@as(f64, 42.5), bal.available, 1e-9);
+    try std.testing.expectApproxEqAbs(@as(f64, 42.5), bal.total, 1e-9);
+    try std.testing.expect(!bal.hasPending());
 }

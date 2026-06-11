@@ -3,6 +3,7 @@ const builtin = @import("builtin");
 const models = @import("../models.zig");
 const install_mod = @import("../install.zig");
 const conf = @import("../conf.zig");
+const rpc = @import("../rpc.zig");
 const Coin = @import("../coin.zig").Coin;
 
 /// Nerva (XNV) backend. Nerva isn't in the Go app, so this is a fresh backend
@@ -44,11 +45,35 @@ pub const Nerva = struct {
     pub const core_version = "0.2.2.0";
 
     // Binary names. Windows appends `.exe`. The wallet CLI is `nerva-wallet-cli`;
-    // there's no `*-tx` helper. (A `nerva-wallet-rpc` also ships but BoxWallet
-    // doesn't drive the wallet, so it isn't promoted.)
+    // there's no `*-tx` helper. `nerva-wallet-rpc` drives the (external) wallet —
+    // BoxWallet launches it alongside the daemon for create/restore/balance (see
+    // the external-wallet section below), so it's promoted too.
     const exe_suffix = if (builtin.os.tag == .windows) ".exe" else "";
     pub const daemon_file = "nervad" ++ exe_suffix;
     pub const cli_file = "nerva-wallet-cli" ++ exe_suffix;
+    pub const wallet_rpc_file = "nerva-wallet-rpc" ++ exe_suffix;
+
+    /// Port BoxWallet binds the managed `nerva-wallet-rpc` to (localhost only).
+    /// Must avoid the daemon's reserved ports: P2P 17565, RPC 17566, and — easy to
+    /// miss — the **ZMQ-RPC** server at `rpc-bind-port + 1` = 17567 (Monero/Nerva
+    /// bind it by default). Colliding there makes *nervad* fail to start ("ZMQ RPC
+    /// Server bind failed: Address already in use") and die, so the wallet port is
+    /// moved well clear.
+    pub const wallet_rpc_port = "18566";
+
+    /// The single managed wallet's filename, inside the wallet dir. Fixed so
+    /// `walletExists` is a pure disk check and every wallet-RPC call targets the
+    /// same file by name.
+    const wallet_name = "BoxWallet";
+
+    /// Nerva inherits Monero's 12-decimal atomic unit
+    /// (`CRYPTONOTE_DISPLAY_DECIMAL_POINT = 12`, verified against
+    /// nerva-project/nerva `cryptonote_config.h`): the wallet RPC reports balances
+    /// as integer atomic units, so divide by this to get whole XNV.
+    const atomic_per_xnv: f64 = 1_000_000_000_000;
+
+    /// A Nerva (Monero) deterministic restore seed is exactly 25 words.
+    pub const seed_word_count = 25;
 
     const release_base = "https://github.com/nerva-project/nerva/releases/download/v" ++ core_version ++ "/";
 
@@ -88,7 +113,7 @@ pub const Nerva = struct {
     // bundle (download is null and install bails before using it).
     const extracted_dir = if (bundle) |b| b.stem else "";
     const bin_subdir = "";
-    const promote_files = [_][]const u8{ daemon_file, cli_file };
+    const promote_files = [_][]const u8{ daemon_file, cli_file, wallet_rpc_file };
 
     // Scratch file the bundle streams to (unique to Nerva). For `.tar.bz2` the
     // installer derives a sibling `.tar` from this name during decompression.
@@ -327,6 +352,442 @@ pub const Nerva = struct {
         return argv;
     }
 
+    // --- External wallet (Monero wallet-rpc) -----------------------------
+    //
+    // Nerva's wallet lives in a *separate* process (`nerva-wallet-rpc`), not the
+    // daemon. BoxWallet launches it bound to localhost:`wallet_rpc_port`, keyless
+    // (`--disable-rpc-login`, mirroring the daemon's open RPC), pointed at the
+    // local daemon, and drives create/restore/open/balance over Monero's wallet
+    // `POST /json_rpc`. All funds-sensitive: a wallet is only ever created with a
+    // user-supplied password, never silently. See `coin.zig`'s `ExternalWallet`.
+
+    /// The managed wallet directory (`<datadir>/wallets`), where `nerva-wallet-rpc`
+    /// creates and opens `BoxWallet`(+`.keys`). Caller owns the slice.
+    fn walletDir(allocator: std.mem.Allocator, home: []const u8) ![]const u8 {
+        const data_dir = try dataDir(allocator, home);
+        defer allocator.free(data_dir);
+        return std.fs.path.join(allocator, &.{ data_dir, "wallets" });
+    }
+
+    /// Port the wallet process is bound to — its RPC endpoint, distinct from the
+    /// daemon's. The lifecycle in `app.zig` builds a `wallet_auth` from this.
+    fn walletRpcPort() []const u8 {
+        return wallet_rpc_port;
+    }
+
+    /// argv to spawn `nerva-wallet-rpc`, bound to `port` on localhost and pointed
+    /// at the local daemon. `--wallet-dir` lets it create/open wallets by name over
+    /// RPC; `--disable-rpc-login` keeps it keyless (both localhost-only). Caller
+    /// owns the returned slice and its strings.
+    fn walletProcessArgv(
+        allocator: std.mem.Allocator,
+        install_root: []const u8,
+        home: []const u8,
+        port: []const u8,
+    ) anyerror![]const []const u8 {
+        const path = try std.fs.path.join(allocator, &.{ install_root, wallet_rpc_file });
+        errdefer allocator.free(path);
+        const dir = try walletDir(allocator, home);
+        errdefer allocator.free(dir);
+        const daemon_addr = try std.fmt.allocPrint(allocator, "127.0.0.1:{s}", .{rpc_default_port});
+        errdefer allocator.free(daemon_addr);
+
+        const argv = try allocator.alloc([]const u8, 10);
+        errdefer allocator.free(argv);
+        argv[0] = path;
+        argv[1] = try allocator.dupe(u8, "--wallet-dir");
+        argv[2] = dir;
+        argv[3] = try allocator.dupe(u8, "--rpc-bind-ip");
+        argv[4] = try allocator.dupe(u8, "127.0.0.1");
+        argv[5] = try allocator.dupe(u8, "--rpc-bind-port");
+        argv[6] = try allocator.dupe(u8, port);
+        argv[7] = try allocator.dupe(u8, "--daemon-address");
+        argv[8] = daemon_addr;
+        argv[9] = try allocator.dupe(u8, "--disable-rpc-login");
+        return argv;
+    }
+
+    /// True if the managed `BoxWallet` already exists on disk (its `.keys` file is
+    /// the authoritative marker — the cache rebuilds from the daemon). A pure disk
+    /// check, so the UI can decide "set up" vs "open" without a running process.
+    fn walletExists(allocator: std.mem.Allocator, home: []const u8) bool {
+        const dir = walletDir(allocator, home) catch return false;
+        defer allocator.free(dir);
+        return install_mod.fileExists(allocator, dir, wallet_name ++ ".keys");
+    }
+
+    // Wallet-RPC result subsets. `get_balance` reports atomic-unit integers;
+    // `query_key` returns the requested key (the mnemonic, for create display).
+    // `create_wallet`/`open_wallet` return an empty object on success, so an
+    // absent `result` (Monero put an `error` in its place) signals failure.
+    const WalletBalanceResult = struct { balance: u64 = 0, unlocked_balance: u64 = 0 };
+    const QueryKeyResult = struct { key: []const u8 = "" };
+    const EmptyResult = struct {};
+
+    /// The `error` half of a Monero wallet-RPC reply (`{ "code": …, "message": … }`),
+    /// present in place of `result` when an op fails. `walletRpcError` reads its
+    /// `message` to give the user a specific reason rather than a bare "failed".
+    const RpcErrObj = struct { code: i64 = 0, message: []const u8 = "" };
+
+    /// JSON-RPC envelope that keeps the `error` object (unlike the shared
+    /// `models.JsonRpcResponse`, which drops it) so wallet ops can translate the
+    /// daemon's failure message into a precise BoxWallet error.
+    fn WalletEnvelope(comptime T: type) type {
+        return struct { result: ?T = null, @"error": ?RpcErrObj = null };
+    }
+
+    /// POST a wallet-RPC `method` with a raw JSON `params` object (a complete
+    /// `{...}` literal — any user string in it must already be JSON-escaped via
+    /// `rpc.jsonQuote`) and parse `result`/`error` into the envelope. Caller
+    /// `deinit`s the `Parsed`.
+    fn walletCall(
+        comptime T: type,
+        allocator: std.mem.Allocator,
+        auth: models.CoinAuth,
+        method: []const u8,
+        params: []const u8,
+    ) !std.json.Parsed(WalletEnvelope(T)) {
+        const body = try std.fmt.allocPrint(
+            allocator,
+            "{{\"jsonrpc\":\"2.0\",\"id\":\"0\",\"method\":\"{s}\",\"params\":{s}}}",
+            .{ method, params },
+        );
+        defer allocator.free(body);
+        const raw = try httpPost(allocator, auth, "/json_rpc", body);
+        defer allocator.free(raw);
+        // `.alloc_always` so parsed strings (the mnemonic, the error message)
+        // survive `raw` being freed.
+        return std.json.parseFromSlice(
+            WalletEnvelope(T),
+            allocator,
+            raw,
+            .{ .ignore_unknown_fields = true, .allocate = .alloc_always },
+        );
+    }
+
+    /// Record the daemon's raw failure `message` into `detail` (for the UI/log) and
+    /// return the mapped BoxWallet error. Used at every wallet-op failure so the
+    /// real reason is never swallowed — even for messages we don't specifically map.
+    fn failWallet(detail: *Coin.WalletErrSink, err: ?RpcErrObj, fallback: anyerror) anyerror {
+        if (err) |e| detail.set(e.message);
+        return walletRpcError(err, fallback);
+    }
+
+    /// Translate a Monero wallet-RPC `error` into the most specific BoxWallet error
+    /// so the UI can tell the user *why* an op failed, not just that it did. Falls
+    /// back to `fallback` when there's no error object or the message is unfamiliar.
+    fn walletRpcError(err: ?RpcErrObj, fallback: anyerror) anyerror {
+        const msg = (err orelse return fallback).message;
+        if (containsIgnoreCase(msg, "already exists")) return error.WalletAlreadyExists;
+        if (containsIgnoreCase(msg, "verification") or
+            containsIgnoreCase(msg, "number of words") or
+            containsIgnoreCase(msg, "invalid word")) return error.SeedWordsInvalid;
+        if (containsIgnoreCase(msg, "invalid password") or
+            containsIgnoreCase(msg, "wrong password") or
+            containsIgnoreCase(msg, "failed to read")) return error.WrongPassword;
+        return fallback;
+    }
+
+    /// Case-insensitive substring test (ASCII). Used to match Monero's English
+    /// error strings regardless of how the daemon cases them.
+    fn containsIgnoreCase(haystack: []const u8, needle: []const u8) bool {
+        if (needle.len == 0) return true;
+        if (needle.len > haystack.len) return false;
+        var i: usize = 0;
+        while (i + needle.len <= haystack.len) : (i += 1) {
+            if (std.ascii.eqlIgnoreCase(haystack[i..][0..needle.len], needle)) return true;
+        }
+        return false;
+    }
+
+    /// Create a new wallet named `BoxWallet` under `password`, then read back its
+    /// freshly-generated 25-word mnemonic for the user to write down. Fails if a
+    /// wallet of that name already exists (Monero returns an error → null result).
+    fn walletCreate(
+        allocator: std.mem.Allocator,
+        wallet_auth: models.CoinAuth,
+        password: []const u8,
+        detail: *Coin.WalletErrSink,
+    ) anyerror!models.Seed {
+        const qpw = try rpc.jsonQuote(allocator, password);
+        defer allocator.free(qpw);
+        {
+            const params = try std.fmt.allocPrint(
+                allocator,
+                "{{\"filename\":\"{s}\",\"password\":{s},\"language\":\"English\"}}",
+                .{ wallet_name, qpw },
+            );
+            defer allocator.free(params);
+            var parsed = try walletCall(EmptyResult, allocator, wallet_auth, "create_wallet", params);
+            defer parsed.deinit();
+            if (parsed.value.result == null) return failWallet(detail, parsed.value.@"error", error.WalletCreateFailed);
+        }
+        var parsed = try walletCall(QueryKeyResult, allocator, wallet_auth, "query_key", "{\"key_type\":\"mnemonic\"}");
+        defer parsed.deinit();
+        const r = parsed.value.result orelse return error.WalletCreateFailed;
+        return models.Seed.from(r.key);
+    }
+
+    /// Restore the managed wallet from a 25-word deterministic `seed` under
+    /// `password`. v1 does a full rescan (`restore_height` 0); a restore-height
+    /// prompt is a future add. The seed's word count is checked first so an obvious
+    /// typo fails fast with a clear error rather than a daemon-side rejection.
+    fn walletRestoreSeed(
+        allocator: std.mem.Allocator,
+        wallet_auth: models.CoinAuth,
+        install_root: []const u8,
+        home: []const u8,
+        password: []const u8,
+        seed: []const u8,
+        detail: *Coin.WalletErrSink,
+    ) anyerror!void {
+        // Normalize first: lowercase + single-space the words so a capitalized
+        // first word or a paste with stray newlines/double spaces doesn't trip the
+        // (case-sensitive) deterministic decode and look like a bad seed.
+        const normalized = try normalizeSeed(allocator, seed);
+        defer allocator.free(normalized);
+        if (!isValidSeed(normalized)) return error.InvalidSeed;
+
+        // Nerva's bundled wallet-rpc is an older Monero that has no
+        // `restore_deterministic_wallet` method ("Method not found"), so the wallet
+        // is materialized on disk by a one-shot `nerva-wallet-cli
+        // --generate-from-json` and then opened over RPC like any other wallet.
+        try cliGenerateFromSeed(allocator, install_root, home, password, normalized, detail);
+        try walletOpen(allocator, wallet_auth, password, detail);
+    }
+
+    /// Restore the managed wallet from `seed` by driving a one-shot
+    /// `nerva-wallet-cli --generate-from-json`: the CLI reads the
+    /// seed/password/filename from a temporary JSON spec and writes
+    /// `BoxWallet`(+`.keys`) into the wallet dir, `--offline` so it never blocks on
+    /// a chain sync. The spec carries the secret in plaintext, so it's overwritten
+    /// and deleted the instant the call returns. Success is the `.keys` file
+    /// appearing on disk — the CLI's exit code is unreliable across Monero vintages,
+    /// so on failure its own stderr/stdout is surfaced as the reason.
+    fn cliGenerateFromSeed(
+        allocator: std.mem.Allocator,
+        install_root: []const u8,
+        home: []const u8,
+        password: []const u8,
+        seed: []const u8,
+        detail: *Coin.WalletErrSink,
+    ) !void {
+        const dir = try walletDir(allocator, home);
+        defer allocator.free(dir);
+        const wallet_path = try std.fs.path.join(allocator, &.{ dir, wallet_name });
+        defer allocator.free(wallet_path);
+
+        // The --generate-from-json spec; every user string is JSON-escaped.
+        const qpw = try rpc.jsonQuote(allocator, password);
+        defer allocator.free(qpw);
+        const qseed = try rpc.jsonQuote(allocator, seed);
+        defer allocator.free(qseed);
+        const qpath = try rpc.jsonQuote(allocator, wallet_path);
+        defer allocator.free(qpath);
+        const spec = try std.fmt.allocPrint(
+            allocator,
+            "{{\"version\":1,\"filename\":{s},\"scan_from_height\":0,\"password\":{s},\"seed\":{s}}}",
+            .{ qpath, qpw, qseed },
+        );
+        defer allocator.free(spec);
+
+        var threaded: std.Io.Threaded = .init(allocator, .{});
+        defer threaded.deinit();
+        const io = threaded.io();
+
+        var dd = try std.Io.Dir.cwd().createDirPathOpen(io, dir, .{});
+        defer dd.close(io);
+
+        const spec_name = wallet_name ++ ".restore.json";
+        try dd.writeFile(io, .{ .sub_path = spec_name, .data = spec });
+        // Shred + delete the plaintext-secret spec however we leave this function.
+        const blank = try allocator.alloc(u8, spec.len);
+        @memset(blank, 0);
+        defer allocator.free(blank);
+        defer {
+            dd.writeFile(io, .{ .sub_path = spec_name, .data = blank }) catch {};
+            dd.deleteFile(io, spec_name) catch {};
+        }
+
+        const spec_path = try std.fs.path.join(allocator, &.{ dir, spec_name });
+        defer allocator.free(spec_path);
+        const cli_path = try std.fs.path.join(allocator, &.{ install_root, cli_file });
+        defer allocator.free(cli_path);
+
+        // `--command exit` plus the closed stdin (run uses `.ignore`, so the REPL
+        // reads EOF) guarantees the CLI exits once the wallet is written; the
+        // timeout is a backstop against any vintage that ignores both.
+        const argv = [_][]const u8{
+            cli_path,
+            "--generate-from-json", spec_path,
+            "--offline",
+            "--log-level",          "0",
+            "--command",            "exit",
+        };
+        const res = std.process.run(allocator, io, .{
+            .argv = &argv,
+            .timeout = .{ .duration = .{ .raw = std.Io.Duration.fromSeconds(120), .clock = .awake } },
+        }) catch |err| {
+            detail.set(@errorName(err));
+            return error.WalletRestoreFailed;
+        };
+        defer allocator.free(res.stdout);
+        defer allocator.free(res.stderr);
+
+        if (!install_mod.fileExists(allocator, dir, wallet_name ++ ".keys")) {
+            const why = std.mem.trim(u8, if (res.stderr.len > 0) res.stderr else res.stdout, " \t\r\n");
+            detail.set(if (why.len > 0) why else "nerva-wallet-cli did not create the wallet");
+            return error.WalletRestoreFailed;
+        }
+    }
+
+    /// Import an existing wallet file (browsed to) as the managed `BoxWallet`, then
+    /// open it. Monero wallets are a `<name>`/`<name>.keys` pair; the `.keys` file
+    /// holds the secret and is all that's needed — the cache rebuilds from the
+    /// daemon on open, so only the (small) keys file is copied (no large-file slurp).
+    /// Accepts either member of the pair from the picker and resolves the keys file.
+    fn walletRestoreFile(
+        allocator: std.mem.Allocator,
+        wallet_auth: models.CoinAuth,
+        home: []const u8,
+        src_path: []const u8,
+        password: []const u8,
+        detail: *Coin.WalletErrSink,
+    ) anyerror!void {
+        const keys_src = if (std.mem.endsWith(u8, src_path, ".keys"))
+            try allocator.dupe(u8, src_path)
+        else
+            try std.fmt.allocPrint(allocator, "{s}.keys", .{src_path});
+        defer allocator.free(keys_src);
+
+        const dest_dir = try walletDir(allocator, home);
+        defer allocator.free(dest_dir);
+
+        try copyKeysFile(allocator, keys_src, dest_dir, wallet_name ++ ".keys");
+        try walletOpen(allocator, wallet_auth, password, detail);
+    }
+
+    /// Copy a (small) Monero `.keys` file from absolute `src_path` into `dest_dir`
+    /// as `dest_name`, creating `dest_dir` if needed. Keys files are a few KB, so a
+    /// single bounded read+write is fine (and avoids a streaming copy for a tiny
+    /// file). The cache file is intentionally not copied — it regenerates on open.
+    fn copyKeysFile(
+        allocator: std.mem.Allocator,
+        src_path: []const u8,
+        dest_dir: []const u8,
+        dest_name: []const u8,
+    ) !void {
+        var threaded: std.Io.Threaded = .init(allocator, .{});
+        defer threaded.deinit();
+        const io = threaded.io();
+
+        // Open via (dir, basename) so an absolute picker path works the same way
+        // the conf code opens files.
+        const src_dir = std.fs.path.dirname(src_path) orelse ".";
+        const src_base = std.fs.path.basename(src_path);
+        var sd = std.Io.Dir.cwd().openDir(io, src_dir, .{}) catch return error.WalletFileNotFound;
+        defer sd.close(io);
+        var src = sd.openFile(io, src_base, .{}) catch return error.WalletFileNotFound;
+        defer src.close(io);
+
+        var buf: [64 * 1024]u8 = undefined;
+        const n = try src.readPositionalAll(io, &buf, 0);
+
+        var dd = try std.Io.Dir.cwd().createDirPathOpen(io, dest_dir, .{});
+        defer dd.close(io);
+        try dd.writeFile(io, .{ .sub_path = dest_name, .data = buf[0..n] });
+    }
+
+    /// Open the existing managed wallet with `password` so its balance can be read.
+    /// Called once at process start when a wallet already exists.
+    fn walletOpen(
+        allocator: std.mem.Allocator,
+        wallet_auth: models.CoinAuth,
+        password: []const u8,
+        detail: *Coin.WalletErrSink,
+    ) anyerror!void {
+        const qpw = try rpc.jsonQuote(allocator, password);
+        defer allocator.free(qpw);
+        const params = try std.fmt.allocPrint(
+            allocator,
+            "{{\"filename\":\"{s}\",\"password\":{s}}}",
+            .{ wallet_name, qpw },
+        );
+        defer allocator.free(params);
+        var parsed = try walletCall(EmptyResult, allocator, wallet_auth, "open_wallet", params);
+        defer parsed.deinit();
+        if (parsed.value.result == null) return failWallet(detail, parsed.value.@"error", error.WalletOpenFailed);
+    }
+
+    /// Read the open wallet's balance. `balance` is the total (includes locked and
+    /// unconfirmed); `unlocked_balance` is spendable now — exactly the Total /
+    /// Available split the frontend renders.
+    fn walletBalance(
+        allocator: std.mem.Allocator,
+        wallet_auth: models.CoinAuth,
+    ) anyerror!models.WalletBalance {
+        var parsed = try walletCall(WalletBalanceResult, allocator, wallet_auth, "get_balance", "{\"account_index\":0}");
+        defer parsed.deinit();
+        const r = parsed.value.result orelse return error.EmptyRpcResult;
+        return atomicToBalance(r.balance, r.unlocked_balance);
+    }
+
+    /// Map Monero atomic balances to the normalized `WalletBalance`. Pure, so it's
+    /// unit-testable without a wallet process.
+    fn atomicToBalance(balance: u64, unlocked: u64) models.WalletBalance {
+        return .{
+            .total = @as(f64, @floatFromInt(balance)) / atomic_per_xnv,
+            .available = @as(f64, @floatFromInt(unlocked)) / atomic_per_xnv,
+        };
+    }
+
+    /// Produce the canonical form of a user-entered seed for the wallet RPC:
+    /// every word lowercased and joined by single spaces, with leading/trailing and
+    /// repeated whitespace collapsed. Monero's English wordlist is all lowercase and
+    /// the deterministic decode is case-sensitive, so a transcriber who capitalizes
+    /// a word — or pastes with newlines/double spaces — would otherwise hit a
+    /// spurious "word list failed verification". Caller owns the returned slice.
+    fn normalizeSeed(allocator: std.mem.Allocator, seed: []const u8) ![]const u8 {
+        var out: std.Io.Writer.Allocating = .init(allocator);
+        errdefer out.deinit();
+        var it = std.mem.tokenizeAny(u8, seed, " \t\r\n");
+        var first = true;
+        while (it.next()) |word| {
+            if (!first) try out.writer.writeByte(' ');
+            first = false;
+            for (word) |c| try out.writer.writeByte(std.ascii.toLower(c));
+        }
+        return out.toOwnedSlice();
+    }
+
+    /// Count whitespace-separated tokens in `s`. Pure helper behind `isValidSeed`.
+    fn wordCount(s: []const u8) usize {
+        var it = std.mem.tokenizeAny(u8, s, " \t\r\n");
+        var n: usize = 0;
+        while (it.next()) |_| n += 1;
+        return n;
+    }
+
+    /// Cheap pre-flight check that `seed` has the right word count (25) before it's
+    /// sent to the wallet RPC. Not a full mnemonic-checksum validation — the wallet
+    /// process does that — just a fast guard against an obviously wrong paste.
+    fn isValidSeed(seed: []const u8) bool {
+        return wordCount(std.mem.trim(u8, seed, " \t\r\n")) == seed_word_count;
+    }
+
+    /// The external-wallet capability wired into the vtable. Funds-sensitive ops
+    /// route through here; bitcoin coins leave `external_wallet` null instead.
+    pub const external_wallet: Coin.ExternalWallet = .{
+        .rpc_port = walletRpcPort,
+        .process_argv = walletProcessArgv,
+        .exists = walletExists,
+        .create = walletCreate,
+        .restore_seed = walletRestoreSeed,
+        .restore_file = walletRestoreFile,
+        .open = walletOpen,
+        .balance = walletBalance,
+    };
+
     // --- vtable plumbing -------------------------------------------------
 
     const vtable: Coin.VTable = .{
@@ -348,6 +809,7 @@ pub const Nerva = struct {
         .launch_mode = vtLaunchMode,
         .daemon_argv = vtDaemonArgv,
         .request_stop = vtRequestStop,
+        .external_wallet = &external_wallet,
     };
 
     fn vtCoinName(_: *anyopaque) []const u8 {
@@ -599,4 +1061,125 @@ test "prepareConf writes a Monero-valid conf nervad can parse (no bitcoin keys)"
     for ([_][]const u8{ "rpcuser", "rpcpassword", "server", "daemon=", "rpcport" }) |bad| {
         try std.testing.expect(std.mem.indexOf(u8, content, bad) == null);
     }
+}
+
+// --- External wallet (Monero wallet-rpc) tests ---------------------------
+
+test "get_balance atomic units map to XNV Total/Available (12 decimals)" {
+    const allocator = std.testing.allocator;
+
+    // 1.5 XNV total, 1.0 XNV unlocked, in 1e12 atomic units.
+    const raw =
+        \\{"id":"0","jsonrpc":"2.0","result":{"balance":1500000000000,"unlocked_balance":1000000000000}}
+    ;
+    var parsed = try std.json.parseFromSlice(
+        models.JsonRpcResponse(Nerva.WalletBalanceResult),
+        allocator,
+        raw,
+        .{ .ignore_unknown_fields = true },
+    );
+    defer parsed.deinit();
+
+    const r = parsed.value.result.?;
+    const bal = Nerva.atomicToBalance(r.balance, r.unlocked_balance);
+    try std.testing.expectApproxEqAbs(@as(f64, 1.5), bal.total, 1e-9);
+    try std.testing.expectApproxEqAbs(@as(f64, 1.0), bal.available, 1e-9);
+    // Total ahead of available → funds still settling.
+    try std.testing.expect(bal.hasPending());
+}
+
+test "isValidSeed accepts a 25-word phrase and rejects other counts" {
+    // 25 space-separated tokens (content irrelevant — only the count is checked).
+    const ok = "a a a a a a a a a a a a a a a a a a a a a a a a a";
+    try std.testing.expect(Nerva.isValidSeed(ok));
+    // Leading/trailing whitespace is trimmed, internal runs tolerated.
+    try std.testing.expect(Nerva.isValidSeed("  " ++ ok ++ "\n"));
+    // Too few / too many words fail fast.
+    try std.testing.expect(!Nerva.isValidSeed("a a a"));
+    try std.testing.expect(!Nerva.isValidSeed(ok ++ " extra"));
+    try std.testing.expect(!Nerva.isValidSeed(""));
+}
+
+test "normalizeSeed lowercases words and collapses whitespace to single spaces" {
+    const allocator = std.testing.allocator;
+
+    // Capitalized first word + newlines + double spaces all clean up to the
+    // canonical single-spaced lowercase phrase Monero's decode expects.
+    const got = try Nerva.normalizeSeed(allocator, "  Abbey   bacon\nCactus  ");
+    defer allocator.free(got);
+    try std.testing.expectEqualStrings("abbey bacon cactus", got);
+
+    // An already-clean phrase is returned unchanged.
+    const clean = try Nerva.normalizeSeed(allocator, "abbey bacon cactus");
+    defer allocator.free(clean);
+    try std.testing.expectEqualStrings("abbey bacon cactus", clean);
+}
+
+test "walletRpcError maps known Monero messages to specific errors" {
+    const E = Nerva.RpcErrObj;
+    try std.testing.expect(Nerva.walletRpcError(E{ .code = -8, .message = "Wallet already exists." }, error.WalletRestoreFailed) == error.WalletAlreadyExists);
+    try std.testing.expect(Nerva.walletRpcError(E{ .message = "Electrum-style word list failed verification" }, error.WalletRestoreFailed) == error.SeedWordsInvalid);
+    try std.testing.expect(Nerva.walletRpcError(E{ .message = "invalid password" }, error.WalletOpenFailed) == error.WrongPassword);
+    // Unfamiliar message / no error object → the caller's fallback.
+    try std.testing.expect(Nerva.walletRpcError(E{ .message = "something new" }, error.WalletRestoreFailed) == error.WalletRestoreFailed);
+    try std.testing.expect(Nerva.walletRpcError(null, error.WalletRestoreFailed) == error.WalletRestoreFailed);
+}
+
+test "walletProcessArgv binds wallet-rpc to localhost and points it at the daemon" {
+    const allocator = std.testing.allocator;
+
+    const argv = try Nerva.walletProcessArgv(allocator, "/opt/bw", "/home/alice", Nerva.wallet_rpc_port);
+    defer {
+        for (argv) |a| allocator.free(a);
+        allocator.free(argv);
+    }
+
+    // First arg is the promoted wallet-rpc binary under the install root.
+    try std.testing.expect(std.mem.endsWith(u8, argv[0], Nerva.wallet_rpc_file));
+    try std.testing.expect(std.mem.startsWith(u8, argv[0], "/opt/bw"));
+
+    // Joined for easy substring assertions on the flags.
+    const joined = try std.mem.join(allocator, " ", argv);
+    defer allocator.free(joined);
+    try std.testing.expect(std.mem.indexOf(u8, joined, "--wallet-dir") != null);
+    // The wallet dir is `<datadir>/wallets`.
+    try std.testing.expect(std.mem.indexOf(u8, joined, "wallets") != null);
+    try std.testing.expect(std.mem.indexOf(u8, joined, "--rpc-bind-ip 127.0.0.1") != null);
+    try std.testing.expect(std.mem.indexOf(u8, joined, "--rpc-bind-port " ++ Nerva.wallet_rpc_port) != null);
+    // Pointed at the local daemon's RPC port, and keyless to match its open RPC.
+    try std.testing.expect(std.mem.indexOf(u8, joined, "--daemon-address 127.0.0.1:" ++ Nerva.rpc_default_port) != null);
+    try std.testing.expect(std.mem.indexOf(u8, joined, "--disable-rpc-login") != null);
+}
+
+test "walletExists keys off the BoxWallet.keys file on disk" {
+    const allocator = std.testing.allocator;
+
+    var threaded: std.Io.Threaded = .init(allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    // A throwaway home; walletExists resolves `<home>/.nerva/wallets/BoxWallet.keys`.
+    const home = "test-nerva-wallet-home";
+    std.Io.Dir.cwd().deleteTree(io, home) catch {};
+    defer std.Io.Dir.cwd().deleteTree(io, home) catch {};
+
+    // No wallet yet → false.
+    try std.testing.expect(!Nerva.walletExists(allocator, home));
+
+    // Lay down the keys file and it flips to true.
+    const wallet_dir = try std.fs.path.join(allocator, &.{ home, Nerva.home_dir, "wallets" });
+    defer allocator.free(wallet_dir);
+    var wd = try std.Io.Dir.cwd().createDirPathOpen(io, wallet_dir, .{});
+    defer wd.close(io);
+    try wd.writeFile(io, .{ .sub_path = "BoxWallet.keys", .data = "KEYS" });
+
+    try std.testing.expect(Nerva.walletExists(allocator, home));
+}
+
+test "Nerva wires the external-wallet capability" {
+    var n: Nerva = .{};
+    const c = n.coin();
+    try std.testing.expect(c.hasExternalWallet());
+    const ew = c.externalWallet().?;
+    try std.testing.expectEqualStrings(Nerva.wallet_rpc_port, ew.rpc_port());
 }
