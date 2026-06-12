@@ -5,7 +5,7 @@
 //! overwritten in place (Windows locks it; POSIX would keep the old inode):
 //!
 //!  1. **Check + stage** (`checkAndStage`), run on a background worker while the
-//!     current build keeps running. It asks GitHub for the latest release, and
+//!     current build keeps running. It asks Codeberg for the latest release, and
 //!     if that's newer than the running version, streams the matching native
 //!     binary to `~/.boxwallet/updates/`, verifies its SHA-256 against the
 //!     release's `SHA256SUMS`, and drops a version marker beside it. Nothing the
@@ -26,17 +26,18 @@ const std = @import("std");
 const builtin = @import("builtin");
 const install = @import("install.zig");
 
-/// The GitHub repo BoxWallet releases come from.
-const repo = "richardltc/boxwallet";
-/// Latest-release metadata endpoint (returns JSON carrying `tag_name`).
-const latest_release_url = "https://api.github.com/repos/" ++ repo ++ "/releases/latest";
+/// The Codeberg repo BoxWallet releases come from.
+const repo = "richardltc/BoxWallet";
+/// Latest-release metadata endpoint (Forgejo API; returns JSON carrying
+/// `tag_name`).
+const latest_release_url = "https://codeberg.org/api/v1/repos/" ++ repo ++ "/releases/latest";
 /// Base for a release's downloadable assets: `<base>/<tag>/<asset>`.
-const download_base = "https://github.com/" ++ repo ++ "/releases/download";
+const download_base = "https://codeberg.org/" ++ repo ++ "/releases/download";
 /// The checksums asset published alongside the per-platform binaries, in the
 /// standard `sha256sum` format (`<64-hex>␠␠<filename>` per line).
 const sums_name = "SHA256SUMS";
-/// Sent as User-Agent — GitHub's API rejects requests without one.
-const user_agent = "BoxWallet (https://github.com/" ++ repo ++ ")";
+/// Sent as User-Agent — some servers reject requests without one.
+const user_agent = "BoxWallet (https://codeberg.org/" ++ repo ++ ")";
 
 /// Where staged updates live, relative to the install root (`~/.boxwallet`).
 const updates_subdir = "updates";
@@ -82,7 +83,7 @@ pub const CheckStatus = enum {
     staged,
     /// No binary is published for this OS/arch — the updater is a no-op here.
     unsupported,
-    /// Couldn't reach GitHub / parse its reply. Best-effort: try again next run.
+    /// Couldn't reach Codeberg / parse its reply. Best-effort: try again next run.
     network_error,
     /// The download didn't match the published checksum — refused.
     verify_failed,
@@ -117,7 +118,7 @@ pub const Check = struct {
     blocked: bool = false,
 };
 
-/// Check GitHub for a newer release and, if found, download + verify + stage it
+/// Check Codeberg for a newer release and, if found, download + verify + stage it
 /// for application on next launch. Runs synchronously on its own blocking io
 /// (the caller drives it from a worker thread). Never errors — every failure
 /// maps to a `CheckStatus`, since a missed update check must not disturb the
@@ -345,7 +346,7 @@ fn fetchText(gpa: std.mem.Allocator, io: std.Io, url: []const u8, max_bytes: usi
             // Raw bytes, no re-encoding — keeps the JSON/text intact.
             .accept_encoding = .{ .override = "identity" },
         },
-        .extra_headers = &.{.{ .name = "accept", .value = "application/vnd.github+json" }},
+        .extra_headers = &.{.{ .name = "accept", .value = "application/json" }},
     });
     defer req.deinit();
     try req.sendBodiless();
@@ -441,7 +442,7 @@ fn numericPrefix(s: []const u8) u64 {
     return v;
 }
 
-/// Extract the `tag_name` string value from a GitHub release JSON document.
+/// Extract the `tag_name` string value from a Codeberg release JSON document.
 /// A deliberately minimal scan (rather than a full JSON parse) — we only need
 /// this one field, and it returns a slice into `json`.
 fn parseTagName(json: []const u8) ?[]const u8 {
@@ -496,7 +497,7 @@ test "stripV drops a leading v" {
 
 test "parseTagName pulls tag_name out of release JSON" {
     const json =
-        \\{"url":"https://api.github.com/...","tag_name": "v0.1.2","name":"Release"}
+        \\{"url":"https://codeberg.org/api/v1/...","tag_name": "v0.1.2","name":"Release"}
     ;
     try std.testing.expectEqualStrings("v0.1.2", parseTagName(json).?);
     try std.testing.expect(parseTagName("{\"name\":\"no tag here\"}") == null);
