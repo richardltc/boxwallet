@@ -983,8 +983,10 @@ pub const Nerva = struct {
         _: *anyopaque,
         allocator: std.mem.Allocator,
         io: std.Io,
+        install_root: []const u8,
         home: []const u8,
     ) anyerror!void {
+        _ = install_root;
         return prepareConf(allocator, io, home);
     }
     fn vtLaunchMode(_: *anyopaque) Coin.LaunchMode {

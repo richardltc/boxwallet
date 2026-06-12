@@ -462,6 +462,23 @@ const QuickSyncModal = struct {
     }
 };
 
+/// The update-confirm prompt — shown when the user presses `u` on a coin with an
+/// available update. Confirm-only: on Yes the stop → reinstall → restart sequence
+/// runs and its progress is shown in the main pane (Stopping… → Downloading… →
+/// Starting…), so there's no multi-stage modal to drive. `from` is the installed
+/// version captured at open; the target is the coin's pinned `core_version`.
+const UpdateModal = struct {
+    coin_idx: usize,
+    /// Confirm-menu cursor (0 = Yes, 1 = No).
+    sel: u8 = 0,
+    from_buf: [32]u8 = undefined,
+    from_len: usize = 0,
+
+    fn from(self: *const UpdateModal) []const u8 {
+        return self.from_buf[0..self.from_len];
+    }
+};
+
 /// Upper bound on a wallet passphrase, sizing the worker's copy buffer and the
 /// modal input's char limit. Comfortably past any sane passphrase length while
 /// keeping the secret in a small fixed buffer (memory constraint).
@@ -674,6 +691,36 @@ const Activity = struct {
     acked: bool = true,
     /// Cached "is the daemon on disk?", for the idle view + button label.
     installed: bool = false,
+    /// Installed daemon version from the on-disk marker (empty = no marker, or not
+    /// installed). Program-lifetime fixed buffer; versions are short.
+    installed_version_buf: [32]u8 = undefined,
+    installed_version_len: usize = 0,
+    /// True when the pinned `core_version` is newer than what's installed — or the
+    /// coin is installed but carries no version marker (a pre-existing binary we
+    /// can't vouch for). Recomputed whenever `installed` is refreshed; drives the
+    /// "update available" badge and the `u` action.
+    update_available: bool = false,
+    /// Set while a one-click update is mid-sequence: `update_await_stop` means we've
+    /// asked the daemon to stop and the reinstall fires once it's down;
+    /// `update_restart` means the daemon was up when the update began, so it's
+    /// restarted once the reinstall completes. Both cleared as the sequence advances
+    /// (or aborts).
+    update_await_stop: bool = false,
+    update_restart: bool = false,
+    /// The running daemon's self-reported version (empty when down/unknown), for
+    /// the "Running" line. Folded from `poll_version_*` after a poll; cleared on
+    /// stop. Program-lifetime fixed buffer.
+    version_buf: [32]u8 = undefined,
+    version_len: usize = 0,
+    /// Poll-staging for the running version: written by the poll worker before it
+    /// stores `poll_done` (release), read by the UI after observing it (acquire),
+    /// so those writes are ordered without a separate atomic.
+    poll_version_buf: [32]u8 = undefined,
+    poll_version_len: usize = 0,
+    /// Set once we've stamped the version marker from the live daemon for an install
+    /// that had none — so a pre-marker (legacy) install stops reading as "update
+    /// available" without a reinstall. One-shot per session.
+    version_stamp_done: bool = false,
     /// Whether this coin's daemon is up. Drives the "daemon running" line.
     /// Written by the daemon-start worker (release) and read by the UI
     /// (acquire), so it's atomic like `phase`.
@@ -741,6 +788,40 @@ const Activity = struct {
         };
     }
 
+    /// The installed daemon version recorded by the marker (empty when unknown).
+    fn installedVersion(self: *const Activity) []const u8 {
+        return self.installed_version_buf[0..self.installed_version_len];
+    }
+
+    /// The running daemon's self-reported version (empty when down/unknown).
+    fn runningVersion(self: *const Activity) []const u8 {
+        return self.version_buf[0..self.version_len];
+    }
+
+    /// Recompute `update_available` / `installed_version` from the on-disk marker
+    /// versus the binary's pinned `core_version`. Cheap disk read, safe on the UI
+    /// thread. `coin`/`install_root` are passed in because `act.coin` isn't set at
+    /// rest.
+    ///
+    /// An installed coin with *no* marker (a pre-marker or hand-installed binary)
+    /// reads as **up to date, not "update available"** — we don't know its version,
+    /// and assuming it's behind would nag every legacy install on every coin. The
+    /// version gets learned and stamped the first time that coin's daemon runs (see
+    /// the poll's one-shot stamp), after which real updates show correctly; a future
+    /// offline `--version` probe will fill it in without needing a run.
+    fn refreshUpdateState(self: *Activity, allocator: std.mem.Allocator, coin: Coin, install_root: []const u8) void {
+        self.installed_version_len = 0;
+        self.update_available = false;
+        if (!self.installed) return;
+
+        const ver = install_mod.readVersionMarker(allocator, install_root, coin.daemonFile()) orelse return;
+        defer allocator.free(ver);
+        const n = @min(ver.len, self.installed_version_buf.len);
+        @memcpy(self.installed_version_buf[0..n], ver[0..n]);
+        self.installed_version_len = n;
+        self.update_available = updater.isNewer(coin.coreVersion(), ver);
+    }
+
     /// `install_mod.Progress` sink — runs on the worker thread. Publishes the
     /// running byte counts and the current phase into the shared atomics; the
     /// UI picks them up on its next frame.
@@ -804,6 +885,10 @@ const Activity = struct {
 
         const progress: install_mod.Progress = .{ .ctx = self, .func = onProgress };
         if (self.coin.install(a, self.install_root, progress)) {
+            // Record what we just installed so update detection works even with the
+            // daemon stopped. Best-effort: a marker hiccup doesn't fail an
+            // otherwise-good install (detection just falls back to "recommended").
+            install_mod.writeVersionMarker(a, self.install_root, self.coin.daemonFile(), self.coin.coreVersion()) catch {};
             self.phase.store(@intFromEnum(Phase.done), .release);
         } else |err| {
             self.err_name = @errorName(err);
@@ -990,6 +1075,11 @@ const Activity = struct {
         self.staking = self.poll_staking.load(.monotonic) != 0;
         self.wallet = @enumFromInt(self.poll_wallet.load(.monotonic));
 
+        // Running daemon version (staged by the poll worker before `poll_done`).
+        const vn = @min(self.poll_version_len, self.version_buf.len);
+        @memcpy(self.version_buf[0..vn], self.poll_version_buf[0..vn]);
+        self.version_len = vn;
+
         // Wallet balances — `f64`s carried as their `u64` bit patterns. Only
         // adopted once a balance has actually been fetched (`poll_has_balance`),
         // so the lines stay hidden on coins that don't report one and don't flash
@@ -1120,6 +1210,26 @@ const Activity = struct {
         self.poll_peers.store(@as(u32, @intCast(@max(info.connections, 0))), .monotonic);
         self.poll_staking.store(@intFromBool(info.staking_active), .monotonic);
 
+        // Stage the running daemon version for the "Running" line (folded by the UI
+        // after this worker stores `poll_done`).
+        const vn = @min(info.version.len, self.poll_version_buf.len);
+        @memcpy(self.poll_version_buf[0..vn], info.version[0..vn]);
+        self.poll_version_len = vn;
+
+        // One-shot: stamp a missing version marker from the live daemon, so an
+        // install made before markers existed stops reading as "update available"
+        // without forcing a reinstall. Never overwrite an existing marker — install
+        // owns it. The live daemon *is* the installed binary, so its reported
+        // version is the right value to record.
+        if (!self.version_stamp_done and info.version.len > 0) {
+            self.version_stamp_done = true;
+            if (install_mod.readVersionMarker(a, self.install_root, self.coin.daemonFile())) |m| {
+                a.free(m);
+            } else {
+                install_mod.writeVersionMarker(a, self.install_root, self.coin.daemonFile(), info.version) catch {};
+            }
+        }
+
         // Wallet security state, for coins whose wallet BoxWallet can manage —
         // lights up the Wallet line and drives which `w` menu options apply.
         // Best-effort: a hiccup (e.g. no wallet loaded yet) just leaves the last
@@ -1231,7 +1341,7 @@ const Activity = struct {
         // conf, or an API-key HOCON for Ergo. Otherwise a bitcoin daemon falls
         // back to cookie auth we can't use, leaving it unmanageable over RPC
         // (poll/stop). The coin owns the format; existing values are kept.
-        try self.coin.prepareConf(a, io, self.home_dir);
+        try self.coin.prepareConf(a, io, self.install_root, self.home_dir);
 
         // The command to spawn — the bare daemon binary for fork coins, or a full
         // command line (e.g. `java -jar … -c <conf>`) for foreground coins.
@@ -1499,6 +1609,11 @@ pub const App = struct {
     /// Monotonic timestamp (ns) of the last getinfo poll round, from the tick
     /// clock. Drives the shared ~2s poll cadence across all installed coins.
     last_poll_ns: i64 = 0,
+    /// Monotonic timestamp (ns) of the last all-coins update scan, and whether one
+    /// has run yet — so the left-nav arrows and Home summary cover every coin, not
+    /// just the selected one. Scanned once up front, then on a slow ~5s cadence.
+    last_update_scan_ns: i64 = 0,
+    update_scan_done: bool = false,
     /// Disk usage of the filesystem that holds the install root (where the
     /// blockchains grow), refreshed on a slow ~30s cadence so the "Disk" bar
     /// reflects current fill without the cost of a per-frame `statfs`. `total`
@@ -1550,6 +1665,9 @@ pub const App = struct {
     /// `modal`; while set it owns keyboard input and is composited over the
     /// dashboard, same as the wallet modal.
     qs_modal: ?QuickSyncModal = null,
+    /// The open update-confirm prompt, or null. Mutually exclusive with the other
+    /// modals; while set it owns keyboard input and is composited over the dashboard.
+    update_modal: ?UpdateModal = null,
     /// Masked passphrase entry for the wallet modal. Persistent (its backing
     /// buffer outlives a single modal), created in `init` and freed in `deinit`;
     /// its value is cleared whenever the modal closes or an action is sent.
@@ -1743,6 +1861,10 @@ pub const App = struct {
             .key => |k| {
                 // The QuickSync prompt (daemon-start) and the wallet modal each own
                 // the keyboard while open; only one is ever open at a time.
+                if (self.update_modal != null) {
+                    self.updateModalKey(k);
+                    return .none;
+                }
                 if (self.qs_modal != null) {
                     self.qsModalKey(k);
                     return .none;
@@ -1755,6 +1877,7 @@ pub const App = struct {
                     .char => |c| switch (c) {
                         'q' => return .quit,
                         'i' => self.tryInstall(),
+                        'u' => self.tryUpdate(),
                         's' => self.tryToggleDaemon(),
                         'w' => self.openWalletModal(),
                         'k' => self.move(-1),
@@ -1981,6 +2104,16 @@ pub const App = struct {
             self.refreshMemory();
         }
 
+        // Refresh every coin's installed/update state up front and on a slow ~5s
+        // cadence, so the left-nav arrows and Home summary reflect *all* coins
+        // (the selected one is also kept current by `refreshSelectedInstalled`).
+        // Cheap: a stat + small marker read per coin.
+        if (!self.update_scan_done or t.timestamp - self.last_update_scan_ns >= 5 * std.time.ns_per_s) {
+            self.update_scan_done = true;
+            self.last_update_scan_ns = t.timestamp;
+            self.scanAllUpdates();
+        }
+
         // All installed coins are polled for live status on a shared ~2s cadence.
         const poll_due = t.timestamp - self.last_poll_ns >= 2 * std.time.ns_per_s;
         for (&self.activities, 0..) |*act, i| {
@@ -2030,8 +2163,30 @@ pub const App = struct {
                         act.balance_avail = 0;
                         act.loading_phase = .none;
                         act.poll_phase.store(@intFromEnum(models.LoadingPhase.none), .monotonic);
+                        // Forget the running version — the daemon's down.
+                        act.version_len = 0;
+                        act.poll_version_len = 0;
                         self.logf("{s}: daemon stopped", .{act.coin.coinName()});
                     } else self.logf("{s}: daemon failed to stop ({s})", .{ act.coin.coinName(), act.daemon_err }),
+                }
+            }
+
+            // One-click update, step 2: we asked the daemon to stop before
+            // reinstalling. Once it's down (worker reaped above), kick the install;
+            // if it wouldn't stop, abort rather than reinstall under a live daemon
+            // (Windows can't replace a running binary, and it's the safe choice
+            // everywhere). `update_restart` stays set so the daemon comes back up
+            // on the new binary when the install finishes.
+            if (act.update_await_stop and act.daemon_thread == null and act.daemonState() != .stopping) {
+                act.update_await_stop = false;
+                if (act.daemonState() == .stopped) {
+                    if (self.coinAt(i)) |c| {
+                        self.logf("{s}: updating — reinstalling…", .{c.coinName()});
+                        self.beginInstall(c, act);
+                    }
+                } else {
+                    act.update_restart = false;
+                    if (self.coinAt(i)) |c| self.logf("{s}: update aborted (daemon wouldn't stop)", .{c.coinName()});
                 }
             }
 
@@ -2224,11 +2379,23 @@ pub const App = struct {
                     act.thread = null;
                 }
                 act.installed = act.coin.isInstalled(self.allocator, self.install_root);
+                act.refreshUpdateState(self.allocator, act.coin, self.install_root);
                 const verb: []const u8 = if (act.updating) "update" else "install";
                 if (p == .done) {
                     self.logf("{s}: {s} complete", .{ act.coin.coinName(), verb });
                 } else {
                     self.logf("{s}: {s} failed ({s})", .{ act.coin.coinName(), verb, act.err_name });
+                }
+
+                // One-click update: the reinstall just finished. If the daemon was
+                // up when the update began, restart it on the new binary. On a
+                // failed reinstall, drop the restart so we don't relaunch a daemon
+                // the user expected to be updated.
+                if (act.update_restart) {
+                    act.update_restart = false;
+                    if (p == .done) {
+                        if (self.coinAt(i)) |c| self.beginDaemonStart(c, act);
+                    }
                 }
             }
 
@@ -2413,6 +2580,23 @@ pub const App = struct {
         if (act.phaseOf() != .idle) return;
         if (self.selectedCoin()) |coin| {
             act.installed = coin.isInstalled(self.allocator, self.install_root);
+            act.refreshUpdateState(self.allocator, coin, self.install_root);
+        }
+    }
+
+    /// Refresh `installed` + `update_available` for *every* coin (not just the
+    /// selected one), so the left-nav arrows and the Home summary cover all coins.
+    /// Coins with an in-flight job are skipped — their phase already speaks for
+    /// them and a stale disk check shouldn't stomp a fresh result.
+    fn scanAllUpdates(self: *App) void {
+        for (entries, 0..) |e, i| {
+            if (e == .home) continue;
+            const act = &self.activities[i];
+            if (act.phaseOf() != .idle) continue;
+            if (self.coinAt(i)) |coin| {
+                act.installed = coin.isInstalled(self.allocator, self.install_root);
+                act.refreshUpdateState(self.allocator, coin, self.install_root);
+            }
         }
     }
 
@@ -2422,7 +2606,13 @@ pub const App = struct {
     /// ignored, but other coins can be installing concurrently.
     fn tryInstall(self: *App) void {
         const coin = self.selectedCoin() orelse return;
-        const act = &self.activities[self.selected];
+        self.beginInstall(coin, &self.activities[self.selected]);
+    }
+
+    /// Spawn the install/update worker for an explicit coin/activity. Factored out
+    /// of `tryInstall` so the one-click update flow can drive it for a coin that may
+    /// no longer be the selected one (the user can navigate away mid-update).
+    fn beginInstall(self: *App, coin: Coin, act: *Activity) void {
         if (act.busy()) return;
 
         // Reap a previously finished thread before reusing the slot.
@@ -2450,6 +2640,73 @@ pub const App = struct {
             return;
         };
         self.logf("{s}: {s}…", .{ coin.coinName(), if (act.updating) "updating" else "installing" });
+    }
+
+    /// Open the update-confirm prompt for the selected coin. A no-op unless an
+    /// update is actually available, nothing else is in flight for the coin, and no
+    /// other modal is open.
+    fn tryUpdate(self: *App) void {
+        const act = &self.activities[self.selected];
+        if (!act.update_available or act.busy()) return;
+        if (act.update_await_stop or act.update_restart) return; // already updating
+        if (self.modal != null or self.qs_modal != null or self.update_modal != null) return;
+
+        var m: UpdateModal = .{ .coin_idx = self.selected };
+        const iv = act.installedVersion();
+        const n = @min(iv.len, m.from_buf.len);
+        @memcpy(m.from_buf[0..n], iv[0..n]);
+        m.from_len = n;
+        self.update_modal = m;
+    }
+
+    /// Handle a keypress while the update prompt is open: walk Yes/No, `enter`/`y`
+    /// confirms, `esc`/`n` cancels. Keys are swallowed so nothing reaches the
+    /// dashboard.
+    fn updateModalKey(self: *App, k: zz.KeyEvent) void {
+        if (self.update_modal == null) return;
+        const m = &self.update_modal.?;
+        switch (k.key) {
+            .escape => self.update_modal = null,
+            .up => m.sel = 0,
+            .down => m.sel = 1,
+            .char => |c| switch (c) {
+                'k' => m.sel = 0,
+                'j' => m.sel = 1,
+                'y' => self.confirmUpdate(),
+                'n' => self.update_modal = null,
+                else => {},
+            },
+            .enter => if (m.sel == 0) self.confirmUpdate() else {
+                self.update_modal = null;
+            },
+            else => {},
+        }
+    }
+
+    /// User confirmed: close the prompt and begin the update sequence.
+    fn confirmUpdate(self: *App) void {
+        const idx = self.update_modal.?.coin_idx;
+        self.update_modal = null;
+        self.beginUpdate(idx);
+    }
+
+    /// Run the one-click update for `coin_idx`. If the daemon is up, stop it first —
+    /// the reinstall fires once it's down (in `onTick`), then the daemon restarts on
+    /// the new binary. If it's already stopped, reinstall straight away. The confirm
+    /// modal locks navigation while open, so `coin_idx` is the selected coin and
+    /// `tryStop` (selected-bound) targets the right daemon.
+    fn beginUpdate(self: *App, coin_idx: usize) void {
+        const act = &self.activities[coin_idx];
+        const coin = self.coinAt(coin_idx) orelse return;
+        const was_running = act.daemonState() == .running;
+        act.update_restart = was_running;
+        if (was_running) {
+            act.update_await_stop = true;
+            self.tryStop();
+            self.logf("{s}: updating — stopping daemon…", .{coin.coinName()});
+        } else {
+            self.beginInstall(coin, act);
+        }
     }
 
     /// Start the selected coin's daemon in the background. Enabled only when the
@@ -2906,13 +3163,21 @@ pub const App = struct {
         const a = ctx.allocator;
 
         const right = self.renderDetail(a);
-        const top = renderTwoPane(a, self.selected, right) catch "render error";
+        // Per-entry "has an update" flags for the left-nav arrows (Home is never an
+        // update target; `update_available` is only set for installed coins).
+        var updates: [entries.len]bool = undefined;
+        for (&updates, 0..) |*u, i| u.* = entries[i] != .home and self.activities[i].update_available;
+        const top = renderTwoPane(a, self.selected, &updates, right) catch "render error";
         const screen = if (!self.log_visible)
             top
         else
             (self.renderWithLog(a, ctx.width, ctx.height, top) catch top);
         // The QuickSync prompt and the wallet modal are mutually exclusive; both
         // are centred over the dashboard by the same compositor.
+        if (self.update_modal != null) {
+            const box = self.renderUpdateModal(a) catch return screen;
+            return overlayBox(a, screen, box, ctx.width, ctx.height) catch screen;
+        }
         if (self.qs_modal != null) {
             const box = self.renderQuickSyncModal(a) catch return screen;
             return overlayBox(a, screen, box, ctx.width, ctx.height) catch screen;
@@ -2982,6 +3247,29 @@ pub const App = struct {
             result;
     }
 
+    /// A one-line-ish summary of coins with an available update, for the Home
+    /// pane: "⬆ Coin updates available: DigiByte, Epic" plus a how-to line. Returns
+    /// "" when nothing's pending, so the line simply vanishes. The names are pulled
+    /// from `update_available` (only ever set for installed coins).
+    fn coinUpdateSummary(self: *const App, a: std.mem.Allocator) []const u8 {
+        var names: std.Io.Writer.Allocating = .init(a);
+        defer names.deinit();
+        var count: usize = 0;
+        for (entries, 0..) |e, i| {
+            if (e == .home or !self.activities[i].update_available) continue;
+            if (count > 0) names.writer.writeAll(", ") catch return "";
+            names.writer.writeAll(entryLabel(e)) catch return "";
+            count += 1;
+        }
+        if (count == 0) return "";
+        const styled = (zz.Style{}).bold(true).fg(.yellow).render(a, names.written()) catch names.written();
+        return std.fmt.allocPrint(
+            a,
+            "\n\n⬆ Coin updates available: {s}\n  Select the coin on the left and press u to update.",
+            .{styled},
+        ) catch "";
+    }
+
     /// Builds the right-hand detail block for the current selection. The coin
     /// pane is rendered generically through the `Coin` interface, so no per-coin
     /// code lives here — a newly registered coin renders for free.
@@ -3000,8 +3288,12 @@ pub const App = struct {
                 std.fmt.allocPrint(a, "\n⚠ Update v{s} downloaded, but BoxWallet's folder isn't writable.\n  Move BoxWallet to a writable location, then restart.", .{self.update_version.slice()}) catch ""
             else
                 std.fmt.allocPrint(a, "\n⬆ Update v{s} downloaded — restart to apply", .{self.update_version.slice()}) catch "";
+            // Coin-update roll-up: the coins whose installed daemon trails their
+            // bundled version, so the user sees them from Home without clicking
+            // into each. Empty (line vanishes) when everything's current.
+            const coin_updates = self.coinUpdateSummary(a);
             return std.fmt.allocPrint(a,
-                \\{s} v{s}{s}
+                \\{s} v{s}{s}{s}
                 \\
                 \\Select a coin on the left to manage it.
                 \\
@@ -3011,7 +3303,7 @@ pub const App = struct {
                 \\  w        wallet (encrypt / unlock / stake)
                 \\  l        toggle the log pane
                 \\  q        quit
-            , .{ head, app_version, notice }) catch "alloc error";
+            , .{ head, app_version, notice, coin_updates }) catch "alloc error";
         };
 
         return self.renderCoin(a, coin, &self.activities[self.selected]) catch "alloc error";
@@ -3035,7 +3327,19 @@ pub const App = struct {
         } else (zz.Style{}).bold(true).fg(head_color).render(a, name_str) catch name_str;
         // Its bundled core version rides alongside in the terminal default,
         // mirroring "BoxWallet TUI v0.0.3" on the Home pane.
-        const head = std.fmt.allocPrint(a, "{s} v{s}", .{ name, coin.coreVersion() }) catch name;
+        const head_base = std.fmt.allocPrint(a, "{s} v{s}", .{ name, coin.coreVersion() }) catch name;
+        // When the on-disk daemon trails the bundled version (or is unmarked), tack
+        // on a yellow "update available" badge advertising the `u` action. The head
+        // shows the bundled (target) version; the badge names what's installed.
+        const head = if (act.update_available) blk: {
+            const iv = act.installedVersion();
+            const badge_text = if (iv.len > 0)
+                std.fmt.allocPrint(a, "   ⬆ v{s} installed — press u to update", .{iv}) catch "   ⬆ update — press u"
+            else
+                "   ⬆ update available — press u";
+            const badge = (zz.Style{}).bold(true).fg(.yellow).render(a, badge_text) catch badge_text;
+            break :blk std.fmt.allocPrint(a, "{s}{s}", .{ head_base, badge }) catch head_base;
+        } else head_base;
 
         const p = act.phaseOf();
         // Status labels wear the coin's brand colour only while their status is
@@ -3056,7 +3360,16 @@ pub const App = struct {
         // label is grey only when stopped and not awaiting (the red ✘ state).
         const daemon_label = statusLabel(a, brand, "Running", act.daemonState() != .stopped or awaiting);
         const daemon_mark: []const u8 = switch (act.daemonState()) {
-            .running => statusMark(a, true),
+            // When up, show the tick plus the daemon's own reported version (once a
+            // poll has read it) — the live "what's actually running" figure, next to
+            // the bundled version in the header.
+            .running => blk: {
+                const tick = statusMark(a, true);
+                const rv = act.runningVersion();
+                if (rv.len == 0) break :blk tick;
+                const ver = (zz.Style{}).dim(true).render(a, std.fmt.allocPrint(a, "v{s}", .{rv}) catch rv) catch rv;
+                break :blk std.fmt.allocPrint(a, "{s} {s}", .{ tick, ver }) catch tick;
+            },
             .stopped => if (awaiting) act.daemon_spinner.view(a) catch "…" else statusMark(a, false),
             .starting, .stopping => act.daemon_spinner.view(a) catch "…",
         };
@@ -3650,10 +3963,55 @@ pub const App = struct {
         return out.toOwnedSlice();
     }
 
+    /// Render the update-confirm prompt box. Mirrors `renderQuickSyncModal`'s
+    /// chrome (brand-coloured rule + rows), but it's confirm-only — the actual
+    /// stop/install/restart progress shows in the main pane afterwards.
+    fn renderUpdateModal(self: *const App, a: std.mem.Allocator) ![]const u8 {
+        const m = self.update_modal.?;
+        const coin = self.coinAt(m.coin_idx) orelse return error.NoCoin;
+        const brand = zz.Color.hex(coin.coinColor());
+        const inner_w = modal_inner_w;
+        const vbar = (zz.Style{}).fg(brand).render(a, "│") catch "│";
+
+        var out: std.Io.Writer.Allocating = .init(a);
+        errdefer out.deinit();
+
+        const title = try std.fmt.allocPrint(a, "{s} — Update", .{coin.coinName()});
+        try modalRule(a, &out.writer, brand, inner_w, "┌", "┐", title);
+        try modalRow(&out.writer, vbar, inner_w, "", 0);
+
+        const from = m.from();
+        const detail = if (from.len > 0)
+            try std.fmt.allocPrint(a, "A newer version is available: {s} → {s}. Updating stops the daemon, installs the new version, and restarts it.", .{ from, coin.coreVersion() })
+        else
+            try std.fmt.allocPrint(a, "Reinstall the bundled version {s}? This stops the daemon, installs it, and restarts it.", .{coin.coreVersion()});
+        try wrapIntoRows(a, &out.writer, vbar, inner_w, detail, (zz.Style{}));
+        try modalRow(&out.writer, vbar, inner_w, "", 0);
+
+        const labels = [_][]const u8{ "Yes — update now", "No — not now" };
+        for (labels, 0..) |lbl, i| {
+            const sel = i == m.sel;
+            const plain = try std.fmt.allocPrint(a, "{s}{s}", .{ if (sel) "❯ " else "  ", lbl });
+            const text = if (sel)
+                ((zz.Style{}).bold(true).fg(brand).render(a, plain) catch plain)
+            else
+                plain;
+            try modalRow(&out.writer, vbar, inner_w, text, zz.width(plain));
+        }
+
+        try modalRow(&out.writer, vbar, inner_w, "", 0);
+        const hint_text = "enter: select   esc: cancel";
+        const hint = (zz.Style{}).dim(true).render(a, hint_text) catch hint_text;
+        try modalRow(&out.writer, vbar, inner_w, hint, zz.width(hint_text));
+        try modalRule(a, &out.writer, brand, inner_w, "└", "┘", "");
+
+        return out.toOwnedSlice();
+    }
+
     /// Joins the left nav column and the right detail block side by side. The
     /// left column lists every entry on every frame, so the coin list is always
     /// on screen regardless of what any coin is doing.
-    fn renderTwoPane(a: std.mem.Allocator, selected: usize, right: []const u8) ![]const u8 {
+    fn renderTwoPane(a: std.mem.Allocator, selected: usize, updates: []const bool, right: []const u8) ![]const u8 {
         // Marker (2 cells) + the label column. Empty rows pad to this full width.
         const col_w = 2 + nav_label_w;
         var out: std.Io.Writer.Allocating = .init(a);
@@ -3673,6 +4031,11 @@ pub const App = struct {
                 // padding of the same visible width (2 cells) to keep alignment.
                 const marker: []const u8 = if (i == selected)
                     (zz.Style{}).bold(true).fg(entryColor(e)).render(a, "❯ ") catch "❯ "
+                else if (i < updates.len and updates[i])
+                    // A coin with an available update gets a yellow ⬆ in the marker
+                    // column (the selected coin shows its arrow + the detail badge
+                    // instead, so it isn't doubled up).
+                    (zz.Style{}).bold(true).fg(.yellow).render(a, "⬆ ") catch "⬆ "
                 else
                     "  ";
                 // Write the label, then pad to the fixed label width with trailing
@@ -4051,6 +4414,49 @@ test "action log renders in the bottom pane, sized to log_visible_lines" {
     // `l` toggles the pane: while hidden, `view` returns the top content alone.
     app.log_visible = false;
     try std.testing.expect(!app.log_visible);
+}
+
+test "refreshUpdateState flags an update when the marker trails the bundled version" {
+    const allocator = std.testing.allocator;
+    var epic: Epic = .{};
+    const c = epic.coin(); // bundled core_version is "4.0.3"
+    const root = "test-update-detect-root";
+
+    var threaded: std.Io.Threaded = .init(allocator, .{});
+    defer threaded.deinit();
+    std.Io.Dir.cwd().deleteTree(threaded.io(), root) catch {};
+    defer std.Io.Dir.cwd().deleteTree(threaded.io(), root) catch {};
+
+    var act: Activity = .{};
+
+    // Not installed → no update prompt, regardless of any marker.
+    act.installed = false;
+    act.refreshUpdateState(allocator, c, root);
+    try std.testing.expect(!act.update_available);
+
+    // Installed but no marker (legacy/manual install) → treated as up to date, not
+    // a nag: we don't know its version yet (learned when the daemon next runs).
+    act.installed = true;
+    act.refreshUpdateState(allocator, c, root);
+    try std.testing.expect(!act.update_available);
+    try std.testing.expectEqualStrings("", act.installedVersion());
+
+    // Marker older than the bundled 4.0.3 → update available, version surfaced.
+    try install_mod.writeVersionMarker(allocator, root, c.daemonFile(), "4.0.2");
+    act.refreshUpdateState(allocator, c, root);
+    try std.testing.expect(act.update_available);
+    try std.testing.expectEqualStrings("4.0.2", act.installedVersion());
+
+    // Marker equal to the bundled version → up to date.
+    try install_mod.writeVersionMarker(allocator, root, c.daemonFile(), "4.0.3");
+    act.refreshUpdateState(allocator, c, root);
+    try std.testing.expect(!act.update_available);
+
+    // Marker newer than the bundle (e.g. after a downgrade of BoxWallet) → not an
+    // update; we never offer to install an older version.
+    try install_mod.writeVersionMarker(allocator, root, c.daemonFile(), "4.1.0");
+    act.refreshUpdateState(allocator, c, root);
+    try std.testing.expect(!act.update_available);
 }
 
 test "awaitingStatus animates only before the first poll of an installed coin" {
@@ -4611,7 +5017,7 @@ test "the wallet modal renders its menu centered over the dashboard" {
     defer arena.deinit();
     const a = arena.allocator();
 
-    const screen = try App.renderTwoPane(a, app.selected, "right pane\n");
+    const screen = try App.renderTwoPane(a, app.selected, &.{}, "right pane\n");
     const out = try app.renderModalOver(a, screen, 80, 24);
 
     // The modal's title and both locked-state actions appear in the composited
@@ -4671,7 +5077,7 @@ test "the external-wallet setup menu renders its create/restore choices" {
     defer arena.deinit();
     const a = arena.allocator();
 
-    const screen = try App.renderTwoPane(a, app.selected, "right pane\n");
+    const screen = try App.renderTwoPane(a, app.selected, &.{}, "right pane\n");
     const out = try app.renderModalOver(a, screen, 80, 24);
 
     try std.testing.expect(std.mem.indexOf(u8, out, "Nerva Wallet") != null);
@@ -4717,15 +5123,73 @@ test "left bar paints only the selected coin in its brand colour, the rest grey"
     const grey_seq = try seq(a, zz.Color.hex(nav_dim_color));
 
     // Select Nexa: its brand colour shows, Divi (unselected) is greyed instead.
-    const screen = try App.renderTwoPane(a, nexa_idx, "");
+    const screen = try App.renderTwoPane(a, nexa_idx, &.{}, "");
     try std.testing.expect(std.mem.indexOf(u8, screen, nexa_seq) != null);
     try std.testing.expect(std.mem.indexOf(u8, screen, grey_seq) != null);
     try std.testing.expect(std.mem.indexOf(u8, screen, divi_seq) == null);
 
     // Switching the selection to Divi flips which one carries its brand colour.
-    const screen2 = try App.renderTwoPane(a, divi_idx, "");
+    const screen2 = try App.renderTwoPane(a, divi_idx, &.{}, "");
     try std.testing.expect(std.mem.indexOf(u8, screen2, divi_seq) != null);
     try std.testing.expect(std.mem.indexOf(u8, screen2, nexa_seq) == null);
+}
+
+test "left-nav shows an update arrow only for non-selected coins with a pending update" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    const nexa_idx = std.mem.indexOfScalar(Entry, &entries, .nexa).?;
+    const home_idx = std.mem.indexOfScalar(Entry, &entries, .home).?;
+
+    var updates = [_]bool{false} ** entries.len;
+    updates[nexa_idx] = true;
+
+    // Home selected → Nexa is non-selected → it carries the ⬆ marker.
+    const screen = try App.renderTwoPane(a, home_idx, &updates, "");
+    try std.testing.expect(std.mem.indexOf(u8, screen, "⬆") != null);
+
+    // No pending updates → no arrow anywhere.
+    const none = [_]bool{false} ** entries.len;
+    const screen2 = try App.renderTwoPane(a, home_idx, &none, "");
+    try std.testing.expect(std.mem.indexOf(u8, screen2, "⬆") == null);
+
+    // When the updating coin is selected, its selection arrow takes the marker
+    // slot — no ⬆ doubled up (the detail badge covers it there).
+    const screen3 = try App.renderTwoPane(a, nexa_idx, &updates, "");
+    try std.testing.expect(std.mem.indexOf(u8, screen3, "⬆") == null);
+}
+
+test "Home summary lists coins with a pending update" {
+    if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
+    const allocator = std.testing.allocator;
+
+    var threaded: std.Io.Threaded = .init(allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    var env = std.process.Environ.Map.init(allocator);
+    defer env.deinit();
+    try env.put("HOME", "/home/tester");
+    var ctx = zz.Context.init(allocator, allocator, io, &env);
+
+    var app: App = undefined;
+    _ = app.init(&ctx);
+    defer app.deinit();
+
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    // Nothing pending → empty summary (the Home line vanishes).
+    try std.testing.expectEqualStrings("", app.coinUpdateSummary(a));
+
+    // Flag Nexa as having an update → it's named in the summary.
+    const nexa_idx = std.mem.indexOfScalar(Entry, &entries, .nexa).?;
+    app.activities[nexa_idx].update_available = true;
+    const s = app.coinUpdateSummary(a);
+    try std.testing.expect(std.mem.indexOf(u8, s, "Coin updates available") != null);
+    try std.testing.expect(std.mem.indexOf(u8, s, entryLabel(.nexa)) != null);
 }
 
 test "coins installing into one root use distinct download scratch files" {
@@ -4780,7 +5244,7 @@ test "per-coin activity is independent and stays inside the right pane" {
 
     // The two-pane layout still lists every coin on the left, whatever each is
     // doing — the activity is confined to the right of the separator.
-    const screen = try App.renderTwoPane(a, app.selected, divi_pane);
+    const screen = try App.renderTwoPane(a, app.selected, &.{}, divi_pane);
     try std.testing.expect(std.mem.indexOf(u8, screen, Nexa.coin_name) != null);
     try std.testing.expect(std.mem.indexOf(u8, screen, Divi.coin_name) != null);
     try std.testing.expect(std.mem.indexOf(u8, screen, "│") != null);

@@ -119,6 +119,8 @@ pub const Ergo = struct {
         maxPeerHeight: ?i64 = null,
         peersCount: ?i64 = null,
         network: []const u8 = "",
+        /// The node's software version (e.g. "6.0.2"), from `/info`'s `appVersion`.
+        appVersion: []const u8 = "",
     };
 
     /// Perform a REST request against the local node and return the response
@@ -222,6 +224,8 @@ pub const Ergo = struct {
             .blocks = r.fullHeight orelse 0,
             .connections = r.peersCount orelse 0,
             .staking_active = false,
+            // `appVersion` points into `parsed`; dupe it onto `allocator`.
+            .version = try allocator.dupe(u8, r.appVersion),
         };
     }
 
@@ -556,8 +560,10 @@ pub const Ergo = struct {
         _: *anyopaque,
         allocator: std.mem.Allocator,
         io: std.Io,
+        install_root: []const u8,
         home: []const u8,
     ) anyerror!void {
+        _ = install_root;
         return prepareConf(allocator, io, home);
     }
     fn vtLaunchMode(_: *anyopaque) Coin.LaunchMode {

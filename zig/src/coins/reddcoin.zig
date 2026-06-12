@@ -146,6 +146,9 @@ pub const ReddCoin = struct {
             .blocks = b.blocks,
             .connections = n.connections,
             .staking_active = staking,
+            // `getnetworkinfo`'s numeric CLIENT_VERSION → dotted string, owned by
+            // `allocator` so it outlives `net`'s deinit.
+            .version = try models.clientVersionString(allocator, n.version),
         };
     }
 
@@ -383,8 +386,10 @@ pub const ReddCoin = struct {
         _: *anyopaque,
         allocator: std.mem.Allocator,
         io: std.Io,
+        install_root: []const u8,
         home: []const u8,
     ) anyerror!void {
+        _ = install_root;
         return prepareConf(allocator, io, home);
     }
     fn vtLaunchMode(_: *anyopaque) Coin.LaunchMode {
