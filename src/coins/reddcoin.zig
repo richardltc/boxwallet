@@ -142,13 +142,23 @@ pub const ReddCoin = struct {
             break :blk if (st.value.result) |s| s.staking else false;
         };
 
+        // `getnetworkinfo`'s numeric CLIENT_VERSION → dotted string, owned by
+        // `allocator` so it outlives `net`'s deinit. ReddCoin's CLIENT_VERSION
+        // carries a legacy leading-0 major (42209 → "0.4.22.9"), but the release is
+        // branded/distributed as "4.22.9" (== core_version). Drop the "0." so the
+        // Running line and the on-disk version marker line up with the bundled
+        // version — otherwise the same release reads as an endless "update available".
+        const full = try models.clientVersionString(allocator, n.version);
+        const version = if (std.mem.startsWith(u8, full, "0.")) blk: {
+            defer allocator.free(full);
+            break :blk try allocator.dupe(u8, full[2..]);
+        } else full;
+
         return .{
             .blocks = b.blocks,
             .connections = n.connections,
             .staking_active = staking,
-            // `getnetworkinfo`'s numeric CLIENT_VERSION → dotted string, owned by
-            // `allocator` so it outlives `net`'s deinit.
-            .version = try models.clientVersionString(allocator, n.version),
+            .version = version,
         };
     }
 
@@ -500,7 +510,7 @@ test "combines getnetworkinfo + staking into DaemonInfo (no getinfo, PoSV)" {
     // ReddCoin 4.x has no `getinfo`: peers come from getnetworkinfo and staking
     // from the `staking` RPC. Prove each parses, then the staking decode.
     const net_raw =
-        \\{"result":{"version":4220900,"subversion":"/ReddCoin:4.22.9/",
+        \\{"result":{"version":42209,"subversion":"/ReddCoin:4.22.9/",
         \\"connections":16,"networkactive":true},"error":null,"id":"boxwallet"}
     ;
     const staking_raw =
@@ -531,6 +541,22 @@ test "combines getnetworkinfo + staking into DaemonInfo (no getinfo, PoSV)" {
 
     try std.testing.expectEqual(@as(i64, 16), info.connections);
     try std.testing.expect(info.staking_active);
+}
+
+test "daemon CLIENT_VERSION drops ReddCoin's legacy leading-0 major" {
+    const allocator = std.testing.allocator;
+
+    // ReddCoin's getnetworkinfo reports CLIENT_VERSION = 42209, which the bitcoin
+    // decoder renders as the 4-part "0.4.22.9". daemonInfo strips the leading "0."
+    // so the Running line and the version marker match the branded "4.22.9"
+    // (== core_version) — otherwise the same release nags as "update available".
+    const full = try models.clientVersionString(allocator, 42209);
+    defer allocator.free(full);
+    try std.testing.expectEqualStrings("0.4.22.9", full);
+
+    const version = if (std.mem.startsWith(u8, full, "0.")) full[2..] else full;
+    try std.testing.expectEqualStrings("4.22.9", version);
+    try std.testing.expectEqualStrings(ReddCoin.core_version, version);
 }
 
 test "staking RPC absent or wallet-locked reads as not staking" {
