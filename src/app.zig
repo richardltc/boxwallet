@@ -1229,7 +1229,15 @@ const Activity = struct {
         if (!self.version_stamp_done and info.version.len > 0) {
             self.version_stamp_done = true;
             if (install_mod.readVersionMarker(a, self.install_root, self.coin.daemonFile())) |m| {
-                a.free(m);
+                defer a.free(m);
+                // The live daemon *is* the installed binary. If the marker claims we're
+                // behind core_version while the daemon reports exactly core_version, the
+                // marker is stale/mis-encoded — correct it so it stops nagging a false
+                // "update available". Requiring an exact match keeps a genuinely older
+                // install (reported != core) untouched, so real updates still show.
+                if (updater.isNewer(self.coin.coreVersion(), m) and
+                    std.mem.eql(u8, info.version, self.coin.coreVersion()))
+                    install_mod.writeVersionMarker(a, self.install_root, self.coin.daemonFile(), info.version) catch {};
             } else {
                 install_mod.writeVersionMarker(a, self.install_root, self.coin.daemonFile(), info.version) catch {};
             }
@@ -3202,16 +3210,24 @@ pub const App = struct {
             (self.renderWithLog(a, ctx.width, ctx.height, top) catch top);
         // The QuickSync prompt and the wallet modal are mutually exclusive; both
         // are centred over the dashboard by the same compositor.
-        if (self.update_modal != null) {
-            const box = self.renderUpdateModal(a) catch return screen;
-            return overlayBox(a, screen, box, ctx.width, ctx.height) catch screen;
-        }
-        if (self.qs_modal != null) {
-            const box = self.renderQuickSyncModal(a) catch return screen;
-            return overlayBox(a, screen, box, ctx.width, ctx.height) catch screen;
-        }
-        if (self.modal == null) return screen;
-        return self.renderModalOver(a, screen, ctx.width, ctx.height) catch screen;
+        const composed = blk: {
+            if (self.update_modal != null) {
+                const box = self.renderUpdateModal(a) catch break :blk screen;
+                break :blk overlayBox(a, screen, box, ctx.width, ctx.height) catch screen;
+            }
+            if (self.qs_modal != null) {
+                const box = self.renderQuickSyncModal(a) catch break :blk screen;
+                break :blk overlayBox(a, screen, box, ctx.width, ctx.height) catch screen;
+            }
+            if (self.modal == null) break :blk screen;
+            break :blk self.renderModalOver(a, screen, ctx.width, ctx.height) catch screen;
+        };
+        // Clip every line to the terminal width before handing it back: ZigZag's
+        // renderer writes each line verbatim with no clipping, so a line wider than
+        // the terminal wraps onto a second physical row — shoving everything below
+        // it down and scrolling the header/nav off the top. A long sync annotation
+        // (the Blocks line's "<block date>  N years … behind") is the usual culprit.
+        return clipToWidth(a, composed, ctx.width);
     }
 
     /// The bottom log pane is a separator bar plus `log_visible_lines` rows.
@@ -4105,6 +4121,75 @@ pub const App = struct {
         return out.toOwnedSlice();
     }
 };
+
+/// Clip every logical line of `screen` to `max_w` visible columns. ZigZag's
+/// renderer (`program.zig`) prints each line verbatim and never clips, so a line
+/// wider than the terminal wraps onto a second physical row — pushing everything
+/// below it down and scrolling the top (header + nav) off-screen. Clipping here
+/// keeps the invariant the renderer relies on: one logical line == one physical
+/// row. ANSI escapes are zero-width and pass through untouched; a line that's
+/// actually truncated gets a reset appended so a cut mid-colour doesn't bleed.
+/// `max_w == 0` (width unknown) is a no-op. The common case (nothing overflows)
+/// returns `screen` without copying.
+fn clipToWidth(a: std.mem.Allocator, screen: []const u8, max_w: u16) []const u8 {
+    if (max_w == 0) return screen;
+
+    var overflows = false;
+    var probe = std.mem.splitScalar(u8, screen, '\n');
+    while (probe.next()) |line| {
+        if (zz.width(line) > max_w) {
+            overflows = true;
+            break;
+        }
+    }
+    if (!overflows) return screen;
+
+    var out: std.Io.Writer.Allocating = .init(a);
+    var lines = std.mem.splitScalar(u8, screen, '\n');
+    var first = true;
+    while (lines.next()) |line| {
+        if (!first) out.writer.writeByte('\n') catch return screen;
+        first = false;
+        clipLineInto(&out.writer, line, max_w) catch return screen;
+    }
+    return out.toOwnedSlice() catch screen;
+}
+
+/// Write `line` to `w`, stopping once `max_w` visible columns have been emitted.
+/// CSI escape sequences (`ESC[ … final`) copy through verbatim (they cost no
+/// columns); other bytes advance the visible count by their display width. A
+/// truncated line is closed with an ANSI reset so styling doesn't leak past it.
+fn clipLineInto(w: *std.Io.Writer, line: []const u8, max_w: u16) !void {
+    if (zz.width(line) <= max_w) {
+        try w.writeAll(line);
+        return;
+    }
+    var i: usize = 0;
+    var vis: usize = 0;
+    while (i < line.len) {
+        if (line[i] == 0x1b) {
+            // Copy the escape sequence whole. CSI is `ESC [ params… final`, where
+            // the final byte is 0x40–0x7E; non-CSI escapes just carry the ESC.
+            const start = i;
+            i += 1;
+            if (i < line.len and line[i] == '[') {
+                i += 1;
+                while (i < line.len and (line[i] < 0x40 or line[i] > 0x7e)) : (i += 1) {}
+                if (i < line.len) i += 1;
+            }
+            try w.writeAll(line[start..i]);
+            continue;
+        }
+        const blen = std.unicode.utf8ByteSequenceLength(line[i]) catch 1;
+        const end = @min(i + blen, line.len);
+        const cw = zz.width(line[i..end]);
+        if (vis + cw > max_w) break;
+        try w.writeAll(line[i..end]);
+        vis += cw;
+        i = end;
+    }
+    try w.writeAll("\x1b[0m");
+}
 
 /// Write one content row of the wallet modal: `│ <text><pad> │`, where `text`
 /// occupies `vis` visible columns (it may carry zero-width ANSI styling) and is
@@ -5155,6 +5240,35 @@ test "the external-wallet setup menu renders its create/restore choices" {
     try std.testing.expect(std.mem.indexOf(u8, out, "Create a new wallet") != null);
     try std.testing.expect(std.mem.indexOf(u8, out, "Restore from seed words") != null);
     try std.testing.expect(std.mem.indexOf(u8, out, "Restore from a wallet file") != null);
+}
+
+test "clipToWidth caps each line to the terminal width without wrapping" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    // Nothing over width → returned untouched (and no copy).
+    const fits = "abc\ndef";
+    try std.testing.expectEqual(fits.ptr, clipToWidth(a, fits, 10).ptr);
+
+    // width 0 (unknown terminal) is a no-op.
+    try std.testing.expectEqual(fits.ptr, clipToWidth(a, fits, 0).ptr);
+
+    // A line past the cap is trimmed to exactly `max_w` visible columns; short
+    // lines on either side are preserved verbatim.
+    const clipped = clipToWidth(a, "hi\nABCDEFGHIJ\nyo", 5);
+    var it = std.mem.splitScalar(u8, clipped, '\n');
+    try std.testing.expectEqualStrings("hi", it.next().?);
+    const mid = it.next().?;
+    try std.testing.expect(zz.width(mid) <= 5);
+    try std.testing.expect(std.mem.startsWith(u8, mid, "ABCDE"));
+    try std.testing.expectEqualStrings("yo", it.next().?);
+
+    // ANSI styling is zero-width: a styled-but-short line is left intact, escapes
+    // and all (here a red "hi" well under the cap).
+    const styled = (zz.Style{}).fg(.red).render(a, "hi") catch "hi";
+    try std.testing.expect(zz.width(styled) <= 4);
+    try std.testing.expectEqualStrings(styled, clipToWidth(a, styled, 4));
 }
 
 test "left bar pins Home on top and lists coins alphabetically" {
