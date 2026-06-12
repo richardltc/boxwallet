@@ -4340,10 +4340,10 @@ fn formatBehind(a: std.mem.Allocator, secs: i64) ![]const u8 {
 }
 
 /// Human date/time of the block at unix timestamp `unix_secs`, as
-/// "YYYY-MM-DD HH:MM UTC". Returns "" when the timestamp is unknown
-/// (`<= 0`). UTC, not local time: a block timestamp is a UTC moment and the
-/// stdlib has no timezone database, so a fixed, unambiguous zone is correct
-/// and portable across Linux/Windows/macOS.
+/// "YYYY-MM-DD HH:MM". Returns "" when the timestamp is unknown
+/// (`<= 0`). The value is UTC, not local time: a block timestamp is a UTC
+/// moment and the stdlib has no timezone database, so a fixed, unambiguous
+/// zone is correct and portable across Linux/Windows/macOS.
 fn formatBlockTime(a: std.mem.Allocator, unix_secs: i64) ![]const u8 {
     if (unix_secs <= 0) return "";
     const epoch = std.time.epoch.EpochSeconds{ .secs = @intCast(unix_secs) };
@@ -4351,7 +4351,7 @@ fn formatBlockTime(a: std.mem.Allocator, unix_secs: i64) ![]const u8 {
     const day_secs = epoch.getDaySeconds();
     const year_day = day.calculateYearDay();
     const month_day = year_day.calculateMonthDay();
-    return std.fmt.allocPrint(a, "{d:0>4}-{d:0>2}-{d:0>2} {d:0>2}:{d:0>2} UTC", .{
+    return std.fmt.allocPrint(a, "{d:0>4}-{d:0>2}-{d:0>2} {d:0>2}:{d:0>2}", .{
         year_day.year,
         month_day.month.numeric(),
         @as(u32, month_day.day_index) + 1,
@@ -4435,7 +4435,7 @@ test "formatBehind picks the top two contiguous units, pluralizing correctly" {
     try std.testing.expectEqualStrings("1 day behind", try formatBehind(a, day + 5 * minute));
 }
 
-test "formatBlockTime renders the tip block timestamp as UTC date/time" {
+test "formatBlockTime renders the tip block timestamp as UTC date/time (no label)" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const a = arena.allocator();
@@ -4445,10 +4445,10 @@ test "formatBlockTime renders the tip block timestamp as UTC date/time" {
     try std.testing.expectEqualStrings("", try formatBlockTime(a, -1));
 
     // A known later instant.
-    try std.testing.expectEqualStrings("2026-06-02 14:32 UTC", try formatBlockTime(a, 1_780_410_720));
+    try std.testing.expectEqualStrings("2026-06-02 14:32", try formatBlockTime(a, 1_780_410_720));
     // Zero-padding on every field (Bitcoin's genesis block, single-digit
     // month/day).
-    try std.testing.expectEqualStrings("2009-01-03 18:15 UTC", try formatBlockTime(a, 1_231_006_505));
+    try std.testing.expectEqualStrings("2009-01-03 18:15", try formatBlockTime(a, 1_231_006_505));
 }
 
 test "usageColor steps green → amber → red at the 75/90 thresholds" {
