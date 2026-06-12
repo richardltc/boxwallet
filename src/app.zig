@@ -684,6 +684,11 @@ const Activity = struct {
     /// Which daemon worker is in flight on `daemon_thread`, so the reap can log
     /// the right outcome (started/failed-to-start vs stopped/failed-to-stop).
     daemon_action: enum { start, stop } = .start,
+    /// Set when the user pressed stop while a status poll was still in flight.
+    /// The stop worker can't spawn until that poll is reaped (it would race the
+    /// poll on `coin`), so `onTick` defers the spawn instead of the UI thread
+    /// blocking on `poll_thread.join()`.
+    stop_pending: bool = false,
     /// True when this run updates an existing daemon (heading reads "updating").
     updating: bool = false,
     /// Cleared when a run starts, set once its completion has been folded back
@@ -2245,7 +2250,9 @@ pub const App = struct {
                 // The warm-up phase is published whether or not the poll reached
                 // the daemon, so fold it in regardless of `applyPoll`.
                 act.loading_phase = @enumFromInt(act.poll_phase.load(.monotonic));
-                if (act.applyPoll() and act.daemonState() != .running)
+                // Don't let a successful poll clobber a pending stop back to
+                // running — the user has already asked it to shut down.
+                if (act.applyPoll() and act.daemonState() != .running and !act.stop_pending)
                     act.daemon.store(@intFromEnum(DaemonState.running), .release);
                 // Mark the just-reaped poll as received once per selection; the
                 // matching "checking" line was logged when this poll started.
@@ -2253,6 +2260,12 @@ pub const App = struct {
                     act.status_logged = true;
                     self.logf("{s}: status received", .{act.coin.coinName()});
                 }
+                // A stop was requested while this poll was in flight; now that the
+                // poll is reaped (no race on `coin`), launch the stop worker. Done
+                // before the next-poll-spawn gate below so its `daemon_thread`
+                // keeps a fresh poll from starting mid-shutdown.
+                if (act.stop_pending and act.daemon_thread == null)
+                    self.beginDaemonStop(act);
             }
 
             // Settle a finished wallet action: clear the secret, update the modal,
@@ -2868,25 +2881,40 @@ pub const App = struct {
         if (!act.installed) return;
         if (act.daemonState() != .running) return;
 
-        // A status poll for this coin may be in flight (only the selected coin is
-        // polled); reap it first so the stop worker doesn't race it on `coin`.
-        if (act.poll_thread) |t| {
-            t.join();
-            act.poll_thread = null;
-        }
-
         act.coin = coin;
         act.home_dir = self.home_dir;
-        act.daemon_action = .stop;
         act.daemon_spinner = makeSpinner();
-        act.daemon_err = "";
+        // Show "stopping" immediately so the press registers, even if we have to
+        // wait for an in-flight poll to be reaped before the worker can start.
         act.daemon.store(@intFromEnum(DaemonState.stopping), .release);
 
+        // A status poll for this coin may be in flight (only the selected coin is
+        // polled). Reaping it on the UI thread would block the event loop — its
+        // RPC has no timeout, so against a busy/shutting-down daemon it can stall
+        // for seconds and freeze the whole UI. Defer the stop instead: `onTick`
+        // reaps the poll asynchronously and then spawns the worker (which still
+        // mustn't race the poll on `coin`).
+        if (act.poll_thread != null) {
+            act.stop_pending = true;
+            return;
+        }
+        self.beginDaemonStop(act);
+    }
+
+    /// Spawn the daemon-stop worker. Assumes `coin`/`home_dir` are already set and
+    /// no status poll is in flight (so it can't race the poll on `coin`). Called
+    /// straight from `tryStop` when no poll is outstanding, or from `onTick` once
+    /// a deferred poll has been reaped.
+    fn beginDaemonStop(self: *App, act: *Activity) void {
+        act.daemon_action = .stop;
+        act.daemon_err = "";
+        act.daemon.store(@intFromEnum(DaemonState.stopping), .release);
         act.daemon_thread = std.Thread.spawn(.{}, Activity.runStopDaemon, .{act}) catch {
             act.daemon.store(@intFromEnum(DaemonState.running), .release);
+            act.stop_pending = false;
             return;
         };
-        self.logf("{s}: stopping daemon…", .{coin.coinName()});
+        self.logf("{s}: stopping daemon…", .{act.coin.coinName()});
     }
 
     /// Spawn the coin's external wallet process (`nerva-wallet-rpc`) alongside its
@@ -4736,6 +4764,49 @@ test "stop is a no-op unless the daemon is running" {
     app.tryStop();
     try std.testing.expectEqual(DaemonState.stopped, act.daemonState());
     try std.testing.expect(act.daemon_thread == null);
+}
+
+test "stop defers the worker while a status poll is in flight" {
+    if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
+    const allocator = std.testing.allocator;
+
+    var threaded: std.Io.Threaded = .init(allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    var env = std.process.Environ.Map.init(allocator);
+    defer env.deinit();
+    try env.put("HOME", "/home/tester");
+    var ctx = zz.Context.init(allocator, allocator, io, &env);
+
+    var app: App = undefined;
+    _ = app.init(&ctx);
+    defer app.deinit();
+
+    app.selected = std.mem.indexOfScalar(Entry, &entries, .divi).?;
+    const act = &app.activities[app.selected];
+    act.installed = true;
+    act.daemon.store(@intFromEnum(DaemonState.running), .release);
+
+    // Simulate a status poll mid-flight with a real (immediately-returning)
+    // thread handle, so `tryStop` takes the "poll in flight" branch.
+    act.poll_thread = try std.Thread.spawn(.{}, struct {
+        fn run() void {}
+    }.run, .{});
+
+    app.tryStop();
+
+    // The UI thread must not have blocked joining the poll (the freeze bug), nor
+    // spawned the stop worker yet — that's deferred to `onTick` once the poll is
+    // reaped. The daemon still reads `.stopping` so the press gives immediate
+    // feedback while we wait.
+    try std.testing.expect(act.stop_pending);
+    try std.testing.expect(act.daemon_thread == null);
+    try std.testing.expectEqual(DaemonState.stopping, act.daemonState());
+
+    // Reap the simulated poll so the test leaks no thread.
+    act.poll_thread.?.join();
+    act.poll_thread = null;
 }
 
 test "App.init resolves install_root from home dir and deinit frees it" {
