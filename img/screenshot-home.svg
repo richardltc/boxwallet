@@ -1,0 +1,32 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="840" height="460" style="font-family:monospace;font-size:13px">
+<rect width="840" height="460" fill="#1e1e2e"/>
+<rect x="0" y="340" width="840" height="120" fill="#181825"/>
+<line x1="168" y1="0" x2="168" y2="340" stroke="#6b6b6b" stroke-width="1"/>
+<line x1="0" y1="340" x2="840" y2="340" stroke="#6b6b6b" stroke-width="1"/>
+<text x="6" y="354" fill="#6b6b6b" font-weight="normal" font-size="11">── Log  (l: hide) ──────────────────────────────────────────────────────────────────────</text>
+<rect x="0" y="0" width="168" height="20" fill="#2a2a3e"/>
+<text x="10" y="16" fill="#7ca071" font-weight="bold" font-size="13">❯ BoxWallet v0.5.1</text>
+<text x="22" y="42" fill="#6b6b6b" font-weight="normal" font-size="13">DigiByte</text>
+<text x="22" y="62" fill="#6b6b6b" font-weight="normal" font-size="13">Divi</text>
+<text x="22" y="82" fill="#6b6b6b" font-weight="normal" font-size="13">Epic Cash</text>
+<text x="22" y="102" fill="#6b6b6b" font-weight="normal" font-size="13">Ergo</text>
+<text x="22" y="122" fill="#6b6b6b" font-weight="normal" font-size="13">Nerva</text>
+<text x="22" y="142" fill="#6b6b6b" font-weight="normal" font-size="13">Nexa</text>
+<text x="22" y="162" fill="#6b6b6b" font-weight="normal" font-size="13">ReddCoin</text>
+<text x="22" y="182" fill="#6b6b6b" font-weight="normal" font-size="13">Zano</text>
+<text x="184" y="16" fill="#7ca071" font-weight="bold" font-size="13">BoxWallet TUI v0.5.1</text>
+<text x="184" y="36" fill="#cdd6f4" font-weight="normal" font-size="13">Select a coin on the left to manage it.</text>
+<text x="194" y="78" fill="#6b6b6b" font-weight="bold" font-size="12">up/down</text>
+<text x="264" y="78" fill="#6b6b6b" font-weight="normal" font-size="12">navigate</text>
+<text x="194" y="96" fill="#6b6b6b" font-weight="bold" font-size="12">i</text>
+<text x="264" y="96" fill="#6b6b6b" font-weight="normal" font-size="12">install selected coin</text>
+<text x="194" y="114" fill="#6b6b6b" font-weight="bold" font-size="12">s</text>
+<text x="264" y="114" fill="#6b6b6b" font-weight="normal" font-size="12">start/stop selected coin's daemon</text>
+<text x="194" y="132" fill="#6b6b6b" font-weight="bold" font-size="12">w</text>
+<text x="264" y="132" fill="#6b6b6b" font-weight="normal" font-size="12">wallet (encrypt / unlock / stake)</text>
+<text x="194" y="150" fill="#6b6b6b" font-weight="bold" font-size="12">l</text>
+<text x="264" y="150" fill="#6b6b6b" font-weight="normal" font-size="12">toggle the log pane</text>
+<text x="194" y="168" fill="#6b6b6b" font-weight="bold" font-size="12">q</text>
+<text x="264" y="168" fill="#6b6b6b" font-weight="normal" font-size="12">quit</text>
+<text x="10" y="372" fill="#6b6b6b" font-weight="normal" font-size="11">10:37:36  BoxWallet TUI v0.5.1 started</text>
+</svg>
