@@ -3325,16 +3325,16 @@ pub const App = struct {
             const t = (zz.Style{}).bold(true).fg(zz.Color.hex(wm.alt_color)).render(a, name_str[wm.split..]) catch name_str[wm.split..];
             break :blk std.fmt.allocPrint(a, "{s}{s}", .{ h, t }) catch name_str;
         } else (zz.Style{}).bold(true).fg(head_color).render(a, name_str) catch name_str;
-        // Its bundled core version rides alongside in the terminal default,
-        // mirroring "BoxWallet TUI v0.0.3" on the Home pane.
-        const head_base = std.fmt.allocPrint(a, "{s} v{s}", .{ name, coin.coreVersion() }) catch name;
+        // Header shows the installed version when known; falls back to the bundled
+        // (target) version when no marker exists.
+        const iv = act.installedVersion();
+        const displayed_version = if (act.update_available and iv.len > 0) iv else coin.coreVersion();
+        const head_base = std.fmt.allocPrint(a, "{s} v{s}", .{ name, displayed_version }) catch name;
         // When the on-disk daemon trails the bundled version (or is unmarked), tack
-        // on a yellow "update available" badge advertising the `u` action. The head
-        // shows the bundled (target) version; the badge names what's installed.
+        // on a yellow badge naming the version that will be installed on `u`.
         const head = if (act.update_available) blk: {
-            const iv = act.installedVersion();
             const badge_text = if (iv.len > 0)
-                std.fmt.allocPrint(a, "   ⬆ v{s} installed — press u to update", .{iv}) catch "   ⬆ update — press u"
+                std.fmt.allocPrint(a, "   ⬆ v{s} available — press u to update", .{coin.coreVersion()}) catch "   ⬆ update — press u"
             else
                 "   ⬆ update available — press u";
             const badge = (zz.Style{}).bold(true).fg(.yellow).render(a, badge_text) catch badge_text;
