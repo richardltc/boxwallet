@@ -114,6 +114,36 @@ const Phase = enum(u8) { idle, downloading, extracting, done, failed };
 /// to `running` or `stopped` when the worker publishes its outcome.
 const DaemonState = enum { stopped, starting, running, stopping };
 
+/// Which tab of the coin detail pane is showing. `home` is everything the pane
+/// historically showed (status, sync/disk/memory bars, install activity, daemon
+/// button); the rest are scaffolded panes filled in later. The coin name and
+/// balance header stay pinned above the tabs regardless of which is active.
+const DetailTab = enum {
+    home,
+    transactions,
+    receive,
+    send,
+    settings,
+
+    fn label(self: DetailTab) []const u8 {
+        return switch (self) {
+            .home => "Home",
+            .transactions => "Transactions",
+            .receive => "Receive",
+            .send => "Send",
+            .settings => "Settings",
+        };
+    }
+};
+
+/// Step to the next/previous detail tab, wrapping around the ends. `delta` is
+/// +1 (right) or -1 (left).
+fn cycleTab(t: DetailTab, delta: i2) DetailTab {
+    const n: i32 = @typeInfo(DetailTab).@"enum".fields.len;
+    const next = @mod(@as(i32, @intFromEnum(t)) + delta, n);
+    return @enumFromInt(next);
+}
+
 /// Chain sync progress. `syncing` shows a spinner ("Syncing"), `synced` a green
 /// tick ("Synced"), `idle` a red cross. Live sync polling lands later — for now
 /// this defaults to `idle`.
@@ -1670,6 +1700,9 @@ pub const App = struct {
     reddcoin: ReddCoin,
     epic: Epic,
     selected: usize,
+    /// Which tab of the selected coin's detail pane is showing. Global rather
+    /// than per-coin: switching coins resets it to Home (see `move`).
+    active_tab: DetailTab = .home,
     /// One per `entries` slot (index 0 / Home is unused), holding that coin's
     /// independent install state. Parallel to `entries` so the selected coin's
     /// activity is `activities[selected]`.
@@ -1895,6 +1928,9 @@ pub const App = struct {
                     self.modalKey(k);
                     return .none;
                 }
+                // Detail-pane tabs only exist for a selected coin, not the Home
+                // screen — so left/right and the 1-5 jumps are live only then.
+                const on_coin = self.selectedCoin() != null;
                 switch (k.key) {
                     .char => |c| switch (c) {
                         'q' => return .quit,
@@ -1905,10 +1941,20 @@ pub const App = struct {
                         'k' => self.move(-1),
                         'j' => self.move(1),
                         'l' => self.log_visible = !self.log_visible,
+                        // Jump straight to a tab by number (1 = Home … 5 = Settings).
+                        '1'...'5' => if (on_coin) {
+                            self.active_tab = @enumFromInt(c - '1');
+                        },
                         else => {},
                     },
                     .up => self.move(-1),
                     .down => self.move(1),
+                    .left => if (on_coin) {
+                        self.active_tab = cycleTab(self.active_tab, -1);
+                    },
+                    .right => if (on_coin) {
+                        self.active_tab = cycleTab(self.active_tab, 1);
+                    },
                     else => {},
                 }
             },
@@ -2521,6 +2567,8 @@ pub const App = struct {
         if (moved) {
             self.last_poll_ns = 0;
             self.activities[self.selected].status_logged = false;
+            // A different coin's pane always opens on its Home tab.
+            self.active_tab = .home;
         }
     }
 
@@ -3576,49 +3624,80 @@ pub const App = struct {
         // Headline live status — what the daemon is doing right now.
         const status_line = renderStatus(a, act, brand);
 
+        // Everything below the header is the Home tab's content; the other tabs
+        // are scaffolded placeholders for now. The coin/balance header and the
+        // tab strip stay pinned above whichever tab is active.
+        const tab_strip = try renderTabStrip(a, brand, self.active_tab);
+        const body: []const u8 = switch (self.active_tab) {
+            .home => try std.fmt.allocPrint(a,
+                \\{s}
+                \\{s}: {s}    {s}: {s}    {s}: {s}    {s}: {s}{s}
+                \\{s}: {s}{s}
+                \\
+                \\{s}  {s}
+                \\{s}  {s}{s}
+                \\
+                \\{s}  {s}
+                \\{s}  {s}
+                \\
+                \\{s}
+                \\
+                \\{s}
+            , .{
+                status_line,
+                installed_label,
+                installed_mark,
+                daemon_label,
+                daemon_mark,
+                peers_label,
+                peers_value,
+                sync_label,
+                sync_mark,
+                staking_part,
+                wallet_label,
+                wallet_value,
+                wallet_hint,
+                headers_label,
+                headers_bar,
+                blocks_label,
+                blocks_bar,
+                behind_text,
+                disk_label,
+                disk_bar,
+                mem_label,
+                mem_bar,
+                middle,
+                daemon_button,
+            }),
+            else => try renderPlaceholderTab(a, self.active_tab),
+        };
+
+        return std.fmt.allocPrint(a, "{s}\n\n{s}\n\n{s}", .{ head_line, tab_strip, body });
+    }
+
+    /// One-line tab strip for the coin detail pane: the active tab in the coin's
+    /// brand colour (bold), the others dimmed, with a dim hint on how to switch.
+    fn renderTabStrip(a: std.mem.Allocator, brand: zz.Color, active: DetailTab) ![]const u8 {
+        var strip: []const u8 = "";
+        inline for (std.meta.tags(DetailTab), 0..) |t, i| {
+            const styled = if (t == active)
+                try (zz.Style{}).bold(true).fg(brand).render(a, t.label())
+            else
+                try (zz.Style{}).dim(true).render(a, t.label());
+            strip = if (i == 0) styled else try std.fmt.allocPrint(a, "{s}   {s}", .{ strip, styled });
+        }
+        const hint = try (zz.Style{}).dim(true).render(a, "   (←/→ or 1-5 to switch tabs)");
+        return std.fmt.allocPrint(a, "{s}{s}", .{ strip, hint });
+    }
+
+    /// Placeholder body for a not-yet-built tab (Transactions/Receive/Send/
+    /// Settings) — its title plus a "coming soon" note.
+    fn renderPlaceholderTab(a: std.mem.Allocator, tab: DetailTab) ![]const u8 {
         return std.fmt.allocPrint(a,
             \\{s}
             \\
-            \\{s}
-            \\{s}: {s}    {s}: {s}    {s}: {s}    {s}: {s}{s}
-            \\{s}: {s}{s}
-            \\
-            \\{s}  {s}
-            \\{s}  {s}{s}
-            \\
-            \\{s}  {s}
-            \\{s}  {s}
-            \\
-            \\{s}
-            \\
-            \\{s}
-        , .{
-            head_line,
-            status_line,
-            installed_label,
-            installed_mark,
-            daemon_label,
-            daemon_mark,
-            peers_label,
-            peers_value,
-            sync_label,
-            sync_mark,
-            staking_part,
-            wallet_label,
-            wallet_value,
-            wallet_hint,
-            headers_label,
-            headers_bar,
-            blocks_label,
-            blocks_bar,
-            behind_text,
-            disk_label,
-            disk_bar,
-            mem_label,
-            mem_bar,
-            middle,
-            daemon_button,
-        });
+            \\Coming soon.
+        , .{tab.label()});
     }
 
     /// A loading spinner tuned to read boldly at a status mark's size: heavy
@@ -4466,6 +4545,19 @@ test "formatBlockTime renders the tip block timestamp as UTC date/time (no label
     // Zero-padding on every field (Bitcoin's genesis block, single-digit
     // month/day).
     try std.testing.expectEqualStrings("2009-01-03 18:15", try formatBlockTime(a, 1_231_006_505));
+}
+
+test "cycleTab steps through the detail tabs and wraps at both ends" {
+    // Forward from each tab.
+    try std.testing.expectEqual(DetailTab.transactions, cycleTab(.home, 1));
+    try std.testing.expectEqual(DetailTab.receive, cycleTab(.transactions, 1));
+    try std.testing.expectEqual(DetailTab.send, cycleTab(.receive, 1));
+    try std.testing.expectEqual(DetailTab.settings, cycleTab(.send, 1));
+    // Forward off the last tab wraps to the first.
+    try std.testing.expectEqual(DetailTab.home, cycleTab(.settings, 1));
+    // Backward off the first tab wraps to the last.
+    try std.testing.expectEqual(DetailTab.settings, cycleTab(.home, -1));
+    try std.testing.expectEqual(DetailTab.send, cycleTab(.settings, -1));
 }
 
 test "usageColor steps green → amber → red at the 75/90 thresholds" {
@@ -5493,13 +5585,14 @@ test "the header balance shows Total always and Available only while funds settl
     act.daemon.store(@intFromEnum(DaemonState.running), .release);
     act.poll_completed = true;
 
-    // renderCoin only touches the disk/memory gauge fields off `self`; the rest of
-    // the App is unused, so a minimal stand-in is enough.
+    // renderCoin only touches the disk/memory gauge fields and the active tab off
+    // `self`; the rest of the App is unused, so a minimal stand-in is enough.
     var app: App = undefined;
     app.disk_used = 0;
     app.disk_total = 0;
     app.mem_used = 0;
     app.mem_total = 0;
+    app.active_tab = .home;
 
     // The label, figure and abbrev are independently styled, so they aren't a
     // single contiguous substring — assert on each piece.
