@@ -21,7 +21,7 @@ const Epic = @import("coins/epic.zig").Epic;
 /// change how BoxWallet identifies itself in the UI. `app_color` is the brand
 /// hex used for the "BoxWallet" wording on the Home pane.
 pub const app_name = "BoxWallet TUI";
-pub const app_version = "0.5.0";
+pub const app_version = "0.5.1";
 const app_color = "#7ca071";
 
 /// Fallback install root used only if the home-dir-based path can't be built

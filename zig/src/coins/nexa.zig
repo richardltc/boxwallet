@@ -20,7 +20,7 @@ pub const Nexa = struct {
     pub const home_dir_win = "NEXA";
     pub const rpc_default_username = "nexarpc";
     pub const rpc_default_port = "7227";
-    pub const core_version = "2.0.0.0";
+    pub const core_version = "2.1.0.0";
 
     // Binary names. Windows appends `.exe`; Linux/macOS use the bare names. The
     // per-target name is what `isInstalled`, the daemon launcher, and the promote
