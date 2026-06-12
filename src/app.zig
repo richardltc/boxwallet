@@ -1374,10 +1374,19 @@ const Activity = struct {
                 .stdin = .ignore,
                 .stdout = .ignore,
                 .stderr = .ignore,
+                // Own process group: detach from BoxWallet's job group so the
+                // daemon outlives the app cleanly. Otherwise it stays in the
+                // terminal's foreground group — the shell won't reclaim the
+                // terminal on quit (frozen prompt) and a Ctrl-C would reach the
+                // daemon. (No-op on Windows, which ignores pgid.) The bitcoin
+                // fork path below gets this for free via the daemon's own
+                // fork+setsid.
+                .pgid = 0,
                 // Don't pop a console window for the background daemon (Windows).
                 .create_no_window = @import("builtin").os.tag == .windows,
             });
-            // Detached: deliberately not waited on, so it outlives this call.
+            // Detached: deliberately not waited on, and in its own process
+            // group, so it outlives this call free of the terminal.
             _ = &child;
             return;
         }
@@ -2150,6 +2159,14 @@ pub const App = struct {
                 // store/return are back to back, so this never blocks.
                 act.daemon_thread.?.join();
                 act.daemon_thread = null;
+                // The deferred-stop latch is serviced once the stop worker is
+                // reaped — clear it so a later poll doesn't re-dispatch
+                // beginDaemonStop and bounce the daemon back into "stopping".
+                // Covers both outcomes: a successful stop and a failed stop that
+                // reverted to running (so a daemon that won't stop isn't retried
+                // forever). Safe for the start path too — no stop can be pending
+                // while starting.
+                act.stop_pending = false;
                 switch (act.daemon_action) {
                     .start => if (ds == .running)
                         self.logf("{s}: daemon running", .{act.coin.coinName()})
