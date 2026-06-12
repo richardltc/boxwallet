@@ -74,6 +74,34 @@ pub const Epic = struct {
     const api_secret = "BoxWalletEpicLocalApiSecret";
     const secret_file = ".api_secret";
 
+    // The node's server config. BoxWallet doesn't write it from scratch — the
+    // daemon generates a full default via `epic server config` — but it patches a
+    // handful of keys (see `managed_conf`) to keep the node safe and well-seeded.
+    pub const conf_file = "epic-server.toml";
+
+    // The keys BoxWallet enforces in `epic-server.toml` on every launch (idempotent
+    // self-heal). Each is set within its `[section]`, replacing an existing line
+    // (commented or not) or inserted at the section's end if missing:
+    //   * `api_http_addr` — pin the node/Owner API to localhost. Critical: the
+    //     fixed-secret auth is only acceptable because the API never leaves
+    //     127.0.0.1, so we heal a `0.0.0.0` someone may have pasted in.
+    //   * `run_tui` — off; BoxWallet launches the node detached with no terminal,
+    //     and the ncurses TUI without a TTY takes the process down.
+    //   * `seeding_type` — DNSSeed: empirically the only mode that keeps automatic
+    //     peer discovery (List pins static IPs and disables DNS). See the seeding
+    //     test notes.
+    //   * `peers_preferred` — a curated, known-live node dialed *in addition* to
+    //     DNS (preferred peers are merged with the seed set regardless of mode), as
+    //     a reliability hedge if DNS resolution ever fails. Not a replacement for
+    //     discovery — just a fallback.
+    const ManagedKey = struct { section: []const u8, key: []const u8, value: []const u8 };
+    const managed_conf = [_]ManagedKey{
+        .{ .section = "server", .key = "api_http_addr", .value = "\"127.0.0.1:" ++ rpc_default_port ++ "\"" },
+        .{ .section = "server", .key = "run_tui", .value = "false" },
+        .{ .section = "server.p2p_config", .key = "seeding_type", .value = "\"DNSSeed\"" },
+        .{ .section = "server.p2p_config", .key = "peers_preferred", .value = "[\"144.202.75.237:3414\"]" },
+    };
+
     // Epic's MimbleWimble block target is 60s; used to turn the height gap into a
     // rough "behind by" estimate while syncing (the Owner API reports no tip
     // timestamp). An approximation, like Nerva's block-gap estimate.
@@ -129,6 +157,9 @@ pub const Epic = struct {
         sync_status: []const u8 = "",
         tip: Tip = .{},
         sync_info: ?SyncInfo = null,
+        /// The node's self-reported agent, e.g. "MW/Epic 4.0.3" — the version is
+        /// the token after the last space (see `derive`).
+        user_agent: []const u8 = "",
     };
     const Tip = struct {
         height: i64 = 0,
@@ -148,6 +179,15 @@ pub const Epic = struct {
         network: i64,
         connections: i64,
         seconds_behind: i64,
+        /// The node version parsed out of `user_agent`, in a fixed buffer so
+        /// `derive` stays allocation-free and the bytes survive the parsed JSON
+        /// being freed. Empty when the agent had none.
+        version_buf: [32]u8 = undefined,
+        version_len: usize = 0,
+
+        fn version(self: *const Derived) []const u8 {
+            return self.version_buf[0..self.version_len];
+        }
     };
 
     /// Map a raw `get_status` into normalized sync figures.
@@ -173,7 +213,11 @@ pub const Epic = struct {
         const synced = std.mem.eql(u8, st.sync_status, "no_sync") and st.connections > 0 and tip > 0;
         const gap = network - tip;
         const seconds_behind: i64 = if (synced or gap <= 0) 0 else gap * block_target_secs;
-        return .{
+
+        // Version is the token after the last space in the user agent ("MW/Epic
+        // 4.0.3" → "4.0.3"); copied into the fixed buffer so it doesn't dangle into
+        // the soon-to-be-freed JSON.
+        var d: Derived = .{
             .synced = synced,
             .blocks = tip,
             .headers = headers,
@@ -181,6 +225,16 @@ pub const Epic = struct {
             .connections = st.connections,
             .seconds_behind = seconds_behind,
         };
+        const ua = st.user_agent;
+        const start = if (std.mem.lastIndexOfScalar(u8, ua, ' ')) |i| i + 1 else 0;
+        const ver = ua[start..];
+        // Only adopt it if it looks like a version (leading digit), so a malformed
+        // or version-less agent reads as "unknown" rather than printing garbage.
+        if (ver.len > 0 and std.ascii.isDigit(ver[0])) {
+            d.version_len = @min(ver.len, d.version_buf.len);
+            @memcpy(d.version_buf[0..d.version_len], ver[0..d.version_len]);
+        }
+        return d;
     }
 
     /// Parse the significant part of a `.api_secret` file: the trimmed first line.
@@ -315,6 +369,8 @@ pub const Epic = struct {
             .blocks = d.blocks,
             .connections = d.connections,
             .staking_active = false,
+            // `d.version()` points into `d`'s own buffer; dupe it onto `allocator`.
+            .version = try allocator.dupe(u8, d.version()),
         };
     }
 
@@ -395,22 +451,207 @@ pub const Epic = struct {
         try install_mod.promoteAndTidy(allocator, install_root, extracted_dir, bin_subdir, &promote_files);
     }
 
-    /// Pre-seed the Owner API secret before first launch so BoxWallet's fixed
-    /// basic-auth header works. The data dir is created if absent; the secret file
-    /// is written only when missing, so the daemon's own (or a user's) secret is
-    /// never clobbered. The node generates the rest of `epic-server.toml` itself
-    /// on first run. `io` is the caller's blocking io. Idempotent.
-    pub fn prepareConf(allocator: std.mem.Allocator, io: std.Io, home: []const u8) !void {
+    /// Prepare Epic's config before launch. Idempotent; creates the data dir if
+    /// absent. Three steps:
+    ///   1. Seed the Owner-API secret (`.api_secret`) if missing — never clobber a
+    ///      daemon-/user-owned secret.
+    ///   2. Ensure `epic-server.toml` exists, generating a default via
+    ///      `epic server config` on the very first launch (the daemon would
+    ///      otherwise only create it during `server run`).
+    ///   3. Patch the handful of keys BoxWallet manages (`managed_conf`) — safe
+    ///      localhost API, headless launch, healthy seeding.
+    /// Steps 2–3 are best-effort: if the binary can't generate a config (or the
+    /// patch fails), `server run` still writes its own default, so launch isn't
+    /// blocked. `io` is the caller's blocking io.
+    pub fn prepareConf(
+        allocator: std.mem.Allocator,
+        io: std.Io,
+        install_root: []const u8,
+        home: []const u8,
+    ) !void {
         const data_dir = try dataDir(allocator, home);
         defer allocator.free(data_dir);
 
         var dir = try std.Io.Dir.cwd().createDirPathOpen(io, data_dir, .{});
         defer dir.close(io);
 
-        // Present already → leave it (the daemon, or the user, owns its secret).
-        if (dir.access(io, secret_file, .{})) |_| return else |_| {}
-        // The daemon reads only the first line; a trailing newline is harmless.
-        try dir.writeFile(io, .{ .sub_path = secret_file, .data = api_secret ++ "\n" });
+        // 1. Seed the secret only when absent (the daemon/user owns its own).
+        if (dir.access(io, secret_file, .{})) |_| {} else |_| {
+            // The daemon reads only the first line; a trailing newline is harmless.
+            try dir.writeFile(io, .{ .sub_path = secret_file, .data = api_secret ++ "\n" });
+        }
+
+        // 2–3. Best-effort: never let a config hiccup block the daemon launch.
+        ensureAndPatchConf(allocator, io, install_root, data_dir, dir) catch {};
+    }
+
+    /// Generate `epic-server.toml` if it's not there yet, then patch the managed
+    /// keys into it. Split out from `prepareConf` so the orchestration is clear and
+    /// the whole thing can be swallowed as best-effort.
+    fn ensureAndPatchConf(
+        allocator: std.mem.Allocator,
+        io: std.Io,
+        install_root: []const u8,
+        data_dir: []const u8,
+        dir: std.Io.Dir,
+    ) !void {
+        if (dir.access(io, conf_file, .{})) |_| {} else |_| {
+            try generateConf(allocator, io, install_root, data_dir);
+        }
+        try patchConf(allocator, io, dir);
+    }
+
+    /// Run `epic server config` to drop a full default `epic-server.toml` into
+    /// `data_dir`. The subcommand writes the file into its working directory, so
+    /// the child's cwd is set to `data_dir`. Waits for it to finish; a non-zero
+    /// exit isn't fatal here — the caller's patch step (or `server run`) handles a
+    /// missing file.
+    fn generateConf(
+        allocator: std.mem.Allocator,
+        io: std.Io,
+        install_root: []const u8,
+        data_dir: []const u8,
+    ) !void {
+        const bin = try std.fs.path.join(allocator, &.{ install_root, daemon_file });
+        defer allocator.free(bin);
+
+        const argv = [_][]const u8{ bin, "server", "config" };
+        var child = try std.process.spawn(io, .{
+            .argv = &argv,
+            .cwd = .{ .path = data_dir },
+            .stdin = .ignore,
+            .stdout = .ignore,
+            .stderr = .ignore,
+        });
+        _ = try child.wait(io);
+    }
+
+    /// Read `epic-server.toml`, apply the managed keys, and rewrite it only if the
+    /// content actually changed (so a steady-state launch touches nothing). The
+    /// file is tiny, so it's read whole through one bounded buffer — within the
+    /// memory budget, and the same pattern `conf.populate` uses.
+    fn patchConf(allocator: std.mem.Allocator, io: std.Io, dir: std.Io.Dir) !void {
+        var file = try dir.openFile(io, conf_file, .{});
+        const stat = try file.stat(io);
+        const size: usize = @intCast(@min(stat.size, 256 * 1024));
+        const input = try allocator.alloc(u8, size);
+        defer allocator.free(input);
+        const n = try file.readPositionalAll(io, input, 0);
+        file.close(io);
+
+        const patched = try patchTomlAlloc(allocator, input[0..n], &managed_conf);
+        defer allocator.free(patched);
+
+        if (std.mem.eql(u8, patched, input[0..n])) return; // already in the desired state
+        try dir.writeFile(io, .{ .sub_path = conf_file, .data = patched });
+    }
+
+    /// Apply `keys` to a TOML document, returning the patched text (caller owns it).
+    /// Pure — no IO — so the section-aware logic is unit-testable.
+    ///
+    /// For each managed key, within its `[section]`: replace the first line setting
+    /// that key (whether live or commented-out), drop any later duplicate of it,
+    /// and if the section never set it, insert it at the section's end. Every other
+    /// line — comments, blank lines, unmanaged keys, other sections — is preserved
+    /// verbatim. A key is only matched while the parser is inside that key's
+    /// section, so identically-named keys in other sections are left alone.
+    fn patchTomlAlloc(
+        allocator: std.mem.Allocator,
+        input: []const u8,
+        keys: []const ManagedKey,
+    ) ![]u8 {
+        var out: std.Io.Writer.Allocating = .init(allocator);
+        defer out.deinit();
+
+        // Per-key "already emitted in its section" flags, bounded to the managed
+        // set. A key can only be matched/written while inside its own section.
+        var written = [_]bool{false} ** managed_conf.len;
+        var section: []const u8 = ""; // current `[section]` name, without brackets
+
+        var lines = std.mem.splitScalar(u8, input, '\n');
+        var first = true;
+        while (lines.next()) |line| {
+            const trimmed = std.mem.trim(u8, line, " \t\r");
+
+            // A new section header: before crossing into it, flush any managed keys
+            // for the section we're leaving that weren't present (insert them).
+            if (trimmed.len >= 2 and trimmed[0] == '[' and trimmed[trimmed.len - 1] == ']') {
+                try flushPending(&out.writer, &first, keys, &written, section);
+                section = trimmed[1 .. trimmed.len - 1];
+                try emitLine(&out.writer, &first, line);
+                continue;
+            }
+
+            // Does this line set one of the managed keys for the current section?
+            if (lineKey(trimmed)) |k| {
+                if (matchKey(keys, section, k)) |idx| {
+                    if (!written[idx]) {
+                        try emitKeyLine(&out.writer, &first, keys[idx]);
+                        written[idx] = true;
+                    }
+                    continue; // replaced (or dropped as a duplicate)
+                }
+            }
+
+            try emitLine(&out.writer, &first, line);
+        }
+        // Flush any keys still pending in the final section.
+        try flushPending(&out.writer, &first, keys, &written, section);
+
+        return out.toOwnedSlice();
+    }
+
+    /// Insert every managed key for `section` that hasn't been written yet.
+    fn flushPending(
+        w: *std.Io.Writer,
+        first: *bool,
+        keys: []const ManagedKey,
+        written: []bool,
+        section: []const u8,
+    ) !void {
+        for (keys, 0..) |mk, i| {
+            if (!written[i] and std.mem.eql(u8, mk.section, section)) {
+                try emitKeyLine(w, first, mk);
+                written[i] = true;
+            }
+        }
+    }
+
+    /// The managed-key index whose section+key matches, or null. The key name is
+    /// compared case-sensitively (TOML keys are).
+    fn matchKey(keys: []const ManagedKey, section: []const u8, key: []const u8) ?usize {
+        for (keys, 0..) |mk, i| {
+            if (std.mem.eql(u8, mk.section, section) and std.mem.eql(u8, mk.key, key)) return i;
+        }
+        return null;
+    }
+
+    /// The key name a line assigns, or null if it isn't a `key = value` line. A
+    /// single leading `#` (a commented-out setting) is tolerated so we can revive
+    /// and set a key the daemon left commented; prose comments have no `=` and read
+    /// as null.
+    fn lineKey(trimmed: []const u8) ?[]const u8 {
+        var s = trimmed;
+        if (s.len > 0 and s[0] == '#') s = std.mem.trimStart(u8, s[1..], " \t");
+        const eq = std.mem.indexOfScalar(u8, s, '=') orelse return null;
+        return std.mem.trim(u8, s[0..eq], " \t");
+    }
+
+    /// Emit a line verbatim, joining segments with `\n` *between* them (a separator
+    /// before every line but the first). Splitting on `\n` and rejoining this way
+    /// reproduces the input faithfully — including whether it ended with a newline.
+    fn emitLine(w: *std.Io.Writer, first: *bool, line: []const u8) !void {
+        if (!first.*) try w.writeByte('\n');
+        try w.writeAll(line);
+        first.* = false;
+    }
+
+    /// Emit a managed key's canonical `key = value`, using the same separator-before
+    /// join as `emitLine` so inserted/replaced lines splice in cleanly.
+    fn emitKeyLine(w: *std.Io.Writer, first: *bool, mk: ManagedKey) !void {
+        if (!first.*) try w.writeByte('\n');
+        try w.print("{s} = {s}", .{ mk.key, mk.value });
+        first.* = false;
     }
 
     /// Epic's node runs in the foreground of its own process (no bitcoin `-daemon`
@@ -497,7 +738,7 @@ pub const Epic = struct {
     /// `epic-server.toml`. The name is still surfaced for the few generic places
     /// that show it.
     fn vtConfFile(_: *anyopaque) []const u8 {
-        return "epic-server.toml";
+        return conf_file;
     }
     fn vtDaemonFile(_: *anyopaque) []const u8 {
         return daemon_file;
@@ -544,9 +785,10 @@ pub const Epic = struct {
         _: *anyopaque,
         allocator: std.mem.Allocator,
         io: std.Io,
+        install_root: []const u8,
         home: []const u8,
     ) anyerror!void {
-        return prepareConf(allocator, io, home);
+        return prepareConf(allocator, io, install_root, home);
     }
     fn vtLaunchMode(_: *anyopaque) Coin.LaunchMode {
         return launchMode();
@@ -624,11 +866,22 @@ test "fetchStatus-shaped JSON parses through the Ok envelope" {
     try std.testing.expectEqualStrings("body_sync", st.sync_status);
     try std.testing.expectEqual(@as(i64, 300000), st.tip.height);
     try std.testing.expectEqual(@as(i64, 371553), st.sync_info.?.highest_height);
+    try std.testing.expectEqualStrings("MW/Epic 4.0.3", st.user_agent);
 
     const d = Epic.derive(st);
     try std.testing.expect(!d.synced);
     try std.testing.expectEqual(@as(i64, 300000), d.blocks);
     try std.testing.expectEqual(@as(i64, 371553), d.network);
+    // The version is the token after the last space of the user agent.
+    try std.testing.expectEqualStrings("4.0.3", d.version());
+}
+
+test "derive reads an empty version when the user agent has no version token" {
+    // A version-less / malformed agent reads as unknown (not "epic"/garbage).
+    const st: Epic.Status = .{ .connections = 1, .sync_status = "no_sync", .tip = .{ .height = 5 }, .user_agent = "epic" };
+    try std.testing.expectEqualStrings("", Epic.derive(st).version());
+    const st2: Epic.Status = .{ .user_agent = "" };
+    try std.testing.expectEqualStrings("", Epic.derive(st2).version());
 }
 
 test "an Err / empty Owner result yields no usable status" {
@@ -671,11 +924,14 @@ test "prepareConf seeds the api secret once, preserving an existing one" {
     const io = threaded.io();
 
     const home = "test-epic-conf-home";
+    // No real epic binary under this root, so the generate/patch step is a
+    // best-effort no-op here (swallowed) — this test exercises only the secret.
+    const install_root = "test-epic-conf-root";
     std.Io.Dir.cwd().deleteTree(io, home) catch {};
     defer std.Io.Dir.cwd().deleteTree(io, home) catch {};
 
     // First pass writes the fixed secret.
-    try Epic.prepareConf(allocator, io, home);
+    try Epic.prepareConf(allocator, io, install_root, home);
 
     const data_dir = try Epic.dataDir(allocator, home);
     defer allocator.free(data_dir);
@@ -689,7 +945,7 @@ test "prepareConf seeds the api secret once, preserving an existing one" {
 
     // Second pass is a no-op: a daemon-/user-generated secret is left untouched.
     try dir.writeFile(io, .{ .sub_path = Epic.secret_file, .data = "someothersecret\n" });
-    try Epic.prepareConf(allocator, io, home);
+    try Epic.prepareConf(allocator, io, install_root, home);
     var f2 = try dir.openFile(io, Epic.secret_file, .{});
     defer f2.close(io);
     const n2 = try f2.readPositionalAll(io, &buf, 0);
@@ -760,6 +1016,73 @@ test "readSecretAt reads a daemon-generated secret from disk, errors when absent
     // An empty secret file is treated as unusable (the daemon would reject it too).
     try dir.writeFile(io, .{ .sub_path = Epic.secret_file, .data = "\n" });
     try std.testing.expectError(error.EmptySecret, Epic.readSecretAt(allocator, io, data_dir));
+}
+
+test "patchTomlAlloc replaces in-section keys, inserts missing ones, preserves the rest" {
+    const allocator = std.testing.allocator;
+    // A miniature epic-server.toml: [server] already sets api_http_addr (to a bad
+    // 0.0.0.0) and run_tui; [server.p2p_config] sets seeding_type but has no
+    // peers_preferred. A same-named key in an unrelated section must be untouched.
+    const input =
+        \\# header comment
+        \\[server]
+        \\api_http_addr = "0.0.0.0:3413"
+        \\run_tui = true
+        \\chain_type = "Mainnet"
+        \\
+        \\[server.p2p_config]
+        \\host = "0.0.0.0"
+        \\seeding_type = "List"
+        \\capabilities = "PEER_LIST"
+        \\
+        \\[other]
+        \\seeding_type = "leave me"
+        \\
+    ;
+    const out = try Epic.patchTomlAlloc(allocator, input, &Epic.managed_conf);
+    defer allocator.free(out);
+
+    // api_http_addr healed to localhost; run_tui forced off; seeding_type → DNSSeed.
+    try std.testing.expect(std.mem.indexOf(u8, out, "api_http_addr = \"127.0.0.1:3413\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "0.0.0.0:3413") == null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "run_tui = false") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "run_tui = true") == null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "seeding_type = \"DNSSeed\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "seeding_type = \"List\"") == null);
+    // peers_preferred inserted into the p2p section.
+    try std.testing.expect(std.mem.indexOf(u8, out, "peers_preferred = [\"144.202.75.237:3414\"]") != null);
+    // Unmanaged content preserved, including the same-named key in [other].
+    try std.testing.expect(std.mem.indexOf(u8, out, "# header comment") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "chain_type = \"Mainnet\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "capabilities = \"PEER_LIST\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "seeding_type = \"leave me\"") != null);
+
+    // Idempotent: patching the already-patched output changes nothing.
+    const out2 = try Epic.patchTomlAlloc(allocator, out, &Epic.managed_conf);
+    defer allocator.free(out2);
+    try std.testing.expectEqualStrings(out, out2);
+}
+
+test "patchTomlAlloc revives a commented-out key and drops duplicates" {
+    const allocator = std.testing.allocator;
+    // run_tui is present only as a commented example; seeding_type appears twice.
+    const input =
+        \\[server]
+        \\#run_tui = true
+        \\[server.p2p_config]
+        \\seeding_type = "List"
+        \\seeding_type = "List"
+        \\
+    ;
+    const out = try Epic.patchTomlAlloc(allocator, input, &Epic.managed_conf);
+    defer allocator.free(out);
+
+    // The commented run_tui became a real, enforced line (exactly once).
+    try std.testing.expect(std.mem.indexOf(u8, out, "run_tui = false") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "#run_tui") == null);
+    // The duplicate seeding_type collapsed to a single canonical line.
+    try std.testing.expect(std.mem.count(u8, out, "seeding_type =") == 1);
+    try std.testing.expect(std.mem.indexOf(u8, out, "seeding_type = \"DNSSeed\"") != null);
 }
 
 test "coin vtable dispatches to Epic metadata, no wallet" {

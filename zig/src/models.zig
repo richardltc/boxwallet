@@ -263,7 +263,46 @@ pub const DaemonInfo = struct {
     connections: i64,
     /// Wallet actively staking. Proof-of-stake coins only; always false for PoW.
     staking_active: bool,
+    /// The running daemon's own version, normalized to a dotted string (e.g.
+    /// "8.26.2"), or empty when the coin can't report one. Each coin fills this
+    /// from whatever its RPC exposes — a numeric `CLIENT_VERSION`, a version
+    /// string, or a user-agent. Owned by the caller's allocator (the poll arena).
+    version: []const u8 = "",
 };
+
+/// Decode a bitcoin-style `CLIENT_VERSION` integer into a dotted version string.
+/// The encoding is `1000000*MAJOR + 10000*MINOR + 100*REVISION + BUILD` (e.g.
+/// 8260200 → "8.26.2"). The build component is dropped when zero so the common
+/// case reads cleanly; a non-zero build is appended. Returns an empty string for a
+/// non-positive value (unknown). Caller owns the returned slice.
+pub fn clientVersionString(allocator: std.mem.Allocator, v: i64) ![]u8 {
+    if (v <= 0) return allocator.dupe(u8, "");
+    const major = @divTrunc(v, 1_000_000);
+    const minor = @mod(@divTrunc(v, 10_000), 100);
+    const rev = @mod(@divTrunc(v, 100), 100);
+    const build = @mod(v, 100);
+    if (build != 0)
+        return std.fmt.allocPrint(allocator, "{d}.{d}.{d}.{d}", .{ major, minor, rev, build });
+    return std.fmt.allocPrint(allocator, "{d}.{d}.{d}", .{ major, minor, rev });
+}
+
+test "clientVersionString decodes the bitcoin CLIENT_VERSION encoding" {
+    const a = std.testing.allocator;
+    const cases = .{
+        .{ 8_260_200, "8.26.2" }, // DigiByte 8.26.2 (build 0 dropped)
+        .{ 4_220_900, "4.22.9" }, // ReddCoin 4.22.9
+        .{ 2_000_000, "2.0.0" }, // Nexa 2.0.0.0 → 2.0.0 (pads equal under isNewer)
+        .{ 1_020_304, "1.2.3.4" }, // non-zero build is kept
+    };
+    inline for (cases) |c| {
+        const s = try clientVersionString(a, c[0]);
+        defer a.free(s);
+        try std.testing.expectEqualStrings(c[1], s);
+    }
+    const empty = try clientVersionString(a, 0);
+    defer a.free(empty);
+    try std.testing.expectEqualStrings("", empty);
+}
 
 /// Raw `getblockchaininfo` result for Divi (subset). Same standard fields as
 /// other bitcoin-derived daemons, with `chainwork` in place of Nexa's

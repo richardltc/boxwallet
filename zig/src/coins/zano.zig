@@ -106,6 +106,8 @@ pub const Zano = struct {
         incoming_connections_count: i64 = 0,
         pos_allowed: bool = false,
         status: []const u8 = "",
+        /// The daemon's software version (e.g. "2.1.17.469"), from `getinfo`.
+        version: []const u8 = "",
     };
 
     /// Build the type-erased `Coin` handle for this instance.
@@ -157,6 +159,8 @@ pub const Zano = struct {
             .blocks = r.height,
             .connections = r.outgoing_connections_count + r.incoming_connections_count,
             .staking_active = r.pos_allowed,
+            // `version` points into `parsed`; dupe it onto `allocator`.
+            .version = try allocator.dupe(u8, r.version),
         };
     }
 
@@ -370,8 +374,10 @@ pub const Zano = struct {
         _: *anyopaque,
         allocator: std.mem.Allocator,
         io: std.Io,
+        install_root: []const u8,
         home: []const u8,
     ) anyerror!void {
+        _ = install_root;
         return prepareConf(allocator, io, home);
     }
     fn vtLaunchMode(_: *anyopaque) Coin.LaunchMode {

@@ -426,6 +426,91 @@ pub fn fileExists(allocator: std.mem.Allocator, dest_root: []const u8, sub_path:
     return true;
 }
 
+/// The version-marker filename for a coin: `.<daemon_file>.version`, kept beside
+/// the promoted binaries in the install root. Derived from the daemon file because
+/// that's already unique per coin. Caller owns the returned slice.
+fn versionMarkerName(allocator: std.mem.Allocator, daemon_file: []const u8) ![]u8 {
+    return std.fmt.allocPrint(allocator, ".{s}.version", .{daemon_file});
+}
+
+/// Record the version BoxWallet just installed, so an update check can compare the
+/// on-disk version against the binary's pinned `core_version` without the daemon
+/// running. Overwrites any prior marker; creates the install root if absent.
+pub fn writeVersionMarker(
+    allocator: std.mem.Allocator,
+    dest_root: []const u8,
+    daemon_file: []const u8,
+    version: []const u8,
+) !void {
+    var threaded: std.Io.Threaded = .init(allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    const name = try versionMarkerName(allocator, daemon_file);
+    defer allocator.free(name);
+
+    var dir = try std.Io.Dir.cwd().createDirPathOpen(io, dest_root, .{});
+    defer dir.close(io);
+    try dir.writeFile(io, .{ .sub_path = name, .data = version });
+}
+
+/// Read the recorded installed version, or null when there's no marker (a legacy
+/// or hand-installed binary the updater can't vouch for). Caller owns the returned
+/// slice; trailing whitespace is trimmed. Bounded buffer — versions are short.
+pub fn readVersionMarker(
+    allocator: std.mem.Allocator,
+    dest_root: []const u8,
+    daemon_file: []const u8,
+) ?[]u8 {
+    var threaded: std.Io.Threaded = .init(allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    const name = versionMarkerName(allocator, daemon_file) catch return null;
+    defer allocator.free(name);
+
+    var dir = std.Io.Dir.cwd().openDir(io, dest_root, .{}) catch return null;
+    defer dir.close(io);
+    var f = dir.openFile(io, name, .{}) catch return null;
+    defer f.close(io);
+
+    var buf: [64]u8 = undefined;
+    const n = f.readPositionalAll(io, &buf, 0) catch return null;
+    const trimmed = std.mem.trim(u8, buf[0..n], " \t\r\n");
+    if (trimmed.len == 0) return null;
+    return allocator.dupe(u8, trimmed) catch null;
+}
+
+test "version marker round-trips, and reads null when absent or empty" {
+    const allocator = std.testing.allocator;
+    const root = "test-version-marker-root";
+    const daemon = "epicd";
+
+    var threaded: std.Io.Threaded = .init(allocator, .{});
+    defer threaded.deinit();
+    std.Io.Dir.cwd().deleteTree(threaded.io(), root) catch {};
+    defer std.Io.Dir.cwd().deleteTree(threaded.io(), root) catch {};
+
+    // Absent → null.
+    try std.testing.expect(readVersionMarker(allocator, root, daemon) == null);
+
+    // Written then read back (a trailing newline is trimmed).
+    try writeVersionMarker(allocator, root, daemon, "4.0.3\n");
+    const v = readVersionMarker(allocator, root, daemon) orelse return error.TestUnexpectedResult;
+    defer allocator.free(v);
+    try std.testing.expectEqualStrings("4.0.3", v);
+
+    // Overwrite with a newer version.
+    try writeVersionMarker(allocator, root, daemon, "4.1.0");
+    const v2 = readVersionMarker(allocator, root, daemon) orelse return error.TestUnexpectedResult;
+    defer allocator.free(v2);
+    try std.testing.expectEqualStrings("4.1.0", v2);
+
+    // Empty/whitespace marker reads as null (treated as unknown).
+    try writeVersionMarker(allocator, root, daemon, "  \n");
+    try std.testing.expect(readVersionMarker(allocator, root, daemon) == null);
+}
+
 test "installRoot builds ~/.boxwallet under the home dir (posix)" {
     if (builtin.os.tag == .windows) return error.SkipZigTest;
     const allocator = std.testing.allocator;

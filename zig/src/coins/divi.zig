@@ -118,6 +118,8 @@ pub const Divi = struct {
             .blocks = r.blocks,
             .connections = r.connections,
             .staking_active = std.mem.eql(u8, r.@"staking status", "Staking Active"),
+            // Divi reports a ready-made version string; dupe it so it outlives `parsed`.
+            .version = try allocator.dupe(u8, r.version),
         };
     }
 
@@ -346,8 +348,10 @@ pub const Divi = struct {
         _: *anyopaque,
         allocator: std.mem.Allocator,
         io: std.Io,
+        install_root: []const u8,
         home: []const u8,
     ) anyerror!void {
+        _ = install_root;
         return prepareConf(allocator, io, home);
     }
     fn vtLaunchMode(_: *anyopaque) Coin.LaunchMode {

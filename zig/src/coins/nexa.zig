@@ -116,6 +116,8 @@ pub const Nexa = struct {
             .blocks = r.blocks,
             .connections = r.connections,
             .staking_active = false,
+            // Freshly formatted on `allocator`, so it outlives `parsed`'s deinit.
+            .version = try models.clientVersionString(allocator, r.version),
         };
     }
 
@@ -341,8 +343,10 @@ pub const Nexa = struct {
         _: *anyopaque,
         allocator: std.mem.Allocator,
         io: std.Io,
+        install_root: []const u8,
         home: []const u8,
     ) anyerror!void {
+        _ = install_root;
         return prepareConf(allocator, io, home);
     }
     fn vtLaunchMode(_: *anyopaque) Coin.LaunchMode {

@@ -215,10 +215,14 @@ pub const Coin = struct {
         /// Ensure the coin's config carries everything the daemon needs before
         /// it's launched — RPC creds for a bitcoin-derived `key=value` conf, an
         /// API-key HOCON for Ergo. Idempotent; creates the data dir if absent.
+        /// `install_root` is where the coin's binaries live, for the rare coin
+        /// (Epic) that must run its own binary to generate a default config before
+        /// patching it; coins that only write files themselves ignore it.
         prepare_conf: *const fn (
             ptr: *anyopaque,
             allocator: std.mem.Allocator,
             io: std.Io,
+            install_root: []const u8,
             home_dir: []const u8,
         ) anyerror!void,
         /// How this coin's daemon is launched (fork vs foreground). See
@@ -403,9 +407,10 @@ pub const Coin = struct {
         self: Coin,
         allocator: std.mem.Allocator,
         io: std.Io,
+        install_root: []const u8,
         home_dir: []const u8,
     ) !void {
-        return self.vtable.prepare_conf(self.ptr, allocator, io, home_dir);
+        return self.vtable.prepare_conf(self.ptr, allocator, io, install_root, home_dir);
     }
     pub fn launchMode(self: Coin) LaunchMode {
         return self.vtable.launch_mode(self.ptr);
