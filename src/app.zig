@@ -3105,39 +3105,54 @@ pub const App = struct {
             const io = threaded.io();
 
             // nerva-wallet-rpc has no shutdown RPC, so we signal it. std's
-            // `child.kill()` sends SIGTERM and then *blocks* until the process
-            // exits — and a Monero wallet-rpc does a slow graceful shutdown
-            // (closing + saving the wallet) on SIGTERM, which froze the prompt for
-            // seconds on quit. So on POSIX we send SIGTERM ourselves, give it a
-            // brief grace window to save, then SIGKILL if it's still up; the
-            // wallet's secret (`.keys`) isn't being rewritten during idle/refresh,
-            // so a forced kill at worst costs a cache rebuild on next open.
-            // `child.kill` below then just reaps the (already dead) process — its
-            // own wait returns at once. Windows' `child.kill` is an immediate
-            // TerminateProcess, so it never had this freeze.
-            if (@import("builtin").os.tag != .windows) {
-                if (child.id) |pid| terminateWithGrace(io, pid, 3000);
+            // `child.kill()` sends SIGTERM then *blocks* until the process exits, and
+            // a Monero wallet-rpc saves the wallet on SIGTERM, which can take a
+            // moment. So on POSIX we drive it ourselves: SIGTERM, reap over a short
+            // grace, then SIGKILL if it overstays — so a clean shutdown returns the
+            // instant it finishes and a stuck one is bounded. Windows' `child.kill`
+            // is an immediate TerminateProcess, so it keeps using that.
+            if (@import("builtin").os.tag == .windows) {
+                child.kill(io);
+            } else if (child.id) |pid| {
+                terminateAndReap(io, pid, 1500);
             }
-            child.kill(io);
             act.wallet_rpc_child = null;
         }
     }
 
-    /// SIGTERM `pid`, then poll its liveness for up to `grace_ms`; if it's still
-    /// alive at the end of the window, SIGKILL it. Keeps a graceful shutdown's
-    /// clean save in the common case while bounding how long a slow-to-exit child
-    /// can stall us. POSIX only — callers guard Windows.
-    fn terminateWithGrace(io: std.Io, pid: std.posix.pid_t, grace_ms: u32) void {
+    /// SIGTERM `pid`, reaping with `WNOHANG` over a `grace_ms` window so a clean
+    /// shutdown returns the moment it finishes; SIGKILL + a blocking reap if it
+    /// overstays. POSIX only — the caller guards Windows.
+    ///
+    /// Reaping (rather than a `kill(pid, 0)` liveness probe) is what makes the
+    /// early-out actually work: a child that has exited but not yet been waited on
+    /// is a zombie, and `kill(zombie, 0)` still reports it as alive — so a probe loop
+    /// never sees it go and waits the whole grace every time.
+    fn terminateAndReap(io: std.Io, pid: std.posix.pid_t, grace_ms: u32) void {
         const posix = std.posix;
         posix.kill(pid, posix.SIG.TERM) catch return; // already gone / not permitted
         var waited: u32 = 0;
         const step: u32 = 50;
         while (waited < grace_ms) : (waited += step) {
+            if (reapNoHang(pid)) return;
             io.sleep(.fromMilliseconds(step), .awake) catch {};
-            // Signal 0 only probes existence; ProcessNotFound ⇒ it exited cleanly.
-            posix.kill(pid, @enumFromInt(0)) catch return;
         }
         posix.kill(pid, posix.SIG.KILL) catch {};
+        // Blocking reap so the killed child doesn't linger as a zombie.
+        var status: if (@import("builtin").link_libc) c_int else u32 = undefined;
+        while (posix.errno(posix.system.wait4(pid, &status, 0, null)) == .INTR) {}
+    }
+
+    /// Non-blocking reap: true once `pid` has terminated (and has been reaped, so it
+    /// won't linger as a zombie), or if there's nothing left to wait on.
+    fn reapNoHang(pid: std.posix.pid_t) bool {
+        const posix = std.posix;
+        var status: if (@import("builtin").link_libc) c_int else u32 = undefined;
+        const rc = posix.system.wait4(pid, &status, posix.W.NOHANG, null);
+        return switch (posix.errno(rc)) {
+            .SUCCESS => rc != 0, // 0 = still running; nonzero (the pid) = exited & reaped
+            else => true, // ECHILD/EINVAL → nothing to wait on; treat as gone
+        };
     }
 
     /// Refresh whether the coin's external wallet file exists on disk (drives the
