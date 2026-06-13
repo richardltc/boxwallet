@@ -44,7 +44,7 @@ pub const Nerva = struct {
     /// path has a username to write (the daemon ignores it).
     pub const rpc_default_username = "nervarpc";
     pub const rpc_default_port = "17566";
-    pub const core_version = "0.2.2.0";
+    pub const core_version = "0.2.3.0";
 
     // Binary names. Windows appends `.exe`. The wallet CLI is `nerva-wallet-cli`;
     // there's no `*-tx` helper. `nerva-wallet-rpc` drives the (external) wallet —
