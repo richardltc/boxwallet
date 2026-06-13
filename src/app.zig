@@ -286,6 +286,10 @@ const WalletAction = enum {
     unlock,
     stake,
     lock,
+    /// Back up the wallet to a file (bitcoin-core `dumpwallet`).
+    backup,
+    /// Restore the wallet from a backup file (bitcoin-core `importwallet`).
+    restore,
 
     /// The menu label for the action.
     fn label(self: WalletAction) []const u8 {
@@ -294,12 +298,19 @@ const WalletAction = enum {
             .unlock => "Unlock",
             .stake => "Unlock for staking",
             .lock => "Lock wallet",
+            .backup => "Back up wallet",
+            .restore => "Restore from file",
         };
     }
 
-    /// Whether the action needs a passphrase entered first (`lock` doesn't).
+    /// Whether the action needs a passphrase entered first. `lock` doesn't, and
+    /// neither do `backup`/`restore` — they run against an already-unlocked wallet
+    /// and set no new credential (so no entry and no confirmation step).
     fn needsPassword(self: WalletAction) bool {
-        return self != .lock;
+        return switch (self) {
+            .encrypt, .unlock, .stake => true,
+            .lock, .backup, .restore => false,
+        };
     }
 };
 
@@ -363,12 +374,23 @@ const setup_choices = [_]SetupChoice{ .create, .restore_seed, .restore_file };
 /// Which actions the `w` menu offers for a given wallet state, written into
 /// `buf` and returned by count. Unencrypted → encrypt; locked → unlock (plus
 /// unlock-for-staking on proof-of-stake coins); unlocked → lock; unknown → none.
-fn walletOptions(wallet: WalletState, pos: bool, buf: *[3]WalletAction) usize {
+/// Backup/restore (when the coin supports them) are offered only while the wallet
+/// is reachable for a key dump — unencrypted or unlocked, never locked (the
+/// daemon rejects `dumpwallet`/`importwallet` on a locked wallet).
+fn walletOptions(wallet: WalletState, pos: bool, supports_backup: bool, supports_import: bool, buf: *[3]WalletAction) usize {
     var n: usize = 0;
     switch (wallet) {
         .unencrypted => {
             buf[n] = .encrypt;
             n += 1;
+            if (supports_backup) {
+                buf[n] = .backup;
+                n += 1;
+            }
+            if (supports_import) {
+                buf[n] = .restore;
+                n += 1;
+            }
         },
         .locked => {
             buf[n] = .unlock;
@@ -381,6 +403,14 @@ fn walletOptions(wallet: WalletState, pos: bool, buf: *[3]WalletAction) usize {
         .unlocked, .unlocked_for_staking => {
             buf[n] = .lock;
             n += 1;
+            if (supports_backup) {
+                buf[n] = .backup;
+                n += 1;
+            }
+            if (supports_import) {
+                buf[n] = .restore;
+                n += 1;
+            }
         },
         .unknown => {},
     }
@@ -1042,11 +1072,14 @@ const Activity = struct {
         );
 
         const pw = self.wallet_pw_buf[0..self.wallet_pw_len];
+        const path = self.wallet_file_buf[0..self.wallet_file_len];
         switch (self.wallet_action) {
             .encrypt => try self.coin.walletEncrypt(a, auth, pw),
             .unlock => try self.coin.walletUnlock(a, auth, pw, false),
             .stake => try self.coin.walletUnlock(a, auth, pw, true),
             .lock => try self.coin.walletLock(a, auth),
+            .backup => try self.coin.walletBackup(a, auth, path),
+            .restore => try self.coin.walletImportFile(a, auth, path),
         }
     }
 
@@ -1983,7 +2016,12 @@ pub const App = struct {
                 .enter => {
                     if (m.option_count == 0) return;
                     m.action = m.options[m.sel];
-                    if (m.action.needsPassword()) {
+                    if (m.action == .restore) {
+                        // Restore needs a backup file — browse for it, then submit
+                        // (no password: the wallet is already unlocked).
+                        m.stage = .setup_file;
+                        self.startFilePicker();
+                    } else if (m.action.needsPassword()) {
                         m.stage = .password;
                         self.pw_input.setValue("") catch {};
                         self.pw_input.focus();
@@ -2103,16 +2141,23 @@ pub const App = struct {
                 },
                 else => self.seed_input.handleKey(k),
             },
-            // The file picker owns navigation; a file selection advances to the
-            // password step.
+            // The file picker owns navigation; a file selection moves on. The
+            // external-wallet restore then asks for a password; the in-daemon
+            // restore (bitcoin coins) submits straight away — its wallet is
+            // already unlocked, so no password is needed.
             .setup_file => switch (k.key) {
                 .escape => self.closeWalletModal(),
                 else => {
                     const selected = self.file_picker.handleKey(self.io, self.environ_map, k) catch false;
                     if (selected) {
-                        m.stage = .setup_password;
-                        self.pw_input.setValue("") catch {};
-                        self.pw_input.focus();
+                        const ext = if (self.coinAt(m.coin_idx)) |c| c.hasExternalWallet() else false;
+                        if (ext) {
+                            m.stage = .setup_password;
+                            self.pw_input.setValue("") catch {};
+                            self.pw_input.focus();
+                        } else {
+                            self.submitWalletAction();
+                        }
                     }
                 },
             },
@@ -2366,12 +2411,20 @@ pub const App = struct {
 
                 if (self.modal) |*m| {
                     if (m.coin_idx == i and m.stage == .working) {
-                        if (ok) {
+                        if (ok and action == .backup) {
+                            // Show the path so the user can find the backup — never
+                            // its contents (it holds private keys).
+                            var buf: [200]u8 = undefined;
+                            const text = std.fmt.bufPrint(&buf, "Backed up to {s} — keep this file safe; it holds your keys.", .{act.wallet_file_buf[0..act.wallet_file_len]}) catch "Wallet backed up — keep the backup file safe.";
+                            m.setMsg(true, text);
+                        } else if (ok) {
                             m.setMsg(true, switch (action) {
                                 .encrypt => "Wallet encrypted. Restart the daemon (s), then unlock.",
                                 .unlock => "Wallet unlocked.",
                                 .stake => "Wallet unlocked for staking.",
                                 .lock => "Wallet locked.",
+                                .restore => "Wallet restored — your balance will appear after it rescans.",
+                                .backup => unreachable,
                             });
                         } else {
                             var buf: [200]u8 = undefined;
@@ -3151,7 +3204,7 @@ pub const App = struct {
             return;
         }
         var opts: [3]WalletAction = undefined;
-        const n = walletOptions(act.wallet, coin.isProofOfStake(), &opts);
+        const n = walletOptions(act.wallet, coin.isProofOfStake(), coin.supportsWalletBackup(), coin.supportsWalletImport(), &opts);
         if (act.wallet == .unknown or n == 0) {
             self.logf("{s}: wallet state not known yet — try again in a moment", .{coin.coinName()});
             return;
@@ -3199,12 +3252,31 @@ pub const App = struct {
         }
 
         // Copy the passphrase into the worker's buffer, then clear the field so
-        // the secret isn't held in two places.
+        // the secret isn't held in two places. (Empty for the passwordless
+        // backup/restore actions — harmless.)
         const pw = self.pw_input.getValue();
         const n = @min(pw.len, wallet_pw_max);
         @memcpy(act.wallet_pw_buf[0..n], pw[0..n]);
         act.wallet_pw_len = n;
         self.pw_input.setValue("") catch {};
+
+        // Backup/restore act on a file path rather than a passphrase, carried in
+        // `wallet_file_buf` (the slot the external restore also uses). Backup
+        // writes a fresh timestamped dump under the install root — the timestamp
+        // dodges the daemon's refusal to overwrite an existing file; restore reads
+        // the file just chosen in the picker.
+        act.install_root = self.install_root;
+        if (m.action == .backup) {
+            const written = std.fmt.bufPrint(&act.wallet_file_buf, "{s}{c}{s}-wallet-backup-{d}.txt", .{
+                self.install_root, std.fs.path.sep, coin.coinNameAbbrev(), std.Io.Timestamp.now(self.io, .real).toSeconds(),
+            }) catch "";
+            act.wallet_file_len = written.len;
+        } else if (m.action == .restore) {
+            const fp = self.file_picker.getSelected() orelse "";
+            const fl = @min(fp.len, act.wallet_file_buf.len);
+            @memcpy(act.wallet_file_buf[0..fl], fp[0..fl]);
+            act.wallet_file_len = fl;
+        }
 
         act.coin = coin;
         act.home_dir = self.home_dir;
@@ -5244,40 +5316,66 @@ test "the Wallet line advertises the w key once the wallet is manageable" {
 test "wallet menu offers the actions that fit the wallet state" {
     var buf: [3]WalletAction = undefined;
 
-    // Unencrypted → only Encrypt.
+    // Unencrypted → only Encrypt (no backup/restore support).
     {
-        const n = walletOptions(.unencrypted, false, &buf);
+        const n = walletOptions(.unencrypted, false, false, false, &buf);
         try std.testing.expectEqual(@as(usize, 1), n);
         try std.testing.expectEqual(WalletAction.encrypt, buf[0]);
     }
     // Locked on a proof-of-work coin → just Unlock.
     {
-        const n = walletOptions(.locked, false, &buf);
+        const n = walletOptions(.locked, false, false, false, &buf);
         try std.testing.expectEqual(@as(usize, 1), n);
         try std.testing.expectEqual(WalletAction.unlock, buf[0]);
     }
     // Locked on a proof-of-stake coin → Unlock + Unlock-for-staking.
     {
-        const n = walletOptions(.locked, true, &buf);
+        const n = walletOptions(.locked, true, false, false, &buf);
         try std.testing.expectEqual(@as(usize, 2), n);
         try std.testing.expectEqual(WalletAction.unlock, buf[0]);
         try std.testing.expectEqual(WalletAction.stake, buf[1]);
     }
     // Unlocked (either flavour) → Lock.
     {
-        try std.testing.expectEqual(@as(usize, 1), walletOptions(.unlocked, true, &buf));
+        try std.testing.expectEqual(@as(usize, 1), walletOptions(.unlocked, true, false, false, &buf));
         try std.testing.expectEqual(WalletAction.lock, buf[0]);
-        try std.testing.expectEqual(@as(usize, 1), walletOptions(.unlocked_for_staking, true, &buf));
+        try std.testing.expectEqual(@as(usize, 1), walletOptions(.unlocked_for_staking, true, false, false, &buf));
         try std.testing.expectEqual(WalletAction.lock, buf[0]);
     }
     // Unknown → no actions (the menu won't open).
-    try std.testing.expectEqual(@as(usize, 0), walletOptions(.unknown, true, &buf));
+    try std.testing.expectEqual(@as(usize, 0), walletOptions(.unknown, true, false, false, &buf));
 
-    // Only lock skips the passphrase prompt.
+    // With backup/restore support: offered when unencrypted or unlocked, after
+    // the primary action — but never while locked (the dump RPCs need the wallet
+    // open).
+    {
+        const n = walletOptions(.unencrypted, false, true, true, &buf);
+        try std.testing.expectEqual(@as(usize, 3), n);
+        try std.testing.expectEqual(WalletAction.encrypt, buf[0]);
+        try std.testing.expectEqual(WalletAction.backup, buf[1]);
+        try std.testing.expectEqual(WalletAction.restore, buf[2]);
+    }
+    {
+        const n = walletOptions(.unlocked, false, true, true, &buf);
+        try std.testing.expectEqual(@as(usize, 3), n);
+        try std.testing.expectEqual(WalletAction.lock, buf[0]);
+        try std.testing.expectEqual(WalletAction.backup, buf[1]);
+        try std.testing.expectEqual(WalletAction.restore, buf[2]);
+    }
+    {
+        // Locked → still just Unlock, even with backup/restore wired.
+        const n = walletOptions(.locked, false, true, true, &buf);
+        try std.testing.expectEqual(@as(usize, 1), n);
+        try std.testing.expectEqual(WalletAction.unlock, buf[0]);
+    }
+
+    // Encrypt/unlock/stake need a passphrase; lock, backup and restore don't.
     try std.testing.expect(WalletAction.encrypt.needsPassword());
     try std.testing.expect(WalletAction.unlock.needsPassword());
     try std.testing.expect(WalletAction.stake.needsPassword());
     try std.testing.expect(!WalletAction.lock.needsPassword());
+    try std.testing.expect(!WalletAction.backup.needsPassword());
+    try std.testing.expect(!WalletAction.restore.needsPassword());
 }
 
 test "WalletState mirrors the normalized WalletSecurity" {
@@ -5309,7 +5407,7 @@ test "the wallet modal renders its menu centered over the dashboard" {
     // open gate needs a running daemon, so set the modal up directly here.
     app.selected = std.mem.indexOfScalar(Entry, &entries, .divi).?;
     var m: Modal = .{ .coin_idx = app.selected };
-    m.option_count = walletOptions(.locked, true, &m.options);
+    m.option_count = walletOptions(.locked, true, false, false, &m.options);
     app.modal = m;
 
     var arena = std.heap.ArenaAllocator.init(allocator);

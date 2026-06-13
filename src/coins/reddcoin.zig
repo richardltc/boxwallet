@@ -292,6 +292,32 @@ pub const ReddCoin = struct {
         return rpc.callExpectOk(allocator, auth, "walletlock", "[]");
     }
 
+    /// Back up the wallet to `dest_path` via `dumpwallet` — a human-readable dump
+    /// of the wallet's keys + HD seed that the user keeps as their backup (it is
+    /// the backup, not a temp: don't shred it). reddcoind refuses this on a locked
+    /// wallet, so the UI only offers it when the wallet is unlocked/unencrypted.
+    /// The path is JSON-escaped before splicing.
+    pub fn walletBackup(allocator: std.mem.Allocator, auth: models.CoinAuth, dest_path: []const u8) !void {
+        const qpath = try rpc.jsonQuote(allocator, dest_path);
+        defer allocator.free(qpath);
+        const params = try std.fmt.allocPrint(allocator, "[{s}]", .{qpath});
+        defer allocator.free(params);
+        return rpc.callExpectOk(allocator, auth, "dumpwallet", params);
+    }
+
+    /// Restore wallet keys from a `dumpwallet` file via `importwallet`, which
+    /// imports the keys and rescans the chain. The rescan blocks the RPC until it
+    /// finishes, so on a slow machine this can outlast the client timeout and read
+    /// as a failure even though reddcoind keeps rescanning — acceptable for v1.
+    /// Like backup, requires the wallet unlocked/unencrypted. Path JSON-escaped.
+    pub fn walletImportFile(allocator: std.mem.Allocator, auth: models.CoinAuth, src_path: []const u8) !void {
+        const qpath = try rpc.jsonQuote(allocator, src_path);
+        defer allocator.free(qpath);
+        const params = try std.fmt.allocPrint(allocator, "[{s}]", .{qpath});
+        defer allocator.free(params);
+        return rpc.callExpectOk(allocator, auth, "importwallet", params);
+    }
+
     /// ReddCoin dropped `getinfo`, so probe `getnetworkinfo` for the daemon's
     /// warm-up phase (any supported method returns the "-28 in warm-up" reply).
     pub fn warmupProbeMethod() []const u8 {
@@ -326,6 +352,8 @@ pub const ReddCoin = struct {
         .wallet_encrypt = vtWalletEncrypt,
         .wallet_unlock = vtWalletUnlock,
         .wallet_lock = vtWalletLock,
+        .wallet_backup = vtWalletBackup,
+        .wallet_import_file = vtWalletImportFile,
         .warmup_probe_method = vtWarmupProbeMethod,
     };
 
@@ -464,6 +492,22 @@ pub const ReddCoin = struct {
         auth: models.CoinAuth,
     ) anyerror!void {
         return walletLock(allocator, auth);
+    }
+    fn vtWalletBackup(
+        _: *anyopaque,
+        allocator: std.mem.Allocator,
+        auth: models.CoinAuth,
+        dest_path: []const u8,
+    ) anyerror!void {
+        return walletBackup(allocator, auth, dest_path);
+    }
+    fn vtWalletImportFile(
+        _: *anyopaque,
+        allocator: std.mem.Allocator,
+        auth: models.CoinAuth,
+        src_path: []const u8,
+    ) anyerror!void {
+        return walletImportFile(allocator, auth, src_path);
     }
     fn vtWarmupProbeMethod(_: *anyopaque) []const u8 {
         return warmupProbeMethod();
