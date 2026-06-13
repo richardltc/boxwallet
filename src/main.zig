@@ -59,6 +59,7 @@ test {
     _ = @import("coins/nerva.zig");
     _ = @import("coins/reddcoin.zig");
     _ = @import("coins/epic.zig");
+    _ = @import("coins/salvium.zig");
     _ = @import("bzip2.zig");
     _ = @import("app.zig");
 }
