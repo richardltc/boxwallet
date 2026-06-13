@@ -31,6 +31,8 @@ const Coin = @import("../coin.zig").Coin;
 pub const Zano = struct {
     pub const coin_name = "Zano";
     pub const coin_name_abbrev = "ZANO";
+    /// One-line description shown under the coin name on the detail pane.
+    pub const coin_description = "Privacy chain with confidential assets and hybrid PoW/PoS.";
     /// Zano brand colour (`#RRGGBB`), for tinting the coin in the frontend.
     pub const coin_color = "#274cff";
     /// Zano is a hybrid PoW/PoS coin — it exposes a staking status.
@@ -293,6 +295,7 @@ pub const Zano = struct {
     const vtable: Coin.VTable = .{
         .coin_name = vtCoinName,
         .coin_name_abbrev = vtCoinNameAbbrev,
+        .coin_description = vtCoinDescription,
         .coin_color = vtCoinColor,
         .core_version = vtCoreVersion,
         .proof_of_stake = vtProofOfStake,
@@ -313,6 +316,9 @@ pub const Zano = struct {
 
     fn vtCoinName(_: *anyopaque) []const u8 {
         return coin_name;
+    }
+    fn vtCoinDescription(_: *anyopaque) []const u8 {
+        return coin_description;
     }
     fn vtCoinNameAbbrev(_: *anyopaque) []const u8 {
         return coin_name_abbrev;

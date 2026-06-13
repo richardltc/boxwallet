@@ -26,6 +26,8 @@ const Coin = @import("../coin.zig").Coin;
 pub const Nerva = struct {
     pub const coin_name = "Nerva";
     pub const coin_name_abbrev = "XNV";
+    /// One-line description shown under the coin name on the detail pane.
+    pub const coin_description = "ASIC-resistant, CPU-mined private CryptoNote coin.";
     /// Nerva brand colour (`#RRGGBB`), for tinting the coin in the frontend.
     pub const coin_color = "#344769";
     /// Nerva is proof-of-work (CPU-mined, Monero-derived) — no wallet staking.
@@ -1062,6 +1064,7 @@ pub const Nerva = struct {
     const vtable: Coin.VTable = .{
         .coin_name = vtCoinName,
         .coin_name_abbrev = vtCoinNameAbbrev,
+        .coin_description = vtCoinDescription,
         .coin_color = vtCoinColor,
         .core_version = vtCoreVersion,
         .proof_of_stake = vtProofOfStake,
@@ -1085,6 +1088,9 @@ pub const Nerva = struct {
 
     fn vtCoinName(_: *anyopaque) []const u8 {
         return coin_name;
+    }
+    fn vtCoinDescription(_: *anyopaque) []const u8 {
+        return coin_description;
     }
     fn vtCoinNameAbbrev(_: *anyopaque) []const u8 {
         return coin_name_abbrev;

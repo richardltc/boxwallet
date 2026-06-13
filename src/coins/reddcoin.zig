@@ -25,6 +25,8 @@ const Coin = @import("../coin.zig").Coin;
 pub const ReddCoin = struct {
     pub const coin_name = "ReddCoin";
     pub const coin_name_abbrev = "RDD";
+    /// One-line description shown under the coin name on the detail pane.
+    pub const coin_description = "The social currency — staking-powered tipping.";
     /// ReddCoin brand colour (`#RRGGBB`), for tinting the coin in the frontend.
     pub const coin_color = "#e30613";
     /// Secondary brand colour for the "Coin" half of the wordmark — the nav draws
@@ -329,6 +331,7 @@ pub const ReddCoin = struct {
     const vtable: Coin.VTable = .{
         .coin_name = vtCoinName,
         .coin_name_abbrev = vtCoinNameAbbrev,
+        .coin_description = vtCoinDescription,
         .coin_color = vtCoinColor,
         .wordmark = vtWordmark,
         .core_version = vtCoreVersion,
@@ -359,6 +362,9 @@ pub const ReddCoin = struct {
 
     fn vtCoinName(_: *anyopaque) []const u8 {
         return coin_name;
+    }
+    fn vtCoinDescription(_: *anyopaque) []const u8 {
+        return coin_description;
     }
     fn vtCoinNameAbbrev(_: *anyopaque) []const u8 {
         return coin_name_abbrev;
