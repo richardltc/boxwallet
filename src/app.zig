@@ -1408,10 +1408,11 @@ const Activity = struct {
                 // daemon outlives the app cleanly. Otherwise it stays in the
                 // terminal's foreground group — the shell won't reclaim the
                 // terminal on quit (frozen prompt) and a Ctrl-C would reach the
-                // daemon. (No-op on Windows, which ignores pgid.) The bitcoin
-                // fork path below gets this for free via the daemon's own
-                // fork+setsid.
-                .pgid = 0,
+                // daemon. The bitcoin fork path below gets this for free via the
+                // daemon's own fork+setsid. Windows has no process groups and
+                // types `pgid` as `?*anyopaque`, so the `0` POSIX sentinel ("new
+                // group") doesn't apply there — leave it null.
+                .pgid = if (@import("builtin").os.tag == .windows) null else 0,
                 // Don't pop a console window for the background daemon (Windows).
                 .create_no_window = @import("builtin").os.tag == .windows,
             });
@@ -3042,9 +3043,42 @@ pub const App = struct {
             defer arena.deinit();
             var threaded: std.Io.Threaded = .init(arena.allocator(), .{});
             defer threaded.deinit();
-            child.kill(threaded.io());
+            const io = threaded.io();
+
+            // nerva-wallet-rpc has no shutdown RPC, so we signal it. std's
+            // `child.kill()` sends SIGTERM and then *blocks* until the process
+            // exits — and a Monero wallet-rpc does a slow graceful shutdown
+            // (closing + saving the wallet) on SIGTERM, which froze the prompt for
+            // seconds on quit. So on POSIX we send SIGTERM ourselves, give it a
+            // brief grace window to save, then SIGKILL if it's still up; the
+            // wallet's secret (`.keys`) isn't being rewritten during idle/refresh,
+            // so a forced kill at worst costs a cache rebuild on next open.
+            // `child.kill` below then just reaps the (already dead) process — its
+            // own wait returns at once. Windows' `child.kill` is an immediate
+            // TerminateProcess, so it never had this freeze.
+            if (@import("builtin").os.tag != .windows) {
+                if (child.id) |pid| terminateWithGrace(io, pid, 3000);
+            }
+            child.kill(io);
             act.wallet_rpc_child = null;
         }
+    }
+
+    /// SIGTERM `pid`, then poll its liveness for up to `grace_ms`; if it's still
+    /// alive at the end of the window, SIGKILL it. Keeps a graceful shutdown's
+    /// clean save in the common case while bounding how long a slow-to-exit child
+    /// can stall us. POSIX only — callers guard Windows.
+    fn terminateWithGrace(io: std.Io, pid: std.posix.pid_t, grace_ms: u32) void {
+        const posix = std.posix;
+        posix.kill(pid, posix.SIG.TERM) catch return; // already gone / not permitted
+        var waited: u32 = 0;
+        const step: u32 = 50;
+        while (waited < grace_ms) : (waited += step) {
+            io.sleep(.fromMilliseconds(step), .awake) catch {};
+            // Signal 0 only probes existence; ProcessNotFound ⇒ it exited cleanly.
+            posix.kill(pid, @enumFromInt(0)) catch return;
+        }
+        posix.kill(pid, posix.SIG.KILL) catch {};
     }
 
     /// Refresh whether the coin's external wallet file exists on disk (drives the
