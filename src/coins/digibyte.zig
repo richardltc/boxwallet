@@ -17,6 +17,8 @@ const Coin = @import("../coin.zig").Coin;
 pub const DigiByte = struct {
     pub const coin_name = "DigiByte";
     pub const coin_name_abbrev = "DGB";
+    /// One-line description shown under the coin name on the detail pane.
+    pub const coin_description = "Fast, secure UTXO blockchain with five mining algorithms.";
     /// DigiByte brand colour (`#RRGGBB`), for tinting the coin in the frontend.
     pub const coin_color = "#0066CC";
     /// DigiByte is proof-of-work (multi-algo) — no wallet staking.
@@ -273,6 +275,7 @@ pub const DigiByte = struct {
     const vtable: Coin.VTable = .{
         .coin_name = vtCoinName,
         .coin_name_abbrev = vtCoinNameAbbrev,
+        .coin_description = vtCoinDescription,
         .coin_color = vtCoinColor,
         .core_version = vtCoreVersion,
         .proof_of_stake = vtProofOfStake,
@@ -300,6 +303,9 @@ pub const DigiByte = struct {
 
     fn vtCoinName(_: *anyopaque) []const u8 {
         return coin_name;
+    }
+    fn vtCoinDescription(_: *anyopaque) []const u8 {
+        return coin_description;
     }
     fn vtCoinNameAbbrev(_: *anyopaque) []const u8 {
         return coin_name_abbrev;

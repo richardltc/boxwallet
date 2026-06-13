@@ -3754,6 +3754,10 @@ pub const App = struct {
         // Everything below the header is the Home tab's content; the other tabs
         // are scaffolded placeholders for now. The coin/balance header and the
         // tab strip stay pinned above whichever tab is active.
+        // A short one-line description under the coin name, dimmed so it reads as a
+        // subtitle. Sits a blank line below the name/version row.
+        const description = (zz.Style{}).dim(true).render(a, coin.coinDescription()) catch coin.coinDescription();
+
         const tab_strip = try renderTabStrip(a, brand, self.active_tab);
         const body: []const u8 = switch (self.active_tab) {
             .home => try std.fmt.allocPrint(a,
@@ -3799,7 +3803,7 @@ pub const App = struct {
             else => try renderPlaceholderTab(a, self.active_tab),
         };
 
-        return std.fmt.allocPrint(a, "{s}\n\n{s}\n\n{s}", .{ head_line, tab_strip, body });
+        return std.fmt.allocPrint(a, "{s}\n\n{s}\n\n{s}\n\n{s}", .{ head_line, description, tab_strip, body });
     }
 
     /// One-line tab strip for the coin detail pane: the active tab in the coin's

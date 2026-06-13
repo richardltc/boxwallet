@@ -161,6 +161,9 @@ pub const Coin = struct {
     pub const VTable = struct {
         coin_name: *const fn (ptr: *anyopaque) []const u8,
         coin_name_abbrev: *const fn (ptr: *anyopaque) []const u8,
+        /// A short one-line description of the coin, shown under its name on the
+        /// detail pane.
+        coin_description: *const fn (ptr: *anyopaque) []const u8,
         /// The coin's brand colour as a `#RRGGBB` hex string, for the frontend.
         coin_color: *const fn (ptr: *anyopaque) []const u8,
         /// Optional: a two-tone wordmark for the coin's name (see `Wordmark`).
@@ -361,6 +364,10 @@ pub const Coin = struct {
     }
     pub fn coinNameAbbrev(self: Coin) []const u8 {
         return self.vtable.coin_name_abbrev(self.ptr);
+    }
+    /// A short one-line description of the coin (shown under its name).
+    pub fn coinDescription(self: Coin) []const u8 {
+        return self.vtable.coin_description(self.ptr);
     }
     /// The coin's brand colour as a `#RRGGBB` hex string.
     pub fn coinColor(self: Coin) []const u8 {

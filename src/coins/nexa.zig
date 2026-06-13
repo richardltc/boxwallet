@@ -11,6 +11,8 @@ const Coin = @import("../coin.zig").Coin;
 pub const Nexa = struct {
     pub const coin_name = "Nexa";
     pub const coin_name_abbrev = "NEXA";
+    /// One-line description shown under the coin name on the detail pane.
+    pub const coin_description = "Scalable proof-of-work blockchain for global payments.";
     /// Nexa brand colour (`#RRGGBB`), for tinting the coin in the frontend.
     pub const coin_color = "#FEE043";
     /// Nexa is proof-of-work — no wallet staking.
@@ -256,6 +258,7 @@ pub const Nexa = struct {
     const vtable: Coin.VTable = .{
         .coin_name = vtCoinName,
         .coin_name_abbrev = vtCoinNameAbbrev,
+        .coin_description = vtCoinDescription,
         .coin_color = vtCoinColor,
         .core_version = vtCoreVersion,
         .proof_of_stake = vtProofOfStake,
@@ -282,6 +285,9 @@ pub const Nexa = struct {
 
     fn vtCoinName(_: *anyopaque) []const u8 {
         return coin_name;
+    }
+    fn vtCoinDescription(_: *anyopaque) []const u8 {
+        return coin_description;
     }
     fn vtCoinNameAbbrev(_: *anyopaque) []const u8 {
         return coin_name_abbrev;
