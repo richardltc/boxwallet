@@ -14,6 +14,7 @@ const Ergo = @import("coins/ergo.zig").Ergo;
 const DigiByte = @import("coins/digibyte.zig").DigiByte;
 const Zano = @import("coins/zano.zig").Zano;
 const Nerva = @import("coins/nerva.zig").Nerva;
+const Salvium = @import("coins/salvium.zig").Salvium;
 const ReddCoin = @import("coins/reddcoin.zig").ReddCoin;
 const Epic = @import("coins/epic.zig").Epic;
 
@@ -34,8 +35,8 @@ const fallback_install_root = "boxwallet-coins";
 /// position. Adding a coin is a matter of extending this list, the `App` field +
 /// `init`, and the dispatch in `selectedCoin`; the detail pane renders
 /// generically through the `Coin` interface, so it needs no per-coin code.
-const Entry = enum { home, nexa, divi, ergo, digibyte, zano, nerva, reddcoin, epic };
-const coin_entries = [_]Entry{ .nexa, .divi, .ergo, .digibyte, .zano, .nerva, .reddcoin, .epic };
+const Entry = enum { home, nexa, divi, ergo, digibyte, zano, nerva, reddcoin, epic, salvium };
+const coin_entries = [_]Entry{ .nexa, .divi, .ergo, .digibyte, .zano, .nerva, .reddcoin, .epic, .salvium };
 
 fn entryLabel(e: Entry) []const u8 {
     return switch (e) {
@@ -48,6 +49,7 @@ fn entryLabel(e: Entry) []const u8 {
         .nerva => Nerva.coin_name,
         .reddcoin => ReddCoin.coin_name,
         .epic => Epic.coin_name,
+        .salvium => Salvium.coin_name,
     };
 }
 
@@ -88,6 +90,7 @@ fn entryColor(e: Entry) zz.Color {
         .nerva => zz.Color.hex(Nerva.coin_color),
         .reddcoin => zz.Color.hex(ReddCoin.coin_color),
         .epic => zz.Color.hex(Epic.coin_color),
+        .salvium => zz.Color.hex(Salvium.coin_color),
     };
 }
 
@@ -1733,6 +1736,7 @@ pub const App = struct {
     nerva: Nerva,
     reddcoin: ReddCoin,
     epic: Epic,
+    salvium: Salvium,
     selected: usize,
     /// Which tab of the selected coin's detail pane is showing. Global rather
     /// than per-coin: switching coins resets it to Home (see `move`).
@@ -1848,6 +1852,7 @@ pub const App = struct {
             .nerva = .{},
             .reddcoin = .{},
             .epic = .{},
+            .salvium = .{},
             .selected = 0,
             .activities = undefined,
             .pw_input = zz.TextInput.init(ctx.persistent_allocator),
@@ -2709,6 +2714,7 @@ pub const App = struct {
             .nerva => @constCast(&self.nerva).coin(),
             .reddcoin => @constCast(&self.reddcoin).coin(),
             .epic => @constCast(&self.epic).coin(),
+            .salvium => @constCast(&self.salvium).coin(),
         };
     }
 
