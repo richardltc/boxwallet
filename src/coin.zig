@@ -309,6 +309,26 @@ pub const Coin = struct {
             allocator: std.mem.Allocator,
             auth: models.CoinAuth,
         ) anyerror!void = null,
+        /// Optional: write a wallet backup file to `dest_path` (bitcoin-core
+        /// `dumpwallet` — a human-readable dump of the wallet's keys + HD seed,
+        /// which the user keeps as their backup). Requires the wallet
+        /// unlocked/unencrypted. Distinct from `ExternalWallet.restore_file`
+        /// (the Monero path); null for coins without a file-backup wallet.
+        wallet_backup: ?*const fn (
+            ptr: *anyopaque,
+            allocator: std.mem.Allocator,
+            auth: models.CoinAuth,
+            dest_path: []const u8,
+        ) anyerror!void = null,
+        /// Optional: import a wallet backup from `src_path` (bitcoin-core
+        /// `importwallet`, which rescans). Requires the wallet
+        /// unlocked/unencrypted; null when unsupported.
+        wallet_import_file: ?*const fn (
+            ptr: *anyopaque,
+            allocator: std.mem.Allocator,
+            auth: models.CoinAuth,
+            src_path: []const u8,
+        ) anyerror!void = null,
         /// Optional: the JSON-RPC method to probe for the daemon's warm-up phase
         /// (the bitcoin-derived "-28 in warm-up" reply carries a phase string like
         /// "Verifying blocks…"). Returns a method the daemon supports (`getinfo` /
@@ -515,6 +535,42 @@ pub const Coin = struct {
     ) !void {
         const f = self.vtable.wallet_lock orelse return error.Unsupported;
         return f(self.ptr, allocator, auth);
+    }
+
+    /// Whether this coin can back up its wallet to a file (the `w` menu's "Back
+    /// up wallet"). True iff the coin wires `wallet_backup`.
+    pub fn supportsWalletBackup(self: Coin) bool {
+        return self.vtable.wallet_backup != null;
+    }
+
+    /// Write a wallet backup to `dest_path`. Errors `error.Unsupported` if the
+    /// coin has no file-backup wallet.
+    pub fn walletBackup(
+        self: Coin,
+        allocator: std.mem.Allocator,
+        auth: models.CoinAuth,
+        dest_path: []const u8,
+    ) !void {
+        const f = self.vtable.wallet_backup orelse return error.Unsupported;
+        return f(self.ptr, allocator, auth, dest_path);
+    }
+
+    /// Whether this coin can import a wallet backup from a file (the `w` menu's
+    /// "Restore from file"). True iff the coin wires `wallet_import_file`.
+    pub fn supportsWalletImport(self: Coin) bool {
+        return self.vtable.wallet_import_file != null;
+    }
+
+    /// Import a wallet backup from `src_path`. Errors `error.Unsupported` if the
+    /// coin has no file-backup wallet.
+    pub fn walletImportFile(
+        self: Coin,
+        allocator: std.mem.Allocator,
+        auth: models.CoinAuth,
+        src_path: []const u8,
+    ) !void {
+        const f = self.vtable.wallet_import_file orelse return error.Unsupported;
+        return f(self.ptr, allocator, auth, src_path);
     }
 
     /// The RPC method to probe for a warm-up phase, or null for coins with no
