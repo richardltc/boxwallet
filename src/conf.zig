@@ -81,17 +81,24 @@ pub fn readAuth(
 }
 
 /// Ensure the coin's conf carries the settings BoxWallet needs to drive the
-/// daemon over RPC, mirroring the Go `PopulateConfFile`: an `rpcuser`, a
-/// generated `rpcpassword`, `server=1`, `daemon=1`, and `rpcport`. Without these
-/// a daemon falls back to cookie auth (or no RPC at all), which BoxWallet can't
-/// use — the symptom that left Nexa unmanageable while Divi (whose conf already
-/// had creds) worked.
+/// daemon over RPC: an `rpcuser`, a generated `rpcpassword`, `server=1`, and
+/// `rpcport`. Without these a daemon falls back to cookie auth (or no RPC at
+/// all), which BoxWallet can't use — the symptom that left Nexa unmanageable
+/// while Divi (whose conf already had creds) worked.
+///
+/// An enabled `daemon=…` line is *removed* if present: BoxWallet supplies
+/// `-daemon` on the launch command line itself (POSIX) and spawns the daemon
+/// detached on Windows, so it never needs it in the conf — and leaving it there
+/// breaks the coin's own Qt GUI (which can't daemonize) and the Windows daemon
+/// (no `-daemon` support), so neither could share the file. A user's explicit
+/// `daemon=0` is left untouched.
 ///
 /// Existing values are preserved — a user's own password/port stay put — and
 /// only missing keys are appended, so the conf's comments and ordering survive.
 /// The data dir and conf are created if absent. Returns true if anything was
-/// written. The conf is a tiny `key=value` file, read whole through one bounded
-/// buffer and rewritten only when a key was added.
+/// written (a key added or a `daemon` line stripped). The conf is a tiny
+/// `key=value` file, read whole through one bounded buffer and rewritten only
+/// when something changed.
 pub fn populate(
     allocator: std.mem.Allocator,
     io: std.Io,
@@ -122,11 +129,15 @@ pub fn populate(
 
     var out: std.Io.Writer.Allocating = .init(allocator);
     defer out.deinit();
-    try out.writer.writeAll(content);
-    // Start appends on a fresh line so a conf without a trailing newline stays valid.
-    if (content.len > 0 and content[content.len - 1] != '\n') try out.writer.writeByte('\n');
 
-    var wrote = false;
+    // Copy the conf forward verbatim, dropping any enabled `daemon` line (see the
+    // doc comment for why). A removal counts as a change so the file is rewritten.
+    var wrote = try stripDaemon(&out.writer, content);
+
+    // Start appends on a fresh line so a conf without a trailing newline stays valid.
+    const so_far = out.written();
+    if (so_far.len > 0 and so_far[so_far.len - 1] != '\n') try out.writer.writeByte('\n');
+
     if (!hasKey(content, "rpcuser")) {
         try out.writer.print("rpcuser={s}\n", .{default_user});
         wrote = true;
@@ -138,10 +149,6 @@ pub fn populate(
     }
     if (!hasKey(content, "server")) {
         try out.writer.writeAll("server=1\n");
-        wrote = true;
-    }
-    if (!hasKey(content, "daemon")) {
-        try out.writer.writeAll("daemon=1\n");
         wrote = true;
     }
     if (!hasKey(content, "rpcport")) {
@@ -169,6 +176,40 @@ pub fn writeConf(
     var dir = try std.Io.Dir.cwd().createDirPathOpen(io, data_dir, .{});
     defer dir.close(io);
     try dir.writeFile(io, .{ .sub_path = conf_file, .data = body });
+}
+
+/// Copy `content` into `w`, dropping any line that *enables* `daemon` (a truthy
+/// `daemon=…`). Returns true if such a line was removed, so the caller knows to
+/// rewrite the conf. Everything else — comments, blank lines, ordering, other
+/// keys, and the original line endings — is preserved byte-for-byte; an explicit
+/// `daemon=0` is kept.
+fn stripDaemon(w: *std.Io.Writer, content: []const u8) !bool {
+    var removed = false;
+    var i: usize = 0;
+    while (i < content.len) {
+        const nl = std.mem.indexOfScalarPos(u8, content, i, '\n') orelse content.len;
+        const end = if (nl < content.len) nl + 1 else nl; // include the '\n' if present
+        const line = std.mem.trim(u8, content[i..nl], " \t\r");
+        const eq = std.mem.indexOfScalar(u8, line, '=');
+        const drop = line.len > 0 and line[0] != '#' and eq != null and
+            std.mem.eql(u8, std.mem.trim(u8, line[0..eq.?], " \t"), "daemon") and
+            isEnabled(std.mem.trim(u8, line[eq.? + 1 ..], " \t"));
+        if (drop) {
+            removed = true;
+        } else {
+            try w.writeAll(content[i..end]);
+        }
+        i = end;
+    }
+    return removed;
+}
+
+/// Bitcoin-conf truthiness for a boolean value (`1`/`true`/`yes`/`on`).
+fn isEnabled(val: []const u8) bool {
+    return std.mem.eql(u8, val, "1") or
+        std.ascii.eqlIgnoreCase(val, "true") or
+        std.ascii.eqlIgnoreCase(val, "yes") or
+        std.ascii.eqlIgnoreCase(val, "on");
 }
 
 /// True if `content` has a non-comment line whose key (left of `=`) is `key`.
@@ -320,6 +361,77 @@ test "populate preserves existing creds rather than overwriting them" {
     defer freeAuth(allocator, auth);
     try std.testing.expectEqualStrings("divirpc", auth.rpc_user);
     try std.testing.expectEqualStrings("keepme", auth.rpc_password);
+}
+
+test "populate strips an enabled daemon line, preserving the rest" {
+    const allocator = std.testing.allocator;
+
+    var threaded: std.Io.Threaded = .init(allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    const dir = "test-conf-daemon-strip-out";
+    std.Io.Dir.cwd().deleteTree(io, dir) catch {};
+    defer std.Io.Dir.cwd().deleteTree(io, dir) catch {};
+
+    // A conf an older BoxWallet (or the user) left carrying daemon=1, with a
+    // comment and creds to prove the rest of the file survives the rewrite.
+    var d = try std.Io.Dir.cwd().createDirPathOpen(io, dir, .{});
+    d.writeFile(io, .{ .sub_path = "divi.conf", .data =
+        \\# divi.conf
+        \\rpcuser=divirpc
+        \\rpcpassword=keepme
+        \\daemon=1
+        \\server=1
+        \\
+    }) catch {};
+    d.close(io);
+
+    // Removing the daemon line counts as a change → wrote=true, file rewritten.
+    try std.testing.expect(try populate(allocator, io, dir, "divi.conf", "x", "51473"));
+
+    var rb: [4096]u8 = undefined;
+    var f = try std.Io.Dir.cwd().openDir(io, dir, .{});
+    defer f.close(io);
+    var cf = try f.openFile(io, "divi.conf", .{});
+    defer cf.close(io);
+    const n = try cf.readPositionalAll(io, &rb, 0);
+    const out = rb[0..n];
+    try std.testing.expect(std.mem.indexOf(u8, out, "daemon=1") == null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "# divi.conf") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "rpcpassword=keepme") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "server=1") != null);
+
+    // Idempotent now: nothing left to strip or add.
+    try std.testing.expect(!try populate(allocator, io, dir, "divi.conf", "x", "51473"));
+}
+
+test "populate leaves an explicit daemon=0 in place" {
+    const allocator = std.testing.allocator;
+
+    var threaded: std.Io.Threaded = .init(allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    const dir = "test-conf-daemon-keep-out";
+    std.Io.Dir.cwd().deleteTree(io, dir) catch {};
+    defer std.Io.Dir.cwd().deleteTree(io, dir) catch {};
+
+    // Everything BoxWallet needs is already present and daemon is *disabled*, so
+    // there's nothing to add and nothing to strip — populate is a no-op.
+    var d = try std.Io.Dir.cwd().createDirPathOpen(io, dir, .{});
+    d.writeFile(io, .{ .sub_path = "divi.conf", .data = "rpcuser=u\nrpcpassword=p\nserver=1\nrpcport=51473\ndaemon=0\n" }) catch {};
+    d.close(io);
+
+    try std.testing.expect(!try populate(allocator, io, dir, "divi.conf", "x", "51473"));
+
+    var rb: [4096]u8 = undefined;
+    var f = try std.Io.Dir.cwd().openDir(io, dir, .{});
+    defer f.close(io);
+    var cf = try f.openFile(io, "divi.conf", .{});
+    defer cf.close(io);
+    const n = try cf.readPositionalAll(io, &rb, 0);
+    try std.testing.expect(std.mem.indexOf(u8, rb[0..n], "daemon=0") != null);
 }
 
 test "readAuth keeps defaults when the conf omits everything" {
