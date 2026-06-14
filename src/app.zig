@@ -629,6 +629,12 @@ const Activity = struct {
     /// Whether the finished poll reached the daemon. Plain field, published by
     /// the `poll_done` release/acquire pairing.
     poll_ok: bool = false,
+    /// Whether the daemon's RPC port was at least reachable (a TCP connect
+    /// succeeded), even if the status fetch itself didn't complete. Lets a
+    /// busy-but-alive daemon — one accepting connections but stalling its RPC
+    /// reply — read as "running" rather than "stopped". Plain field, published by
+    /// the `poll_done` release/acquire pairing alongside `poll_ok`.
+    poll_alive: bool = false,
     /// True once the first poll for this coin has been reaped (success or not).
     /// Until then — from the moment the coin is selected/installed and a poll is
     /// pending — the Running/Staking marks animate instead of showing a stale ✘.
@@ -1201,16 +1207,45 @@ const Activity = struct {
 
         if (self.fetchStatus(a)) {
             self.poll_ok = true;
+            self.poll_alive = true;
             // The daemon answered normally, so it isn't warming up.
             self.poll_phase.store(@intFromEnum(models.LoadingPhase.none), .monotonic);
         } else |_| {
             self.poll_ok = false;
+            // The status fetch failed — but a daemon under heavy load accepts the
+            // connection instantly while stalling its RPC reply for seconds (Nerva
+            // behind its blockchain lock). Tell that apart from a daemon that's
+            // actually down with a cheap connect probe: reachable ⇒ up-but-busy, so
+            // the UI keeps it "running" instead of flipping to "stopped".
+            self.poll_alive = self.probeReachable(a);
             // The daemon may be up but still warming up — probe its phase so the
             // UI can show *what* it's doing (Loading/Verifying/…) rather than a
             // bare spinner. Best-effort; a failure leaves it `none`.
             self.probeLoadingPhase(a);
         }
         self.poll_done.store(true, .release);
+    }
+
+    /// Cheap "is the daemon up?" check after a failed status fetch: resolve the
+    /// coin's RPC credentials and try a bare TCP connect to its port. A daemon
+    /// that's merely busy accepts the connection (so this returns true) while one
+    /// that's down refuses it. Runs on the caller's poll arena; any resolution
+    /// hiccup reads as not reachable.
+    fn probeReachable(self: *Activity, a: std.mem.Allocator) bool {
+        var threaded: std.Io.Threaded = .init(a, .{});
+        defer threaded.deinit();
+        const io = threaded.io();
+
+        const data_dir = self.coin.dataDir(a, self.home_dir) catch return false;
+        const auth = conf.readAuth(
+            a,
+            io,
+            data_dir,
+            self.coin.confFile(),
+            self.coin.rpcDefaultUsername(),
+            self.coin.rpcDefaultPort(),
+        ) catch return false;
+        return rpc.daemonReachable(a, auth);
     }
 
     /// Probe the daemon's warm-up phase after a failed status fetch. Only worth
@@ -2373,8 +2408,12 @@ pub const App = struct {
                 // the daemon, so fold it in regardless of `applyPoll`.
                 act.loading_phase = @enumFromInt(act.poll_phase.load(.monotonic));
                 // Don't let a successful poll clobber a pending stop back to
-                // running — the user has already asked it to shut down.
-                if (act.applyPoll() and act.daemonState() != .running and !act.stop_pending)
+                // running — the user has already asked it to shut down. A poll
+                // that only reached the port (`poll_alive`, no full reply) still
+                // proves the daemon is up, so a busy daemon stalling its RPC reads
+                // as running rather than flipping to stopped. `applyPoll` runs
+                // first regardless so a full reply's fields are folded in.
+                if ((act.applyPoll() or act.poll_alive) and act.daemonState() != .running and !act.stop_pending)
                     act.daemon.store(@intFromEnum(DaemonState.running), .release);
                 // Mark the just-reaped poll as received once per selection; the
                 // matching "checking" line was logged when this poll started.
@@ -2506,6 +2545,7 @@ pub const App = struct {
                     act.coin = coin;
                     act.home_dir = self.home_dir;
                     act.poll_ok = false;
+                    act.poll_alive = false;
                     act.poll_done.store(false, .monotonic);
                     // Announce the first status check for this selection; the
                     // matching "received" line follows when the poll is reaped.
