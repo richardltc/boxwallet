@@ -39,6 +39,9 @@ const Coin = @import("../coin.zig").Coin;
 ///     stopped by sending it SIGTERM (Linux-only, which is the only target Epic
 ///     installs on).
 pub const Epic = struct {
+    /// Whether the coin is exposed in the nav. False keeps it out of the left
+    /// bar entirely (registered but hidden) until it's ready for users.
+    pub const live = false;
     pub const coin_name = "Epic Cash";
     pub const coin_name_abbrev = "EPIC";
     /// One-line description shown under the coin name on the detail pane.

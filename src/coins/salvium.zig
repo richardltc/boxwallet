@@ -25,6 +25,9 @@ const Coin = @import("../coin.zig").Coin;
 ///     `POST /stop_daemon` endpoint. The daemon is unauthenticated by default, so
 ///     no basic auth is sent (mirrors Ergo's keyless REST).
 pub const Salvium = struct {
+    /// Whether the coin is exposed in the nav. False keeps it out of the left
+    /// bar entirely (registered but hidden) until it's ready for users.
+    pub const live = false;
     pub const coin_name = "Salvium";
     pub const coin_name_abbrev = "SAL";
     /// One-line description shown under the coin name on the detail pane.

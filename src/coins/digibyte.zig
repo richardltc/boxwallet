@@ -15,6 +15,9 @@ const Coin = @import("../coin.zig").Coin;
 /// assembled from two calls — `getblockchaininfo` (chain/height/sync) and
 /// `getnetworkinfo` (peer count) — rather than a single `getinfo`.
 pub const DigiByte = struct {
+    /// Whether the coin is exposed in the nav. False keeps it out of the left
+    /// bar entirely (registered but hidden) until it's ready for users.
+    pub const live = false;
     pub const coin_name = "DigiByte";
     pub const coin_name_abbrev = "DGB";
     /// One-line description shown under the coin name on the detail pane.
