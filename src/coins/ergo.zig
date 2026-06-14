@@ -27,6 +27,9 @@ const Coin = @import("../coin.zig").Coin;
 ///   * **Units** — balances are in nanoERG (1 ERG = 1e9 nanoERG); not surfaced by
 ///     the current status-only TUI.
 pub const Ergo = struct {
+    /// Whether the coin is exposed in the nav. False keeps it out of the left
+    /// bar entirely (registered but hidden) until it's ready for users.
+    pub const live = true;
     pub const coin_name = "Ergo";
     pub const coin_name_abbrev = "ERG";
     /// One-line description shown under the coin name on the detail pane.

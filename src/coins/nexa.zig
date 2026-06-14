@@ -9,6 +9,9 @@ const Coin = @import("../coin.zig").Coin;
 /// Nexa backend. Constants lifted from
 /// `cmd/cli/cmd/coins/nexa/nexa.go`.
 pub const Nexa = struct {
+    /// Whether the coin is exposed in the nav. False keeps it out of the left
+    /// bar entirely (registered but hidden) until it's ready for users.
+    pub const live = true;
     pub const coin_name = "Nexa";
     pub const coin_name_abbrev = "NEXA";
     /// One-line description shown under the coin name on the detail pane.

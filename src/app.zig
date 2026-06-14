@@ -33,8 +33,10 @@ const fallback_install_root = "boxwallet-coins";
 /// Every coin registered in the left bar. Order here is irrelevant — `entries`
 /// sorts them alphabetically below — so a newly ported coin can be added in any
 /// position. Adding a coin is a matter of extending this list, the `App` field +
-/// `init`, and the dispatch in `selectedCoin`; the detail pane renders
-/// generically through the `Coin` interface, so it needs no per-coin code.
+/// `init`, the dispatch in `selectedCoin`, and an arm in `entryLive`; the detail
+/// pane renders generically through the `Coin` interface, so it needs no per-coin
+/// code. A coin whose per-coin `live` constant is false stays registered here but
+/// is dropped from `entries` — hidden from the nav entirely until it's ready.
 const Entry = enum { home, nexa, divi, ergo, digibyte, zano, nerva, reddcoin, epic, salvium };
 const coin_entries = [_]Entry{ .nexa, .divi, .ergo, .digibyte, .zano, .nerva, .reddcoin, .epic, .salvium };
 
@@ -94,10 +96,29 @@ fn entryColor(e: Entry) zz.Color {
     };
 }
 
-/// The left-column order: Home pinned to the top, then the coins alphabetically
-/// by label. The sort runs at comptime, so registering a coin keeps the list
-/// ordered without anyone placing it by hand. Index 0 is always Home; the rest
-/// are coins, and `activities` is indexed parallel to this.
+/// Whether a coin is exposed in the nav. Coins gate this on their per-coin `live`
+/// constant; a `false` coin is dropped from `entries` entirely (no row, no
+/// activity slot, never selectable or polled). Home is always live.
+fn entryLive(e: Entry) bool {
+    return switch (e) {
+        .home => true,
+        .nexa => Nexa.live,
+        .divi => Divi.live,
+        .ergo => Ergo.live,
+        .digibyte => DigiByte.live,
+        .zano => Zano.live,
+        .nerva => Nerva.live,
+        .reddcoin => ReddCoin.live,
+        .epic => Epic.live,
+        .salvium => Salvium.live,
+    };
+}
+
+/// The left-column order: Home pinned to the top, then the live coins
+/// alphabetically by label. The sort and the live-filter run at comptime, so
+/// registering a coin keeps the list ordered without anyone placing it by hand.
+/// Index 0 is always Home; the rest are coins, and `activities` is indexed
+/// parallel to this.
 const entries = blk: {
     var coins = coin_entries;
     std.mem.sort(Entry, &coins, {}, struct {
@@ -105,7 +126,15 @@ const entries = blk: {
             return std.mem.lessThan(u8, entryLabel(a), entryLabel(b));
         }
     }.lessThan);
-    break :blk [_]Entry{.home} ++ coins;
+    // Drop coins whose per-coin `live` flag is false — they vanish from the nav
+    // entirely (no row, no activity slot, never selectable or polled).
+    var live_coins: [coin_entries.len]Entry = undefined;
+    var n: usize = 0;
+    for (coins) |e| if (entryLive(e)) {
+        live_coins[n] = e;
+        n += 1;
+    };
+    break :blk [_]Entry{.home} ++ live_coins[0..n].*;
 };
 
 /// Where a coin's background install has got to. The UI reads this every frame
@@ -5617,6 +5646,16 @@ test "left bar pins Home on top and lists coins alphabetically" {
         const label = entryLabel(e);
         if (prev) |p| try std.testing.expect(std.mem.lessThan(u8, p, label));
         prev = label;
+    }
+}
+
+test "only live coins appear in the nav" {
+    // Home is always present; every other registered coin appears iff its `live`
+    // flag is set. Holds regardless of which coins are currently live.
+    try std.testing.expect(std.mem.indexOfScalar(Entry, &entries, .home) != null);
+    inline for (coin_entries) |e| {
+        const present = std.mem.indexOfScalar(Entry, &entries, e) != null;
+        try std.testing.expectEqual(entryLive(e), present);
     }
 }
 

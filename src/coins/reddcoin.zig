@@ -23,6 +23,9 @@ const Coin = @import("../coin.zig").Coin;
 ///     normalized `staking_active`. Best-effort: a wallet that can't answer it
 ///     just reads as not staking rather than failing the whole poll.
 pub const ReddCoin = struct {
+    /// Whether the coin is exposed in the nav. False keeps it out of the left
+    /// bar entirely (registered but hidden) until it's ready for users.
+    pub const live = true;
     pub const coin_name = "ReddCoin";
     pub const coin_name_abbrev = "RDD";
     /// One-line description shown under the coin name on the detail pane.

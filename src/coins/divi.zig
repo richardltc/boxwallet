@@ -9,6 +9,9 @@ const Coin = @import("../coin.zig").Coin;
 /// Divi backend. Constants lifted from
 /// `cmd/cli/cmd/coins/divi/divi.go`.
 pub const Divi = struct {
+    /// Whether the coin is exposed in the nav. False keeps it out of the left
+    /// bar entirely (registered but hidden) until it's ready for users.
+    pub const live = true;
     pub const coin_name = "Divi";
     pub const coin_name_abbrev = "DIVI";
     /// One-line description shown under the coin name on the detail pane.
