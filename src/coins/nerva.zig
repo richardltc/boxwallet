@@ -157,12 +157,16 @@ pub const Nerva = struct {
     };
 
     /// Bound (ms) on a status/stop RPC round-trip. A healthy nervad answers
-    /// `get_info` in milliseconds; this cap exists so a wedged or over-busy daemon
-    /// — one whose RPC thread is starved under load, so it accepts the connection
-    /// but never replies — can't hang the poll worker (and, through it, the app's
-    /// quit) forever. Without it a stuck daemon pins the status on "Checking…"
-    /// indefinitely, because the poll never returns to clear it.
-    const status_timeout_ms: u32 = 8000;
+    /// `get_info` in milliseconds, but a *busy* one — its RPC reply stalled behind
+    /// the blockchain lock while it relays across dozens of peers — can take many
+    /// seconds, accepting the connection yet not replying. This cap keeps such a
+    /// stall from hanging the poll worker (and, through it, the app's quit). It's
+    /// deliberately short because liveness no longer rides on this call: a poll
+    /// that times out here still detects the daemon as up via the cheap connect
+    /// probe (`rpc.daemonReachable`), so the UI shows "running" rather than
+    /// "stopped" — the only cost of a timeout is that fresh sync numbers wait for
+    /// the next poll once the daemon frees up.
+    const status_timeout_ms: u32 = 3000;
 
     /// Bound (ms) on a wallet-RPC op. A Monero wallet open/create/restore drives an
     /// initial refresh that can legitimately take many seconds, so these get a far

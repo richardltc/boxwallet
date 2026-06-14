@@ -223,6 +223,36 @@ pub fn ensureWallet(
     return error.WalletNotReady;
 }
 
+/// Cheap TCP liveness probe for a daemon's RPC endpoint. A successful connect
+/// proves the daemon is bound and accepting connections — i.e. *up* — regardless
+/// of whether it answers an RPC promptly. This is the distinction that matters
+/// for a daemon under load: a healthy node accepts the connection instantly yet
+/// can stall an RPC *reply* for several seconds (e.g. Nerva serializing
+/// `get_info` behind its blockchain lock while relaying across dozens of peers),
+/// whereas a genuinely stopped daemon refuses the connection outright. So a
+/// status fetch that times out while this probe still succeeds means "up but
+/// busy", not "down" — letting the UI hold the daemon at "running" rather than
+/// flipping it to "stopped" on a transient stall.
+///
+/// Localhost-only (the daemon binds 127.0.0.1), so the connect returns
+/// immediately — accepted (daemon up) or `ConnectionRefused` (down) — with no
+/// slow path that would need a timeout. (A connect *timeout* isn't even
+/// available here: the 0.16 threaded `Io` backend panics on
+/// `netConnectIpPosix with timeout`, and a loopback connect never blocks long
+/// enough to want one.) Best-effort: anything that isn't a clean connect reads
+/// as not reachable.
+pub fn daemonReachable(allocator: std.mem.Allocator, auth: models.CoinAuth) bool {
+    var threaded: std.Io.Threaded = .init(allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    const port = std.fmt.parseInt(u16, auth.port, 10) catch return false;
+    const addr = std.Io.net.IpAddress.parseIp4(auth.ip_address, port) catch return false;
+    const stream = addr.connect(io, .{ .mode = .stream }) catch return false;
+    stream.close(io);
+    return true;
+}
+
 /// Build an `Authorization: Basic <base64(user:password)>` header value.
 fn basicAuthHeader(allocator: std.mem.Allocator, user: []const u8, password: []const u8) ![]u8 {
     const creds = try std.fmt.allocPrint(allocator, "{s}:{s}", .{ user, password });
@@ -384,6 +414,25 @@ test "jsonQuote escapes a passphrase so it can't break out of the params array" 
         defer allocator.free(q);
         try std.testing.expectEqualStrings("\"a\\\"b\\\\c\"", q);
     }
+}
+
+test "daemonReachable reads an unparseable endpoint as not reachable" {
+    // The guard clauses must fail closed before any socket work: a malformed
+    // address or port can't be probed, so it reads as down rather than erroring.
+    // (The connect path itself needs a live listener and is exercised by the app.)
+    const allocator = std.testing.allocator;
+    try std.testing.expect(!daemonReachable(allocator, .{
+        .ip_address = "not-an-ip",
+        .port = "17566",
+        .rpc_user = "",
+        .rpc_password = "",
+    }));
+    try std.testing.expect(!daemonReachable(allocator, .{
+        .ip_address = "127.0.0.1",
+        .port = "not-a-port",
+        .rpc_user = "",
+        .rpc_password = "",
+    }));
 }
 
 test "basic auth header is correctly base64-encoded" {
