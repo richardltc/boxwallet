@@ -3840,6 +3840,7 @@ pub const App = struct {
                 middle,
                 daemon_button,
             }),
+            .settings => try renderSettingsTab(a, coin, brand, self.home_dir),
             else => try renderPlaceholderTab(a, self.active_tab),
         };
 
@@ -3861,8 +3862,36 @@ pub const App = struct {
         return std.fmt.allocPrint(a, "{s}{s}", .{ strip, hint });
     }
 
-    /// Placeholder body for a not-yet-built tab (Transactions/Receive/Send/
-    /// Settings) — its title plus a "coming soon" note.
+    /// The Settings tab body: the on-disk location of the coin's managed wallet
+    /// file, so the user can find/back it up. Coins BoxWallet manages no discrete
+    /// wallet file for (Ergo's node-internal wallet, Epic, Zano) show an em-dash.
+    /// Monero-style coins list the `.keys` companion on its own line. The path is
+    /// built on the per-frame arena `a`, like the rest of the pane.
+    fn renderSettingsTab(a: std.mem.Allocator, coin: Coin, brand: zz.Color, home_dir: []const u8) ![]const u8 {
+        const wallet_label = statusLabel(a, brand, "Wallet file", true);
+        const wf = coin.walletPath(a, home_dir) catch null;
+        const wallet_value: []const u8 = if (wf) |w|
+            (zz.Style{}).dim(true).render(a, w.path) catch w.path
+        else
+            (zz.Style{}).fg(.brightBlack).render(a, "—  (managed by the node)") catch "—";
+        // A Monero wallet is a file pair — show its `.keys` companion on its own
+        // aligned row ("Wallet keys" is the same width as "Wallet file") so the
+        // user knows to back up both. Empty (folds out) for single-file coins.
+        const keys_row: []const u8 = if (wf) |w| blk: {
+            const k = w.keys orelse break :blk "";
+            const keys_label = statusLabel(a, brand, "Wallet keys", true);
+            const keys_value = (zz.Style{}).dim(true).render(a, k) catch k;
+            break :blk std.fmt.allocPrint(a, "\n{s}: {s}", .{ keys_label, keys_value }) catch "";
+        } else "";
+        return std.fmt.allocPrint(a,
+            \\Settings
+            \\
+            \\{s}: {s}{s}
+        , .{ wallet_label, wallet_value, keys_row });
+    }
+
+    /// Placeholder body for a not-yet-built tab (Transactions/Receive/Send) — its
+    /// title plus a "coming soon" note.
     fn renderPlaceholderTab(a: std.mem.Allocator, tab: DetailTab) ![]const u8 {
         return std.fmt.allocPrint(a,
             \\{s}

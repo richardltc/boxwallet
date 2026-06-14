@@ -1104,4 +1104,6 @@ test "coin vtable dispatches to Epic metadata, no wallet" {
     // Node only — no wallet, no balance.
     try std.testing.expect(!c.supportsWallet());
     try std.testing.expect(!c.supportsBalance());
+    // No managed wallet file, so the Settings tab shows an em-dash.
+    try std.testing.expect((try c.walletPath(std.testing.allocator, "/home/alice")) == null);
 }

@@ -142,6 +142,15 @@ pub const DigiByte = struct {
         return conf.dataDir(allocator, home, home_dir, home_dir_win);
     }
 
+    /// The managed wallet's on-disk location — the bitcoin-core 0.21+ wallet
+    /// directory `<datadir>/wallets/BoxWallet` (holding `wallet.dat`), created by
+    /// `ensureWallet`. Caller owns the returned strings.
+    pub fn walletPath(allocator: std.mem.Allocator, home: []const u8) !?Coin.WalletFile {
+        const data_dir = try dataDir(allocator, home);
+        defer allocator.free(data_dir);
+        return .{ .path = try std.fs.path.join(allocator, &.{ data_dir, "wallets", "BoxWallet" }) };
+    }
+
     /// True if `digibyted` (`digibyted.exe` on Windows) is already present under
     /// `install_root`.
     pub fn isInstalled(allocator: std.mem.Allocator, install_root: []const u8) bool {
@@ -286,6 +295,7 @@ pub const DigiByte = struct {
         .blockchain_state = vtBlockchainState,
         .daemon_info = vtDaemonInfo,
         .data_dir = vtDataDir,
+        .wallet_path = vtWalletPath,
         .is_installed = vtIsInstalled,
         .install = vtInstall,
         .prepare_conf = vtPrepareConf,
@@ -351,6 +361,13 @@ pub const DigiByte = struct {
         home: []const u8,
     ) anyerror![]const u8 {
         return dataDir(allocator, home);
+    }
+    fn vtWalletPath(
+        _: *anyopaque,
+        allocator: std.mem.Allocator,
+        home: []const u8,
+    ) anyerror!?Coin.WalletFile {
+        return walletPath(allocator, home);
     }
     fn vtIsInstalled(_: *anyopaque, allocator: std.mem.Allocator, install_root: []const u8) bool {
         return isInstalled(allocator, install_root);
@@ -566,6 +583,16 @@ test "coin vtable dispatches to DigiByte metadata" {
     // Bitcoin-core wallet over RPC: the `w` menu and the balance lines are both on.
     try std.testing.expect(c.supportsWallet());
     try std.testing.expect(c.supportsBalance());
+}
+
+test "walletPath points at the bitcoin-core BoxWallet directory" {
+    if (builtin.os.tag == .windows) return error.SkipZigTest;
+    const allocator = std.testing.allocator;
+    var dgb: DigiByte = .{};
+    const wf = (try dgb.coin().walletPath(allocator, "/home/alice")).?;
+    defer allocator.free(wf.path);
+    try std.testing.expectEqualStrings("/home/alice/.digibyte/wallets/BoxWallet", wf.path);
+    try std.testing.expect(wf.keys == null);
 }
 
 test "maps getwalletinfo unlocked_until to the wallet security state" {

@@ -786,6 +786,8 @@ test "coin vtable dispatches to Ergo metadata" {
     // `supportsWallet`).
     try std.testing.expect(c.supportsBalance());
     try std.testing.expect(!c.supportsWallet());
+    // Node-internal wallet — no discrete file for the Settings tab to list.
+    try std.testing.expect((try c.walletPath(std.testing.allocator, "/home/alice")) == null);
 }
 
 test "parses /wallet/balances nanoErg into whole-ERG available/total" {
