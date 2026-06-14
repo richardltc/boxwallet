@@ -158,6 +158,15 @@ pub const Coin = struct {
         alt_color: []const u8,
     };
 
+    /// Where a coin's managed wallet lives on disk, for the Settings tab. `path`
+    /// is the primary wallet file (or directory); `keys` is the Monero-style
+    /// `.keys` companion (null for single-file coins). Strings owned by the
+    /// caller's allocator.
+    pub const WalletFile = struct {
+        path: []const u8,
+        keys: ?[]const u8 = null,
+    };
+
     pub const VTable = struct {
         coin_name: *const fn (ptr: *anyopaque) []const u8,
         coin_name_abbrev: *const fn (ptr: *anyopaque) []const u8,
@@ -332,6 +341,15 @@ pub const Coin = struct {
             auth: models.CoinAuth,
             src_path: []const u8,
         ) anyerror!void = null,
+        /// Optional: the on-disk location of the coin's managed wallet, for the
+        /// Settings tab. Returns null for coins BoxWallet manages no discrete
+        /// wallet file for (Ergo's node-internal wallet, Epic's node-only build,
+        /// Zano). Caller owns the returned struct's strings (built on `allocator`).
+        wallet_path: ?*const fn (
+            ptr: *anyopaque,
+            allocator: std.mem.Allocator,
+            home_dir: []const u8,
+        ) anyerror!?WalletFile = null,
         /// Optional: the JSON-RPC method to probe for the daemon's warm-up phase
         /// (the bitcoin-derived "-28 in warm-up" reply carries a phase string like
         /// "Verifying blocks…"). Returns a method the daemon supports (`getinfo` /
@@ -472,6 +490,18 @@ pub const Coin = struct {
         auth: models.CoinAuth,
     ) !void {
         if (self.vtable.ensure_wallet) |f| return f(self.ptr, allocator, auth);
+    }
+
+    /// The coin's managed wallet location for the Settings tab, or null when the
+    /// coin has no single discrete wallet file (or no hook wired). Caller owns
+    /// the returned struct's strings.
+    pub fn walletPath(
+        self: Coin,
+        allocator: std.mem.Allocator,
+        home_dir: []const u8,
+    ) !?WalletFile {
+        const f = self.vtable.wallet_path orelse return null;
+        return f(self.ptr, allocator, home_dir);
     }
 
     /// Whether this coin exposes a wallet BoxWallet can manage (drives the `w`

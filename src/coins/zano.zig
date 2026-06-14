@@ -514,4 +514,7 @@ test "coin vtable dispatches to Zano metadata" {
     try std.testing.expectEqualStrings("zanod", c.daemonFile());
     try std.testing.expectEqualStrings("11211", c.rpcDefaultPort());
     try std.testing.expectEqual(Coin.LaunchMode.foreground, c.launchMode());
+    // BoxWallet manages no fixed wallet file for Zano, so the Settings tab shows
+    // an em-dash rather than a path.
+    try std.testing.expect((try c.walletPath(std.testing.allocator, "/home/alice")) == null);
 }

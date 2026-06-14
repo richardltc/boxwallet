@@ -644,6 +644,18 @@ pub const Nerva = struct {
         return std.fs.path.join(allocator, &.{ data_dir, "wallets" });
     }
 
+    /// The managed wallet's on-disk location for the Settings tab: the Monero
+    /// `<datadir>/wallets/BoxWallet` file plus its `.keys` companion. Caller owns
+    /// the returned strings.
+    pub fn walletPath(allocator: std.mem.Allocator, home: []const u8) !?Coin.WalletFile {
+        const dir = try walletDir(allocator, home);
+        defer allocator.free(dir);
+        const path = try std.fs.path.join(allocator, &.{ dir, wallet_name });
+        errdefer allocator.free(path);
+        const keys = try std.fs.path.join(allocator, &.{ dir, wallet_name ++ ".keys" });
+        return .{ .path = path, .keys = keys };
+    }
+
     /// Port the wallet process is bound to — its RPC endpoint, distinct from the
     /// daemon's. The lifecycle in `app.zig` builds a `wallet_auth` from this.
     fn walletRpcPort() []const u8 {
@@ -1079,6 +1091,7 @@ pub const Nerva = struct {
         .blockchain_state = vtBlockchainState,
         .daemon_info = vtDaemonInfo,
         .data_dir = vtDataDir,
+        .wallet_path = vtWalletPath,
         .is_installed = vtIsInstalled,
         .install = vtInstall,
         .prepare_conf = vtPrepareConf,
@@ -1140,6 +1153,13 @@ pub const Nerva = struct {
         home: []const u8,
     ) anyerror![]const u8 {
         return dataDir(allocator, home);
+    }
+    fn vtWalletPath(
+        _: *anyopaque,
+        allocator: std.mem.Allocator,
+        home: []const u8,
+    ) anyerror!?Coin.WalletFile {
+        return walletPath(allocator, home);
     }
     fn vtIsInstalled(_: *anyopaque, allocator: std.mem.Allocator, install_root: []const u8) bool {
         return isInstalled(allocator, install_root);
@@ -1424,6 +1444,17 @@ test "coin vtable dispatches to Nerva metadata" {
     try std.testing.expectEqualStrings("nerva.conf", c.confFile());
     try std.testing.expectEqualStrings("17566", c.rpcDefaultPort());
     try std.testing.expectEqual(Coin.LaunchMode.foreground, c.launchMode());
+}
+
+test "walletPath reports the Monero wallet file plus its .keys companion" {
+    if (builtin.os.tag == .windows) return error.SkipZigTest;
+    const allocator = std.testing.allocator;
+    var n: Nerva = .{};
+    const wf = (try n.coin().walletPath(allocator, "/home/alice")).?;
+    defer allocator.free(wf.path);
+    defer allocator.free(wf.keys.?);
+    try std.testing.expectEqualStrings("/home/alice/.nerva/wallets/BoxWallet", wf.path);
+    try std.testing.expectEqualStrings("/home/alice/.nerva/wallets/BoxWallet.keys", wf.keys.?);
 }
 
 test "prepareConf writes a Monero-valid conf nervad can parse (no bitcoin keys)" {
