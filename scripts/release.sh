@@ -100,14 +100,31 @@ AUTH=(-H "Authorization: token $CODEBERG_TOKEN")
 
 # Run a request and split curl's appended status code from the body, so API
 # errors are visible (curl -f swallows the body and prints only 'error: 22').
+#
+# Retries on transient server errors (HTTP 5xx) with a short backoff: Forgejo
+# processes a freshly-pushed tag asynchronously, so a create-release POST fired
+# immediately after the tag push can race the server and 500 (with an empty
+# message) until the tag is registered. Retrying a few times rides out that
+# window — and any other transient 5xx — instead of aborting the whole run.
 RESP_BODY=""
 RESP_STATUS=""
 api() { # method url [extra curl args...]
   local method="$1" url="$2"; shift 2
-  local out
-  out="$(curl -sS -w $'\n%{http_code}' "${AUTH[@]}" -X "$method" "$url" "$@")"
-  RESP_STATUS="${out##*$'\n'}"
-  RESP_BODY="${out%$'\n'*}"
+  local out attempt=1 max=5
+  while :; do
+    out="$(curl -sS -w $'\n%{http_code}' "${AUTH[@]}" -X "$method" "$url" "$@")"
+    RESP_STATUS="${out##*$'\n'}"
+    RESP_BODY="${out%$'\n'*}"
+    # Retry only on 5xx, and only while attempts remain.
+    case "$RESP_STATUS" in
+      5*) [ "$attempt" -lt "$max" ] || break ;;
+      *) break ;;
+    esac
+    printf '    %s %s -> HTTP %s, retrying (%d/%d)...\n' \
+      "$method" "$url" "$RESP_STATUS" "$attempt" "$max" >&2
+    sleep "$attempt"   # linear backoff: 1s, 2s, 3s, 4s
+    attempt=$((attempt + 1))
+  done
 }
 
 # Sanity-check the token before mutating anything: a 401/403 here means a
