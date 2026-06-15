@@ -144,7 +144,7 @@ pub fn populate(
     }
     if (!hasKey(content, "rpcpassword")) {
         var pw_buf: [20]u8 = undefined;
-        try out.writer.print("rpcpassword={s}\n", .{randomPassword(&pw_buf)});
+        try out.writer.print("rpcpassword={s}\n", .{randomPassword(io, &pw_buf)});
         wrote = true;
     }
     if (!hasKey(content, "server")) {
@@ -333,21 +333,27 @@ fn hasKey(content: []const u8, key: []const u8) bool {
     return false;
 }
 
-/// Fill `buf` with a random alphanumeric password (mirrors the Go `rand.String`),
-/// returning it as a slice. Bytes come from the OS entropy source; on a platform
-/// without one we fall back to a seeded PRNG — fine for a local rpcpassword (the
-/// Go reference uses non-crypto `math/rand` here too).
-fn randomPassword(buf: []u8) []const u8 {
+/// Fill `buf` with a random alphanumeric password, returning it as a slice. Bytes
+/// come from the platform's cryptographically secure RNG via `io.random` (a CSPRNG
+/// seeded from OS entropy), so the rpcpassword guarding the daemon's localhost RPC
+/// isn't guessable by another local user — the same CSPRNG on every OS, with no
+/// weak fallback. Each byte is drawn with rejection sampling so the alphabet maps
+/// onto it without modulo bias.
+fn randomPassword(io: std.Io, buf: []u8) []const u8 {
     const charset = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
-    var raw: [64]u8 = undefined;
-    std.debug.assert(buf.len <= raw.len);
-    const from_os = builtin.os.tag == .linux and
-        std.os.linux.getrandom(&raw, buf.len, 0) == buf.len;
-    if (!from_os) {
-        var prng = std.Random.DefaultPrng.init(@intFromPtr(buf.ptr));
-        prng.random().bytes(raw[0..buf.len]);
+    // Reject the few high bytes that would skew the modulo, so every charset index
+    // is equally likely (256 % 62 == 8 bytes fall outside the uniform run).
+    const limit = 256 - (256 % charset.len);
+    io.random(buf); // seed every slot; the rare biased bytes are resampled below
+    for (buf) |*c| {
+        var b = c.*;
+        while (b >= limit) {
+            var one: [1]u8 = undefined;
+            io.random(&one);
+            b = one[0];
+        }
+        c.* = charset[b % charset.len];
     }
-    for (buf, 0..) |*c, i| c.* = charset[raw[i] % charset.len];
     return buf;
 }
 
@@ -650,4 +656,19 @@ test "setValue creates the conf (and dir) when absent" {
     const v = try readValue(allocator, io, dir, "litecoin.conf", "prune");
     defer if (v) |p| allocator.free(p);
     try std.testing.expectEqualStrings("0", v.?);
+}
+
+test "randomPassword fills the buffer with charset-only bytes" {
+    // Randomness quality isn't unit-testable, but charset compliance is the one
+    // externally observable property — and the rejection-sampling loop must always
+    // terminate with an in-alphabet byte for every slot, on every OS.
+    var threaded: std.Io.Threaded = .init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    const charset = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
+    var buf: [20]u8 = undefined;
+    const pw = randomPassword(io, &buf);
+    try std.testing.expectEqual(@as(usize, 20), pw.len);
+    for (pw) |c| try std.testing.expect(std.mem.indexOfScalar(u8, charset, c) != null);
 }
