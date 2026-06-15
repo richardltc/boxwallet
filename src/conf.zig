@@ -178,6 +178,115 @@ pub fn writeConf(
     try dir.writeFile(io, .{ .sub_path = conf_file, .data = body });
 }
 
+/// Read a single `key=value` setting from `conf_file` under `data_dir`, returning
+/// the (allocator-owned) value, or null when the conf or the key is absent. The
+/// conf is scanned line by line through a fixed buffer — never slurped whole —
+/// like `readAuth`. Used for settings BoxWallet exposes/reads back individually
+/// (e.g. a coin's `prune` target). The last occurrence wins, mirroring how a
+/// bitcoin daemon takes the final value of a repeated key.
+pub fn readValue(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    data_dir: []const u8,
+    conf_file: []const u8,
+    key: []const u8,
+) !?[]const u8 {
+    var dir = std.Io.Dir.cwd().openDir(io, data_dir, .{}) catch |err| switch (err) {
+        error.FileNotFound => return null,
+        else => return err,
+    };
+    defer dir.close(io);
+
+    var file = dir.openFile(io, conf_file, .{}) catch |err| switch (err) {
+        error.FileNotFound => return null,
+        else => return err,
+    };
+    defer file.close(io);
+
+    var found: ?[]const u8 = null;
+    errdefer if (found) |f| allocator.free(f);
+
+    var buf: [8 * 1024]u8 = undefined;
+    var fr = file.reader(io, &buf);
+    while (try fr.interface.takeDelimiter('\n')) |raw| {
+        const line = std.mem.trim(u8, raw, " \t\r");
+        if (line.len == 0 or line[0] == '#') continue;
+        const eq = std.mem.indexOfScalar(u8, line, '=') orelse continue;
+        if (!std.mem.eql(u8, std.mem.trim(u8, line[0..eq], " \t"), key)) continue;
+        // Each `takeDelimiter` slice is overwritten by the next read, so dup the
+        // value out now; a later occurrence frees the earlier one and wins.
+        const val = std.mem.trim(u8, line[eq + 1 ..], " \t");
+        const dup = try allocator.dupe(u8, val);
+        if (found) |f| allocator.free(f);
+        found = dup;
+    }
+    return found;
+}
+
+/// Set `key=value` in `conf_file` under `data_dir`, replacing an existing
+/// (non-comment) line for `key` in place or appending one if absent; every other
+/// line — comments, blank lines, ordering, line endings — is preserved. The data
+/// dir and conf are created if missing. For settings BoxWallet owns the value of
+/// (e.g. a coin's `prune` target chosen at first start). The conf is a tiny file,
+/// read whole through one bounded buffer and rewritten once.
+pub fn setValue(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    data_dir: []const u8,
+    conf_file: []const u8,
+    key: []const u8,
+    value: []const u8,
+) !void {
+    var dir = try std.Io.Dir.cwd().createDirPathOpen(io, data_dir, .{});
+    defer dir.close(io);
+
+    var content: []const u8 = "";
+    var content_owned = false;
+    if (dir.openFile(io, conf_file, .{})) |file| {
+        defer file.close(io);
+        const stat = try file.stat(io);
+        const size: usize = @intCast(@min(stat.size, 64 * 1024));
+        const data = try allocator.alloc(u8, size);
+        const n = try file.readPositionalAll(io, data, 0);
+        content = data[0..n];
+        content_owned = true;
+    } else |err| switch (err) {
+        error.FileNotFound => {},
+        else => return err,
+    }
+    defer if (content_owned) allocator.free(content);
+
+    var out: std.Io.Writer.Allocating = .init(allocator);
+    defer out.deinit();
+
+    // Copy lines forward verbatim, swapping the first matching key line for the
+    // new value. Preserves original line endings on every untouched line.
+    var replaced = false;
+    var i: usize = 0;
+    while (i < content.len) {
+        const nl = std.mem.indexOfScalarPos(u8, content, i, '\n') orelse content.len;
+        const end = if (nl < content.len) nl + 1 else nl;
+        const line = std.mem.trim(u8, content[i..nl], " \t\r");
+        const eq = std.mem.indexOfScalar(u8, line, '=');
+        const is_key = !replaced and line.len > 0 and line[0] != '#' and eq != null and
+            std.mem.eql(u8, std.mem.trim(u8, line[0..eq.?], " \t"), key);
+        if (is_key) {
+            try out.writer.print("{s}={s}\n", .{ key, value });
+            replaced = true;
+        } else {
+            try out.writer.writeAll(content[i..end]);
+        }
+        i = end;
+    }
+    if (!replaced) {
+        const so_far = out.written();
+        if (so_far.len > 0 and so_far[so_far.len - 1] != '\n') try out.writer.writeByte('\n');
+        try out.writer.print("{s}={s}\n", .{ key, value });
+    }
+
+    try dir.writeFile(io, .{ .sub_path = conf_file, .data = out.written() });
+}
+
 /// Copy `content` into `w`, dropping any line that *enables* `daemon` (a truthy
 /// `daemon=…`). Returns true if such a line was removed, so the caller knows to
 /// rewrite the conf. Everything else — comments, blank lines, ordering, other
@@ -455,4 +564,90 @@ test "readAuth keeps defaults when the conf omits everything" {
     try std.testing.expectEqualStrings("defuser", auth.rpc_user);
     try std.testing.expectEqualStrings("", auth.rpc_password);
     try std.testing.expectEqualStrings("1234", auth.port);
+}
+
+test "readValue returns null for a missing conf or missing key, the value when present" {
+    const allocator = std.testing.allocator;
+
+    var threaded: std.Io.Threaded = .init(allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    const dir = "test-conf-readvalue-out";
+    std.Io.Dir.cwd().deleteTree(io, dir) catch {};
+    defer std.Io.Dir.cwd().deleteTree(io, dir) catch {};
+
+    // No conf at all → null (no error).
+    try std.testing.expect((try readValue(allocator, io, dir, "litecoin.conf", "prune")) == null);
+
+    var d = try std.Io.Dir.cwd().createDirPathOpen(io, dir, .{});
+    defer d.close(io);
+    try d.writeFile(io, .{ .sub_path = "litecoin.conf", .data =
+        \\# litecoin.conf
+        \\rpcuser=ltc
+        \\prune=5000
+        \\
+    });
+
+    const present = try readValue(allocator, io, dir, "litecoin.conf", "prune");
+    defer if (present) |p| allocator.free(p);
+    try std.testing.expectEqualStrings("5000", present.?);
+
+    // A key the conf omits → null.
+    try std.testing.expect((try readValue(allocator, io, dir, "litecoin.conf", "txindex")) == null);
+}
+
+test "setValue replaces an existing key in place and appends a missing one" {
+    const allocator = std.testing.allocator;
+
+    var threaded: std.Io.Threaded = .init(allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    const dir = "test-conf-setvalue-out";
+    std.Io.Dir.cwd().deleteTree(io, dir) catch {};
+    defer std.Io.Dir.cwd().deleteTree(io, dir) catch {};
+
+    var d = try std.Io.Dir.cwd().createDirPathOpen(io, dir, .{});
+    d.writeFile(io, .{ .sub_path = "litecoin.conf", .data =
+        \\# litecoin.conf
+        \\prune=2000
+        \\rpcuser=ltc
+        \\
+    }) catch {};
+    d.close(io);
+
+    // Replace prune in place; the comment, ordering, and other keys survive.
+    try setValue(allocator, io, dir, "litecoin.conf", "prune", "10000");
+    {
+        const v = try readValue(allocator, io, dir, "litecoin.conf", "prune");
+        defer if (v) |p| allocator.free(p);
+        try std.testing.expectEqualStrings("10000", v.?);
+        const u = try readValue(allocator, io, dir, "litecoin.conf", "rpcuser");
+        defer if (u) |p| allocator.free(p);
+        try std.testing.expectEqualStrings("ltc", u.?);
+    }
+
+    // A key not present is appended.
+    try setValue(allocator, io, dir, "litecoin.conf", "txindex", "1");
+    const t = try readValue(allocator, io, dir, "litecoin.conf", "txindex");
+    defer if (t) |p| allocator.free(p);
+    try std.testing.expectEqualStrings("1", t.?);
+}
+
+test "setValue creates the conf (and dir) when absent" {
+    const allocator = std.testing.allocator;
+
+    var threaded: std.Io.Threaded = .init(allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    const dir = "test-conf-setvalue-fresh-out";
+    std.Io.Dir.cwd().deleteTree(io, dir) catch {};
+    defer std.Io.Dir.cwd().deleteTree(io, dir) catch {};
+
+    try setValue(allocator, io, dir, "litecoin.conf", "prune", "0");
+    const v = try readValue(allocator, io, dir, "litecoin.conf", "prune");
+    defer if (v) |p| allocator.free(p);
+    try std.testing.expectEqualStrings("0", v.?);
 }
