@@ -4032,9 +4032,10 @@ pub const App = struct {
         // Everything below the header is the Home tab's content; the other tabs
         // are scaffolded placeholders for now. The coin/balance header and the
         // tab strip stay pinned above whichever tab is active.
-        // A short one-line description under the coin name, dimmed so it reads as a
-        // subtitle. Sits a blank line below the name/version row.
-        const description = (zz.Style{}).dim(true).render(a, coin.coinDescription()) catch coin.coinDescription();
+        // A short one-line description under the coin name, in the default colour
+        // to match the `v<version>` text in the header. Sits a blank line below
+        // the name/version row.
+        const description = coin.coinDescription();
 
         const tab_strip = try renderTabStrip(a, brand, self.active_tab);
         const body: []const u8 = switch (self.active_tab) {
