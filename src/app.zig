@@ -17,6 +17,7 @@ const Nerva = @import("coins/nerva.zig").Nerva;
 const Salvium = @import("coins/salvium.zig").Salvium;
 const ReddCoin = @import("coins/reddcoin.zig").ReddCoin;
 const Epic = @import("coins/epic.zig").Epic;
+const Litecoin = @import("coins/litecoin.zig").Litecoin;
 
 /// The application's display name, version, and brand colour — the one place to
 /// change how BoxWallet identifies itself in the UI. `app_color` is the brand
@@ -37,8 +38,8 @@ const fallback_install_root = "boxwallet-coins";
 /// pane renders generically through the `Coin` interface, so it needs no per-coin
 /// code. A coin whose per-coin `live` constant is false stays registered here but
 /// is dropped from `entries` — hidden from the nav entirely until it's ready.
-const Entry = enum { home, nexa, divi, ergo, digibyte, zano, nerva, reddcoin, epic, salvium };
-const coin_entries = [_]Entry{ .nexa, .divi, .ergo, .digibyte, .zano, .nerva, .reddcoin, .epic, .salvium };
+const Entry = enum { home, nexa, divi, ergo, digibyte, zano, nerva, reddcoin, epic, salvium, litecoin };
+const coin_entries = [_]Entry{ .nexa, .divi, .ergo, .digibyte, .zano, .nerva, .reddcoin, .epic, .salvium, .litecoin };
 
 fn entryLabel(e: Entry) []const u8 {
     return switch (e) {
@@ -52,6 +53,7 @@ fn entryLabel(e: Entry) []const u8 {
         .reddcoin => ReddCoin.coin_name,
         .epic => Epic.coin_name,
         .salvium => Salvium.coin_name,
+        .litecoin => Litecoin.coin_name,
     };
 }
 
@@ -93,6 +95,7 @@ fn entryColor(e: Entry) zz.Color {
         .reddcoin => zz.Color.hex(ReddCoin.coin_color),
         .epic => zz.Color.hex(Epic.coin_color),
         .salvium => zz.Color.hex(Salvium.coin_color),
+        .litecoin => zz.Color.hex(Litecoin.coin_color),
     };
 }
 
@@ -111,6 +114,7 @@ fn entryLive(e: Entry) bool {
         .reddcoin => ReddCoin.live,
         .epic => Epic.live,
         .salvium => Salvium.live,
+        .litecoin => Litecoin.live,
     };
 }
 
@@ -554,6 +558,37 @@ const QuickSyncModal = struct {
     }
 };
 
+/// A first-start prune preset: a menu label and the target it sets, in MiB
+/// (matching the daemon's `prune=` units; 0 = full node). 1 GB is taken as
+/// 1000 MiB so the size reads back cleanly as "N GB" on the Settings tab.
+const PrunePreset = struct { label: []const u8, mib: i64 };
+const prune_presets = [_]PrunePreset{
+    .{ .label = "No pruning (full node)", .mib = 0 },
+    .{ .label = "Prune to 2 GB", .mib = 2000 },
+    .{ .label = "Prune to 5 GB", .mib = 5000 },
+    .{ .label = "Prune to 10 GB", .mib = 10000 },
+};
+
+/// The prune prompt — a small modal shown the first time a prune-capable coin's
+/// daemon starts (Litecoin), asking how much disk to cap the blockchain at. On a
+/// choice it writes `prune=<MiB>` to the coin's conf, then the daemon starts (via
+/// `startAfterPrune`). Distinct from the wallet/QuickSync modals so the flows
+/// don't entangle. The menu lists `prune_presets` plus a trailing "Custom…" that
+/// advances to a GB text field (`prune_input`).
+const PruneModal = struct {
+    const Stage = enum { menu, custom };
+    /// Menu index of the trailing "Custom…" row (after the presets).
+    const custom_row = prune_presets.len;
+
+    stage: Stage = .menu,
+    /// The entry the prompt acts on, so a moved left-nav selection doesn't misfire.
+    coin_idx: usize = 0,
+    /// Cursor over the menu: 0..prune_presets.len presets, then `custom_row`.
+    sel: usize = 0,
+    /// Set when a typed custom amount didn't parse, so the field can flag it.
+    bad_input: bool = false,
+};
+
 /// The update-confirm prompt — shown when the user presses `u` on a coin with an
 /// available update. Confirm-only: on Yes the stop → reinstall → restart sequence
 /// runs and its progress is shown in the main pane (Stopping… → Downloading… →
@@ -753,6 +788,16 @@ const Activity = struct {
     /// on the UI thread. Drives the "no wallet / locked / open" pane hint and which
     /// setup flow `w` opens. UI-thread only.
     ext_wallet_exists: bool = false,
+
+    /// The coin's configured prune target for the Settings tab, in MiB (0 = full
+    /// node), or -1 when unknown/unset. Cached so the tab doesn't read the conf in
+    /// the render path; refreshed lazily on the UI thread (`refreshPruneState`) and
+    /// written directly when the prune prompt applies a value. UI-thread only.
+    prune_mib: i64 = -1,
+    /// Whether `prune_mib` has been read from the conf yet — a one-shot latch so the
+    /// read happens once per selection rather than every tick. Re-armed nowhere: the
+    /// value only changes via the prune prompt, which sets `prune_mib` directly.
+    prune_read: bool = false,
 
     // --- external-wallet setup worker --------------------------------------
     // Mirrors the wallet-action worker: one create/restore/open RPC on a private
@@ -1801,6 +1846,7 @@ pub const App = struct {
     reddcoin: ReddCoin,
     epic: Epic,
     salvium: Salvium,
+    litecoin: Litecoin,
     selected: usize,
     /// Which tab of the selected coin's detail pane is showing. Global rather
     /// than per-coin: switching coins resets it to Home (see `move`).
@@ -1825,6 +1871,10 @@ pub const App = struct {
     /// The open update-confirm prompt, or null. Mutually exclusive with the other
     /// modals; while set it owns keyboard input and is composited over the dashboard.
     update_modal: ?UpdateModal = null,
+    /// The open first-start prune prompt, or null. Mutually exclusive with the
+    /// other modals; while set it owns keyboard input and is composited over the
+    /// dashboard, same as the wallet/QuickSync modals.
+    prune_modal: ?PruneModal = null,
     /// Masked passphrase entry for the wallet modal. Persistent (its backing
     /// buffer outlives a single modal), created in `init` and freed in `deinit`;
     /// its value is cleared whenever the modal closes or an action is sent.
@@ -1832,6 +1882,9 @@ pub const App = struct {
     /// Visible entry for a 25-word restore seed (external-wallet flow). Like
     /// `pw_input`, persistent and cleared on close/submit.
     seed_input: zz.TextInput,
+    /// Visible entry for a custom prune amount in GB (prune prompt). Persistent
+    /// like the others; digits only, cleared whenever the prompt opens.
+    prune_input: zz.TextInput,
     /// File browser for the restore-from-file flow (external-wallet coins).
     /// Persistent; navigated on demand, freed in `deinit`.
     file_picker: zz.components.FilePicker,
@@ -1917,10 +1970,12 @@ pub const App = struct {
             .reddcoin = .{},
             .epic = .{},
             .salvium = .{},
+            .litecoin = .{},
             .selected = 0,
             .activities = undefined,
             .pw_input = zz.TextInput.init(ctx.persistent_allocator),
             .seed_input = zz.TextInput.init(ctx.persistent_allocator),
+            .prune_input = zz.TextInput.init(ctx.persistent_allocator),
             .file_picker = zz.components.FilePicker.init(ctx.persistent_allocator),
         };
         // The wallet passphrase field masks its input and stays a fixed width.
@@ -1931,6 +1986,10 @@ pub const App = struct {
         // is wide enough for a 25-word mnemonic.
         self.seed_input.setWidth(modal_inner_w - 6);
         self.seed_input.setCharLimit(256);
+        // The custom-prune field takes a plain GB number — visible, narrow, and
+        // capped at a handful of digits.
+        self.prune_input.setWidth(10);
+        self.prune_input.setCharLimit(6);
         // The file browser only offers files (you're picking a wallet file), in a
         // modest viewport that fits the centered modal.
         self.file_picker.file_only = true;
@@ -2006,6 +2065,7 @@ pub const App = struct {
         }
         self.pw_input.deinit();
         self.seed_input.deinit();
+        self.prune_input.deinit();
         self.file_picker.deinit();
         if (self.install_root_owned) self.allocator.free(self.install_root);
         if (self.home_dir_owned) self.allocator.free(self.home_dir);
@@ -2025,6 +2085,10 @@ pub const App = struct {
                 }
                 if (self.qs_modal != null) {
                     self.qsModalKey(k);
+                    return .none;
+                }
+                if (self.prune_modal != null) {
+                    self.pruneModalKey(k);
                     return .none;
                 }
                 if (self.modal != null) {
@@ -2416,6 +2480,10 @@ pub const App = struct {
                         self.killWalletRpc(act);
                     if (i == self.selected) self.refreshExtWalletExists(xcoin, act);
                 }
+                // Cache the selected coin's prune setting for the Settings tab — a
+                // one-shot, cheap conf read, independent of daemon state so it
+                // shows even while the daemon is stopped.
+                if (i == self.selected) self.refreshPruneState(xcoin, act);
             }
 
             if (act.sync == .syncing) {
@@ -2784,6 +2852,7 @@ pub const App = struct {
             .reddcoin => @constCast(&self.reddcoin).coin(),
             .epic => @constCast(&self.epic).coin(),
             .salvium => @constCast(&self.salvium).coin(),
+            .litecoin => @constCast(&self.litecoin).coin(),
         };
     }
 
@@ -2952,10 +3021,23 @@ pub const App = struct {
             act.daemon_thread = null;
         }
 
-        // Offer the coin's sync accelerator (Nerva's QuickSync) before the first
-        // synced start: a yes/no prompt that, on yes, downloads the helper then
-        // starts. On a synced chain — or a coin with no accelerator — this is false
-        // and we start straight away.
+        // First-start prune prompt (Litecoin): ask how much disk to cap the
+        // blockchain at before the daemon ever runs. Offered only once — once a
+        // `prune` value is in the conf, this is false. The choice writes the conf,
+        // then `startAfterPrune` carries on with the rest of the preflight.
+        if (coin.offersPrunePrompt(self.allocator, self.home_dir)) {
+            self.openPruneModal(coin);
+            return;
+        }
+        self.startAfterPrune(coin, act);
+    }
+
+    /// The rest of the daemon-start preflight, after any prune prompt: offer the
+    /// coin's sync accelerator (Nerva's QuickSync) before the first synced start —
+    /// a yes/no prompt that, on yes, downloads the helper then starts. On a synced
+    /// chain — or a coin with no accelerator — start straight away. Factored out so
+    /// it can run both directly from `tryStart` and after the prune choice.
+    fn startAfterPrune(self: *App, coin: Coin, act: *Activity) void {
         if (coin.offersSyncAccelerator(self.allocator, self.install_root, self.home_dir)) {
             self.openQuickSyncModal(coin);
             return;
@@ -3071,6 +3153,118 @@ pub const App = struct {
         const act = &self.activities[m.coin_idx];
         self.qs_modal = null;
         if (coin) |c| self.beginDaemonStart(c, act);
+    }
+
+    /// Open the first-start prune prompt for `coin`. Resets the cursor to the
+    /// safest choice (full node) and clears the custom field.
+    fn openPruneModal(self: *App, coin: Coin) void {
+        _ = coin;
+        self.prune_modal = .{ .coin_idx = self.selected, .sel = 0 };
+        self.prune_input.setValue("") catch {};
+    }
+
+    /// Handle a keypress while the prune prompt is open. `menu` walks the presets +
+    /// "Custom…" (enter fires the choice or opens the custom field; esc cancels the
+    /// start). `custom` collects a GB number (enter applies; esc returns to the
+    /// menu; digits edit the field).
+    fn pruneModalKey(self: *App, k: zz.KeyEvent) void {
+        if (self.prune_modal == null) return;
+        const m = &self.prune_modal.?;
+        switch (m.stage) {
+            .menu => switch (k.key) {
+                .escape => self.prune_modal = null,
+                .up => if (m.sel > 0) {
+                    m.sel -= 1;
+                },
+                .down => if (m.sel < PruneModal.custom_row) {
+                    m.sel += 1;
+                },
+                .enter => self.choosePrune(),
+                .char => |c| switch (c) {
+                    'k' => if (m.sel > 0) {
+                        m.sel -= 1;
+                    },
+                    'j' => if (m.sel < PruneModal.custom_row) {
+                        m.sel += 1;
+                    },
+                    else => {},
+                },
+                else => {},
+            },
+            .custom => switch (k.key) {
+                // esc backs out to the menu rather than cancelling the whole start.
+                .escape => {
+                    m.stage = .menu;
+                    m.bad_input = false;
+                },
+                .enter => self.applyCustomPrune(),
+                // Digits only — a GB count. Typing clears a prior parse error.
+                .char => |c| if (c >= '0' and c <= '9') {
+                    m.bad_input = false;
+                    self.prune_input.handleKey(k);
+                },
+                // Backspace/paste/cursor moves edit the field.
+                else => self.prune_input.handleKey(k),
+            },
+        }
+    }
+
+    /// Act on the highlighted menu row: a preset applies its target straight away;
+    /// the trailing "Custom…" row opens the GB entry field.
+    fn choosePrune(self: *App) void {
+        const m = &self.prune_modal.?;
+        if (m.sel == PruneModal.custom_row) {
+            m.stage = .custom;
+            m.bad_input = false;
+            self.prune_input.setValue("") catch {};
+            self.prune_input.focus();
+            return;
+        }
+        self.applyPruneAndStart(prune_presets[m.sel].mib);
+    }
+
+    /// Parse the custom GB entry and apply it. A blank or unparseable value (or 0,
+    /// which is the "No pruning" preset's job) flags the field and waits.
+    fn applyCustomPrune(self: *App) void {
+        const m = &self.prune_modal.?;
+        const text = std.mem.trim(u8, self.prune_input.getValue(), " \t");
+        const gb = std.fmt.parseInt(i64, text, 10) catch {
+            m.bad_input = true;
+            return;
+        };
+        if (gb <= 0) {
+            m.bad_input = true;
+            return;
+        }
+        self.applyPruneAndStart(gb * 1000);
+    }
+
+    /// Persist the chosen prune target to the coin's conf, then carry on with the
+    /// daemon start. Writing the conf is a tiny synchronous op (like the wallet
+    /// flows); a failure is logged and the start proceeds (the daemon just runs
+    /// unpruned, and the prompt re-offers next time). Caches the value on the
+    /// Activity so the Settings tab reflects it immediately.
+    fn applyPruneAndStart(self: *App, prune_mib: i64) void {
+        const m = &self.prune_modal.?;
+        const idx = m.coin_idx;
+        const coin = self.coinAt(idx) orelse {
+            self.prune_modal = null;
+            return;
+        };
+        const act = &self.activities[idx];
+        self.prune_modal = null;
+
+        if (coin.applyPrune(self.allocator, self.home_dir, prune_mib)) {
+            act.prune_mib = prune_mib;
+            act.prune_read = true;
+            if (prune_mib == 0)
+                self.logf("{s}: pruning disabled (full node)", .{coin.coinName()})
+            else
+                self.logf("{s}: pruning to {d} MiB", .{ coin.coinName(), prune_mib });
+        } else |err| {
+            self.logf("{s}: couldn't write prune setting ({s}) — starting unpruned", .{ coin.coinName(), @errorName(err) });
+        }
+        self.startAfterPrune(coin, act);
     }
 
     /// Stop the selected coin's running daemon in the background (via the JSON-RPC
@@ -3231,6 +3425,17 @@ pub const App = struct {
         if (!coin.hasExternalWallet()) return;
         const ew = coin.externalWallet().?;
         act.ext_wallet_exists = ew.exists(self.allocator, self.home_dir);
+    }
+
+    /// Cache the coin's configured prune target for the Settings tab — a cheap conf
+    /// read done once per selection (latched by `prune_read`), so the render path
+    /// never touches disk. No-op for coins without the pruning capability. Runs on
+    /// the UI thread, like `refreshExtWalletExists`. `prune_mib` is left -1 when the
+    /// conf carries no `prune` value yet (the prompt hasn't been answered).
+    fn refreshPruneState(self: *App, coin: Coin, act: *Activity) void {
+        if (act.prune_read or coin.pruning() == null) return;
+        act.prune_mib = (coin.pruningState(self.allocator, self.home_dir) catch null) orelse -1;
+        act.prune_read = true;
     }
 
     /// `w` for an external-wallet (Monero-style) coin: open the setup menu when no
@@ -3478,6 +3683,10 @@ pub const App = struct {
             }
             if (self.qs_modal != null) {
                 const box = self.renderQuickSyncModal(a) catch break :blk screen;
+                break :blk overlayBox(a, screen, box, ctx.width, ctx.height) catch screen;
+            }
+            if (self.prune_modal != null) {
+                const box = self.renderPruneModal(a) catch break :blk screen;
                 break :blk overlayBox(a, screen, box, ctx.width, ctx.height) catch screen;
             }
             if (self.modal == null) break :blk screen;
@@ -3869,7 +4078,7 @@ pub const App = struct {
                 middle,
                 daemon_button,
             }),
-            .settings => try renderSettingsTab(a, coin, brand, self.home_dir),
+            .settings => try renderSettingsTab(a, coin, brand, self.home_dir, act),
             else => try renderPlaceholderTab(a, self.active_tab),
         };
 
@@ -3892,11 +4101,13 @@ pub const App = struct {
     }
 
     /// The Settings tab body: the on-disk location of the coin's managed wallet
-    /// file, so the user can find/back it up. Coins BoxWallet manages no discrete
-    /// wallet file for (Ergo's node-internal wallet, Epic, Zano) show an em-dash.
-    /// Monero-style coins list the `.keys` companion on its own line. The path is
-    /// built on the per-frame arena `a`, like the rest of the pane.
-    fn renderSettingsTab(a: std.mem.Allocator, coin: Coin, brand: zz.Color, home_dir: []const u8) ![]const u8 {
+    /// file (so the user can find/back it up) and — for prune-capable coins
+    /// (Litecoin) — the configured prune target, read-only. Coins BoxWallet manages
+    /// no discrete wallet file for (Ergo's node-internal wallet, Epic, Zano) show an
+    /// em-dash. Monero-style coins list the `.keys` companion on its own line. All
+    /// values come from the per-frame arena `a` and the cached `act` (no disk IO in
+    /// the render path). Labels are padded to a common width so the colons align.
+    fn renderSettingsTab(a: std.mem.Allocator, coin: Coin, brand: zz.Color, home_dir: []const u8, act: *const Activity) ![]const u8 {
         const wallet_label = statusLabel(a, brand, "Wallet file", true);
         const wf = coin.walletPath(a, home_dir) catch null;
         const wallet_value: []const u8 = if (wf) |w|
@@ -3912,11 +4123,32 @@ pub const App = struct {
             const keys_value = (zz.Style{}).dim(true).render(a, k) catch k;
             break :blk std.fmt.allocPrint(a, "\n{s}: {s}", .{ keys_label, keys_value }) catch "";
         } else "";
+        // Pruning row, only for coins with the capability (Litecoin). Read-only —
+        // the value is chosen once at first start. "Pruning" is padded to the
+        // wallet labels' width so the colon lines up.
+        const prune_row: []const u8 = if (coin.pruning() != null) blk: {
+            const prune_label = statusLabel(a, brand, "Pruning    ", true);
+            const prune_value = formatPruneValue(a, act.prune_mib);
+            break :blk std.fmt.allocPrint(a, "\n{s}: {s}", .{ prune_label, prune_value }) catch "";
+        } else "";
         return std.fmt.allocPrint(a,
             \\Settings
             \\
-            \\{s}: {s}{s}
-        , .{ wallet_label, wallet_value, keys_row });
+            \\{s}: {s}{s}{s}
+        , .{ wallet_label, wallet_value, keys_row, prune_row });
+    }
+
+    /// Format a cached prune target (MiB; 0 = full node, <0 = not configured yet)
+    /// for the Settings tab. Whole-GB targets read as "N GB" (matching how they're
+    /// chosen), an odd MiB value as "N MiB", and 0/unset spell out their meaning.
+    fn formatPruneValue(a: std.mem.Allocator, prune_mib: i64) []const u8 {
+        if (prune_mib < 0) return (zz.Style{}).fg(.brightBlack).render(a, "not set") catch "not set";
+        if (prune_mib == 0) return (zz.Style{}).dim(true).render(a, "disabled (full node)") catch "disabled (full node)";
+        const text = if (@rem(prune_mib, 1000) == 0)
+            std.fmt.allocPrint(a, "{d} GB", .{@divTrunc(prune_mib, 1000)}) catch "?"
+        else
+            std.fmt.allocPrint(a, "{d} MiB", .{prune_mib}) catch "?";
+        return (zz.Style{}).dim(true).render(a, text) catch text;
     }
 
     /// Placeholder body for a not-yet-built tab (Transactions/Receive/Send) — its
@@ -4330,6 +4562,68 @@ pub const App = struct {
         try modalRule(a, &out.writer, brand, inner_w, "└", "┘", "");
 
         return out.toOwnedSlice();
+    }
+
+    /// Render the first-start prune prompt box. Mirrors `renderQuickSyncModal`'s
+    /// chrome: a brand-coloured rule + rows. `menu` lists the presets plus a
+    /// "Custom…" row; `custom` shows a GB entry field.
+    fn renderPruneModal(self: *const App, a: std.mem.Allocator) ![]const u8 {
+        const m = self.prune_modal.?;
+        const coin = self.coinAt(m.coin_idx) orelse return error.NoCoin;
+        const brand = zz.Color.hex(coin.coinColor());
+        const inner_w = modal_inner_w;
+        const vbar = (zz.Style{}).fg(brand).render(a, "│") catch "│";
+
+        var out: std.Io.Writer.Allocating = .init(a);
+        errdefer out.deinit();
+
+        const title = try std.fmt.allocPrint(a, "{s} — blockchain storage", .{coin.coinName()});
+        try modalRule(a, &out.writer, brand, inner_w, "┌", "┐", title);
+        try modalRow(&out.writer, vbar, inner_w, "", 0);
+
+        switch (m.stage) {
+            .menu => {
+                try wrapIntoRows(a, &out.writer, vbar, inner_w, "How much disk should the blockchain use? Pruning caps it; the full chain is 50+ GB.", (zz.Style{}));
+                try modalRow(&out.writer, vbar, inner_w, "", 0);
+                // The presets, then a trailing "Custom…" row at `custom_row`.
+                inline for (prune_presets, 0..) |preset, i| {
+                    try pruneMenuRow(a, &out.writer, vbar, inner_w, brand, preset.label, i == m.sel);
+                }
+                try pruneMenuRow(a, &out.writer, vbar, inner_w, brand, "Custom…", m.sel == PruneModal.custom_row);
+            },
+            .custom => {
+                const field = try self.prune_input.view(a);
+                const text = try std.fmt.allocPrint(a, "Prune to: {s} GB", .{field});
+                try modalRow(&out.writer, vbar, inner_w, text, zz.width("Prune to: ") + zz.width(field) + zz.width(" GB"));
+                if (m.bad_input) {
+                    const warn = "Enter a whole number of GB (1 or more).";
+                    const styled = (zz.Style{}).fg(.red).render(a, warn) catch warn;
+                    try modalRow(&out.writer, vbar, inner_w, styled, zz.width(warn));
+                }
+            },
+        }
+
+        try modalRow(&out.writer, vbar, inner_w, "", 0);
+        const hint = switch (m.stage) {
+            .menu => "enter: select   esc: cancel",
+            .custom => "enter: confirm   esc: back",
+        };
+        const hint_styled = (zz.Style{}).dim(true).render(a, hint) catch hint;
+        try modalRow(&out.writer, vbar, inner_w, hint_styled, zz.width(hint));
+        try modalRule(a, &out.writer, brand, inner_w, "└", "┘", "");
+
+        return out.toOwnedSlice();
+    }
+
+    /// One selectable row of the prune menu: a `❯` marker + brand-bold label when
+    /// highlighted, plain otherwise. Mirrors the QuickSync/wallet menu rows.
+    fn pruneMenuRow(a: std.mem.Allocator, w: *std.Io.Writer, vbar: []const u8, inner_w: usize, brand: zz.Color, label: []const u8, sel: bool) !void {
+        const plain = try std.fmt.allocPrint(a, "{s}{s}", .{ if (sel) "❯ " else "  ", label });
+        const text = if (sel)
+            ((zz.Style{}).bold(true).fg(brand).render(a, plain) catch plain)
+        else
+            plain;
+        try modalRow(w, vbar, inner_w, text, zz.width(plain));
     }
 
     /// Render the update-confirm prompt box. Mirrors `renderQuickSyncModal`'s

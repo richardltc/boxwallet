@@ -137,6 +137,41 @@ pub const Coin = struct {
         ) anyerror!void,
     };
 
+    /// An optional **block-pruning** capability — for bitcoin-derived coins whose
+    /// chain is large enough that the user is asked, the first time the daemon
+    /// starts, how much disk to cap the blockchain at (Litecoin). The choice is
+    /// persisted in the coin's conf as `prune=<MiB>` (0 = full node), so it's a
+    /// one-time prompt and is read back for the Settings tab. Coins with no such
+    /// prompt leave `pruning` null; `offersPrunePrompt`/`pruning` key off it.
+    ///
+    /// Prune target is always in **MiB**, matching the daemon's `prune=` units; the
+    /// UI converts to/from GB for display. 0 disables pruning (keep the whole
+    /// chain); a positive value is the on-disk cap (the daemon enforces a ~550 MiB
+    /// floor).
+    pub const Pruning = struct {
+        /// Whether to show the first-start prune prompt now: true only when the
+        /// conf carries no `prune` setting yet (a fresh install BoxWallet hasn't
+        /// configured, and not a conf the user already pruned themselves). A pure
+        /// disk check, so it runs before the daemon is up.
+        should_offer: *const fn (
+            allocator: std.mem.Allocator,
+            home_dir: []const u8,
+        ) bool,
+        /// Persist the chosen prune target (MiB; 0 = full node) to the conf,
+        /// creating the conf/dir if absent. Called once, before the daemon launches.
+        apply: *const fn (
+            allocator: std.mem.Allocator,
+            home_dir: []const u8,
+            prune_mib: i64,
+        ) anyerror!void,
+        /// The configured prune target for the Settings tab: MiB, 0 (full node), or
+        /// null when the conf carries no `prune` setting. A cheap conf read.
+        current: *const fn (
+            allocator: std.mem.Allocator,
+            home_dir: []const u8,
+        ) anyerror!?i64,
+    };
+
     /// How a coin's daemon is launched.
     ///   - `fork`: the daemon forks itself into the background and the launcher
     ///     exits (bitcoin-derived `*coind -daemon`); the launcher waits on it and
@@ -375,6 +410,10 @@ pub const Coin = struct {
         /// coins with no such helper. `syncAccelerator`/`offersSyncAccelerator` key
         /// off this.
         sync_accelerator: ?*const SyncAccelerator = null,
+        /// Optional: the block-pruning capability (Litecoin's first-start prune
+        /// prompt). Null for coins with no prune prompt. `pruning`/`offersPrunePrompt`
+        /// key off this.
+        pruning: ?*const Pruning = null,
     };
 
     pub fn coinName(self: Coin) []const u8 {
@@ -657,5 +696,33 @@ pub const Coin = struct {
     ) bool {
         const sa = self.vtable.sync_accelerator orelse return false;
         return sa.should_offer(allocator, install_root, home_dir);
+    }
+
+    /// The block-pruning capability, or null when the coin has none. Callers use
+    /// the fn pointers directly (apply/current).
+    pub fn pruning(self: Coin) ?*const Pruning {
+        return self.vtable.pruning;
+    }
+
+    /// Whether to show the first-start prune prompt before launching the daemon —
+    /// false for coins with no prune capability, or when the conf already carries
+    /// a `prune` setting (so it's asked exactly once).
+    pub fn offersPrunePrompt(self: Coin, allocator: std.mem.Allocator, home_dir: []const u8) bool {
+        const pr = self.vtable.pruning orelse return false;
+        return pr.should_offer(allocator, home_dir);
+    }
+
+    /// Persist the chosen prune target (MiB; 0 = full node) to the coin's conf.
+    /// A no-op error path for coins without the capability.
+    pub fn applyPrune(self: Coin, allocator: std.mem.Allocator, home_dir: []const u8, prune_mib: i64) !void {
+        const pr = self.vtable.pruning orelse return error.Unsupported;
+        return pr.apply(allocator, home_dir, prune_mib);
+    }
+
+    /// The configured prune target (MiB, 0, or null when unset) for the Settings
+    /// tab, or null for coins without the capability.
+    pub fn pruningState(self: Coin, allocator: std.mem.Allocator, home_dir: []const u8) !?i64 {
+        const pr = self.vtable.pruning orelse return null;
+        return pr.current(allocator, home_dir);
     }
 };
