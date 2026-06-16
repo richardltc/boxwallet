@@ -1450,5 +1450,6 @@ test "Nerva wires the external-wallet capability" {
     const c = n.coin();
     try std.testing.expect(c.hasExternalWallet());
     const ew = c.externalWallet().?;
-    try std.testing.expectEqualStrings(Nerva.wallet_rpc_port, ew.rpc_port());
+    try std.testing.expect(c.hasExternalWalletProcess());
+    try std.testing.expectEqualStrings(Nerva.wallet_rpc_port, ew.rpc_port.?());
 }
