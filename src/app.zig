@@ -600,6 +600,10 @@ const UpdateModal = struct {
     sel: u8 = 0,
     from_buf: [32]u8 = undefined,
     from_len: usize = 0,
+    /// True when opened by `i` on an already-installed coin (a deliberate
+    /// reinstall) rather than by `u` for an available update — drives the
+    /// title/wording. Both confirm into the same stop → install → restart flow.
+    reinstall: bool = false,
 
     fn from(self: *const UpdateModal) []const u8 {
         return self.from_buf[0..self.from_len];
@@ -2942,7 +2946,29 @@ pub const App = struct {
     /// ignored, but other coins can be installing concurrently.
     fn tryInstall(self: *App) void {
         const coin = self.selectedCoin() orelse return;
-        self.beginInstall(coin, &self.activities[self.selected]);
+        const act = &self.activities[self.selected];
+        // A first-time install is the primary action — do it straight away. But a
+        // coin that's *already* installed shouldn't be clobbered by a stray `i`;
+        // confirm the reinstall first (it reuses the update prompt + flow).
+        if (act.installed) {
+            self.openReinstallModal();
+            return;
+        }
+        self.beginInstall(coin, act);
+    }
+
+    /// Open the reinstall-confirm prompt for the selected (installed) coin. A
+    /// no-op if anything's already in flight for the coin or another modal is
+    /// open. On Yes it runs the same stop → install → restart sequence as an
+    /// update; on No nothing happens.
+    fn openReinstallModal(self: *App) void {
+        const act = &self.activities[self.selected];
+        if (act.busy()) return;
+        if (act.update_await_stop or act.update_restart) return; // already updating
+        if (self.modal != null or self.qs_modal != null or self.update_modal != null) return;
+        // from_len stays 0: the prompt reads "reinstall the bundled version"
+        // rather than "X → Y", since this isn't tied to a newer release.
+        self.update_modal = .{ .coin_idx = self.selected, .reinstall = true };
     }
 
     /// Spawn the install/update worker for an explicit coin/activity. Factored out
@@ -4089,6 +4115,14 @@ pub const App = struct {
 
         const middle = try renderActivity(a, act, p);
         const daemon_button = renderDaemonButton(a, act);
+        // The action area below the bars: the optional install/update button
+        // (absent when an installed coin is already up to date) sitting above the
+        // always-present daemon control. Folding them together here keeps the
+        // spacing tidy whether or not the button is shown.
+        const controls = if (middle.len == 0)
+            daemon_button
+        else
+            try std.fmt.allocPrint(a, "{s}\n\n{s}", .{ middle, daemon_button });
 
         // Headline live status — what the daemon is doing right now.
         const status_line = renderStatus(a, act, brand);
@@ -4115,8 +4149,6 @@ pub const App = struct {
                 \\{s}  {s}
                 \\
                 \\{s}
-                \\
-                \\{s}
             , .{
                 status_line,
                 installed_label,
@@ -4140,8 +4172,7 @@ pub const App = struct {
                 disk_bar,
                 mem_label,
                 mem_bar,
-                middle,
-                daemon_button,
+                controls,
             }),
             .settings => try renderSettingsTab(a, coin, brand, self.home_dir, act),
             else => try renderPlaceholderTab(a, self.active_tab),
@@ -4333,14 +4364,16 @@ pub const App = struct {
     fn renderActivity(a: std.mem.Allocator, act: *const Activity, p: Phase) ![]const u8 {
         switch (p) {
             .idle => {
-                // When the daemon is already present, the action updates in
-                // place rather than doing a first-time install. A status line
-                // only adds anything in the not-yet-installed case; once
-                // installed the "[ Update ]   (press i)" button already says it.
-                const button = if (act.installed) "[ Update ]" else "[ Install ]";
-                if (act.installed)
-                    return std.fmt.allocPrint(a, "{s}   (press i)", .{button});
-                return std.fmt.allocPrint(a, "{s}   (press i)\n\nstatus: press i to install", .{button});
+                // Not yet installed: offer the first-time install on `i`.
+                if (!act.installed)
+                    return std.fmt.allocPrint(a, "[ Install ]   (press i)\n\nstatus: press i to install", .{});
+                // Installed and a newer core is bundled: offer the one-click
+                // update on `u` (the confirming stop → reinstall → restart flow).
+                // Up to date: no button — the header carries the version and the
+                // daemon control sits below; there's nothing to update.
+                if (act.update_available)
+                    return std.fmt.allocPrint(a, "[ Update ]   (press u)", .{});
+                return "";
             },
             .downloading, .extracting => {
                 const verb: []const u8 = if (act.updating) "updating" else "installing";
@@ -4704,7 +4737,7 @@ pub const App = struct {
         var out: std.Io.Writer.Allocating = .init(a);
         errdefer out.deinit();
 
-        const title = try std.fmt.allocPrint(a, "{s} — Update", .{coin.coinName()});
+        const title = try std.fmt.allocPrint(a, "{s} — {s}", .{ coin.coinName(), if (m.reinstall) "Reinstall" else "Update" });
         try modalRule(a, &out.writer, brand, inner_w, "┌", "┐", title);
         try modalRow(&out.writer, vbar, inner_w, "", 0);
 
@@ -4716,7 +4749,10 @@ pub const App = struct {
         try wrapIntoRows(a, &out.writer, vbar, inner_w, detail, (zz.Style{}));
         try modalRow(&out.writer, vbar, inner_w, "", 0);
 
-        const labels = [_][]const u8{ "Yes — update now", "No — not now" };
+        const labels = if (m.reinstall)
+            [_][]const u8{ "Yes — reinstall now", "No — cancel" }
+        else
+            [_][]const u8{ "Yes — update now", "No — not now" };
         for (labels, 0..) |lbl, i| {
             const sel = i == m.sel;
             const plain = try std.fmt.allocPrint(a, "{s}{s}", .{ if (sel) "❯ " else "  ", lbl });
