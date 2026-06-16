@@ -140,6 +140,12 @@ pub const Coin = struct {
             allocator: std.mem.Allocator,
             wallet_auth: models.CoinAuth,
         ) anyerror!models.WalletBalance,
+        /// Valid word counts for this wallet's restore seed, for the seed-entry
+        /// UI's prompt and live word counter (the daemon does the real validation).
+        /// The first entry is the canonical length named in the prompt. Monero/
+        /// CryptoNote coins use the default `{25}`; Ergo's BIP39 mnemonics accept
+        /// `{15, 12, 24}` (15 canonical, what its node generates).
+        seed_word_counts: []const usize = &.{25},
     };
 
     /// An optional **sync accelerator** — a large, opt-in helper file that makes a
@@ -710,6 +716,13 @@ pub const Coin = struct {
     /// (`hasExternalWallet` false). Callers use the fn pointers directly.
     pub fn externalWallet(self: Coin) ?*const ExternalWallet {
         return self.vtable.external_wallet;
+    }
+
+    /// Valid restore-seed word counts for the seed-entry UI (canonical length
+    /// first). Falls back to `{25}` for coins without an external wallet.
+    pub fn seedWordCounts(self: Coin) []const usize {
+        const ew = self.vtable.external_wallet orelse return &.{25};
+        return ew.seed_word_counts;
     }
 
     /// Run the coin's post-sync hook (a no-op for coins that wire none). The caller

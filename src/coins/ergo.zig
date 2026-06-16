@@ -494,6 +494,9 @@ pub const Ergo = struct {
         .open = walletOpen,
         .lock = walletLock,
         .balance = walletBalance,
+        // Ergo generates a 15-word BIP39 mnemonic, but the node accepts a standard
+        // 12- or 24-word phrase too (e.g. imported from another wallet).
+        .seed_word_counts = &.{ 15, 12, 24 },
     };
 
     // --- Files / paths ---------------------------------------------------
@@ -989,6 +992,8 @@ test "coin vtable dispatches to Ergo metadata" {
     // No portable wallet file, so the setup menu omits "restore from file".
     try std.testing.expect(c.externalWallet().?.restore_file == null);
     try std.testing.expect(c.externalWallet().?.lock != null);
+    // 15-word node mnemonic canonical, but 12/24 also accepted on restore.
+    try std.testing.expectEqualSlices(usize, &.{ 15, 12, 24 }, c.seedWordCounts());
     // Node-internal wallet — no discrete file for the Settings tab to list.
     try std.testing.expect((try c.walletPath(std.testing.allocator, "/home/alice")) == null);
 }

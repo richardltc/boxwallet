@@ -356,7 +356,8 @@ const WalletAction = enum {
 const WalletSetupOp = enum {
     /// Create a brand-new wallet (returns a mnemonic seed to display).
     create,
-    /// Restore a wallet from a 25-word mnemonic seed.
+    /// Restore a wallet from a mnemonic seed (length per coin — see
+    /// `ExternalWallet.seed_word_counts`).
     restore_seed,
     /// Import an existing wallet file browsed to with the file picker.
     restore_file,
@@ -498,7 +499,7 @@ const Modal = struct {
         /// External-wallet: re-enter a *new* password to confirm it matches (so a
         /// typo can't lock the user out of a wallet they can never reopen).
         setup_password_confirm,
-        /// External-wallet: type/paste the 25-word restore seed.
+        /// External-wallet: type/paste the restore seed (length per coin).
         setup_seed_input,
         /// External-wallet: browse for a wallet file to import.
         setup_file,
@@ -654,9 +655,24 @@ const wallet_rpc_cred_len = 24;
 /// and the footer hints without wrapping, while fitting an 80-column terminal.
 const modal_inner_w = 42;
 
-/// Expected word count of an external-wallet recovery seed (Monero/CryptoNote
-/// deterministic mnemonic). Drives the seed-entry prompt and live word counter.
-const seed_word_target = 25;
+/// Whether `n` is one of the wallet's valid restore-seed word counts (drives the
+/// seed-entry counter's green "looks right" state).
+fn seedCountAccepted(counts: []const usize, n: usize) bool {
+    for (counts) |c| if (c == n) return true;
+    return false;
+}
+
+/// Render the valid seed word counts as "a, b or c" (canonical first), for the
+/// seed-entry prompt. Caller owns the returned slice.
+fn joinSeedCounts(a: std.mem.Allocator, counts: []const usize) ![]const u8 {
+    var w: std.Io.Writer.Allocating = .init(a);
+    errdefer w.deinit();
+    for (counts, 0..) |c, i| {
+        if (i != 0) try w.writer.writeAll(if (i == counts.len - 1) " or " else ", ");
+        try w.writer.print("{d}", .{c});
+    }
+    return w.toOwnedSlice();
+}
 
 /// Per-coin install activity.
 ///
@@ -1940,7 +1956,7 @@ pub const App = struct {
     /// buffer outlives a single modal), created in `init` and freed in `deinit`;
     /// its value is cleared whenever the modal closes or an action is sent.
     pw_input: zz.TextInput,
-    /// Visible entry for a 25-word restore seed (external-wallet flow). Like
+    /// Visible entry for a restore seed (external-wallet flow). Like
     /// `pw_input`, persistent and cleared on close/submit.
     seed_input: zz.TextInput,
     /// Visible entry for a custom prune amount in GB (prune prompt). Persistent
@@ -4612,7 +4628,14 @@ pub const App = struct {
             // The words are word-wrapped across rows with a live count so a long
             // mnemonic stays inside the box instead of overrunning its right edge.
             .setup_seed_input => {
-                const prompt = "Enter your 25-word recovery seed (type or paste):";
+                // The accepted word counts are per-coin (Monero coins: 25; Ergo's
+                // BIP39 mnemonics: 15/12/24), so the prompt and counter reflect what
+                // this wallet takes rather than a hard-coded length.
+                const counts = if (self.coinAt(m.coin_idx)) |c| c.seedWordCounts() else &[_]usize{25};
+                const prompt = if (counts.len == 1)
+                    try std.fmt.allocPrint(a, "Enter your {d}-word recovery seed (type or paste):", .{counts[0]})
+                else
+                    try std.fmt.allocPrint(a, "Enter your recovery seed — {s} words (type or paste):", .{try joinSeedCounts(a, counts)});
                 try wrapIntoRows(a, &out.writer, vbar, inner_w, prompt, (zz.Style{}));
                 try modalRow(&out.writer, vbar, inner_w, "", 0);
 
@@ -4629,8 +4652,13 @@ pub const App = struct {
 
                 try modalRow(&out.writer, vbar, inner_w, "", 0);
                 const n = countWords(val);
-                const counter = try std.fmt.allocPrint(a, "{d} / {d} words", .{ n, seed_word_target });
-                const cstyle = if (n == seed_word_target) (zz.Style{}).fg(.green) else (zz.Style{}).dim(true);
+                // "/ C" against the single target when there's one; just the live
+                // count when several lengths are valid. Green once it's a valid count.
+                const counter = if (counts.len == 1)
+                    try std.fmt.allocPrint(a, "{d} / {d} words", .{ n, counts[0] })
+                else
+                    try std.fmt.allocPrint(a, "{d} words", .{n});
+                const cstyle = if (seedCountAccepted(counts, n)) (zz.Style{}).fg(.green) else (zz.Style{}).dim(true);
                 const counter_styled = cstyle.render(a, counter) catch counter;
                 try modalRow(&out.writer, vbar, inner_w, counter_styled, zz.width(counter));
             },
@@ -6022,6 +6050,26 @@ test "setup choices map to the right external-wallet ops" {
     // Every op has a non-empty verb (used in logs and the working line).
     for ([_]WalletSetupOp{ .create, .restore_seed, .restore_file, .open, .lock }) |op|
         try std.testing.expect(op.verb().len > 0);
+}
+
+test "seed word counter accepts any valid length and lists them in the prompt" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    // Monero coins: a single fixed length.
+    try std.testing.expect(seedCountAccepted(&.{25}, 25));
+    try std.testing.expect(!seedCountAccepted(&.{25}, 12));
+    try std.testing.expectEqualStrings("25", try joinSeedCounts(a, &.{25}));
+
+    // Ergo: 15 canonical, but 12/24 also accepted — both the 12-word import and
+    // the 15-word node phrase read as valid.
+    const ergo_counts: []const usize = &.{ 15, 12, 24 };
+    try std.testing.expect(seedCountAccepted(ergo_counts, 15));
+    try std.testing.expect(seedCountAccepted(ergo_counts, 12));
+    try std.testing.expect(seedCountAccepted(ergo_counts, 24));
+    try std.testing.expect(!seedCountAccepted(ergo_counts, 18));
+    try std.testing.expectEqualStrings("15, 12 or 24", try joinSeedCounts(a, ergo_counts));
 }
 
 test "only password-setting ops ask for confirmation" {
