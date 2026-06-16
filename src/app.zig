@@ -1923,6 +1923,17 @@ pub const App = struct {
     /// Sync edge: stored with release by the worker when the check finishes; the
     /// UI loads it with acquire, then reads the result fields and joins.
     update_done: std.atomic.Value(bool) = .init(false),
+    /// Sync edge: stored with release by the worker the moment it commits to
+    /// downloading a newer build (before the download), so the UI can log
+    /// "downloading vX" up front. The UI loads it with acquire, then reads
+    /// `update_dl_version`.
+    update_downloading: std.atomic.Value(bool) = .init(false),
+    /// The version being downloaded, written once by the worker before it sets
+    /// `update_downloading`; read by the UI after that acquire edge. Distinct
+    /// from `update_version` so the two writes never race.
+    update_dl_version: updater.VersionBuf = .{},
+    /// UI-thread-only latch so the "downloading vX" line is logged just once.
+    update_dl_logged: bool = false,
     /// Worker result, read by the UI only after the `update_done` edge — so
     /// these plain fields need no atomics.
     update_status: updater.CheckStatus = .up_to_date,
@@ -2335,6 +2346,12 @@ pub const App = struct {
         if (!self.update_started) {
             self.update_started = true;
             self.update_thread = std.Thread.spawn(.{}, runUpdateCheck, .{self}) catch null;
+        }
+        // Announce the download once, the moment the worker commits to it — so
+        // "downloading vX" shows up front rather than only when it lands.
+        if (self.update_thread != null and !self.update_dl_logged and self.update_downloading.load(.acquire)) {
+            self.update_dl_logged = true;
+            self.logf("downloading update v{s}…", .{self.update_dl_version.slice()});
         }
         // Reap a finished update check: fold the outcome in and log it once.
         if (self.update_thread != null and self.update_done.load(.acquire)) {
@@ -2763,11 +2780,24 @@ pub const App = struct {
         defer threaded.deinit();
         const io = threaded.io();
 
-        const result = updater.checkAndStage(a, io, self.install_root, app_version);
+        const result = updater.checkAndStage(a, io, self.install_root, app_version, .{
+            .ctx = self,
+            .on_download_start = onUpdateDownloadStart,
+        });
         self.update_status = result.status;
         self.update_version = result.version;
         self.update_blocked = result.blocked;
         self.update_done.store(true, .release);
+    }
+
+    /// `updater.Notify` hook, called on the update worker thread just before the
+    /// new binary is streamed down. Hands the version to the UI thread (publish
+    /// the buffer, then flip `update_downloading` with release) so `onTick` can
+    /// log "downloading vX" before the download finishes.
+    fn onUpdateDownloadStart(ctx: *anyopaque, version: []const u8) void {
+        const self: *App = @ptrCast(@alignCast(ctx));
+        self.update_dl_version.set(version);
+        self.update_downloading.store(true, .release);
     }
 
     fn move(self: *App, delta: i32) void {

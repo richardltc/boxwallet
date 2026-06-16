@@ -99,7 +99,7 @@ pub const VersionBuf = struct {
         return self.buf[0..self.len];
     }
 
-    fn set(self: *VersionBuf, s: []const u8) void {
+    pub fn set(self: *VersionBuf, s: []const u8) void {
         const n = @min(s.len, self.buf.len);
         @memcpy(self.buf[0..n], s[0..n]);
         self.len = n;
@@ -118,19 +118,31 @@ pub const Check = struct {
     blocked: bool = false,
 };
 
+/// Optional hook fired once a newer release has been found and is *about to* be
+/// streamed down — before the (potentially slow) download — carrying the version
+/// being fetched. Lets the UI log "downloading vX" up front rather than only
+/// after the download lands. Runs on the worker thread, so an implementation
+/// must hand the version off to the UI thread safely (see app.zig).
+pub const Notify = struct {
+    ctx: *anyopaque,
+    on_download_start: *const fn (ctx: *anyopaque, version: []const u8) void,
+};
+
 /// Check Codeberg for a newer release and, if found, download + verify + stage it
 /// for application on next launch. Runs synchronously on its own blocking io
 /// (the caller drives it from a worker thread). Never errors — every failure
 /// maps to a `CheckStatus`, since a missed update check must not disturb the
-/// running app.
+/// running app. `notify`, if given, fires once just before the binary download
+/// begins.
 pub fn checkAndStage(
     gpa: std.mem.Allocator,
     io: std.Io,
     install_root: []const u8,
     current_version: []const u8,
+    notify: ?Notify,
 ) Check {
     const asset = asset_name orelse return .{ .status = .unsupported };
-    return checkAndStageInner(gpa, io, install_root, current_version, asset) catch |err| .{
+    return checkAndStageInner(gpa, io, install_root, current_version, asset, notify) catch |err| .{
         .status = switch (err) {
             error.VerifyFailed => .verify_failed,
             else => .network_error,
@@ -144,6 +156,7 @@ fn checkAndStageInner(
     install_root: []const u8,
     current_version: []const u8,
     asset: []const u8,
+    notify: ?Notify,
 ) !Check {
     const json = try fetchText(gpa, io, latest_release_url, max_release_json);
     defer gpa.free(json);
@@ -174,6 +187,10 @@ fn checkAndStageInner(
     const sums = try fetchText(gpa, io, sums_url, max_sums);
     defer gpa.free(sums);
     const want = parseChecksum(sums, asset) orelse return error.VerifyFailed;
+
+    // A newer release exists and we're committed to fetching it — let the UI
+    // announce the download before we spend time on it.
+    if (notify) |n| n.on_download_start(n.ctx, version);
 
     // Stream the binary to disk (flat memory), then verify before trusting it.
     const asset_url = try std.fmt.allocPrint(gpa, "{s}/{s}/{s}", .{ download_base, tag, asset });
