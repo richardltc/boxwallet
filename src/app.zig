@@ -362,6 +362,9 @@ const WalletSetupOp = enum {
     restore_file,
     /// Open the existing managed wallet (unlock it for this session).
     open,
+    /// Re-lock an open wallet (in-daemon wallets that stay open while the daemon
+    /// runs, e.g. Ergo; the process-backed coins lock by killing their process).
+    lock,
 
     fn verb(self: WalletSetupOp) []const u8 {
         return switch (self) {
@@ -369,29 +372,35 @@ const WalletSetupOp = enum {
             .restore_seed => "Restore from seed",
             .restore_file => "Restore from file",
             .open => "Unlock wallet",
+            .lock => "Lock wallet",
         };
     }
 
     /// Whether this op *sets* a new wallet password (so the UI asks the user to
     /// confirm it). `open` checks an existing password — a typo there just fails to
-    /// unlock and is retried, so no confirmation is needed.
+    /// unlock and is retried, so no confirmation is needed; `lock` takes none.
     fn setsNewPassword(self: WalletSetupOp) bool {
-        return self != .open;
+        return self == .create or self == .restore_seed or self == .restore_file;
     }
 };
 
-/// The three choices on the external-wallet setup menu (shown when no wallet
-/// exists yet). Parallel to `WalletSetupOp` but only the user-pickable subset.
+/// The choices on an external-wallet menu — the setup choices shown when no
+/// wallet exists yet, plus `lock` shown when an open wallet can be re-locked.
+/// Parallel to `WalletSetupOp` but only the user-pickable subset. Which appear is
+/// coin- and state-dependent (`menuChoicesFor`), written into the modal's option
+/// buffer when the menu opens.
 const SetupChoice = enum {
     create,
     restore_seed,
     restore_file,
+    lock,
 
     fn label(self: SetupChoice) []const u8 {
         return switch (self) {
             .create => "Create a new wallet",
             .restore_seed => "Restore from seed words",
             .restore_file => "Restore from a wallet file",
+            .lock => "Lock wallet",
         };
     }
 
@@ -400,12 +409,28 @@ const SetupChoice = enum {
             .create => .create,
             .restore_seed => .restore_seed,
             .restore_file => .restore_file,
+            .lock => .lock,
         };
     }
 };
 
-/// The setup-menu choices, in display order.
-const setup_choices = [_]SetupChoice{ .create, .restore_seed, .restore_file };
+/// Fill `buf` with the setup-menu choices for `coin`'s external wallet, in display
+/// order, returning the count. Create + restore-from-seed are always offered;
+/// restore-from-file only when the coin wires it (a portable wallet file — not
+/// Ergo's in-daemon wallet).
+fn menuChoicesFor(coin: Coin, buf: *[3]SetupChoice) usize {
+    const ew = coin.externalWallet() orelse return 0;
+    var n: usize = 0;
+    buf[n] = .create;
+    n += 1;
+    buf[n] = .restore_seed;
+    n += 1;
+    if (ew.restore_file != null) {
+        buf[n] = .restore_file;
+        n += 1;
+    }
+    return n;
+}
 
 /// Which actions the `w` menu offers for a given wallet state, written into
 /// `buf` and returned by count. Unencrypted → encrypt; locked → unlock (plus
@@ -498,8 +523,12 @@ const Modal = struct {
     msg_len: usize = 0,
 
     // --- external-wallet (setup) flow --------------------------------------
-    /// Cursor on the setup menu (`setup_choices`).
+    /// Cursor on the setup menu, into `setup_options[0..setup_option_count]`.
     setup_sel: usize = 0,
+    /// The menu choices for this coin/state, filled when the menu opens (the
+    /// setup choices via `menuChoicesFor`, or a single `.lock` for an open wallet).
+    setup_options: [3]SetupChoice = undefined,
+    setup_option_count: usize = 0,
     /// The first entry of a new password, stashed while the confirm field is typed
     /// so the two can be compared. Plaintext, so it's wiped as soon as it's used or
     /// the modal closes (memory/secret hygiene, like the worker's copy).
@@ -1190,13 +1219,18 @@ const Activity = struct {
     /// spawned (`wallet_rpc_creds_set`); before that the empty creds just fail.
     fn extWalletAuth(self: *const Activity) models.CoinAuth {
         const ew = self.coin.externalWallet().?;
-        if (!self.wallet_rpc_creds_set)
-            return .{ .rpc_user = "", .rpc_password = "", .ip_address = "127.0.0.1", .port = ew.rpc_port() };
+        // In-daemon wallet (no separate process / per-session creds): point at the
+        // daemon's own RPC endpoint. A coin whose in-daemon wallet RPC needs real
+        // auth resolves it inside its hooks (Ergo uses a fixed api_key), so empty
+        // creds here are correct.
+        const port = if (ew.rpc_port) |f| f() else self.coin.rpcDefaultPort();
+        if (ew.process_argv == null or !self.wallet_rpc_creds_set)
+            return .{ .rpc_user = "", .rpc_password = "", .ip_address = "127.0.0.1", .port = port };
         return .{
             .rpc_user = self.wallet_rpc_user_buf[0..],
             .rpc_password = self.wallet_rpc_pass_buf[0..],
             .ip_address = "127.0.0.1",
-            .port = ew.rpc_port(),
+            .port = port,
         };
     }
 
@@ -1229,8 +1263,9 @@ const Activity = struct {
         switch (self.wallet_setup_op) {
             .create => self.wallet_setup_seed = try ew.create(a, auth, pw, detail),
             .restore_seed => try ew.restore_seed(a, auth, self.install_root, self.home_dir, pw, self.wallet_seed_buf[0..self.wallet_seed_len], detail),
-            .restore_file => try ew.restore_file(a, auth, self.home_dir, self.wallet_file_buf[0..self.wallet_file_len], pw, detail),
+            .restore_file => try (ew.restore_file orelse return error.Unsupported)(a, auth, self.home_dir, self.wallet_file_buf[0..self.wallet_file_len], pw, detail),
             .open => try ew.open(a, auth, pw, detail),
+            .lock => try (ew.lock orelse return error.Unsupported)(a, auth, detail),
         }
     }
 
@@ -2224,13 +2259,14 @@ pub const App = struct {
                 .up => if (m.setup_sel > 0) {
                     m.setup_sel -= 1;
                 },
-                .down => if (m.setup_sel + 1 < setup_choices.len) {
+                .down => if (m.setup_sel + 1 < m.setup_option_count) {
                     m.setup_sel += 1;
                 },
                 .enter => {
-                    const choice = setup_choices[m.setup_sel];
+                    const choice = m.setup_options[m.setup_sel];
                     m.setup_op = choice.op();
-                    // create → password; the restores collect their input first.
+                    // create → password; the restores collect their input first;
+                    // lock takes no input and fires straight away.
                     switch (choice) {
                         .create => {
                             m.stage = .setup_password;
@@ -2246,13 +2282,14 @@ pub const App = struct {
                             m.stage = .setup_file;
                             self.startFilePicker();
                         },
+                        .lock => self.submitWalletSetup(),
                     }
                 },
                 .char => |c| switch (c) {
                     'k' => if (m.setup_sel > 0) {
                         m.setup_sel -= 1;
                     },
-                    'j' => if (m.setup_sel + 1 < setup_choices.len) {
+                    'j' => if (m.setup_sel + 1 < m.setup_option_count) {
                         m.setup_sel += 1;
                     },
                     else => {},
@@ -2517,10 +2554,19 @@ pub const App = struct {
             // refreshed only for the coin on screen.
             if (self.coinAt(i)) |xcoin| {
                 if (xcoin.hasExternalWallet()) {
-                    if (act.daemonState() == .running)
-                        self.ensureWalletRpc(act, xcoin)
-                    else if (act.wallet_rpc_child != null)
-                        self.killWalletRpc(act);
+                    if (xcoin.hasExternalWalletProcess()) {
+                        // Process-backed (Monero-style): spawn the wallet service
+                        // alongside a running daemon, kill it once the daemon's gone.
+                        if (act.daemonState() == .running)
+                            self.ensureWalletRpc(act, xcoin)
+                        else if (act.wallet_rpc_child != null)
+                            self.killWalletRpc(act);
+                    } else if (act.daemonState() != .running and act.ext_wallet_open.load(.monotonic) != 0) {
+                        // In-daemon wallet (Ergo): no process to manage, but the
+                        // node relocks the wallet when it stops — drop our "open"
+                        // flag so balance polling pauses and `w` re-prompts to unlock.
+                        act.ext_wallet_open.store(0, .monotonic);
+                    }
                     if (i == self.selected) self.refreshExtWalletExists(xcoin, act);
                 }
                 // Cache the selected coin's prune setting for the Settings tab — a
@@ -2636,8 +2682,9 @@ pub const App = struct {
 
                 const detail = act.wallet_setup_sink.slice();
                 if (ok) {
-                    act.ext_wallet_open.store(1, .monotonic);
-                    act.ext_wallet_exists = true;
+                    // Lock closes the wallet; every other op leaves it open.
+                    act.ext_wallet_open.store(if (op == .lock) 0 else 1, .monotonic);
+                    if (op != .lock) act.ext_wallet_exists = true;
                     self.logf("{s}: {s} succeeded", .{ act.coin.coinName(), op.verb() });
                 } else if (detail.len > 0) {
                     // The daemon told us why — log its raw message alongside the
@@ -2661,6 +2708,7 @@ pub const App = struct {
                                 .restore_seed => "Wallet restored — your balance will appear after it rescans.",
                                 .restore_file => "Wallet imported — your balance will appear shortly.",
                                 .open => "Wallet unlocked.",
+                                .lock => "Wallet locked.",
                                 .create => unreachable,
                             });
                         } else {
@@ -3397,9 +3445,12 @@ pub const App = struct {
     /// be killed when the daemon stops (Monero wallet-rpc has no shutdown RPC).
     /// Best-effort; a spawn failure just leaves the wallet unavailable until retry.
     fn ensureWalletRpc(self: *App, act: *Activity, coin: Coin) void {
-        if (!coin.hasExternalWallet() or act.wallet_rpc_child != null or act.wallet_rpc_attempted) return;
+        if (!coin.hasExternalWalletProcess() or act.wallet_rpc_child != null or act.wallet_rpc_attempted) return;
         act.wallet_rpc_attempted = true;
         const ew = coin.externalWallet().?;
+        // Process-backed only (guarded above), so both are present.
+        const argv_fn = ew.process_argv.?;
+        const port = ew.rpc_port.?();
 
         var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
         defer arena.deinit();
@@ -3418,7 +3469,7 @@ pub const App = struct {
 
         // argv is consumed by spawn (fork/exec copies it), so the local arena can
         // be freed right after — the returned `Child` holds only the pid/handle.
-        const argv = ew.process_argv(a, self.install_root, self.home_dir, ew.rpc_port(), act.wallet_rpc_user_buf[0..], act.wallet_rpc_pass_buf[0..]) catch |err| {
+        const argv = argv_fn(a, self.install_root, self.home_dir, port, act.wallet_rpc_user_buf[0..], act.wallet_rpc_pass_buf[0..]) catch |err| {
             self.logf("{s}: couldn't build the wallet service command ({s})", .{ coin.coinName(), @errorName(err) });
             return;
         };
@@ -3528,16 +3579,19 @@ pub const App = struct {
         act.prune_read = true;
     }
 
-    /// `w` for an external-wallet (Monero-style) coin: open the setup menu when no
-    /// wallet exists yet, the unlock prompt when one exists but isn't open this
-    /// session, or do nothing when it's already unlocked. Requires the daemon and
-    /// the wallet service to be up.
+    /// `w` for an external-wallet coin (Monero-style process or Ergo-style
+    /// in-daemon): open the setup menu when no wallet exists yet, the unlock prompt
+    /// when one exists but isn't open this session, or (for a coin that supports it)
+    /// the lock action when it's already open. Requires the daemon and, for a
+    /// process-backed coin, the wallet service to be up.
     fn openExternalWalletModal(self: *App, coin: Coin, act: *Activity) void {
         if (!act.installed or act.daemonState() != .running) {
             self.logf("{s}: start the daemon first to set up the wallet", .{coin.coinName()});
             return;
         }
-        if (act.wallet_rpc_child == null) {
+        // Process-backed coins also need their wallet service up; in-daemon coins
+        // are ready as soon as the daemon is (checked above).
+        if (coin.hasExternalWalletProcess() and act.wallet_rpc_child == null) {
             if (act.wallet_rpc_attempted)
                 self.logf("{s}: wallet service didn't start — press i to reinstall (adds the wallet service), then restart the daemon", .{coin.coinName()})
             else
@@ -3548,10 +3602,17 @@ pub const App = struct {
         if (!act.ext_wallet_exists) {
             m.stage = .setup_menu;
             m.setup_sel = 0;
+            m.setup_option_count = menuChoicesFor(coin, &m.setup_options);
         } else if (act.ext_wallet_open.load(.monotonic) == 0) {
             // A wallet exists but isn't open this session — unlock it.
             m.stage = .setup_password;
             m.setup_op = .open;
+        } else if (coin.externalWallet().?.lock != null) {
+            // Already open and the coin can re-lock — offer a one-item Lock menu.
+            m.stage = .setup_menu;
+            m.setup_sel = 0;
+            m.setup_options[0] = .lock;
+            m.setup_option_count = 1;
         } else {
             self.logf("{s}: wallet already unlocked", .{coin.coinName()});
             return;
@@ -4037,10 +4098,14 @@ pub const App = struct {
         // hint, not part of the status. External coins spell out the action ("set
         // up" / "unlock"); in-daemon coins use the generic "(press w)".
         const wallet_hint: []const u8 = if (ext and daemon_up) blk: {
+            // An open wallet only advertises `w` when the coin can re-lock it.
+            const can_lock = if (coin.externalWallet()) |ew| ew.lock != null else false;
             const text = if (!act.ext_wallet_exists)
                 "   (press w to set up)"
             else if (!ext_open)
                 "   (press w to unlock)"
+            else if (can_lock)
+                "   (press w to lock)"
             else
                 "";
             break :blk if (text.len == 0) "" else (zz.Style{}).dim(true).render(a, text) catch text;
@@ -4511,12 +4576,12 @@ pub const App = struct {
                     try modalRow(&out.writer, vbar, inner_w, text, zz.width("Passphrase: ") + zz.width(masked));
                 }
             },
-            // External-wallet setup menu: the create / restore choices.
+            // External-wallet menu: the create / restore choices, or lock.
             .setup_menu => {
                 var i: usize = 0;
-                while (i < setup_choices.len) : (i += 1) {
+                while (i < m.setup_option_count) : (i += 1) {
                     const sel = i == m.setup_sel;
-                    const plain = try std.fmt.allocPrint(a, "{s}{s}", .{ if (sel) "❯ " else "  ", setup_choices[i].label() });
+                    const plain = try std.fmt.allocPrint(a, "{s}{s}", .{ if (sel) "❯ " else "  ", m.setup_options[i].label() });
                     const text = if (sel)
                         ((zz.Style{}).bold(true).fg(brand).render(a, plain) catch plain)
                     else
@@ -5950,20 +6015,24 @@ test "setup choices map to the right external-wallet ops" {
     try std.testing.expectEqual(WalletSetupOp.create, SetupChoice.create.op());
     try std.testing.expectEqual(WalletSetupOp.restore_seed, SetupChoice.restore_seed.op());
     try std.testing.expectEqual(WalletSetupOp.restore_file, SetupChoice.restore_file.op());
+    try std.testing.expectEqual(WalletSetupOp.lock, SetupChoice.lock.op());
     // Every choice has a non-empty menu label.
-    for (setup_choices) |c| try std.testing.expect(c.label().len > 0);
+    for ([_]SetupChoice{ .create, .restore_seed, .restore_file, .lock }) |c|
+        try std.testing.expect(c.label().len > 0);
     // Every op has a non-empty verb (used in logs and the working line).
-    for ([_]WalletSetupOp{ .create, .restore_seed, .restore_file, .open }) |op|
+    for ([_]WalletSetupOp{ .create, .restore_seed, .restore_file, .open, .lock }) |op|
         try std.testing.expect(op.verb().len > 0);
 }
 
 test "only password-setting ops ask for confirmation" {
     // Creating/restoring sets a new password (confirm it — a typo would lock the
-    // user out); opening checks an existing one (a typo just fails and is retried).
+    // user out); opening checks an existing one (a typo just fails and is retried);
+    // lock takes no password.
     try std.testing.expect(WalletSetupOp.create.setsNewPassword());
     try std.testing.expect(WalletSetupOp.restore_seed.setsNewPassword());
     try std.testing.expect(WalletSetupOp.restore_file.setsNewPassword());
     try std.testing.expect(!WalletSetupOp.open.setsNewPassword());
+    try std.testing.expect(!WalletSetupOp.lock.setsNewPassword());
 }
 
 test "the external-wallet setup menu renders its create/restore choices" {
@@ -5984,9 +6053,12 @@ test "the external-wallet setup menu renders its create/restore choices" {
     defer app.deinit();
 
     // Open Nerva's setup menu directly (the real gate needs a running daemon +
-    // wallet service).
+    // wallet service). Populate the choice list the way `openExternalWalletModal`
+    // would — Nerva wires `restore_file`, so all three appear.
     app.selected = std.mem.indexOfScalar(Entry, &entries, .nerva).?;
-    app.modal = .{ .coin_idx = app.selected, .stage = .setup_menu };
+    var m: Modal = .{ .coin_idx = app.selected, .stage = .setup_menu };
+    m.setup_option_count = menuChoicesFor(app.coinAt(app.selected).?, &m.setup_options);
+    app.modal = m;
 
     var arena = std.heap.ArenaAllocator.init(allocator);
     defer arena.deinit();

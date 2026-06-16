@@ -2,6 +2,7 @@ const std = @import("std");
 const builtin = @import("builtin");
 const models = @import("../models.zig");
 const install_mod = @import("../install.zig");
+const rpc = @import("../rpc.zig");
 const Coin = @import("../coin.zig").Coin;
 
 /// Ergo (ERG) backend. Ported from the Elixir reference in `ergo/`.
@@ -128,15 +129,26 @@ pub const Ergo = struct {
         appVersion: []const u8 = "",
     };
 
-    /// Perform a REST request against the local node and return the response
-    /// body. Caller owns the returned slice. `api_key_hdr`, when set, is sent as
-    /// the `api_key` header (protected endpoints); `/info` needs none.
-    fn restRequest(
+    /// A REST response: the HTTP status and the body (caller owns `body`). Wallet
+    /// ops inspect `status` to tell success from a 4xx (whose body carries Ergo's
+    /// error JSON), so they use `restCall` directly rather than `restRequest`.
+    const RestResponse = struct {
+        status: std.http.Status,
+        body: []u8,
+    };
+
+    /// Perform a REST request against the local node and return the status + body.
+    /// `api_key_hdr`, when set, is sent as the `api_key` header (protected
+    /// endpoints); `/info` needs none. `json_body`, when set, is sent as the
+    /// request payload with a JSON content-type (the wallet POSTs); GET ignores it.
+    /// Caller owns `body`.
+    fn restCall(
         allocator: std.mem.Allocator,
         method: std.http.Method,
         path: []const u8,
         api_key_hdr: ?[]const u8,
-    ) ![]u8 {
+        json_body: ?[]const u8,
+    ) !RestResponse {
         var threaded: std.Io.Threaded = .init(allocator, .{});
         defer threaded.deinit();
 
@@ -149,11 +161,16 @@ pub const Ergo = struct {
         var body: std.Io.Writer.Allocating = .init(allocator);
         defer body.deinit();
 
-        var hdr_buf: [1]std.http.Header = undefined;
-        var extra: []const std.http.Header = &.{};
+        const has_json = method != .GET and json_body != null;
+        var hdr_buf: [2]std.http.Header = undefined;
+        var nh: usize = 0;
         if (api_key_hdr) |key| {
-            hdr_buf[0] = .{ .name = "api_key", .value = key };
-            extra = hdr_buf[0..1];
+            hdr_buf[nh] = .{ .name = "api_key", .value = key };
+            nh += 1;
+        }
+        if (has_json) {
+            hdr_buf[nh] = .{ .name = "Content-Type", .value = "application/json" };
+            nh += 1;
         }
 
         const result = try client.fetch(.{
@@ -163,13 +180,29 @@ pub const Ergo = struct {
             // asserts the method carries no body — so a POST (which "has a body")
             // must pass a payload, even the empty one `/node/shutdown` wants.
             // GET stays payload-less (it takes the bodiless path correctly).
-            .payload = if (method == .GET) null else "",
+            .payload = if (method == .GET) null else (json_body orelse ""),
             .response_writer = &body.writer,
-            .extra_headers = extra,
+            .extra_headers = hdr_buf[0..nh],
         });
-        if (result.status == .unauthorized) return error.AuthFailed;
 
-        return body.toOwnedSlice();
+        return .{ .status = result.status, .body = try body.toOwnedSlice() };
+    }
+
+    /// Perform a REST request and return the body, mapping a 401 to `AuthFailed`.
+    /// For the status-agnostic callers (`/info`, balances, shutdown). Caller owns
+    /// the returned slice.
+    fn restRequest(
+        allocator: std.mem.Allocator,
+        method: std.http.Method,
+        path: []const u8,
+        api_key_hdr: ?[]const u8,
+    ) ![]u8 {
+        const resp = try restCall(allocator, method, path, api_key_hdr, null);
+        if (resp.status == .unauthorized) {
+            allocator.free(resp.body);
+            return error.AuthFailed;
+        }
+        return resp.body;
     }
 
     /// Fetch + parse `GET /info`. Caller must `deinit` the returned `Parsed`.
@@ -243,13 +276,34 @@ pub const Ergo = struct {
         allocator.free(reply);
     }
 
-    // --- Wallet balance --------------------------------------------------
+    // --- Wallet management + balance -------------------------------------
+    //
+    // Ergo's wallet is *in-daemon*: the node exposes it over the same REST API
+    // (`/wallet/*`, behind the api_key, 127.0.0.1 only). Its setup model is the
+    // Monero shape — create returns a mnemonic to back up, restore from seed,
+    // unlock/lock with a password — so it plugs into the shared external-wallet
+    // setup UI via `external_wallet` below, with no separate wallet process
+    // (`process_argv`/`rpc_port` left null). The `auth` passed to these hooks is
+    // the daemon's endpoint, but Ergo authenticates with its fixed api_key, so the
+    // hooks ignore it.
 
     /// Subset of `GET /wallet/status` — whether the wallet exists and is unlocked.
     /// Both must hold before the balance endpoints will answer with real figures.
     const ErgoWalletStatus = struct {
         isInitialized: bool = false,
         isUnlocked: bool = false,
+    };
+
+    /// `POST /wallet/init` result — the freshly-generated mnemonic to display.
+    const ErgoWalletInit = struct {
+        mnemonic: []const u8 = "",
+    };
+
+    /// Ergo's REST error body (`{"error":400,"reason":"…","detail":"…"}`). `detail`
+    /// is the human-readable cause when present; `reason` is the fallback.
+    const ErgoError = struct {
+        reason: []const u8 = "",
+        detail: []const u8 = "",
     };
 
     /// Subset of the `/wallet/balances*` endpoints: the Ergo amount in nanoErg
@@ -278,7 +332,7 @@ pub const Ergo = struct {
     /// is missing or locked (so the frontend simply hides the lines rather than
     /// reading a misleading 0). `auth` is unused — Ergo authenticates with its
     /// fixed api_key.
-    pub fn walletBalance(allocator: std.mem.Allocator, auth: models.CoinAuth) !models.WalletBalance {
+    pub fn walletBalance(allocator: std.mem.Allocator, auth: models.CoinAuth) anyerror!models.WalletBalance {
         _ = auth;
 
         // A locked or uninitialized wallet can't report a balance; the endpoints
@@ -298,6 +352,149 @@ pub const Ergo = struct {
             .total = @as(f64, @floatFromInt(with_unconfirmed)) / nano_per_erg,
         };
     }
+
+    /// Record the node's failure reason from a non-2xx wallet reply into `detail`
+    /// (so the UI shows the real cause, not a bare error name) and return `err`.
+    /// `body` is the REST response body; an unparseable one just leaves `detail`
+    /// empty. Never logs/stores the request — only the node's error text.
+    fn failWallet(
+        allocator: std.mem.Allocator,
+        detail: *Coin.WalletErrSink,
+        body: []const u8,
+        err: anyerror,
+    ) anyerror {
+        if (std.json.parseFromSlice(ErgoError, allocator, body, .{ .ignore_unknown_fields = true })) |parsed| {
+            defer parsed.deinit();
+            const msg = if (parsed.value.detail.len > 0) parsed.value.detail else parsed.value.reason;
+            if (msg.len > 0) detail.set(msg);
+        } else |_| {}
+        return err;
+    }
+
+    /// Whether the node already has an initialized wallet — read from
+    /// `GET /wallet/status` (localhost only; the daemon is always up before the UI
+    /// offers the wallet menu). A failed read (node down) reads as "no wallet",
+    /// which is harmless: the menu can't open without a running daemon anyway.
+    /// `home_dir` is unused — the wallet lives in the node, not a path we stat.
+    pub fn walletExists(allocator: std.mem.Allocator, home_dir: []const u8) bool {
+        _ = home_dir;
+        const resp = restCall(allocator, .GET, "/wallet/status", api_key, null) catch return false;
+        defer allocator.free(resp.body);
+        if (resp.status != .ok) return false;
+        var st = std.json.parseFromSlice(ErgoWalletStatus, allocator, resp.body, .{ .ignore_unknown_fields = true }) catch return false;
+        defer st.deinit();
+        return st.value.isInitialized;
+    }
+
+    /// Create a new wallet under `password` via `POST /wallet/init`, returning the
+    /// node-generated mnemonic for the user to back up (Ergo leaves the new wallet
+    /// unlocked). The request body and the mnemonic-bearing reply hold secrets, so
+    /// both are wiped before the buffers are freed. `auth` is unused (fixed api_key).
+    pub fn walletCreate(
+        allocator: std.mem.Allocator,
+        auth: models.CoinAuth,
+        password: []const u8,
+        detail: *Coin.WalletErrSink,
+    ) anyerror!models.Seed {
+        _ = auth;
+        const qpw = try rpc.jsonQuote(allocator, password);
+        defer wipeFree(allocator, qpw);
+        const body = try std.fmt.allocPrint(allocator, "{{\"pass\":{s},\"mnemonicPass\":\"\"}}", .{qpw});
+        defer wipeFree(allocator, body);
+
+        const resp = try restCall(allocator, .POST, "/wallet/init", api_key, body);
+        // The reply carries the mnemonic — wipe it once copied into the Seed.
+        defer wipeFree(allocator, resp.body);
+        if (resp.status != .ok) return failWallet(allocator, detail, resp.body, error.WalletCreateFailed);
+
+        var parsed = try std.json.parseFromSlice(ErgoWalletInit, allocator, resp.body, .{ .ignore_unknown_fields = true });
+        defer parsed.deinit();
+        return models.Seed.from(parsed.value.mnemonic);
+    }
+
+    /// Restore a wallet from a mnemonic `seed` under `password` via
+    /// `POST /wallet/restore`, then unlock it so the balance shows immediately.
+    /// `install_root`/`home_dir` are unused (no CLI shell-out — the node restores
+    /// over REST). Secret-bearing buffers are wiped before free.
+    pub fn walletRestoreSeed(
+        allocator: std.mem.Allocator,
+        auth: models.CoinAuth,
+        install_root: []const u8,
+        home_dir: []const u8,
+        password: []const u8,
+        seed: []const u8,
+        detail: *Coin.WalletErrSink,
+    ) anyerror!void {
+        _ = install_root;
+        _ = home_dir;
+        const qpw = try rpc.jsonQuote(allocator, password);
+        defer wipeFree(allocator, qpw);
+        const qseed = try rpc.jsonQuote(allocator, seed);
+        defer wipeFree(allocator, qseed);
+        const body = try std.fmt.allocPrint(
+            allocator,
+            "{{\"pass\":{s},\"mnemonic\":{s},\"mnemonicPass\":\"\",\"usePre1627KeyDerivation\":false}}",
+            .{ qpw, qseed },
+        );
+        defer wipeFree(allocator, body);
+
+        const resp = try restCall(allocator, .POST, "/wallet/restore", api_key, body);
+        defer allocator.free(resp.body);
+        if (resp.status != .ok) return failWallet(allocator, detail, resp.body, error.WalletRestoreFailed);
+
+        // Restore initializes but may leave the wallet locked — unlock so polling
+        // can read the (rescanning) balance straight away.
+        try walletOpen(allocator, auth, password, detail);
+    }
+
+    /// Unlock the wallet with `password` via `POST /wallet/unlock`. `auth` unused.
+    pub fn walletOpen(
+        allocator: std.mem.Allocator,
+        auth: models.CoinAuth,
+        password: []const u8,
+        detail: *Coin.WalletErrSink,
+    ) anyerror!void {
+        _ = auth;
+        const qpw = try rpc.jsonQuote(allocator, password);
+        defer wipeFree(allocator, qpw);
+        const body = try std.fmt.allocPrint(allocator, "{{\"pass\":{s}}}", .{qpw});
+        defer wipeFree(allocator, body);
+
+        const resp = try restCall(allocator, .POST, "/wallet/unlock", api_key, body);
+        defer allocator.free(resp.body);
+        if (resp.status != .ok) return failWallet(allocator, detail, resp.body, error.WalletOpenFailed);
+    }
+
+    /// Re-lock the wallet via `POST /wallet/lock` (no body). `auth` unused.
+    pub fn walletLock(
+        allocator: std.mem.Allocator,
+        auth: models.CoinAuth,
+        detail: *Coin.WalletErrSink,
+    ) anyerror!void {
+        _ = auth;
+        const resp = try restCall(allocator, .POST, "/wallet/lock", api_key, null);
+        defer allocator.free(resp.body);
+        if (resp.status != .ok) return failWallet(allocator, detail, resp.body, error.WalletLockFailed);
+    }
+
+    /// Overwrite a secret-bearing buffer with zeros before freeing it, so a
+    /// password/seed/mnemonic doesn't linger in freed heap.
+    fn wipeFree(allocator: std.mem.Allocator, buf: []u8) void {
+        @memset(buf, 0);
+        allocator.free(buf);
+    }
+
+    /// The external-wallet capability, backed by the in-daemon REST wallet (no
+    /// separate process — `process_argv`/`rpc_port` null). `restore_file` is null:
+    /// Ergo has no portable wallet file, so the setup menu omits that choice.
+    const external_wallet: Coin.ExternalWallet = .{
+        .exists = walletExists,
+        .create = walletCreate,
+        .restore_seed = walletRestoreSeed,
+        .open = walletOpen,
+        .lock = walletLock,
+        .balance = walletBalance,
+    };
 
     // --- Files / paths ---------------------------------------------------
 
@@ -498,7 +695,11 @@ pub const Ergo = struct {
         .launch_mode = vtLaunchMode,
         .daemon_argv = vtDaemonArgv,
         .request_stop = vtRequestStop,
-        .wallet_balance = vtWalletBalance,
+        // Ergo's wallet is in-daemon (REST) but Monero-shaped (create → mnemonic,
+        // restore, unlock/lock), so it rides the external-wallet setup flow rather
+        // than the bitcoin in-daemon wallet hooks. Balance flows through
+        // `external_wallet.balance`, gated on the wallet being open.
+        .external_wallet = &external_wallet,
     };
 
     fn vtCoinName(_: *anyopaque) []const u8 {
@@ -592,13 +793,6 @@ pub const Ergo = struct {
         auth: models.CoinAuth,
     ) anyerror!void {
         return requestStop(allocator, auth);
-    }
-    fn vtWalletBalance(
-        _: *anyopaque,
-        allocator: std.mem.Allocator,
-        auth: models.CoinAuth,
-    ) anyerror!models.WalletBalance {
-        return walletBalance(allocator, auth);
     }
 };
 
@@ -785,12 +979,68 @@ test "coin vtable dispatches to Ergo metadata" {
     try std.testing.expectEqualStrings("ergo.conf", c.confFile());
     try std.testing.expectEqualStrings("9053", c.rpcDefaultPort());
     try std.testing.expectEqual(Coin.LaunchMode.foreground, c.launchMode());
-    // Ergo reports a balance over REST (no manageable-wallet menu, so no
-    // `supportsWallet`).
-    try std.testing.expect(c.supportsBalance());
+    // Ergo drives the external-wallet setup flow, backed by the in-daemon REST
+    // wallet (so no separate process), and reports balance through it — not via the
+    // standalone `wallet_balance`/bitcoin `wallet_security_state` hooks.
+    try std.testing.expect(c.hasExternalWallet());
+    try std.testing.expect(!c.hasExternalWalletProcess());
+    try std.testing.expect(!c.supportsBalance());
     try std.testing.expect(!c.supportsWallet());
+    // No portable wallet file, so the setup menu omits "restore from file".
+    try std.testing.expect(c.externalWallet().?.restore_file == null);
+    try std.testing.expect(c.externalWallet().?.lock != null);
     // Node-internal wallet — no discrete file for the Settings tab to list.
     try std.testing.expect((try c.walletPath(std.testing.allocator, "/home/alice")) == null);
+}
+
+test "parses /wallet/init mnemonic into a Seed" {
+    const allocator = std.testing.allocator;
+    // The node's reply to a successful create. The mnemonic is copied into the
+    // fixed Seed buffer (never the heap).
+    var parsed = try std.json.parseFromSlice(
+        Ergo.ErgoWalletInit,
+        allocator,
+        "{\"mnemonic\":\"abandon ability able about above absent absorb abstract\"}",
+        .{ .ignore_unknown_fields = true },
+    );
+    defer parsed.deinit();
+    const seed = models.Seed.from(parsed.value.mnemonic);
+    try std.testing.expectEqualStrings("abandon ability able about above absent absorb abstract", seed.slice());
+}
+
+test "wallet request bodies JSON-escape the password and seed" {
+    const allocator = std.testing.allocator;
+
+    // A password with characters that must be escaped in JSON (quote, backslash):
+    // a naive interpolation would produce invalid JSON / let the value break out.
+    const qpw = try rpc.jsonQuote(allocator, "p\"a\\ss");
+    defer allocator.free(qpw);
+    const unlock_body = try std.fmt.allocPrint(allocator, "{{\"pass\":{s}}}", .{qpw});
+    defer allocator.free(unlock_body);
+    try std.testing.expectEqualStrings("{\"pass\":\"p\\\"a\\\\ss\"}", unlock_body);
+
+    // The restore body carries both pass and the (quoted) mnemonic plus the fixed
+    // flags, and stays well-formed.
+    const qseed = try rpc.jsonQuote(allocator, "word one two");
+    defer allocator.free(qseed);
+    const restore_body = try std.fmt.allocPrint(
+        allocator,
+        "{{\"pass\":{s},\"mnemonic\":{s},\"mnemonicPass\":\"\",\"usePre1627KeyDerivation\":false}}",
+        .{ qpw, qseed },
+    );
+    defer allocator.free(restore_body);
+    try std.testing.expect(std.mem.indexOf(u8, restore_body, "\"mnemonic\":\"word one two\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, restore_body, "\"usePre1627KeyDerivation\":false") != null);
+}
+
+test "a failed wallet reply surfaces the node's reason into the sink" {
+    const allocator = std.testing.allocator;
+    var sink: Coin.WalletErrSink = .{};
+    // Ergo's 400 body: prefer `detail`, falling back to `reason`.
+    const body = "{\"error\":400,\"reason\":\"Bad request\",\"detail\":\"wrong password\"}";
+    const err = Ergo.failWallet(allocator, &sink, body, error.WalletOpenFailed);
+    try std.testing.expectError(error.WalletOpenFailed, @as(anyerror!void, err));
+    try std.testing.expectEqualStrings("wrong password", sink.slice());
 }
 
 test "parses /wallet/balances nanoErg into whole-ERG available/total" {
