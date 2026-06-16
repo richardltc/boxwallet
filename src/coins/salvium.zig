@@ -157,194 +157,12 @@ pub const Salvium = struct {
     /// can't wedge the worker.
     const wallet_timeout_ms: u32 = 60_000;
 
-    /// POST `payload` to `path` on the local daemon and return the response body.
-    /// Caller owns the slice. No basic auth — Salvium's daemon RPC is open by
-    /// default (like Ergo's keyless REST).
-    ///
-    /// `timeout_ms` bounds every blocking send/recv: on POSIX via a raw socket with
-    /// `SO_RCVTIMEO`/`SO_SNDTIMEO`, so a daemon that accepts the connection but
-    /// never answers fails fast instead of hanging us indefinitely. `std.http.Client`
-    /// reads go through `std.Io.net`, which is non-blocking + poll-based and ignores
-    /// the socket receive timeout, so it can't give us that bound — hence the
-    /// hand-rolled request here. Windows keeps the `std.http.Client` path (its quit
-    /// path doesn't block, and raw sockets there would need `WSAStartup`); the
-    /// request/response are tiny localhost JSON, so a minimal HTTP/1.1 write +
-    /// read-to-`Content-Length` is enough.
-    fn httpPost(
-        allocator: std.mem.Allocator,
-        auth: models.CoinAuth,
-        path: []const u8,
-        payload: []const u8,
-        timeout_ms: u32,
-    ) ![]u8 {
-        if (builtin.os.tag == .windows)
-            return httpPostFetch(allocator, auth, path, payload);
-
-        const posix = std.posix;
-
-        const ip = parseIp4(auth.ip_address) catch return error.InvalidRpcAddress;
-        const port = std.fmt.parseInt(u16, auth.port, 10) catch return error.InvalidRpcAddress;
-
-        const sock_rc = posix.system.socket(posix.AF.INET, posix.SOCK.STREAM, 0);
-        if (posix.errno(sock_rc) != .SUCCESS) return error.RpcConnectFailed;
-        const sock: posix.socket_t = @intCast(sock_rc);
-        defer _ = posix.system.close(sock);
-
-        // Cap each blocking send/recv. A blocking socket with SO_RCVTIMEO returns
-        // EAGAIN (→ error.WouldBlock) once the timeout elapses with no data.
-        const tv = posix.timeval{
-            .sec = @intCast(timeout_ms / 1000),
-            .usec = @intCast((timeout_ms % 1000) * 1000),
-        };
-        posix.setsockopt(sock, posix.SOL.SOCKET, posix.SO.RCVTIMEO, std.mem.asBytes(&tv)) catch {};
-        posix.setsockopt(sock, posix.SOL.SOCKET, posix.SO.SNDTIMEO, std.mem.asBytes(&tv)) catch {};
-
-        // Localhost-only (the daemon is 127.0.0.1-bound), so connect is immediate
-        // or refused outright — the timeout that matters is on the response read.
-        var addr: posix.sockaddr.in = .{
-            .port = std.mem.nativeToBig(u16, port),
-            .addr = ip,
-        };
-        if (posix.errno(posix.system.connect(sock, @ptrCast(&addr), @sizeOf(posix.sockaddr.in))) != .SUCCESS)
-            return error.RpcConnectFailed;
-
-        // Minimal HTTP/1.1. `Connection: close` lets us read to EOF as a backstop,
-        // but we still honor `Content-Length` so a keep-alive reply returns promptly.
-        const req = try std.fmt.allocPrint(
-            allocator,
-            "POST {s} HTTP/1.1\r\nHost: {s}:{s}\r\nContent-Type: application/json\r\nContent-Length: {d}\r\nConnection: close\r\n\r\n{s}",
-            .{ path, auth.ip_address, auth.port, payload.len, payload },
-        );
-        defer allocator.free(req);
-        try sockWriteAll(sock, req);
-
-        // Accumulate header+body, bounded. These RPC replies are a few KB; the cap
-        // is a guard against a misbehaving peer, not a working size.
-        const max_response = 1 << 20;
-        var resp: std.Io.Writer.Allocating = .init(allocator);
-        defer resp.deinit();
-        var buf: [4096]u8 = undefined;
-        var header_end: ?usize = null;
-        var content_len: ?usize = null;
-        while (true) {
-            const n = posix.read(sock, &buf) catch |err| switch (err) {
-                error.WouldBlock => return error.Timeout, // SO_RCVTIMEO fired
-                else => return error.RpcReadFailed,
-            };
-            if (n == 0) break; // EOF — server closed after the response
-            try resp.writer.writeAll(buf[0..n]);
-            if (resp.written().len > max_response) return error.ResponseTooLarge;
-            if (header_end == null) {
-                if (std.mem.indexOf(u8, resp.written(), "\r\n\r\n")) |idx| {
-                    header_end = idx + 4;
-                    if (statusCode(resp.written()[0..idx]) == 401) return error.AuthFailed;
-                    content_len = parseContentLength(resp.written()[0..idx]);
-                }
-            }
-            // Stop as soon as the declared body has arrived (don't wait for EOF).
-            if (header_end) |he| if (content_len) |cl| {
-                if (resp.written().len - he >= cl) break;
-            };
-        }
-
-        const he = header_end orelse return error.RpcReadFailed;
-        const all = resp.written();
-        const body = if (content_len) |cl| all[he..@min(he + cl, all.len)] else all[he..];
-        return allocator.dupe(u8, body);
-    }
-
-    /// `std.http.Client` POST (no timeout) — the Windows path for `httpPost`.
-    fn httpPostFetch(
-        allocator: std.mem.Allocator,
-        auth: models.CoinAuth,
-        path: []const u8,
-        payload: []const u8,
-    ) ![]u8 {
-        var threaded: std.Io.Threaded = .init(allocator, .{});
-        defer threaded.deinit();
-
-        var client: std.http.Client = .{ .allocator = allocator, .io = threaded.io() };
-        defer client.deinit();
-
-        const url = try std.fmt.allocPrint(allocator, "http://{s}:{s}{s}", .{ auth.ip_address, auth.port, path });
-        defer allocator.free(url);
-
-        var body: std.Io.Writer.Allocating = .init(allocator);
-        defer body.deinit();
-
-        const result = try client.fetch(.{
-            .location = .{ .url = url },
-            .method = .POST,
-            .payload = payload,
-            .response_writer = &body.writer,
-            .extra_headers = &.{.{ .name = "content-type", .value = "application/json" }},
-        });
-        if (result.status == .unauthorized) return error.AuthFailed;
-
-        return body.toOwnedSlice();
-    }
-
-    /// Write every byte of `bytes` to the socket, looping over partial writes and
-    /// retrying `EINTR`. A send that blocks past `SO_SNDTIMEO` surfaces as `EAGAIN`.
-    fn sockWriteAll(sock: std.posix.socket_t, bytes: []const u8) !void {
-        const posix = std.posix;
-        var i: usize = 0;
-        while (i < bytes.len) {
-            const rc = posix.system.write(sock, bytes.ptr + i, bytes.len - i);
-            switch (posix.errno(rc)) {
-                .SUCCESS => {
-                    const w: usize = @intCast(rc);
-                    if (w == 0) return error.RpcWriteFailed;
-                    i += w;
-                },
-                .INTR => continue,
-                .AGAIN => return error.Timeout,
-                else => return error.RpcWriteFailed,
-            }
-        }
-    }
-
-    /// Parse a dotted-quad IPv4 into a network-order `u32` for `sockaddr.in.addr`.
-    /// `@bitCast` of the octet array yields a value whose in-memory bytes are the
-    /// octets in order — i.e. network byte order — on either host endianness.
-    fn parseIp4(s: []const u8) !u32 {
-        var octets: [4]u8 = undefined;
-        var it = std.mem.splitScalar(u8, s, '.');
-        for (&octets) |*o| {
-            const part = it.next() orelse return error.InvalidIp;
-            o.* = std.fmt.parseInt(u8, part, 10) catch return error.InvalidIp;
-        }
-        if (it.next() != null) return error.InvalidIp;
-        return @bitCast(octets);
-    }
-
-    /// The numeric status from an HTTP status line ("HTTP/1.1 200 OK" → 200); 0 if
-    /// it can't be parsed.
-    fn statusCode(header: []const u8) u16 {
-        const line_end = std.mem.indexOfScalar(u8, header, '\r') orelse header.len;
-        var it = std.mem.tokenizeScalar(u8, header[0..line_end], ' ');
-        _ = it.next(); // HTTP/1.1
-        const code = it.next() orelse return 0;
-        return std.fmt.parseInt(u16, code, 10) catch 0;
-    }
-
-    /// The `Content-Length` value from a response header block, or null if absent.
-    fn parseContentLength(header: []const u8) ?usize {
-        var lines = std.mem.splitSequence(u8, header, "\r\n");
-        while (lines.next()) |line| {
-            const colon = std.mem.indexOfScalar(u8, line, ':') orelse continue;
-            if (std.ascii.eqlIgnoreCase(std.mem.trim(u8, line[0..colon], " "), "content-length"))
-                return std.fmt.parseInt(usize, std.mem.trim(u8, line[colon + 1 ..], " "), 10) catch null;
-        }
-        return null;
-    }
-
     /// Fetch + parse `get_info`. Caller must `deinit` the returned `Parsed`.
     fn fetchInfo(
         allocator: std.mem.Allocator,
         auth: models.CoinAuth,
     ) !std.json.Parsed(models.JsonRpcResponse(SalviumInfo)) {
-        const raw = try httpPost(allocator, auth, "/json_rpc", "{\"jsonrpc\":\"2.0\",\"id\":\"0\",\"method\":\"get_info\"}", status_timeout_ms);
+        const raw = try rpc.moneroPost(allocator, auth, "/json_rpc", "{\"jsonrpc\":\"2.0\",\"id\":\"0\",\"method\":\"get_info\"}", status_timeout_ms);
         defer allocator.free(raw);
         return std.json.parseFromSlice(
             models.JsonRpcResponse(SalviumInfo),
@@ -423,7 +241,7 @@ pub const Salvium = struct {
     /// Ask salviumd to shut down via Monero's direct `POST /stop_daemon` (not a
     /// `/json_rpc` method).
     pub fn requestStop(allocator: std.mem.Allocator, auth: models.CoinAuth) !void {
-        const reply = try httpPost(allocator, auth, "/stop_daemon", "{}", status_timeout_ms);
+        const reply = try rpc.moneroPost(allocator, auth, "/stop_daemon", "{}", status_timeout_ms);
         allocator.free(reply);
     }
 
@@ -536,11 +354,13 @@ pub const Salvium = struct {
     // --- External wallet (Monero wallet-rpc) -----------------------------
     //
     // Salvium's wallet lives in a *separate* process (`salvium-wallet-rpc`), not the
-    // daemon. BoxWallet launches it bound to localhost:`wallet_rpc_port`, keyless
-    // (`--disable-rpc-login`, mirroring the daemon's open RPC), pointed at the
-    // local daemon, and drives create/restore/open/balance over Monero's wallet
-    // `POST /json_rpc`. All funds-sensitive: a wallet is only ever created with a
-    // user-supplied password, never silently. See `coin.zig`'s `ExternalWallet`.
+    // daemon. BoxWallet launches it bound to localhost:`wallet_rpc_port`, locked to
+    // per-session credentials (`--rpc-login <user>:<pass>`, HTTP digest auth — the
+    // wallet RPC exposes the spend key and `sweep_all`, so localhost alone isn't
+    // enough), pointed at the local daemon, and drives create/restore/open/balance
+    // over Monero's wallet `POST /json_rpc`. All funds-sensitive: a wallet is only
+    // ever created with a user-supplied password, never silently. See `coin.zig`'s
+    // `ExternalWallet`.
 
     /// The managed wallet directory (`<datadir>/wallets`), where `salvium-wallet-rpc`
     /// creates and opens `BoxWallet`(+`.keys`). Caller owns the slice.
@@ -570,13 +390,17 @@ pub const Salvium = struct {
 
     /// argv to spawn `salvium-wallet-rpc`, bound to `port` on localhost and pointed
     /// at the local daemon. `--wallet-dir` lets it create/open wallets by name over
-    /// RPC; `--disable-rpc-login` keeps it keyless (both localhost-only). Caller
-    /// owns the returned slice and its strings.
+    /// RPC; `--rpc-login <user>:<pass>` locks the wallet RPC to the per-session
+    /// credentials BoxWallet generated, so another local process can't drive it
+    /// (the wallet RPC exposes the spend key and `sweep_all`). Caller owns the
+    /// returned slice and its strings.
     fn walletProcessArgv(
         allocator: std.mem.Allocator,
         install_root: []const u8,
         home: []const u8,
         port: []const u8,
+        rpc_user: []const u8,
+        rpc_password: []const u8,
     ) anyerror![]const []const u8 {
         const path = try std.fs.path.join(allocator, &.{ install_root, wallet_rpc_file });
         errdefer allocator.free(path);
@@ -584,8 +408,10 @@ pub const Salvium = struct {
         errdefer allocator.free(dir);
         const daemon_addr = try std.fmt.allocPrint(allocator, "127.0.0.1:{s}", .{rpc_default_port});
         errdefer allocator.free(daemon_addr);
+        const login = try std.fmt.allocPrint(allocator, "{s}:{s}", .{ rpc_user, rpc_password });
+        errdefer allocator.free(login);
 
-        const argv = try allocator.alloc([]const u8, 10);
+        const argv = try allocator.alloc([]const u8, 11);
         errdefer allocator.free(argv);
         argv[0] = path;
         argv[1] = try allocator.dupe(u8, "--wallet-dir");
@@ -596,7 +422,8 @@ pub const Salvium = struct {
         argv[6] = try allocator.dupe(u8, port);
         argv[7] = try allocator.dupe(u8, "--daemon-address");
         argv[8] = daemon_addr;
-        argv[9] = try allocator.dupe(u8, "--disable-rpc-login");
+        argv[9] = try allocator.dupe(u8, "--rpc-login");
+        argv[10] = login;
         return argv;
     }
 
@@ -646,7 +473,7 @@ pub const Salvium = struct {
             .{ method, params },
         );
         defer allocator.free(body);
-        const raw = try httpPost(allocator, auth, "/json_rpc", body, wallet_timeout_ms);
+        const raw = try rpc.moneroPost(allocator, auth, "/json_rpc", body, wallet_timeout_ms);
         defer allocator.free(raw);
         // `.alloc_always` so parsed strings (the mnemonic, the error message)
         // survive `raw` being freed.
@@ -1359,7 +1186,7 @@ test "walletRpcError maps known Monero messages to specific errors" {
 test "walletProcessArgv binds wallet-rpc to localhost and points it at the daemon" {
     const allocator = std.testing.allocator;
 
-    const argv = try Salvium.walletProcessArgv(allocator, "/opt/bw", "/home/alice", Salvium.wallet_rpc_port);
+    const argv = try Salvium.walletProcessArgv(allocator, "/opt/bw", "/home/alice", Salvium.wallet_rpc_port, "rpcuser123", "rpcpass456");
     defer {
         for (argv) |a| allocator.free(a);
         allocator.free(argv);
@@ -1377,9 +1204,11 @@ test "walletProcessArgv binds wallet-rpc to localhost and points it at the daemo
     try std.testing.expect(std.mem.indexOf(u8, joined, "wallets") != null);
     try std.testing.expect(std.mem.indexOf(u8, joined, "--rpc-bind-ip 127.0.0.1") != null);
     try std.testing.expect(std.mem.indexOf(u8, joined, "--rpc-bind-port " ++ Salvium.wallet_rpc_port) != null);
-    // Pointed at the local daemon's RPC port, and keyless to match its open RPC.
+    // Pointed at the local daemon's RPC port.
     try std.testing.expect(std.mem.indexOf(u8, joined, "--daemon-address 127.0.0.1:" ++ Salvium.rpc_default_port) != null);
-    try std.testing.expect(std.mem.indexOf(u8, joined, "--disable-rpc-login") != null);
+    // The wallet RPC is locked to the per-session credentials, not keyless.
+    try std.testing.expect(std.mem.indexOf(u8, joined, "--rpc-login rpcuser123:rpcpass456") != null);
+    try std.testing.expect(std.mem.indexOf(u8, joined, "--disable-rpc-login") == null);
 }
 
 test "walletExists keys off the BoxWallet.keys file on disk" {

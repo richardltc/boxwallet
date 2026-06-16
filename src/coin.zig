@@ -47,12 +47,17 @@ pub const Coin = struct {
         /// Port BoxWallet binds the wallet-rpc process to (localhost only).
         rpc_port: *const fn () []const u8,
         /// argv to spawn the wallet-rpc process, bound to `port` and pointed at
-        /// the daemon. Caller owns the returned slice and its strings.
+        /// the daemon, locked to the per-session `rpc_user`/`rpc_password` (the
+        /// wallet RPC exposes the spend key, so it must not be left keyless). The
+        /// same credentials are returned by the app's `extWalletAuth`. Caller owns
+        /// the returned slice and its strings.
         process_argv: *const fn (
             allocator: std.mem.Allocator,
             install_root: []const u8,
             home_dir: []const u8,
             port: []const u8,
+            rpc_user: []const u8,
+            rpc_password: []const u8,
         ) anyerror![]const []const u8,
         /// Whether the managed "BoxWallet" wallet already exists on disk (a file
         /// check — no running process needed). False → the UI prompts to set one up.

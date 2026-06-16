@@ -1,4 +1,5 @@
 const std = @import("std");
+const builtin = @import("builtin");
 const models = @import("models.zig");
 
 /// Perform a JSON-RPC POST against a coin daemon and return the raw response
@@ -264,6 +265,421 @@ fn basicAuthHeader(allocator: std.mem.Allocator, user: []const u8, password: []c
     _ = enc.encode(b64, creds);
 
     return std.fmt.allocPrint(allocator, "Basic {s}", .{b64});
+}
+
+// --- Monero-family wallet/daemon HTTP transport ---------------------------
+//
+// Monero-derived coins (Nerva, Salvium) talk a plain HTTP/1.1 `POST` to a local
+// `json_rpc`/`stop_daemon` endpoint, and their *wallet* RPC enforces **HTTP
+// Digest** auth (`monero-wallet-rpc --rpc-login user:pass`) — basic auth is not
+// accepted. `moneroPost` is the one transport for both: it bounds every blocking
+// send/recv with a timeout (so a daemon that accepts but never answers fails fast
+// instead of hanging), and transparently answers a `401` Digest challenge when
+// credentials are present. The daemon RPC is keyless, so an empty `auth.rpc_user`
+// just skips the digest handshake.
+
+const MoneroExchange = struct { status: u16, www_authenticate: ?[]u8, body: []u8 };
+
+/// POST `payload` to `path` on `auth`'s endpoint, answering a Digest challenge
+/// when `auth.rpc_user` is set. `timeout_ms` bounds each blocking socket op on
+/// POSIX. Returns the raw response body (caller owns it); `401` after the retry
+/// (or with no usable challenge) is `error.AuthFailed`.
+pub fn moneroPost(
+    allocator: std.mem.Allocator,
+    auth: models.CoinAuth,
+    path: []const u8,
+    payload: []const u8,
+    timeout_ms: u32,
+) ![]u8 {
+    const first = try moneroExchange(allocator, auth, path, payload, timeout_ms, null);
+
+    // No auth required (daemon RPC), or a non-401 reply: hand the body back as-is,
+    // mirroring the bitcoin-style "parse the body regardless of status" contract.
+    if (first.status != 401 or auth.rpc_user.len == 0) {
+        if (first.www_authenticate) |w| allocator.free(w);
+        if (first.status == 401) {
+            allocator.free(first.body);
+            return error.AuthFailed;
+        }
+        return first.body;
+    }
+
+    // Authenticated wallet RPC: compute the Digest response and retry once with a
+    // fresh nonce (Monero challenges every request, so there's no nonce to reuse).
+    allocator.free(first.body);
+    const challenge = first.www_authenticate orelse return error.AuthFailed;
+    defer allocator.free(challenge);
+
+    var threaded: std.Io.Threaded = .init(allocator, .{});
+    defer threaded.deinit();
+    const av = (try digestAuthValue(allocator, threaded.io(), challenge, auth.rpc_user, auth.rpc_password, "POST", path)) orelse
+        return error.AuthFailed;
+    defer allocator.free(av);
+
+    const second = try moneroExchange(allocator, auth, path, payload, timeout_ms, av);
+    if (second.www_authenticate) |w| allocator.free(w);
+    if (second.status == 401) {
+        allocator.free(second.body);
+        return error.AuthFailed;
+    }
+    return second.body;
+}
+
+/// One HTTP round-trip for `moneroPost`. `authorization`, when given, is sent as
+/// the `Authorization` header value. Returns the status, any `WWW-Authenticate`
+/// value (owned), and the body (owned) — it never turns a `401` into an error so
+/// the caller can drive the digest retry.
+fn moneroExchange(
+    allocator: std.mem.Allocator,
+    auth: models.CoinAuth,
+    path: []const u8,
+    payload: []const u8,
+    timeout_ms: u32,
+    authorization: ?[]const u8,
+) !MoneroExchange {
+    if (builtin.os.tag == .windows)
+        return moneroExchangeWindows(allocator, auth, path, payload, authorization);
+
+    const posix = std.posix;
+
+    const ip = parseIp4(auth.ip_address) catch return error.InvalidRpcAddress;
+    const port = std.fmt.parseInt(u16, auth.port, 10) catch return error.InvalidRpcAddress;
+
+    const sock_rc = posix.system.socket(posix.AF.INET, posix.SOCK.STREAM, 0);
+    if (posix.errno(sock_rc) != .SUCCESS) return error.RpcConnectFailed;
+    const sock: posix.socket_t = @intCast(sock_rc);
+    defer _ = posix.system.close(sock);
+
+    const tv = posix.timeval{
+        .sec = @intCast(timeout_ms / 1000),
+        .usec = @intCast((timeout_ms % 1000) * 1000),
+    };
+    posix.setsockopt(sock, posix.SOL.SOCKET, posix.SO.RCVTIMEO, std.mem.asBytes(&tv)) catch {};
+    posix.setsockopt(sock, posix.SOL.SOCKET, posix.SO.SNDTIMEO, std.mem.asBytes(&tv)) catch {};
+
+    var addr: posix.sockaddr.in = .{
+        .port = std.mem.nativeToBig(u16, port),
+        .addr = ip,
+    };
+    if (posix.errno(posix.system.connect(sock, @ptrCast(&addr), @sizeOf(posix.sockaddr.in))) != .SUCCESS)
+        return error.RpcConnectFailed;
+
+    const auth_line = if (authorization) |a|
+        try std.fmt.allocPrint(allocator, "Authorization: {s}\r\n", .{a})
+    else
+        try allocator.dupe(u8, "");
+    defer allocator.free(auth_line);
+
+    const req = try std.fmt.allocPrint(
+        allocator,
+        "POST {s} HTTP/1.1\r\nHost: {s}:{s}\r\nContent-Type: application/json\r\nContent-Length: {d}\r\n{s}Connection: close\r\n\r\n{s}",
+        .{ path, auth.ip_address, auth.port, payload.len, auth_line, payload },
+    );
+    defer allocator.free(req);
+    try sockWriteAll(sock, req);
+
+    const max_response = 1 << 20;
+    var resp: std.Io.Writer.Allocating = .init(allocator);
+    defer resp.deinit();
+    var buf: [4096]u8 = undefined;
+    var header_end: ?usize = null;
+    var content_len: ?usize = null;
+    var status: u16 = 0;
+    var www: ?[]u8 = null;
+    errdefer if (www) |w| allocator.free(w);
+    while (true) {
+        const n = posix.read(sock, &buf) catch |err| switch (err) {
+            error.WouldBlock => return error.Timeout,
+            else => return error.RpcReadFailed,
+        };
+        if (n == 0) break;
+        try resp.writer.writeAll(buf[0..n]);
+        if (resp.written().len > max_response) return error.ResponseTooLarge;
+        if (header_end == null) {
+            if (std.mem.indexOf(u8, resp.written(), "\r\n\r\n")) |idx| {
+                header_end = idx + 4;
+                const head = resp.written()[0..idx];
+                status = statusCode(head);
+                content_len = parseContentLength(head);
+                if (headerValue(head, "www-authenticate")) |v| www = try allocator.dupe(u8, v);
+            }
+        }
+        if (header_end) |he| if (content_len) |cl| {
+            if (resp.written().len - he >= cl) break;
+        };
+    }
+
+    const he = header_end orelse return error.RpcReadFailed;
+    const all = resp.written();
+    const body = if (content_len) |cl| all[he..@min(he + cl, all.len)] else all[he..];
+    return .{ .status = status, .www_authenticate = www, .body = try allocator.dupe(u8, body) };
+}
+
+/// `std.http.Client` round-trip — the Windows path for `moneroExchange` (raw
+/// POSIX sockets there would need `WSAStartup`). No socket timeout (the request
+/// is tiny localhost JSON), but it reads the status + headers so digest works.
+fn moneroExchangeWindows(
+    allocator: std.mem.Allocator,
+    auth: models.CoinAuth,
+    path: []const u8,
+    payload: []const u8,
+    authorization: ?[]const u8,
+) !MoneroExchange {
+    var threaded: std.Io.Threaded = .init(allocator, .{});
+    defer threaded.deinit();
+
+    var client: std.http.Client = .{ .allocator = allocator, .io = threaded.io() };
+    defer client.deinit();
+
+    const url = try std.fmt.allocPrint(allocator, "http://{s}:{s}{s}", .{ auth.ip_address, auth.port, path });
+    defer allocator.free(url);
+    const uri = try std.Uri.parse(url);
+
+    var extra: [2]std.http.Header = undefined;
+    var nh: usize = 0;
+    extra[nh] = .{ .name = "content-type", .value = "application/json" };
+    nh += 1;
+    if (authorization) |a| {
+        extra[nh] = .{ .name = "authorization", .value = a };
+        nh += 1;
+    }
+
+    var req = try client.request(.POST, uri, .{ .extra_headers = extra[0..nh] });
+    defer req.deinit();
+
+    const body_buf = try allocator.dupe(u8, payload);
+    defer allocator.free(body_buf);
+    try req.sendBodyComplete(body_buf);
+
+    var redirect_buffer: [4096]u8 = undefined;
+    var response = try req.receiveHead(&redirect_buffer);
+    const status: u16 = @intFromEnum(response.head.status);
+
+    var www: ?[]u8 = null;
+    errdefer if (www) |w| allocator.free(w);
+    {
+        var it = response.head.iterateHeaders();
+        while (it.next()) |h| {
+            if (std.ascii.eqlIgnoreCase(h.name, "www-authenticate")) {
+                www = try allocator.dupe(u8, h.value);
+                break;
+            }
+        }
+    }
+
+    var transfer_buffer: [16 * 1024]u8 = undefined;
+    const reader = response.reader(&transfer_buffer);
+    var out: std.Io.Writer.Allocating = .init(allocator);
+    errdefer out.deinit();
+    while (true) {
+        _ = reader.stream(&out.writer, .limited(64 * 1024)) catch |err| switch (err) {
+            error.EndOfStream => break,
+            else => return error.RpcReadFailed,
+        };
+        if (out.written().len > (1 << 20)) return error.ResponseTooLarge;
+    }
+    return .{ .status = status, .www_authenticate = www, .body = try out.toOwnedSlice() };
+}
+
+/// Write every byte of `bytes` to the socket, looping over partial writes and
+/// retrying `EINTR`. A send that blocks past `SO_SNDTIMEO` surfaces as `EAGAIN`.
+fn sockWriteAll(sock: std.posix.socket_t, bytes: []const u8) !void {
+    const posix = std.posix;
+    var i: usize = 0;
+    while (i < bytes.len) {
+        const rc = posix.system.write(sock, bytes.ptr + i, bytes.len - i);
+        switch (posix.errno(rc)) {
+            .SUCCESS => {
+                const w: usize = @intCast(rc);
+                if (w == 0) return error.RpcWriteFailed;
+                i += w;
+            },
+            .INTR => continue,
+            .AGAIN => return error.Timeout,
+            else => return error.RpcWriteFailed,
+        }
+    }
+}
+
+/// Parse a dotted-quad IPv4 into a network-order `u32` for `sockaddr.in.addr`.
+fn parseIp4(s: []const u8) !u32 {
+    var octets: [4]u8 = undefined;
+    var it = std.mem.splitScalar(u8, s, '.');
+    for (&octets) |*o| {
+        const part = it.next() orelse return error.InvalidIp;
+        o.* = std.fmt.parseInt(u8, part, 10) catch return error.InvalidIp;
+    }
+    if (it.next() != null) return error.InvalidIp;
+    return @bitCast(octets);
+}
+
+/// The numeric status from an HTTP status line ("HTTP/1.1 200 OK" → 200); 0 if
+/// it can't be parsed.
+fn statusCode(header: []const u8) u16 {
+    const line_end = std.mem.indexOfScalar(u8, header, '\r') orelse header.len;
+    var it = std.mem.tokenizeScalar(u8, header[0..line_end], ' ');
+    _ = it.next(); // HTTP/1.1
+    const code = it.next() orelse return 0;
+    return std.fmt.parseInt(u16, code, 10) catch 0;
+}
+
+/// The value of header `name` from a CRLF-delimited response header block.
+fn headerValue(header: []const u8, name: []const u8) ?[]const u8 {
+    var lines = std.mem.splitSequence(u8, header, "\r\n");
+    while (lines.next()) |line| {
+        const colon = std.mem.indexOfScalar(u8, line, ':') orelse continue;
+        if (std.ascii.eqlIgnoreCase(std.mem.trim(u8, line[0..colon], " "), name))
+            return std.mem.trim(u8, line[colon + 1 ..], " ");
+    }
+    return null;
+}
+
+/// The `Content-Length` value from a response header block, or null if absent.
+fn parseContentLength(header: []const u8) ?usize {
+    if (headerValue(header, "content-length")) |v|
+        return std.fmt.parseInt(usize, v, 10) catch null;
+    return null;
+}
+
+// --- HTTP Digest auth (RFC 2617) ------------------------------------------
+
+/// Build an `Authorization: Digest …` header value answering `challenge` (the
+/// raw `WWW-Authenticate` value). Generates a random client nonce from the OS
+/// CSPRNG. Returns null when `challenge` isn't a usable Digest challenge. Caller
+/// owns the result.
+fn digestAuthValue(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    challenge: []const u8,
+    user: []const u8,
+    password: []const u8,
+    method: []const u8,
+    uri: []const u8,
+) !?[]u8 {
+    var raw: [8]u8 = undefined;
+    io.random(&raw);
+    const cnonce = std.fmt.bytesToHex(raw, .lower);
+    return buildDigest(allocator, challenge, user, password, method, uri, cnonce[0..]);
+}
+
+/// The deterministic core of `digestAuthValue` (explicit `cnonce` for testing).
+fn buildDigest(
+    allocator: std.mem.Allocator,
+    challenge: []const u8,
+    user: []const u8,
+    password: []const u8,
+    method: []const u8,
+    uri: []const u8,
+    cnonce: []const u8,
+) !?[]u8 {
+    if (!std.ascii.startsWithIgnoreCase(std.mem.trimStart(u8, challenge, " "), "digest")) return null;
+    const realm = digestParam(challenge, "realm") orelse return null;
+    const nonce = digestParam(challenge, "nonce") orelse return null;
+    const opaque_val = digestParam(challenge, "opaque");
+    const use_qop = if (digestParam(challenge, "qop")) |q| containsToken(q, "auth") else false;
+
+    const ha1 = try md5Hex(allocator, "{s}:{s}:{s}", .{ user, realm, password });
+    const ha2 = try md5Hex(allocator, "{s}:{s}", .{ method, uri });
+    const nc = "00000001";
+
+    const opaque_tail = if (opaque_val) |o|
+        try std.fmt.allocPrint(allocator, ", opaque=\"{s}\"", .{o})
+    else
+        try allocator.dupe(u8, "");
+    defer allocator.free(opaque_tail);
+
+    if (use_qop) {
+        const response = try md5Hex(allocator, "{s}:{s}:{s}:{s}:{s}:{s}", .{ ha1[0..], nonce, nc, cnonce, "auth", ha2[0..] });
+        return try std.fmt.allocPrint(
+            allocator,
+            "Digest username=\"{s}\", realm=\"{s}\", nonce=\"{s}\", uri=\"{s}\", algorithm=MD5, qop=auth, nc={s}, cnonce=\"{s}\", response=\"{s}\"{s}",
+            .{ user, realm, nonce, uri, nc, cnonce, response[0..], opaque_tail },
+        );
+    }
+
+    const response = try md5Hex(allocator, "{s}:{s}:{s}", .{ ha1[0..], nonce, ha2[0..] });
+    return try std.fmt.allocPrint(
+        allocator,
+        "Digest username=\"{s}\", realm=\"{s}\", nonce=\"{s}\", uri=\"{s}\", response=\"{s}\"{s}",
+        .{ user, realm, nonce, uri, response[0..], opaque_tail },
+    );
+}
+
+/// Hex-encoded MD5 of an `allocPrint`-formatted string.
+fn md5Hex(allocator: std.mem.Allocator, comptime fmt: []const u8, args: anytype) ![32]u8 {
+    const s = try std.fmt.allocPrint(allocator, fmt, args);
+    defer allocator.free(s);
+    var digest: [16]u8 = undefined;
+    std.crypto.hash.Md5.hash(s, &digest, .{});
+    return std.fmt.bytesToHex(digest, .lower);
+}
+
+/// Extract a `key=value` parameter from a Digest challenge. Handles quoted
+/// (`realm="x"`) and bare (`qop=auth`) values, matching `key` only at a token
+/// boundary so e.g. `nonce` doesn't also match a longer key.
+fn digestParam(challenge: []const u8, key: []const u8) ?[]const u8 {
+    var i: usize = 0;
+    while (std.mem.indexOfPos(u8, challenge, i, key)) |pos| {
+        i = pos + key.len;
+        if (pos != 0) {
+            const prev = challenge[pos - 1];
+            if (prev != ' ' and prev != ',') continue;
+        }
+        var j = pos + key.len;
+        while (j < challenge.len and challenge[j] == ' ') j += 1;
+        if (j >= challenge.len or challenge[j] != '=') continue;
+        j += 1;
+        while (j < challenge.len and challenge[j] == ' ') j += 1;
+        if (j < challenge.len and challenge[j] == '"') {
+            j += 1;
+            const end = std.mem.indexOfScalarPos(u8, challenge, j, '"') orelse return null;
+            return challenge[j..end];
+        }
+        var end = j;
+        while (end < challenge.len and challenge[end] != ',' and challenge[end] != ' ') end += 1;
+        return challenge[j..end];
+    }
+    return null;
+}
+
+/// Whether comma-separated `list` contains the exact token `token`.
+fn containsToken(list: []const u8, token: []const u8) bool {
+    var it = std.mem.splitScalar(u8, list, ',');
+    while (it.next()) |t| if (std.mem.eql(u8, std.mem.trim(u8, t, " "), token)) return true;
+    return false;
+}
+
+test "buildDigest matches the RFC 2617 §3.5 worked example" {
+    const challenge =
+        "Digest realm=\"testrealm@host.com\", qop=\"auth,auth-int\", " ++
+        "nonce=\"dcd98b7102dd2f0e8b11d0f600bfb0c093\", " ++
+        "opaque=\"5ccc069c403ebaf9f0171e9517f40e41\"";
+    const v = (try buildDigest(
+        std.testing.allocator,
+        challenge,
+        "Mufasa",
+        "Circle Of Life",
+        "GET",
+        "/dir/index.html",
+        "0a4f113b",
+    )).?;
+    defer std.testing.allocator.free(v);
+
+    try std.testing.expect(std.mem.indexOf(u8, v, "response=\"6629fae49393a05397450978507c4ef1\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, v, "qop=auth") != null);
+    try std.testing.expect(std.mem.indexOf(u8, v, "opaque=\"5ccc069c403ebaf9f0171e9517f40e41\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, v, "nc=00000001") != null);
+}
+
+test "buildDigest rejects a non-Digest challenge" {
+    try std.testing.expect((try buildDigest(std.testing.allocator, "Basic realm=\"x\"", "u", "p", "POST", "/json_rpc", "abc")) == null);
+}
+
+test "digestParam reads quoted and bare values at token boundaries" {
+    const c = "Digest qop=auth, realm=\"r\", nonce=\"abc\", noncekey=\"zzz\"";
+    try std.testing.expectEqualStrings("auth", digestParam(c, "qop").?);
+    try std.testing.expectEqualStrings("r", digestParam(c, "realm").?);
+    try std.testing.expectEqualStrings("abc", digestParam(c, "nonce").?);
 }
 
 test "callParsed's alloc_always keeps strings valid after the source is freed" {
