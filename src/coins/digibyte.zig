@@ -17,7 +17,7 @@ const Coin = @import("../coin.zig").Coin;
 pub const DigiByte = struct {
     /// Whether the coin is exposed in the nav. False keeps it out of the left
     /// bar entirely (registered but hidden) until it's ready for users.
-    pub const live = false;
+    pub const live = true;
     pub const coin_name = "DigiByte";
     pub const coin_name_abbrev = "DGB";
     /// One-line description shown under the coin name on the detail pane.
