@@ -13,17 +13,29 @@ pub const Coin = struct {
     ptr: *anyopaque,
     vtable: *const VTable,
 
-    /// An **external wallet** capability — for Monero/CryptoNote coins (Nerva,
-    /// later Zano) whose wallet is a *separate* RPC process, not part of the
-    /// daemon. A coin that sets `external_wallet` in its vtable has BoxWallet
-    /// launch and manage that process (`process_argv`, bound to `rpc_port` on
-    /// localhost) alongside the daemon, and drives wallet setup/balance through
-    /// these hooks. Bitcoin-derived coins leave it null and use the in-daemon
+    /// An **external wallet** capability — a wallet whose setup model is the
+    /// Monero/CryptoNote shape: *create returns a mnemonic to back up*, restore
+    /// from seed, unlock with a password. It backs the setup UI (the create /
+    /// restore / unlock / seed-display modal). Two backings are supported:
+    ///
+    ///   * **Separate process** (Nerva, Zano): the wallet is its own RPC process,
+    ///     not part of the daemon. `process_argv`/`rpc_port` are set, so BoxWallet
+    ///     launches and manages that process (bound to `rpc_port` on localhost)
+    ///     alongside the daemon. The `wallet_auth` passed to the hooks is the
+    ///     wallet process's own endpoint (127.0.0.1 + `rpc_port`), with per-session
+    ///     credentials, distinct from the daemon's `CoinAuth`.
+    ///   * **In-daemon** (Ergo): the wallet lives in the daemon itself, reached
+    ///     over the same RPC/REST endpoint. `process_argv` (and `rpc_port`) are
+    ///     left null — BoxWallet spawns no separate process, and the wallet is
+    ///     "ready" whenever the daemon is running. The `wallet_auth` passed to the
+    ///     hooks is the daemon's own endpoint; a coin whose in-daemon wallet RPC
+    ///     needs real auth resolves it inside its hooks (Ergo uses a fixed
+    ///     api_key), so the hooks may ignore `wallet_auth`.
+    ///
+    /// Bitcoin-derived coins leave `external_wallet` null and use the in-daemon
     /// wallet hooks instead (`ensure_wallet`/`wallet_security_state`/
     /// `wallet_balance`).
     ///
-    /// The `wallet_auth` passed to the RPC hooks is the wallet process's own
-    /// endpoint (127.0.0.1 + `rpc_port`), distinct from the daemon's `CoinAuth`.
     /// Optional, bounded sink an external-wallet op fills with the daemon's own
     /// failure message before returning an error, so the UI/log can show *why* a
     /// create/restore/open failed rather than a bare error name. Pre-sized (no
@@ -44,23 +56,29 @@ pub const Coin = struct {
     };
 
     pub const ExternalWallet = struct {
-        /// Port BoxWallet binds the wallet-rpc process to (localhost only).
-        rpc_port: *const fn () []const u8,
+        /// Port BoxWallet binds the wallet-rpc process to (localhost only). Null
+        /// for an in-daemon wallet (no separate process — the daemon's own port is
+        /// used).
+        rpc_port: ?*const fn () []const u8 = null,
         /// argv to spawn the wallet-rpc process, bound to `port` and pointed at
         /// the daemon, locked to the per-session `rpc_user`/`rpc_password` (the
         /// wallet RPC exposes the spend key, so it must not be left keyless). The
         /// same credentials are returned by the app's `extWalletAuth`. Caller owns
-        /// the returned slice and its strings.
-        process_argv: *const fn (
+        /// the returned slice and its strings. **Null marks an in-daemon wallet**:
+        /// BoxWallet spawns no separate process, and `hasExternalWalletProcess`
+        /// keys off this being non-null.
+        process_argv: ?*const fn (
             allocator: std.mem.Allocator,
             install_root: []const u8,
             home_dir: []const u8,
             port: []const u8,
             rpc_user: []const u8,
             rpc_password: []const u8,
-        ) anyerror![]const []const u8,
-        /// Whether the managed "BoxWallet" wallet already exists on disk (a file
-        /// check — no running process needed). False → the UI prompts to set one up.
+        ) anyerror![]const []const u8 = null,
+        /// Whether the managed wallet already exists. For a process-backed wallet
+        /// this is a file check (no running process needed); for an in-daemon
+        /// wallet it may probe the daemon's status endpoint (the daemon is up
+        /// whenever the UI offers the menu). False → the UI prompts to set one up.
         exists: *const fn (allocator: std.mem.Allocator, home_dir: []const u8) bool,
         /// Create a new wallet with `password`; returns its freshly-generated
         /// mnemonic seed for the user to back up. `detail` receives the daemon's
@@ -87,15 +105,17 @@ pub const Coin = struct {
         /// Import an existing wallet file (`src_path`, browsed to) into the managed
         /// wallet dir and open it with `password`. Uses `home_dir` to resolve the
         /// destination; may also need the wallet process (via `wallet_auth`) to open.
-        /// `detail` receives the daemon's failure message on error.
-        restore_file: *const fn (
+        /// `detail` receives the daemon's failure message on error. **Null for coins
+        /// with no portable wallet file** (Ergo's in-daemon wallet), in which case
+        /// the setup menu omits the "Restore from a wallet file" choice.
+        restore_file: ?*const fn (
             allocator: std.mem.Allocator,
             wallet_auth: models.CoinAuth,
             home_dir: []const u8,
             src_path: []const u8,
             password: []const u8,
             detail: *WalletErrSink,
-        ) anyerror!void,
+        ) anyerror!void = null,
         /// Open the existing managed wallet with `password` (so its balance can be
         /// read). Called when a wallet already exists at process start. `detail`
         /// receives the daemon's failure message on error.
@@ -105,6 +125,16 @@ pub const Coin = struct {
             password: []const u8,
             detail: *WalletErrSink,
         ) anyerror!void,
+        /// Re-lock the open wallet. Null for the Monero-style process-backed coins,
+        /// which lock implicitly when their wallet process is killed (so the UI
+        /// offers no explicit lock); set for an in-daemon wallet that stays open
+        /// while the daemon runs and so needs an explicit lock action. `detail`
+        /// receives the daemon's failure message on error.
+        lock: ?*const fn (
+            allocator: std.mem.Allocator,
+            wallet_auth: models.CoinAuth,
+            detail: *WalletErrSink,
+        ) anyerror!void = null,
         /// Read the open wallet's balances over the wallet RPC.
         balance: *const fn (
             allocator: std.mem.Allocator,
@@ -661,10 +691,19 @@ pub const Coin = struct {
         return null;
     }
 
-    /// Whether this coin's wallet is a separate RPC process BoxWallet manages
-    /// (Monero-style). True iff the coin wires `external_wallet`.
+    /// Whether this coin drives the external-wallet setup flow (create-returns-seed
+    /// / restore / unlock), whether backed by a separate process or in-daemon. True
+    /// iff the coin wires `external_wallet`.
     pub fn hasExternalWallet(self: Coin) bool {
         return self.vtable.external_wallet != null;
+    }
+
+    /// Whether the external wallet is backed by a *separate process* BoxWallet must
+    /// spawn (Monero-style), as opposed to living in the daemon (Ergo). True iff the
+    /// capability wires `process_argv`.
+    pub fn hasExternalWalletProcess(self: Coin) bool {
+        const ew = self.vtable.external_wallet orelse return false;
+        return ew.process_argv != null;
     }
 
     /// The external-wallet capability, or null when the coin has none
