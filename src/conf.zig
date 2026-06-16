@@ -339,7 +339,7 @@ fn hasKey(content: []const u8, key: []const u8) bool {
 /// isn't guessable by another local user — the same CSPRNG on every OS, with no
 /// weak fallback. Each byte is drawn with rejection sampling so the alphabet maps
 /// onto it without modulo bias.
-fn randomPassword(io: std.Io, buf: []u8) []const u8 {
+pub fn randomPassword(io: std.Io, buf: []u8) []const u8 {
     const charset = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
     // Reject the few high bytes that would skew the modulo, so every charset index
     // is equally likely (256 % 62 == 8 bytes fall outside the uniform run).

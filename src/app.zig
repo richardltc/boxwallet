@@ -611,6 +611,11 @@ const UpdateModal = struct {
 /// keeping the secret in a small fixed buffer (memory constraint).
 const wallet_pw_max = 256;
 
+/// Length of each randomly generated wallet-rpc credential (`--rpc-login`). 24
+/// alphanumeric chars from the CSPRNG is ~143 bits — far beyond brute force by a
+/// local attacker, while staying a small fixed buffer.
+const wallet_rpc_cred_len = 24;
+
 /// Inner content width (columns) of the wallet modal box — the area between the
 /// `│ ` and ` │`. Sized to hold the longest menu label, the passphrase field,
 /// and the footer hints without wrapping, while fitting an 80-column terminal.
@@ -776,6 +781,14 @@ const Activity = struct {
     /// stops (Monero wallet-rpc has no shutdown RPC). Null when not running. Owned
     /// and touched only on the UI thread.
     wallet_rpc_child: ?std.process.Child = null,
+    /// Per-session credentials the wallet-rpc is launched with (`--rpc-login`) and
+    /// that `extWalletAuth` answers its HTTP digest challenge with. Generated from
+    /// the OS CSPRNG when the process is spawned and wiped when it's killed, so the
+    /// wallet RPC (which exposes the spend key + `sweep_all`) can't be driven by
+    /// another local process. Always full-length when `wallet_rpc_creds_set`.
+    wallet_rpc_user_buf: [wallet_rpc_cred_len]u8 = undefined,
+    wallet_rpc_pass_buf: [wallet_rpc_cred_len]u8 = undefined,
+    wallet_rpc_creds_set: bool = false,
     /// Whether we've tried to spawn the wallet-rpc this daemon run. Stops a missing
     /// or broken binary from being retried (and re-logged) every tick; the failure
     /// is reported once. Reset when the daemon is (re)started or the process killed.
@@ -1167,11 +1180,20 @@ const Activity = struct {
     }
 
     /// The wallet *process*'s own RPC endpoint (127.0.0.1 + the capability's bound
-    /// port), keyless — distinct from the daemon's `CoinAuth`. Only valid for
-    /// `coin.hasExternalWallet()` coins.
+    /// port), with the per-session `--rpc-login` credentials so the HTTP digest
+    /// handshake succeeds — distinct from the daemon's `CoinAuth`. Only valid for
+    /// `coin.hasExternalWallet()` coins, and only once the wallet-rpc has been
+    /// spawned (`wallet_rpc_creds_set`); before that the empty creds just fail.
     fn extWalletAuth(self: *const Activity) models.CoinAuth {
         const ew = self.coin.externalWallet().?;
-        return .{ .rpc_user = "", .rpc_password = "", .ip_address = "127.0.0.1", .port = ew.rpc_port() };
+        if (!self.wallet_rpc_creds_set)
+            return .{ .rpc_user = "", .rpc_password = "", .ip_address = "127.0.0.1", .port = ew.rpc_port() };
+        return .{
+            .rpc_user = self.wallet_rpc_user_buf[0..],
+            .rpc_password = self.wallet_rpc_pass_buf[0..],
+            .ip_address = "127.0.0.1",
+            .port = ew.rpc_port(),
+        };
     }
 
     /// External-wallet setup worker. Runs the chosen create/restore/open RPC on a
@@ -3330,9 +3352,17 @@ pub const App = struct {
         defer threaded.deinit();
         const io = threaded.io();
 
+        // Fresh per-session wallet-rpc credentials from the OS CSPRNG, so the RPC
+        // (which exposes the spend key + `sweep_all`) is locked to this BoxWallet
+        // run and not reachable by another local process. `extWalletAuth` answers
+        // the digest challenge with the same buffers.
+        _ = conf.randomPassword(io, &act.wallet_rpc_user_buf);
+        _ = conf.randomPassword(io, &act.wallet_rpc_pass_buf);
+        act.wallet_rpc_creds_set = true;
+
         // argv is consumed by spawn (fork/exec copies it), so the local arena can
         // be freed right after — the returned `Child` holds only the pid/handle.
-        const argv = ew.process_argv(a, self.install_root, self.home_dir, ew.rpc_port()) catch |err| {
+        const argv = ew.process_argv(a, self.install_root, self.home_dir, ew.rpc_port(), act.wallet_rpc_user_buf[0..], act.wallet_rpc_pass_buf[0..]) catch |err| {
             self.logf("{s}: couldn't build the wallet service command ({s})", .{ coin.coinName(), @errorName(err) });
             return;
         };
@@ -3360,6 +3390,10 @@ pub const App = struct {
         _ = self;
         act.ext_wallet_open.store(0, .monotonic);
         act.wallet_rpc_attempted = false;
+        // Wipe the wallet-rpc credentials — the process they unlocked is going away.
+        @memset(&act.wallet_rpc_user_buf, 0);
+        @memset(&act.wallet_rpc_pass_buf, 0);
+        act.wallet_rpc_creds_set = false;
         if (act.wallet_rpc_child) |*child| {
             var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
             defer arena.deinit();
