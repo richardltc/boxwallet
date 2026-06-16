@@ -129,13 +129,23 @@ pub const DigiByte = struct {
         defer net.deinit();
         const n = net.value.result orelse return error.EmptyRpcResult;
 
+        // `getnetworkinfo`'s numeric CLIENT_VERSION → dotted string, owned by
+        // `allocator` so it outlives `net`'s deinit. DigiByte's CLIENT_VERSION
+        // carries a legacy leading-0 major (82602 → "0.8.26.2"), but the release is
+        // branded/distributed as "8.26.2" (== core_version). Drop the "0." so the
+        // Running line and the on-disk version marker line up with the bundled
+        // version — otherwise the same release reads as an endless "update available".
+        const full = try models.clientVersionString(allocator, n.version);
+        const version = if (std.mem.startsWith(u8, full, "0.")) blk: {
+            defer allocator.free(full);
+            break :blk try allocator.dupe(u8, full[2..]);
+        } else full;
+
         return .{
             .blocks = b.blocks,
             .connections = n.connections,
             .staking_active = false,
-            // `getnetworkinfo`'s numeric CLIENT_VERSION → dotted string, owned by
-            // `allocator` so it outlives `net`'s deinit.
-            .version = try models.clientVersionString(allocator, n.version),
+            .version = version,
         };
     }
 
@@ -515,7 +525,7 @@ test "combines getblockchaininfo + getnetworkinfo into DaemonInfo (PoW, no getin
         \\"verificationprogress":1.0},"error":null,"id":"boxwallet"}
     ;
     const net_raw =
-        \\{"result":{"version":8260200,"subversion":"/DigiByte:8.26.2/",
+        \\{"result":{"version":82602,"subversion":"/DigiByte:8.26.2/",
         \\"protocolversion":70017,"connections":12,"networkactive":true,
         \\"relayfee":0.00001000,"warnings":""},"error":null,"id":"boxwallet"}
     ;
@@ -535,10 +545,25 @@ test "combines getblockchaininfo + getnetworkinfo into DaemonInfo (PoW, no getin
     );
     defer net.deinit();
 
+    // DigiByte's CLIENT_VERSION 82602 decodes via the generic bitcoin packing to
+    // the legacy 4-part "0.8.26.2"; daemonInfo strips the leading "0." so the
+    // Running line and the version marker match the branded "8.26.2" (==
+    // core_version) — otherwise the same release nags as "update available".
+    const full = try models.clientVersionString(allocator, net.value.result.?.version);
+    try std.testing.expectEqualStrings("0.8.26.2", full);
+    const version = if (std.mem.startsWith(u8, full, "0.")) blk: {
+        defer allocator.free(full);
+        break :blk try allocator.dupe(u8, full[2..]);
+    } else full;
+    defer allocator.free(version);
+    try std.testing.expectEqualStrings("8.26.2", version);
+    try std.testing.expectEqualStrings(DigiByte.core_version, version);
+
     const info: models.DaemonInfo = .{
         .blocks = bc.value.result.?.blocks,
         .connections = net.value.result.?.connections,
         .staking_active = false,
+        .version = version,
     };
 
     try std.testing.expectEqual(@as(i64, 18650200), info.blocks);
