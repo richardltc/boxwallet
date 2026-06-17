@@ -429,7 +429,12 @@ pub const Ergo = struct {
         _ = home_dir;
         const qpw = try rpc.jsonQuote(allocator, password);
         defer wipeFree(allocator, qpw);
-        const qseed = try rpc.jsonQuote(allocator, seed);
+        // Normalize the seed (lowercase + collapse whitespace) so a pasted phrase
+        // with stray case/spacing still restores — see the convention on
+        // `models.normalizeSeedWords` and `Coin.ExternalWallet.restore_seed`.
+        const normalized = try models.normalizeSeedWords(allocator, seed);
+        defer wipeFree(allocator, normalized);
+        const qseed = try rpc.jsonQuote(allocator, normalized);
         defer wipeFree(allocator, qseed);
         const body = try std.fmt.allocPrint(
             allocator,
@@ -1068,6 +1073,47 @@ test "a failed wallet reply surfaces the node's reason into the sink" {
     const err = Ergo.failWallet(allocator, &sink, body, error.WalletOpenFailed);
     try std.testing.expectError(error.WalletOpenFailed, @as(anyerror!void, err));
     try std.testing.expectEqualStrings("wrong password", sink.slice());
+}
+
+test "walletRemove deletes the node wallet dir and is a no-op when absent" {
+    if (builtin.os.tag == .windows) return error.SkipZigTest;
+    const allocator = std.testing.allocator;
+
+    var threaded: std.Io.Threaded = .init(allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    const home = "test-ergo-walletremove-home";
+    std.Io.Dir.cwd().deleteTree(io, home) catch {};
+    defer std.Io.Dir.cwd().deleteTree(io, home) catch {};
+
+    const data_dir = try Ergo.dataDir(allocator, home);
+    defer allocator.free(data_dir);
+    const wallet_dir = try std.fs.path.join(allocator, &.{ data_dir, "wallet" });
+    defer allocator.free(wallet_dir);
+    const keystore = try std.fs.path.join(allocator, &.{ wallet_dir, "keystore" });
+    defer allocator.free(keystore);
+
+    // Mimic an initialized wallet: <dataDir>/wallet/keystore/<secret>.json
+    var kd = try std.Io.Dir.cwd().createDirPathOpen(io, keystore, .{});
+    try kd.writeFile(io, .{ .sub_path = "secret.json", .data = "{}" });
+    kd.close(io);
+
+    // Present, then removed, then a second remove is a harmless no-op.
+    try std.Io.Dir.cwd().access(io, wallet_dir, .{});
+    try Ergo.walletRemove(allocator, home);
+    try std.testing.expectError(error.FileNotFound, std.Io.Dir.cwd().access(io, wallet_dir, .{}));
+    try Ergo.walletRemove(allocator, home);
+}
+
+test "restore seed is normalized (lowercased, whitespace collapsed)" {
+    const allocator = std.testing.allocator;
+    // A messy paste: capitalized words, tabs/newlines, leading/trailing and doubled
+    // spaces — restore must reduce it to the canonical space-joined lowercase form.
+    const messy = "  Abandon\tABILITY\n able   about  ";
+    const norm = try models.normalizeSeedWords(allocator, messy);
+    defer allocator.free(norm);
+    try std.testing.expectEqualStrings("abandon ability able about", norm);
 }
 
 test "parses /wallet/balances nanoErg into whole-ERG available/total" {

@@ -261,6 +261,28 @@ pub const Seed = struct {
     }
 };
 
+/// Canonical normalization for a user-entered recovery seed: every word lowercased
+/// and joined by single spaces, with leading/trailing and repeated whitespace
+/// collapsed. The BIP39 (Ergo) and Monero/CryptoNote (Nerva/Salvium) wordlists are
+/// all lowercase and decode case-sensitively, so a phrase typed with a capitalized
+/// word — or pasted with newlines / double spaces — would otherwise be rejected.
+///
+/// **Convention:** every restore-from-seed path runs the seed through this before
+/// handing it to the daemon/wallet, so a messy paste still restores. Caller owns the
+/// returned slice; since it holds the (secret) mnemonic, wipe it before freeing.
+pub fn normalizeSeedWords(allocator: std.mem.Allocator, seed: []const u8) ![]u8 {
+    var out: std.Io.Writer.Allocating = .init(allocator);
+    errdefer out.deinit();
+    var it = std.mem.tokenizeAny(u8, seed, " \t\r\n");
+    var first = true;
+    while (it.next()) |word| {
+        if (!first) try out.writer.writeByte(' ');
+        first = false;
+        for (word) |c| try out.writer.writeByte(std.ascii.toLower(c));
+    }
+    return out.toOwnedSlice();
+}
+
 /// Normalized wallet balance — the coin-agnostic view a frontend renders. Per-coin
 /// `getwalletinfo` shapes map onto this.
 ///

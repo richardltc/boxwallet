@@ -175,6 +175,12 @@ ZIG_GLOBAL_CACHE_DIR=zig-pkg zig build release # cross-build all release binarie
   in **alphabetical order by label**. `app.zig` builds `entries` by
   comptime-sorting `coin_entries`, so registering a coin doesn't require placing
   it by hand — add it anywhere in `coin_entries` and it sorts into place.
+- **Restore-from-seed always normalizes the seed.** Any wallet restore that takes
+  mnemonic words must run them through `models.normalizeSeedWords` (lowercase +
+  collapse whitespace) before handing them to the daemon/CLI, so a phrase pasted
+  with stray case or double spaces still restores. The seed is a secret — wipe any
+  working copy (`@memset(..., 0)`) before freeing. See the note on
+  `Coin.ExternalWallet.restore_seed`.
 - Match the surrounding code's comment density, naming, and idioms.
 
 ## Port status
