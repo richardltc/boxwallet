@@ -135,6 +135,17 @@ pub const Coin = struct {
             wallet_auth: models.CoinAuth,
             detail: *WalletErrSink,
         ) anyerror!void = null,
+        /// Remove the managed wallet's on-disk artifacts so a *new* one can be
+        /// created/restored in its place — the in-app "Replace wallet". Destructive:
+        /// the UI gates it behind a typed confirmation. For an in-daemon wallet
+        /// (Ergo) the node caches the secret in memory, so the app stops the daemon
+        /// before calling this and restarts it after (see the replace orchestration
+        /// in `app.zig`); this hook itself just deletes the files. Null = the coin
+        /// offers no in-app replace. `supportsWalletReplace` keys off this.
+        remove: ?*const fn (
+            allocator: std.mem.Allocator,
+            home_dir: []const u8,
+        ) anyerror!void = null,
         /// Read the open wallet's balances over the wallet RPC.
         balance: *const fn (
             allocator: std.mem.Allocator,
@@ -710,6 +721,14 @@ pub const Coin = struct {
     pub fn hasExternalWalletProcess(self: Coin) bool {
         const ew = self.vtable.external_wallet orelse return false;
         return ew.process_argv != null;
+    }
+
+    /// Whether the coin can remove its existing wallet so a different one can be
+    /// created/restored (the destructive in-app "Replace wallet"). True iff the
+    /// external-wallet capability wires `remove`.
+    pub fn supportsWalletReplace(self: Coin) bool {
+        const ew = self.vtable.external_wallet orelse return false;
+        return ew.remove != null;
     }
 
     /// The external-wallet capability, or null when the coin has none

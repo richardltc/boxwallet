@@ -429,23 +429,19 @@ const SetupChoice = enum {
     create,
     restore_seed,
     restore_file,
+    unlock,
     lock,
+    /// Destructively remove the current wallet to create/restore a different one.
+    replace,
 
     fn label(self: SetupChoice) []const u8 {
         return switch (self) {
             .create => "Create a new wallet",
             .restore_seed => "Restore from seed words",
             .restore_file => "Restore from a wallet file",
+            .unlock => "Unlock wallet",
             .lock => "Lock wallet",
-        };
-    }
-
-    fn op(self: SetupChoice) WalletSetupOp {
-        return switch (self) {
-            .create => .create,
-            .restore_seed => .restore_seed,
-            .restore_file => .restore_file,
-            .lock => .lock,
+            .replace => "Replace wallet…",
         };
     }
 };
@@ -540,6 +536,11 @@ const Modal = struct {
         setup_file,
         /// External-wallet: show the freshly-created seed to write down.
         setup_seed_show,
+        /// External-wallet: quiz the user on a few seed words to confirm the backup.
+        setup_seed_verify,
+        /// External-wallet: typed confirmation before destroying an existing wallet
+        /// to create/restore a different one (the "Replace wallet" path).
+        setup_replace_confirm,
     };
 
     stage: Stage = .menu,
@@ -577,6 +578,15 @@ const Modal = struct {
     /// The mnemonic to display at `setup_seed_show`, copied from the worker's
     /// result when a create succeeds.
     seed: models.Seed = .{},
+    /// Backup-verification quiz (`setup_seed_verify`): the three 1-based seed-word
+    /// positions the user must re-enter to prove they wrote the mnemonic down, the
+    /// current step into them, and whether the last answer was wrong (for the note).
+    verify_pos: [3]usize = .{ 0, 0, 0 },
+    verify_step: usize = 0,
+    verify_bad: bool = false,
+    /// Whether the typed text on `setup_replace_confirm` didn't match the required
+    /// confirmation word yet (drives the "type REPLACE to confirm" hint state).
+    replace_bad: bool = false,
 
     fn setMsg(self: *Modal, ok: bool, text: []const u8) void {
         self.ok = ok;
@@ -959,6 +969,11 @@ const Activity = struct {
     /// (or aborts).
     update_await_stop: bool = false,
     update_restart: bool = false,
+    /// Set while an in-app "Replace wallet" is mid-sequence: we've asked the daemon
+    /// to stop, and once it's down the old wallet is deleted and the daemon
+    /// restarted (an in-daemon wallet like Ergo caches its secret, so the node must
+    /// bounce before a new wallet can be created/restored). Cleared as it advances.
+    wallet_replace_await_stop: bool = false,
     /// The running daemon's self-reported version (empty when down/unknown), for
     /// the "Running" line. Folded from `poll_version_*` after a poll; cleared on
     /// stop. Program-lifetime fixed buffer.
@@ -2334,26 +2349,43 @@ pub const App = struct {
                     m.setup_sel += 1;
                 },
                 .enter => {
-                    const choice = m.setup_options[m.setup_sel];
-                    m.setup_op = choice.op();
-                    // create → password; the restores collect their input first;
-                    // lock takes no input and fires straight away.
-                    switch (choice) {
+                    // create → set new password; restores collect input first;
+                    // unlock → existing password; lock fires straight away; replace
+                    // goes to the destructive typed confirmation.
+                    switch (m.setup_options[m.setup_sel]) {
                         .create => {
+                            m.setup_op = .create;
                             m.stage = .setup_password;
                             self.pw_input.setValue("") catch {};
                             self.pw_input.focus();
                         },
                         .restore_seed => {
+                            m.setup_op = .restore_seed;
                             m.stage = .setup_seed_input;
                             self.seed_input.setValue("") catch {};
                             self.seed_input.focus();
                         },
                         .restore_file => {
+                            m.setup_op = .restore_file;
                             m.stage = .setup_file;
                             self.startFilePicker();
                         },
-                        .lock => self.submitWalletSetup(),
+                        .unlock => {
+                            m.setup_op = .open;
+                            m.stage = .setup_password;
+                            self.pw_input.setValue("") catch {};
+                            self.pw_input.focus();
+                        },
+                        .lock => {
+                            m.setup_op = .lock;
+                            self.submitWalletSetup();
+                        },
+                        .replace => {
+                            m.replace_bad = false;
+                            m.stage = .setup_replace_confirm;
+                            self.seed_input.setValue("") catch {};
+                            self.seed_input.focus();
+                        },
                     }
                 },
                 .char => |c| switch (c) {
@@ -2439,9 +2471,57 @@ pub const App = struct {
                     }
                 },
             },
-            // The freshly-created seed is on screen; any key closes (the wallet is
-            // already open at this point).
-            .setup_seed_show => self.closeWalletModal(),
+            // The freshly-created seed is on screen; any key moves to the backup
+            // quiz (the wallet is already created at this point — the quiz just
+            // confirms the user wrote the words down correctly). `esc` skips it.
+            .setup_seed_show => switch (k.key) {
+                .escape => self.closeWalletModal(),
+                else => {
+                    m.verify_step = 0;
+                    m.verify_bad = false;
+                    _ = pickVerifyPositions(self.io, countWords(m.seed.slice()), &m.verify_pos);
+                    m.stage = .setup_seed_verify;
+                    self.seed_input.setValue("") catch {};
+                    self.seed_input.focus();
+                },
+            },
+            // Backup quiz: each correct word advances; the third finishes. A wrong
+            // answer sends them back to the seed so they can fix their written copy.
+            .setup_seed_verify => switch (k.key) {
+                .escape => self.closeWalletModal(),
+                .enter => {
+                    const entered = std.mem.trim(u8, self.seed_input.getValue(), " \t\r\n");
+                    if (entered.len == 0) {} else if (std.ascii.eqlIgnoreCase(entered, nthWord(m.seed.slice(), m.verify_pos[m.verify_step]))) {
+                        self.seed_input.setValue("") catch {};
+                        m.verify_bad = false;
+                        if (m.verify_step + 1 >= 3) {
+                            self.seed_input.blur();
+                            m.setMsg(true, "Backup verified — your wallet is ready.");
+                        } else {
+                            m.verify_step += 1;
+                        }
+                    } else {
+                        // Their written copy is wrong — show the seed again to fix.
+                        m.verify_bad = true;
+                        m.stage = .setup_seed_show;
+                        self.seed_input.setValue("") catch {};
+                    }
+                },
+                else => self.seed_input.handleKey(k),
+            },
+            // Destructive replace: only the exact confirmation word proceeds.
+            .setup_replace_confirm => switch (k.key) {
+                .escape => self.closeWalletModal(),
+                .enter => if (std.mem.eql(u8, self.seed_input.getValue(), replace_confirm_word)) {
+                    self.beginWalletReplace();
+                } else {
+                    m.replace_bad = true;
+                },
+                else => {
+                    m.replace_bad = false;
+                    self.seed_input.handleKey(k);
+                },
+            },
             // While the RPC is in flight, ignore input — the reap moves us on.
             .working => {},
             // Any key dismisses the result.
@@ -2598,6 +2678,33 @@ pub const App = struct {
                 } else {
                     act.update_restart = false;
                     if (self.coinAt(i)) |c| self.logf("{s}: update aborted (daemon wouldn't stop)", .{c.coinName()});
+                }
+            }
+
+            // "Replace wallet", step 2: the daemon was asked to stop. Once it's down
+            // (worker reaped above), delete the old wallet and restart so the node
+            // forgets its cached secret; pressing `w` then offers create/restore. If
+            // it wouldn't stop, abort rather than delete under a live daemon.
+            if (act.wallet_replace_await_stop and act.daemon_thread == null and act.daemonState() != .stopping) {
+                act.wallet_replace_await_stop = false;
+                if (act.daemonState() == .stopped) {
+                    if (self.coinAt(i)) |c| {
+                        if (c.externalWallet()) |ew| {
+                            if (ew.remove) |remove| {
+                                if (remove(self.allocator, self.home_dir)) {
+                                    act.ext_wallet_exists = false;
+                                    self.logf("{s}: previous wallet removed — restarting daemon", .{c.coinName()});
+                                } else |err| {
+                                    self.logf("{s}: couldn't remove wallet ({s})", .{ c.coinName(), @errorName(err) });
+                                }
+                            }
+                        }
+                        // Restart regardless: the user expects the node back up. If
+                        // the delete failed, the create/restore menu just won't show.
+                        self.beginDaemonStart(c, act);
+                    }
+                } else {
+                    if (self.coinAt(i)) |c| self.logf("{s}: replace aborted (daemon wouldn't stop)", .{c.coinName()});
                 }
             }
 
@@ -3674,28 +3781,66 @@ pub const App = struct {
                 self.logf("{s}: wallet service still starting — try again in a moment", .{coin.coinName()});
             return;
         }
+        const ew = coin.externalWallet().?;
         var m: Modal = .{ .coin_idx = self.selected };
         if (!act.ext_wallet_exists) {
             m.stage = .setup_menu;
             m.setup_sel = 0;
             m.setup_option_count = menuChoicesFor(coin, &m.setup_options);
         } else if (act.ext_wallet_open.load(.monotonic) == 0) {
-            // A wallet exists but isn't open this session — unlock it.
-            m.stage = .setup_password;
-            m.setup_op = .open;
-        } else if (coin.externalWallet().?.lock != null) {
-            // Already open and the coin can re-lock — offer a one-item Lock menu.
+            // A wallet exists but isn't open this session. With no replace option
+            // it's a straight unlock (quickest path); with one, show a menu so the
+            // user can choose unlock vs. replacing it with a different seed.
+            if (!coin.supportsWalletReplace()) {
+                m.stage = .setup_password;
+                m.setup_op = .open;
+            } else {
+                m.stage = .setup_menu;
+                m.setup_sel = 0;
+                m.setup_options[0] = .unlock;
+                m.setup_options[1] = .replace;
+                m.setup_option_count = 2;
+            }
+        } else {
+            // Already open: offer lock and/or replace; nothing to do if neither.
+            var n: usize = 0;
+            if (ew.lock != null) {
+                m.setup_options[n] = .lock;
+                n += 1;
+            }
+            if (coin.supportsWalletReplace()) {
+                m.setup_options[n] = .replace;
+                n += 1;
+            }
+            if (n == 0) {
+                self.logf("{s}: wallet already unlocked", .{coin.coinName()});
+                return;
+            }
             m.stage = .setup_menu;
             m.setup_sel = 0;
-            m.setup_options[0] = .lock;
-            m.setup_option_count = 1;
-        } else {
-            self.logf("{s}: wallet already unlocked", .{coin.coinName()});
-            return;
+            m.setup_option_count = n;
         }
         self.pw_input.setValue("") catch {};
         self.seed_input.setValue("") catch {};
         self.modal = m;
+    }
+
+    /// Begin a confirmed "Replace wallet": stop the daemon, then (once it's down)
+    /// delete the old wallet and restart, so the node forgets its cached secret and
+    /// the normal create/restore menu becomes available again. Modelled on the
+    /// one-click-update stop→act→restart sequence (`beginUpdate`). Called only after
+    /// the user typed the confirmation word.
+    fn beginWalletReplace(self: *App) void {
+        const m = self.modal orelse return;
+        const act = &self.activities[m.coin_idx];
+        const coin = self.coinAt(m.coin_idx) orelse return;
+        self.closeWalletModal();
+        act.coin = coin;
+        act.home_dir = self.home_dir;
+        act.install_root = self.install_root;
+        act.wallet_replace_await_stop = true;
+        self.logf("{s}: replacing wallet — stopping daemon…", .{coin.coinName()});
+        self.tryStop();
     }
 
     /// Point the file picker at the user's home dir and focus it, for the
@@ -4724,10 +4869,49 @@ pub const App = struct {
             },
             // Show the freshly-created mnemonic for the user to write down.
             .setup_seed_show => {
-                const note = (zz.Style{}).bold(true).fg(.yellow).render(a, "Write these words down and keep them safe:") catch "Write these words down and keep them safe:";
-                try modalRow(&out.writer, vbar, inner_w, note, zz.width("Write these words down and keep them safe:"));
+                const wc = countWords(m.seed.slice());
+                var hdrbuf: [64]u8 = undefined;
+                const hdr = std.fmt.bufPrint(&hdrbuf, "Write down all {d} words, in order:", .{wc}) catch "Write down your recovery words, in order:";
+                const hdr_styled = (zz.Style{}).bold(true).fg(.yellow).render(a, hdr) catch hdr;
+                try modalRow(&out.writer, vbar, inner_w, hdr_styled, zz.width(hdr));
                 try modalRow(&out.writer, vbar, inner_w, "", 0);
-                try wrapIntoRows(a, &out.writer, vbar, inner_w, m.seed.slice(), (zz.Style{}).fg(brand));
+                // One numbered word per row so the order (and count) is unambiguous.
+                var i: usize = 1;
+                while (i <= wc) : (i += 1) {
+                    const row = std.fmt.allocPrint(a, "{d:>2}. {s}", .{ i, nthWord(m.seed.slice(), i) }) catch continue;
+                    const styled = (zz.Style{}).fg(brand).render(a, row) catch row;
+                    try modalRow(&out.writer, vbar, inner_w, styled, zz.width(row));
+                }
+                try modalRow(&out.writer, vbar, inner_w, "", 0);
+                const warn = "Anyone with these words can spend your funds. Lose them and your coins are gone forever — store them offline and never share them.";
+                try wrapIntoRows(a, &out.writer, vbar, inner_w, warn, (zz.Style{}).bold(true).fg(.red));
+            },
+            // Quiz a few words to confirm the user actually wrote the seed down.
+            .setup_seed_verify => {
+                var introbuf: [48]u8 = undefined;
+                const intro = std.fmt.bufPrint(&introbuf, "Confirm your backup ({d} of 3):", .{m.verify_step + 1}) catch "Confirm your backup:";
+                try modalRow(&out.writer, vbar, inner_w, intro, zz.width(intro));
+                try modalRow(&out.writer, vbar, inner_w, "", 0);
+                const val = self.seed_input.getValue();
+                const line = std.fmt.allocPrint(a, "Enter word #{d}: {s}\u{2588}", .{ m.verify_pos[m.verify_step], val }) catch "Enter the requested word:";
+                try modalRow(&out.writer, vbar, inner_w, (zz.Style{}).fg(brand).render(a, line) catch line, zz.width(line));
+                if (m.verify_bad) {
+                    const note = "That word doesn't match — check your written copy.";
+                    try modalRow(&out.writer, vbar, inner_w, (zz.Style{}).fg(.red).render(a, note) catch note, zz.width(note));
+                }
+            },
+            // Typed confirmation before destroying the existing wallet.
+            .setup_replace_confirm => {
+                const warn = "This permanently removes the wallet on this node. If its seed isn't backed up, its funds are lost forever.";
+                try wrapIntoRows(a, &out.writer, vbar, inner_w, warn, (zz.Style{}).bold(true).fg(.red));
+                try modalRow(&out.writer, vbar, inner_w, "", 0);
+                const val = self.seed_input.getValue();
+                const line = std.fmt.allocPrint(a, "Type {s} to confirm: {s}\u{2588}", .{ replace_confirm_word, val }) catch "Type REPLACE to confirm:";
+                try modalRow(&out.writer, vbar, inner_w, line, zz.width(line));
+                if (m.replace_bad) {
+                    const note = "Didn't match — type it exactly, or esc to cancel.";
+                    try modalRow(&out.writer, vbar, inner_w, (zz.Style{}).fg(.red).render(a, note) catch note, zz.width(note));
+                }
             },
             .setup_file => unreachable, // handled by the early return above
             .working => try modalRow(&out.writer, vbar, inner_w, "Working…", zz.width("Working…")),
@@ -4744,7 +4928,9 @@ pub const App = struct {
             .setup_password => "enter: next   esc: cancel",
             .setup_password_confirm => "enter: confirm   esc: cancel",
             .setup_seed_input => "enter: next   esc: cancel",
-            .setup_seed_show => "press any key once you've saved it",
+            .setup_seed_show => "press any key once you've written them down",
+            .setup_seed_verify => "enter: check   esc: cancel",
+            .setup_replace_confirm => "enter: confirm   esc: cancel",
             .setup_file => unreachable,
             .working => "please wait…",
             .result => "press any key to close",
@@ -5123,6 +5309,46 @@ fn countWords(s: []const u8) usize {
     while (it.next()) |_| n += 1;
     return n;
 }
+
+/// The `n`-th (1-based) whitespace-separated word of `s`, or "" if out of range.
+/// Used to render the numbered seed and to check the backup-verification answers.
+fn nthWord(s: []const u8, n: usize) []const u8 {
+    if (n == 0) return "";
+    var it = std.mem.tokenizeAny(u8, s, " \t\r\n");
+    var i: usize = 0;
+    while (it.next()) |word| {
+        i += 1;
+        if (i == n) return word;
+    }
+    return "";
+}
+
+/// Pick up to three distinct 1-based positions in `[1, word_count]` for the backup
+/// quiz, written into `out` and returned by count (fewer than 3 only for an
+/// unusually short seed). Bytes come from `io.random` (the OS CSPRNG, as
+/// `conf.randomPassword` uses); the choice isn't security-sensitive, but there's no
+/// reason to make it predictable.
+fn pickVerifyPositions(io: std.Io, word_count: usize, out: *[3]usize) usize {
+    const want = @min(@as(usize, 3), word_count);
+    var n: usize = 0;
+    while (n < want) {
+        var b: [1]u8 = undefined;
+        io.random(&b);
+        const pos = @as(usize, b[0] % word_count) + 1; // 1..word_count
+        var dup = false;
+        for (out[0..n]) |p| {
+            if (p == pos) dup = true;
+        }
+        if (!dup) {
+            out[n] = pos;
+            n += 1;
+        }
+    }
+    return n;
+}
+
+/// The word the user must type to confirm the destructive "Replace wallet" action.
+const replace_confirm_word = "REPLACE";
 
 /// Write a top/bottom border row of the modal in the brand colour: the corner
 /// glyphs `left`/`right` with `inner_w + 2` box-drawing dashes between them. A
@@ -6160,19 +6386,82 @@ test "the wallet modal renders its menu centered over the dashboard" {
     try std.testing.expect(std.mem.indexOf(u8, out, "┘") != null);
 }
 
-test "setup choices map to the right external-wallet ops" {
-    // The three pickable choices map onto their setup ops; `open` is reached
-    // directly (unlock flow), never from this menu.
-    try std.testing.expectEqual(WalletSetupOp.create, SetupChoice.create.op());
-    try std.testing.expectEqual(WalletSetupOp.restore_seed, SetupChoice.restore_seed.op());
-    try std.testing.expectEqual(WalletSetupOp.restore_file, SetupChoice.restore_file.op());
-    try std.testing.expectEqual(WalletSetupOp.lock, SetupChoice.lock.op());
-    // Every choice has a non-empty menu label.
-    for ([_]SetupChoice{ .create, .restore_seed, .restore_file, .lock }) |c|
+test "every wallet menu choice and op has a non-empty label/verb" {
+    // Each pickable menu choice has a label (rendered in the setup menu)…
+    for ([_]SetupChoice{ .create, .restore_seed, .restore_file, .unlock, .lock, .replace }) |c|
         try std.testing.expect(c.label().len > 0);
-    // Every op has a non-empty verb (used in logs and the working line).
+    // …and every op has a verb (used in logs and the working line).
     for ([_]WalletSetupOp{ .create, .restore_seed, .restore_file, .open, .lock }) |op|
         try std.testing.expect(op.verb().len > 0);
+}
+
+test "nthWord returns the 1-based word and the backup quiz picks distinct positions" {
+    const seed = "alpha bravo charlie delta echo foxtrot";
+    try std.testing.expectEqualStrings("alpha", nthWord(seed, 1));
+    try std.testing.expectEqualStrings("charlie", nthWord(seed, 3));
+    try std.testing.expectEqualStrings("foxtrot", nthWord(seed, 6));
+    try std.testing.expectEqualStrings("", nthWord(seed, 0));
+    try std.testing.expectEqualStrings("", nthWord(seed, 7)); // out of range
+
+    var threaded: std.Io.Threaded = .init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    var pos: [3]usize = .{ 0, 0, 0 };
+    const n = pickVerifyPositions(io, 15, &pos);
+    try std.testing.expectEqual(@as(usize, 3), n);
+    for (pos) |p| try std.testing.expect(p >= 1 and p <= 15);
+    // Distinct.
+    try std.testing.expect(pos[0] != pos[1] and pos[1] != pos[2] and pos[0] != pos[2]);
+}
+
+test "Ergo's wallet menu offers unlock+replace when locked and lock+replace when open" {
+    if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
+    const allocator = std.testing.allocator;
+
+    var threaded: std.Io.Threaded = .init(allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    var env = std.process.Environ.Map.init(allocator);
+    defer env.deinit();
+    try env.put("HOME", "/home/tester");
+    var ctx = zz.Context.init(allocator, allocator, io, &env);
+
+    var app: App = undefined;
+    _ = app.init(&ctx);
+    defer app.deinit();
+
+    app.selected = std.mem.indexOfScalar(Entry, &entries, .ergo).?;
+    const act = &app.activities[app.selected];
+    act.installed = true;
+    act.daemon.store(@intFromEnum(DaemonState.running), .release);
+    act.ext_wallet_exists = true;
+
+    const coin = app.coinAt(app.selected).?;
+    try std.testing.expect(coin.supportsWalletReplace());
+
+    // Locked (not open this session) → Unlock + Replace.
+    act.ext_wallet_open.store(0, .monotonic);
+    app.openExternalWalletModal(coin, act);
+    {
+        const m = app.modal.?;
+        try std.testing.expectEqual(Modal.Stage.setup_menu, m.stage);
+        try std.testing.expectEqual(@as(usize, 2), m.setup_option_count);
+        try std.testing.expectEqual(SetupChoice.unlock, m.setup_options[0]);
+        try std.testing.expectEqual(SetupChoice.replace, m.setup_options[1]);
+    }
+    app.closeWalletModal();
+
+    // Open → Lock + Replace.
+    act.ext_wallet_open.store(1, .monotonic);
+    app.openExternalWalletModal(coin, act);
+    {
+        const m = app.modal.?;
+        try std.testing.expectEqual(@as(usize, 2), m.setup_option_count);
+        try std.testing.expectEqual(SetupChoice.lock, m.setup_options[0]);
+        try std.testing.expectEqual(SetupChoice.replace, m.setup_options[1]);
+    }
+    app.closeWalletModal();
 }
 
 test "seed word counter accepts any valid length and lists them in the prompt" {

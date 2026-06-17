@@ -465,14 +465,15 @@ pub const Ergo = struct {
         if (resp.status != .ok) return failWallet(allocator, detail, resp.body, error.WalletOpenFailed);
     }
 
-    /// Re-lock the wallet via `POST /wallet/lock` (no body). `auth` unused.
+    /// Re-lock the wallet via `GET /wallet/lock` (Ergo's lock endpoint is a GET and
+    /// takes no body, unlike init/restore/unlock which are POSTs). `auth` unused.
     pub fn walletLock(
         allocator: std.mem.Allocator,
         auth: models.CoinAuth,
         detail: *Coin.WalletErrSink,
     ) anyerror!void {
         _ = auth;
-        const resp = try restCall(allocator, .POST, "/wallet/lock", api_key, null);
+        const resp = try restCall(allocator, .GET, "/wallet/lock", api_key, null);
         defer allocator.free(resp.body);
         if (resp.status != .ok) return failWallet(allocator, detail, resp.body, error.WalletLockFailed);
     }
@@ -484,6 +485,26 @@ pub const Ergo = struct {
         allocator.free(buf);
     }
 
+    /// Remove the node's wallet so a different one can be created/restored — the
+    /// in-app "Replace wallet". Deletes `<dataDir>/wallet` (the `keystore` secret
+    /// plus the `registry`/`storage` scan DBs), so `/wallet/status` reports
+    /// `isInitialized:false` on the next start. The node caches the secret in
+    /// memory, so the caller (app.zig) stops the daemon before this and restarts it
+    /// after; deleting at runtime alone wouldn't take effect. Idempotent — a missing
+    /// wallet dir is fine. `deleteTree` holds nothing in memory beyond a path.
+    pub fn walletRemove(allocator: std.mem.Allocator, home: []const u8) anyerror!void {
+        var threaded: std.Io.Threaded = .init(allocator, .{});
+        defer threaded.deinit();
+        const io = threaded.io();
+
+        const data_dir = try dataDir(allocator, home);
+        defer allocator.free(data_dir);
+        const wallet_dir = try std.fs.path.join(allocator, &.{ data_dir, "wallet" });
+        defer allocator.free(wallet_dir);
+
+        try std.Io.Dir.cwd().deleteTree(io, wallet_dir);
+    }
+
     /// The external-wallet capability, backed by the in-daemon REST wallet (no
     /// separate process — `process_argv`/`rpc_port` null). `restore_file` is null:
     /// Ergo has no portable wallet file, so the setup menu omits that choice.
@@ -493,6 +514,7 @@ pub const Ergo = struct {
         .restore_seed = walletRestoreSeed,
         .open = walletOpen,
         .lock = walletLock,
+        .remove = walletRemove,
         .balance = walletBalance,
         // Ergo generates a 15-word BIP39 mnemonic, but the node accepts a standard
         // 12- or 24-word phrase too (e.g. imported from another wallet).
