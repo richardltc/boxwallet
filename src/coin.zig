@@ -89,10 +89,16 @@ pub const Coin = struct {
             password: []const u8,
             detail: *WalletErrSink,
         ) anyerror!models.Seed,
-        /// Restore a wallet from a 25-word mnemonic `seed` under `password`.
-        /// `install_root`/`home_dir` are provided because the restore may shell out
-        /// to the coin's wallet CLI (older Monero forks lack an RPC seed-restore).
-        /// `detail` receives the daemon's/CLI's failure message on error.
+        /// Restore a wallet from a mnemonic `seed` under `password` (word count per
+        /// coin — see `seed_word_counts`). `install_root`/`home_dir` are provided
+        /// because the restore may shell out to the coin's wallet CLI (older Monero
+        /// forks lack an RPC seed-restore). `detail` receives the daemon's/CLI's
+        /// failure message on error.
+        ///
+        /// **Always normalize the seed first** with `models.normalizeSeedWords`
+        /// (lowercase + collapse whitespace) before handing it to the daemon/CLI, so
+        /// a phrase pasted with stray case or spacing still restores. The seed is the
+        /// secret — wipe any working copy before freeing it.
         restore_seed: *const fn (
             allocator: std.mem.Allocator,
             wallet_auth: models.CoinAuth,
