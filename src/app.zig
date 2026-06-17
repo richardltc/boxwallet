@@ -41,6 +41,41 @@ const fallback_install_root = "boxwallet-coins";
 const Entry = enum { home, nexa, divi, ergo, digibyte, zano, nerva, reddcoin, epic, salvium, litecoin };
 const coin_entries = [_]Entry{ .nexa, .divi, .ergo, .digibyte, .zano, .nerva, .reddcoin, .epic, .salvium, .litecoin };
 
+/// The registered coin backends as their concrete types — the source of truth for
+/// the compile-time checks below. Must list the same coins as `coin_entries` (the
+/// length assertion in the guard catches a coin added to one list but not the
+/// other).
+const coin_types = .{ Nexa, Divi, Ergo, DigiByte, Zano, Nerva, ReddCoin, Epic, Salvium, Litecoin };
+
+// Compile-time guard: no two coins may declare the same executable filename. Every
+// coin promotes its binaries into the one shared install root (`~/.boxwallet`) and
+// `isInstalled` keys off the daemon filename, so a name clash would silently
+// overwrite another coin's binary on install and confuse install detection. A
+// duplicate — e.g. a future CryptoNote coin shipping a stock `simplewallet` like
+// Zano's — fails the build here rather than corrupting an install on disk. (Ergo's
+// versioned jar and the Windows subdir bundles live outside the shared root, but
+// the promoted daemon/cli/tx/wallet-rpc executables all share it, so those four
+// filename decls are what's checked.)
+comptime {
+    if (coin_types.len != coin_entries.len)
+        @compileError("coin_types and coin_entries must list the same coins");
+
+    const exe_fields = .{ "daemon_file", "cli_file", "tx_file", "wallet_rpc_file" };
+    var names: []const []const u8 = &.{};
+    for (coin_types) |C| {
+        for (exe_fields) |f| {
+            if (@hasDecl(C, f)) names = names ++ &[_][]const u8{@field(C, f)};
+        }
+    }
+    for (names, 0..) |a, i| {
+        for (names[i + 1 ..]) |b| {
+            if (std.mem.eql(u8, a, b))
+                @compileError("two coins declare the same binary filename '" ++ a ++
+                    "': they would collide in the shared install root — give one a unique name");
+        }
+    }
+}
+
 fn entryLabel(e: Entry) []const u8 {
     return switch (e) {
         .home => "HOME",
