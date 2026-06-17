@@ -894,6 +894,13 @@ const Activity = struct {
     /// poll on `coin`), so `onTick` defers the spawn instead of the UI thread
     /// blocking on `poll_thread.join()`.
     stop_pending: bool = false,
+    /// Latched true when BoxWallet deliberately stopped this daemon (the stop
+    /// worker confirmed `.stopped`). While set, an automatic status poll must not
+    /// resurrect the daemon to `.running` just because the node is still finishing
+    /// its shutdown / still briefly answering. Cleared on the next explicit start.
+    /// (The poll-driven running detection is wanted for a daemon started *outside*
+    /// BoxWallet — this only suppresses it after our own stop.)
+    stopped_by_us: bool = false,
     /// True when this run updates an existing daemon (heading reads "updating").
     updating: bool = false,
     /// Cleared when a run starts, set once its completion has been folded back
@@ -1344,6 +1351,19 @@ const Activity = struct {
         self.tip_time = self.poll_tip_time.load(.monotonic);
         self.sync = if (self.poll_synced.load(.monotonic) != 0) .synced else .syncing;
         return true;
+    }
+
+    /// Whether a just-reaped poll should promote the daemon to `.running`. A reply —
+    /// a full `applyPoll` *or* a bare `poll_alive` port hit — proves the daemon is
+    /// up, which is how a daemon started outside BoxWallet is detected. But it must
+    /// not resurrect a daemon while a stop is pending, nor one we deliberately
+    /// stopped (`stopped_by_us`): the node can keep answering for a moment as it
+    /// shuts down, and resurrecting it would flash "Waiting for peers…" and stick
+    /// there. `applyPoll` is always evaluated first, for its fold-in side effect.
+    fn shouldAdoptRunning(self: *Activity) bool {
+        const replied = self.applyPoll() or self.poll_alive;
+        return replied and self.daemonState() != .running and
+            !self.stop_pending and !self.stopped_by_us;
     }
 
     /// Live poll worker. Two RPC round-trips (`getinfo` for peers/staking,
@@ -2494,6 +2514,11 @@ pub const App = struct {
                     else
                         self.logf("{s}: daemon failed to start ({s})", .{ act.coin.coinName(), act.daemon_err }),
                     .stop => if (ds == .stopped) {
+                        // We deliberately stopped it: latch so an automatic poll
+                        // can't resurrect it to "running" while the node is still
+                        // finishing its shutdown (it'd flash "Waiting for peers…"
+                        // and stick there). Cleared on the next explicit start.
+                        act.stopped_by_us = true;
                         // Daemon is down — clear the live readings so the pane
                         // doesn't keep showing stale peers/sync from when it ran.
                         act.peers = 0;
@@ -2609,13 +2634,10 @@ pub const App = struct {
                 // The warm-up phase is published whether or not the poll reached
                 // the daemon, so fold it in regardless of `applyPoll`.
                 act.loading_phase = @enumFromInt(act.poll_phase.load(.monotonic));
-                // Don't let a successful poll clobber a pending stop back to
-                // running — the user has already asked it to shut down. A poll
-                // that only reached the port (`poll_alive`, no full reply) still
-                // proves the daemon is up, so a busy daemon stalling its RPC reads
-                // as running rather than flipping to stopped. `applyPoll` runs
-                // first regardless so a full reply's fields are folded in.
-                if ((act.applyPoll() or act.poll_alive) and act.daemonState() != .running and !act.stop_pending)
+                // Promote to running only when a reply proves the daemon is up and
+                // we haven't asked it to stop — see `shouldAdoptRunning` (which also
+                // runs `applyPoll` for its fold-in side effect).
+                if (act.shouldAdoptRunning())
                     act.daemon.store(@intFromEnum(DaemonState.running), .release);
                 // Mark the just-reaped poll as received once per selection; the
                 // matching "checking" line was logged when this poll started.
@@ -3197,6 +3219,9 @@ pub const App = struct {
         act.daemon_action = .start;
         act.daemon_spinner = makeSpinner();
         act.daemon_err = "";
+        // Release the "we stopped it" latch — an explicit start means a poll may
+        // legitimately promote the daemon to running again.
+        act.stopped_by_us = false;
         // A freshly (re)started daemon won't have our named wallet loaded (Core
         // only auto-loads the unnamed default), so re-run ensureWallet on the next
         // poll for coins that need it.
@@ -5718,6 +5743,69 @@ test "stop defers the worker while a status poll is in flight" {
     // Reap the simulated poll so the test leaks no thread.
     act.poll_thread.?.join();
     act.poll_thread = null;
+}
+
+test "a poll does not resurrect a daemon we deliberately stopped" {
+    // After BoxWallet stops a daemon, the node can keep answering for a moment as
+    // it shuts down. A status poll landing in that window must NOT flip the daemon
+    // back to running (which rendered as a stuck "Waiting for peers…"). The
+    // `stopped_by_us` latch suppresses that; an unlatched stopped daemon (startup /
+    // started outside BoxWallet) is still promoted to running.
+    const reply = struct {
+        fn mark(act: *Activity) void {
+            act.poll_ok = true;
+            act.poll_alive = true;
+            act.poll_peers.store(0, .monotonic); // shutting down: peers dropped
+        }
+    };
+
+    // Latched stop: a successful poll is folded in but the state stays stopped.
+    var stopped: Activity = .{};
+    stopped.daemon.store(@intFromEnum(DaemonState.stopped), .release);
+    stopped.stopped_by_us = true;
+    reply.mark(&stopped);
+    try std.testing.expect(!stopped.shouldAdoptRunning());
+    try std.testing.expectEqual(DaemonState.stopped, stopped.daemonState());
+
+    // Same reply, but not stopped by us (e.g. a daemon already running at app
+    // start) — it's correctly adopted as running.
+    var external: Activity = .{};
+    external.daemon.store(@intFromEnum(DaemonState.stopped), .release);
+    reply.mark(&external);
+    try std.testing.expect(external.shouldAdoptRunning());
+}
+
+test "an explicit start clears the stopped-by-us latch" {
+    if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
+    const allocator = std.testing.allocator;
+
+    var threaded: std.Io.Threaded = .init(allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    var env = std.process.Environ.Map.init(allocator);
+    defer env.deinit();
+    try env.put("HOME", "/home/tester");
+    var ctx = zz.Context.init(allocator, allocator, io, &env);
+
+    var app: App = undefined;
+    _ = app.init(&ctx);
+    defer app.deinit();
+
+    app.selected = std.mem.indexOfScalar(Entry, &entries, .divi).?;
+    const act = &app.activities[app.selected];
+    act.installed = true;
+    act.stopped_by_us = true;
+
+    app.beginDaemonStart(app.coinAt(app.selected).?, act);
+    // The latch is released so a later poll can promote the daemon again.
+    try std.testing.expect(!act.stopped_by_us);
+
+    // Reap the start worker so the test leaks no thread.
+    if (act.daemon_thread) |t| {
+        t.join();
+        act.daemon_thread = null;
+    }
 }
 
 test "App.init resolves install_root from home dir and deinit frees it" {
