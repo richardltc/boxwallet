@@ -912,6 +912,7 @@ pub const Nerva = struct {
         .coin_color = vtCoinColor,
         .core_version = vtCoreVersion,
         .proof_of_stake = vtProofOfStake,
+        .balance_decimals = vtBalanceDecimals,
         .conf_file = vtConfFile,
         .daemon_file = vtDaemonFile,
         .rpc_default_port = vtRpcDefaultPort,
@@ -948,6 +949,10 @@ pub const Nerva = struct {
     }
     fn vtProofOfStake(_: *anyopaque) bool {
         return proof_of_stake;
+    }
+    /// Nerva inherits Monero's 12-decimal atomic unit (see `atomic_per_xnv`).
+    fn vtBalanceDecimals(_: *anyopaque) u8 {
+        return 12;
     }
     fn vtConfFile(_: *anyopaque) []const u8 {
         return conf_file;

@@ -712,6 +712,7 @@ pub const Ergo = struct {
         .coin_color = vtCoinColor,
         .core_version = vtCoreVersion,
         .proof_of_stake = vtProofOfStake,
+        .balance_decimals = vtBalanceDecimals,
         .conf_file = vtConfFile,
         .daemon_file = vtDaemonFile,
         .rpc_default_port = vtRpcDefaultPort,
@@ -749,6 +750,11 @@ pub const Ergo = struct {
     }
     fn vtProofOfStake(_: *anyopaque) bool {
         return proof_of_stake;
+    }
+    /// ERG balances are denominated to 9 decimal places (1 ERG = 1e9 nanoERG, see
+    /// `nano_per_erg`).
+    fn vtBalanceDecimals(_: *anyopaque) u8 {
+        return 9;
     }
     fn vtConfFile(_: *anyopaque) []const u8 {
         return conf_file;
