@@ -134,6 +134,21 @@ fn entryColor(e: Entry) zz.Color {
     };
 }
 
+/// If a log line's leading "<tag>:" names BoxWallet or a coin, return the byte
+/// length of that tag and the colour to tint it; null when there's no such tag.
+/// `msg` must start at the tag (the timestamp already stripped). Lets the log
+/// pane paint just the coin/BoxWallet word in its brand colour, the rest plain.
+fn logTagColor(msg: []const u8) ?struct { len: usize, col: zz.Color } {
+    const colon = std.mem.indexOfScalar(u8, msg, ':') orelse return null;
+    const tag = msg[0..colon];
+    if (std.mem.eql(u8, tag, home_brand_text))
+        return .{ .len = colon, .col = zz.Color.hex(app_color) };
+    for (entries[1..]) |e| // skip Home; coins carry their own brand colour
+        if (std.mem.eql(u8, tag, entryLabel(e)))
+            return .{ .len = colon, .col = entryColor(e) };
+    return null;
+}
+
 /// Whether a coin is exposed in the nav. Coins gate this on their per-coin `live`
 /// constant; a `false` coin is dropped from `entries` entirely (no row, no
 /// activity slot, never selectable or polled). Home is always live.
@@ -2170,7 +2185,7 @@ pub const App = struct {
 
         // Seed the action log so the pane starts with a line announcing the
         // running build rather than an empty box.
-        self.logf("{s} v{s} started", .{ app_name, app_version });
+        self.logf("{s}: TUI v{s} started", .{ home_brand_text, app_version });
 
         // A modest repeating tick so background installs animate and their
         // completions are noticed without waiting on a keypress. Idle ticks are
@@ -2543,7 +2558,7 @@ pub const App = struct {
         // "downloading vX" shows up front rather than only when it lands.
         if (self.update_thread != null and !self.update_dl_logged and self.update_downloading.load(.acquire)) {
             self.update_dl_logged = true;
-            self.logf("downloading update v{s}…", .{self.update_dl_version.slice()});
+            self.logf("{s}: downloading update v{s}…", .{ home_brand_text, self.update_dl_version.slice() });
         }
         // Reap a finished update check: fold the outcome in and log it once.
         if (self.update_thread != null and self.update_done.load(.acquire)) {
@@ -2553,11 +2568,11 @@ pub const App = struct {
                 .staged => {
                     self.update_available = true;
                     if (self.update_blocked)
-                        self.logf("update v{s} downloaded, but BoxWallet's folder isn't writable — move it somewhere writable, then restart", .{self.update_version.slice()})
+                        self.logf("{s}: update v{s} downloaded, but BoxWallet's folder isn't writable — move it somewhere writable, then restart", .{ home_brand_text, self.update_version.slice() })
                     else
-                        self.logf("update v{s} downloaded — restart to apply", .{self.update_version.slice()});
+                        self.logf("{s}: update v{s} downloaded — restart to apply", .{ home_brand_text, self.update_version.slice() });
                 },
-                .up_to_date => self.logf("up to date (v{s})", .{app_version}),
+                .up_to_date => self.logf("{s}: up to date (v{s})", .{ home_brand_text, app_version }),
                 // Quiet otherwise: no published binary for this target, or a
                 // best-effort network/verify miss that retries next launch.
                 .unsupported, .network_error, .verify_failed => {},
@@ -4118,7 +4133,19 @@ pub const App = struct {
         var i: usize = 0;
         while (i < show) : (i += 1) {
             const slot = &self.log_lines[(start + i) % log_capacity];
-            try out.writer.print("{s}\n", .{slot.buf[0..slot.len]});
+            const line = slot.buf[0..slot.len];
+            // Tint the leading "<coin>:"/"BoxWallet:" tag in its brand colour,
+            // the rest plain. The tag begins at the first letter, just past the
+            // "HH:MM:SS  " timestamp (split it off first — it has colons too).
+            var ts: usize = 0;
+            while (ts < line.len and !std.ascii.isAlphabetic(line[ts])) : (ts += 1) {}
+            const msg = line[ts..];
+            if (logTagColor(msg)) |hit| {
+                const tag = (zz.Style{}).fg(hit.col).render(a, msg[0..hit.len]) catch msg[0..hit.len];
+                try out.writer.print("{s}{s}{s}\n", .{ line[0..ts], tag, msg[hit.len..] });
+            } else {
+                try out.writer.print("{s}\n", .{line});
+            }
         }
 
         // The renderer paints one terminal row per '\n'-separated segment from
@@ -5609,7 +5636,7 @@ test "action log renders in the bottom pane, sized to log_visible_lines" {
     _ = app.init(&ctx);
     defer app.deinit();
 
-    app.logf("NEXA: {s}", .{"installing…"});
+    app.logf("Nexa: {s}", .{"installing…"});
 
     var arena = std.heap.ArenaAllocator.init(allocator);
     defer arena.deinit();
@@ -5618,7 +5645,12 @@ test "action log renders in the bottom pane, sized to log_visible_lines" {
 
     // The separator bar and the logged line both appear below the top content.
     try std.testing.expect(std.mem.indexOf(u8, out, "Log") != null);
-    try std.testing.expect(std.mem.indexOf(u8, out, "NEXA: installing…") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "installing…") != null);
+    // The "Nexa" tag is tinted in its brand colour, so it no longer sits bare
+    // against the colon — the same styled span appears verbatim in the output.
+    const nexa_tag = (zz.Style{}).fg(zz.Color.hex(Nexa.coin_color)).render(arena.allocator(), "Nexa") catch unreachable;
+    try std.testing.expect(std.mem.indexOf(u8, out, nexa_tag) != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "Nexa: installing…") == null);
 
     // The whole view is exactly `term_height` rows (no trailing newline, so the
     // renderer doesn't scroll the top line off-screen): `term_height` segments
@@ -5639,6 +5671,22 @@ test "action log renders in the bottom pane, sized to log_visible_lines" {
     // `l` toggles the pane: while hidden, `view` returns the top content alone.
     app.log_visible = false;
     try std.testing.expect(!app.log_visible);
+}
+
+test "logTagColor matches the leading coin/BoxWallet tag, nothing else" {
+    // A coin tag is the coin name up to (not including) the colon.
+    const coin_hit = logTagColor("Divi: starting daemon…").?;
+    try std.testing.expectEqual(@as(usize, "Divi".len), coin_hit.len);
+    try std.testing.expectEqual(entryColor(.divi), coin_hit.col);
+
+    // The app tag is "BoxWallet", tinted in the brand colour.
+    const app_hit = logTagColor("BoxWallet: up to date (v0.0.0)").?;
+    try std.testing.expectEqual(@as(usize, home_brand_text.len), app_hit.len);
+    try std.testing.expectEqual(zz.Color.hex(app_color), app_hit.col);
+
+    // No tag (no colon, or an unknown word) leaves the line plain.
+    try std.testing.expect(logTagColor("no tag here") == null);
+    try std.testing.expect(logTagColor("Bitcoin: not a registered coin") == null);
 }
 
 test "refreshUpdateState flags an update when the marker trails the bundled version" {
