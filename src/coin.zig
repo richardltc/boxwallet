@@ -277,6 +277,12 @@ pub const Coin = struct {
         /// True for proof-of-stake coins (which expose a staking status); false
         /// for proof-of-work coins.
         proof_of_stake: *const fn (ptr: *anyopaque) bool,
+        /// Optional: the number of decimal places this coin's balances are shown
+        /// to — 8 for bitcoin-derived coins, 12 for the Monero forks (Nerva/Zano),
+        /// 9 for Ergo (nanoERG), 2 for Nexa. Drives the fixed-width balance figure
+        /// so a zero reads as "0.00000000" rather than a bare "0". Null defaults to
+        /// 8 (`Coin.balanceDecimals`).
+        balance_decimals: ?*const fn (ptr: *anyopaque) u8 = null,
         conf_file: *const fn (ptr: *anyopaque) []const u8,
         /// Daemon binary filename for the host OS (e.g. `nexad`, `divid`).
         daemon_file: *const fn (ptr: *anyopaque) []const u8,
@@ -500,6 +506,13 @@ pub const Coin = struct {
     /// True for proof-of-stake coins (which expose a staking status).
     pub fn isProofOfStake(self: Coin) bool {
         return self.vtable.proof_of_stake(self.ptr);
+    }
+    /// The number of decimal places balances are displayed to (default 8). Used
+    /// to render every balance figure at fixed width — including a zero, which
+    /// shows as "0.<decimals zeros>" rather than a bare "0".
+    pub fn balanceDecimals(self: Coin) u8 {
+        if (self.vtable.balance_decimals) |f| return f(self.ptr);
+        return 8;
     }
     pub fn confFile(self: Coin) []const u8 {
         return self.vtable.conf_file(self.ptr);

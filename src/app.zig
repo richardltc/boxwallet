@@ -23,7 +23,7 @@ const Litecoin = @import("coins/litecoin.zig").Litecoin;
 /// change how BoxWallet identifies itself in the UI. `app_color` is the brand
 /// hex used for the "BoxWallet" wording on the Home pane.
 pub const app_name = "BoxWallet TUI";
-pub const app_version = "0.5.2";
+pub const app_version = "0.5.3";
 const app_color = "#7ca071";
 
 /// Fallback install root used only if the home-dir-based path can't be built
@@ -4372,10 +4372,11 @@ pub const App = struct {
         // that report no balance.
         const corner: []const u8 = if (coin.supportsBalance() or coin.hasExternalWallet()) blk: {
             const abbrev = coin.coinNameAbbrev();
+            const dp = coin.balanceDecimals();
             const bal: models.WalletBalance = .{ .total = act.balance_total, .available = act.balance_avail };
-            const total = balanceCorner(a, brand, "Total", act.balance_total, abbrev, .green);
+            const total = balanceCorner(a, brand, "Total", act.balance_total, abbrev, .green, dp);
             if (!bal.hasPending()) break :blk total;
-            const avail = balanceCorner(a, brand, "Available", act.balance_avail, abbrev, .yellow);
+            const avail = balanceCorner(a, brand, "Available", act.balance_avail, abbrev, .yellow, dp);
             break :blk std.fmt.allocPrint(a, "{s}   {s}", .{ total, avail }) catch total;
         } else "";
 
@@ -4591,21 +4592,23 @@ pub const App = struct {
         return (zz.Style{}).fg(c).render(a, text) catch text;
     }
 
-    /// Format a coin amount into `buf` as a trimmed decimal with thousands
-    /// separators, no abbrev (e.g. 1234567.5 → "1,234,567.5", 10 → "10", 0 → "0").
-    /// Renders up to 8 decimal places (coins are divisible to 8dp), strips trailing
-    /// zeros and a bare trailing dot, then groups the integer part in threes.
-    /// Returns a slice into `buf` — no allocation. `buf` need only be ~40 bytes for
-    /// any f64 in this notation; callers pass a `[64]u8`.
-    fn formatAmount(buf: []u8, value: f64) []const u8 {
+    /// Format a coin amount into `buf` at a *fixed* `decimals` places with thousands
+    /// separators, no abbrev (e.g. 1234567.5 at 8dp → "1,234,567.50000000", 0 at 8dp
+    /// → "0.00000000"). The figure is always shown to the coin's full precision —
+    /// trailing zeros are kept, not stripped — so a zero balance reads as a balance
+    /// rather than a bare "0". The integer part is then grouped in threes. Returns a
+    /// slice into `buf` — no allocation. `buf` is sized for any f64 in this notation
+    /// (callers pass a `[64]u8`).
+    fn formatAmount(buf: []u8, value: f64, decimals: u8) []const u8 {
         var raw: [64]u8 = undefined;
-        const s = std.fmt.bufPrint(&raw, "{d:.8}", .{value}) catch return "?";
+        var w = std.Io.Writer.fixed(&raw);
+        w.printFloat(value, .{ .mode = .decimal, .precision = decimals }) catch return "?";
+        const s = w.buffered();
         const dot = std.mem.indexOfScalar(u8, s, '.');
         const int_part = if (dot) |d| s[0..d] else s;
-        var frac: []const u8 = if (dot) |d| s[d + 1 ..] else "";
-        var fend = frac.len;
-        while (fend > 0 and frac[fend - 1] == '0') fend -= 1;
-        frac = frac[0..fend];
+        // printFloat pads to exactly `decimals` digits, so the fraction is taken
+        // verbatim — no trailing-zero stripping (fixed-width display).
+        const frac: []const u8 = if (dot) |d| s[d + 1 ..] else "";
 
         // Group the integer digits in threes: a comma precedes digit `i` when the
         // count of digits after it is a positive multiple of 3.
@@ -4628,21 +4631,21 @@ pub const App = struct {
         return buf[0..gi];
     }
 
-    /// Format a coin balance as `formatAmount` followed by the coin's abbrev
-    /// (e.g. "1,234.5 NEXA").
-    fn formatBalance(a: std.mem.Allocator, value: f64, abbrev: []const u8) []const u8 {
+    /// Format a coin balance as `formatAmount` (at `decimals` places) followed by
+    /// the coin's abbrev (e.g. "1,234.50000000 NEXA").
+    fn formatBalance(a: std.mem.Allocator, value: f64, abbrev: []const u8, decimals: u8) []const u8 {
         var buf: [64]u8 = undefined;
-        return std.fmt.allocPrint(a, "{s} {s}", .{ formatAmount(&buf, value), abbrev }) catch abbrev;
+        return std.fmt.allocPrint(a, "{s} {s}", .{ formatAmount(&buf, value, decimals), abbrev }) catch abbrev;
     }
 
     /// One styled balance figure for the header corner: `<label>: <amount> <abbrev>`
     /// with the label and abbrev in the coin's brand colour and the amount tinted
     /// by `num_color` (green for Total, yellow for a still-settling Available).
-    fn balanceCorner(a: std.mem.Allocator, brand: zz.Color, label: []const u8, value: f64, abbrev: []const u8, num_color: zz.Color) []const u8 {
+    fn balanceCorner(a: std.mem.Allocator, brand: zz.Color, label: []const u8, value: f64, abbrev: []const u8, num_color: zz.Color, decimals: u8) []const u8 {
         var buf: [64]u8 = undefined;
         const brand_sty = (zz.Style{}).bold(true).fg(brand);
         const lbl = brand_sty.render(a, std.fmt.allocPrint(a, "{s}:", .{label}) catch label) catch label;
-        const num = (zz.Style{}).bold(true).fg(num_color).render(a, formatAmount(&buf, value)) catch "?";
+        const num = (zz.Style{}).bold(true).fg(num_color).render(a, formatAmount(&buf, value, decimals)) catch "?";
         const abbr = brand_sty.render(a, abbrev) catch abbrev;
         return std.fmt.allocPrint(a, "{s} {s} {s}", .{ lbl, num, abbr }) catch lbl;
     }
@@ -6784,24 +6787,28 @@ test "per-coin activity is independent and stays inside the right pane" {
     try std.testing.expect(std.mem.indexOf(u8, screen, "│") != null);
 }
 
-test "formatBalance trims trailing zeros and appends the coin abbrev" {
+test "formatBalance shows fixed decimals and appends the coin abbrev" {
     const a = std.testing.allocator;
-    // Whole amounts drop the fractional part entirely.
-    const whole = App.formatBalance(a, 10.0, "NEXA");
+    // Whole amounts are padded out to the coin's full precision (here 8dp).
+    const whole = App.formatBalance(a, 10.0, "NEXA", 8);
     defer a.free(whole);
-    try std.testing.expectEqualStrings("10 NEXA", whole);
-    // Fractions keep only their significant digits.
-    const frac = App.formatBalance(a, 13.5, "DIVI");
+    try std.testing.expectEqualStrings("10.00000000 NEXA", whole);
+    // Fractions are padded to the fixed width too — trailing zeros are kept.
+    const frac = App.formatBalance(a, 13.5, "DIVI", 8);
     defer a.free(frac);
-    try std.testing.expectEqualStrings("13.5 DIVI", frac);
-    // Zero is just "0", not a string of zeros.
-    const zero = App.formatBalance(a, 0.0, "NEXA");
+    try std.testing.expectEqualStrings("13.50000000 DIVI", frac);
+    // Zero reads as a full-width zero, not a bare "0".
+    const zero = App.formatBalance(a, 0.0, "NEXA", 2);
     defer a.free(zero);
-    try std.testing.expectEqualStrings("0 NEXA", zero);
+    try std.testing.expectEqualStrings("0.00 NEXA", zero);
+    // A 12-decimal coin (Nerva/Zano) shows all twelve places.
+    const xnv = App.formatBalance(a, 0.0, "XNV", 12);
+    defer a.free(xnv);
+    try std.testing.expectEqualStrings("0.000000000000 XNV", xnv);
     // Large amounts get thousands separators on the integer part.
-    const big = App.formatBalance(a, 1234567.5, "XNV");
+    const big = App.formatBalance(a, 1234567.5, "XNV", 8);
     defer a.free(big);
-    try std.testing.expectEqualStrings("1,234,567.5 XNV", big);
+    try std.testing.expectEqualStrings("1,234,567.50000000 XNV", big);
 }
 
 test "the header balance shows Total always and Available only while funds settle" {
