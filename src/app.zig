@@ -3333,7 +3333,10 @@ pub const App = struct {
     fn tryStart(self: *App) void {
         const coin = self.selectedCoin() orelse return;
         const act = &self.activities[self.selected];
-        if (!act.installed) return;
+        if (!act.installed) {
+            self.logf("{s}: not installed — press i to install", .{coin.coinName()});
+            return;
+        }
         if (act.daemonState() != .stopped) return;
 
         // Reap a previously finished daemon worker before reusing the slot.
