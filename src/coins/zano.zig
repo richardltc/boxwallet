@@ -23,7 +23,10 @@ const Coin = @import("../coin.zig").Coin;
 ///     `getinfo` carries everything. Sync is derived from `height` vs
 ///     `max_net_seen_height` (the network tip), and the peer count from the
 ///     connection counts. (The Go reference left this half-wired to the bitcoin
-///     structs; this maps the real `getinfo` fields instead.)
+///     structs; this maps the real `getinfo` fields instead.) Like other
+///     CryptoNote daemons (cf. Nerva), the daemon RPC is **not** the bitcoin
+///     transport: `getinfo` is a `POST /json_rpc` method (keyless on localhost),
+///     not a JSON-RPC 1.0 call to root — so it goes through `rpc.moneroPost`.
 ///
 /// Linux x86_64 installs the AppImage; Windows x64 installs the official `.zip`.
 /// macOS ships only a `.dmg`, not wired, so it resolves no download
@@ -115,6 +118,34 @@ pub const Zano = struct {
         version: []const u8 = "",
     };
 
+    /// Bound (ms) on a status/stop RPC round-trip. A healthy zanod answers
+    /// `getinfo` in milliseconds, but a *busy* one (its reply stalled behind the
+    /// blockchain lock while relaying across peers) can take seconds, accepting the
+    /// connection yet not replying. This cap keeps such a stall from hanging the
+    /// poll worker — liveness rides on the cheap connect probe, not this call, so a
+    /// timeout just defers fresh numbers to the next poll. Mirrors Nerva.
+    const status_timeout_ms: u32 = 3000;
+
+    /// Fetch + parse `getinfo`. Caller must `deinit` the returned `Parsed`.
+    ///
+    /// Zano is a CryptoNote daemon: `getinfo` is a `POST /json_rpc` method, not a
+    /// bitcoin-style JSON-RPC 1.0 call to root, so it goes through `moneroPost`
+    /// (the daemon RPC is keyless on localhost — an empty user skips the digest
+    /// handshake). The reply is the JSON-RPC envelope `{ "result": { … } }`.
+    fn fetchInfo(
+        allocator: std.mem.Allocator,
+        auth: models.CoinAuth,
+    ) !std.json.Parsed(models.JsonRpcResponse(ZanoGetInfo)) {
+        const raw = try rpc.moneroPost(allocator, auth, "/json_rpc", "{\"jsonrpc\":\"2.0\",\"id\":\"0\",\"method\":\"getinfo\"}", status_timeout_ms);
+        defer allocator.free(raw);
+        return std.json.parseFromSlice(
+            models.JsonRpcResponse(ZanoGetInfo),
+            allocator,
+            raw,
+            .{ .ignore_unknown_fields = true, .allocate = .alloc_always },
+        );
+    }
+
     /// Build the type-erased `Coin` handle for this instance.
     pub fn coin(self: *Zano) Coin {
         return .{ .ptr = self, .vtable = &vtable };
@@ -128,7 +159,7 @@ pub const Zano = struct {
         allocator: std.mem.Allocator,
         auth: models.CoinAuth,
     ) !models.BlockchainState {
-        var parsed = try rpc.callParsed(ZanoGetInfo, allocator, auth, "getinfo");
+        var parsed = try fetchInfo(allocator, auth);
         defer parsed.deinit();
 
         const r = parsed.value.result orelse return error.EmptyRpcResult;
@@ -156,7 +187,7 @@ pub const Zano = struct {
         allocator: std.mem.Allocator,
         auth: models.CoinAuth,
     ) !models.DaemonInfo {
-        var parsed = try rpc.callParsed(ZanoGetInfo, allocator, auth, "getinfo");
+        var parsed = try fetchInfo(allocator, auth);
         defer parsed.deinit();
 
         const r = parsed.value.result orelse return error.EmptyRpcResult;
@@ -272,24 +303,29 @@ pub const Zano = struct {
         return .foreground;
     }
 
-    /// The full launch command: `zanod --no-console --no-predownload` (mirrors the
-    /// Go `StartDaemon`). Caller owns the returned slice and every string in it.
+    /// The full launch command: `zanod --no-console`. Caller owns the returned
+    /// slice and every string in it.
+    ///
+    /// `--no-predownload` is deliberately omitted: it would disable Zano's
+    /// bootstrap-snapshot download and force a full P2P sync of the whole chain,
+    /// which is glacially slow on the low-spec hardware BoxWallet targets. Letting
+    /// predownload run gives a fresh node a recent DB to start from.
     pub fn daemonArgv(allocator: std.mem.Allocator, install_root: []const u8, _: []const u8) ![]const []const u8 {
         const path = if (builtin.os.tag == .windows)
             try std.fs.path.join(allocator, &.{ install_root, win_subdir, daemon_file })
         else
             try std.fs.path.join(allocator, &.{ install_root, daemon_file });
         errdefer allocator.free(path);
-        const argv = try allocator.alloc([]const u8, 3);
+        const argv = try allocator.alloc([]const u8, 2);
         argv[0] = path;
         argv[1] = try allocator.dupe(u8, "--no-console");
-        argv[2] = try allocator.dupe(u8, "--no-predownload");
         return argv;
     }
 
-    /// Ask zanod to shut down via the CryptoNote JSON-RPC `stop_daemon`.
+    /// Ask zanod to shut down via the CryptoNote direct `POST /stop_daemon`
+    /// handler (not a `/json_rpc` method, and not the bitcoin transport).
     pub fn requestStop(allocator: std.mem.Allocator, auth: models.CoinAuth) !void {
-        const reply = try rpc.call(allocator, auth, "stop_daemon");
+        const reply = try rpc.moneroPost(allocator, auth, "/stop_daemon", "{}", status_timeout_ms);
         allocator.free(reply);
     }
 
