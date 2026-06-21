@@ -185,6 +185,6 @@ ZIG_GLOBAL_CACHE_DIR=zig-pkg zig build release # cross-build all release binarie
 
 ## Port status
 
-- **Done (10):** digibyte, divi, epic, ergo, litecoin, nerva, nexa, reddcoin,
-  salvium, zano.
-- **Remaining (19):** navcoin pivx
+- **Done (11):** bitcoin, digibyte, divi, epic, ergo, litecoin, nerva, nexa,
+  reddcoin, salvium, zano.
+- **Remaining:** navcoin pivx

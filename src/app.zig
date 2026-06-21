@@ -18,6 +18,7 @@ const Salvium = @import("coins/salvium.zig").Salvium;
 const ReddCoin = @import("coins/reddcoin.zig").ReddCoin;
 const Epic = @import("coins/epic.zig").Epic;
 const Litecoin = @import("coins/litecoin.zig").Litecoin;
+const Bitcoin = @import("coins/bitcoin.zig").Bitcoin;
 
 /// The application's display name, version, and brand colour — the one place to
 /// change how BoxWallet identifies itself in the UI. `app_color` is the brand
@@ -38,14 +39,14 @@ const fallback_install_root = "boxwallet-coins";
 /// pane renders generically through the `Coin` interface, so it needs no per-coin
 /// code. A coin whose per-coin `live` constant is false stays registered here but
 /// is dropped from `entries` — hidden from the nav entirely until it's ready.
-const Entry = enum { home, nexa, divi, ergo, digibyte, zano, nerva, reddcoin, epic, salvium, litecoin };
-const coin_entries = [_]Entry{ .nexa, .divi, .ergo, .digibyte, .zano, .nerva, .reddcoin, .epic, .salvium, .litecoin };
+const Entry = enum { home, nexa, divi, ergo, digibyte, zano, nerva, reddcoin, epic, salvium, litecoin, bitcoin };
+const coin_entries = [_]Entry{ .nexa, .divi, .ergo, .digibyte, .zano, .nerva, .reddcoin, .epic, .salvium, .litecoin, .bitcoin };
 
 /// The registered coin backends as their concrete types — the source of truth for
 /// the compile-time checks below. Must list the same coins as `coin_entries` (the
 /// length assertion in the guard catches a coin added to one list but not the
 /// other).
-const coin_types = .{ Nexa, Divi, Ergo, DigiByte, Zano, Nerva, ReddCoin, Epic, Salvium, Litecoin };
+const coin_types = .{ Nexa, Divi, Ergo, DigiByte, Zano, Nerva, ReddCoin, Epic, Salvium, Litecoin, Bitcoin };
 
 // Compile-time guard: no two coins may declare the same executable filename. Every
 // coin promotes its binaries into the one shared install root (`~/.boxwallet`) and
@@ -89,6 +90,7 @@ fn entryLabel(e: Entry) []const u8 {
         .epic => Epic.coin_name,
         .salvium => Salvium.coin_name,
         .litecoin => Litecoin.coin_name,
+        .bitcoin => Bitcoin.coin_name,
     };
 }
 
@@ -131,6 +133,7 @@ fn entryColor(e: Entry) zz.Color {
         .epic => zz.Color.hex(Epic.coin_color),
         .salvium => zz.Color.hex(Salvium.coin_color),
         .litecoin => zz.Color.hex(Litecoin.coin_color),
+        .bitcoin => zz.Color.hex(Bitcoin.coin_color),
     };
 }
 
@@ -165,6 +168,7 @@ fn entryLive(e: Entry) bool {
         .epic => Epic.live,
         .salvium => Salvium.live,
         .litecoin => Litecoin.live,
+        .bitcoin => Bitcoin.live,
     };
 }
 
@@ -2009,6 +2013,7 @@ pub const App = struct {
     epic: Epic,
     salvium: Salvium,
     litecoin: Litecoin,
+    bitcoin: Bitcoin,
     selected: usize,
     /// Which tab of the selected coin's detail pane is showing. Global rather
     /// than per-coin: switching coins resets it to Home (see `move`).
@@ -2144,6 +2149,7 @@ pub const App = struct {
             .epic = .{},
             .salvium = .{},
             .litecoin = .{},
+            .bitcoin = .{},
             .selected = 0,
             .activities = undefined,
             .pw_input = zz.TextInput.init(ctx.persistent_allocator),
@@ -3152,6 +3158,7 @@ pub const App = struct {
             .epic => @constCast(&self.epic).coin(),
             .salvium => @constCast(&self.salvium).coin(),
             .litecoin => @constCast(&self.litecoin).coin(),
+            .bitcoin => @constCast(&self.bitcoin).coin(),
         };
     }
 
@@ -5692,7 +5699,7 @@ test "logTagColor matches the leading coin/BoxWallet tag, nothing else" {
 
     // No tag (no colon, or an unknown word) leaves the line plain.
     try std.testing.expect(logTagColor("no tag here") == null);
-    try std.testing.expect(logTagColor("Bitcoin: not a registered coin") == null);
+    try std.testing.expect(logTagColor("Dogecoin: not a registered coin") == null);
 }
 
 test "refreshUpdateState flags an update when the marker trails the bundled version" {

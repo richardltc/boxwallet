@@ -61,6 +61,7 @@ test {
     _ = @import("coins/epic.zig");
     _ = @import("coins/salvium.zig");
     _ = @import("coins/litecoin.zig");
+    _ = @import("coins/bitcoin.zig");
     _ = @import("bzip2.zig");
     _ = @import("app.zig");
 }
