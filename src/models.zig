@@ -131,6 +131,41 @@ pub const LtcWalletInfo = struct {
     immature_balance: f64 = 0,
 };
 
+/// Raw `getblockchaininfo` result for Bitcoin (subset). Bitcoin Core reports
+/// `verificationprogress`, so sync is derived from it exactly as for Litecoin.
+/// Defaults keep parsing resilient to omitted fields.
+pub const BtcBlockchainInfo = struct {
+    chain: []const u8 = "",
+    blocks: i64 = 0,
+    headers: i64 = 0,
+    bestblockhash: []const u8 = "",
+    verificationprogress: f64 = 0,
+    /// Tip block's own timestamp (unix seconds) — exact, preferred over
+    /// `mediantime`. 0 if omitted.
+    time: i64 = 0,
+    /// Median timestamp (unix seconds) of the last 11 blocks — fallback for the
+    /// "behind by …" estimate when `time` is absent. 0 if omitted.
+    mediantime: i64 = 0,
+};
+
+/// Raw `getnetworkinfo` result for Bitcoin (subset). Bitcoin Core has no
+/// `getinfo`, so the live peer count comes from here. Defaults keep parsing
+/// resilient to omitted fields.
+pub const BtcNetworkInfo = struct {
+    version: i64 = 0,
+    connections: i64 = 0,
+};
+
+/// Raw `getwalletinfo` result for Bitcoin (Bitcoin Core): numeric
+/// `unlocked_until` for security (absent/0/positive) plus the balance triplet.
+/// Defaults keep parsing resilient to omitted fields.
+pub const BtcWalletInfo = struct {
+    unlocked_until: ?i64 = null,
+    balance: f64 = 0,
+    unconfirmed_balance: f64 = 0,
+    immature_balance: f64 = 0,
+};
+
 /// Raw `getblockchaininfo` result for ReddCoin (subset). ReddCoin 4.x is Bitcoin
 /// 22-based and reports `verificationprogress`, so sync is derived from it the
 /// same way as Nexa. Defaults keep parsing resilient to omitted fields.
