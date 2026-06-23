@@ -57,6 +57,27 @@ pub const Zano = struct {
     pub const daemon_file = "zanod" ++ exe_suffix;
     pub const cli_file = "simplewallet" ++ exe_suffix;
 
+    /// Port BoxWallet binds the managed `simplewallet` RPC server to (localhost
+    /// only). Kept clear of the daemon's RPC (11211) and the nearby P2P port so a
+    /// running daemon and an open wallet never collide.
+    pub const wallet_rpc_port = "11233";
+
+    /// The single managed wallet's filename, inside the wallet dir. Fixed so
+    /// `walletExists` is a pure disk check and the RPC server is always launched
+    /// against the same file. Zano stores a wallet as one file (no Monero-style
+    /// `.keys` companion).
+    const wallet_name = "BoxWallet";
+
+    /// Zano's atomic unit: 1 ZANO = 10^12 atomic units
+    /// (`CRYPTONOTE_DISPLAY_DECIMAL_POINT = 12`), so wallet-RPC integer balances are
+    /// divided by this to get whole ZANO.
+    const atomic_per_zano: f64 = 1_000_000_000_000;
+
+    /// Bound (ms) on a wallet-RPC op. A wallet's first balance read after opening can
+    /// trail an initial refresh, so this is far longer than the daemon status cap —
+    /// still bounded so a hung wallet service can't wedge the worker.
+    const wallet_timeout_ms: u32 = 60_000;
+
     // build.zano.org filenames embed an opaque build hash in brackets (URL-encoded
     // `%5B…%5D`), and the server exposes no directory index or "latest" alias — so
     // the URL can't be derived from the version alone. Bumping the version means
@@ -329,6 +350,346 @@ pub const Zano = struct {
         allocator.free(reply);
     }
 
+    // --- External wallet (Zano simplewallet) -----------------------------
+    //
+    // Zano's wallet lives in a separate process (`simplewallet`), like Nerva's — but
+    // its RPC model is fundamentally different. `simplewallet --rpc-bind-port …` can
+    // only serve the **one** wallet it was launched on (`--wallet-file … --password
+    // …`); it exposes no create/open/restore over RPC (only `getbalance`,
+    // `get_restore_info`, …). So BoxWallet can't keep one idle, password-less RPC
+    // process around the way it does for Nerva — instead it (re)launches the server
+    // per-open with the wallet file + password (`launch_server_argv`), and creating a
+    // wallet is a one-shot `--generate-new-wallet` CLI run (`cli_create`) before the
+    // server is started. The wallet RPC is keyless on localhost (`simplewallet` has
+    // no `--rpc-login`), matching the daemon's own localhost-only RPC. All
+    // funds-sensitive: a wallet is only ever created/opened with a user-supplied
+    // password, never silently. See `coin.zig`'s `ExternalWallet`.
+
+    /// The managed wallet directory (`<datadir>/wallets`), where the `BoxWallet`
+    /// wallet file is created and opened. Caller owns the slice.
+    fn walletDir(allocator: std.mem.Allocator, home: []const u8) ![]const u8 {
+        const data_dir = try dataDir(allocator, home);
+        defer allocator.free(data_dir);
+        return std.fs.path.join(allocator, &.{ data_dir, "wallets" });
+    }
+
+    /// Port the wallet process is bound to — its RPC endpoint, distinct from the
+    /// daemon's. The lifecycle in `app.zig` builds a keyless `wallet_auth` from this.
+    fn walletRpcPort() []const u8 {
+        return wallet_rpc_port;
+    }
+
+    /// True if the managed `BoxWallet` wallet file already exists on disk. A pure
+    /// disk check, so the UI can decide "set up" vs "unlock" without a running
+    /// process.
+    fn walletExists(allocator: std.mem.Allocator, home: []const u8) bool {
+        const dir = walletDir(allocator, home) catch return false;
+        defer allocator.free(dir);
+        return install_mod.fileExists(allocator, dir, wallet_name);
+    }
+
+    /// Resolve the `simplewallet` binary path (the `zano/` bundle subdir on Windows,
+    /// the install root elsewhere — mirroring `daemonArgv`). Caller owns the slice.
+    fn cliPath(allocator: std.mem.Allocator, install_root: []const u8) ![]const u8 {
+        return if (builtin.os.tag == .windows)
+            std.fs.path.join(allocator, &.{ install_root, win_subdir, cli_file })
+        else
+            std.fs.path.join(allocator, &.{ install_root, cli_file });
+    }
+
+    /// argv to launch `simplewallet` as an RPC server against the managed wallet
+    /// file, opened with `wallet_password`, bound to localhost:`port` and pointed at
+    /// the local daemon. Setting `--rpc-bind-port` switches simplewallet into server
+    /// mode (no interactive console). The wallet RPC is keyless on localhost — Zano
+    /// `simplewallet` exposes no `--rpc-login`, so the 127.0.0.1 bind is the
+    /// protection, as it is for the daemon. Caller owns the slice and its strings.
+    ///
+    /// Note the password rides the argv (Zano's own exchange-integration guide opens
+    /// the wallet the same way), so it's visible to other local users via `ps`. That
+    /// matches the trust boundary already in force here — the keyless localhost RPC
+    /// means any local user could drive the open wallet regardless — so it adds no
+    /// exposure beyond it. (`--password-file` would avoid the `ps` leak but, in the
+    /// Monero lineage Zano forks from, conflicts with `--rpc-bind-port`.)
+    fn launchServerArgv(
+        allocator: std.mem.Allocator,
+        install_root: []const u8,
+        home: []const u8,
+        port: []const u8,
+        wallet_password: []const u8,
+    ) anyerror![]const []const u8 {
+        const path = try cliPath(allocator, install_root);
+        errdefer allocator.free(path);
+        const dir = try walletDir(allocator, home);
+        defer allocator.free(dir);
+        const wallet_path = try std.fs.path.join(allocator, &.{ dir, wallet_name });
+        defer allocator.free(wallet_path);
+
+        const wallet_arg = try std.fmt.allocPrint(allocator, "--wallet-file={s}", .{wallet_path});
+        errdefer allocator.free(wallet_arg);
+        const pass_arg = try std.fmt.allocPrint(allocator, "--password={s}", .{wallet_password});
+        errdefer allocator.free(pass_arg);
+        const port_arg = try std.fmt.allocPrint(allocator, "--rpc-bind-port={s}", .{port});
+        errdefer allocator.free(port_arg);
+        const daemon_arg = try std.fmt.allocPrint(allocator, "--daemon-address=127.0.0.1:{s}", .{rpc_default_port});
+        errdefer allocator.free(daemon_arg);
+
+        const argv = try allocator.alloc([]const u8, 6);
+        errdefer allocator.free(argv);
+        argv[0] = path;
+        argv[1] = wallet_arg;
+        argv[2] = pass_arg;
+        argv[3] = try allocator.dupe(u8, "--rpc-bind-ip=127.0.0.1");
+        argv[4] = port_arg;
+        argv[5] = daemon_arg;
+        return argv;
+    }
+
+    /// One-shot `simplewallet --generate-new-wallet=<file> --password=<pw>` to
+    /// materialize the managed wallet file (no RPC server — the app launches that
+    /// next). Without `--rpc-bind-port` simplewallet would drop to its interactive
+    /// console after generating, so stdin is closed (it reads EOF and exits) and a
+    /// timeout backstops any vintage that lingers. Success is the wallet file
+    /// appearing on disk; on failure the CLI's own stderr/stdout is surfaced.
+    fn cliCreate(
+        allocator: std.mem.Allocator,
+        install_root: []const u8,
+        home: []const u8,
+        password: []const u8,
+        detail: *Coin.WalletErrSink,
+    ) anyerror!void {
+        const dir = try walletDir(allocator, home);
+        defer allocator.free(dir);
+
+        var threaded: std.Io.Threaded = .init(allocator, .{});
+        defer threaded.deinit();
+        const io = threaded.io();
+
+        // Ensure the wallet dir exists so simplewallet can write into it.
+        var dd = try std.Io.Dir.cwd().createDirPathOpen(io, dir, .{});
+        dd.close(io);
+
+        const wallet_path = try std.fs.path.join(allocator, &.{ dir, wallet_name });
+        defer allocator.free(wallet_path);
+        const cli = try cliPath(allocator, install_root);
+        defer allocator.free(cli);
+
+        const gen_arg = try std.fmt.allocPrint(allocator, "--generate-new-wallet={s}", .{wallet_path});
+        defer allocator.free(gen_arg);
+        const pass_arg = try std.fmt.allocPrint(allocator, "--password={s}", .{password});
+        defer allocator.free(pass_arg);
+
+        const argv = [_][]const u8{ cli, gen_arg, pass_arg };
+        const res = std.process.run(allocator, io, .{
+            .argv = &argv,
+            .timeout = .{ .duration = .{ .raw = std.Io.Duration.fromSeconds(120), .clock = .awake } },
+        }) catch |err| {
+            detail.set(@errorName(err));
+            return error.WalletCreateFailed;
+        };
+        defer allocator.free(res.stdout);
+        defer allocator.free(res.stderr);
+
+        if (!install_mod.fileExists(allocator, dir, wallet_name)) {
+            const why = std.mem.trim(u8, if (res.stderr.len > 0) res.stderr else res.stdout, " \t\r\n");
+            detail.set(if (why.len > 0) why else "simplewallet did not create the wallet");
+            return error.WalletCreateFailed;
+        }
+    }
+
+    /// Import an existing Zano wallet file (browsed to) as the managed `BoxWallet`.
+    /// A Zano wallet is a single file, so it's copied straight in (the app launches
+    /// the server against it and confirms the password next). Streamed in bounded
+    /// chunks rather than slurped, so a wallet with a large tx cache stays flat in
+    /// memory. The destination is overwritten if present (the caller gates this
+    /// behind the create/restore menu, only shown when no managed wallet exists).
+    fn walletRestoreFile(
+        allocator: std.mem.Allocator,
+        _: models.CoinAuth,
+        home: []const u8,
+        src_path: []const u8,
+        _: []const u8,
+        _: *Coin.WalletErrSink,
+    ) anyerror!void {
+        const dest_dir = try walletDir(allocator, home);
+        defer allocator.free(dest_dir);
+        try copyFileStreaming(allocator, src_path, dest_dir, wallet_name);
+    }
+
+    /// Stream-copy the file at absolute `src_path` into `dest_dir` as `dest_name`,
+    /// creating `dest_dir` if needed. Bounded buffer (no whole-file slurp), so a
+    /// large wallet file copies at flat memory.
+    fn copyFileStreaming(
+        allocator: std.mem.Allocator,
+        src_path: []const u8,
+        dest_dir: []const u8,
+        dest_name: []const u8,
+    ) !void {
+        var threaded: std.Io.Threaded = .init(allocator, .{});
+        defer threaded.deinit();
+        const io = threaded.io();
+
+        const src_dir = std.fs.path.dirname(src_path) orelse ".";
+        const src_base = std.fs.path.basename(src_path);
+        var sd = std.Io.Dir.cwd().openDir(io, src_dir, .{}) catch return error.WalletFileNotFound;
+        defer sd.close(io);
+        var src = sd.openFile(io, src_base, .{}) catch return error.WalletFileNotFound;
+        defer src.close(io);
+
+        var dd = try std.Io.Dir.cwd().createDirPathOpen(io, dest_dir, .{});
+        defer dd.close(io);
+        var dst = try dd.createFile(io, dest_name, .{ .truncate = true });
+        defer dst.close(io);
+
+        var buf: [64 * 1024]u8 = undefined;
+        var off: u64 = 0;
+        while (true) {
+            const n = try src.readPositionalAll(io, &buf, off);
+            if (n == 0) break;
+            try dst.writePositionalAll(io, buf[0..n], off);
+            off += n;
+            if (n < buf.len) break;
+        }
+    }
+
+    // Wallet-RPC result subsets. `getbalance` reports atomic-unit integers for the
+    // native coin (whitelisted assets ride a `balances` array we ignore);
+    // `get_restore_info` returns the wallet's mnemonic for the create-time display.
+    const WalletBalanceResult = struct { balance: u64 = 0, unlocked_balance: u64 = 0 };
+    const RestoreInfoResult = struct { seed_phrase: []const u8 = "" };
+
+    /// The `error` half of a Zano wallet-RPC reply, present in place of `result` when
+    /// an op fails. Its `message` is surfaced so the user sees a real reason.
+    const RpcErrObj = struct { code: i64 = 0, message: []const u8 = "" };
+
+    /// JSON-RPC envelope keeping the `error` object (unlike the shared
+    /// `models.JsonRpcResponse`, which drops it) so wallet ops can report why.
+    fn WalletEnvelope(comptime T: type) type {
+        return struct { result: ?T = null, @"error": ?RpcErrObj = null };
+    }
+
+    /// POST a wallet-RPC `method` with a raw JSON `params` object and parse
+    /// `result`/`error`. Keyless on localhost (empty user → `moneroPost` skips the
+    /// digest handshake). Caller `deinit`s the `Parsed`.
+    fn walletCall(
+        comptime T: type,
+        allocator: std.mem.Allocator,
+        auth: models.CoinAuth,
+        method: []const u8,
+        params: []const u8,
+    ) !std.json.Parsed(WalletEnvelope(T)) {
+        const body = try std.fmt.allocPrint(
+            allocator,
+            "{{\"jsonrpc\":\"2.0\",\"id\":\"0\",\"method\":\"{s}\",\"params\":{s}}}",
+            .{ method, params },
+        );
+        defer allocator.free(body);
+        const raw = try rpc.moneroPost(allocator, auth, "/json_rpc", body, wallet_timeout_ms);
+        defer allocator.free(raw);
+        // `.alloc_always` so parsed strings (the seed phrase, error message) survive
+        // `raw` being freed.
+        return std.json.parseFromSlice(
+            WalletEnvelope(T),
+            allocator,
+            raw,
+            .{ .ignore_unknown_fields = true, .allocate = .alloc_always },
+        );
+    }
+
+    /// Read the freshly-generated wallet's mnemonic (after `cli_create` + the server
+    /// launch) for the user to write down. The unsecured seed (no seed-password) is
+    /// returned by `get_restore_info` with an empty `seed_password`. This is the
+    /// `create` hook: the file already exists and the server is up by the time it
+    /// runs, so it's purely the seed read-back.
+    fn walletCreate(
+        allocator: std.mem.Allocator,
+        wallet_auth: models.CoinAuth,
+        _: []const u8,
+        detail: *Coin.WalletErrSink,
+    ) anyerror!models.Seed {
+        var parsed = try walletCall(RestoreInfoResult, allocator, wallet_auth, "get_restore_info", "{\"seed_password\":\"\"}");
+        defer parsed.deinit();
+        const r = parsed.value.result orelse {
+            if (parsed.value.@"error") |e| detail.set(e.message);
+            return error.WalletCreateFailed;
+        };
+        if (r.seed_phrase.len == 0) return error.WalletCreateFailed;
+        return models.Seed.from(r.seed_phrase);
+    }
+
+    /// Confirm the just-launched wallet server has the wallet open, by reading its
+    /// balance. The `open` hook runs *after* `launchWalletServer` has started the
+    /// server with the password (a wrong password makes the server exit before
+    /// binding, so that path already failed); a clean `getbalance` here proves the
+    /// wallet is open and serving.
+    fn walletOpen(
+        allocator: std.mem.Allocator,
+        wallet_auth: models.CoinAuth,
+        _: []const u8,
+        detail: *Coin.WalletErrSink,
+    ) anyerror!void {
+        var parsed = try walletCall(WalletBalanceResult, allocator, wallet_auth, "getbalance", "{}");
+        defer parsed.deinit();
+        if (parsed.value.result == null) {
+            if (parsed.value.@"error") |e| detail.set(e.message);
+            return error.WalletOpenFailed;
+        }
+    }
+
+    /// Read the open wallet's native ZANO balance. `balance` is the total (includes
+    /// locked/unconfirmed); `unlocked_balance` is spendable now — the Total /
+    /// Available split the frontend renders.
+    fn walletBalance(
+        allocator: std.mem.Allocator,
+        wallet_auth: models.CoinAuth,
+    ) anyerror!models.WalletBalance {
+        var parsed = try walletCall(WalletBalanceResult, allocator, wallet_auth, "getbalance", "{}");
+        defer parsed.deinit();
+        const r = parsed.value.result orelse return error.EmptyRpcResult;
+        return atomicToBalance(r.balance, r.unlocked_balance);
+    }
+
+    /// Map Zano atomic balances to the normalized `WalletBalance`. Pure, so it's
+    /// unit-testable without a wallet process.
+    fn atomicToBalance(balance: u64, unlocked: u64) models.WalletBalance {
+        return .{
+            .total = @as(f64, @floatFromInt(balance)) / atomic_per_zano,
+            .available = @as(f64, @floatFromInt(unlocked)) / atomic_per_zano,
+        };
+    }
+
+    /// Restore-from-seed is deferred: Zano's `--restore-wallet` prompts for the seed
+    /// interactively with no non-interactive flag, so BoxWallet doesn't offer it yet
+    /// (the setup menu hides it via `supports_seed_restore = false`). The hook stays
+    /// wired to satisfy the interface; it's never reached.
+    fn walletRestoreSeedUnsupported(
+        _: std.mem.Allocator,
+        _: models.CoinAuth,
+        _: []const u8,
+        _: []const u8,
+        _: []const u8,
+        _: []const u8,
+        _: *Coin.WalletErrSink,
+    ) anyerror!void {
+        return error.Unsupported;
+    }
+
+    /// The external-wallet capability wired into the vtable. Unlike Nerva's, this is
+    /// a launch-with-password wallet (`launch_server_argv` + `cli_create`), so the
+    /// app relaunches `simplewallet` per-open rather than keeping one idle process.
+    pub const external_wallet: Coin.ExternalWallet = .{
+        .rpc_port = walletRpcPort,
+        .launch_server_argv = launchServerArgv,
+        .cli_create = cliCreate,
+        .supports_seed_restore = false,
+        .exists = walletExists,
+        .create = walletCreate,
+        .restore_seed = walletRestoreSeedUnsupported,
+        .restore_file = walletRestoreFile,
+        .open = walletOpen,
+        .balance = walletBalance,
+        .seed_word_counts = &.{ 26, 25, 24 },
+    };
+
     // --- vtable plumbing -------------------------------------------------
 
     const vtable: Coin.VTable = .{
@@ -338,6 +699,7 @@ pub const Zano = struct {
         .coin_color = vtCoinColor,
         .core_version = vtCoreVersion,
         .proof_of_stake = vtProofOfStake,
+        .balance_decimals = vtBalanceDecimals,
         .conf_file = vtConfFile,
         .daemon_file = vtDaemonFile,
         .rpc_default_port = vtRpcDefaultPort,
@@ -351,6 +713,7 @@ pub const Zano = struct {
         .launch_mode = vtLaunchMode,
         .daemon_argv = vtDaemonArgv,
         .request_stop = vtRequestStop,
+        .external_wallet = &external_wallet,
     };
 
     fn vtCoinName(_: *anyopaque) []const u8 {
@@ -370,6 +733,10 @@ pub const Zano = struct {
     }
     fn vtProofOfStake(_: *anyopaque) bool {
         return proof_of_stake;
+    }
+    /// Zano inherits the CryptoNote 12-decimal atomic unit (see `atomic_per_zano`).
+    fn vtBalanceDecimals(_: *anyopaque) u8 {
+        return 12;
     }
     fn vtConfFile(_: *anyopaque) []const u8 {
         return conf_file;
@@ -553,7 +920,159 @@ test "coin vtable dispatches to Zano metadata" {
     try std.testing.expectEqualStrings("zanod", c.daemonFile());
     try std.testing.expectEqualStrings("11211", c.rpcDefaultPort());
     try std.testing.expectEqual(Coin.LaunchMode.foreground, c.launchMode());
+    // Zano balances render to 12 decimals (CryptoNote atomic unit).
+    try std.testing.expectEqual(@as(u8, 12), c.balanceDecimals());
     // BoxWallet manages no fixed wallet file for Zano, so the Settings tab shows
     // an em-dash rather than a path.
     try std.testing.expect((try c.walletPath(std.testing.allocator, "/home/alice")) == null);
+}
+
+// --- External wallet (Zano simplewallet) tests ---------------------------
+
+test "Zano wires a launch-with-password external wallet" {
+    var z: Zano = .{};
+    const c = z.coin();
+    try std.testing.expect(c.hasExternalWallet());
+    try std.testing.expect(c.hasExternalWalletProcess());
+    // Distinct from Nerva: the wallet process is (re)launched per-open with the
+    // password, not spawned once eagerly.
+    try std.testing.expect(c.walletLaunchesWithPassword());
+    // Restore-from-seed is deferred (Zano's is interactive-only upstream).
+    try std.testing.expect(!c.supportsSeedRestore());
+
+    const ew = c.externalWallet().?;
+    try std.testing.expectEqualStrings(Zano.wallet_rpc_port, ew.rpc_port.?());
+    // The launch-with-password hooks are set; the eager `process_argv` is not.
+    try std.testing.expect(ew.launch_server_argv != null);
+    try std.testing.expect(ew.cli_create != null);
+    try std.testing.expect(ew.process_argv == null);
+    // 26-word canonical seed, with 25/24 accepted for older wallets.
+    try std.testing.expectEqual(@as(usize, 26), c.seedWordCounts()[0]);
+    try std.testing.expectEqual(@as(usize, 3), c.seedWordCounts().len);
+}
+
+test "launchServerArgv runs simplewallet as a localhost RPC server for the wallet" {
+    const allocator = std.testing.allocator;
+
+    const argv = try Zano.launchServerArgv(allocator, "/opt/bw", "/home/alice", Zano.wallet_rpc_port, "hunter2");
+    defer {
+        for (argv) |a| allocator.free(a);
+        allocator.free(argv);
+    }
+
+    // First arg is the simplewallet binary under the install root.
+    try std.testing.expect(std.mem.endsWith(u8, argv[0], Zano.cli_file));
+    try std.testing.expect(std.mem.startsWith(u8, argv[0], "/opt/bw"));
+
+    const joined = try std.mem.join(allocator, " ", argv);
+    defer allocator.free(joined);
+    // Opens the managed wallet file with the supplied password.
+    try std.testing.expect(std.mem.indexOf(u8, joined, "--wallet-file=") != null);
+    try std.testing.expect(std.mem.indexOf(u8, joined, "wallets/BoxWallet") != null);
+    try std.testing.expect(std.mem.indexOf(u8, joined, "--password=hunter2") != null);
+    // Server mode, bound to localhost on the wallet port, pointed at the daemon.
+    try std.testing.expect(std.mem.indexOf(u8, joined, "--rpc-bind-ip=127.0.0.1") != null);
+    try std.testing.expect(std.mem.indexOf(u8, joined, "--rpc-bind-port=" ++ Zano.wallet_rpc_port) != null);
+    try std.testing.expect(std.mem.indexOf(u8, joined, "--daemon-address=127.0.0.1:11211") != null);
+    // No --rpc-login: Zano simplewallet has none; the localhost bind is the guard.
+    try std.testing.expect(std.mem.indexOf(u8, joined, "--rpc-login") == null);
+}
+
+test "getbalance atomic units map to ZANO Total/Available (12 decimals)" {
+    const allocator = std.testing.allocator;
+
+    // 1.5 ZANO total, 1.0 ZANO unlocked, in 1e12 atomic units.
+    const raw =
+        \\{"id":"0","jsonrpc":"2.0","result":{"balance":1500000000000,"unlocked_balance":1000000000000}}
+    ;
+    var parsed = try std.json.parseFromSlice(
+        models.JsonRpcResponse(Zano.WalletBalanceResult),
+        allocator,
+        raw,
+        .{ .ignore_unknown_fields = true },
+    );
+    defer parsed.deinit();
+
+    const r = parsed.value.result.?;
+    const bal = Zano.atomicToBalance(r.balance, r.unlocked_balance);
+    try std.testing.expectApproxEqAbs(@as(f64, 1.5), bal.total, 1e-9);
+    try std.testing.expectApproxEqAbs(@as(f64, 1.0), bal.available, 1e-9);
+    // Total ahead of available → funds still settling.
+    try std.testing.expect(bal.hasPending());
+}
+
+test "get_restore_info parse yields the seed phrase for create-time display" {
+    const allocator = std.testing.allocator;
+
+    const raw =
+        \\{"id":"0","jsonrpc":"2.0","result":{"seed_phrase":"abbey bacon cactus delta","is_auditable":false}}
+    ;
+    var parsed = try std.json.parseFromSlice(
+        Zano.WalletEnvelope(Zano.RestoreInfoResult),
+        allocator,
+        raw,
+        .{ .ignore_unknown_fields = true, .allocate = .alloc_always },
+    );
+    defer parsed.deinit();
+
+    try std.testing.expectEqualStrings("abbey bacon cactus delta", parsed.value.result.?.seed_phrase);
+    try std.testing.expect(parsed.value.@"error" == null);
+}
+
+test "walletExists keys off the BoxWallet file on disk" {
+    const allocator = std.testing.allocator;
+
+    var threaded: std.Io.Threaded = .init(allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    // A throwaway home; walletExists resolves `<home>/.Zano/wallets/BoxWallet`.
+    const home = "test-zano-wallet-home";
+    std.Io.Dir.cwd().deleteTree(io, home) catch {};
+    defer std.Io.Dir.cwd().deleteTree(io, home) catch {};
+
+    // No wallet yet → false.
+    try std.testing.expect(!Zano.walletExists(allocator, home));
+
+    // Lay down the wallet file and it flips to true.
+    const wallet_dir = try std.fs.path.join(allocator, &.{ home, Zano.home_dir, "wallets" });
+    defer allocator.free(wallet_dir);
+    var wd = try std.Io.Dir.cwd().createDirPathOpen(io, wallet_dir, .{});
+    defer wd.close(io);
+    try wd.writeFile(io, .{ .sub_path = "BoxWallet", .data = "WALLET" });
+
+    try std.testing.expect(Zano.walletExists(allocator, home));
+}
+
+test "restore-from-file streams an external wallet file in as the managed wallet" {
+    const allocator = std.testing.allocator;
+
+    var threaded: std.Io.Threaded = .init(allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    const home = "test-zano-restore-home";
+    std.Io.Dir.cwd().deleteTree(io, home) catch {};
+    defer std.Io.Dir.cwd().deleteTree(io, home) catch {};
+
+    // A source wallet file outside the managed dir.
+    var hd = try std.Io.Dir.cwd().createDirPathOpen(io, home, .{});
+    defer hd.close(io);
+    try hd.writeFile(io, .{ .sub_path = "mywallet.zan", .data = "ZANOWALLETBYTES" });
+    const src = try std.fs.path.join(allocator, &.{ home, "mywallet.zan" });
+    defer allocator.free(src);
+
+    // Import it; the bytes land at `<home>/.Zano/wallets/BoxWallet`.
+    try Zano.walletRestoreFile(allocator, undefined, home, src, "pw", undefined);
+    try std.testing.expect(Zano.walletExists(allocator, home));
+
+    const dest = try std.fs.path.join(allocator, &.{ home, Zano.home_dir, "wallets", "BoxWallet" });
+    defer allocator.free(dest);
+    var dd = try std.Io.Dir.cwd().openDir(io, std.fs.path.dirname(dest).?, .{});
+    defer dd.close(io);
+    var f = try dd.openFile(io, "BoxWallet", .{});
+    defer f.close(io);
+    var buf: [64]u8 = undefined;
+    const n = try f.readPositionalAll(io, &buf, 0);
+    try std.testing.expectEqualStrings("ZANOWALLETBYTES", buf[0..n]);
 }

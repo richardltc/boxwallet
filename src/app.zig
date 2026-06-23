@@ -474,8 +474,12 @@ fn menuChoicesFor(coin: Coin, buf: *[3]SetupChoice) usize {
     var n: usize = 0;
     buf[n] = .create;
     n += 1;
-    buf[n] = .restore_seed;
-    n += 1;
+    // Restore-from-seed only where the coin has wired it (Zano's is interactive-only
+    // upstream and deferred, so its menu skips straight to create / restore-file).
+    if (coin.supportsSeedRestore()) {
+        buf[n] = .restore_seed;
+        n += 1;
+    }
     if (ew.restore_file != null) {
         buf[n] = .restore_file;
         n += 1;
@@ -1349,9 +1353,39 @@ const Activity = struct {
     /// mnemonic in `wallet_setup_seed` for the UI to display.
     fn doWalletSetup(self: *Activity, a: std.mem.Allocator) !void {
         const ew = self.coin.externalWallet() orelse return error.NoExternalWallet;
-        const auth = self.extWalletAuth();
         const pw = self.wallet_pw_buf[0..self.wallet_pw_len];
         const detail = &self.wallet_setup_sink;
+
+        // Launch-with-password wallets (Zano `simplewallet`): the RPC server serves
+        // only the wallet handed to it at startup, so the *app* launches it per-op
+        // with the password. Create materializes the file via a one-shot CLI first,
+        // then the running server's RPC is used to read the seed; open just relaunches
+        // against the existing file (a wrong password makes the server exit, which
+        // `launchWalletServer` surfaces as a failed open).
+        if (self.coin.walletLaunchesWithPassword()) {
+            switch (self.wallet_setup_op) {
+                .create => {
+                    try (ew.cli_create orelse return error.Unsupported)(a, self.install_root, self.home_dir, pw, detail);
+                    try self.launchWalletServer(pw);
+                    self.wallet_setup_seed = try ew.create(a, self.extWalletAuth(), pw, detail);
+                },
+                .restore_file => {
+                    // Import the wallet file onto disk, then launch the server against
+                    // it and confirm the password opens it.
+                    try (ew.restore_file orelse return error.Unsupported)(a, self.extWalletAuth(), self.home_dir, self.wallet_file_buf[0..self.wallet_file_len], pw, detail);
+                    try self.launchWalletServer(pw);
+                    try ew.open(a, self.extWalletAuth(), pw, detail);
+                },
+                .open => {
+                    try self.launchWalletServer(pw);
+                    try ew.open(a, self.extWalletAuth(), pw, detail);
+                },
+                .restore_seed, .lock => return error.Unsupported,
+            }
+            return;
+        }
+
+        const auth = self.extWalletAuth();
         switch (self.wallet_setup_op) {
             .create => self.wallet_setup_seed = try ew.create(a, auth, pw, detail),
             .restore_seed => try ew.restore_seed(a, auth, self.install_root, self.home_dir, pw, self.wallet_seed_buf[0..self.wallet_seed_len], detail),
@@ -1359,6 +1393,69 @@ const Activity = struct {
             .open => try ew.open(a, auth, pw, detail),
             .lock => try (ew.lock orelse return error.Unsupported)(a, auth, detail),
         }
+    }
+
+    /// Launch the coin's wallet RPC server against the managed wallet file, opened
+    /// with `wallet_password`, and wait until it answers — the open path for
+    /// launch-with-password external wallets (Zano `simplewallet`), whose RPC can
+    /// only serve the wallet it was started on. Any wallet process still serving a
+    /// previous wallet is torn down first. On a wrong password the server exits
+    /// without ever binding its port, so a bounded reachability wait that elapses is
+    /// reported as a failed open. Runs on the setup worker (which owns the child
+    /// handle for the duration; the tick loop won't reap it while the worker runs).
+    fn launchWalletServer(self: *Activity, wallet_password: []const u8) !void {
+        const ew = self.coin.externalWallet().?;
+        const argv_fn = ew.launch_server_argv.?;
+        const port = ew.rpc_port.?();
+
+        var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+        defer arena.deinit();
+        const a = arena.allocator();
+        var threaded: std.Io.Threaded = .init(a, .{});
+        defer threaded.deinit();
+        const io = threaded.io();
+
+        // Tear down any wallet process still serving a previous wallet.
+        if (self.wallet_rpc_child) |*child| {
+            child.kill(io);
+            self.wallet_rpc_child = null;
+        }
+        self.ext_wallet_open.store(0, .monotonic);
+
+        // argv is consumed by spawn (fork/exec copies it), so the local arena can be
+        // freed right after. The wallet password rides argv only — never disk.
+        const argv = try argv_fn(a, self.install_root, self.home_dir, port, wallet_password);
+        const child = std.process.spawn(io, .{
+            .argv = argv,
+            .stdin = .ignore,
+            .stdout = .ignore,
+            .stderr = .ignore,
+            .create_no_window = @import("builtin").os.tag == .windows,
+        }) catch return error.WalletServiceFailed;
+        self.wallet_rpc_child = child;
+
+        // Wait for the wallet RPC to bind its port (or the process to die on a bad
+        // password). Bounded so a never-answering server can't wedge the worker.
+        const auth = self.extWalletAuth();
+        var waited: u32 = 0;
+        const step: u32 = 250;
+        const limit: u32 = 25_000;
+        while (waited < limit) : (waited += step) {
+            if (rpc.daemonReachable(a, auth)) return;
+            // Fast wrong-password path: simplewallet refuses a bad password and exits
+            // before ever binding its port, so reap-on-exit lets us fail at once
+            // rather than waiting out the whole timeout. (POSIX; Windows times out.)
+            if (@import("builtin").os.tag != .windows) {
+                if (self.wallet_rpc_child) |ch| if (ch.id) |pid| {
+                    if (App.reapNoHang(pid)) {
+                        self.wallet_rpc_child = null;
+                        return error.WalletOpenFailed;
+                    }
+                };
+            }
+            io.sleep(.fromMilliseconds(step), .awake) catch {};
+        }
+        return error.WalletOpenFailed;
     }
 
     /// Whether the coin's live status is still being resolved: it's installed and
@@ -2759,12 +2856,18 @@ pub const App = struct {
             if (self.coinAt(i)) |xcoin| {
                 if (xcoin.hasExternalWallet()) {
                     if (xcoin.hasExternalWalletProcess()) {
-                        // Process-backed (Monero-style): spawn the wallet service
-                        // alongside a running daemon, kill it once the daemon's gone.
-                        if (act.daemonState() == .running)
-                            self.ensureWalletRpc(act, xcoin)
-                        else if (act.wallet_rpc_child != null)
+                        // Process-backed: bring the wallet service up alongside a
+                        // running daemon and reap it once the daemon's gone. The
+                        // Monero model (Nerva) spawns it eagerly and password-less;
+                        // the Zano model launches it per-open with the password, so
+                        // here we only ever tear it down (never eager-spawn), and not
+                        // while a setup op is mid-flight (it owns the child handle).
+                        if (act.daemonState() == .running) {
+                            if (!xcoin.walletLaunchesWithPassword())
+                                self.ensureWalletRpc(act, xcoin);
+                        } else if (act.wallet_rpc_child != null and act.wallet_setup_thread == null) {
                             self.killWalletRpc(act);
+                        }
                     } else if (act.daemonState() != .running and act.ext_wallet_open.load(.monotonic) != 0) {
                         // In-daemon wallet (Ergo): no process to manage, but the
                         // node relocks the wallet when it stops — drop our "open"
@@ -3798,8 +3901,10 @@ pub const App = struct {
             return;
         }
         // Process-backed coins also need their wallet service up; in-daemon coins
-        // are ready as soon as the daemon is (checked above).
-        if (coin.hasExternalWalletProcess() and act.wallet_rpc_child == null) {
+        // are ready as soon as the daemon is (checked above). Launch-with-password
+        // coins (Zano) have no service until a wallet is opened — the setup op
+        // launches it — so they're exempt from this gate.
+        if (coin.hasExternalWalletProcess() and !coin.walletLaunchesWithPassword() and act.wallet_rpc_child == null) {
             if (act.wallet_rpc_attempted)
                 self.logf("{s}: wallet service didn't start — press i to reinstall (adds the wallet service), then restart the daemon", .{coin.coinName()})
             else
@@ -5337,6 +5442,15 @@ fn friendlyWalletError(name: []const u8, detail: []const u8) []const u8 {
     if (eql(u8, name, "WrongPassword"))
         return "That password didn't match this wallet.";
     if (detail.len > 0) return detail;
+    // Fallbacks (only when the backend gave no specific reason) for the
+    // launch-with-password flow, where a wrong password makes the wallet service
+    // exit without a message rather than returning a daemon error.
+    if (eql(u8, name, "WalletOpenFailed"))
+        return "Couldn't open the wallet — check the password, and that the daemon is running and synced.";
+    if (eql(u8, name, "WalletServiceFailed"))
+        return "The wallet service didn't start. Press i to reinstall it, then try again.";
+    if (eql(u8, name, "WalletCreateFailed"))
+        return "Couldn't create the wallet. Check the daemon is running, then try again.";
     return name;
 }
 
