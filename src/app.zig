@@ -1376,11 +1376,19 @@ const Activity = struct {
                     try self.launchWalletServer(pw);
                     try ew.open(a, self.extWalletAuth(), pw, detail);
                 },
+                .restore_seed => {
+                    // Materialize the wallet from the seed via the coin's CLI
+                    // (Epic's `init -r`), then launch the server against it and
+                    // confirm the password opens it — same shape as restore_file.
+                    try ew.restore_seed(a, self.extWalletAuth(), self.install_root, self.home_dir, pw, self.wallet_seed_buf[0..self.wallet_seed_len], detail);
+                    try self.launchWalletServer(pw);
+                    try ew.open(a, self.extWalletAuth(), pw, detail);
+                },
                 .open => {
                     try self.launchWalletServer(pw);
                     try ew.open(a, self.extWalletAuth(), pw, detail);
                 },
-                .restore_seed, .lock => return error.Unsupported,
+                .lock => return error.Unsupported,
             }
             return;
         }

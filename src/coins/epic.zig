@@ -3,6 +3,8 @@ const builtin = @import("builtin");
 const models = @import("../models.zig");
 const install_mod = @import("../install.zig");
 const rpc = @import("../rpc.zig");
+const conf = @import("../conf.zig");
+const bip39 = @import("../bip39.zig");
 const Coin = @import("../coin.zig").Coin;
 
 /// Epic Cash (EPIC) backend — the node daemon plus a managed `epic-wallet`
@@ -889,15 +891,23 @@ pub const Epic = struct {
     }
 
     /// POST a raw JSON `body` at the wallet's Owner API and return the response body
-    /// (caller frees). Basic-auths with the per-session `.owner_api_secret` carried
-    /// on `auth.rpc_password`; a 401 surfaces as `error.AuthFailed`.
+    /// (caller frees). Basic-auths with the per-session `.owner_api_secret` cached in
+    /// `OwnerSecret` at launch; a 401 surfaces as `error.AuthFailed`.
     fn walletPost(allocator: std.mem.Allocator, io: std.Io, auth: models.CoinAuth, body: []const u8) ![]u8 {
         var client: std.http.Client = .{ .allocator = allocator, .io = io };
         defer client.deinit();
 
         const url = try std.fmt.allocPrint(allocator, "http://{s}:{s}/v3/owner", .{ auth.ip_address, auth.port });
         defer allocator.free(url);
-        const auth_header = try basicAuthHeader(allocator, wallet_api_username, auth.rpc_password);
+
+        // The Owner-API basic-auth secret is the per-session one written to
+        // `.owner_api_secret` when the wallet process was launched and cached in
+        // `OwnerSecret` (a launch-with-password wallet doesn't carry creds on `auth`).
+        // Absent it, the wallet service isn't up yet.
+        var sec_buf: [64]u8 = undefined;
+        defer @memset(&sec_buf, 0);
+        const sec_len = OwnerSecret.get(&sec_buf) orelse return error.WalletServiceNotReady;
+        const auth_header = try basicAuthHeader(allocator, wallet_api_username, sec_buf[0..sec_len]);
         defer allocator.free(auth_header);
 
         var resp: std.Io.Writer.Allocating = .init(allocator);
@@ -1044,6 +1054,51 @@ pub const Epic = struct {
         }
     };
 
+    // --- Owner-API basic-auth secret -------------------------------------
+    //
+    // The wallet process is (re)launched per-open (the launch-with-password model),
+    // and its Owner API authenticates `epic:<secret>` against the `.owner_api_secret`
+    // file it read at startup. BoxWallet draws that secret fresh from the OS CSPRNG on
+    // each launch — so another local process can't drive the wallet RPC, which exposes
+    // the seed — writes it to the file, and caches it here for `walletPost` (the app
+    // doesn't carry it on `auth` for this wallet shape). Set on launch, wiped on
+    // remove. Guarded like `Session` because the launch and the balance poll run on
+    // different threads.
+    const OwnerSecret = struct {
+        var mutex: std.atomic.Mutex = .unlocked;
+        var buf: [64]u8 = undefined;
+        var len: usize = 0;
+
+        fn lock() void {
+            while (!mutex.tryLock()) std.atomic.spinLoopHint();
+        }
+
+        fn set(secret: []const u8) void {
+            lock();
+            defer mutex.unlock();
+            const n = @min(secret.len, buf.len);
+            @memcpy(buf[0..n], secret[0..n]);
+            len = n;
+        }
+
+        /// Copy the cached secret into `out`, returning its length, or null when no
+        /// wallet process has been launched this session.
+        fn get(out: []u8) ?usize {
+            lock();
+            defer mutex.unlock();
+            if (len == 0 or len > out.len) return null;
+            @memcpy(out[0..len], buf[0..len]);
+            return len;
+        }
+
+        fn clear() void {
+            lock();
+            defer mutex.unlock();
+            @memset(&buf, 0);
+            len = 0;
+        }
+    };
+
     // --- Wallet files / paths --------------------------------------------
 
     /// The wallet's data dir (`<top>/wallet_data`), where `wallet.seed` and the
@@ -1157,30 +1212,16 @@ pub const Epic = struct {
         try dir.writeFile(io, .{ .sub_path = wallet_conf_file, .data = patched });
     }
 
-    /// Prepare the wallet's runtime before spawning `epic-wallet owner_api`:
-    ///   1. ensure the top dir exists,
-    ///   2. (over)write `.owner_api_secret` with this session's secret — the Owner
-    ///      API is locked to it, so a fresh random one each spawn keeps another local
-    ///      process from driving the wallet RPC (it exposes the seed),
-    ///   3. ensure `epic-wallet.toml` exists (write a default if not) and heal the
-    ///      managed keys.
-    /// `secret` is the per-session basic-auth secret BoxWallet generated. Not
-    /// best-effort — without the secret + config the Owner API can't be reached.
-    fn prepareWalletRuntime(
-        allocator: std.mem.Allocator,
-        io: std.Io,
-        home: []const u8,
-        secret: []const u8,
-    ) !void {
+    /// Ensure `epic-wallet.toml` exists (write the default if not) and heal the keys
+    /// BoxWallet manages, creating the top dir if needed. Both the CLI bootstrap
+    /// (`init -r` reads `data_file_dir` from it) and the Owner-API launch (the
+    /// listener reads the whole config) need it in place. Idempotent.
+    fn ensureWalletConfig(allocator: std.mem.Allocator, io: std.Io, home: []const u8) !void {
         const top = try dataDir(allocator, home);
         defer allocator.free(top);
 
         var dir = try std.Io.Dir.cwd().createDirPathOpen(io, top, .{});
         defer dir.close(io);
-
-        // The Owner API reads the secret file at startup; write the exact bytes (no
-        // trailing newline) so our basic-auth header matches.
-        try dir.writeFile(io, .{ .sub_path = owner_secret_file, .data = secret });
 
         if (dir.access(io, wallet_conf_file, .{})) |_| {} else |_| {
             const tmpl = try defaultWalletToml(allocator, top);
@@ -1190,38 +1231,133 @@ pub const Epic = struct {
         try patchWalletConf(allocator, io, dir, top);
     }
 
-    /// argv to spawn `epic-wallet owner_api`, after preparing its config + this
-    /// session's `.owner_api_secret` (delivered as `rpc_password`). The Owner API
-    /// binds to 127.0.0.1:3420 from the config; `-t` points it at the shared top
-    /// dir. Caller owns the returned slice and its strings. (`rpc_user` is unused —
-    /// the Owner API's basic-auth username is the fixed `epic`.)
-    fn walletProcessArgv(
+    /// Draw a fresh per-session Owner-API secret from the OS CSPRNG, write it to
+    /// `<top>/.owner_api_secret` (exact bytes, no trailing newline so the basic-auth
+    /// header matches what the listener reads), and cache it for `walletPost`. Run on
+    /// every wallet-process launch so the RPC (which exposes the seed) is locked to
+    /// this BoxWallet run.
+    fn writeOwnerSecret(allocator: std.mem.Allocator, io: std.Io, home: []const u8) !void {
+        const top = try dataDir(allocator, home);
+        defer allocator.free(top);
+
+        var dir = try std.Io.Dir.cwd().createDirPathOpen(io, top, .{});
+        defer dir.close(io);
+
+        var secret_buf: [32]u8 = undefined;
+        defer @memset(&secret_buf, 0);
+        const secret = conf.randomPassword(io, &secret_buf);
+        try dir.writeFile(io, .{ .sub_path = owner_secret_file, .data = secret });
+        OwnerSecret.set(secret);
+    }
+
+    /// argv to (re)launch `epic-wallet owner_api` against the managed wallet, opened
+    /// with `wallet_password`. epic-wallet 4.0.0 only starts the Owner-API listener
+    /// when (a) a wallet already exists on disk — so create/restore materialize one
+    /// via `init -r` first (see `runInitRecover`) — and (b) the wallet password is
+    /// supplied at launch; that's why Epic is a launch-with-password wallet rather
+    /// than an eagerly-spawned one. `--offline_mode` lets it come up before the node
+    /// has finished syncing (it otherwise exits on its startup sync check); `-c <top>`
+    /// pins it to the managed config regardless of BoxWallet's cwd (the `owner_api`
+    /// subcommand ignores `-t`). The password rides argv only — never disk — matching
+    /// the Zano launch-with-password convention. Caller owns the returned slice.
+    fn launchServerArgv(
         allocator: std.mem.Allocator,
         install_root: []const u8,
         home: []const u8,
         port: []const u8,
-        rpc_user: []const u8,
-        rpc_password: []const u8,
+        wallet_password: []const u8,
     ) anyerror![]const []const u8 {
-        _ = port;
-        _ = rpc_user;
+        _ = port; // bound via the config's `owner_api_listen_port`, not a flag.
 
         var threaded: std.Io.Threaded = .init(allocator, .{});
         defer threaded.deinit();
-        try prepareWalletRuntime(allocator, threaded.io(), home, rpc_password);
+        const io = threaded.io();
+
+        try ensureWalletConfig(allocator, io, home);
+        try writeOwnerSecret(allocator, io, home);
 
         const bin = try std.fs.path.join(allocator, &.{ install_root, wallet_file });
         errdefer allocator.free(bin);
         const top = try dataDir(allocator, home);
         errdefer allocator.free(top);
+        const pass = try allocator.dupe(u8, wallet_password);
+        errdefer allocator.free(pass);
 
-        const argv = try allocator.alloc([]const u8, 4);
+        const argv = try allocator.alloc([]const u8, 7);
         errdefer allocator.free(argv);
         argv[0] = bin;
-        argv[1] = try allocator.dupe(u8, "-t");
-        argv[2] = top;
-        argv[3] = try allocator.dupe(u8, "owner_api");
+        argv[1] = try allocator.dupe(u8, "--offline_mode");
+        argv[2] = try allocator.dupe(u8, "-p");
+        argv[3] = pass;
+        argv[4] = try allocator.dupe(u8, "-c");
+        argv[5] = top;
+        argv[6] = try allocator.dupe(u8, "owner_api");
         return argv;
+    }
+
+    /// Materialize the managed wallet on disk from a BIP39 `mnemonic` under
+    /// `password` by running `epic-wallet -t <top> -p <pw> init -r` and feeding the
+    /// phrase on the child's stdin. This is the only headless path that creates a
+    /// wallet: the Owner API can't (its listener won't start until a wallet exists),
+    /// and the new-wallet `init` reads its password straight from the TTY. Shared by
+    /// restore (the user's phrase) and create (a freshly generated one). The config is
+    /// written first (init -r reads `data_file_dir` from it). The password rides argv
+    /// only; the phrase touches just the stdin pipe (the caller wipes its copy).
+    /// `detail` carries a reason on failure.
+    fn runInitRecover(
+        allocator: std.mem.Allocator,
+        install_root: []const u8,
+        home: []const u8,
+        password: []const u8,
+        mnemonic: []const u8,
+        detail: *Coin.WalletErrSink,
+    ) !void {
+        var threaded: std.Io.Threaded = .init(allocator, .{});
+        defer threaded.deinit();
+        const io = threaded.io();
+
+        try ensureWalletConfig(allocator, io, home);
+
+        const bin = try std.fs.path.join(allocator, &.{ install_root, wallet_file });
+        defer allocator.free(bin);
+        const top = try dataDir(allocator, home);
+        defer allocator.free(top);
+
+        const argv = [_][]const u8{ bin, "-t", top, "-p", password, "init", "-r" };
+        var child = std.process.spawn(io, .{
+            .argv = &argv,
+            .stdin = .pipe,
+            .stdout = .ignore,
+            .stderr = .ignore,
+            .create_no_window = builtin.os.tag == .windows,
+        }) catch |err| {
+            detail.set(@errorName(err));
+            return error.WalletRestoreFailed;
+        };
+
+        // Feed the recovery phrase (newline-terminated) on stdin, then close it so the
+        // CLI reads EOF and proceeds. Small payload to a 64 KiB pipe, so no deadlock.
+        if (child.stdin) |stdin| {
+            stdin.writeStreamingAll(io, mnemonic) catch {};
+            stdin.writeStreamingAll(io, "\n") catch {};
+            stdin.close(io);
+            child.stdin = null;
+        }
+
+        const term = child.wait(io) catch |err| {
+            detail.set(@errorName(err));
+            return error.WalletRestoreFailed;
+        };
+        const ok = switch (term) {
+            .exited => |code| code == 0,
+            else => false,
+        };
+        // The CLI exits 0 and writes `wallet_data/wallet.seed` on success; a bad
+        // phrase, a checksum mismatch, or a pre-existing wallet leaves it absent.
+        if (!ok or !walletExists(allocator, home)) {
+            detail.set("epic-wallet could not initialize the wallet from the recovery phrase");
+            return error.WalletRestoreFailed;
+        }
     }
 
     // --- Wallet ops over the encrypted Owner API -------------------------
@@ -1275,10 +1411,38 @@ pub const Epic = struct {
         Session.set(token);
     }
 
-    /// Create a new wallet under `password`, returning its freshly-generated 24-word
-    /// recovery phrase for the user to back up, then opening it so the balance shows.
-    /// `create_wallet` itself returns nothing, so the phrase comes from a follow-up
-    /// `get_mnemonic`.
+    /// Generate a fresh 24-word BIP39 recovery phrase from the OS CSPRNG and
+    /// materialize the wallet from it via `init -r` — the headless create path (the
+    /// Owner API can't bootstrap a wallet and the new-wallet `init` needs a TTY; see
+    /// `runInitRecover`). `epicCreate` then reads the phrase back over the Owner API
+    /// for the user to back up. The generated phrase is wiped here once restored.
+    /// Wired as the wallet's `cli_create`: the app runs this, launches the wallet
+    /// process, then calls `create` to read the seed.
+    fn epicCliCreate(
+        allocator: std.mem.Allocator,
+        install_root: []const u8,
+        home: []const u8,
+        password: []const u8,
+        detail: *Coin.WalletErrSink,
+    ) anyerror!void {
+        var threaded: std.Io.Threaded = .init(allocator, .{});
+        defer threaded.deinit();
+
+        var seed_buf: [bip39.max_mnemonic_len]u8 = undefined;
+        defer @memset(&seed_buf, 0);
+        const mnemonic = bip39.generate(threaded.io(), 24, &seed_buf) catch |err| {
+            detail.set(@errorName(err));
+            return error.WalletCreateFailed;
+        };
+        runInitRecover(allocator, install_root, home, password, mnemonic, detail) catch
+            return error.WalletCreateFailed;
+    }
+
+    /// Read the just-created wallet's 24-word recovery phrase back over the Owner API
+    /// (`get_mnemonic`) so the UI can show it for backup, then open it so the balance
+    /// polls immediately. The wallet was materialized by `epicCliCreate` (BIP39
+    /// generate → `init -r`) before the Owner-API process was launched, so there's no
+    /// `create_wallet` call here — the Owner API can't run without an existing wallet.
     fn epicCreate(
         allocator: std.mem.Allocator,
         auth: models.CoinAuth,
@@ -1294,20 +1458,6 @@ pub const Epic = struct {
             @memset(pw_q, 0);
             allocator.free(pw_q);
         }
-
-        // 24 words ⇒ mnemonic_length 32 (entropy bytes).
-        const create_params = try std.fmt.allocPrint(
-            allocator,
-            "{{\"name\":null,\"mnemonic\":null,\"mnemonic_length\":32,\"password\":\"{s}\"}}",
-            .{pw_q},
-        );
-        defer {
-            @memset(create_params, 0);
-            allocator.free(create_params);
-        }
-        const r1 = try runWalletRpc(allocator, io, auth, "create_wallet", create_params, detail, error.WalletCreateFailed);
-        @memset(r1, 0);
-        allocator.free(r1);
 
         const gm_params = try std.fmt.allocPrint(allocator, "{{\"name\":null,\"password\":\"{s}\"}}", .{pw_q});
         defer {
@@ -1331,55 +1481,26 @@ pub const Epic = struct {
         return seed;
     }
 
-    /// Restore a wallet from a mnemonic `seed` under `password`, then open it. The
-    /// seed is normalized (lowercase + collapse whitespace) before use and the
-    /// working copy wiped, per the restore convention.
+    /// Restore a wallet from a mnemonic `seed` under `password` via `init -r` (the
+    /// app launches the wallet process and opens it next). The seed is normalized
+    /// (lowercase + collapse whitespace) per the restore convention and the working
+    /// copy wiped. `auth` is unused — restore is a CLI bootstrap, not an Owner-API
+    /// call (the Owner API can't run until the wallet it would create exists).
     fn epicRestore(
         allocator: std.mem.Allocator,
-        auth: models.CoinAuth,
+        _: models.CoinAuth,
         install_root: []const u8,
         home: []const u8,
         password: []const u8,
         seed: []const u8,
         detail: *Coin.WalletErrSink,
     ) anyerror!void {
-        _ = install_root;
-        _ = home;
-        var threaded: std.Io.Threaded = .init(allocator, .{});
-        defer threaded.deinit();
-        const io = threaded.io();
-
         const normalized = try models.normalizeSeedWords(allocator, seed);
         defer {
             @memset(normalized, 0);
             allocator.free(normalized);
         }
-        const seed_q = try rpc.jsonQuote(allocator, normalized);
-        defer {
-            @memset(seed_q, 0);
-            allocator.free(seed_q);
-        }
-        const pw_q = try rpc.jsonQuote(allocator, password);
-        defer {
-            @memset(pw_q, 0);
-            allocator.free(pw_q);
-        }
-        const mlen: u8 = if (wordCount(normalized) <= 12) 16 else 32;
-
-        const params = try std.fmt.allocPrint(
-            allocator,
-            "{{\"name\":null,\"mnemonic\":\"{s}\",\"mnemonic_length\":{d},\"password\":\"{s}\"}}",
-            .{ seed_q, mlen, pw_q },
-        );
-        defer {
-            @memset(params, 0);
-            allocator.free(params);
-        }
-        const r = try runWalletRpc(allocator, io, auth, "create_wallet", params, detail, error.WalletRestoreFailed);
-        @memset(r, 0);
-        allocator.free(r);
-
-        try openAndCacheToken(allocator, io, auth, pw_q, detail);
+        try runInitRecover(allocator, install_root, home, password, normalized, detail);
     }
 
     /// Open the existing wallet with `password` (caching its token), so its balance
@@ -1420,6 +1541,7 @@ pub const Epic = struct {
     /// new one can be created/restored in its place, and drop any cached token.
     fn epicRemove(allocator: std.mem.Allocator, home: []const u8) anyerror!void {
         Session.clear();
+        OwnerSecret.clear();
         var threaded: std.Io.Threaded = .init(allocator, .{});
         defer threaded.deinit();
         const dir = try walletDataDir(allocator, home);
@@ -1492,12 +1614,17 @@ pub const Epic = struct {
         return n;
     }
 
-    /// Epic's external (process-backed) wallet capability — the Monero/CryptoNote
-    /// shape (create returns a seed, restore from seed, unlock with a password),
-    /// driven over the encrypted Owner API of a managed `epic-wallet owner_api`.
+    /// Epic's external (process-backed) wallet capability. epic-wallet 4.0.0 only
+    /// starts its Owner-API listener against an existing wallet and with the password
+    /// at launch, so it's a **launch-with-password** wallet (like Zano): the process
+    /// is (re)launched per-open via `launch_server_argv`, and a wallet is first
+    /// materialized on disk by a CLI `init -r` — `cli_create` for create (a generated
+    /// BIP39 phrase) and `restore_seed` for restore (the user's). Open/lock/balance
+    /// then run over the encrypted Owner API.
     pub const external_wallet: Coin.ExternalWallet = .{
         .rpc_port = walletRpcPort,
-        .process_argv = walletProcessArgv,
+        .launch_server_argv = launchServerArgv,
+        .cli_create = epicCliCreate,
         .exists = walletExists,
         .create = epicCreate,
         .restore_seed = epicRestore,
@@ -1921,12 +2048,15 @@ test "coin vtable dispatches to Epic metadata and the external wallet" {
     try std.testing.expect(!c.isProofOfStake());
     try std.testing.expectEqualStrings("3413", c.rpcDefaultPort());
     try std.testing.expectEqual(Coin.LaunchMode.foreground, c.launchMode());
-    // Epic now drives the Monero-style external wallet, backed by a separate
-    // `epic-wallet owner_api` process. (The bitcoin-style in-daemon hooks —
+    // Epic drives a launch-with-password external wallet, backed by a separate
+    // `epic-wallet owner_api` process the app (re)launches per-open with the password
+    // (it won't serve without one). (The bitcoin-style in-daemon hooks —
     // `wallet_security_state`/`wallet_balance` — stay unused: balance flows through
     // the external wallet's own `balance`.)
     try std.testing.expect(c.hasExternalWallet());
     try std.testing.expect(c.hasExternalWalletProcess());
+    try std.testing.expect(c.walletLaunchesWithPassword());
+    try std.testing.expect(c.supportsSeedRestore());
     try std.testing.expect(c.supportsWalletReplace());
     try std.testing.expect(!c.supportsWallet());
     try std.testing.expect(!c.supportsBalance());
@@ -2086,7 +2216,7 @@ test "patchTomlAlloc heals a wallet config's interface/port to localhost" {
     try std.testing.expect(std.mem.indexOf(u8, out, "owner_api_listen_port = 3420") != null);
 }
 
-test "walletProcessArgv prepares the config + per-session secret and builds owner_api argv" {
+test "launchServerArgv prepares the config + per-session secret and builds owner_api argv" {
     if (builtin.os.tag == .windows) return error.SkipZigTest;
     const a = std.testing.allocator;
     var threaded: std.Io.Threaded = .init(a, .{});
@@ -2097,20 +2227,27 @@ test "walletProcessArgv prepares the config + per-session secret and builds owne
     std.Io.Dir.cwd().deleteTree(io, home) catch {};
     defer std.Io.Dir.cwd().deleteTree(io, home) catch {};
 
-    const argv = try Epic.walletProcessArgv(a, "/opt/bw", home, Epic.wallet_rpc_port, "user123", "secretXYZ");
+    const argv = try Epic.launchServerArgv(a, "/opt/bw", home, Epic.wallet_rpc_port, "walletpw9");
     defer {
         for (argv) |s| a.free(s);
         a.free(argv);
     }
-    try std.testing.expectEqual(@as(usize, 4), argv.len);
+    // `epic-wallet --offline_mode -p <pw> -c <top> owner_api`: a wallet that only
+    // serves the password handed to it at launch, brought up before the node syncs,
+    // pinned to the managed config dir.
+    try std.testing.expectEqual(@as(usize, 7), argv.len);
     try std.testing.expect(std.mem.endsWith(u8, argv[0], Epic.wallet_file));
-    try std.testing.expectEqualStrings("-t", argv[1]);
-    try std.testing.expectEqualStrings("owner_api", argv[3]);
+    try std.testing.expectEqualStrings("--offline_mode", argv[1]);
+    try std.testing.expectEqualStrings("-p", argv[2]);
+    try std.testing.expectEqualStrings("walletpw9", argv[3]);
+    try std.testing.expectEqualStrings("-c", argv[4]);
+    try std.testing.expectEqualStrings("owner_api", argv[6]);
 
-    // The per-session secret was written verbatim (no trailing newline) and the
-    // config generated + healed to localhost.
+    // A non-empty per-session secret was written verbatim (no trailing newline), and
+    // the config was generated + healed to localhost.
     const top = try Epic.dataDir(a, home);
     defer a.free(top);
+    try std.testing.expectEqualStrings(top, argv[5]);
     var dir = try std.Io.Dir.cwd().openDir(io, top, .{});
     defer dir.close(io);
 
@@ -2118,7 +2255,8 @@ test "walletProcessArgv prepares the config + per-session secret and builds owne
     defer sf.close(io);
     var sbuf: [64]u8 = undefined;
     const sn = try sf.readPositionalAll(io, &sbuf, 0);
-    try std.testing.expectEqualStrings("secretXYZ", sbuf[0..sn]);
+    try std.testing.expect(sn > 0);
+    try std.testing.expect(std.mem.indexOfScalar(u8, sbuf[0..sn], '\n') == null);
 
     var cf = try dir.openFile(io, Epic.wallet_conf_file, .{});
     defer cf.close(io);
