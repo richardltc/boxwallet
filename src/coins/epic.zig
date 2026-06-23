@@ -166,6 +166,10 @@ pub const Epic = struct {
     // `--rpc-login`, delivered via the file epic-wallet's config points `api_secret`
     // at. Layered under the mandatory ECDH/AES-GCM channel + the open_wallet token.
     const owner_secret_file = ".owner_api_secret";
+    // Temp file the recovery phrase is written to so `init -r` can read it as stdin
+    // (a regular file, not a pipe — see `runInitRecover`). Holds the seed only
+    // momentarily: overwritten + deleted on every path.
+    const recover_phrase_file = ".boxwallet-recover.tmp";
     // The node's own foreign-API secret (it generates this on first run). The wallet
     // authenticates to the node with it — `node_api_secret_path` in the wallet config.
     const node_foreign_secret_file = ".foreign_api_secret";
@@ -931,7 +935,73 @@ pub const Epic = struct {
     /// POST → decrypt. Returns the decrypted inner JSON-RPC *response* bytes (caller
     /// wipes + frees — they may carry a seed/balance). `params` is a complete JSON
     /// object literal; any secret inside it (a password) is wiped here after sealing.
+    // The Owner API keeps a SINGLE shared ECDH key — whatever the most recent
+    // `init_secure_api` established — so two secure calls whose handshakes interleave
+    // clobber each other's key and one then fails to decrypt ("Decryption error" →
+    // SecureChannelFailed). Serialize every secure call (handshake + encrypted request
+    // as one atomic unit) so the wallet open on the setup worker and the balance poll
+    // on the poll worker can't race. Nothing nested takes it, so no deadlock; held
+    // across HTTP I/O, so waiters `io.sleep` between tries rather than hot-spinning.
+    var channel_mutex: std.atomic.Mutex = .unlocked;
+
+    // Diagnostic: the server's raw reply at the step a secure call failed, so the
+    // error the UI shows names *why* (a decryption/clobber envelope, a rejected
+    // pubkey, or an empty body = bad basic auth) instead of a bare
+    // `SecureChannelFailed`. Written only while `channel_mutex` is held, read right
+    // after the call returns its error.
+    var channel_err: [220]u8 = undefined;
+    var channel_err_len: usize = 0;
+
+    fn noteChannelErr(stage: []const u8, raw: []const u8) void {
+        var n: usize = 0;
+        for (stage) |c| {
+            if (n >= channel_err.len) break;
+            channel_err[n] = c;
+            n += 1;
+        }
+        const trimmed = std.mem.trim(u8, raw, " \t\r\n");
+        const body = if (trimmed.len == 0) "<empty body — bad basic auth?>" else trimmed;
+        for (body) |c| {
+            if (n >= channel_err.len) break;
+            channel_err[n] = c;
+            n += 1;
+        }
+        channel_err_len = n;
+    }
+
+    /// Serialized, lightly-retrying wrapper over `secureRpcOnce`. Holds `channel_mutex`
+    /// so no other secure call can swap the server's shared key mid-handshake, and
+    /// retries the transient channel errors a couple of times — a freshly-launched
+    /// `owner_api` can accept the TCP connection a beat before its secure API is ready,
+    /// and any stray clobber is recoverable by re-handshaking. A genuine wallet-level
+    /// failure (wrong password) comes back decrypted as an `Err`, not these errors, so
+    /// it isn't retried.
     fn secureRpc(
+        allocator: std.mem.Allocator,
+        io: std.Io,
+        auth: models.CoinAuth,
+        inner_method: []const u8,
+        params: []const u8,
+    ) ![]u8 {
+        while (!channel_mutex.tryLock()) io.sleep(.fromMilliseconds(5), .awake) catch {};
+        defer channel_mutex.unlock();
+        channel_err_len = 0;
+
+        var attempt: usize = 0;
+        while (true) : (attempt += 1) {
+            return secureRpcOnce(allocator, io, auth, inner_method, params) catch |err| {
+                if (attempt < 2 and (err == error.SecureChannelFailed or err == error.SecureChannelAuth)) {
+                    io.sleep(.fromMilliseconds(200), .awake) catch {};
+                    continue;
+                }
+                return err;
+            };
+        }
+    }
+
+    /// One handshake + encrypted request/response. Run under `channel_mutex` via
+    /// `secureRpc`; never call directly.
+    fn secureRpcOnce(
         allocator: std.mem.Allocator,
         io: std.Io,
         auth: models.CoinAuth,
@@ -952,7 +1022,10 @@ pub const Epic = struct {
         const init_raw = try walletPost(allocator, io, auth, init_body);
         defer allocator.free(init_raw);
 
-        const server_hex = try parseOkString(allocator, init_raw);
+        const server_hex = parseOkString(allocator, init_raw) catch |err| {
+            noteChannelErr("init_secure_api", init_raw);
+            return err;
+        };
         defer allocator.free(server_hex);
         var key = try deriveKey(secret, server_hex);
         defer @memset(&key, 0);
@@ -974,7 +1047,10 @@ pub const Epic = struct {
         defer allocator.free(resp_raw);
 
         // 3. Decrypt the reply.
-        return openResponse(allocator, key, resp_raw);
+        return openResponse(allocator, key, resp_raw) catch |err| {
+            noteChannelErr("encrypted_request", resp_raw);
+            return err;
+        };
     }
 
     /// Parse `{"result":{"Ok":"<string>"}}` (the init handshake + token/seed replies),
@@ -1301,9 +1377,16 @@ pub const Epic = struct {
     /// wallet: the Owner API can't (its listener won't start until a wallet exists),
     /// and the new-wallet `init` reads its password straight from the TTY. Shared by
     /// restore (the user's phrase) and create (a freshly generated one). The config is
-    /// written first (init -r reads `data_file_dir` from it). The password rides argv
-    /// only; the phrase touches just the stdin pipe (the caller wipes its copy).
-    /// `detail` carries a reason on failure.
+    /// written first (init -r reads `data_file_dir` from it). `detail` carries a
+    /// reason on failure.
+    ///
+    /// The phrase is delivered via a **temp file** handed to the child as stdin, not a
+    /// pipe: a pipe write races the app's concurrent TUI event loop and can leave the
+    /// child reading EOF with no phrase (epic-wallet then logs "User Cancelled"),
+    /// whereas a regular-file stdin is read deterministically by the child regardless
+    /// of what the parent's io is doing. The phrase is a secret on disk, so the temp
+    /// file is overwritten and deleted on every path (the documented temp-secret
+    /// pattern); the password still rides argv only (never disk).
     fn runInitRecover(
         allocator: std.mem.Allocator,
         install_root: []const u8,
@@ -1316,39 +1399,61 @@ pub const Epic = struct {
         defer threaded.deinit();
         const io = threaded.io();
 
-        try ensureWalletConfig(allocator, io, home);
-
         const bin = try std.fs.path.join(allocator, &.{ install_root, wallet_file });
         defer allocator.free(bin);
         const top = try dataDir(allocator, home);
         defer allocator.free(top);
 
+        var dir = try std.Io.Dir.cwd().createDirPathOpen(io, top, .{});
+        defer dir.close(io);
+
+        // epic-wallet's `init -r` writes the wallet config itself, and at the default
+        // ~/.epic location it refuses to run when `epic-wallet.toml` already exists
+        // ("... already exists in the target directory. Please remove it first"). So
+        // remove any managed config first; init -r recreates a complete default one
+        // (localhost Owner API on 3420 already), which `launchServerArgv`'s
+        // `ensureWalletConfig` then heals for our secret/paths before the wallet
+        // process is launched. (Don't pre-write it here — that's what tripped the
+        // guard.)
+        dir.deleteFile(io, wallet_conf_file) catch {};
+
+        // Write the (newline-terminated) phrase to the temp file the child will read
+        // as stdin, then wipe + delete it on every exit path — it holds the seed.
+        {
+            var f = try dir.createFile(io, recover_phrase_file, .{ .truncate = true });
+            f.writeStreamingAll(io, mnemonic) catch {};
+            f.writeStreamingAll(io, "\n") catch {};
+            f.close(io);
+        }
+        defer {
+            if (dir.createFile(io, recover_phrase_file, .{ .truncate = true })) |zf| {
+                var zeros: [320]u8 = [_]u8{0} ** 320;
+                zf.writeStreamingAll(io, zeros[0..@min(zeros.len, mnemonic.len + 1)]) catch {};
+                zf.close(io);
+            } else |_| {}
+            dir.deleteFile(io, recover_phrase_file) catch {};
+        }
+
+        const stdin_file = try dir.openFile(io, recover_phrase_file, .{});
+
         const argv = [_][]const u8{ bin, "-t", top, "-p", password, "init", "-r" };
         var child = std.process.spawn(io, .{
             .argv = &argv,
-            .stdin = .pipe,
+            .stdin = .{ .file = stdin_file },
             .stdout = .ignore,
             .stderr = .pipe,
             .create_no_window = builtin.os.tag == .windows,
         }) catch |err| {
+            stdin_file.close(io);
             detail.set(@errorName(err));
             return error.WalletRestoreFailed;
         };
+        stdin_file.close(io); // the child holds its own dup of the fd
 
-        // Feed the recovery phrase (newline-terminated) on stdin, then close it so the
-        // CLI reads EOF and proceeds. Small payload to a 64 KiB pipe, so no deadlock.
-        if (child.stdin) |stdin| {
-            stdin.writeStreamingAll(io, mnemonic) catch {};
-            stdin.writeStreamingAll(io, "\n") catch {};
-            stdin.close(io);
-            child.stdin = null;
-        }
-
-        // Drain stderr — epic-wallet reports the real reason there (e.g. "Recovery
-        // word phrase is invalid.") — so a failed restore is surfaced honestly rather
-        // than as a generic message. Bounded read (the message is one short line);
-        // reading to EOF also waits out the child's work before `wait`. stdout carries
-        // only the (now-discarded) interactive prompt, so it stays `.ignore`d.
+        // Drain stderr — epic-wallet reports a bad phrase there ("Recovery word phrase
+        // is invalid.") — so a failed restore is surfaced honestly rather than as a
+        // generic message. Bounded read (one short line); reading to EOF also waits out
+        // the child's work before `wait`. stdout carries only the (discarded) prompt.
         var errbuf: [512]u8 = undefined;
         var errlen: usize = 0;
         if (child.stderr) |stderr| {
@@ -1392,7 +1497,12 @@ pub const Epic = struct {
         detail: *Coin.WalletErrSink,
         fail: anyerror,
     ) ![]u8 {
-        const r = try secureRpc(allocator, io, auth, method, params);
+        const r = secureRpc(allocator, io, auth, method, params) catch |err| {
+            // Surface the server's raw reply at the failing step so the UI shows why
+            // the secure channel broke rather than a bare error name.
+            if (channel_err_len > 0) detail.set(channel_err[0..channel_err_len]);
+            return err;
+        };
         if (!innerSucceeded(r)) {
             setErrDetail(detail, r);
             @memset(r, 0);
@@ -1411,7 +1521,11 @@ pub const Epic = struct {
         pw_q: []const u8,
         detail: *Coin.WalletErrSink,
     ) !void {
-        const params = try std.fmt.allocPrint(allocator, "{{\"name\":null,\"password\":\"{s}\"}}", .{pw_q});
+        // `pw_q` is a complete JSON string token — `jsonQuote` already includes the
+        // surrounding quotes — so embed it bare (`:{s}`), not wrapped in more quotes,
+        // or the inner JSON is malformed (`""pw""`) and the daemon rejects the
+        // decrypted body as invalid JSON.
+        const params = try std.fmt.allocPrint(allocator, "{{\"name\":null,\"password\":{s}}}", .{pw_q});
         defer {
             @memset(params, 0);
             allocator.free(params);
@@ -1477,7 +1591,8 @@ pub const Epic = struct {
             allocator.free(pw_q);
         }
 
-        const gm_params = try std.fmt.allocPrint(allocator, "{{\"name\":null,\"password\":\"{s}\"}}", .{pw_q});
+        // `pw_q` already carries its surrounding quotes (see `openAndCacheToken`).
+        const gm_params = try std.fmt.allocPrint(allocator, "{{\"name\":null,\"password\":{s}}}", .{pw_q});
         defer {
             @memset(gm_params, 0);
             allocator.free(gm_params);
