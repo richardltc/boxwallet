@@ -4418,11 +4418,16 @@ pub const App = struct {
 
         // Sync line: red cross when idle, spinner while syncing, green tick once
         // synced. The label itself reads "Synced" only when fully synced, and is
-        // grey only in the idle (red ✘) state.
-        const sync_text = if (act.sync == .synced) "Synced" else "Syncing";
-        const sync_label = statusLabel(a, brand, sync_text, awaiting or act.sync != .idle);
+        // grey only in the idle (red ✘) state. When the daemon is not running
+        // (stopping or stopped) treat it the same as idle — stale poll values
+        // must not leak a green ✓ while the daemon is on its way down.
+        const daemon_up = act.daemonState() == .running;
+        const sync_text = if (daemon_up and act.sync == .synced) "Synced" else "Syncing";
+        const sync_label = statusLabel(a, brand, sync_text, awaiting or (daemon_up and act.sync != .idle));
         const sync_mark: []const u8 = if (awaiting)
             act.daemon_spinner.view(a) catch "…"
+        else if (!daemon_up)
+            statusMark(a, false)
         else switch (act.sync) {
             .synced => statusMark(a, true),
             .idle => statusMark(a, false),
@@ -4431,10 +4436,14 @@ pub const App = struct {
 
         // Staking only applies to proof-of-stake coins; PoW coins omit it
         // entirely (empty string folds out of the status line). Grey unless
-        // animating (awaiting) or staking (green tick).
+        // animating (awaiting) or staking (green tick). Same daemon-up guard as
+        // sync: stale `staking = true` must not show while the daemon is stopping.
         const staking_part: []const u8 = if (coin.isProofOfStake()) blk: {
-            const staking_label = statusLabel(a, brand, "Staking", awaiting or act.staking);
-            const staking_mark = if (awaiting) act.daemon_spinner.view(a) catch "…" else statusMark(a, act.staking);
+            const staking_label = statusLabel(a, brand, "Staking", awaiting or (daemon_up and act.staking));
+            const staking_mark = if (awaiting)
+                act.daemon_spinner.view(a) catch "…"
+            else
+                statusMark(a, daemon_up and act.staking);
             break :blk std.fmt.allocPrint(a, "    {s}: {s}", .{ staking_label, staking_mark }) catch "";
         } else "";
 
@@ -4445,7 +4454,6 @@ pub const App = struct {
         //     so the line reflects the external wallet's setup state — "No wallet"
         //     (with a set-up hint), "Locked" (with an unlock hint), or "Unlocked".
         const ext = coin.hasExternalWallet();
-        const daemon_up = act.daemonState() == .running;
         const ext_open = ext and act.ext_wallet_open.load(.monotonic) != 0;
 
         const wallet_label = statusLabel(a, brand, "Wallet", if (ext) daemon_up else act.wallet != .unknown);
