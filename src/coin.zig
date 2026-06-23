@@ -161,8 +161,44 @@ pub const Coin = struct {
         /// UI's prompt and live word counter (the daemon does the real validation).
         /// The first entry is the canonical length named in the prompt. Monero/
         /// CryptoNote coins use the default `{25}`; Ergo's BIP39 mnemonics accept
-        /// `{15, 12, 24}` (15 canonical, what its node generates).
+        /// `{15, 12, 24}` (15 canonical, what its node generates); Zano uses
+        /// `{26, 25, 24}` (26 canonical).
         seed_word_counts: []const usize = &.{25},
+        /// Optional: for a wallet whose RPC process can only serve a **single**
+        /// wallet file passed at launch with its password (Zano's `simplewallet` —
+        /// its RPC exposes no create/open/restore, only balance/seed for the wallet
+        /// it was started on). When set, BoxWallet does **not** spawn the wallet
+        /// process eagerly and password-less (the Monero `--wallet-dir` model);
+        /// instead it (re)launches it per-open with the wallet file + password via
+        /// this argv, so `process_argv` is left null. The process binds
+        /// localhost:`port`; the wallet RPC is keyless on localhost (Zano
+        /// `simplewallet` has no `--rpc-login`), the same localhost-only protection
+        /// the daemon's own RPC relies on. `walletLaunchesWithPassword` keys off this.
+        launch_server_argv: ?*const fn (
+            allocator: std.mem.Allocator,
+            install_root: []const u8,
+            home_dir: []const u8,
+            port: []const u8,
+            wallet_password: []const u8,
+        ) anyerror![]const []const u8 = null,
+        /// Optional: one-shot CLI that materializes the managed wallet file under
+        /// `password` *before* the RPC server is launched (Zano
+        /// `simplewallet --generate-new-wallet`). Paired with `launch_server_argv`:
+        /// the app runs this, then launches the server and calls `create` to read
+        /// back the freshly-generated seed over RPC. Null for coins that create over
+        /// RPC. The password touches the process argv only (no shell), never disk.
+        cli_create: ?*const fn (
+            allocator: std.mem.Allocator,
+            install_root: []const u8,
+            home_dir: []const u8,
+            password: []const u8,
+            detail: *WalletErrSink,
+        ) anyerror!void = null,
+        /// Whether the setup menu offers "Restore from seed words". True for coins
+        /// whose wallet BoxWallet can restore from a mnemonic; false where it isn't
+        /// wired yet (Zano's restore-from-seed is interactive-only upstream, deferred
+        /// for now). `supportsSeedRestore` keys off this.
+        supports_seed_restore: bool = true,
     };
 
     /// An optional **sync accelerator** — a large, opt-in helper file that makes a
@@ -735,11 +771,29 @@ pub const Coin = struct {
     }
 
     /// Whether the external wallet is backed by a *separate process* BoxWallet must
-    /// spawn (Monero-style), as opposed to living in the daemon (Ergo). True iff the
-    /// capability wires `process_argv`.
+    /// spawn, as opposed to living in the daemon (Ergo). True for both the Monero
+    /// model (`process_argv`, spawned once eagerly) and the Zano model
+    /// (`launch_server_argv`, (re)launched per-open with the password).
     pub fn hasExternalWalletProcess(self: Coin) bool {
         const ew = self.vtable.external_wallet orelse return false;
-        return ew.process_argv != null;
+        return ew.process_argv != null or ew.launch_server_argv != null;
+    }
+
+    /// Whether the wallet process must be (re)launched per-open bound to a specific
+    /// wallet file and password (Zano's `simplewallet`), rather than spawned once
+    /// password-less (Nerva). True iff the capability wires `launch_server_argv`.
+    /// The app skips the eager spawn for these and launches on create/open instead.
+    pub fn walletLaunchesWithPassword(self: Coin) bool {
+        const ew = self.vtable.external_wallet orelse return false;
+        return ew.launch_server_argv != null;
+    }
+
+    /// Whether the external-wallet setup menu offers restore-from-seed (false where
+    /// the coin hasn't wired it — Zano). Falls back to false for coins with no
+    /// external wallet.
+    pub fn supportsSeedRestore(self: Coin) bool {
+        const ew = self.vtable.external_wallet orelse return false;
+        return ew.supports_seed_restore;
     }
 
     /// Whether the coin can remove its existing wallet so a different one can be
