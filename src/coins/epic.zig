@@ -1328,7 +1328,7 @@ pub const Epic = struct {
             .argv = &argv,
             .stdin = .pipe,
             .stdout = .ignore,
-            .stderr = .ignore,
+            .stderr = .pipe,
             .create_no_window = builtin.os.tag == .windows,
         }) catch |err| {
             detail.set(@errorName(err));
@@ -1344,6 +1344,23 @@ pub const Epic = struct {
             child.stdin = null;
         }
 
+        // Drain stderr — epic-wallet reports the real reason there (e.g. "Recovery
+        // word phrase is invalid.") — so a failed restore is surfaced honestly rather
+        // than as a generic message. Bounded read (the message is one short line);
+        // reading to EOF also waits out the child's work before `wait`. stdout carries
+        // only the (now-discarded) interactive prompt, so it stays `.ignore`d.
+        var errbuf: [512]u8 = undefined;
+        var errlen: usize = 0;
+        if (child.stderr) |stderr| {
+            while (errlen < errbuf.len) {
+                const got = stderr.readStreaming(io, &.{errbuf[errlen..]}) catch break;
+                if (got == 0) break;
+                errlen += got;
+            }
+            stderr.close(io);
+            child.stderr = null;
+        }
+
         const term = child.wait(io) catch |err| {
             detail.set(@errorName(err));
             return error.WalletRestoreFailed;
@@ -1355,7 +1372,8 @@ pub const Epic = struct {
         // The CLI exits 0 and writes `wallet_data/wallet.seed` on success; a bad
         // phrase, a checksum mismatch, or a pre-existing wallet leaves it absent.
         if (!ok or !walletExists(allocator, home)) {
-            detail.set("epic-wallet could not initialize the wallet from the recovery phrase");
+            const why = std.mem.trim(u8, errbuf[0..errlen], " \t\r\n");
+            detail.set(if (why.len > 0) why else "epic-wallet could not initialize the wallet from the recovery phrase");
             return error.WalletRestoreFailed;
         }
     }
