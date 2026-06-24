@@ -315,6 +315,19 @@ pub const Ergo = struct {
     /// nanoErg per ERG — Ergo's REST API reports balances in the base unit.
     const nano_per_erg: f64 = 1_000_000_000;
 
+    /// Read `GET /wallet/status` (localhost, behind the api_key) into its
+    /// init/unlock flags. The shared probe behind `walletExists`, the balance
+    /// gate, and the idempotent unlock paths — Ergo's REST API has no other way to
+    /// learn whether the wallet is initialized/unlocked. Caller gets a value copy;
+    /// nothing to free.
+    fn walletStatus(allocator: std.mem.Allocator) !ErgoWalletStatus {
+        const raw = try restRequest(allocator, .GET, "/wallet/status", api_key);
+        defer allocator.free(raw);
+        var parsed = try std.json.parseFromSlice(ErgoWalletStatus, allocator, raw, .{ .ignore_unknown_fields = true });
+        defer parsed.deinit();
+        return parsed.value;
+    }
+
     /// Fetch + parse one `/wallet/balances*` endpoint, returning its nanoErg total.
     fn fetchErgBalance(allocator: std.mem.Allocator, path: []const u8) !i64 {
         const raw = try restRequest(allocator, .GET, path, api_key);
@@ -338,11 +351,8 @@ pub const Ergo = struct {
         // A locked or uninitialized wallet can't report a balance; the endpoints
         // would 400. Gate on the status so we never surface a phantom 0.
         {
-            const raw = try restRequest(allocator, .GET, "/wallet/status", api_key);
-            defer allocator.free(raw);
-            var st = try std.json.parseFromSlice(ErgoWalletStatus, allocator, raw, .{ .ignore_unknown_fields = true });
-            defer st.deinit();
-            if (!st.value.isInitialized or !st.value.isUnlocked) return error.WalletUnavailable;
+            const st = try walletStatus(allocator);
+            if (!st.isInitialized or !st.isUnlocked) return error.WalletUnavailable;
         }
 
         const confirmed = try fetchErgBalance(allocator, "/wallet/balances");
@@ -447,12 +457,20 @@ pub const Ergo = struct {
         defer allocator.free(resp.body);
         if (resp.status != .ok) return failWallet(allocator, detail, resp.body, error.WalletRestoreFailed);
 
-        // Restore initializes but may leave the wallet locked — unlock so polling
-        // can read the (rescanning) balance straight away.
+        // Restore initializes and normally leaves the wallet unlocked, so unlocking
+        // again would draw a 400 "Wallet already unlocked". `walletOpen` is gated on
+        // the status, so it's a no-op when the node already has it open and only
+        // unlocks if restore left it locked — polling reads the (rescanning) balance
+        // straight away either way.
         try walletOpen(allocator, auth, password, detail);
     }
 
-    /// Unlock the wallet with `password` via `POST /wallet/unlock`. `auth` unused.
+    /// Unlock the wallet with `password` via `POST /wallet/unlock`. Idempotent: if
+    /// the node already reports the wallet unlocked, returns success without calling
+    /// unlock (which would 400 with "Wallet already unlocked") — so restore's
+    /// follow-up unlock and a stray explicit Unlock both settle cleanly. A wrong
+    /// password still fails with a distinct error, so this doesn't mask a bad
+    /// password. `auth` unused.
     pub fn walletOpen(
         allocator: std.mem.Allocator,
         auth: models.CoinAuth,
@@ -460,6 +478,12 @@ pub const Ergo = struct {
         detail: *Coin.WalletErrSink,
     ) anyerror!void {
         _ = auth;
+        // Already unlocked → nothing to do. A failed status read falls through to the
+        // unlock attempt (which surfaces the real error).
+        if (walletStatus(allocator)) |st| {
+            if (st.isUnlocked) return;
+        } else |_| {}
+
         const qpw = try rpc.jsonQuote(allocator, password);
         defer wipeFree(allocator, qpw);
         const body = try std.fmt.allocPrint(allocator, "{{\"pass\":{s}}}", .{qpw});
@@ -1169,5 +1193,30 @@ test "a locked or uninitialized wallet reports as unavailable" {
         defer st.deinit();
         const usable = st.value.isInitialized and st.value.isUnlocked;
         try std.testing.expectEqual(c[1], usable);
+    }
+}
+
+test "the idempotent-unlock gate skips unlocking an already-unlocked wallet" {
+    // `walletOpen`/`walletRestoreSeed` short-circuit when the node reports the
+    // wallet unlocked, avoiding the spurious 400 "Wallet already unlocked" that
+    // made a successful restore look like a failure. The gate is just this flag
+    // (the live unlock call can't run offline), so assert the predicate directly.
+    const allocator = std.testing.allocator;
+    const cases = .{
+        // Already unlocked → skip the unlock call (success, no-op).
+        .{ "{\"isInitialized\":true,\"isUnlocked\":true}", true },
+        // Initialized but locked → proceed to unlock.
+        .{ "{\"isInitialized\":true,\"isUnlocked\":false}", false },
+    };
+    inline for (cases) |c| {
+        var st = try std.json.parseFromSlice(
+            Ergo.ErgoWalletStatus,
+            allocator,
+            c[0],
+            .{ .ignore_unknown_fields = true },
+        );
+        defer st.deinit();
+        // `walletOpen` returns early iff `isUnlocked`.
+        try std.testing.expectEqual(c[1], st.value.isUnlocked);
     }
 }
