@@ -1519,8 +1519,12 @@ pub const Epic = struct {
     /// scan (`scan` blocks until done), so it runs **synchronously** here, and
     /// **before** the owner_api is launched so nothing else holds the wallet's
     /// database. The scan must reach the node (no `--offline_mode`); a node that's
-    /// unreachable/unsynced is surfaced honestly via `detail` (drained from stderr,
-    /// matching `runInitRecover`). The password rides argv only.
+    /// unreachable/unsynced is surfaced honestly via `detail`.
+    ///
+    /// epic-wallet's log4rs writes to **stdout** (not stderr), and the failing
+    /// `ERROR …` line trails a multi-line INFO banner, so we pipe stdout and keep its
+    /// **tail** (a bounded ring), then lift the last `ERROR` line out of it (see
+    /// `scanErrLine`). The password rides argv only.
     fn runScan(
         allocator: std.mem.Allocator,
         io: std.Io,
@@ -1538,27 +1542,32 @@ pub const Epic = struct {
         var child = std.process.spawn(io, .{
             .argv = argv,
             .stdin = .ignore,
-            .stdout = .ignore,
-            .stderr = .pipe,
+            .stdout = .pipe,
+            .stderr = .ignore,
             .create_no_window = builtin.os.tag == .windows,
         }) catch |err| {
             detail.set(@errorName(err));
             return error.WalletRescanFailed;
         };
 
-        // Drain stderr (bounded) — a bad/unreachable node is reported there — so a
-        // failed scan surfaces the real reason rather than a generic message. Reading
-        // to EOF also waits out the scan before `wait`.
-        var errbuf: [512]u8 = undefined;
-        var errlen: usize = 0;
-        if (child.stderr) |stderr| {
-            while (errlen < errbuf.len) {
-                const got = stderr.readStreaming(io, &.{errbuf[errlen..]}) catch break;
+        // Drain stdout keeping only the tail: when the buffer fills, drop the older
+        // half and keep reading, so the trailing `ERROR` line survives the INFO
+        // banner ahead of it. Reading to EOF also waits out the scan before `wait`.
+        var buf: [1024]u8 = undefined;
+        var len: usize = 0;
+        if (child.stdout) |stdout| {
+            while (true) {
+                if (len == buf.len) {
+                    const keep = buf.len / 2;
+                    std.mem.copyForwards(u8, buf[0..keep], buf[buf.len - keep ..]);
+                    len = keep;
+                }
+                const got = stdout.readStreaming(io, &.{buf[len..]}) catch break;
                 if (got == 0) break;
-                errlen += got;
+                len += got;
             }
-            stderr.close(io);
-            child.stderr = null;
+            stdout.close(io);
+            child.stdout = null;
         }
 
         const term = child.wait(io) catch |err| {
@@ -1570,10 +1579,29 @@ pub const Epic = struct {
             else => false,
         };
         if (!ok) {
-            const why = std.mem.trim(u8, errbuf[0..errlen], " \t\r\n");
-            detail.set(if (why.len > 0) why else "epic-wallet could not scan the chain to recover the restored wallet's funds");
+            const why = scanErrLine(buf[0..len]);
+            detail.set(if (why.len > 0) why else "epic-wallet could not scan the chain — make sure the Epic daemon is running and synced, then restore again");
             return error.WalletRescanFailed;
         }
+    }
+
+    /// Pull the actionable reason out of captured `epic-wallet scan` output: the last
+    /// `ERROR …` line (e.g. "Failed to check node sync status: … error sending
+    /// request" when the node is down), with the `<timestamp> ERROR ` prefix stripped
+    /// so the user sees just the message. Returns "" when there's no ERROR line (the
+    /// caller then uses a generic fallback). Pure — unit-testable without a wallet.
+    fn scanErrLine(out: []const u8) []const u8 {
+        var best: []const u8 = "";
+        var it = std.mem.splitScalar(u8, out, '\n');
+        while (it.next()) |line| {
+            const t = std.mem.trim(u8, line, " \t\r");
+            if (std.mem.indexOf(u8, t, "ERROR") != null) best = t;
+        }
+        if (best.len == 0) return "";
+        // Drop everything up to and including the "ERROR " marker → keep the message.
+        if (std.mem.indexOf(u8, best, "ERROR ")) |i|
+            return std.mem.trim(u8, best[i + "ERROR ".len ..], " \t\r");
+        return best;
     }
 
     // --- Wallet ops over the encrypted Owner API -------------------------
@@ -1728,16 +1756,29 @@ pub const Epic = struct {
         }
         try runInitRecover(allocator, install_root, home, password, normalized, detail);
 
-        // `init -r` writes only the seed — the wallet has no output set yet, so its
-        // balance reads zero until the chain is scanned to restore the seed's
-        // existing outputs. Heal the config first (so the scan can authenticate to
-        // the node), then run a synchronous repair scan while nothing else holds the
-        // wallet open (the owner_api hasn't launched yet). See `runScan`.
+        // `init -r` writes only the seed; the wallet has no output set yet. The app
+        // launches the owner_api and opens the wallet next, and the balance poll's
+        // `retrieve_summary_info` (refresh_from_node) recovers the seed's outputs as
+        // the node serves them — so the balance fills in once the node is fully
+        // synced. We additionally run an explicit `scan` here to *front-load* that
+        // recovery while nothing else holds the wallet open (before the owner_api
+        // launches), so a synced node shows the balance immediately on restore.
+        //
+        // This scan is **best-effort**: it hard-refuses on a node that isn't fully
+        // synced ("Node is currently syncing…"), which is the common state right
+        // after install. A restore must not fail for that — `init -r` genuinely
+        // restored the wallet, and the refresh path above recovers the funds once the
+        // node catches up. So swallow any scan error; the user sees the node's sync
+        // progress in the daemon panel. See `runScan`.
         var threaded: std.Io.Threaded = .init(allocator, .{});
         defer threaded.deinit();
         const io = threaded.io();
-        try ensureWalletConfig(allocator, io, home);
-        try runScan(allocator, io, install_root, home, password, detail);
+        ensureWalletConfig(allocator, io, home) catch {};
+        runScan(allocator, io, install_root, home, password, detail) catch {
+            // Non-fatal — clear any reason the scan left in the sink so it can't be
+            // mistaken for a restore failure by the caller.
+            detail.set("");
+        };
     }
 
     /// Open the existing wallet with `password` (caching its token), so its balance
@@ -2522,4 +2563,19 @@ test "scanArgv builds `epic-wallet -t <top> -p <pw> scan` for the recovery scan"
     try std.testing.expectEqualStrings("-p", argv[3]);
     try std.testing.expectEqualStrings("walletpw9", argv[4]);
     try std.testing.expectEqualStrings("scan", argv[5]);
+}
+
+test "scanErrLine lifts the last ERROR line (sans timestamp) from scan output" {
+    // epic-wallet logs to stdout; the failing ERROR trails an INFO banner.
+    const out =
+        "2026-06-24 15:55:28.049 INFO log4rs is initialized\n" ++
+        "2026-06-24 15:55:28.049 INFO Connecting to the node: http://127.0.0.1:3413 ...\n" ++
+        "2026-06-24 15:55:28.050 ERROR Failed to check node sync status: error sending request\n" ++
+        "2026-06-24 15:55:28.050 WARN Set --offline_mode to proceed without a synced node\n";
+    try std.testing.expectEqualStrings(
+        "Failed to check node sync status: error sending request",
+        Epic.scanErrLine(out),
+    );
+    // No ERROR line → empty, so the caller falls back to a generic message.
+    try std.testing.expectEqualStrings("", Epic.scanErrLine("INFO all good\nWARN minor\n"));
 }
