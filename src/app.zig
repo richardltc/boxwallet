@@ -4019,11 +4019,18 @@ pub const App = struct {
         self.modal = m;
     }
 
-    /// Begin a confirmed "Replace wallet": stop the daemon, then (once it's down)
-    /// delete the old wallet and restart, so the node forgets its cached secret and
-    /// the normal create/restore menu becomes available again. Modelled on the
-    /// one-click-update stop→act→restart sequence (`beginUpdate`). Called only after
-    /// the user typed the confirmation word.
+    /// Begin a confirmed "Replace wallet", clearing the old wallet so the normal
+    /// create/restore menu becomes available again. Called only after the user typed
+    /// the confirmation word.
+    ///
+    /// Two shapes, depending on where the wallet lives:
+    ///   * **External wallet process** (Epic/Zano/Nerva — `hasExternalWalletProcess`):
+    ///     the *node* doesn't hold the wallet, so the daemon is left running. Bouncing
+    ///     it here would needlessly reset the node's sync and drop its peers (the bug
+    ///     this avoids). We just kill the wallet process and delete its artifacts.
+    ///   * **In-daemon wallet** (Ergo): the node *does* hold the wallet (and caches its
+    ///     secret), so we stop the daemon, delete the wallet once it's down, then
+    ///     restart — the stop→act→restart sequence driven from the tick reap loop.
     fn beginWalletReplace(self: *App) void {
         const m = self.modal orelse return;
         const act = &self.activities[m.coin_idx];
@@ -4032,6 +4039,22 @@ pub const App = struct {
         act.coin = coin;
         act.home_dir = self.home_dir;
         act.install_root = self.install_root;
+
+        if (coin.hasExternalWalletProcess()) {
+            // Tear down the separate wallet process (frees the wallet files), then
+            // delete the wallet — leaving the daemon (and its sync) untouched.
+            self.killWalletRpc(act);
+            if (coin.externalWallet()) |ew| if (ew.remove) |remove| {
+                if (remove(self.allocator, self.home_dir)) {
+                    self.logf("{s}: previous wallet removed", .{coin.coinName()});
+                } else |err| {
+                    self.logf("{s}: couldn't remove wallet ({s})", .{ coin.coinName(), @errorName(err) });
+                }
+            };
+            act.ext_wallet_exists = false;
+            return;
+        }
+
         act.wallet_replace_await_stop = true;
         self.logf("{s}: replacing wallet — stopping daemon…", .{coin.coinName()});
         self.tryStop();
