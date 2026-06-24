@@ -1483,6 +1483,99 @@ pub const Epic = struct {
         }
     }
 
+    /// argv for a full repair scan: `epic-wallet -t <top> -p <pw> scan`. Pulled out
+    /// (like `launchServerArgv`/`daemonArgv`) so the command shape is unit-testable
+    /// without a wallet. The password rides argv only — never disk — matching the
+    /// launch-with-password convention. Caller owns the returned slice + strings.
+    fn scanArgv(
+        allocator: std.mem.Allocator,
+        install_root: []const u8,
+        home: []const u8,
+        password: []const u8,
+    ) ![]const []const u8 {
+        const bin = try std.fs.path.join(allocator, &.{ install_root, wallet_file });
+        errdefer allocator.free(bin);
+        const top = try dataDir(allocator, home);
+        errdefer allocator.free(top);
+        const pass = try allocator.dupe(u8, password);
+        errdefer allocator.free(pass);
+
+        const argv = try allocator.alloc([]const u8, 6);
+        errdefer allocator.free(argv);
+        argv[0] = bin;
+        argv[1] = try allocator.dupe(u8, "-t");
+        argv[2] = top;
+        argv[3] = try allocator.dupe(u8, "-p");
+        argv[4] = pass;
+        argv[5] = try allocator.dupe(u8, "scan");
+        return argv;
+    }
+
+    /// Rebuild a freshly-restored wallet's output set from the live node by running
+    /// `epic-wallet … scan` (the documented recovery step). A wallet materialized by
+    /// `init -r` holds only its seed — no outputs — so its balance reads zero until
+    /// the chain is scanned and the seed's existing outputs are restored. This is
+    /// Epic's analogue of Ergo's rescan-on-restore; but Epic has no async/background
+    /// scan (`scan` blocks until done), so it runs **synchronously** here, and
+    /// **before** the owner_api is launched so nothing else holds the wallet's
+    /// database. The scan must reach the node (no `--offline_mode`); a node that's
+    /// unreachable/unsynced is surfaced honestly via `detail` (drained from stderr,
+    /// matching `runInitRecover`). The password rides argv only.
+    fn runScan(
+        allocator: std.mem.Allocator,
+        io: std.Io,
+        install_root: []const u8,
+        home: []const u8,
+        password: []const u8,
+        detail: *Coin.WalletErrSink,
+    ) !void {
+        const argv = try scanArgv(allocator, install_root, home, password);
+        defer {
+            for (argv) |s| allocator.free(s);
+            allocator.free(argv);
+        }
+
+        var child = std.process.spawn(io, .{
+            .argv = argv,
+            .stdin = .ignore,
+            .stdout = .ignore,
+            .stderr = .pipe,
+            .create_no_window = builtin.os.tag == .windows,
+        }) catch |err| {
+            detail.set(@errorName(err));
+            return error.WalletRescanFailed;
+        };
+
+        // Drain stderr (bounded) — a bad/unreachable node is reported there — so a
+        // failed scan surfaces the real reason rather than a generic message. Reading
+        // to EOF also waits out the scan before `wait`.
+        var errbuf: [512]u8 = undefined;
+        var errlen: usize = 0;
+        if (child.stderr) |stderr| {
+            while (errlen < errbuf.len) {
+                const got = stderr.readStreaming(io, &.{errbuf[errlen..]}) catch break;
+                if (got == 0) break;
+                errlen += got;
+            }
+            stderr.close(io);
+            child.stderr = null;
+        }
+
+        const term = child.wait(io) catch |err| {
+            detail.set(@errorName(err));
+            return error.WalletRescanFailed;
+        };
+        const ok = switch (term) {
+            .exited => |code| code == 0,
+            else => false,
+        };
+        if (!ok) {
+            const why = std.mem.trim(u8, errbuf[0..errlen], " \t\r\n");
+            detail.set(if (why.len > 0) why else "epic-wallet could not scan the chain to recover the restored wallet's funds");
+            return error.WalletRescanFailed;
+        }
+    }
+
     // --- Wallet ops over the encrypted Owner API -------------------------
 
     /// Run one encrypted Owner-API call and require success; on a wallet-level error
@@ -1634,6 +1727,17 @@ pub const Epic = struct {
             allocator.free(normalized);
         }
         try runInitRecover(allocator, install_root, home, password, normalized, detail);
+
+        // `init -r` writes only the seed — the wallet has no output set yet, so its
+        // balance reads zero until the chain is scanned to restore the seed's
+        // existing outputs. Heal the config first (so the scan can authenticate to
+        // the node), then run a synchronous repair scan while nothing else holds the
+        // wallet open (the owner_api hasn't launched yet). See `runScan`.
+        var threaded: std.Io.Threaded = .init(allocator, .{});
+        defer threaded.deinit();
+        const io = threaded.io();
+        try ensureWalletConfig(allocator, io, home);
+        try runScan(allocator, io, install_root, home, password, detail);
     }
 
     /// Open the existing wallet with `password` (caching its token), so its balance
@@ -2397,4 +2501,25 @@ test "launchServerArgv prepares the config + per-session secret and builds owner
     const cn = try cf.readPositionalAll(io, &cbuf, 0);
     try std.testing.expect(std.mem.indexOf(u8, cbuf[0..cn], "owner_api_listen_port = 3420") != null);
     try std.testing.expect(std.mem.indexOf(u8, cbuf[0..cn], "api_listen_interface = \"127.0.0.1\"") != null);
+}
+
+test "scanArgv builds `epic-wallet -t <top> -p <pw> scan` for the recovery scan" {
+    const a = std.testing.allocator;
+    const argv = try Epic.scanArgv(a, "/opt/bw", "/home/alice", "walletpw9");
+    defer {
+        for (argv) |s| a.free(s);
+        a.free(argv);
+    }
+    // `epic-wallet -t <top> -p <pw> scan`: a full repair scan pinned to the managed
+    // data dir, opened with the wallet password (no `--offline_mode` — it must reach
+    // the node to restore outputs).
+    try std.testing.expectEqual(@as(usize, 6), argv.len);
+    try std.testing.expect(std.mem.endsWith(u8, argv[0], Epic.wallet_file));
+    try std.testing.expectEqualStrings("-t", argv[1]);
+    const top = try Epic.dataDir(a, "/home/alice");
+    defer a.free(top);
+    try std.testing.expectEqualStrings(top, argv[2]);
+    try std.testing.expectEqualStrings("-p", argv[3]);
+    try std.testing.expectEqualStrings("walletpw9", argv[4]);
+    try std.testing.expectEqualStrings("scan", argv[5]);
 }
