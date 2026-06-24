@@ -157,6 +157,29 @@ pub const Coin = struct {
             allocator: std.mem.Allocator,
             wallet_auth: models.CoinAuth,
         ) anyerror!models.WalletBalance,
+        /// Optional: report wallet rescan progress for an in-daemon wallet that
+        /// re-scans the chain after a restore (Ergo, whose node scans only forward,
+        /// so a restored seed's history is recovered by an explicit rescan-from-0).
+        /// Returns null when the wallet isn't rescanning (caught up, locked, or the
+        /// chain height isn't known yet) or for coins where it doesn't apply. The UI
+        /// shows a "Rescanning… X%" indicator while it's non-null.
+        rescan_progress: ?*const fn (
+            allocator: std.mem.Allocator,
+            wallet_auth: models.CoinAuth,
+        ) anyerror!?models.RescanProgress = null,
+        /// Optional: whether the wallet is currently unlocked *at the daemon*. Only
+        /// meaningful for an in-daemon wallet (Ergo) whose node outlives the app and
+        /// keeps the wallet unlocked across an app restart — letting the UI re-adopt
+        /// the real open-state (and resume balance/rescan polling) instead of falsely
+        /// showing "Locked" until the user re-enters a password the node no longer
+        /// needs. Not a *security* unlock: it only reports state the node already
+        /// holds (balance reads authenticate with the api_key, not this password), so
+        /// it never opens a wallet. Null for process-backed wallets, whose RPC dies
+        /// with the app.
+        is_open: ?*const fn (
+            allocator: std.mem.Allocator,
+            wallet_auth: models.CoinAuth,
+        ) anyerror!bool = null,
         /// Valid word counts for this wallet's restore seed, for the seed-entry
         /// UI's prompt and live word counter (the daemon does the real validation).
         /// The first entry is the canonical length named in the prompt. Monero/
