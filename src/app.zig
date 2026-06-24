@@ -848,6 +848,14 @@ const Activity = struct {
     poll_balance_total: std.atomic.Value(u64) = .init(0),
     poll_balance_avail: std.atomic.Value(u64) = .init(0),
     poll_has_balance: std.atomic.Value(u8) = .init(0),
+    /// Latest polled wallet rescan progress, for an in-daemon external wallet that
+    /// re-scans after a restore (Ergo, via `ExternalWallet.rescan_progress`).
+    /// `poll_rescanning` gates the scanned/target heights: 1 while a rescan is in
+    /// flight, 0 when caught up or not applicable. Drives the "Rescanning… X%"
+    /// wallet-line indicator. Published by the `poll_done` edge.
+    poll_rescan_scanned: std.atomic.Value(u64) = .init(0),
+    poll_rescan_target: std.atomic.Value(u64) = .init(0),
+    poll_rescanning: std.atomic.Value(u8) = .init(0),
     /// Latest probed daemon warm-up phase (`@intFromEnum(models.LoadingPhase)`).
     /// Set on every poll: `none` when the daemon answered normally, otherwise the
     /// phase parsed from its "-28 in warm-up" reply. Published by the `poll_done`
@@ -1038,6 +1046,12 @@ const Activity = struct {
     balance_total: f64 = 0,
     balance_avail: f64 = 0,
     has_balance: bool = false,
+    /// Wallet rescan progress, folded in from the poll for an external wallet that
+    /// re-scans after a restore (Ergo). `rescanning` gates the heights: true while a
+    /// rescan is in flight, driving the "Rescanning… X%" wallet-line indicator.
+    rescan_scanned: u64 = 0,
+    rescan_target: u64 = 0,
+    rescanning: bool = false,
     /// Whether the wallet is actively staking. Only shown for proof-of-stake
     /// coins; live staking polling lands later — for now this stays false.
     staking: bool = false,
@@ -1499,6 +1513,13 @@ const Activity = struct {
             self.has_balance = true;
         }
 
+        // Wallet rescan progress (external in-daemon wallets only). The flag is
+        // always adopted — clearing it the moment the scan catches up returns the
+        // wallet line to "Unlocked".
+        self.rescanning = self.poll_rescanning.load(.monotonic) != 0;
+        self.rescan_scanned = self.poll_rescan_scanned.load(.monotonic);
+        self.rescan_target = self.poll_rescan_target.load(.monotonic);
+
         // Two separate, accurate sync axes:
         //   Headers  = local headers / network tip (download progress vs peers)
         //   Blocks   = validated blocks / downloaded headers (validation catch-up)
@@ -1712,6 +1733,22 @@ const Activity = struct {
             } else |_| {}
         }
 
+        // Re-adopt a still-unlocked in-daemon wallet after an app restart. The Ergo
+        // node outlives the app and keeps the wallet unlocked, but `ext_wallet_open`
+        // is a per-session flag that resets to 0 — so the wallet would falsely read
+        // "Locked" (and balance/rescan polling would stay paused) until the user
+        // re-entered a password the node no longer needs. Promote the flag from the
+        // node's real state; only ever *up* (locking stays driven by the explicit
+        // lock action and daemon-stop), and only for in-daemon wallets (a process-
+        // backed wallet's RPC died with the app, so there's nothing to re-adopt).
+        if (self.coin.hasExternalWallet() and !self.coin.hasExternalWalletProcess() and self.ext_wallet_open.load(.monotonic) == 0) {
+            if (self.coin.externalWallet().?.is_open) |isOpen| {
+                if (isOpen(a, self.extWalletAuth())) |open| {
+                    if (open) self.ext_wallet_open.store(1, .monotonic);
+                } else |_| {}
+            }
+        }
+
         // External-wallet (Monero-style) balance — read from the *wallet* process,
         // not the daemon, and only once the wallet's been opened this session
         // (`ext_wallet_open`). Same Total/Available split published into the same
@@ -1723,6 +1760,22 @@ const Activity = struct {
                 self.poll_balance_avail.store(@bitCast(bal.available), .monotonic);
                 self.poll_has_balance.store(1, .monotonic);
             } else |_| {}
+
+            // Rescan progress — for an in-daemon wallet that re-scans after a
+            // restore (Ergo). Non-null means a rescan is in flight: publish the
+            // heights and flag it; null (caught up / n/a) clears the flag. Best-
+            // effort: a read hiccup leaves the last value so the bar doesn't flicker.
+            if (ew.rescan_progress) |rescanProgress| {
+                if (rescanProgress(a, self.extWalletAuth())) |maybe| {
+                    if (maybe) |rp| {
+                        self.poll_rescan_scanned.store(@intCast(@max(rp.scanned, 0)), .monotonic);
+                        self.poll_rescan_target.store(@intCast(@max(rp.target, 0)), .monotonic);
+                        self.poll_rescanning.store(1, .monotonic);
+                    } else {
+                        self.poll_rescanning.store(0, .monotonic);
+                    }
+                } else |_| {}
+            }
         }
 
         const state = try self.coin.blockchainState(a, auth);
@@ -2778,6 +2831,9 @@ pub const App = struct {
                         // "Total: 0" for a stopped daemon rather than a stale amount.
                         act.balance_total = 0;
                         act.balance_avail = 0;
+                        // Drop any rescan indicator — the wallet's gone with the node.
+                        act.rescanning = false;
+                        act.poll_rescanning.store(0, .monotonic);
                         act.loading_phase = .none;
                         act.poll_phase.store(@intFromEnum(models.LoadingPhase.none), .monotonic);
                         // Forget the running version — the daemon's down.
@@ -4469,6 +4525,17 @@ pub const App = struct {
             if (!daemon_up) break :blk (zz.Style{}).fg(.brightBlack).render(a, "Unknown") catch "Unknown";
             if (!act.ext_wallet_exists) break :blk (zz.Style{}).bold(true).fg(.yellow).render(a, "No wallet") catch "No wallet";
             if (!ext_open) break :blk (zz.Style{}).bold(true).fg(.yellow).render(a, "Locked") catch "Locked";
+            // An open wallet that's mid-rescan (Ergo, after a restore) reports its
+            // progress instead of a bare "Unlocked" — the scan can take many minutes
+            // on a low-spec box, so the user needs to see it's working.
+            if (act.rescanning) {
+                const pct = models.RescanProgress.fraction(.{
+                    .scanned = @intCast(act.rescan_scanned),
+                    .target = @intCast(act.rescan_target),
+                }) * 100;
+                const text = std.fmt.allocPrint(a, "Rescanning… {d:.0}%", .{pct}) catch "Rescanning…";
+                break :blk (zz.Style{}).bold(true).fg(.yellow).render(a, text) catch text;
+            }
             break :blk (zz.Style{}).bold(true).fg(.green).render(a, "Unlocked") catch "Unlocked";
         } else (zz.Style{}).bold(true).fg(act.wallet.color()).render(a, act.wallet.text()) catch act.wallet.text();
 
@@ -5467,6 +5534,8 @@ fn friendlyWalletError(name: []const u8, detail: []const u8) []const u8 {
         return "The wallet service didn't start. Press i to reinstall it, then try again.";
     if (eql(u8, name, "WalletCreateFailed"))
         return "Couldn't create the wallet. Check the daemon is running, then try again.";
+    if (eql(u8, name, "WalletRescanFailed"))
+        return "Wallet restored, but the rescan to find existing funds didn't start. Replace the wallet and restore again to retry.";
     return name;
 }
 

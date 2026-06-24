@@ -287,11 +287,15 @@ pub const Ergo = struct {
     // the daemon's endpoint, but Ergo authenticates with its fixed api_key, so the
     // hooks ignore it.
 
-    /// Subset of `GET /wallet/status` — whether the wallet exists and is unlocked.
-    /// Both must hold before the balance endpoints will answer with real figures.
+    /// Subset of `GET /wallet/status` — whether the wallet exists and is unlocked,
+    /// plus the last height the wallet has scanned to. `isInitialized`/`isUnlocked`
+    /// must both hold before the balance endpoints answer with real figures;
+    /// `walletHeight` drives the rescan-progress indicator (it resets to 0 and
+    /// climbs after a rescan-from-0).
     const ErgoWalletStatus = struct {
         isInitialized: bool = false,
         isUnlocked: bool = false,
+        walletHeight: i64 = 0,
     };
 
     /// `POST /wallet/init` result — the freshly-generated mnemonic to display.
@@ -463,7 +467,20 @@ pub const Ergo = struct {
         // unlocks if restore left it locked — polling reads the (rescanning) balance
         // straight away either way.
         try walletOpen(allocator, auth, password, detail);
+
+        // Ergo's node scans only *forward* from the restore height, so an imported
+        // seed's existing funds are never found without an explicit full rescan.
+        // Trigger one from genesis (`fromHeight:0`); the node resets the wallet's
+        // scan pointer and rescans in the background (this POST returns at once).
+        // The wallet must be unlocked first (done above) for the node to derive keys.
+        const rescan = try restCall(allocator, .POST, "/wallet/rescan", api_key, rescan_body);
+        defer allocator.free(rescan.body);
+        if (rescan.status != .ok) return failWallet(allocator, detail, rescan.body, error.WalletRescanFailed);
     }
+
+    /// Rescan request body — a full scan from genesis (`fromHeight:0`) so a restored
+    /// seed's entire history is re-scanned.
+    const rescan_body = "{\"fromHeight\":0}";
 
     /// Unlock the wallet with `password` via `POST /wallet/unlock`. Idempotent: if
     /// the node already reports the wallet unlocked, returns success without calling
@@ -507,6 +524,51 @@ pub const Ergo = struct {
         if (resp.status != .ok) return failWallet(allocator, detail, resp.body, error.WalletLockFailed);
     }
 
+    /// Whether the node currently has the wallet unlocked — read from
+    /// `GET /wallet/status`. The Ergo node outlives the app, so an app restart leaves
+    /// a previously-unlocked wallet unlocked at the node; this lets the UI re-adopt
+    /// that state (resuming balance + rescan polling) rather than misreport "Locked".
+    /// Not an unlock — it only reports state, and never touches the password. `auth`
+    /// unused (fixed api_key).
+    pub fn walletIsOpen(allocator: std.mem.Allocator, auth: models.CoinAuth) anyerror!bool {
+        _ = auth;
+        const st = try walletStatus(allocator);
+        return st.isInitialized and st.isUnlocked;
+    }
+
+    /// Below this many blocks behind the tip we treat the wallet as "caught up" and
+    /// report no rescan, so the routine 1-2 block lag of normal forward sync doesn't
+    /// flash a spurious "Rescanning…" indicator. A real rescan-from-0 starts ~1.5M
+    /// blocks behind, far past this.
+    const rescan_done_slack: i64 = 32;
+
+    /// Report wallet rescan progress, or null when the wallet isn't meaningfully
+    /// rescanning. After a restore we kick off a rescan-from-0 (see
+    /// `walletRestoreSeed`); the node resets `walletHeight` to 0 and scans up toward
+    /// the chain tip, so progress is `walletHeight / fullHeight`. Null when the
+    /// wallet is locked/uninitialized, the tip height isn't known yet, or the wallet
+    /// is within `rescan_done_slack` of the tip (caught up). `auth` unused (fixed
+    /// api_key). Best-effort: any read error propagates to the caller, which treats
+    /// it as "no progress info this tick".
+    pub fn walletRescanProgress(
+        allocator: std.mem.Allocator,
+        auth: models.CoinAuth,
+    ) anyerror!?models.RescanProgress {
+        _ = auth;
+        const st = try walletStatus(allocator);
+        if (!st.isInitialized or !st.isUnlocked) return null;
+
+        var info = try fetchInfo(allocator);
+        defer info.deinit();
+        const full = info.value.fullHeight orelse 0;
+        if (full <= 0) return null;
+
+        // Caught up (or scanning the last few blocks of normal forward sync) → no
+        // rescan to show.
+        if (st.walletHeight >= full - rescan_done_slack) return null;
+        return .{ .scanned = st.walletHeight, .target = full };
+    }
+
     /// Overwrite a secret-bearing buffer with zeros before freeing it, so a
     /// password/seed/mnemonic doesn't linger in freed heap.
     fn wipeFree(allocator: std.mem.Allocator, buf: []u8) void {
@@ -545,6 +607,8 @@ pub const Ergo = struct {
         .lock = walletLock,
         .remove = walletRemove,
         .balance = walletBalance,
+        .rescan_progress = walletRescanProgress,
+        .is_open = walletIsOpen,
         // Ergo generates a 15-word BIP39 mnemonic, but the node accepts a standard
         // 12- or 24-word phrase too (e.g. imported from another wallet).
         .seed_word_counts = &.{ 15, 12, 24 },
@@ -1219,4 +1283,49 @@ test "the idempotent-unlock gate skips unlocking an already-unlocked wallet" {
         // `walletOpen` returns early iff `isUnlocked`.
         try std.testing.expectEqual(c[1], st.value.isUnlocked);
     }
+}
+
+test "/wallet/status parses walletHeight for rescan progress" {
+    const allocator = std.testing.allocator;
+    // A wallet partway through a rescan: scanned to height 500000, ignoring the
+    // change address and error fields we don't model.
+    var st = try std.json.parseFromSlice(
+        Ergo.ErgoWalletStatus,
+        allocator,
+        "{\"isInitialized\":true,\"isUnlocked\":true,\"changeAddress\":\"9f...\",\"walletHeight\":500000,\"error\":\"\"}",
+        .{ .ignore_unknown_fields = true },
+    );
+    defer st.deinit();
+    try std.testing.expectEqual(@as(i64, 500000), st.value.walletHeight);
+}
+
+test "rescan-progress threshold hides normal forward-sync lag, shows a real rescan" {
+    // `walletRescanProgress` returns null when within `rescan_done_slack` of the
+    // tip (routine 1-2 block lag) and a `{scanned,target}` when meaningfully behind
+    // (a rescan-from-0). The live status/info reads can't run offline, so assert the
+    // height predicate the function applies. Mirrors `walletRescanProgress`.
+    const slack = Ergo.rescan_done_slack;
+    const Case = struct { wallet: i64, full: i64, rescanning: bool };
+    const cases = [_]Case{
+        // Mid-rescan, far behind → show progress.
+        .{ .wallet = 500_000, .full = 1_200_000, .rescanning = true },
+        // One block behind (normal sync) → no indicator.
+        .{ .wallet = 1_199_999, .full = 1_200_000, .rescanning = false },
+        // Exactly at the slack edge → still counts as caught up.
+        .{ .wallet = 1_200_000 - slack, .full = 1_200_000, .rescanning = false },
+        // Just past the slack edge → a rescan to surface.
+        .{ .wallet = 1_200_000 - slack - 1, .full = 1_200_000, .rescanning = true },
+    };
+    for (cases) |c| {
+        const rescanning = c.full > 0 and c.wallet < c.full - slack;
+        try std.testing.expectEqual(c.rescanning, rescanning);
+    }
+}
+
+test "the rescan body requests a full scan from genesis" {
+    const allocator = std.testing.allocator;
+    const Body = struct { fromHeight: i64 = -1 };
+    var parsed = try std.json.parseFromSlice(Body, allocator, Ergo.rescan_body, .{});
+    defer parsed.deinit();
+    try std.testing.expectEqual(@as(i64, 0), parsed.value.fromHeight);
 }

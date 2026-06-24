@@ -347,6 +347,24 @@ pub const WalletBalance = struct {
     }
 };
 
+/// How far a wallet rescan has progressed — `scanned` blocks of `target`. Reported
+/// by an in-daemon wallet that re-scans the chain after a restore (Ergo, whose node
+/// only scans forward, so a restored seed's history is found by an explicit
+/// rescan-from-0). Scalar-only; owns no memory. A frontend shows it as a
+/// "Rescanning… X%" indicator until `scanned` catches up to `target`.
+pub const RescanProgress = struct {
+    scanned: i64,
+    target: i64,
+
+    /// Fraction scanned in `[0, 1]`. Guards a zero/negative `target` (returns 0) and
+    /// clamps overshoot, so a frontend can multiply by 100 for a percentage safely.
+    pub fn fraction(self: RescanProgress) f64 {
+        if (self.target <= 0) return 0;
+        const f = @as(f64, @floatFromInt(self.scanned)) / @as(f64, @floatFromInt(self.target));
+        return std.math.clamp(f, 0, 1);
+    }
+};
+
 /// Coin-agnostic snapshot from a daemon's `getinfo` — the live "is it healthy"
 /// numbers a frontend shows alongside chain sync (peer count, block height,
 /// whether the wallet is staking). Scalar-only, so it owns no memory and needs
@@ -396,6 +414,19 @@ test "clientVersionString decodes the bitcoin CLIENT_VERSION encoding" {
     const empty = try clientVersionString(a, 0);
     defer a.free(empty);
     try std.testing.expectEqualStrings("", empty);
+}
+
+test "RescanProgress.fraction derives a clamped 0..1 ratio" {
+    // Partway through: 500k of 1.2M scanned.
+    try std.testing.expectApproxEqAbs(
+        @as(f64, 500000.0 / 1200000.0),
+        (RescanProgress{ .scanned = 500000, .target = 1200000 }).fraction(),
+        1e-9,
+    );
+    // A zero/unknown target can't divide — reads as 0, not NaN/inf.
+    try std.testing.expectEqual(@as(f64, 0), (RescanProgress{ .scanned = 10, .target = 0 }).fraction());
+    // Overshoot (scanned past a stale target) clamps to 1 rather than exceeding it.
+    try std.testing.expectEqual(@as(f64, 1), (RescanProgress{ .scanned = 1300000, .target = 1200000 }).fraction());
 }
 
 /// Raw `getblockchaininfo` result for Divi (subset). Same standard fields as
