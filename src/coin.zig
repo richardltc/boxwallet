@@ -412,12 +412,14 @@ pub const Coin = struct {
         /// JSON-RPC `stop`; Ergo POSTs its REST `/node/shutdown`. The caller then
         /// polls `daemon_info` until it stops answering, so this need only send
         /// the request. `auth` is the resolved RPC auth (coins that don't use it —
-        /// Ergo authenticates with a fixed API key — may ignore it).
-        request_stop: *const fn (
+        /// Ergo authenticates with a fixed API key — may ignore it). Left null for
+        /// coins whose daemon exposes **no** shutdown RPC (Zano's zanod): the
+        /// caller stops those by terminating the process instead (see `hasRpcStop`).
+        request_stop: ?*const fn (
             ptr: *anyopaque,
             allocator: std.mem.Allocator,
             auth: models.CoinAuth,
-        ) anyerror!void,
+        ) anyerror!void = null,
         /// Optional: ensure the daemon has a usable wallet loaded. Bitcoin-Core
         /// 0.21+ forks (DigiByte, ReddCoin) no longer auto-create a default
         /// wallet, so a fresh daemon has none and wallet RPCs (staking,
@@ -637,12 +639,17 @@ pub const Coin = struct {
     ) ![]const []const u8 {
         return self.vtable.daemon_argv(self.ptr, allocator, install_root, home_dir);
     }
+    /// Whether this coin's daemon can be shut down over RPC. False means the
+    /// caller must stop it by killing the process (zanod has no shutdown RPC).
+    pub fn hasRpcStop(self: Coin) bool {
+        return self.vtable.request_stop != null;
+    }
     pub fn requestStop(
         self: Coin,
         allocator: std.mem.Allocator,
         auth: models.CoinAuth,
     ) !void {
-        return self.vtable.request_stop(self.ptr, allocator, auth);
+        return self.vtable.request_stop.?(self.ptr, allocator, auth);
     }
 
     /// Whether this coin needs an explicit wallet created/loaded after the daemon

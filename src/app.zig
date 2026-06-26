@@ -962,6 +962,15 @@ const Activity = struct {
     thread: ?std.Thread = null,
     /// Joins the daemon start/stop worker once it has published its result.
     daemon_thread: ?std.Thread = null,
+    /// Handle to a *foreground* daemon we launched this session, retained so a
+    /// coin with no shutdown RPC (Zano's zanod) can be stopped by killing it.
+    /// Only meaningful for foreground coins — fork coins double-fork, so the
+    /// spawned launcher isn't the daemon. Set by the start worker, read/killed by
+    /// the stop worker, cleared on the UI thread once a stop is reaped; these are
+    /// serialized through `daemon_thread`, so never touched concurrently. Null
+    /// when no foreground daemon was started here (e.g. zanod from a prior session
+    /// — the stop path then finds it by name).
+    daemon_child: ?std.process.Child = null,
     /// Which daemon worker is in flight on `daemon_thread`, so the reap can log
     /// the right outcome (started/failed-to-start vs stopped/failed-to-stop).
     daemon_action: enum { start, stop } = .start,
@@ -1241,10 +1250,16 @@ const Activity = struct {
     /// the daemon to actually exit — probing `getinfo` until it stops answering.
     /// Holding this worker thread blocks the status poll, so a mid-shutdown reply
     /// can't flip the daemon back to running once we've reported it stopped.
+    ///
+    /// Coins whose daemon has **no** shutdown RPC (`hasRpcStop` false — Zano)
+    /// take the kill path instead: there's no request to send and no RPC port to
+    /// watch drop, so the process is terminated and its absence confirmed by name.
     fn requestStop(self: *Activity, a: std.mem.Allocator) !void {
         var threaded: std.Io.Threaded = .init(a, .{});
         defer threaded.deinit();
         const io = threaded.io();
+
+        if (!self.coin.hasRpcStop()) return self.stopDaemonByKill(io);
 
         const data_dir = try self.coin.dataDir(a, self.home_dir);
         const auth = try conf.readAuth(
@@ -1273,6 +1288,61 @@ const Activity = struct {
             _ = probe.reset(.retain_capacity);
             _ = self.coin.daemonInfo(probe.allocator(), auth) catch return;
         }
+    }
+
+    /// Stop a daemon that exposes no shutdown RPC (zanod) by terminating the
+    /// process. SIGTERM lets zanod flush its LMDB chain DB; a SIGKILL backstop
+    /// bounds a daemon that ignores it (LMDB is crash-safe, so a forced kill at
+    /// worst loses unflushed writes and re-syncs). The target is found by binary
+    /// name, so this works for both a daemon we started this session (also reaped
+    /// via the retained handle, so it doesn't linger as a zombie) and one left
+    /// running by a previous session.
+    fn stopDaemonByKill(self: *Activity, io: std.Io) !void {
+        const name = self.coin.daemonFile();
+
+        if (@import("builtin").os.tag == .windows) {
+            // No /proc to scan: kill our own handle if we have it (same session),
+            // else fall back to taskkill by image name (prior session).
+            if (self.daemon_child) |*child| {
+                child.kill(io);
+            } else {
+                var killer = std.process.spawn(io, .{
+                    .argv = &.{ "taskkill", "/F", "/IM", name },
+                    .environ_map = self.environ_map,
+                    .stdin = .ignore,
+                    .stdout = .ignore,
+                    .stderr = .ignore,
+                    .create_no_window = true,
+                }) catch return;
+                _ = killer.wait(io) catch {};
+            }
+            return;
+        }
+
+        // POSIX: signal every matching process (covers our child and any from a
+        // prior session uniformly), then confirm by name.
+        _ = signalProcessesByName(io, name, std.posix.SIG.TERM);
+
+        // Wait for it to actually exit, reaping our own child each round so its
+        // zombie doesn't keep reading as alive via /proc (a prior-session daemon
+        // is reaped by init, so it just disappears). Cap the wait so a wedged
+        // daemon doesn't pin the worker forever.
+        var attempts: u8 = 0;
+        while (attempts < 40) : (attempts += 1) {
+            io.sleep(.fromMilliseconds(250), .awake) catch {};
+            if (self.daemon_child) |child| if (child.id) |pid| {
+                _ = App.reapNoHang(pid);
+            };
+            if (!processAlive(io, name)) return;
+        }
+
+        // Still up after the grace window: force it, then reap our child once more.
+        _ = signalProcessesByName(io, name, std.posix.SIG.KILL);
+        if (self.daemon_child) |child| if (child.id) |pid| {
+            const posix = std.posix;
+            var status: if (@import("builtin").link_libc) c_int else u32 = undefined;
+            while (posix.errno(posix.system.wait4(pid, &status, 0, null)) == .INTR) {}
+        };
     }
 
     /// Wallet-action worker. Runs the chosen encrypt/unlock/lock RPC on a private
@@ -1867,7 +1937,7 @@ const Activity = struct {
         // and the status poll flips the UI to "running" once it answers. A
         // pre-start failure can't be surfaced here (no launcher exit/stderr).
         if (self.coin.launchMode() == .foreground) {
-            var child = try std.process.spawn(io, .{
+            const child = try std.process.spawn(io, .{
                 .argv = argv,
                 .environ_map = self.environ_map,
                 .stdin = .ignore,
@@ -1886,8 +1956,9 @@ const Activity = struct {
                 .create_no_window = @import("builtin").os.tag == .windows,
             });
             // Detached: deliberately not waited on, and in its own process
-            // group, so it outlives this call free of the terminal.
-            _ = &child;
+            // group, so it outlives this call free of the terminal. Retain the
+            // handle so a coin with no shutdown RPC (zanod) can be killed on stop.
+            self.daemon_child = child;
             return;
         }
 
@@ -2081,6 +2152,35 @@ fn processAlive(io: std.Io, name: []const u8) bool {
         if (std.mem.eql(u8, std.mem.trim(u8, cbuf[0..n], " \t\r\n"), want)) return true;
     }
     return false;
+}
+
+/// Send `sig` to every process named `name` (matched against `/proc/<pid>/comm`,
+/// truncated to 15 bytes), returning how many were signaled. The companion to
+/// `processAlive` for the no-shutdown-RPC stop path: it terminates a daemon
+/// found by binary name, whether or not we hold a handle to it. POSIX-only
+/// (`/proc` + `kill`); the Windows stop path uses the handle / `taskkill`.
+fn signalProcessesByName(io: std.Io, name: []const u8, sig: std.posix.SIG) usize {
+    var proc = std.Io.Dir.cwd().openDir(io, "/proc", .{ .iterate = true }) catch return 0;
+    defer proc.close(io);
+
+    const want = if (name.len > 15) name[0..15] else name;
+
+    var signaled: usize = 0;
+    var it = proc.iterate();
+    while (it.next(io) catch null) |entry| {
+        if (entry.kind != .directory or entry.name.len == 0 or !std.ascii.isDigit(entry.name[0])) continue;
+        var path_buf: [32]u8 = undefined;
+        const comm_path = std.fmt.bufPrint(&path_buf, "{s}/comm", .{entry.name}) catch continue;
+        var f = proc.openFile(io, comm_path, .{}) catch continue;
+        defer f.close(io);
+        var cbuf: [64]u8 = undefined;
+        const n = f.readPositionalAll(io, &cbuf, 0) catch continue;
+        if (!std.mem.eql(u8, std.mem.trim(u8, cbuf[0..n], " \t\r\n"), want)) continue;
+        const pid = std.fmt.parseInt(std.posix.pid_t, entry.name, 10) catch continue;
+        std.posix.kill(pid, sig) catch continue;
+        signaled += 1;
+    }
+    return signaled;
 }
 
 /// Bounded action log. One fixed-capacity line per entry, kept in a ring so the
@@ -2839,6 +2939,10 @@ pub const App = struct {
                         // Forget the running version — the daemon's down.
                         act.version_len = 0;
                         act.poll_version_len = 0;
+                        // The retained foreground handle (if any) was killed and
+                        // reaped by the stop worker — drop it so a later start
+                        // doesn't reuse a dead pid.
+                        act.daemon_child = null;
                         self.logf("{s}: daemon stopped", .{act.coin.coinName()});
                     } else self.logf("{s}: daemon failed to stop ({s})", .{ act.coin.coinName(), act.daemon_err }),
                 }
