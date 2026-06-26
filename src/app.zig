@@ -2427,10 +2427,22 @@ pub const App = struct {
         // capped at a handful of digits.
         self.prune_input.setWidth(10);
         self.prune_input.setCharLimit(6);
-        // The file browser only offers files (you're picking a wallet file), in a
-        // modest viewport that fits the centered modal.
-        self.file_picker.file_only = true;
+        // The file browser is for picking a wallet file, in a modest viewport
+        // that fits the centered modal. `file_only` must stay false: ZigZag
+        // implements it by hiding every directory from the listing (not just
+        // making them unselectable), which would strip the subdirectories you
+        // need to navigate through to reach the file. Directories navigate on
+        // Enter; only an actual file is ever submitted (see selectCurrent).
+        self.file_picker.file_only = false;
         self.file_picker.height = 12;
+        // ZigZag defaults the entry icons to emoji (📁/📄/🔗/📂), which render
+        // as boxes or wrong-width glyphs on terminals without emoji fonts (SSH,
+        // the Linux console), mangling row alignment so paths can't be read.
+        // Plain ASCII markers stay aligned everywhere.
+        self.file_picker.dir_icon = "[D] ";
+        self.file_picker.parent_icon = "[^] ";
+        self.file_picker.link_icon = "[L] ";
+        self.file_picker.file_icon = "[F] ";
         self.file_picker.blur();
         // Sync keeps the default braille dots; Running/Staking/Peers and the
         // install progress use the heavier pulsing spinner (`makeSpinner`).
