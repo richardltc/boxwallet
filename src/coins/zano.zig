@@ -343,12 +343,11 @@ pub const Zano = struct {
         return argv;
     }
 
-    /// Ask zanod to shut down via the CryptoNote direct `POST /stop_daemon`
-    /// handler (not a `/json_rpc` method, and not the bitcoin transport).
-    pub fn requestStop(allocator: std.mem.Allocator, auth: models.CoinAuth) !void {
-        const reply = try rpc.moneroPost(allocator, auth, "/stop_daemon", "{}", status_timeout_ms);
-        allocator.free(reply);
-    }
+    // No requestStop: unlike Monero forks (Nerva/Salvium), zanod exposes **no**
+    // shutdown RPC — its RPC server has no `/stop_daemon` URI handler and no
+    // `/json_rpc` stop method (only `stop_mining`). So the vtable leaves
+    // `request_stop` null and app.zig stops zanod by terminating the process
+    // (SIGTERM, which lets it flush its LMDB chain DB). See `Coin.hasRpcStop`.
 
     // --- External wallet (Zano simplewallet) -----------------------------
     //
@@ -712,7 +711,8 @@ pub const Zano = struct {
         .prepare_conf = vtPrepareConf,
         .launch_mode = vtLaunchMode,
         .daemon_argv = vtDaemonArgv,
-        .request_stop = vtRequestStop,
+        // No `.request_stop`: zanod exposes no shutdown RPC, so app.zig stops it
+        // by terminating the process (see the requestStop note above).
         .external_wallet = &external_wallet,
     };
 
@@ -802,13 +802,6 @@ pub const Zano = struct {
         home: []const u8,
     ) anyerror![]const []const u8 {
         return daemonArgv(allocator, install_root, home);
-    }
-    fn vtRequestStop(
-        _: *anyopaque,
-        allocator: std.mem.Allocator,
-        auth: models.CoinAuth,
-    ) anyerror!void {
-        return requestStop(allocator, auth);
     }
 };
 
@@ -920,6 +913,9 @@ test "coin vtable dispatches to Zano metadata" {
     try std.testing.expectEqualStrings("zanod", c.daemonFile());
     try std.testing.expectEqualStrings("11211", c.rpcDefaultPort());
     try std.testing.expectEqual(Coin.LaunchMode.foreground, c.launchMode());
+    // zanod exposes no shutdown RPC, so the vtable leaves request_stop null and
+    // app.zig stops it by killing the process.
+    try std.testing.expect(!c.hasRpcStop());
     // Zano balances render to 12 decimals (CryptoNote atomic unit).
     try std.testing.expectEqual(@as(u8, 12), c.balanceDecimals());
     // BoxWallet manages no fixed wallet file for Zano, so the Settings tab shows
