@@ -182,9 +182,4 @@ ZIG_GLOBAL_CACHE_DIR=zig-pkg zig build release # cross-build all release binarie
   working copy (`@memset(..., 0)`) before freeing. See the note on
   `Coin.ExternalWallet.restore_seed`.
 - Match the surrounding code's comment density, naming, and idioms.
-- **Don't break other coins** If you need to change code that is being used by another coin, make sure there is no possibility that the other coin functionaility will break. 
-
-## Port status
-
-- **Done (11):** bitcoin, digibyte, divi, epic, ergo, litecoin, nerva, nexa,
-  reddcoin, salvium, zano.
+- **Don't break other coins** If you need to change code that is being used by another coin, make sure there is no possibility that the other coin functionaility will break.
