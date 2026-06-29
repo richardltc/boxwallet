@@ -798,6 +798,22 @@ pub const Salvium = struct {
         return wordCount(std.mem.trim(u8, seed, " \t\r\n")) == seed_word_count;
     }
 
+    /// Remove the managed wallet so a different one can be created/restored in its
+    /// place — the destructive in-app "Replace wallet". Drops the whole
+    /// `<datadir>/wallets` dir (the `BoxWallet` cache, its `.keys` secret, and the
+    /// `.address.txt`), so `walletExists` reports false next. The caller (`app.zig`)
+    /// kills `salvium-wallet-rpc` first — releasing the file locks — and leaves the
+    /// daemon (and its sync) running; the next create/restore re-creates the dir.
+    /// Idempotent — a missing dir is fine; `deleteTree` holds nothing in memory
+    /// beyond a path.
+    fn walletRemove(allocator: std.mem.Allocator, home: []const u8) anyerror!void {
+        var threaded: std.Io.Threaded = .init(allocator, .{});
+        defer threaded.deinit();
+        const dir = try walletDir(allocator, home);
+        defer allocator.free(dir);
+        try std.Io.Dir.cwd().deleteTree(threaded.io(), dir);
+    }
+
     /// The external-wallet capability wired into the vtable. Funds-sensitive ops
     /// route through here; bitcoin coins leave `external_wallet` null instead.
     pub const external_wallet: Coin.ExternalWallet = .{
@@ -808,6 +824,7 @@ pub const Salvium = struct {
         .restore_seed = walletRestoreSeed,
         .restore_file = walletRestoreFile,
         .open = walletOpen,
+        .remove = walletRemove,
         .balance = walletBalance,
     };
 
@@ -1236,11 +1253,40 @@ test "walletExists keys off the BoxWallet.keys file on disk" {
     try std.testing.expect(Salvium.walletExists(allocator, home));
 }
 
+test "walletRemove drops the wallet dir so a replacement can be set up" {
+    const allocator = std.testing.allocator;
+
+    var threaded: std.Io.Threaded = .init(allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    const home = "test-salvium-remove-home";
+    std.Io.Dir.cwd().deleteTree(io, home) catch {};
+    defer std.Io.Dir.cwd().deleteTree(io, home) catch {};
+
+    // Idempotent on a missing wallet — replace before any wallet exists is fine.
+    try Salvium.walletRemove(allocator, home);
+
+    // Lay down a full Monero wallet triple, then remove it; walletExists flips back.
+    const wallet_dir = try std.fs.path.join(allocator, &.{ home, Salvium.home_dir, "wallets" });
+    defer allocator.free(wallet_dir);
+    var wd = try std.Io.Dir.cwd().createDirPathOpen(io, wallet_dir, .{});
+    defer wd.close(io);
+    try wd.writeFile(io, .{ .sub_path = "BoxWallet", .data = "CACHE" });
+    try wd.writeFile(io, .{ .sub_path = "BoxWallet.keys", .data = "KEYS" });
+    try wd.writeFile(io, .{ .sub_path = "BoxWallet.address.txt", .data = "ADDR" });
+    try std.testing.expect(Salvium.walletExists(allocator, home));
+
+    try Salvium.walletRemove(allocator, home);
+    try std.testing.expect(!Salvium.walletExists(allocator, home));
+}
+
 test "Salvium wires the external-wallet capability" {
     var n: Salvium = .{};
     const c = n.coin();
     try std.testing.expect(c.hasExternalWallet());
     const ew = c.externalWallet().?;
     try std.testing.expect(c.hasExternalWalletProcess());
+    try std.testing.expect(c.supportsWalletReplace());
     try std.testing.expectEqualStrings(Salvium.wallet_rpc_port, ew.rpc_port.?());
 }

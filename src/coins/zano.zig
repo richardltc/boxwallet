@@ -672,6 +672,21 @@ pub const Zano = struct {
         return error.Unsupported;
     }
 
+    /// Remove the managed wallet so a different one can be created/restored in its
+    /// place — the destructive in-app "Replace wallet". Drops the whole
+    /// `<datadir>/wallets` dir (the single `BoxWallet` file and any companions), so
+    /// `walletExists` reports false next. The caller (`app.zig`) stops the per-open
+    /// `simplewallet` first — releasing the file lock — and leaves the daemon (and
+    /// its sync) running; the next create/restore re-creates the dir. Idempotent — a
+    /// missing dir is fine; `deleteTree` holds nothing in memory beyond a path.
+    fn walletRemove(allocator: std.mem.Allocator, home: []const u8) anyerror!void {
+        var threaded: std.Io.Threaded = .init(allocator, .{});
+        defer threaded.deinit();
+        const dir = try walletDir(allocator, home);
+        defer allocator.free(dir);
+        try std.Io.Dir.cwd().deleteTree(threaded.io(), dir);
+    }
+
     /// The external-wallet capability wired into the vtable. Unlike Nerva's, this is
     /// a launch-with-password wallet (`launch_server_argv` + `cli_create`), so the
     /// app relaunches `simplewallet` per-open rather than keeping one idle process.
@@ -685,6 +700,7 @@ pub const Zano = struct {
         .restore_seed = walletRestoreSeedUnsupported,
         .restore_file = walletRestoreFile,
         .open = walletOpen,
+        .remove = walletRemove,
         .balance = walletBalance,
         .seed_word_counts = &.{ 26, 25, 24 },
     };
@@ -942,9 +958,37 @@ test "Zano wires a launch-with-password external wallet" {
     try std.testing.expect(ew.launch_server_argv != null);
     try std.testing.expect(ew.cli_create != null);
     try std.testing.expect(ew.process_argv == null);
+    // Replace-wallet is wired so the setup menu can offer it.
+    try std.testing.expect(c.supportsWalletReplace());
     // 26-word canonical seed, with 25/24 accepted for older wallets.
     try std.testing.expectEqual(@as(usize, 26), c.seedWordCounts()[0]);
     try std.testing.expectEqual(@as(usize, 3), c.seedWordCounts().len);
+}
+
+test "walletRemove drops the wallet dir so a replacement can be set up" {
+    const allocator = std.testing.allocator;
+
+    var threaded: std.Io.Threaded = .init(allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    const home = "test-zano-remove-home";
+    std.Io.Dir.cwd().deleteTree(io, home) catch {};
+    defer std.Io.Dir.cwd().deleteTree(io, home) catch {};
+
+    // Idempotent on a missing wallet — replace before any wallet exists is fine.
+    try Zano.walletRemove(allocator, home);
+
+    // Lay down the single Zano wallet file, then remove it; walletExists flips back.
+    const wallet_dir = try std.fs.path.join(allocator, &.{ home, Zano.home_dir, "wallets" });
+    defer allocator.free(wallet_dir);
+    var wd = try std.Io.Dir.cwd().createDirPathOpen(io, wallet_dir, .{});
+    defer wd.close(io);
+    try wd.writeFile(io, .{ .sub_path = "BoxWallet", .data = "WALLET" });
+    try std.testing.expect(Zano.walletExists(allocator, home));
+
+    try Zano.walletRemove(allocator, home);
+    try std.testing.expect(!Zano.walletExists(allocator, home));
 }
 
 test "launchServerArgv runs simplewallet as a localhost RPC server for the wallet" {
