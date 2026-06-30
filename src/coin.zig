@@ -299,15 +299,19 @@ pub const Coin = struct {
     pub const LaunchMode = enum { fork, foreground };
 
     /// A **two-tone wordmark** — the coin's name drawn in two colours: the head
-    /// (`coin_name[0..split]`) in the coin's `coin_color`, the tail
-    /// (`coin_name[split..]`) in `alt_color`. Lets a coin brand its name with a
-    /// second colour (ReddCoin's "Redd"+"Coin"); single-colour coins leave the
-    /// `wordmark` vtable hook null.
+    /// (`coin_name[0..split]`) and the tail (`coin_name[split..]`). By default the
+    /// head wears the coin's `coin_color` and the tail wears `alt_color` (ReddCoin's
+    /// "Redd"+"Coin"); a coin that wants the *head* in a different colour (SpiderByte
+    /// draws "Spider" white, "Byte" in the brand colour) sets `head_color` to
+    /// override it. Single-colour coins leave the `wordmark` vtable hook null.
     pub const Wordmark = struct {
         /// Byte index in `coin_name` where the `alt_color` half begins.
         split: usize,
         /// Hex `#RRGGBB` for the tail half.
         alt_color: []const u8,
+        /// Optional hex `#RRGGBB` for the head half. Null → the coin's `coin_color`
+        /// (the common case); set it to draw the head in a non-brand colour.
+        head_color: ?[]const u8 = null,
     };
 
     /// Where a coin's managed wallet lives on disk, for the Settings tab. `path`
