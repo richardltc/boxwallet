@@ -24,7 +24,7 @@ const Bitcoin = @import("coins/bitcoin.zig").Bitcoin;
 /// change how BoxWallet identifies itself in the UI. `app_color` is the brand
 /// hex used for the "BoxWallet" wording on the Home pane.
 pub const app_name = "BoxWallet TUI";
-pub const app_version = "0.5.5";
+pub const app_version = "0.5.6";
 const app_color = "#7ca071";
 
 /// Fallback install root used only if the home-dir-based path can't be built
@@ -386,8 +386,7 @@ fn statusReadout(act: *const Activity) StatusReadout {
                 .active = true,
                 .presync_pct = is_presync,
             };
-        }
-        else if (act.sync == .synced)
+        } else if (act.sync == .synced)
             .{ .text = "Synced", .col = .green, .active = true }
         else
             .{ .text = "Running", .col = .green, .active = true },
