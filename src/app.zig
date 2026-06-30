@@ -19,6 +19,7 @@ const ReddCoin = @import("coins/reddcoin.zig").ReddCoin;
 const Epic = @import("coins/epic.zig").Epic;
 const Litecoin = @import("coins/litecoin.zig").Litecoin;
 const Bitcoin = @import("coins/bitcoin.zig").Bitcoin;
+const SpiderByte = @import("coins/spiderbyte.zig").SpiderByte;
 
 /// The application's display name, version, and brand colour — the one place to
 /// change how BoxWallet identifies itself in the UI. `app_color` is the brand
@@ -39,14 +40,14 @@ const fallback_install_root = "boxwallet-coins";
 /// pane renders generically through the `Coin` interface, so it needs no per-coin
 /// code. A coin whose per-coin `live` constant is false stays registered here but
 /// is dropped from `entries` — hidden from the nav entirely until it's ready.
-const Entry = enum { home, nexa, divi, ergo, digibyte, zano, nerva, reddcoin, epic, salvium, litecoin, bitcoin };
-const coin_entries = [_]Entry{ .nexa, .divi, .ergo, .digibyte, .zano, .nerva, .reddcoin, .epic, .salvium, .litecoin, .bitcoin };
+const Entry = enum { home, nexa, divi, ergo, digibyte, zano, nerva, reddcoin, epic, salvium, litecoin, bitcoin, spiderbyte };
+const coin_entries = [_]Entry{ .nexa, .divi, .ergo, .digibyte, .zano, .nerva, .reddcoin, .epic, .salvium, .litecoin, .bitcoin, .spiderbyte };
 
 /// The registered coin backends as their concrete types — the source of truth for
 /// the compile-time checks below. Must list the same coins as `coin_entries` (the
 /// length assertion in the guard catches a coin added to one list but not the
 /// other).
-const coin_types = .{ Nexa, Divi, Ergo, DigiByte, Zano, Nerva, ReddCoin, Epic, Salvium, Litecoin, Bitcoin };
+const coin_types = .{ Nexa, Divi, Ergo, DigiByte, Zano, Nerva, ReddCoin, Epic, Salvium, Litecoin, Bitcoin, SpiderByte };
 
 // Compile-time guard: no two coins may declare the same executable filename. Every
 // coin promotes its binaries into the one shared install root (`~/.boxwallet`) and
@@ -91,6 +92,7 @@ fn entryLabel(e: Entry) []const u8 {
         .salvium => Salvium.coin_name,
         .litecoin => Litecoin.coin_name,
         .bitcoin => Bitcoin.coin_name,
+        .spiderbyte => SpiderByte.coin_name,
     };
 }
 
@@ -134,6 +136,7 @@ fn entryColor(e: Entry) zz.Color {
         .salvium => zz.Color.hex(Salvium.coin_color),
         .litecoin => zz.Color.hex(Litecoin.coin_color),
         .bitcoin => zz.Color.hex(Bitcoin.coin_color),
+        .spiderbyte => zz.Color.hex(SpiderByte.coin_color),
     };
 }
 
@@ -169,6 +172,7 @@ fn entryLive(e: Entry) bool {
         .salvium => Salvium.live,
         .litecoin => Litecoin.live,
         .bitcoin => Bitcoin.live,
+        .spiderbyte => SpiderByte.live,
     };
 }
 
@@ -2389,6 +2393,7 @@ pub const App = struct {
     salvium: Salvium,
     litecoin: Litecoin,
     bitcoin: Bitcoin,
+    spiderbyte: SpiderByte,
     selected: usize,
     /// Which tab of the selected coin's detail pane is showing. Global rather
     /// than per-coin: switching coins resets it to Home (see `move`).
@@ -2525,6 +2530,7 @@ pub const App = struct {
             .salvium = .{},
             .litecoin = .{},
             .bitcoin = .{},
+            .spiderbyte = .{},
             .selected = 0,
             .activities = undefined,
             .pw_input = zz.TextInput.init(ctx.persistent_allocator),
@@ -3559,6 +3565,7 @@ pub const App = struct {
             .salvium => @constCast(&self.salvium).coin(),
             .litecoin => @constCast(&self.litecoin).coin(),
             .bitcoin => @constCast(&self.bitcoin).coin(),
+            .spiderbyte => @constCast(&self.spiderbyte).coin(),
         };
     }
 
@@ -4666,10 +4673,12 @@ pub const App = struct {
         const name_str = coin.coinName();
         const head_color = zz.Color.hex(coin.coinColor());
         // The coin name wears its brand colour — or, for a two-tone wordmark
-        // (ReddCoin: "Redd" red, "Coin" near-white), the head in `coin_color` and
-        // the tail in the wordmark's alt colour, matching the left-nav label.
+        // (ReddCoin: "Redd" red, "Coin" near-white; SpiderByte: "Spider" white,
+        // "Byte" brand), the head in `coin_color` (or the wordmark's `head_color`
+        // override) and the tail in its alt colour, matching the left-nav label.
         const name = if (coin.wordmark()) |wm| blk: {
-            const h = (zz.Style{}).bold(true).fg(head_color).render(a, name_str[0..wm.split]) catch name_str[0..wm.split];
+            const hc = if (wm.head_color) |c| zz.Color.hex(c) else head_color;
+            const h = (zz.Style{}).bold(true).fg(hc).render(a, name_str[0..wm.split]) catch name_str[0..wm.split];
             const t = (zz.Style{}).bold(true).fg(zz.Color.hex(wm.alt_color)).render(a, name_str[wm.split..]) catch name_str[wm.split..];
             break :blk std.fmt.allocPrint(a, "{s}{s}", .{ h, t }) catch name_str;
         } else (zz.Style{}).bold(true).fg(head_color).render(a, name_str) catch name_str;
@@ -5646,6 +5655,17 @@ pub const App = struct {
                     const redd = (zz.Style{}).bold(true).fg(zz.Color.hex(ReddCoin.coin_color)).render(a, head) catch head;
                     const cn = (zz.Style{}).bold(true).fg(zz.Color.hex(ReddCoin.coin_color_alt)).render(a, tail) catch tail;
                     try out.writer.print("{s}{s}{s}", .{ marker, redd, cn });
+                    used = name.len;
+                } else if (e == .spiderbyte and i == selected) {
+                    // SpiderByte's two-tone wordmark when selected: "Spider" in
+                    // white, "Byte" in the brand colour. Unselected, it greys out
+                    // like every other coin (handled by the generic branch below).
+                    const name = SpiderByte.coin_name;
+                    const head = name[0..SpiderByte.wordmark_split];
+                    const tail = name[SpiderByte.wordmark_split..];
+                    const sp = (zz.Style{}).bold(true).fg(zz.Color.hex(SpiderByte.wordmark_head_color)).render(a, head) catch head;
+                    const bt = (zz.Style{}).bold(true).fg(zz.Color.hex(SpiderByte.coin_color)).render(a, tail) catch tail;
+                    try out.writer.print("{s}{s}{s}", .{ marker, sp, bt });
                     used = name.len;
                 } else {
                     const text = entryLabel(e);
