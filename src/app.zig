@@ -312,7 +312,14 @@ fn loadingPhaseText(p: models.LoadingPhase) []const u8 {
 fn renderStatus(a: std.mem.Allocator, act: *const Activity, brand: zz.Color) []const u8 {
     const r = statusReadout(act);
     const label = App.statusLabel(a, brand, "Status", r.active);
-    const value = (zz.Style{}).bold(true).fg(r.col).render(a, r.text) catch r.text;
+    // On the presync line, append the live percentage scraped from debug.log (the
+    // only place it surfaces). Done here, not in `r.text`, so the logged-on-change
+    // status stays a static string rather than churning every poll.
+    const text = if (r.presync_pct and act.presync_bp > 0)
+        std.fmt.allocPrint(a, "{s} {d:.2}%", .{ r.text, @as(f64, @floatFromInt(act.presync_bp)) / 100.0 }) catch r.text
+    else
+        r.text;
+    const value = (zz.Style{}).bold(true).fg(r.col).render(a, text) catch text;
     return std.fmt.allocPrint(a, "{s}: {s}", .{ label, value }) catch value;
 }
 
@@ -321,7 +328,15 @@ fn renderStatus(a: std.mem.Allocator, act: *const Activity, brand: zz.Color) []c
 /// label brightens). `text` is a static, program-lifetime string — `renderStatus`
 /// styles it and the live log records it verbatim on change, so the two can't
 /// drift apart.
-const StatusReadout = struct { text: []const u8, col: zz.Color, active: bool };
+const StatusReadout = struct {
+    text: []const u8,
+    col: zz.Color,
+    active: bool,
+    /// True only on the "Pre-synching headers…" line, signalling `renderStatus` to
+    /// append the live presync percentage (`Activity.presync_bp`). Kept off `text`
+    /// so the logged-on-change status stays a static string.
+    presync_pct: bool = false,
+};
 
 /// Resolve a coin's current status. Priority, highest first: installing
 /// (downloading/extracting) → not installed → starting/stopping → checking
@@ -349,20 +364,29 @@ fn statusReadout(act: *const Activity) StatusReadout {
             .{ .text = loadingPhaseText(act.loading_phase), .col = .yellow, .active = true }
         else if (act.peers == 0)
             .{ .text = "Waiting for peers…", .col = .yellow, .active = true }
-        else if (act.sync == .syncing)
+        else if (act.sync == .syncing) blk: {
             // Headers stream in first, then blocks validate against them. While
             // the Headers bar is still filling we're downloading headers;
             // otherwise we're catching the blocks up. (A 0 header total means the
             // tip isn't known yet — treat that as block catch-up rather than
-            // claiming a headers phase we can't measure.)
-            .{
-                .text = if (act.headers_total > 0 and act.headers_cur < act.headers_total)
-                    "Syncing headers…"
+            // claiming a headers phase we can't measure.) Within the headers
+            // phase, a stalled committed-header height means the node is in Core
+            // 24+'s throwaway presync pass — say so, and let `renderStatus` append
+            // the live percentage, since the bar can't move.
+            const in_headers = act.headers_total > 0 and act.headers_cur < act.headers_total;
+            const is_presync = in_headers and act.presync;
+            break :blk .{
+                .text = if (!in_headers)
+                    "Syncing blocks…"
+                else if (is_presync)
+                    "Pre-synching headers…"
                 else
-                    "Syncing blocks…",
+                    "Syncing headers…",
                 .col = .cyan,
                 .active = true,
-            }
+                .presync_pct = is_presync,
+            };
+        }
         else if (act.sync == .synced)
             .{ .text = "Synced", .col = .green, .active = true }
         else
@@ -867,6 +891,10 @@ const Activity = struct {
     poll_synced: std.atomic.Value(u8) = .init(0),
     /// Estimated network tip (max peer `synced_headers`), the Headers bar target.
     poll_network: std.atomic.Value(u64) = .init(0),
+    /// Latest headers pre-sync percentage in basis points (744 == 7.44%), scraped
+    /// from `debug.log` while syncing; 0 when synced or no presync line is found.
+    /// The presync pass's progress isn't in RPC, so this is the only source.
+    poll_presync_bp: std.atomic.Value(u32) = .init(0),
     /// Seconds behind the chain tip (wall clock now − tip block timestamp),
     /// computed in the poll worker where the real-time clock is reachable.
     /// -1 means unknown (the daemon reports no tip timestamp). Drives the
@@ -1074,6 +1102,21 @@ const Activity = struct {
     headers_total: u64 = 0,
     blocks_cur: u64 = 0,
     blocks_total: u64 = 0,
+    /// Whether the daemon is in Bitcoin Core 24+'s headers *pre-synchronization*
+    /// pass. During presync the node downloads every header in a throwaway
+    /// anti-DoS pass without committing any, so the committed `headers` height we
+    /// display sits still while the node is busy — and RPC exposes no presync
+    /// height. Inferred in `applyPoll` from a non-advancing header height in the
+    /// headers phase; drives the "Pre-synching headers…" readout so the line
+    /// doesn't read as a frozen "Syncing headers…".
+    presync: bool = false,
+    /// Previous poll's `headers_cur`, kept to tell a stalled (presync) committed-
+    /// header height from one actively climbing.
+    prev_headers_cur: u64 = 0,
+    /// Headers pre-sync progress in basis points (744 == 7.44%), scraped from
+    /// `debug.log` (the only place the presync pass exposes it). Appended to the
+    /// "Pre-synching headers…" status line at render time; 0 when unknown.
+    presync_bp: u32 = 0,
     /// Seconds behind the chain tip, or -1 when unknown. How far behind in
     /// wall-clock time the chain is while syncing.
     behind_secs: i64 = -1,
@@ -1612,6 +1655,23 @@ const Activity = struct {
         self.headers_total = if (self.peers > 0 and network > 0) @max(network, headers) else 0;
         self.blocks_cur = blocks;
         self.blocks_total = @max(headers, blocks);
+
+        // Headers pre-synchronization detection (Bitcoin Core 24+). During the
+        // initial anti-DoS presync pass the daemon downloads every header without
+        // committing any, so the committed `headers` height we display sits still
+        // while the node is busy churning through the chain — and RPC exposes no
+        // presync height to show instead. Treat a non-advancing committed-header
+        // height, while in the headers phase with peers connected, as presync;
+        // comparing against the previous poll means an actively-climbing height
+        // never trips it (during a real header download `headers` jumps by
+        // thousands between polls). Block download hasn't begun yet, so this only
+        // ever fires in the headers phase. (The presync pass isn't persisted — a
+        // restart mid-presync redoes it.)
+        const in_headers_phase = self.headers_total > 0 and self.headers_cur < self.headers_total;
+        self.presync = self.peers > 0 and in_headers_phase and self.headers_cur <= self.prev_headers_cur;
+        self.prev_headers_cur = self.headers_cur;
+        self.presync_bp = self.poll_presync_bp.load(.monotonic);
+
         self.behind_secs = self.poll_behind.load(.monotonic);
         self.tip_time = self.poll_tip_time.load(.monotonic);
         self.sync = if (self.poll_synced.load(.monotonic) != 0) .synced else .syncing;
@@ -1883,6 +1943,16 @@ const Activity = struct {
         );
         self.poll_synced.store(@intFromBool(state.synced), .monotonic);
 
+        // Headers pre-sync progress (Bitcoin Core 24+). While syncing, the
+        // throwaway presync pass exposes its progress only in debug.log, so scrape
+        // the latest percentage there for the status line; once synced there's
+        // nothing to show. Harmless on non-Core coins — their log has no such line,
+        // so it reads back 0.
+        self.poll_presync_bp.store(
+            if (!state.synced) (presyncPercentBp(io, data_dir) orelse 0) else 0,
+            .monotonic,
+        );
+
         // One-shot post-sync hook (Nerva reclaims its quicksync file here). Gated on
         // a *real* sync — caught up AND with at least one peer — so a daemon that
         // momentarily reads "synced" before it has any peers (a low height with no
@@ -2112,6 +2182,54 @@ fn pickDebugLogError(tail: []const u8) []const u8 {
         }
     }
     return if (root_hit.len != 0) root_hit else if (generic_hit.len != 0) generic_hit else fallback;
+}
+
+/// Read the headers pre-sync percentage from the coin's `<datadir>/debug.log`,
+/// in basis points (744 == 7.44%), or null when no presync line is in the tail.
+/// Bitcoin Core 24+ logs "Pre-synchronizing blockheaders, height: N (~X.XX%)"
+/// during the throwaway presync pass; that percentage is the *only* place the
+/// pass's progress surfaces (RPC reports a frozen header height meanwhile). Reads
+/// only the tail (bounded — the log grows unboundedly), mirroring
+/// `setDaemonErrFromDebugLog`. Best-effort: any IO hiccup, or a non-Core coin
+/// whose log lacks the line, yields null.
+fn presyncPercentBp(io: std.Io, data_dir: []const u8) ?u32 {
+    var dir = std.Io.Dir.cwd().openDir(io, data_dir, .{}) catch return null;
+    defer dir.close(io);
+    var file = dir.openFile(io, "debug.log", .{}) catch return null;
+    defer file.close(io);
+    const stat = file.stat(io) catch return null;
+    // A modest tail keeps the read flat and biases toward the latest presync
+    // line; presync logs every couple of seconds, so the most recent one is
+    // comfortably within the last few KiB.
+    var buf: [4 * 1024]u8 = undefined;
+    const off = if (stat.size > buf.len) stat.size - buf.len else 0;
+    const n = file.readPositionalAll(io, &buf, off) catch return null;
+    return parsePresyncPercentBp(buf[0..n]);
+}
+
+/// Extract the most recent headers pre-sync percentage from a `debug.log` tail,
+/// as basis points (744 == 7.44%), or null if no presync line is present. Matches
+/// only the presync pass line ("Pre-synchronizing blockheaders … (~X%)"), not the
+/// later "Synchronizing blockheaders" redownload pass (during which the committed
+/// header height climbs on its own). The *last* match wins — the freshest log
+/// line. Returns a value clamped to 0..10000.
+fn parsePresyncPercentBp(tail: []const u8) ?u32 {
+    var found: ?u32 = null;
+    var it = std.mem.splitScalar(u8, tail, '\n');
+    while (it.next()) |raw| {
+        const line = std.mem.trim(u8, raw, " \t\r");
+        if (std.mem.indexOf(u8, line, "Pre-synchronizing blockheaders") == null) continue;
+        // The figure sits between "(~" and the trailing "%" — e.g. "(~7.44%)".
+        const open = std.mem.indexOf(u8, line, "(~") orelse continue;
+        const rest = line[open + 2 ..];
+        const pct_end = std.mem.indexOfScalar(u8, rest, '%') orelse continue;
+        const num = std.mem.trim(u8, rest[0..pct_end], " ");
+        const pct = std.fmt.parseFloat(f64, num) catch continue;
+        const bp = pct * 100.0; // percent → basis points (two-decimal precision)
+        const clamped = std.math.clamp(bp, 0.0, 10000.0);
+        found = @intFromFloat(@round(clamped));
+    }
+    return found;
 }
 
 /// True if `line` contains any of `needles` (case-insensitive).
@@ -6170,6 +6288,74 @@ test "debug.log helpers strip the timestamp and pick the root-cause line" {
     try std.testing.expectEqualStrings("all done", pickDebugLogError("starting\nall done\n"));
 }
 
+test "parsePresyncPercentBp extracts the latest presync percentage as basis points" {
+    // A single presync line → its percentage in basis points (7.44% → 744).
+    try std.testing.expectEqual(
+        @as(?u32, 744),
+        parsePresyncPercentBp("2026-06-30 07:30:43 Pre-synchronizing blockheaders, height: 1759996 (~7.44%)\n"),
+    );
+
+    // The freshest line wins when several are present (presync climbs over time).
+    const tail =
+        \\2026-06-30 07:29:10 Pre-synchronizing blockheaders, height: 1219996 (~5.11%)
+        \\2026-06-30 07:29:49 New outbound-full-relay v1 peer connected: version: 70019
+        \\2026-06-30 07:30:43 Pre-synchronizing blockheaders, height: 1759996 (~7.44%)
+        \\2026-06-30 07:30:50 Sent Dandelion discovery hash to peer=18
+    ;
+    try std.testing.expectEqual(@as(?u32, 744), parsePresyncPercentBp(tail));
+
+    // The *redownload* pass ("Synchronizing blockheaders", no "Pre-") is NOT
+    // presync — the committed header height climbs on its own then, so it must not
+    // be matched.
+    try std.testing.expectEqual(
+        @as(?u32, null),
+        parsePresyncPercentBp("2026-06-30 08:00:00 Synchronizing blockheaders, height: 5000000 (~21.10%)\n"),
+    );
+
+    // No presync line at all → null.
+    try std.testing.expectEqual(
+        @as(?u32, null),
+        parsePresyncPercentBp("2026-06-30 08:00:00 UpdateTip: new best=deadbeef height=28817\n"),
+    );
+
+    // Endpoints map cleanly to 0 / 10000 basis points.
+    try std.testing.expectEqual(
+        @as(?u32, 0),
+        parsePresyncPercentBp("Pre-synchronizing blockheaders, height: 1 (~0.00%)\n"),
+    );
+    try std.testing.expectEqual(
+        @as(?u32, 10000),
+        parsePresyncPercentBp("Pre-synchronizing blockheaders, height: 23700000 (~100.00%)\n"),
+    );
+}
+
+test "renderStatus appends the presync percentage only on the presync line" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const brand = zz.Color.hex(app_color);
+
+    // Presync line with a known percentage → the rendered status carries it.
+    var act: Activity = .{};
+    act.installed = true;
+    act.daemon = .init(@intFromEnum(DaemonState.running));
+    act.peers = 7;
+    act.sync = .syncing;
+    act.headers_cur = 419_996;
+    act.headers_total = 23_700_000;
+    act.presync = true;
+    act.presync_bp = 744;
+    const with_pct = renderStatus(a, &act, brand);
+    try std.testing.expect(std.mem.indexOf(u8, with_pct, "Pre-synching headers… 7.44%") != null);
+
+    // Same presync state but no scraped percentage (log line not in the tail) →
+    // the base line shows, with no trailing percentage.
+    act.presync_bp = 0;
+    const no_pct = renderStatus(a, &act, brand);
+    try std.testing.expect(std.mem.indexOf(u8, no_pct, "Pre-synching headers…") != null);
+    try std.testing.expect(std.mem.indexOf(u8, no_pct, "%") == null);
+}
+
 test "a successful poll folds peers, staking, heights and sync into the display" {
     // A finished poll publishes its result into the atomics; applyPoll copies it
     // into the plain fields the pane renders. A failed poll is a no-op so a
@@ -6269,6 +6455,52 @@ test "a successful poll folds peers, staking, heights and sync into the display"
     try std.testing.expectEqual(@as(u32, 7), stale.peers);
     try std.testing.expect(stale.staking);
     try std.testing.expectEqual(SyncState.synced, stale.sync);
+}
+
+test "a stalled committed-header height in the headers phase reads as presync" {
+    // Bitcoin Core 24+ runs a throwaway headers presync pass whose progress it
+    // doesn't expose via RPC, so the committed `headers` height sits still while
+    // the node is busy. A header height that doesn't advance between polls (in the
+    // headers phase, with peers) is read as presync and surfaces a distinct line.
+    const running = @intFromEnum(DaemonState.running);
+
+    var act: Activity = .{};
+    act.installed = true;
+    act.daemon = .init(running);
+    act.poll_ok = true;
+    act.poll_peers.store(7, .monotonic);
+    act.poll_synced.store(0, .monotonic);
+    act.poll_network.store(23_700_000, .monotonic); // real tip from peers
+    act.poll_headers.store(419_996, .monotonic); // committed headers, stuck
+    act.poll_blocks.store(28_817, .monotonic);
+
+    // First poll: prev_headers_cur is still 0, so the height counts as "advanced"
+    // and we don't yet claim presync — one poll of evidence isn't enough.
+    try std.testing.expect(act.applyPoll());
+    try std.testing.expectEqual(SyncState.syncing, act.sync);
+    try std.testing.expect(!act.presync);
+    try std.testing.expectEqualStrings("Syncing headers…", statusReadout(&act).text);
+
+    // Second poll: same committed-header height → not advancing → presync.
+    try std.testing.expect(act.applyPoll());
+    try std.testing.expect(act.presync);
+    try std.testing.expectEqualStrings("Pre-synching headers…", statusReadout(&act).text);
+
+    // Once committed headers start climbing again, it's a normal header download.
+    act.poll_headers.store(1_500_000, .monotonic);
+    try std.testing.expect(act.applyPoll());
+    try std.testing.expect(!act.presync);
+    try std.testing.expectEqualStrings("Syncing headers…", statusReadout(&act).text);
+
+    // Block-validation phase (headers complete): never presync, even if a poll's
+    // block height happens not to move — presync is a headers-phase concept.
+    act.poll_network.store(23_700_000, .monotonic);
+    act.poll_headers.store(23_700_000, .monotonic);
+    act.poll_blocks.store(2_000_000, .monotonic);
+    try std.testing.expect(act.applyPoll()); // headers now climbed → not presync
+    try std.testing.expect(act.applyPoll()); // headers static but phase is blocks
+    try std.testing.expect(!act.presync);
+    try std.testing.expectEqualStrings("Syncing blocks…", statusReadout(&act).text);
 }
 
 test "daemon toggle button reflects install and daemon state" {
