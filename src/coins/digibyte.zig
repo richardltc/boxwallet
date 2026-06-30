@@ -38,7 +38,7 @@ pub const DigiByte = struct {
     // and the macOS `.zip` carries only the DigiByte-Qt GUI app (no
     // `digibyted`/cli/tx). So only Linux resolves a usable download below; Windows
     // and macOS are null (`error.UnsupportedPlatform` at install time).
-    pub const core_version = "8.26.2";
+    pub const core_version = "9.26.2";
 
     // Binary names. Windows appends `.exe`; Linux/macOS use the bare names. The
     // per-target name is what `isInstalled`, the daemon launcher, and the promote
@@ -189,10 +189,30 @@ pub const DigiByte = struct {
     /// Ensure `digibyte.conf` carries the RPC creds (and `server=1`/`daemon=1`/
     /// `rpcport`) BoxWallet needs before the daemon reads it; existing values are
     /// kept. A standard bitcoin-derived `key=value` conf.
+    ///
+    /// On top of the shared creds, DigiByte's DigiDollar feature needs the
+    /// transaction index and the DigiDollar subsystem switched on (`txindex=1`,
+    /// `digidollar=1`). These are **DigiByte-only** — no other BoxWallet coin
+    /// supports DigiDollar — so they're set here in the coin file rather than in
+    /// the shared conf helper, and only added when absent so a user's explicit
+    /// choice (even `=0`) survives.
     pub fn prepareConf(allocator: std.mem.Allocator, io: std.Io, home: []const u8) !void {
         const data_dir = try dataDir(allocator, home);
         defer allocator.free(data_dir);
         _ = try conf.populate(allocator, io, data_dir, conf_file, rpc_default_username, rpc_default_port);
+        try ensureEnabled(allocator, io, data_dir, "txindex");
+        try ensureEnabled(allocator, io, data_dir, "digidollar");
+    }
+
+    /// Append `key=1` to `digibyte.conf` only if the key isn't already present,
+    /// leaving any existing value (including an explicit `key=0`) untouched.
+    /// Idempotent — a second prepare reads the key back and writes nothing.
+    fn ensureEnabled(allocator: std.mem.Allocator, io: std.Io, data_dir: []const u8, key: []const u8) !void {
+        if (try conf.readValue(allocator, io, data_dir, conf_file, key)) |existing| {
+            allocator.free(existing);
+            return;
+        }
+        try conf.setValue(allocator, io, data_dir, conf_file, key, "1");
     }
 
     /// DigiByte is a bitcoin-derived daemon: it forks itself into the background
@@ -525,7 +545,7 @@ test "combines getblockchaininfo + getnetworkinfo into DaemonInfo (PoW, no getin
         \\"verificationprogress":1.0},"error":null,"id":"boxwallet"}
     ;
     const net_raw =
-        \\{"result":{"version":82602,"subversion":"/DigiByte:8.26.2/",
+        \\{"result":{"version":92602,"subversion":"/DigiByte:9.26.2/",
         \\"protocolversion":70017,"connections":12,"networkactive":true,
         \\"relayfee":0.00001000,"warnings":""},"error":null,"id":"boxwallet"}
     ;
@@ -545,18 +565,18 @@ test "combines getblockchaininfo + getnetworkinfo into DaemonInfo (PoW, no getin
     );
     defer net.deinit();
 
-    // DigiByte's CLIENT_VERSION 82602 decodes via the generic bitcoin packing to
-    // the legacy 4-part "0.8.26.2"; daemonInfo strips the leading "0." so the
-    // Running line and the version marker match the branded "8.26.2" (==
+    // DigiByte's CLIENT_VERSION 92602 decodes via the generic bitcoin packing to
+    // the legacy 4-part "0.9.26.2"; daemonInfo strips the leading "0." so the
+    // Running line and the version marker match the branded "9.26.2" (==
     // core_version) — otherwise the same release nags as "update available".
     const full = try models.clientVersionString(allocator, net.value.result.?.version);
-    try std.testing.expectEqualStrings("0.8.26.2", full);
+    try std.testing.expectEqualStrings("0.9.26.2", full);
     const version = if (std.mem.startsWith(u8, full, "0.")) blk: {
         defer allocator.free(full);
         break :blk try allocator.dupe(u8, full[2..]);
     } else full;
     defer allocator.free(version);
-    try std.testing.expectEqualStrings("8.26.2", version);
+    try std.testing.expectEqualStrings("9.26.2", version);
     try std.testing.expectEqualStrings(DigiByte.core_version, version);
 
     const info: models.DaemonInfo = .{
@@ -611,6 +631,72 @@ test "coin vtable dispatches to DigiByte metadata" {
     // Bitcoin-core wallet over RPC: the `w` menu and the balance lines are both on.
     try std.testing.expect(c.supportsWallet());
     try std.testing.expect(c.supportsBalance());
+}
+
+test "prepareConf enables txindex + digidollar (DigiDollar) alongside the shared creds" {
+    const allocator = std.testing.allocator;
+
+    var threaded: std.Io.Threaded = .init(allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    // Use a throwaway home; prepareConf writes to <home>/.digibyte/digibyte.conf
+    // (POSIX). Windows resolves a different data dir, so skip there.
+    if (builtin.os.tag == .windows) return error.SkipZigTest;
+    const home = "test-dgb-conf-out";
+    std.Io.Dir.cwd().deleteTree(io, home) catch {};
+    defer std.Io.Dir.cwd().deleteTree(io, home) catch {};
+
+    try DigiByte.prepareConf(allocator, io, home);
+
+    const data_dir = try DigiByte.dataDir(allocator, home);
+    defer allocator.free(data_dir);
+
+    // server=1 from the shared populate, txindex=1 + digidollar=1 from the coin.
+    inline for (.{ "server", "txindex", "digidollar" }) |key| {
+        const v = try conf.readValue(allocator, io, data_dir, DigiByte.conf_file, key);
+        defer if (v) |p| allocator.free(p);
+        try std.testing.expectEqualStrings("1", v.?);
+    }
+
+    // Idempotent: a second prepare keeps the same values (nothing duplicated).
+    try DigiByte.prepareConf(allocator, io, home);
+    {
+        const v = try conf.readValue(allocator, io, data_dir, DigiByte.conf_file, "digidollar");
+        defer if (v) |p| allocator.free(p);
+        try std.testing.expectEqualStrings("1", v.?);
+    }
+}
+
+test "prepareConf preserves an explicit digidollar=0 rather than forcing it on" {
+    const allocator = std.testing.allocator;
+
+    var threaded: std.Io.Threaded = .init(allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    if (builtin.os.tag == .windows) return error.SkipZigTest;
+    const home = "test-dgb-conf-keep-out";
+    std.Io.Dir.cwd().deleteTree(io, home) catch {};
+    defer std.Io.Dir.cwd().deleteTree(io, home) catch {};
+
+    // A user who has deliberately turned DigiDollar off; prepareConf must not
+    // override that choice.
+    const data_dir = try DigiByte.dataDir(allocator, home);
+    defer allocator.free(data_dir);
+    var d = try std.Io.Dir.cwd().createDirPathOpen(io, data_dir, .{});
+    d.writeFile(io, .{ .sub_path = DigiByte.conf_file, .data = "digidollar=0\n" }) catch {};
+    d.close(io);
+
+    try DigiByte.prepareConf(allocator, io, home);
+
+    const dd = try conf.readValue(allocator, io, data_dir, DigiByte.conf_file, "digidollar");
+    defer if (dd) |p| allocator.free(p);
+    try std.testing.expectEqualStrings("0", dd.?);
+    // txindex was still absent, so it's added.
+    const tx = try conf.readValue(allocator, io, data_dir, DigiByte.conf_file, "txindex");
+    defer if (tx) |p| allocator.free(p);
+    try std.testing.expectEqualStrings("1", tx.?);
 }
 
 test "walletPath points at the bitcoin-core BoxWallet directory" {
