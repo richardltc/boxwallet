@@ -31,7 +31,7 @@ const Coin = @import("../coin.zig").Coin;
 pub const SpiderByte = struct {
     /// Whether the coin is exposed in the nav. False keeps it out of the left
     /// bar entirely (registered but hidden) until it's ready for users.
-    pub const live = true;
+    pub const live = false;
     pub const coin_name = "SpiderByte";
     pub const coin_name_abbrev = "SPB";
     /// One-line description shown under the coin name on the detail pane.
