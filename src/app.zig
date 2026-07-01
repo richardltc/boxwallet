@@ -332,11 +332,18 @@ fn loadingPhaseText(p: models.LoadingPhase) []const u8 {
 fn renderStatus(a: std.mem.Allocator, act: *const Activity, brand: zz.Color) []const u8 {
     const r = statusReadout(act);
     const label = App.statusLabel(a, brand, "Status", r.active);
-    // On the presync line, append the live percentage scraped from debug.log (the
-    // only place it surfaces). Done here, not in `r.text`, so the logged-on-change
-    // status stays a static string rather than churning every poll.
-    const text = if (r.presync_pct and act.presync_bp > 0)
-        std.fmt.allocPrint(a, "{s} {d:.2}%", .{ r.text, @as(f64, @floatFromInt(act.presync_bp)) / 100.0 }) catch r.text
+    // On the presync/block-loading lines, append the live percentage scraped
+    // from debug.log (the only place either surfaces). Done here, not in
+    // `r.text`, so the logged-on-change status stays a static string rather
+    // than churning every poll.
+    const bp: ?u32 = if (r.presync_pct and act.presync_bp > 0)
+        act.presync_bp
+    else if (r.load_progress and act.load_pct_bp > 0)
+        act.load_pct_bp
+    else
+        null;
+    const text = if (bp) |v|
+        std.fmt.allocPrint(a, "{s} {d:.2}%", .{ r.text, @as(f64, @floatFromInt(v)) / 100.0 }) catch r.text
     else
         r.text;
     const value = (zz.Style{}).bold(true).fg(r.col).render(a, text) catch text;
@@ -356,6 +363,11 @@ const StatusReadout = struct {
     /// append the live presync percentage (`Activity.presync_bp`). Kept off `text`
     /// so the logged-on-change status stays a static string.
     presync_pct: bool = false,
+    /// True only on the "Loading blocks…"/"Processing blocks…" lines, signalling
+    /// `renderStatus` to append the live block-loading percentage
+    /// (`Activity.load_pct_bp`). Kept off `text` for the same reason as
+    /// `presync_pct`.
+    load_progress: bool = false,
 };
 
 /// Resolve a coin's current status. Priority, highest first: installing
@@ -380,9 +392,26 @@ fn statusReadout(act: *const Activity) StatusReadout {
             .{ .text = "Checking…", .col = .cyan, .active = true }
         else
             .{ .text = "Idle", .col = .brightBlack, .active = false },
-        .running => if (act.loading_phase != .none)
-            .{ .text = loadingPhaseText(act.loading_phase), .col = .yellow, .active = true }
-        else if (act.peers == 0)
+        .running => if (act.loading_phase != .none) blk: {
+            // RPC's "-28" warm-up message only ever says the coarse "Loading
+            // block index..." for the whole block-loading window; some daemons
+            // (DigiByte) additionally log a finer-grained percentage for two
+            // sub-stages debug.log distinguishes but RPC doesn't — say so, and
+            // let `renderStatus` append the live percentage, same as presync.
+            if (act.loading_phase == .loading and act.load_stage != .none) {
+                break :blk .{
+                    .text = switch (act.load_stage) {
+                        .loading_blocks => "Loading blocks…",
+                        .processing_blocks => "Processing blocks…",
+                        .none => unreachable,
+                    },
+                    .col = .yellow,
+                    .active = true,
+                    .load_progress = true,
+                };
+            }
+            break :blk .{ .text = loadingPhaseText(act.loading_phase), .col = .yellow, .active = true };
+        } else if (act.peers == 0)
             .{ .text = "Waiting for peers…", .col = .yellow, .active = true }
         else if (act.sync == .syncing) blk: {
             // Headers stream in first, then blocks validate against them. While
@@ -929,6 +958,12 @@ const Activity = struct {
     /// phase parsed from its "-28 in warm-up" reply. Published by the `poll_done`
     /// edge.
     poll_phase: std.atomic.Value(u8) = .init(@intFromEnum(models.LoadingPhase.none)),
+    /// Block-loading sub-stage/percentage scraped from `debug.log` during the
+    /// `.loading` warm-up phase (`@intFromEnum(LoadStage)` /
+    /// basis points). Set alongside `poll_phase` in `probeLoadingPhase`;
+    /// `.none`/0 when no such line is in the tail.
+    poll_load_stage: std.atomic.Value(u8) = .init(@intFromEnum(LoadStage.none)),
+    poll_load_pct_bp: std.atomic.Value(u32) = .init(0),
     /// Latest polled chain heights and sync flag, from `getblockchaininfo`.
     poll_headers: std.atomic.Value(u64) = .init(0),
     poll_blocks: std.atomic.Value(u64) = .init(0),
@@ -939,6 +974,13 @@ const Activity = struct {
     /// from `debug.log` while syncing; 0 when synced or no presync line is found.
     /// The presync pass's progress isn't in RPC, so this is the only source.
     poll_presync_bp: std.atomic.Value(u32) = .init(0),
+    /// Whether the last poll actually found a `"Pre-synchronizing
+    /// blockheaders…"` line in `debug.log` — kept separate from
+    /// `poll_presync_bp` so "found at 0.00%" isn't indistinguishable from "no
+    /// line found" (both would otherwise read back as 0). When true this is an
+    /// authoritative presync signal; when false (older forks whose daemon never
+    /// logs the line, e.g. DigiByte) `applyPoll` falls back to inferring it.
+    poll_presync_found: std.atomic.Value(u8) = .init(0),
     /// Seconds behind the chain tip (wall clock now − tip block timestamp),
     /// computed in the poll worker where the real-time clock is reachable.
     /// -1 means unknown (the daemon reports no tip timestamp). Drives the
@@ -1146,6 +1188,13 @@ const Activity = struct {
     /// `none` once it's responsive. Folded in from `poll_phase` on each poll reap;
     /// drives the Wallet line's "loading" readout.
     loading_phase: models.LoadingPhase = .none,
+    /// Block-loading sub-stage and its live percentage, folded in from
+    /// `poll_load_stage`/`poll_load_pct_bp` alongside `loading_phase`. Only
+    /// meaningful while `loading_phase == .loading`; refines that generic
+    /// "Loading…" label into "Loading blocks…"/"Processing blocks…" with a
+    /// live percentage when `debug.log` carries one of those lines.
+    load_stage: LoadStage = .none,
+    load_pct_bp: u32 = 0,
     /// Headers/blocks sync progress (current vs total). Populated by the live
     /// sync poll later; 0/0 renders an empty bar.
     headers_cur: u64 = 0,
@@ -1156,13 +1205,23 @@ const Activity = struct {
     /// pass. During presync the node downloads every header in a throwaway
     /// anti-DoS pass without committing any, so the committed `headers` height we
     /// display sits still while the node is busy — and RPC exposes no presync
-    /// height. Inferred in `applyPoll` from a non-advancing header height in the
-    /// headers phase; drives the "Pre-synching headers…" readout so the line
-    /// doesn't read as a frozen "Syncing headers…".
+    /// height. True when either `debug.log` confirms the pass directly
+    /// (authoritative — see `poll_presync_found`), or, when the daemon never logs
+    /// that line, when the committed header height has failed to advance for
+    /// `presync_stall_threshold` *consecutive* polls (see `presync_stall_polls`).
+    /// Requiring more than one stalled poll for the inferred path avoids flagging
+    /// presync on a single momentary stall (peer latency, a poll landing just
+    /// before a header lands) during an otherwise-normal header download, which
+    /// would flip the "Pre-synching headers…"/"Syncing headers…" label back and
+    /// forth every tick.
     presync: bool = false,
     /// Previous poll's `headers_cur`, kept to tell a stalled (presync) committed-
     /// header height from one actively climbing.
     prev_headers_cur: u64 = 0,
+    /// Count of consecutive polls where the committed header height failed to
+    /// advance while in the headers phase. Resets to 0 the instant the height
+    /// advances; feeds the debounced (log-unconfirmed) side of `presync`.
+    presync_stall_polls: u32 = 0,
     /// Headers pre-sync progress in basis points (744 == 7.44%), scraped from
     /// `debug.log` (the only place the presync pass exposes it). Appended to the
     /// "Pre-synching headers…" status line at render time; 0 when unknown.
@@ -1713,15 +1772,29 @@ const Activity = struct {
         // initial anti-DoS presync pass the daemon downloads every header without
         // committing any, so the committed `headers` height we display sits still
         // while the node is busy churning through the chain — and RPC exposes no
-        // presync height to show instead. Treat a non-advancing committed-header
-        // height, while in the headers phase with peers connected, as presync;
-        // comparing against the previous poll means an actively-climbing height
-        // never trips it (during a real header download `headers` jumps by
-        // thousands between polls). Block download hasn't begun yet, so this only
-        // ever fires in the headers phase. (The presync pass isn't persisted — a
-        // restart mid-presync redoes it.)
+        // presync height to show instead. Block download hasn't begun yet, so
+        // this only ever fires in the headers phase. (The presync pass isn't
+        // persisted — a restart mid-presync redoes it.)
+        //
+        // Two signals feed `presync`, in priority order:
+        //   1. `debug.log` confirms the pass directly ("Pre-synchronizing
+        //      blockheaders…", scraped into `poll_presync_found`) — authoritative
+        //      where the daemon logs it (Core 24+ lineages).
+        //   2. Otherwise, infer it from a *sustained* non-advancing committed-
+        //      header height: `presync_stall_polls` counts consecutive polls
+        //      where the height didn't move, and only trips presync once it
+        //      reaches `presync_stall_threshold`. A single stalled poll (peer
+        //      latency, a poll landing just before a header commits) no longer
+        //      flips the label — during a real header download `headers` jumps
+        //      by thousands between polls and resets the counter to 0, so a
+        //      genuine multi-minute presync freeze still gets caught within a
+        //      couple of poll ticks. Older forks that never log the presync line
+        //      (e.g. DigiByte) rely entirely on this fallback.
         const in_headers_phase = self.headers_total > 0 and self.headers_cur < self.headers_total;
-        self.presync = self.peers > 0 and in_headers_phase and self.headers_cur <= self.prev_headers_cur;
+        const stalled = self.peers > 0 and in_headers_phase and self.headers_cur <= self.prev_headers_cur;
+        self.presync_stall_polls = if (stalled) self.presync_stall_polls + 1 else 0;
+        const log_confirmed = in_headers_phase and self.poll_presync_found.load(.monotonic) != 0;
+        self.presync = log_confirmed or self.presync_stall_polls >= presync_stall_threshold;
         self.prev_headers_cur = self.headers_cur;
         self.presync_bp = self.poll_presync_bp.load(.monotonic);
 
@@ -1759,6 +1832,7 @@ const Activity = struct {
             self.poll_alive = true;
             // The daemon answered normally, so it isn't warming up.
             self.poll_phase.store(@intFromEnum(models.LoadingPhase.none), .monotonic);
+            self.clearLoadProgress();
         } else |_| {
             self.poll_ok = false;
             // The status fetch failed — but a daemon under heavy load accepts the
@@ -1797,6 +1871,15 @@ const Activity = struct {
         return rpc.daemonReachable(a, auth);
     }
 
+    /// Reset the block-loading sub-stage/percentage atomics to `.none`/0 — used
+    /// by every early-return branch of `probeLoadingPhase` so a coin with no
+    /// warm-up (or a daemon that's actually stopped) doesn't keep showing a
+    /// stale percentage from a previous poll.
+    fn clearLoadProgress(self: *Activity) void {
+        self.poll_load_stage.store(@intFromEnum(LoadStage.none), .monotonic);
+        self.poll_load_pct_bp.store(0, .monotonic);
+    }
+
     /// Probe the daemon's warm-up phase after a failed status fetch. Only worth
     /// doing while we believe the daemon is up (a stopped daemon would just refuse
     /// the connection); coins with no bitcoin-style warm-up (`warmupProbeMethod`
@@ -1804,10 +1887,12 @@ const Activity = struct {
     fn probeLoadingPhase(self: *Activity, a: std.mem.Allocator) void {
         const method = self.coin.warmupProbeMethod() orelse {
             self.poll_phase.store(@intFromEnum(models.LoadingPhase.none), .monotonic);
+            self.clearLoadProgress();
             return;
         };
         if (self.daemonState() == .stopped) {
             self.poll_phase.store(@intFromEnum(models.LoadingPhase.none), .monotonic);
+            self.clearLoadProgress();
             return;
         }
 
@@ -1815,8 +1900,13 @@ const Activity = struct {
         defer threaded.deinit();
         const io = threaded.io();
 
+        const data_dir = self.coin.dataDir(a, self.home_dir) catch {
+            self.poll_phase.store(@intFromEnum(models.LoadingPhase.none), .monotonic);
+            self.clearLoadProgress();
+            return;
+        };
+
         const phase: models.LoadingPhase = blk: {
-            const data_dir = self.coin.dataDir(a, self.home_dir) catch break :blk .none;
             const auth = conf.readAuth(
                 a,
                 io,
@@ -1828,6 +1918,14 @@ const Activity = struct {
             break :blk rpc.loadingPhase(a, auth, method) catch .none;
         };
         self.poll_phase.store(@intFromEnum(phase), .monotonic);
+
+        // RPC's "-28" warm-up message only ever says the coarse "Loading block
+        // index..." for the whole loading window; some daemons (DigiByte)
+        // additionally log a finer-grained percentage in debug.log — scrape it
+        // the same way `presyncPercentBp` does for the headers presync pass.
+        const progress = loadProgressBp(io, data_dir);
+        self.poll_load_stage.store(@intFromEnum(progress.stage), .monotonic);
+        self.poll_load_pct_bp.store(progress.pct_bp, .monotonic);
     }
 
     /// Resolve the coin's RPC credentials from its conf, then fetch both the
@@ -2000,11 +2098,12 @@ const Activity = struct {
         // throwaway presync pass exposes its progress only in debug.log, so scrape
         // the latest percentage there for the status line; once synced there's
         // nothing to show. Harmless on non-Core coins — their log has no such line,
-        // so it reads back 0.
-        self.poll_presync_bp.store(
-            if (!state.synced) (presyncPercentBp(io, data_dir) orelse 0) else 0,
-            .monotonic,
-        );
+        // so the scrape comes back null. Store found-ness separately from the
+        // percentage so `applyPoll` can tell "log confirms presync at 0.00%" apart
+        // from "no presync line at all" — both would otherwise read back as 0.
+        const presync_scrape = if (!state.synced) presyncPercentBp(io, data_dir) else null;
+        self.poll_presync_bp.store(presync_scrape orelse 0, .monotonic);
+        self.poll_presync_found.store(@intFromBool(presync_scrape != null), .monotonic);
 
         // One-shot post-sync hook (Nerva reclaims its quicksync file here). Gated on
         // a *real* sync — caught up AND with at least one peer — so a daemon that
@@ -2237,6 +2336,12 @@ fn pickDebugLogError(tail: []const u8) []const u8 {
     return if (root_hit.len != 0) root_hit else if (generic_hit.len != 0) generic_hit else fallback;
 }
 
+/// Consecutive stalled polls (~2s apart) required before `applyPoll` infers
+/// presync from a non-advancing header height, when `debug.log` doesn't
+/// confirm it directly. One stalled poll is noise (peer latency); this many in
+/// a row is a real freeze.
+const presync_stall_threshold: u32 = 2;
+
 /// Read the headers pre-sync percentage from the coin's `<datadir>/debug.log`,
 /// in basis points (744 == 7.44%), or null when no presync line is in the tail.
 /// Bitcoin Core 24+ logs "Pre-synchronizing blockheaders, height: N (~X.XX%)"
@@ -2281,6 +2386,65 @@ fn parsePresyncPercentBp(tail: []const u8) ?u32 {
         const bp = pct * 100.0; // percent → basis points (two-decimal precision)
         const clamped = std.math.clamp(bp, 0.0, 10000.0);
         found = @intFromFloat(@round(clamped));
+    }
+    return found;
+}
+
+/// Which sub-stage of the block-index-loading window the daemon is in, per
+/// `debug.log` — RPC's "-28" warm-up message only ever says the coarse
+/// "Loading block index..." for this whole window; some daemons (DigiByte)
+/// additionally log a finer-grained, percentage-bearing line for two
+/// sub-stages RPC doesn't distinguish.
+const LoadStage = enum { none, loading_blocks, processing_blocks };
+
+/// A load sub-stage plus its live percentage, in basis points (1000 ==
+/// 10.00%). `.none`/0 when neither line is in the tail.
+const LoadProgress = struct {
+    stage: LoadStage = .none,
+    pct_bp: u32 = 0,
+};
+
+/// Read the block-loading sub-stage and percentage from the coin's
+/// `<datadir>/debug.log`, mirroring `presyncPercentBp`. Best-effort: any IO
+/// hiccup, or a coin whose log lacks these lines, yields `.{}` (`.none`/0).
+fn loadProgressBp(io: std.Io, data_dir: []const u8) LoadProgress {
+    var dir = std.Io.Dir.cwd().openDir(io, data_dir, .{}) catch return .{};
+    defer dir.close(io);
+    var file = dir.openFile(io, "debug.log", .{}) catch return .{};
+    defer file.close(io);
+    const stat = file.stat(io) catch return .{};
+    var buf: [4 * 1024]u8 = undefined;
+    const off = if (stat.size > buf.len) stat.size - buf.len else 0;
+    const n = file.readPositionalAll(io, &buf, off) catch return .{};
+    return parseLoadProgress(buf[0..n]);
+}
+
+/// Extract the freshest block-loading sub-stage/percentage from a `debug.log`
+/// tail — e.g. `"init message: Loading blocks... 10%"` or
+/// `"LoadBlockIndex: Processing blocks... 10%"`. The *last* match of either
+/// line wins (the freshest), so a transition from one stage to the other is
+/// picked up as soon as it appears in the tail. `.{}` (`.none`/0) if neither
+/// line is present.
+fn parseLoadProgress(tail: []const u8) LoadProgress {
+    var found: LoadProgress = .{};
+    var it = std.mem.splitScalar(u8, tail, '\n');
+    while (it.next()) |raw| {
+        const line = std.mem.trim(u8, raw, " \t\r");
+        const stage: LoadStage = if (std.mem.indexOf(u8, line, "Processing blocks") != null)
+            .processing_blocks
+        else if (std.mem.indexOf(u8, line, "Loading blocks") != null)
+            .loading_blocks
+        else
+            continue;
+        // The figure is the number immediately before the trailing "%", e.g.
+        // "Loading blocks... 10%".
+        const pct_end = std.mem.lastIndexOfScalar(u8, line, '%') orelse continue;
+        var start = pct_end;
+        while (start > 0 and (std.ascii.isDigit(line[start - 1]) or line[start - 1] == '.')) start -= 1;
+        if (start == pct_end) continue;
+        const pct = std.fmt.parseFloat(f64, line[start..pct_end]) catch continue;
+        const bp = std.math.clamp(pct * 100.0, 0.0, 10000.0);
+        found = .{ .stage = stage, .pct_bp = @intFromFloat(@round(bp)) };
     }
     return found;
 }
@@ -3138,6 +3302,9 @@ pub const App = struct {
                         act.poll_rescanning.store(0, .monotonic);
                         act.loading_phase = .none;
                         act.poll_phase.store(@intFromEnum(models.LoadingPhase.none), .monotonic);
+                        act.load_stage = .none;
+                        act.load_pct_bp = 0;
+                        act.clearLoadProgress();
                         // Forget the running version — the daemon's down.
                         act.version_len = 0;
                         act.poll_version_len = 0;
@@ -3295,6 +3462,8 @@ pub const App = struct {
                 // The warm-up phase is published whether or not the poll reached
                 // the daemon, so fold it in regardless of `applyPoll`.
                 act.loading_phase = @enumFromInt(act.poll_phase.load(.monotonic));
+                act.load_stage = @enumFromInt(act.poll_load_stage.load(.monotonic));
+                act.load_pct_bp = act.poll_load_pct_bp.load(.monotonic);
                 // Promote to running only when a reply proves the daemon is up and
                 // we haven't asked it to stop — see `shouldAdoptRunning` (which also
                 // runs `applyPoll` for its fold-in side effect).
@@ -6511,6 +6680,78 @@ test "renderStatus appends the presync percentage only on the presync line" {
     try std.testing.expect(std.mem.indexOf(u8, no_pct, "%") == null);
 }
 
+test "parseLoadProgress extracts the freshest block-loading stage/percentage" {
+    // The two exact lines observed in a DigiByte debug.log.
+    const loading = parseLoadProgress("init message: Loading blocks... 10%\n");
+    try std.testing.expectEqual(LoadStage.loading_blocks, loading.stage);
+    try std.testing.expectEqual(@as(u32, 1000), loading.pct_bp);
+
+    const processing = parseLoadProgress("2026-07-01T14:04:26Z LoadBlockIndex: Processing blocks... 10%\n");
+    try std.testing.expectEqual(LoadStage.processing_blocks, processing.stage);
+    try std.testing.expectEqual(@as(u32, 1000), processing.pct_bp);
+
+    // The freshest line wins when both stages appear in the tail (a real
+    // transition from loading to processing).
+    const tail =
+        \\init message: Loading blocks... 40%
+        \\2026-07-01T14:04:20Z LoadBlockIndex: Processing blocks... 5%
+        \\2026-07-01T14:04:26Z LoadBlockIndex: Processing blocks... 12%
+    ;
+    const latest = parseLoadProgress(tail);
+    try std.testing.expectEqual(LoadStage.processing_blocks, latest.stage);
+    try std.testing.expectEqual(@as(u32, 1200), latest.pct_bp);
+
+    // No matching line at all → `.none`/0.
+    const none = parseLoadProgress("2026-07-01T14:04:26Z UpdateTip: new best=deadbeef height=28817\n");
+    try std.testing.expectEqual(LoadStage.none, none.stage);
+    try std.testing.expectEqual(@as(u32, 0), none.pct_bp);
+
+    // A trailing "%" with no digits before it isn't a false match.
+    const malformed = parseLoadProgress("init message: Loading blocks... %\n");
+    try std.testing.expectEqual(LoadStage.none, malformed.stage);
+}
+
+test "renderStatus shows the block-loading sub-stage and percentage during .loading" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const brand = zz.Color.hex(app_color);
+
+    var act: Activity = .{};
+    act.installed = true;
+    act.daemon = .init(@intFromEnum(DaemonState.running));
+    act.loading_phase = .loading;
+
+    // "Loading blocks…" sub-stage, with its live percentage.
+    act.load_stage = .loading_blocks;
+    act.load_pct_bp = 1000;
+    const loading = renderStatus(a, &act, brand);
+    try std.testing.expect(std.mem.indexOf(u8, loading, "Loading blocks… 10.00%") != null);
+
+    // "Processing blocks…" sub-stage.
+    act.load_stage = .processing_blocks;
+    act.load_pct_bp = 1234;
+    const processing = renderStatus(a, &act, brand);
+    try std.testing.expect(std.mem.indexOf(u8, processing, "Processing blocks… 12.34%") != null);
+
+    // No sub-stage found in the log (yet) → falls back to the plain generic
+    // label, no percentage.
+    act.load_stage = .none;
+    act.load_pct_bp = 0;
+    const plain = renderStatus(a, &act, brand);
+    try std.testing.expect(std.mem.indexOf(u8, plain, "Loading…") != null);
+    try std.testing.expect(std.mem.indexOf(u8, plain, "%") == null);
+
+    // A different warm-up phase ignores `load_stage` entirely, even if it's
+    // stale from a moment ago — always renders via `loadingPhaseText`.
+    act.loading_phase = .verifying;
+    act.load_stage = .processing_blocks;
+    act.load_pct_bp = 1234;
+    const verifying = renderStatus(a, &act, brand);
+    try std.testing.expect(std.mem.indexOf(u8, verifying, "Verifying…") != null);
+    try std.testing.expect(std.mem.indexOf(u8, verifying, "%") == null);
+}
+
 test "a successful poll folds peers, staking, heights and sync into the display" {
     // A finished poll publishes its result into the atomics; applyPoll copies it
     // into the plain fields the pane renders. A failed poll is a no-op so a
@@ -6615,8 +6856,10 @@ test "a successful poll folds peers, staking, heights and sync into the display"
 test "a stalled committed-header height in the headers phase reads as presync" {
     // Bitcoin Core 24+ runs a throwaway headers presync pass whose progress it
     // doesn't expose via RPC, so the committed `headers` height sits still while
-    // the node is busy. A header height that doesn't advance between polls (in the
-    // headers phase, with peers) is read as presync and surfaces a distinct line.
+    // the node is busy. A header height that fails to advance for
+    // `presync_stall_threshold` *consecutive* polls (in the headers phase, with
+    // peers) is read as presync and surfaces a distinct line — one stalled poll
+    // alone isn't enough (see the flip-flop regression test below).
     const running = @intFromEnum(DaemonState.running);
 
     var act: Activity = .{};
@@ -6636,7 +6879,13 @@ test "a stalled committed-header height in the headers phase reads as presync" {
     try std.testing.expect(!act.presync);
     try std.testing.expectEqualStrings("Syncing headers…", statusReadout(&act).text);
 
-    // Second poll: same committed-header height → not advancing → presync.
+    // Second poll: same committed-header height → first stalled poll → still not
+    // enough evidence on its own (debounced).
+    try std.testing.expect(act.applyPoll());
+    try std.testing.expect(!act.presync);
+    try std.testing.expectEqualStrings("Syncing headers…", statusReadout(&act).text);
+
+    // Third poll: second consecutive stalled poll → threshold reached → presync.
     try std.testing.expect(act.applyPoll());
     try std.testing.expect(act.presync);
     try std.testing.expectEqualStrings("Pre-synching headers…", statusReadout(&act).text);
@@ -6656,6 +6905,74 @@ test "a stalled committed-header height in the headers phase reads as presync" {
     try std.testing.expect(act.applyPoll()); // headers static but phase is blocks
     try std.testing.expect(!act.presync);
     try std.testing.expectEqualStrings("Syncing blocks…", statusReadout(&act).text);
+}
+
+test "a single momentary header stall during a real download doesn't flip to presync" {
+    // Regression test: the old one-poll heuristic flagged presync (and flipped
+    // the Status line/log back and forth) on any single tick where the header
+    // count happened not to move, even mid-download. Debouncing over
+    // `presync_stall_threshold` consecutive polls means one blip, surrounded by
+    // real advances, must never trip it.
+    const running = @intFromEnum(DaemonState.running);
+
+    var act: Activity = .{};
+    act.installed = true;
+    act.daemon = .init(running);
+    act.poll_ok = true;
+    act.poll_peers.store(7, .monotonic);
+    act.poll_synced.store(0, .monotonic);
+    act.poll_network.store(23_700_000, .monotonic);
+
+    act.poll_headers.store(100_000, .monotonic);
+    try std.testing.expect(act.applyPoll());
+    try std.testing.expect(!act.presync);
+
+    act.poll_headers.store(200_000, .monotonic); // advancing
+    try std.testing.expect(act.applyPoll());
+    try std.testing.expect(!act.presync);
+
+    // One momentary stall — a blip, not a real freeze.
+    try std.testing.expect(act.applyPoll());
+    try std.testing.expect(!act.presync);
+    try std.testing.expectEqualStrings("Syncing headers…", statusReadout(&act).text);
+
+    act.poll_headers.store(300_000, .monotonic); // resumes advancing
+    try std.testing.expect(act.applyPoll());
+    try std.testing.expect(!act.presync);
+    try std.testing.expectEqualStrings("Syncing headers…", statusReadout(&act).text);
+}
+
+test "a debug.log-confirmed presync line is authoritative, no debounce needed" {
+    // When the daemon actually logs "Pre-synchronizing blockheaders…",
+    // `poll_presync_found` carries that ground truth straight through —
+    // presync shows immediately (no waiting for consecutive stalled polls) and
+    // clears the instant the log stops confirming it, even if the header
+    // height still hasn't moved.
+    const running = @intFromEnum(DaemonState.running);
+
+    var act: Activity = .{};
+    act.installed = true;
+    act.daemon = .init(running);
+    act.poll_ok = true;
+    act.poll_peers.store(7, .monotonic);
+    act.poll_synced.store(0, .monotonic);
+    act.poll_network.store(23_700_000, .monotonic);
+    act.poll_headers.store(419_996, .monotonic);
+    act.poll_presync_found.store(1, .monotonic);
+
+    // First poll ever (prev_headers_cur == 0, so the debounced path sees an
+    // "advance") — the log confirmation alone is enough.
+    try std.testing.expect(act.applyPoll());
+    try std.testing.expect(act.presync);
+    try std.testing.expectEqualStrings("Pre-synching headers…", statusReadout(&act).text);
+
+    // Log stops confirming it (pass ended, or log rotated) but the header
+    // height genuinely hasn't moved yet — falls back to the debounced signal,
+    // which isn't tripped yet on just one stalled poll.
+    act.poll_presync_found.store(0, .monotonic);
+    try std.testing.expect(act.applyPoll());
+    try std.testing.expect(!act.presync);
+    try std.testing.expectEqualStrings("Syncing headers…", statusReadout(&act).text);
 }
 
 test "daemon toggle button reflects install and daemon state" {
