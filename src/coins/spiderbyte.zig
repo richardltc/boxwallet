@@ -291,6 +291,66 @@ pub const SpiderByte = struct {
         return rpc.callExpectOk(allocator, auth, "backupwallet", params);
     }
 
+    /// Restore the wallet by swapping in a user-supplied backup `wallet.dat`.
+    /// This NovaCoin-era daemon has no `importwallet` RPC — its backup is a binary
+    /// `backupwallet` copy — so restore is the file-level counterpart: replace
+    /// `<data_dir>/wallet.dat` with `src_path`. The daemon holds `wallet.dat` open
+    /// while running, so the caller stops it before calling this and restarts it
+    /// after (see the offline-restore orchestration in `app.zig`); this hook only
+    /// touches files and takes no auth.
+    ///
+    /// Safety: the existing `wallet.dat` (if any) is first moved aside to a
+    /// timestamped `wallet.dat.bak-<unix_ts>` sibling, so a mistaken restore never
+    /// destroys the current wallet — it stays recoverable. An empty source is
+    /// rejected before anything is clobbered. The copy is streamed in a fixed
+    /// buffer (no whole-file buffering).
+    pub fn walletRestoreFileOffline(
+        allocator: std.mem.Allocator,
+        home: []const u8,
+        src_path: []const u8,
+    ) !void {
+        // Self-contained blocking IO (mirrors Ergo's walletRemove and the
+        // Monero-style coins' copyKeysFile) — the file work is bounded and this hook
+        // takes no `io` from the caller.
+        var threaded: std.Io.Threaded = .init(allocator, .{});
+        defer threaded.deinit();
+        const io = threaded.io();
+
+        const data_dir = try dataDir(allocator, home);
+        defer allocator.free(data_dir);
+
+        // Open source via (dir, basename) so an absolute picker path works the same
+        // way the conf code / copyKeysFile open files.
+        const src_dir = std.fs.path.dirname(src_path) orelse ".";
+        const src_base = std.fs.path.basename(src_path);
+        var sd = std.Io.Dir.cwd().openDir(io, src_dir, .{}) catch return error.WalletFileNotFound;
+        defer sd.close(io);
+
+        // Reject an empty/missing source before touching the current wallet.
+        const src_stat = sd.statFile(io, src_base, .{}) catch return error.WalletFileNotFound;
+        if (src_stat.size == 0) return error.EmptyWalletFile;
+
+        var dd = try std.Io.Dir.cwd().createDirPathOpen(io, data_dir, .{});
+        defer dd.close(io);
+
+        // Preserve the current wallet.dat (if present) as a timestamped backup so a
+        // wrong-file restore stays recoverable. A missing current wallet is fine.
+        if (dd.statFile(io, "wallet.dat", .{})) |_| {
+            const ns = std.Io.Timestamp.now(io, .real).toNanoseconds();
+            const bak = try std.fmt.allocPrint(allocator, "wallet.dat.bak-{d}", .{ns});
+            defer allocator.free(bak);
+            try dd.rename("wallet.dat", dd, bak, io);
+        } else |err| switch (err) {
+            error.FileNotFound => {},
+            else => return err,
+        }
+
+        // Stream the backup into place. Unlike copyKeysFile (a single 64 KB read,
+        // fine for tiny .keys files), a BDB wallet.dat can be large, so copyFile's
+        // streaming copy is used — still bounded memory, but no truncation.
+        try sd.copyFile(src_base, dd, "wallet.dat", io, .{});
+    }
+
     /// This daemon answers `getinfo` immediately on startup (no bitcoin-style
     /// "-28 warm-up" phase), so probe it for liveness/warm-up.
     pub fn warmupProbeMethod() []const u8 {
@@ -370,6 +430,7 @@ pub const SpiderByte = struct {
         .wallet_unlock = vtWalletUnlock,
         .wallet_lock = vtWalletLock,
         .wallet_backup = vtWalletBackup,
+        .wallet_restore_file_offline = vtWalletRestoreFileOffline,
         .warmup_probe_method = vtWarmupProbeMethod,
     };
 
@@ -520,6 +581,14 @@ pub const SpiderByte = struct {
     ) anyerror!void {
         return walletBackup(allocator, auth, dest_path);
     }
+    fn vtWalletRestoreFileOffline(
+        _: *anyopaque,
+        allocator: std.mem.Allocator,
+        home: []const u8,
+        src_path: []const u8,
+    ) anyerror!void {
+        return walletRestoreFileOffline(allocator, home, src_path);
+    }
     fn vtWarmupProbeMethod(_: *anyopaque) []const u8 {
         return warmupProbeMethod();
     }
@@ -665,6 +734,133 @@ test "two-tone wordmark splits SpiderByte into a white head and brand tail" {
     // Head is the white override; tail is the brand colour.
     try std.testing.expectEqualStrings("#ffffff", wm.head_color.?);
     try std.testing.expectEqualStrings("#f72585", wm.alt_color);
+}
+
+test "walletRestoreFileOffline swaps a backup into place, preserving the old wallet" {
+    if (builtin.os.tag == .windows) return error.SkipZigTest;
+    const allocator = std.testing.allocator;
+
+    var threaded: std.Io.Threaded = .init(allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    const cwd = std.Io.Dir.cwd();
+
+    // A fake home (relative to cwd) whose .SpiderByte data dir we can inspect.
+    const home = "test-spb-restore-home";
+    cwd.deleteTree(io, home) catch {};
+    defer cwd.deleteTree(io, home) catch {};
+
+    const data_dir = try SpiderByte.dataDir(allocator, home);
+    defer allocator.free(data_dir);
+    var dd = try cwd.createDirPathOpen(io, data_dir, .{});
+    defer dd.close(io);
+
+    // Seed an existing (current) wallet.dat and a separate backup to restore.
+    try dd.writeFile(io, .{ .sub_path = "wallet.dat", .data = "OLD-WALLET" });
+    var hd = try cwd.createDirPathOpen(io, home, .{});
+    defer hd.close(io);
+    try hd.writeFile(io, .{ .sub_path = "backup.dat", .data = "NEW-WALLET" });
+    const src = try std.fs.path.join(allocator, &.{ home, "backup.dat" });
+    defer allocator.free(src);
+
+    try SpiderByte.walletRestoreFileOffline(allocator, home, src);
+
+    // Destination now holds the backup's contents…
+    {
+        const got = try dd.readFileAlloc(io, "wallet.dat", allocator, .limited(64));
+        defer allocator.free(got);
+        try std.testing.expectEqualStrings("NEW-WALLET", got);
+    }
+
+    // …and the previous wallet.dat was preserved as a wallet.dat.bak-* sibling.
+    var idir = try cwd.openDir(io, data_dir, .{ .iterate = true });
+    defer idir.close(io);
+    var it = idir.iterate();
+    var found_bak = false;
+    while (try it.next(io)) |entry| {
+        if (std.mem.startsWith(u8, entry.name, "wallet.dat.bak-")) {
+            const old = try dd.readFileAlloc(io, entry.name, allocator, .limited(64));
+            defer allocator.free(old);
+            try std.testing.expectEqualStrings("OLD-WALLET", old);
+            found_bak = true;
+        }
+    }
+    try std.testing.expect(found_bak);
+}
+
+test "walletRestoreFileOffline restores into a fresh data dir (no prior wallet)" {
+    if (builtin.os.tag == .windows) return error.SkipZigTest;
+    const allocator = std.testing.allocator;
+
+    var threaded: std.Io.Threaded = .init(allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    const cwd = std.Io.Dir.cwd();
+
+    const home = "test-spb-restore-fresh";
+    cwd.deleteTree(io, home) catch {};
+    defer cwd.deleteTree(io, home) catch {};
+
+    const data_dir = try SpiderByte.dataDir(allocator, home);
+    defer allocator.free(data_dir);
+    var dd = try cwd.createDirPathOpen(io, data_dir, .{});
+    defer dd.close(io);
+
+    var hd = try cwd.createDirPathOpen(io, home, .{});
+    defer hd.close(io);
+    try hd.writeFile(io, .{ .sub_path = "backup.dat", .data = "RESTORED" });
+    const src = try std.fs.path.join(allocator, &.{ home, "backup.dat" });
+    defer allocator.free(src);
+
+    // No current wallet.dat present — restore should just drop the backup in.
+    try SpiderByte.walletRestoreFileOffline(allocator, home, src);
+
+    const got = try dd.readFileAlloc(io, "wallet.dat", allocator, .limited(64));
+    defer allocator.free(got);
+    try std.testing.expectEqualStrings("RESTORED", got);
+}
+
+test "walletRestoreFileOffline rejects an empty source before clobbering the wallet" {
+    if (builtin.os.tag == .windows) return error.SkipZigTest;
+    const allocator = std.testing.allocator;
+
+    var threaded: std.Io.Threaded = .init(allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    const cwd = std.Io.Dir.cwd();
+
+    const home = "test-spb-restore-empty";
+    cwd.deleteTree(io, home) catch {};
+    defer cwd.deleteTree(io, home) catch {};
+
+    const data_dir = try SpiderByte.dataDir(allocator, home);
+    defer allocator.free(data_dir);
+    var dd = try cwd.createDirPathOpen(io, data_dir, .{});
+    defer dd.close(io);
+    try dd.writeFile(io, .{ .sub_path = "wallet.dat", .data = "KEEP-ME" });
+
+    // An empty backup is refused outright — the current wallet must be untouched.
+    var hd = try cwd.createDirPathOpen(io, home, .{});
+    defer hd.close(io);
+    try hd.writeFile(io, .{ .sub_path = "empty.dat", .data = "" });
+    const src = try std.fs.path.join(allocator, &.{ home, "empty.dat" });
+    defer allocator.free(src);
+
+    try std.testing.expectError(error.EmptyWalletFile, SpiderByte.walletRestoreFileOffline(allocator, home, src));
+
+    const still = try dd.readFileAlloc(io, "wallet.dat", allocator, .limited(64));
+    defer allocator.free(still);
+    try std.testing.expectEqualStrings("KEEP-ME", still);
+}
+
+test "coin vtable exposes the offline wallet-file restore" {
+    var spb: SpiderByte = .{};
+    const c = spb.coin();
+    // SpiderByte offers the offline file swap but not the RPC importwallet path.
+    try std.testing.expect(c.supportsWalletRestoreOffline());
+    try std.testing.expect(!c.supportsWalletImport());
+    // Backup is still offered (binary backupwallet copy).
+    try std.testing.expect(c.supportsWalletBackup());
 }
 
 test "walletPath points at the NovaCoin-era wallet.dat under the data dir" {

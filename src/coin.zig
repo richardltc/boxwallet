@@ -505,6 +505,20 @@ pub const Coin = struct {
             auth: models.CoinAuth,
             src_path: []const u8,
         ) anyerror!void = null,
+        /// Optional: restore a wallet by replacing the coin's managed wallet file
+        /// with a user-supplied backup, performed OFFLINE (daemon stopped) — for
+        /// old daemons whose backup is a binary `wallet.dat` copy and that have no
+        /// `importwallet` RPC (SpiderByte). The app stops the daemon, calls this,
+        /// then restarts it, so the restored wallet is loaded cleanly. This hook
+        /// only touches files; it takes no auth (the daemon is down). Distinct from
+        /// `wallet_import_file` (bitcoin-core `importwallet`, which runs over RPC on
+        /// a *live* daemon and merges keys into the open wallet). Null = unsupported.
+        wallet_restore_file_offline: ?*const fn (
+            ptr: *anyopaque,
+            allocator: std.mem.Allocator,
+            home_dir: []const u8,
+            src_path: []const u8,
+        ) anyerror!void = null,
         /// Optional: the on-disk location of the coin's managed wallet, for the
         /// Settings tab. Returns null for coins BoxWallet manages no discrete
         /// wallet file for (Ergo's node-internal wallet, Epic's node-only build,
@@ -788,6 +802,26 @@ pub const Coin = struct {
     ) !void {
         const f = self.vtable.wallet_import_file orelse return error.Unsupported;
         return f(self.ptr, allocator, auth, src_path);
+    }
+
+    /// Whether this coin can restore its wallet by an offline file swap (the `w`
+    /// menu's "Restore from a wallet file", daemon-stopped). True iff the coin
+    /// wires `wallet_restore_file_offline`. Distinct from `supportsWalletImport`.
+    pub fn supportsWalletRestoreOffline(self: Coin) bool {
+        return self.vtable.wallet_restore_file_offline != null;
+    }
+
+    /// Restore the wallet by replacing its managed file with the backup at
+    /// `src_path` (daemon must be stopped by the caller). Errors
+    /// `error.Unsupported` if the coin has no offline file restore.
+    pub fn walletRestoreFileOffline(
+        self: Coin,
+        allocator: std.mem.Allocator,
+        home_dir: []const u8,
+        src_path: []const u8,
+    ) !void {
+        const f = self.vtable.wallet_restore_file_offline orelse return error.Unsupported;
+        return f(self.ptr, allocator, home_dir, src_path);
     }
 
     /// The RPC method to probe for a warm-up phase, or null for coins with no

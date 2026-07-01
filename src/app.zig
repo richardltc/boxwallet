@@ -407,6 +407,9 @@ const WalletAction = enum {
     backup,
     /// Restore the wallet from a backup file (bitcoin-core `importwallet`).
     restore,
+    /// Restore the wallet by swapping in a backup file with the daemon stopped
+    /// (old daemons with no `importwallet`, e.g. SpiderByte's binary wallet.dat).
+    restore_file_offline,
 
     /// The menu label for the action.
     fn label(self: WalletAction) []const u8 {
@@ -417,16 +420,18 @@ const WalletAction = enum {
             .lock => "Lock wallet",
             .backup => "Back up wallet",
             .restore => "Restore from file",
+            .restore_file_offline => "Restore from a wallet file",
         };
     }
 
     /// Whether the action needs a passphrase entered first. `lock` doesn't, and
     /// neither do `backup`/`restore` — they run against an already-unlocked wallet
-    /// and set no new credential (so no entry and no confirmation step).
+    /// and set no new credential (so no entry and no confirmation step). The
+    /// offline file restore is a daemon-stopped file swap and takes no password.
     fn needsPassword(self: WalletAction) bool {
         return switch (self) {
             .encrypt, .unlock, .stake => true,
-            .lock, .backup, .restore => false,
+            .lock, .backup, .restore, .restore_file_offline => false,
         };
     }
 };
@@ -519,8 +524,10 @@ fn menuChoicesFor(coin: Coin, buf: *[3]SetupChoice) usize {
 /// unlock-for-staking on proof-of-stake coins); unlocked → lock; unknown → none.
 /// Backup/restore (when the coin supports them) are offered only while the wallet
 /// is reachable for a key dump — unencrypted or unlocked, never locked (the
-/// daemon rejects `dumpwallet`/`importwallet` on a locked wallet).
-fn walletOptions(wallet: WalletState, pos: bool, supports_backup: bool, supports_import: bool, buf: *[3]WalletAction) usize {
+/// daemon rejects `dumpwallet`/`importwallet` on a locked wallet). The *offline*
+/// file restore (`supports_restore_offline`) is a daemon-stopped file swap, so it
+/// needs no live/unlocked wallet and is offered in every state (including locked).
+fn walletOptions(wallet: WalletState, pos: bool, supports_backup: bool, supports_import: bool, supports_restore_offline: bool, buf: *[4]WalletAction) usize {
     var n: usize = 0;
     switch (wallet) {
         .unencrypted => {
@@ -534,12 +541,20 @@ fn walletOptions(wallet: WalletState, pos: bool, supports_backup: bool, supports
                 buf[n] = .restore;
                 n += 1;
             }
+            if (supports_restore_offline) {
+                buf[n] = .restore_file_offline;
+                n += 1;
+            }
         },
         .locked => {
             buf[n] = .unlock;
             n += 1;
             if (pos) {
                 buf[n] = .stake;
+                n += 1;
+            }
+            if (supports_restore_offline) {
+                buf[n] = .restore_file_offline;
                 n += 1;
             }
         },
@@ -552,6 +567,10 @@ fn walletOptions(wallet: WalletState, pos: bool, supports_backup: bool, supports
             }
             if (supports_import) {
                 buf[n] = .restore;
+                n += 1;
+            }
+            if (supports_restore_offline) {
+                buf[n] = .restore_file_offline;
                 n += 1;
             }
         },
@@ -582,8 +601,14 @@ const Modal = struct {
         setup_password_confirm,
         /// External-wallet: type/paste the restore seed (length per coin).
         setup_seed_input,
-        /// External-wallet: browse for a wallet file to import.
+        /// External-wallet: browse for a wallet file to import. Also reused by the
+        /// bitcoin-style offline file restore (`restore_file_offline`).
         setup_file,
+        /// Confirm the destructive offline file restore (`restore_file_offline`):
+        /// the current wallet.dat is replaced — the daemon is bounced to load the
+        /// backup. The old wallet.dat is kept as a `.bak`, so this is a plain
+        /// enter-to-proceed confirm, not a typed-word gate.
+        restore_file_confirm,
         /// External-wallet: show the freshly-created seed to write down.
         setup_seed_show,
         /// External-wallet: quiz the user on a few seed words to confirm the backup.
@@ -596,7 +621,7 @@ const Modal = struct {
     stage: Stage = .menu,
     /// Index into `options[0..option_count]`.
     sel: usize = 0,
-    options: [3]WalletAction = undefined,
+    options: [4]WalletAction = undefined,
     option_count: usize = 0,
     /// The action chosen at the menu (valid from the password stage on).
     action: WalletAction = .unlock,
@@ -1045,6 +1070,12 @@ const Activity = struct {
     /// restarted (an in-daemon wallet like Ergo caches its secret, so the node must
     /// bounce before a new wallet can be created/restored). Cleared as it advances.
     wallet_replace_await_stop: bool = false,
+    /// Set while an in-app offline wallet-file restore is mid-sequence: we've asked
+    /// the daemon to stop, and once it's down the picked backup (in `wallet_file_buf`)
+    /// is swapped over `wallet.dat` and the daemon restarted so it loads it (the
+    /// daemon holds `wallet.dat` open while running, e.g. SpiderByte). Cleared as it
+    /// advances.
+    wallet_restore_await_stop: bool = false,
     /// The running daemon's self-reported version (empty when down/unknown), for
     /// the "Running" line. Folded from `poll_version_*` after a poll; cleared on
     /// stop. Program-lifetime fixed buffer.
@@ -1435,6 +1466,9 @@ const Activity = struct {
             .lock => try self.coin.walletLock(a, auth),
             .backup => try self.coin.walletBackup(a, auth, path),
             .restore => try self.coin.walletImportFile(a, auth, path),
+            // The offline file restore never runs through this RPC worker — it's a
+            // daemon-stopped file swap driven by the tick reap loop.
+            .restore_file_offline => unreachable,
         }
     }
 
@@ -2721,9 +2755,10 @@ pub const App = struct {
                 .enter => {
                     if (m.option_count == 0) return;
                     m.action = m.options[m.sel];
-                    if (m.action == .restore) {
+                    if (m.action == .restore or m.action == .restore_file_offline) {
                         // Restore needs a backup file — browse for it, then submit
-                        // (no password: the wallet is already unlocked).
+                        // (no password: the RPC import runs on the unlocked wallet,
+                        // and the offline swap runs with the daemon stopped).
                         m.stage = .setup_file;
                         self.startFilePicker();
                     } else if (m.action.needsPassword()) {
@@ -2879,6 +2914,15 @@ pub const App = struct {
                             m.stage = .setup_password;
                             self.pw_input.setValue("") catch {};
                             self.pw_input.focus();
+                        } else if (m.action == .restore_file_offline) {
+                            // Bitcoin-style offline swap: stash the picked path and
+                            // confirm before bouncing the daemon to load it.
+                            const act = &self.activities[m.coin_idx];
+                            const fp = self.file_picker.getSelected() orelse "";
+                            const fl = @min(fp.len, act.wallet_file_buf.len);
+                            @memcpy(act.wallet_file_buf[0..fl], fp[0..fl]);
+                            act.wallet_file_len = fl;
+                            m.stage = .restore_file_confirm;
                         } else {
                             self.submitWalletAction();
                         }
@@ -2935,6 +2979,13 @@ pub const App = struct {
                     m.replace_bad = false;
                     self.seed_input.handleKey(k);
                 },
+            },
+            // Confirm the offline file restore: enter bounces the daemon to swap in
+            // the picked backup; esc cancels. The old wallet.dat is kept as a .bak.
+            .restore_file_confirm => switch (k.key) {
+                .escape => self.closeWalletModal(),
+                .enter => self.beginWalletFileRestore(),
+                else => {},
             },
             // While the RPC is in flight, ignore input — the reap moves us on.
             .working => {},
@@ -3129,6 +3180,31 @@ pub const App = struct {
                 }
             }
 
+            // Offline wallet-file restore, step 2: the daemon was asked to stop.
+            // Once it's down, swap the picked backup over wallet.dat and restart so
+            // the daemon loads it. If it wouldn't stop, abort rather than overwrite a
+            // wallet.dat a live daemon still holds open.
+            if (act.wallet_restore_await_stop and act.daemon_thread == null and act.daemonState() != .stopping) {
+                act.wallet_restore_await_stop = false;
+                if (act.daemonState() == .stopped) {
+                    if (self.coinAt(i)) |c| {
+                        const src = act.wallet_file_buf[0..act.wallet_file_len];
+                        if (c.walletRestoreFileOffline(self.allocator, self.home_dir, src)) {
+                            self.logf("{s}: wallet restored — restarting daemon", .{c.coinName()});
+                        } else |err| {
+                            self.logf("{s}: wallet restore failed ({s})", .{ c.coinName(), @errorName(err) });
+                        }
+                        act.wallet_file_len = 0;
+                        // Restart regardless: the user expects the node back up. On a
+                        // failed swap the previous wallet.dat (or its .bak) is intact.
+                        self.beginDaemonStart(c, act);
+                    }
+                } else {
+                    act.wallet_file_len = 0;
+                    if (self.coinAt(i)) |c| self.logf("{s}: restore aborted (daemon wouldn't stop)", .{c.coinName()});
+                }
+            }
+
             // Reap a finished QuickSync (sync-accelerator) download: on success
             // close the prompt and start the daemon (now that the helper is on
             // disk, `daemonArgv` will pass it); on failure flip the prompt to its
@@ -3261,7 +3337,9 @@ pub const App = struct {
                                 .stake => "Wallet unlocked for staking.",
                                 .lock => "Wallet locked.",
                                 .restore => "Wallet restored — your balance will appear after it rescans.",
-                                .backup => unreachable,
+                                // Not RPC-worker actions: backup is handled above;
+                                // the offline restore is driven by the tick loop.
+                                .backup, .restore_file_offline => unreachable,
                             });
                         } else {
                             var buf: [200]u8 = undefined;
@@ -4300,6 +4378,25 @@ pub const App = struct {
         self.tryStop();
     }
 
+    /// Begin a confirmed offline wallet-file restore: the picked backup path is
+    /// already in the activity's `wallet_file_buf`. The daemon holds `wallet.dat`
+    /// open while running, so we stop it, and once it's down the tick reap loop
+    /// swaps the file in and restarts (mirrors `beginWalletReplace`'s stop→act→
+    /// restart, but replacing the wallet file rather than deleting it).
+    fn beginWalletFileRestore(self: *App) void {
+        const m = self.modal orelse return;
+        const act = &self.activities[m.coin_idx];
+        const coin = self.coinAt(m.coin_idx) orelse return;
+        self.closeWalletModal();
+        act.coin = coin;
+        act.home_dir = self.home_dir;
+        act.install_root = self.install_root;
+
+        act.wallet_restore_await_stop = true;
+        self.logf("{s}: restoring wallet — stopping daemon…", .{coin.coinName()});
+        self.tryStop();
+    }
+
     /// Point the file picker at the user's home dir and focus it, for the
     /// restore-from-file flow.
     fn startFilePicker(self: *App) void {
@@ -4327,8 +4424,8 @@ pub const App = struct {
             self.logf("{s}: start the daemon first to manage the wallet", .{coin.coinName()});
             return;
         }
-        var opts: [3]WalletAction = undefined;
-        const n = walletOptions(act.wallet, coin.isProofOfStake(), coin.supportsWalletBackup(), coin.supportsWalletImport(), &opts);
+        var opts: [4]WalletAction = undefined;
+        const n = walletOptions(act.wallet, coin.isProofOfStake(), coin.supportsWalletBackup(), coin.supportsWalletImport(), coin.supportsWalletRestoreOffline(), &opts);
         if (act.wallet == .unknown or n == 0) {
             self.logf("{s}: wallet state not known yet — try again in a moment", .{coin.coinName()});
             return;
@@ -5254,7 +5351,8 @@ pub const App = struct {
         if (m.stage == .setup_file) {
             var fout: std.Io.Writer.Allocating = .init(a);
             errdefer fout.deinit();
-            const heading = (zz.Style{}).bold(true).fg(brand).render(a, "Select a wallet file to import") catch "Select a wallet file to import";
+            const heading_txt = if (m.action == .restore_file_offline) "Select your backup wallet.dat to restore" else "Select a wallet file to import";
+            const heading = (zz.Style{}).bold(true).fg(brand).render(a, heading_txt) catch heading_txt;
             try fout.writer.print("{s}\n\n", .{heading});
             const picker = try self.file_picker.view(a);
             try fout.writer.writeAll(picker);
@@ -5406,6 +5504,11 @@ pub const App = struct {
                     try modalRow(&out.writer, vbar, inner_w, (zz.Style{}).fg(.red).render(a, note) catch note, zz.width(note));
                 }
             },
+            // Confirm the offline file restore (daemon bounced, wallet.dat swapped).
+            .restore_file_confirm => {
+                const warn = "This replaces the current wallet.dat with the selected backup and restarts the daemon. The existing wallet.dat is kept as a timestamped .bak.";
+                try wrapIntoRows(a, &out.writer, vbar, inner_w, warn, (zz.Style{}).bold(true).fg(brand));
+            },
             .setup_file => unreachable, // handled by the early return above
             .working => try modalRow(&out.writer, vbar, inner_w, "Working…", zz.width("Working…")),
             .result => {
@@ -5424,6 +5527,7 @@ pub const App = struct {
             .setup_seed_show => "press any key once you've written them down",
             .setup_seed_verify => "enter: check   esc: cancel",
             .setup_replace_confirm => "enter: confirm   esc: cancel",
+            .restore_file_confirm => "enter: restore   esc: cancel",
             .setup_file => unreachable,
             .working => "please wait…",
             .result => "press any key to close",
@@ -6924,49 +7028,49 @@ test "the Wallet line advertises the w key once the wallet is manageable" {
 }
 
 test "wallet menu offers the actions that fit the wallet state" {
-    var buf: [3]WalletAction = undefined;
+    var buf: [4]WalletAction = undefined;
 
     // Unencrypted → only Encrypt (no backup/restore support).
     {
-        const n = walletOptions(.unencrypted, false, false, false, &buf);
+        const n = walletOptions(.unencrypted, false, false, false, false, &buf);
         try std.testing.expectEqual(@as(usize, 1), n);
         try std.testing.expectEqual(WalletAction.encrypt, buf[0]);
     }
     // Locked on a proof-of-work coin → just Unlock.
     {
-        const n = walletOptions(.locked, false, false, false, &buf);
+        const n = walletOptions(.locked, false, false, false, false, &buf);
         try std.testing.expectEqual(@as(usize, 1), n);
         try std.testing.expectEqual(WalletAction.unlock, buf[0]);
     }
     // Locked on a proof-of-stake coin → Unlock + Unlock-for-staking.
     {
-        const n = walletOptions(.locked, true, false, false, &buf);
+        const n = walletOptions(.locked, true, false, false, false, &buf);
         try std.testing.expectEqual(@as(usize, 2), n);
         try std.testing.expectEqual(WalletAction.unlock, buf[0]);
         try std.testing.expectEqual(WalletAction.stake, buf[1]);
     }
     // Unlocked (either flavour) → Lock.
     {
-        try std.testing.expectEqual(@as(usize, 1), walletOptions(.unlocked, true, false, false, &buf));
+        try std.testing.expectEqual(@as(usize, 1), walletOptions(.unlocked, true, false, false, false, &buf));
         try std.testing.expectEqual(WalletAction.lock, buf[0]);
-        try std.testing.expectEqual(@as(usize, 1), walletOptions(.unlocked_for_staking, true, false, false, &buf));
+        try std.testing.expectEqual(@as(usize, 1), walletOptions(.unlocked_for_staking, true, false, false, false, &buf));
         try std.testing.expectEqual(WalletAction.lock, buf[0]);
     }
     // Unknown → no actions (the menu won't open).
-    try std.testing.expectEqual(@as(usize, 0), walletOptions(.unknown, true, false, false, &buf));
+    try std.testing.expectEqual(@as(usize, 0), walletOptions(.unknown, true, false, false, false, &buf));
 
     // With backup/restore support: offered when unencrypted or unlocked, after
     // the primary action — but never while locked (the dump RPCs need the wallet
     // open).
     {
-        const n = walletOptions(.unencrypted, false, true, true, &buf);
+        const n = walletOptions(.unencrypted, false, true, true, false, &buf);
         try std.testing.expectEqual(@as(usize, 3), n);
         try std.testing.expectEqual(WalletAction.encrypt, buf[0]);
         try std.testing.expectEqual(WalletAction.backup, buf[1]);
         try std.testing.expectEqual(WalletAction.restore, buf[2]);
     }
     {
-        const n = walletOptions(.unlocked, false, true, true, &buf);
+        const n = walletOptions(.unlocked, false, true, true, false, &buf);
         try std.testing.expectEqual(@as(usize, 3), n);
         try std.testing.expectEqual(WalletAction.lock, buf[0]);
         try std.testing.expectEqual(WalletAction.backup, buf[1]);
@@ -6974,18 +7078,48 @@ test "wallet menu offers the actions that fit the wallet state" {
     }
     {
         // Locked → still just Unlock, even with backup/restore wired.
-        const n = walletOptions(.locked, false, true, true, &buf);
+        const n = walletOptions(.locked, false, true, true, false, &buf);
         try std.testing.expectEqual(@as(usize, 1), n);
         try std.testing.expectEqual(WalletAction.unlock, buf[0]);
     }
 
-    // Encrypt/unlock/stake need a passphrase; lock, backup and restore don't.
+    // Offline file restore (SpiderByte shape: backup wired, import not) is offered
+    // in *every* real state — including locked — because it's a daemon-stopped file
+    // swap that needs no open/unlocked wallet.
+    {
+        // Unencrypted → Encrypt + Backup + offline restore.
+        const n = walletOptions(.unencrypted, false, true, false, true, &buf);
+        try std.testing.expectEqual(@as(usize, 3), n);
+        try std.testing.expectEqual(WalletAction.encrypt, buf[0]);
+        try std.testing.expectEqual(WalletAction.backup, buf[1]);
+        try std.testing.expectEqual(WalletAction.restore_file_offline, buf[2]);
+    }
+    {
+        // Locked PoS → Unlock + Stake + offline restore (backup omitted: locked).
+        const n = walletOptions(.locked, true, true, false, true, &buf);
+        try std.testing.expectEqual(@as(usize, 3), n);
+        try std.testing.expectEqual(WalletAction.unlock, buf[0]);
+        try std.testing.expectEqual(WalletAction.stake, buf[1]);
+        try std.testing.expectEqual(WalletAction.restore_file_offline, buf[2]);
+    }
+    {
+        // Unlocked → Lock + Backup + offline restore.
+        const n = walletOptions(.unlocked, false, true, false, true, &buf);
+        try std.testing.expectEqual(@as(usize, 3), n);
+        try std.testing.expectEqual(WalletAction.lock, buf[0]);
+        try std.testing.expectEqual(WalletAction.backup, buf[1]);
+        try std.testing.expectEqual(WalletAction.restore_file_offline, buf[2]);
+    }
+
+    // Encrypt/unlock/stake need a passphrase; lock, backup, restore and the offline
+    // restore don't.
     try std.testing.expect(WalletAction.encrypt.needsPassword());
     try std.testing.expect(WalletAction.unlock.needsPassword());
     try std.testing.expect(WalletAction.stake.needsPassword());
     try std.testing.expect(!WalletAction.lock.needsPassword());
     try std.testing.expect(!WalletAction.backup.needsPassword());
     try std.testing.expect(!WalletAction.restore.needsPassword());
+    try std.testing.expect(!WalletAction.restore_file_offline.needsPassword());
 }
 
 test "WalletState mirrors the normalized WalletSecurity" {
@@ -7017,7 +7151,7 @@ test "the wallet modal renders its menu centered over the dashboard" {
     // open gate needs a running daemon, so set the modal up directly here.
     app.selected = std.mem.indexOfScalar(Entry, &entries, .divi).?;
     var m: Modal = .{ .coin_idx = app.selected };
-    m.option_count = walletOptions(.locked, true, false, false, &m.options);
+    m.option_count = walletOptions(.locked, true, false, false, false, &m.options);
     app.modal = m;
 
     var arena = std.heap.ArenaAllocator.init(allocator);
