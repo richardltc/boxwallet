@@ -7,6 +7,7 @@ const memory = @import("memory.zig");
 const conf = @import("conf.zig");
 const rpc = @import("rpc.zig");
 const updater = @import("update.zig");
+const qrcode = @import("qrcode.zig");
 const Coin = @import("coin.zig").Coin;
 const Nexa = @import("coins/nexa.zig").Nexa;
 const Divi = @import("coins/divi.zig").Divi;
@@ -1144,6 +1145,35 @@ const Activity = struct {
     /// so those writes are ordered without a separate atomic.
     poll_version_buf: [32]u8 = undefined,
     poll_version_len: usize = 0,
+    /// The coin's cached recent transactions (Transactions tab), newest-first.
+    /// Folded from `poll_tx_*` after a poll; cleared on daemon stop. Only ever
+    /// populated for a coin whose `supportsTransactions()` is true — stays empty
+    /// (and unused) for every other coin. Fixed-capacity, matching the project's
+    /// "bound the working set" memory rule.
+    tx_buf: [tx_cache_cap]models.WalletTx = undefined,
+    tx_count: usize = 0,
+    /// Poll-staging for the transaction cache — same ordering rationale as
+    /// `poll_version_buf`: written by the poll worker before `poll_done` (release),
+    /// read by the UI after observing it (acquire).
+    poll_tx_buf: [tx_cache_cap]models.WalletTx = undefined,
+    poll_tx_count: usize = 0,
+    /// The coin's cached receive address (Receive tab), and its poll-staging
+    /// counterpart — same cross-thread plain-buffer pattern as the version/
+    /// transaction caches. Unlike balance/transactions, this is fetched at
+    /// most once passively (see `want_new_receive_address`), never every
+    /// poll: `getaccountaddress` silently rotates once the address has been
+    /// paid, so polling it on a timer would swap the displayed address out
+    /// from under the user without their consent.
+    receive_addr_buf: [128]u8 = undefined,
+    receive_addr_len: usize = 0,
+    poll_receive_addr_buf: [128]u8 = undefined,
+    poll_receive_addr_len: usize = 0,
+    /// Set by the UI thread (only at the pre-spawn staging point, never while
+    /// a poll is in flight — see the spawn site) when the user pressed the
+    /// Receive tab's "New address" key. `fetchStatus` consumes it: true means
+    /// mint a brand-new address (`getnewaddress`) instead of the stable
+    /// "current" one, and clears the flag whether or not the fetch succeeded.
+    want_new_receive_address: bool = false,
     /// Set once we've stamped the version marker from the live daemon for an install
     /// that had none — so a pre-marker (legacy) install stops reading as "update
     /// available" without a reinstall. One-shot per session.
@@ -1738,6 +1768,17 @@ const Activity = struct {
             self.has_balance = true;
         }
 
+        // Cached transactions (staged by the poll worker before `poll_done`), same
+        // ordering rationale as the version buffer above.
+        const tn = @min(self.poll_tx_count, self.tx_buf.len);
+        @memcpy(self.tx_buf[0..tn], self.poll_tx_buf[0..tn]);
+        self.tx_count = tn;
+
+        // Cached receive address, same ordering rationale.
+        const an = @min(self.poll_receive_addr_len, self.receive_addr_buf.len);
+        @memcpy(self.receive_addr_buf[0..an], self.poll_receive_addr_buf[0..an]);
+        self.receive_addr_len = an;
+
         // Wallet rescan progress (external in-daemon wallets only). The flag is
         // always adopted — clearing it the moment the scan catches up returns the
         // wallet line to "Unlocked".
@@ -2012,6 +2053,35 @@ const Activity = struct {
                 self.poll_balance_avail.store(@bitCast(bal.available), .monotonic);
                 self.poll_has_balance.store(1, .monotonic);
             } else |_| {}
+        }
+
+        // Wallet transaction history (Transactions tab), for coins that report
+        // one — every poll, regardless of which tab is on screen, so an
+        // incoming payment shows up promptly no matter what the user's
+        // looking at. Best-effort: a hiccup just leaves the last cached list,
+        // so a blip doesn't blank the tab.
+        if (self.coin.supportsTransactions()) {
+            if (self.coin.walletTransactions(a, auth, tx_cache_cap)) |txs| {
+                const n = @min(txs.len, tx_cache_cap);
+                @memcpy(self.poll_tx_buf[0..n], txs[0..n]);
+                self.poll_tx_count = n;
+            } else |_| {}
+        }
+
+        // Wallet receive address (Receive tab). Unlike balance/transactions,
+        // this is NOT re-fetched every poll: `getaccountaddress` silently
+        // rotates once the address has been paid, so polling it passively
+        // would swap the displayed address out from under the user without
+        // their consent. Fetched once (no cached address yet) or when the
+        // user explicitly asked for a new one via the Receive tab's "New
+        // address" key — never otherwise.
+        if (self.coin.supportsReceiveAddress() and (self.receive_addr_len == 0 or self.want_new_receive_address)) {
+            if (self.coin.walletReceiveAddress(a, auth, self.want_new_receive_address)) |addr| {
+                const n = @min(addr.len, self.poll_receive_addr_buf.len);
+                @memcpy(self.poll_receive_addr_buf[0..n], addr[0..n]);
+                self.poll_receive_addr_len = n;
+            } else |_| {}
+            self.want_new_receive_address = false; // consumed either way
         }
 
         // Re-adopt a still-unlocked in-daemon wallet after an app restart. The Ergo
@@ -2342,6 +2412,11 @@ fn pickDebugLogError(tail: []const u8) []const u8 {
 /// a row is a real freeze.
 const presync_stall_threshold: u32 = 2;
 
+/// How many of a coin's most recent transactions the Transactions tab caches
+/// and fetches per poll. Bounds both the RPC page size and the fixed-capacity
+/// display buffer (`Activity.tx_buf`/`poll_tx_buf`) — no unbounded growth.
+const tx_cache_cap: usize = 20;
+
 /// Read the headers pre-sync percentage from the coin's `<datadir>/debug.log`,
 /// in basis points (744 == 7.44%), or null when no presync line is in the tail.
 /// Bitcoin Core 24+ logs "Pre-synchronizing blockheaders, height: N (~X.XX%)"
@@ -2612,6 +2687,10 @@ pub const App = struct {
     /// Which tab of the selected coin's detail pane is showing. Global rather
     /// than per-coin: switching coins resets it to Home (see `move`).
     active_tab: DetailTab = .home,
+    /// A "New address" request from the Receive tab's `n` key, waiting to be
+    /// staged onto the selected coin's `Activity` at the next poll spawn (see
+    /// that site). Only ever touched by the UI thread.
+    pending_new_receive_address: bool = false,
     /// One per `entries` slot (index 0 / Home is unused), holding that coin's
     /// independent install state. Parallel to `entries` so the selected coin's
     /// activity is `activities[selected]`.
@@ -2857,7 +2936,7 @@ pub const App = struct {
         if (self.home_dir_owned) self.allocator.free(self.home_dir);
     }
 
-    pub fn update(self: *App, msg: Msg, _: *zz.Context) zz.Cmd(Msg) {
+    pub fn update(self: *App, msg: Msg, ctx: *zz.Context) zz.Cmd(Msg) {
         switch (msg) {
             // While the wallet modal is open it owns the keyboard — global keys
             // (quit/install/navigate) are suppressed so typing a passphrase or
@@ -2894,6 +2973,8 @@ pub const App = struct {
                         'k' => self.move(-1),
                         'j' => self.move(1),
                         'l' => self.log_visible = !self.log_visible,
+                        'c' => if (on_coin and self.active_tab == .receive) self.copyReceiveAddress(ctx),
+                        'n' => if (on_coin and self.active_tab == .receive) self.requestNewReceiveAddress(),
                         // Jump straight to a tab by number (1 = Home … 5 = Settings).
                         '1'...'5' => if (on_coin) {
                             self.active_tab = @enumFromInt(c - '1');
@@ -3297,6 +3378,14 @@ pub const App = struct {
                         // "Total: 0" for a stopped daemon rather than a stale amount.
                         act.balance_total = 0;
                         act.balance_avail = 0;
+                        // Drop the cached transaction list — the daemon's gone.
+                        act.tx_count = 0;
+                        act.poll_tx_count = 0;
+                        // Drop the cached receive address too — re-fetched fresh
+                        // (the stable "current" address) next time the daemon comes
+                        // up and polls.
+                        act.receive_addr_len = 0;
+                        act.poll_receive_addr_len = 0;
                         // Drop any rescan indicator — the wallet's gone with the node.
                         act.rescanning = false;
                         act.poll_rescanning.store(0, .monotonic);
@@ -3605,6 +3694,12 @@ pub const App = struct {
                     act.poll_ok = false;
                     act.poll_alive = false;
                     act.poll_done.store(false, .monotonic);
+                    // Consume a pending "New address" request (set by the 'n' key
+                    // handler) — only ever written here, at the single pre-spawn
+                    // staging point, so there's no race with the poll worker
+                    // reading it (no poll is in flight while this runs).
+                    act.want_new_receive_address = self.pending_new_receive_address;
+                    self.pending_new_receive_address = false;
                     // Announce the first status check for this selection; the
                     // matching "received" line follows when the poll is reaped.
                     if (!act.status_logged)
@@ -4007,6 +4102,36 @@ pub const App = struct {
     /// `s` toggles the selected coin's daemon: start it when stopped, stop it when
     /// running. Mid-transition (starting/stopping) presses are ignored, mirroring
     /// the dimmed button — the one key always matches the label it shows.
+    /// Copy the selected coin's cached receive address to the system
+    /// clipboard via OSC 52 (`ctx.setClipboard`). Logs the outcome either way
+    /// so pressing `c` always gives visible feedback — including when the
+    /// terminal doesn't support/allow OSC 52 clipboard writes, which
+    /// `setClipboard` reports as `false` rather than an error.
+    fn copyReceiveAddress(self: *App, ctx: *zz.Context) void {
+        const coin = self.selectedCoin() orelse return;
+        const act = &self.activities[self.selected];
+        if (act.receive_addr_len == 0) return;
+        const addr = act.receive_addr_buf[0..act.receive_addr_len];
+        const copied = ctx.setClipboard(addr) catch false;
+        self.logf("{s}: {s}", .{
+            coin.coinName(),
+            if (copied) "address copied to clipboard" else "clipboard copy not supported by this terminal",
+        });
+    }
+
+    /// Request a fresh receive address on the next poll (`getnewaddress`,
+    /// which always mints a new key) rather than the stable "current" one
+    /// `fetchStatus` otherwise only fetches once. Forces an immediate poll
+    /// (`last_poll_ns = 0`, the same trick coin-switching uses, `move` below)
+    /// rather than waiting out the shared ~2s cadence, since this is a
+    /// deliberate user action expecting prompt feedback.
+    fn requestNewReceiveAddress(self: *App) void {
+        const act = &self.activities[self.selected];
+        if (!act.installed or act.poll_thread != null) return;
+        self.pending_new_receive_address = true;
+        self.last_poll_ns = 0;
+    }
+
     fn tryToggleDaemon(self: *App) void {
         const act = &self.activities[self.selected];
         switch (act.daemonState()) {
@@ -5250,6 +5375,14 @@ pub const App = struct {
                 controls,
             }),
             .settings => try renderSettingsTab(a, coin, brand, self.home_dir, act),
+            .transactions => if (coin.supportsTransactions())
+                try renderTransactionsTab(a, act, coin.balanceDecimals())
+            else
+                try renderPlaceholderTab(a, self.active_tab),
+            .receive => if (coin.supportsReceiveAddress())
+                try renderReceiveTab(a, act)
+            else
+                try renderPlaceholderTab(a, self.active_tab),
             else => try renderPlaceholderTab(a, self.active_tab),
         };
 
@@ -5330,6 +5463,125 @@ pub const App = struct {
             \\
             \\Coming soon.
         , .{tab.label()});
+    }
+
+    /// The Transactions tab body: the coin's cached recent transactions
+    /// (`act.tx_buf`/`act.tx_count`, populated by the poll worker), newest-first,
+    /// one per line — a direction glyph, the date, the amount, and a
+    /// confirmation status. Only reached for a coin whose
+    /// `supportsTransactions()` is true; every other coin's `.transactions` case
+    /// still falls through to `renderPlaceholderTab`. Reads only the cached
+    /// `act` fields — no RPC/disk IO in the render path.
+    fn renderTransactionsTab(a: std.mem.Allocator, act: *const Activity, decimals: u8) ![]const u8 {
+        if (act.tx_count == 0) {
+            return "Transactions\n\nNo transactions yet.";
+        }
+        var body: []const u8 = "";
+        for (act.tx_buf[0..act.tx_count], 0..) |tx, i| {
+            const glyph = txDirectionGlyph(a, tx.direction);
+            const date = try formatBlockTime(a, tx.time);
+            var buf: [64]u8 = undefined;
+            const amount = formatAmount(&buf, tx.amount, decimals);
+            const conf_text = txConfirmationText(a, tx.confirmations);
+            const line = try std.fmt.allocPrint(a, "{s}  {s}  {s}  {s}", .{ glyph, date, amount, conf_text });
+            body = if (i == 0) line else try std.fmt.allocPrint(a, "{s}\n{s}", .{ body, line });
+        }
+        return std.fmt.allocPrint(a, "Transactions\n\n{s}", .{body});
+    }
+
+    /// A transaction counts as settled once it has more than this many
+    /// confirmations; at or below it, the raw count is shown instead so the user
+    /// can watch it climb.
+    const tx_confirmed_threshold: i64 = 6;
+
+    /// The confirmation status for one Transactions row: a bold green
+    /// "Confirmed" once `confirmations` exceeds `tx_confirmed_threshold`,
+    /// otherwise a bold yellow "N confirmation(s)" (still settling — the same
+    /// yellow the pending/Available balance figure uses elsewhere).
+    fn txConfirmationText(a: std.mem.Allocator, confirmations: i64) []const u8 {
+        if (confirmations > tx_confirmed_threshold) {
+            return (zz.Style{}).bold(true).fg(.green).render(a, "Confirmed") catch "Confirmed";
+        }
+        const n = @max(confirmations, 0);
+        const text = std.fmt.allocPrint(a, "{d} confirmation{s}", .{ n, if (n == 1) "" else "s" }) catch "?";
+        return (zz.Style{}).bold(true).fg(.yellow).render(a, text) catch text;
+    }
+
+    /// The direction glyph for one Transactions row: bold green ↓ (received),
+    /// bold red ↑ (sent), or a bold yellow `*` for a stake reward — this daemon
+    /// reports a stake credit the same way a mined block reward would be (see
+    /// `SpiderByte.directionFromCategory`), so it's neither "received from" nor
+    /// "sent to" anyone; the coins were minted by the wallet itself.
+    fn txDirectionGlyph(a: std.mem.Allocator, direction: models.TxDirection) []const u8 {
+        return switch (direction) {
+            .received => (zz.Style{}).bold(true).fg(.green).render(a, "↓") catch "↓",
+            .sent => (zz.Style{}).bold(true).fg(.red).render(a, "↑") catch "↑",
+            .stake => (zz.Style{}).bold(true).fg(.yellow).render(a, "*") catch "*",
+        };
+    }
+
+    /// The Receive tab body: the coin's cached receive address
+    /// (`act.receive_addr_buf`/`receive_addr_len`, populated by the poll
+    /// worker) plus a QR code of it. Only reached for a coin whose
+    /// `supportsReceiveAddress()` is true; every other coin's `.receive` case
+    /// still falls through to `renderPlaceholderTab`. Reads only the cached
+    /// `act` fields — no RPC/disk IO in the render path (the QR encode itself
+    /// is pure computation on the already-cached address string).
+    fn renderReceiveTab(a: std.mem.Allocator, act: *const Activity) ![]const u8 {
+        if (act.receive_addr_len == 0) return "Receive\n\nNo address yet.";
+        const addr = act.receive_addr_buf[0..act.receive_addr_len];
+        const hint = (zz.Style{}).dim(true).render(a, "  (c: copy   n: new address)") catch "";
+        const qr = qrcode.encodeText(a, addr, .medium) catch return std.fmt.allocPrint(
+            a,
+            "Receive\n\nAddress: {s}{s}\n\n(QR code unavailable)",
+            .{ addr, hint },
+        );
+        defer qr.deinit();
+        const qr_block = try renderQrHalfBlock(a, qr);
+        return std.fmt.allocPrint(a, "Receive\n\nAddress: {s}{s}\n\n{s}", .{ addr, hint, qr_block });
+    }
+
+    /// True black/white for the QR render — ZigZag's *named* `.black`/
+    /// `.white` are `Color.ansi` presets ((0,0,0)/(192,192,192), not pure
+    /// white), which would hurt scan contrast.
+    const qr_black = zz.Color.hex("#000000");
+    const qr_white = zz.Color.hex("#ffffff");
+    /// Modules of light border required on all sides by the QR spec — a code
+    /// without one often fails to scan at all. This is a correctness
+    /// requirement, not polish.
+    const qr_quiet_zone: i32 = 4;
+
+    /// Render a `Qr` as ANSI-styled half-block Unicode (`▀`), the standard
+    /// "reliable in any terminal" technique (what `qrencode -t ANSIUTF8`/most
+    /// terminal QR tools do): pack 2 module-rows per printed row —
+    /// foreground = top module's color, background = bottom module's color —
+    /// so each character cell reads as one roughly-square QR pixel despite
+    /// terminal cells being about 2:1 tall. Includes the mandatory quiet
+    /// zone; `Qr.get` already reads out-of-bounds coordinates as light, which
+    /// is exactly the quiet zone's color, so no special-casing is needed at
+    /// the padded edges (including a trailing unpaired row, since QR sizes
+    /// are always odd and the quiet zone is even).
+    fn renderQrHalfBlock(a: std.mem.Allocator, qr: qrcode.Qr) ![]const u8 {
+        const sz: i32 = qr.size();
+        const padded: i32 = sz + qr_quiet_zone * 2;
+        var body: []const u8 = "";
+        var vy: i32 = 0;
+        var first = true;
+        while (vy < padded) : (vy += 2) {
+            var line: []const u8 = "";
+            var vx: i32 = 0;
+            while (vx < padded) : (vx += 1) {
+                const top_dark = qr.get(vx - qr_quiet_zone, vy - qr_quiet_zone);
+                const bottom_dark = qr.get(vx - qr_quiet_zone, vy + 1 - qr_quiet_zone);
+                const fg = if (top_dark) qr_black else qr_white;
+                const bg = if (bottom_dark) qr_black else qr_white;
+                const cell = (zz.Style{}).fg(fg).bg(bg).render(a, "▀") catch "▀";
+                line = if (vx == 0) cell else try std.fmt.allocPrint(a, "{s}{s}", .{ line, cell });
+            }
+            body = if (first) line else try std.fmt.allocPrint(a, "{s}\n{s}", .{ body, line });
+            first = false;
+        }
+        return body;
     }
 
     /// A loading spinner tuned to read boldly at a status mark's size: heavy
@@ -6750,6 +7002,338 @@ test "renderStatus shows the block-loading sub-stage and percentage during .load
     const verifying = renderStatus(a, &act, brand);
     try std.testing.expect(std.mem.indexOf(u8, verifying, "Verifying…") != null);
     try std.testing.expect(std.mem.indexOf(u8, verifying, "%") == null);
+}
+
+test "txDirectionGlyph colors received/sent/stake distinctly" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    const received = App.txDirectionGlyph(a, .received);
+    try std.testing.expect(std.mem.indexOf(u8, received, "↓") != null);
+
+    const sent = App.txDirectionGlyph(a, .sent);
+    try std.testing.expect(std.mem.indexOf(u8, sent, "↑") != null);
+
+    // Stake is a `*`, not an arrow — this daemon reports a stake credit the
+    // same way a mined block reward would be, so it's neither received-from
+    // nor sent-to anyone.
+    const stake = App.txDirectionGlyph(a, .stake);
+    try std.testing.expect(std.mem.indexOf(u8, stake, "*") != null);
+    try std.testing.expect(std.mem.indexOf(u8, stake, "↓") == null);
+    try std.testing.expect(std.mem.indexOf(u8, stake, "↑") == null);
+}
+
+test "txConfirmationText shows the raw count at/below the threshold, 'Confirmed' above it" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    // Right at the threshold (6): not yet "Confirmed".
+    const at_threshold = App.txConfirmationText(a, 6);
+    try std.testing.expect(std.mem.indexOf(u8, at_threshold, "6 confirmations") != null);
+    try std.testing.expect(std.mem.indexOf(u8, at_threshold, "Confirmed") == null);
+
+    // One past the threshold: "Confirmed".
+    const past_threshold = App.txConfirmationText(a, 7);
+    try std.testing.expect(std.mem.indexOf(u8, past_threshold, "Confirmed") != null);
+
+    // Singular vs plural wording.
+    const one = App.txConfirmationText(a, 1);
+    try std.testing.expect(std.mem.indexOf(u8, one, "1 confirmation") != null);
+    try std.testing.expect(std.mem.indexOf(u8, one, "1 confirmations") == null);
+
+    const zero = App.txConfirmationText(a, 0);
+    try std.testing.expect(std.mem.indexOf(u8, zero, "0 confirmations") != null);
+}
+
+test "renderTransactionsTab lists cached transactions newest-first with date and amount" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    // Empty cache: an explicit empty state rather than a bare blank list.
+    var act: Activity = .{};
+    {
+        const empty = try App.renderTransactionsTab(a, &act, 8);
+        try std.testing.expect(std.mem.indexOf(u8, empty, "No transactions yet.") != null);
+    }
+
+    // Row 0 (7 confirmations, just over the threshold) is settled; row 1 (0,
+    // still unconfirmed) and row 2 (6, at the threshold but not past it) are
+    // both still shown with their raw counts.
+    act.tx_buf[0] = .{ .direction = .received, .amount = 2.5, .time = 1893456000, .confirmations = 7 };
+    act.tx_buf[1] = .{ .direction = .sent, .amount = 1.25, .time = 1893456060, .confirmations = 0 };
+    act.tx_buf[2] = .{ .direction = .stake, .amount = 5.0, .time = 1893456120, .confirmations = 6 };
+    act.tx_count = 3;
+
+    const body = try App.renderTransactionsTab(a, &act, 8);
+    try std.testing.expect(std.mem.indexOf(u8, body, "Transactions") != null);
+    // Each row carries its glyph, the formatted date, the formatted amount, and
+    // a confirmation status.
+    try std.testing.expect(std.mem.indexOf(u8, body, "↓") != null);
+    try std.testing.expect(std.mem.indexOf(u8, body, "2.50000000") != null);
+    try std.testing.expect(std.mem.indexOf(u8, body, "Confirmed") != null);
+    try std.testing.expect(std.mem.indexOf(u8, body, "↑") != null);
+    try std.testing.expect(std.mem.indexOf(u8, body, "1.25000000") != null);
+    try std.testing.expect(std.mem.indexOf(u8, body, "0 confirmations") != null);
+    try std.testing.expect(std.mem.indexOf(u8, body, "*") != null);
+    try std.testing.expect(std.mem.indexOf(u8, body, "5.00000000") != null);
+    try std.testing.expect(std.mem.indexOf(u8, body, "6 confirmations") != null);
+
+    // Row order in the rendered text follows `tx_buf`'s order (newest-first is
+    // `mapTransactions`'s job on the SpiderByte side; this just proves the
+    // renderer preserves whatever order the cache holds) — the received row
+    // (index 0) appears before the stake row (index 2).
+    const recv_pos = std.mem.indexOf(u8, body, "2.50000000").?;
+    const stake_pos = std.mem.indexOf(u8, body, "5.00000000").?;
+    try std.testing.expect(recv_pos < stake_pos);
+}
+
+test "the Transactions tab only shows live data for a coin that supports it" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    var app: App = undefined;
+    app.disk_used = 0;
+    app.disk_total = 0;
+    app.mem_used = 0;
+    app.mem_total = 0;
+    app.active_tab = .transactions;
+
+    // Nexa has no `wallet_transactions` wired — its Transactions tab must keep
+    // showing the generic placeholder, unaffected by this SpiderByte-only
+    // feature (per-coin rule: don't break other coins).
+    {
+        var nexa: Nexa = .{};
+        const coin = nexa.coin();
+        try std.testing.expect(!coin.supportsTransactions());
+
+        var act: Activity = .{
+            .coin = coin,
+            .home_dir = "",
+            .spinner = App.makeSpinner(),
+            .daemon_spinner = App.makeSpinner(),
+            .sync_spinner = zz.Spinner.init(),
+        };
+        act.installed = true;
+        act.daemon.store(@intFromEnum(DaemonState.running), .release);
+        act.poll_completed = true;
+
+        const pane = try App.renderCoin(&app, a, coin, &act);
+        try std.testing.expect(std.mem.indexOf(u8, pane, "Coming soon.") != null);
+    }
+
+    // SpiderByte supports it — a cached transaction shows up live instead.
+    {
+        var spb: SpiderByte = .{};
+        const coin = spb.coin();
+        try std.testing.expect(coin.supportsTransactions());
+
+        var act: Activity = .{
+            .coin = coin,
+            .home_dir = "",
+            .spinner = App.makeSpinner(),
+            .daemon_spinner = App.makeSpinner(),
+            .sync_spinner = zz.Spinner.init(),
+        };
+        act.installed = true;
+        act.daemon.store(@intFromEnum(DaemonState.running), .release);
+        act.poll_completed = true;
+        act.tx_buf[0] = .{ .direction = .received, .amount = 3.0, .time = 1893456000, .confirmations = 12 };
+        act.tx_count = 1;
+
+        const pane = try App.renderCoin(&app, a, coin, &act);
+        try std.testing.expect(std.mem.indexOf(u8, pane, "Coming soon.") == null);
+        try std.testing.expect(std.mem.indexOf(u8, pane, "3.00000000") != null);
+    }
+}
+
+test "renderReceiveTab shows an empty state with no cached address" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    const act: Activity = .{};
+    const body = try App.renderReceiveTab(a, &act);
+    try std.testing.expect(std.mem.indexOf(u8, body, "No address yet.") != null);
+}
+
+test "renderReceiveTab shows the cached address, the key hint, and a QR block" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    var act: Activity = .{};
+    const addr = "XmM8G6mfvJvqfxLnf78EE7oGDwtvfxKz9y";
+    @memcpy(act.receive_addr_buf[0..addr.len], addr);
+    act.receive_addr_len = addr.len;
+
+    const body = try App.renderReceiveTab(a, &act);
+    try std.testing.expect(std.mem.indexOf(u8, body, "Receive") != null);
+    try std.testing.expect(std.mem.indexOf(u8, body, addr) != null);
+    try std.testing.expect(std.mem.indexOf(u8, body, "c: copy") != null);
+    try std.testing.expect(std.mem.indexOf(u8, body, "n: new address") != null);
+    // The QR block is present (half-block glyphs), not the "unavailable"
+    // fallback.
+    try std.testing.expect(std.mem.indexOf(u8, body, "▀") != null);
+    try std.testing.expect(std.mem.indexOf(u8, body, "QR code unavailable") == null);
+}
+
+test "renderQrHalfBlock pads with the mandatory quiet zone on every side" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    const qr = try qrcode.encodeText(a, "sp1der", .medium);
+    defer qr.deinit();
+    const block = try App.renderQrHalfBlock(a, qr);
+
+    // 2 module-rows per printed row, size + 2*quiet_zone rows/cols total.
+    const expected_rows = @divTrunc(qr.size() + App.qr_quiet_zone * 2 + 1, 2);
+    var lines = std.mem.splitScalar(u8, block, '\n');
+    var row_count: usize = 0;
+    var first_line_width: usize = 0;
+    while (lines.next()) |line| {
+        if (row_count == 0) first_line_width = zz.width(line);
+        row_count += 1;
+    }
+    try std.testing.expectEqual(@as(usize, @intCast(expected_rows)), row_count);
+    try std.testing.expectEqual(@as(usize, @intCast(qr.size() + App.qr_quiet_zone * 2)), first_line_width);
+}
+
+test "the Receive tab only shows a live address for a coin that supports it" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    var app: App = undefined;
+    app.disk_used = 0;
+    app.disk_total = 0;
+    app.mem_used = 0;
+    app.mem_total = 0;
+    app.active_tab = .receive;
+
+    // Nexa has no `wallet_receive_address` wired — its Receive tab must keep
+    // showing the generic placeholder (per-coin rule: don't break other
+    // coins).
+    {
+        var nexa: Nexa = .{};
+        const coin = nexa.coin();
+        try std.testing.expect(!coin.supportsReceiveAddress());
+
+        var act: Activity = .{
+            .coin = coin,
+            .home_dir = "",
+            .spinner = App.makeSpinner(),
+            .daemon_spinner = App.makeSpinner(),
+            .sync_spinner = zz.Spinner.init(),
+        };
+        act.installed = true;
+        act.daemon.store(@intFromEnum(DaemonState.running), .release);
+        act.poll_completed = true;
+
+        const pane = try App.renderCoin(&app, a, coin, &act);
+        try std.testing.expect(std.mem.indexOf(u8, pane, "Coming soon.") != null);
+    }
+
+    // SpiderByte supports it — a cached address shows up live instead.
+    {
+        var spb: SpiderByte = .{};
+        const coin = spb.coin();
+        try std.testing.expect(coin.supportsReceiveAddress());
+
+        var act: Activity = .{
+            .coin = coin,
+            .home_dir = "",
+            .spinner = App.makeSpinner(),
+            .daemon_spinner = App.makeSpinner(),
+            .sync_spinner = zz.Spinner.init(),
+        };
+        act.installed = true;
+        act.daemon.store(@intFromEnum(DaemonState.running), .release);
+        act.poll_completed = true;
+        const addr = "XmM8G6mfvJvqfxLnf78EE7oGDwtvfxKz9y";
+        @memcpy(act.receive_addr_buf[0..addr.len], addr);
+        act.receive_addr_len = addr.len;
+
+        const pane = try App.renderCoin(&app, a, coin, &act);
+        try std.testing.expect(std.mem.indexOf(u8, pane, "Coming soon.") == null);
+        try std.testing.expect(std.mem.indexOf(u8, pane, addr) != null);
+    }
+}
+
+test "requestNewReceiveAddress stages a pending request and forces an immediate poll" {
+    if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
+    const allocator = std.testing.allocator;
+
+    var threaded: std.Io.Threaded = .init(allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    var env = std.process.Environ.Map.init(allocator);
+    defer env.deinit();
+    try env.put("HOME", "/home/tester");
+    var ctx = zz.Context.init(allocator, allocator, io, &env);
+
+    var app: App = undefined;
+    _ = app.init(&ctx);
+    defer app.deinit();
+
+    // Index 0 is Home (unused); pick a real coin slot.
+    app.selected = 1;
+    app.activities[1].installed = true;
+    app.last_poll_ns = 123_456_789;
+
+    app.requestNewReceiveAddress();
+    try std.testing.expect(app.pending_new_receive_address);
+    try std.testing.expectEqual(@as(i64, 0), app.last_poll_ns);
+
+    // No-op when the coin isn't installed — nothing to poll yet.
+    app.pending_new_receive_address = false;
+    app.last_poll_ns = 123_456_789;
+    app.activities[1].installed = false;
+    app.requestNewReceiveAddress();
+    try std.testing.expect(!app.pending_new_receive_address);
+    try std.testing.expectEqual(@as(i64, 123_456_789), app.last_poll_ns);
+}
+
+test "copyReceiveAddress no-ops without a cached address, logs otherwise" {
+    if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
+    const allocator = std.testing.allocator;
+
+    var threaded: std.Io.Threaded = .init(allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    var env = std.process.Environ.Map.init(allocator);
+    defer env.deinit();
+    try env.put("HOME", "/home/tester");
+    var ctx = zz.Context.init(allocator, allocator, io, &env);
+
+    var app: App = undefined;
+    _ = app.init(&ctx);
+    defer app.deinit();
+
+    app.selected = 1;
+    app.activities[1].installed = true;
+
+    // No cached address yet: no-op, nothing logged.
+    const before = app.log_count;
+    app.copyReceiveAddress(&ctx);
+    try std.testing.expectEqual(before, app.log_count);
+
+    // With a cached address, pressing copy always logs an outcome — the test
+    // harness's io isn't a real TTY, so `ctx.setClipboard` deterministically
+    // reports unsupported rather than actually writing OSC 52.
+    const addr = "XmM8G6mfvJvqfxLnf78EE7oGDwtvfxKz9y";
+    @memcpy(app.activities[1].receive_addr_buf[0..addr.len], addr);
+    app.activities[1].receive_addr_len = addr.len;
+    app.copyReceiveAddress(&ctx);
+    try std.testing.expectEqual(before + 1, app.log_count);
+    const last = app.log_lines[(app.log_count - 1) % log_capacity].buf[0..app.log_lines[(app.log_count - 1) % log_capacity].len];
+    try std.testing.expect(std.mem.indexOf(u8, last, "clipboard") != null);
 }
 
 test "a successful poll folds peers, staking, heights and sync into the display" {

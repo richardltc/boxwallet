@@ -65,5 +65,6 @@ test {
     _ = @import("coins/spiderbyte.zig");
     _ = @import("bzip2.zig");
     _ = @import("bip39.zig");
+    _ = @import("qrcode.zig");
     _ = @import("app.zig");
 }

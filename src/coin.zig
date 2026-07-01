@@ -459,6 +459,28 @@ pub const Coin = struct {
             allocator: std.mem.Allocator,
             auth: models.CoinAuth,
         ) anyerror!models.WalletBalance = null,
+        /// Optional: list the wallet's most recent transactions (bitcoin-core-style
+        /// `listtransactions`), normalized to `WalletTx`, capped at `limit` entries.
+        /// Non-null marks a coin whose Transactions tab shows live data;
+        /// `supportsTransactions` keys off this being non-null.
+        wallet_transactions: ?*const fn (
+            ptr: *anyopaque,
+            allocator: std.mem.Allocator,
+            auth: models.CoinAuth,
+            limit: usize,
+        ) anyerror![]models.WalletTx = null,
+        /// Optional: the wallet's receive address. `force_new` false gets the
+        /// stable "current" address (bitcoin-core-style `getaccountaddress ""`
+        /// semantics); `force_new` true mints a brand-new one
+        /// (`getnewaddress`-style), for an explicit user-requested rotation.
+        /// Non-null marks a coin whose Receive tab shows a live address;
+        /// `supportsReceiveAddress` keys off this being non-null.
+        wallet_receive_address: ?*const fn (
+            ptr: *anyopaque,
+            allocator: std.mem.Allocator,
+            auth: models.CoinAuth,
+            force_new: bool,
+        ) anyerror![]const u8 = null,
         /// Optional: encrypt the (currently unencrypted) wallet with `passphrase`.
         /// Bitcoin-derived daemons stop themselves after this — the caller restarts
         /// them. Paired with `wallet_security_state`; null when unsupported.
@@ -730,6 +752,45 @@ pub const Coin = struct {
     ) !models.WalletBalance {
         const f = self.vtable.wallet_balance orelse return error.Unsupported;
         return f(self.ptr, allocator, auth);
+    }
+
+    /// Whether this coin reports a wallet transaction history over RPC (drives
+    /// the Transactions tab). True iff the coin wires `wallet_transactions`.
+    pub fn supportsTransactions(self: Coin) bool {
+        return self.vtable.wallet_transactions != null;
+    }
+
+    /// Read the wallet's most recent transactions, capped at `limit` entries.
+    /// Errors `error.Unsupported` if the coin reports no transaction history
+    /// (`supportsTransactions` false).
+    pub fn walletTransactions(
+        self: Coin,
+        allocator: std.mem.Allocator,
+        auth: models.CoinAuth,
+        limit: usize,
+    ) ![]models.WalletTx {
+        const f = self.vtable.wallet_transactions orelse return error.Unsupported;
+        return f(self.ptr, allocator, auth, limit);
+    }
+
+    /// Whether this coin reports a receive address over RPC (drives the
+    /// Receive tab). True iff the coin wires `wallet_receive_address`.
+    pub fn supportsReceiveAddress(self: Coin) bool {
+        return self.vtable.wallet_receive_address != null;
+    }
+
+    /// Read the wallet's receive address. `force_new` true mints a brand-new
+    /// address; false gets the stable "current" one. Errors
+    /// `error.Unsupported` if the coin reports no receive address
+    /// (`supportsReceiveAddress` false).
+    pub fn walletReceiveAddress(
+        self: Coin,
+        allocator: std.mem.Allocator,
+        auth: models.CoinAuth,
+        force_new: bool,
+    ) ![]const u8 {
+        const f = self.vtable.wallet_receive_address orelse return error.Unsupported;
+        return f(self.ptr, allocator, auth, force_new);
     }
 
     /// Encrypt the wallet with `passphrase`. Errors `error.Unsupported` if the
