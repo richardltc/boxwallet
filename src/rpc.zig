@@ -134,7 +134,20 @@ pub fn callParsed(
     auth: models.CoinAuth,
     method: []const u8,
 ) !std.json.Parsed(models.JsonRpcResponse(T)) {
-    const raw = try call(allocator, auth, method);
+    return callParsedParams(T, allocator, auth, method, "[]");
+}
+
+/// Like `callParsed`, but with an explicit JSON `params` array (e.g. `[123]` for
+/// `getblockhash`). `params` is spliced verbatim, so the caller is responsible
+/// for it being valid JSON. See `callParsed` for the `.alloc_always` rationale.
+pub fn callParsedParams(
+    comptime T: type,
+    allocator: std.mem.Allocator,
+    auth: models.CoinAuth,
+    method: []const u8,
+    params: []const u8,
+) !std.json.Parsed(models.JsonRpcResponse(T)) {
+    const raw = try callParams(allocator, auth, method, params);
     defer allocator.free(raw);
 
     // `.alloc_always` is essential here: we free `raw` on return, so the parsed

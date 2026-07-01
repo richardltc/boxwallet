@@ -91,6 +91,13 @@ pub const SpiderByte = struct {
         testnet: bool = false,
     };
 
+    /// The single `getblock` field BoxWallet needs: the tip block's `time` (unix
+    /// seconds), used for the "behind by …" sync readout. Everything else in the
+    /// verbose `getblock` result is dropped via `ignore_unknown_fields`.
+    const SpiderByteBlock = struct {
+        time: i64 = 0,
+    };
+
     /// Build the type-erased `Coin` handle for this instance.
     pub fn coin(self: *SpiderByte) Coin {
         return .{ .ptr = self, .vtable = &vtable };
@@ -115,6 +122,12 @@ pub const SpiderByte = struct {
         const network = rpc.networkHeight(allocator, auth) catch 0;
         const st = syncStatus(r.blocks, network);
 
+        // Tip-block timestamp for the "behind by …" wall-clock readout. `getinfo`
+        // reports none on this NovaCoin-era daemon, so it's fetched from the tip
+        // block itself — but only while syncing, to avoid two extra RPCs per poll
+        // once caught up (the frontend shows this readout only during a sync).
+        const tip_time: i64 = if (!st.synced) tipTime(allocator, auth, r.blocks) else 0;
+
         return .{
             .chain = try allocator.dupe(u8, if (r.testnet) "test" else "main"),
             .blocks = r.blocks,
@@ -129,9 +142,38 @@ pub const SpiderByte = struct {
             .verification_progress = st.progress,
             .synced = st.synced,
             .network_height = network,
-            // getinfo reports no tip-block timestamp, so the "behind by …" estimate
-            // is left unset (0); the frontend simply omits it.
+            .tip_time = tip_time,
         };
+    }
+
+    /// The tip block's timestamp (unix seconds), so the frontend can show how far
+    /// behind in wall-clock time the chain is while syncing. `getinfo` carries no
+    /// tip timestamp on this NovaCoin-era daemon, so it's read from the tip block
+    /// in two steps: `getblockhash(<height>)` → `getblock(<hash>).time`.
+    ///
+    /// Best-effort: any hiccup (missing method, no such block, transport error)
+    /// returns 0 (unknown), which just leaves the readout omitted — never fatal to
+    /// the poll. Each call parses into a minimal struct and frees its reply, so the
+    /// working set stays flat.
+    fn tipTime(allocator: std.mem.Allocator, auth: models.CoinAuth, height: i64) i64 {
+        if (height <= 0) return 0;
+
+        // getblockhash <height> → "<hash>"
+        const hp = std.fmt.allocPrint(allocator, "[{d}]", .{height}) catch return 0;
+        defer allocator.free(hp);
+        var hash_parsed = rpc.callParsedParams([]const u8, allocator, auth, "getblockhash", hp) catch return 0;
+        defer hash_parsed.deinit();
+        const hash = hash_parsed.value.result orelse return 0;
+
+        // getblock "<hash>" → { time }
+        const hq = rpc.jsonQuote(allocator, hash) catch return 0;
+        defer allocator.free(hq);
+        const bp = std.fmt.allocPrint(allocator, "[{s}]", .{hq}) catch return 0;
+        defer allocator.free(bp);
+        var blk_parsed = rpc.callParsedParams(SpiderByteBlock, allocator, auth, "getblock", bp) catch return 0;
+        defer blk_parsed.deinit();
+        const b = blk_parsed.value.result orelse return 0;
+        return b.time;
     }
 
     /// Live status, normalized for a frontend — all from the one `getinfo` call:
@@ -621,6 +663,28 @@ test "parses getinfo into normalized BlockchainState fields" {
     try std.testing.expect(!r.testnet);
     // Unencrypted wallet: getinfo omits unlocked_until → null.
     try std.testing.expect(r.unlocked_until == null);
+}
+
+test "parses the tip block's time from a getblock reply" {
+    const allocator = std.testing.allocator;
+
+    // Canned getblock reply — proves the tip-time parse (feeding the "behind by …"
+    // readout) without a running spiderbyted. The many other verbose getblock
+    // fields are dropped via ignore_unknown_fields.
+    const raw =
+        \\{"result":{"hash":"00000000abc","height":1234567,"time":1893456000,
+        \\"nonce":42,"bits":"1d00ffff","difficulty":0.0008},"error":null,"id":"boxwallet"}
+    ;
+
+    var parsed = try std.json.parseFromSlice(
+        models.JsonRpcResponse(SpiderByte.SpiderByteBlock),
+        allocator,
+        raw,
+        .{ .ignore_unknown_fields = true, .allocate = .alloc_always },
+    );
+    defer parsed.deinit();
+
+    try std.testing.expectEqual(@as(i64, 1893456000), parsed.value.result.?.time);
 }
 
 test "syncStatus derives synced + progress from local vs network height" {
