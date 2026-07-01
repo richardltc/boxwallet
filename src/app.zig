@@ -155,6 +155,22 @@ fn logTagColor(msg: []const u8) ?struct { len: usize, col: zz.Color } {
     return null;
 }
 
+/// Render a log line's coin `tag` in the coin's full branding — its two-tone
+/// wordmark (SpiderByte "Spider"+"Byte", ReddCoin "Redd"+"Coin") when it has one,
+/// else its single brand colour — so the log matches the detail-pane header. `tag`
+/// is exactly the coin name (the log tag equals `entryLabel`), so a wordmark's
+/// byte `split` indexes straight into it. Returns an owned styled slice.
+fn brandLogTag(a: std.mem.Allocator, coin: Coin, tag: []const u8) []const u8 {
+    const brand = zz.Color.hex(coin.coinColor());
+    if (coin.wordmark()) |wm| {
+        const hc = if (wm.head_color) |c| zz.Color.hex(c) else brand;
+        const h = (zz.Style{}).fg(hc).render(a, tag[0..wm.split]) catch tag[0..wm.split];
+        const t = (zz.Style{}).fg(zz.Color.hex(wm.alt_color)).render(a, tag[wm.split..]) catch tag[wm.split..];
+        return std.fmt.allocPrint(a, "{s}{s}", .{ h, t }) catch tag;
+    }
+    return (zz.Style{}).fg(brand).render(a, tag) catch tag;
+}
+
 /// Whether a coin is exposed in the nav. Coins gate this on their per-coin `live`
 /// constant; a `false` coin is dropped from `entries` entirely (no row, no
 /// activity slot, never selectable or polled). Home is always live.
@@ -3647,6 +3663,15 @@ pub const App = struct {
         };
     }
 
+    /// The coin a log line's leading `tag` names (the text before the ':', with the
+    /// timestamp already stripped), or null for the BoxWallet/Home tag and any
+    /// unknown tag. Lets the log pane draw a coin tag in its own branding.
+    fn coinForTag(self: *const App, tag: []const u8) ?Coin {
+        for (entries[1..], 1..) |e, i|
+            if (std.mem.eql(u8, tag, entryLabel(e))) return self.coinAt(i);
+        return null;
+    }
+
     /// Refresh the selected coin's cached installed flag from disk. Skipped when
     /// that coin has an active or finished job — its phase already speaks for it,
     /// and we don't want to stomp a fresh result with a stale disk check.
@@ -4680,7 +4705,14 @@ pub const App = struct {
             while (ts < line.len and !std.ascii.isAlphabetic(line[ts])) : (ts += 1) {}
             const msg = line[ts..];
             if (logTagColor(msg)) |hit| {
-                const tag = (zz.Style{}).fg(hit.col).render(a, msg[0..hit.len]) catch msg[0..hit.len];
+                const tag_txt = msg[0..hit.len];
+                // A coin tag wears its full branding (two-tone wordmark or single
+                // brand colour), matching the detail-pane header; BoxWallet/Home has
+                // no coin, so it falls back to `hit.col` (the app brand colour).
+                const tag = if (self.coinForTag(tag_txt)) |coin|
+                    brandLogTag(a, coin, tag_txt)
+                else
+                    (zz.Style{}).fg(hit.col).render(a, tag_txt) catch tag_txt;
                 try out.writer.print("{s}{s}{s}\n", .{ line[0..ts], tag, msg[hit.len..] });
             } else {
                 try out.writer.print("{s}\n", .{line});
