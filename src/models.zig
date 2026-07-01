@@ -347,6 +347,24 @@ pub const WalletBalance = struct {
     }
 };
 
+/// Coin-agnostic direction of a wallet transaction, for the Transactions tab.
+/// `stake` covers a proof-of-stake reward (or, on a coin that still mines, a
+/// mined block reward) — coins the wallet minted itself rather than received
+/// from/sent to another party.
+pub const TxDirection = enum { received, sent, stake };
+
+/// One wallet transaction, normalized for display. Deliberately scalar-only
+/// (no owned strings) so a bounded, fixed-capacity cache of these can be
+/// memcpy'd across the poll-worker/UI-thread boundary the same way the daemon
+/// version string already is (`Activity.poll_version_buf` in `app.zig`) — no
+/// per-entry allocation or `deinit`.
+pub const WalletTx = struct {
+    direction: TxDirection,
+    amount: f64, // positive magnitude; `direction` carries the sign
+    time: i64, // unix seconds
+    confirmations: i64,
+};
+
 /// How far a wallet rescan has progressed — `scanned` blocks of `target`. Reported
 /// by an in-daemon wallet that re-scans the chain after a restore (Ergo, whose node
 /// only scans forward, so a restored seed's history is found by an explicit

@@ -291,6 +291,100 @@ pub const SpiderByte = struct {
         return models.WalletBalance.fromParts(r.balance, r.stake, r.newmint);
     }
 
+    /// One `listtransactions` entry (the subset BoxWallet uses).
+    const SpiderByteTx = struct {
+        category: []const u8 = "",
+        amount: f64 = 0,
+        time: i64 = 0,
+        confirmations: i64 = 0,
+    };
+
+    /// The wallet's most recent transactions, newest-first, via
+    /// `listtransactions "*" <limit> 0`. This NovaCoin-era daemon returns them
+    /// oldest-to-newest (confirmed against upstream `rpcwallet.cpp`'s own
+    /// `std::reverse(...); // Return oldest to newest`), so the result is reversed
+    /// here. `"move"` entries (transfers between named accounts BoxWallet never
+    /// uses) are dropped by `directionFromCategory` returning null.
+    pub fn walletTransactions(
+        allocator: std.mem.Allocator,
+        auth: models.CoinAuth,
+        limit: usize,
+    ) ![]models.WalletTx {
+        const params = try std.fmt.allocPrint(allocator, "[\"*\",{d},0]", .{limit});
+        defer allocator.free(params);
+        var parsed = try rpc.callParsedParams([]SpiderByteTx, allocator, auth, "listtransactions", params);
+        defer parsed.deinit();
+
+        const raw = parsed.value.result orelse return error.EmptyRpcResult;
+        return mapTransactions(allocator, raw);
+    }
+
+    /// Reverse `raw` (oldest-to-newest, as the daemon returns it) into
+    /// newest-first `WalletTx`es, mapping each `category` via
+    /// `directionFromCategory` and dropping entries with no mapped direction
+    /// (`"move"`). Split out from `walletTransactions` so the mapping/ordering
+    /// logic is unit-testable without a live RPC call. Two passes (count, then
+    /// fill) so the returned slice is allocated at its exact final length —
+    /// callers free exactly what was allocated.
+    fn mapTransactions(allocator: std.mem.Allocator, raw: []const SpiderByteTx) ![]models.WalletTx {
+        var count: usize = 0;
+        for (raw) |r| {
+            if (directionFromCategory(r.category) != null) count += 1;
+        }
+
+        var out = try allocator.alloc(models.WalletTx, count);
+        var n: usize = 0;
+        var i = raw.len;
+        while (i > 0) {
+            i -= 1;
+            const direction = directionFromCategory(raw[i].category) orelse continue;
+            out[n] = .{
+                .direction = direction,
+                .amount = @abs(raw[i].amount),
+                .time = raw[i].time,
+                .confirmations = raw[i].confirmations,
+            };
+            n += 1;
+        }
+        return out;
+    }
+
+    /// Map this daemon's `listtransactions` `category` to the normalized
+    /// direction. `"generate"`/`"immature"`/`"orphan"` all come from
+    /// `CWalletTx::GetAmounts`'s combined `IsCoinBase() || IsCoinStake()` check —
+    /// SpiderByte never mines, so these three only ever represent a stake reward
+    /// at different maturity stages. `"move"` has no direction (null; the caller
+    /// skips it).
+    fn directionFromCategory(category: []const u8) ?models.TxDirection {
+        if (std.mem.eql(u8, category, "receive")) return .received;
+        if (std.mem.eql(u8, category, "send")) return .sent;
+        if (std.mem.eql(u8, category, "generate") or
+            std.mem.eql(u8, category, "immature") or
+            std.mem.eql(u8, category, "orphan")) return .stake;
+        return null;
+    }
+
+    /// The wallet's receive address. `force_new` picks the RPC:
+    /// `getaccountaddress ""` for the stable "current" address (used only for
+    /// the one-time initial fetch — see `rpcwallet.cpp`'s `GetAccountAddress`,
+    /// which silently rotates once the address has been paid), or
+    /// `getnewaddress` to mint a fresh one on an explicit user-requested
+    /// rotation (mints a new key on *every* call, so it's only ever called on
+    /// demand, never polled).
+    pub fn receiveAddress(allocator: std.mem.Allocator, auth: models.CoinAuth, force_new: bool) ![]const u8 {
+        var parsed = try rpc.callParsedParams([]const u8, allocator, auth, receiveAddressMethod(force_new), "[\"\"]");
+        defer parsed.deinit();
+        const addr = parsed.value.result orelse return error.EmptyRpcResult;
+        return allocator.dupe(u8, addr); // parsed.deinit() frees its arena below us
+    }
+
+    /// Which RPC `receiveAddress` calls for a given `force_new` — split out as
+    /// a pure helper so the method-selection logic is unit-testable without a
+    /// live daemon.
+    fn receiveAddressMethod(force_new: bool) []const u8 {
+        return if (force_new) "getnewaddress" else "getaccountaddress";
+    }
+
     /// Encrypt the wallet with `passphrase`. spiderbyted stops itself afterwards
     /// (the caller restarts it). The passphrase is JSON-escaped before splicing.
     pub fn walletEncrypt(allocator: std.mem.Allocator, auth: models.CoinAuth, passphrase: []const u8) !void {
@@ -468,6 +562,8 @@ pub const SpiderByte = struct {
         .request_stop = vtRequestStop,
         .wallet_security_state = vtWalletSecurityState,
         .wallet_balance = vtWalletBalance,
+        .wallet_transactions = vtWalletTransactions,
+        .wallet_receive_address = vtWalletReceiveAddress,
         .wallet_encrypt = vtWalletEncrypt,
         .wallet_unlock = vtWalletUnlock,
         .wallet_lock = vtWalletLock,
@@ -590,6 +686,22 @@ pub const SpiderByte = struct {
         auth: models.CoinAuth,
     ) anyerror!models.WalletBalance {
         return walletBalance(allocator, auth);
+    }
+    fn vtWalletTransactions(
+        _: *anyopaque,
+        allocator: std.mem.Allocator,
+        auth: models.CoinAuth,
+        limit: usize,
+    ) anyerror![]models.WalletTx {
+        return walletTransactions(allocator, auth, limit);
+    }
+    fn vtWalletReceiveAddress(
+        _: *anyopaque,
+        allocator: std.mem.Allocator,
+        auth: models.CoinAuth,
+        force_new: bool,
+    ) anyerror![]const u8 {
+        return receiveAddress(allocator, auth, force_new);
     }
     fn vtWalletEncrypt(
         _: *anyopaque,
@@ -754,6 +866,122 @@ test "maps getinfo balance to available + total (stake/newmint pending)" {
     try std.testing.expectApproxEqAbs(@as(f64, 12.5), bal.available, 1e-9);
     try std.testing.expectApproxEqAbs(@as(f64, 17.0), bal.total, 1e-9);
     try std.testing.expect(bal.hasPending());
+}
+
+test "directionFromCategory maps listtransactions categories to normalized direction" {
+    try std.testing.expectEqual(models.TxDirection.received, SpiderByte.directionFromCategory("receive").?);
+    try std.testing.expectEqual(models.TxDirection.sent, SpiderByte.directionFromCategory("send").?);
+    // "generate"/"immature"/"orphan" all come from the daemon's combined
+    // IsCoinBase()||IsCoinStake() check — SpiderByte never mines, so all three
+    // represent a stake reward at some maturity stage.
+    try std.testing.expectEqual(models.TxDirection.stake, SpiderByte.directionFromCategory("generate").?);
+    try std.testing.expectEqual(models.TxDirection.stake, SpiderByte.directionFromCategory("immature").?);
+    try std.testing.expectEqual(models.TxDirection.stake, SpiderByte.directionFromCategory("orphan").?);
+    // "move" (a transfer between named accounts BoxWallet never uses) has no
+    // direction — the caller drops it.
+    try std.testing.expect(SpiderByte.directionFromCategory("move") == null);
+    try std.testing.expect(SpiderByte.directionFromCategory("something-unknown") == null);
+}
+
+test "mapTransactions reverses to newest-first, maps categories, drops move, and takes abs(amount)" {
+    const allocator = std.testing.allocator;
+
+    // The daemon returns oldest-to-newest; a "send" amount already arrives
+    // negated (ValueFromAmount(-s.second) in rpcwallet.cpp).
+    const raw = [_]SpiderByte.SpiderByteTx{
+        .{ .category = "generate", .amount = 5.0, .time = 100, .confirmations = 500 }, // oldest: a mature stake reward
+        .{ .category = "receive", .amount = 2.5, .time = 200, .confirmations = 10 },
+        .{ .category = "move", .amount = 1.0, .time = 250, .confirmations = 10 }, // dropped: internal account transfer
+        .{ .category = "send", .amount = -1.25, .time = 300, .confirmations = 1 }, // newest
+    };
+
+    const txs = try SpiderByte.mapTransactions(allocator, &raw);
+    defer allocator.free(txs);
+
+    // "move" dropped, so 4 raw entries → 3 mapped, newest-first.
+    try std.testing.expectEqual(@as(usize, 3), txs.len);
+
+    try std.testing.expectEqual(models.TxDirection.sent, txs[0].direction);
+    try std.testing.expectApproxEqAbs(@as(f64, 1.25), txs[0].amount, 1e-9);
+    try std.testing.expectEqual(@as(i64, 300), txs[0].time);
+    try std.testing.expectEqual(@as(i64, 1), txs[0].confirmations);
+
+    try std.testing.expectEqual(models.TxDirection.received, txs[1].direction);
+    try std.testing.expectApproxEqAbs(@as(f64, 2.5), txs[1].amount, 1e-9);
+    try std.testing.expectEqual(@as(i64, 200), txs[1].time);
+    try std.testing.expectEqual(@as(i64, 10), txs[1].confirmations);
+
+    try std.testing.expectEqual(models.TxDirection.stake, txs[2].direction);
+    try std.testing.expectApproxEqAbs(@as(f64, 5.0), txs[2].amount, 1e-9);
+    try std.testing.expectEqual(@as(i64, 100), txs[2].time);
+    try std.testing.expectEqual(@as(i64, 500), txs[2].confirmations);
+}
+
+test "parses a listtransactions reply into SpiderByteTx entries" {
+    const allocator = std.testing.allocator;
+
+    // A canned reply shaped like the real daemon's listtransactions output
+    // (rpcwallet.cpp), with the extra fields BoxWallet doesn't use
+    // (account/address/txid/...) dropped via ignore_unknown_fields.
+    const raw =
+        \\{"result":[
+        \\{"account":"","category":"generate","amount":5.0,"confirmations":120,"time":100},
+        \\{"account":"","address":"S1abc","category":"receive","amount":2.5,"confirmations":10,"time":200}
+        \\],"error":null,"id":"boxwallet"}
+    ;
+
+    var parsed = try std.json.parseFromSlice(
+        models.JsonRpcResponse([]SpiderByte.SpiderByteTx),
+        allocator,
+        raw,
+        .{ .ignore_unknown_fields = true, .allocate = .alloc_always },
+    );
+    defer parsed.deinit();
+
+    const r = parsed.value.result.?;
+    try std.testing.expectEqual(@as(usize, 2), r.len);
+    try std.testing.expectEqualStrings("generate", r[0].category);
+    try std.testing.expectApproxEqAbs(@as(f64, 5.0), r[0].amount, 1e-9);
+    try std.testing.expectEqual(@as(i64, 100), r[0].time);
+    try std.testing.expectEqual(@as(i64, 120), r[0].confirmations);
+    try std.testing.expectEqualStrings("receive", r[1].category);
+}
+
+test "coin vtable exposes wallet_transactions for SpiderByte" {
+    var spb: SpiderByte = .{};
+    const c = spb.coin();
+    try std.testing.expect(c.supportsTransactions());
+}
+
+test "receiveAddressMethod picks getaccountaddress vs getnewaddress" {
+    // Stable "current" address for the one-time initial fetch...
+    try std.testing.expectEqualStrings("getaccountaddress", SpiderByte.receiveAddressMethod(false));
+    // ...a fresh mint only for an explicit user-requested rotation.
+    try std.testing.expectEqualStrings("getnewaddress", SpiderByte.receiveAddressMethod(true));
+}
+
+test "parses a getaccountaddress/getnewaddress reply (bare JSON string result)" {
+    const allocator = std.testing.allocator;
+
+    // Both RPCs return the address as a bare string result, same shape as
+    // getblockhash (see the tipTime test above).
+    const raw = "{\"result\":\"XmM8G6mfvJvqfxLnf78EE7oGDwtvfxKz9y\",\"error\":null,\"id\":\"boxwallet\"}";
+
+    var parsed = try std.json.parseFromSlice(
+        models.JsonRpcResponse([]const u8),
+        allocator,
+        raw,
+        .{ .ignore_unknown_fields = true, .allocate = .alloc_always },
+    );
+    defer parsed.deinit();
+
+    try std.testing.expectEqualStrings("XmM8G6mfvJvqfxLnf78EE7oGDwtvfxKz9y", parsed.value.result.?);
+}
+
+test "coin vtable exposes wallet_receive_address for SpiderByte" {
+    var spb: SpiderByte = .{};
+    const c = spb.coin();
+    try std.testing.expect(c.supportsReceiveAddress());
 }
 
 test "no upstream bundle: install is unsupported" {
