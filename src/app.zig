@@ -216,6 +216,35 @@ const entries = blk: {
     break :blk [_]Entry{.home} ++ live_coins[0..n].*;
 };
 
+/// The slice of the coin list (entries[1..]) visible in the left nav, plus
+/// whether a "more above/below" indicator row should be drawn on either edge.
+const NavWindow = struct { start: usize, len: usize, more_above: bool, more_below: bool };
+
+/// Pick which coins fit in a `rows`-row nav viewport so the selected coin is
+/// always on screen. `sel` and `total` index the coin list (Home excluded — it
+/// stays pinned above the window). When everything fits the whole list comes
+/// back with no indicators, so large terminals render exactly as before. On
+/// overflow the window is centred on `sel`; with 3+ rows each needed indicator
+/// replaces the edge row it points past (centring keeps `sel` clear of the
+/// edges), while 1–2 rows are too tight for indicators and just show the window.
+fn navWindow(sel: usize, total: usize, rows: usize) NavWindow {
+    if (rows >= total) return .{ .start = 0, .len = total, .more_above = false, .more_below = false };
+    if (rows == 0) return .{ .start = 0, .len = 0, .more_above = false, .more_below = false };
+    var start = @min(sel -| (rows - 1) / 2, total - rows);
+    var len = rows;
+    const above = start > 0;
+    const below = start + rows < total;
+    const indicators = rows >= 3;
+    if (indicators) {
+        if (above) {
+            start += 1;
+            len -= 1;
+        }
+        if (below) len -= 1;
+    }
+    return .{ .start = start, .len = len, .more_above = above and indicators, .more_below = below and indicators };
+}
+
 /// Where a coin's background install has got to. The UI reads this every frame
 /// to paint the coin's pane; the worker thread advances it.
 const Phase = enum(u8) { idle, downloading, extracting, done, failed };
@@ -5227,7 +5256,18 @@ pub const App = struct {
         // update target; `update_available` is only set for installed coins).
         var updates: [entries.len]bool = undefined;
         for (&updates, 0..) |*u, i| u.* = entries[i] != .home and self.activities[i].update_available;
-        const top = renderTwoPane(a, self.selected, &updates, right) catch "render error";
+        // The two-pane block gets whatever the log pane doesn't: windowing the
+        // nav and clipping the detail pane to that budget keeps the whole frame
+        // within the terminal, so the top row (Home) can never scroll off on a
+        // short terminal. Height 0 (unknown, e.g. tests) leaves both unbounded;
+        // a known height keeps at least one row so a terminal shorter than the
+        // log pane still stays bounded rather than falling into "unlimited".
+        const nav_rows: usize = if (ctx.height == 0)
+            0
+        else
+            @max(1, @as(usize, ctx.height) -| (if (self.log_visible) @as(usize, log_pane_rows) else 0));
+        const top_full = renderTwoPane(a, self.selected, &updates, right, nav_rows) catch "render error";
+        const top = clipToHeight(top_full, nav_rows);
         const screen = if (!self.log_visible)
             top
         else
@@ -6584,76 +6624,116 @@ pub const App = struct {
         return out.toOwnedSlice();
     }
 
-    /// Joins the left nav column and the right detail block side by side. The
-    /// left column lists every entry on every frame, so the coin list is always
-    /// on screen regardless of what any coin is doing.
-    fn renderTwoPane(a: std.mem.Allocator, selected: usize, updates: []const bool, right: []const u8) ![]const u8 {
+    /// Joins the left nav column and the right detail block side by side. Home
+    /// is pinned to the top row; the coins below it are windowed to `nav_rows`
+    /// total nav rows (0 = unlimited) via `navWindow`, so the selected coin is
+    /// always on screen even when the terminal is shorter than the coin list.
+    /// When everything fits the output is identical to the unwindowed render.
+    fn renderTwoPane(a: std.mem.Allocator, selected: usize, updates: []const bool, right: []const u8, nav_rows: usize) ![]const u8 {
         // Marker (2 cells) + the label column. Empty rows pad to this full width.
         const col_w = 2 + nav_label_w;
         var out: std.Io.Writer.Allocating = .init(a);
         errdefer out.deinit();
 
+        // Lay the nav rows out first: Home, an optional "more above" indicator,
+        // the visible slice of coins, and an optional "more below" indicator.
+        // One row is reserved for Home; the coin window gets the rest.
+        const RowDesc = union(enum) { entry: usize, more_above, more_below };
+        const total_coins = entries.len - 1;
+        const coin_rows = if (nav_rows == 0) total_coins else nav_rows - 1;
+        const w = navWindow(selected -| 1, total_coins, coin_rows);
+        var desc: [entries.len + 2]RowDesc = undefined;
+        var desc_n: usize = 0;
+        desc[desc_n] = .{ .entry = 0 };
+        desc_n += 1;
+        if (w.more_above) {
+            desc[desc_n] = .more_above;
+            desc_n += 1;
+        }
+        for (w.start..w.start + w.len) |ci| {
+            desc[desc_n] = .{ .entry = ci + 1 };
+            desc_n += 1;
+        }
+        if (w.more_below) {
+            desc[desc_n] = .more_below;
+            desc_n += 1;
+        }
+
         var rit = std.mem.splitScalar(u8, right, '\n');
         var i: usize = 0;
         while (true) {
-            const have_left = i < entries.len;
+            const have_left = i < desc_n;
             const r = rit.next();
             if (!have_left and r == null) break;
 
-            if (have_left) {
-                const e = entries[i];
-                // The selection marker is a bold, brand-coloured arrow so the
-                // current coin stands out at a glance; unselected rows get blank
-                // padding of the same visible width (2 cells) to keep alignment.
-                const marker: []const u8 = if (i == selected)
-                    (zz.Style{}).bold(true).fg(entryColor(e)).render(a, "❯ ") catch "❯ "
-                else if (i < updates.len and updates[i])
-                    // A coin with an available update gets a yellow ⬆ in the marker
-                    // column (the selected coin shows its arrow + the detail badge
-                    // instead, so it isn't doubled up).
-                    (zz.Style{}).bold(true).fg(.yellow).render(a, "⬆ ") catch "⬆ "
-                else
-                    "  ";
-                // Write the label, then pad to the fixed label width with trailing
-                // spaces so the `│` separator stays aligned regardless of label
-                // length (the colour ANSI codes are zero-width). Home is special:
-                // "BoxWallet" in the brand colour, the version in the default
-                // colour. Coins are one styled label (brand when selected, else
-                // grey).
-                var used: usize = undefined;
-                if (e == .home) {
-                    const brand = (zz.Style{}).bold(i == selected).fg(entryColor(.home)).render(a, home_brand_text) catch home_brand_text;
-                    try out.writer.print("{s}{s}{s}", .{ marker, brand, home_version_text });
-                    used = home_brand_text.len + home_version_text.len;
-                } else if (e == .reddcoin and i == selected) {
-                    // ReddCoin's two-tone wordmark when selected: "Redd" in the
-                    // brand red, "Coin" in near-white. Unselected, it greys out
-                    // like every other coin (handled by the generic branch below).
-                    const name = ReddCoin.coin_name;
-                    const head = name[0..ReddCoin.wordmark_split];
-                    const tail = name[ReddCoin.wordmark_split..];
-                    const redd = (zz.Style{}).bold(true).fg(zz.Color.hex(ReddCoin.coin_color)).render(a, head) catch head;
-                    const cn = (zz.Style{}).bold(true).fg(zz.Color.hex(ReddCoin.coin_color_alt)).render(a, tail) catch tail;
-                    try out.writer.print("{s}{s}{s}", .{ marker, redd, cn });
-                    used = name.len;
-                } else if (e == .spiderbyte and i == selected) {
-                    // SpiderByte's two-tone wordmark when selected: "Spider" in
-                    // white, "Byte" in the brand colour. Unselected, it greys out
-                    // like every other coin (handled by the generic branch below).
-                    const name = SpiderByte.coin_name;
-                    const head = name[0..SpiderByte.wordmark_split];
-                    const tail = name[SpiderByte.wordmark_split..];
-                    const sp = (zz.Style{}).bold(true).fg(zz.Color.hex(SpiderByte.wordmark_head_color)).render(a, head) catch head;
-                    const bt = (zz.Style{}).bold(true).fg(zz.Color.hex(SpiderByte.coin_color)).render(a, tail) catch tail;
-                    try out.writer.print("{s}{s}{s}", .{ marker, sp, bt });
-                    used = name.len;
-                } else {
-                    const text = entryLabel(e);
-                    const label = (zz.Style{}).bold(i == selected).fg(navColor(e, i == selected)).render(a, text) catch text;
-                    try out.writer.print("{s}{s}", .{ marker, label });
-                    used = text.len;
-                }
-                if (nav_label_w > used) try out.writer.splatByteAll(' ', nav_label_w - used);
+            if (have_left) switch (desc[i]) {
+                // Scroll indicators: a dim arrow row where the coin list
+                // continues past the window, in the blank marker column's
+                // alignment. The glyphs are multi-byte, so padding measures
+                // their visible width rather than byte length.
+                .more_above, .more_below => {
+                    const text: []const u8 = if (desc[i] == .more_above) "↑ ···" else "↓ ···";
+                    const hint = (zz.Style{}).fg(zz.Color.hex(nav_dim_color)).render(a, text) catch text;
+                    try out.writer.print("  {s}", .{hint});
+                    const used = zz.width(text);
+                    if (nav_label_w > used) try out.writer.splatByteAll(' ', nav_label_w - used);
+                },
+                .entry => |ei| {
+                    const e = entries[ei];
+                    const is_sel = ei == selected;
+                    // The selection marker is a bold, brand-coloured arrow so the
+                    // current coin stands out at a glance; unselected rows get blank
+                    // padding of the same visible width (2 cells) to keep alignment.
+                    const marker: []const u8 = if (is_sel)
+                        (zz.Style{}).bold(true).fg(entryColor(e)).render(a, "❯ ") catch "❯ "
+                    else if (ei < updates.len and updates[ei])
+                        // A coin with an available update gets a yellow ⬆ in the marker
+                        // column (the selected coin shows its arrow + the detail badge
+                        // instead, so it isn't doubled up).
+                        (zz.Style{}).bold(true).fg(.yellow).render(a, "⬆ ") catch "⬆ "
+                    else
+                        "  ";
+                    // Write the label, then pad to the fixed label width with trailing
+                    // spaces so the `│` separator stays aligned regardless of label
+                    // length (the colour ANSI codes are zero-width). Home is special:
+                    // "BoxWallet" in the brand colour, the version in the default
+                    // colour. Coins are one styled label (brand when selected, else
+                    // grey).
+                    var used: usize = undefined;
+                    if (e == .home) {
+                        const brand = (zz.Style{}).bold(is_sel).fg(entryColor(.home)).render(a, home_brand_text) catch home_brand_text;
+                        try out.writer.print("{s}{s}{s}", .{ marker, brand, home_version_text });
+                        used = home_brand_text.len + home_version_text.len;
+                    } else if (e == .reddcoin and is_sel) {
+                        // ReddCoin's two-tone wordmark when selected: "Redd" in the
+                        // brand red, "Coin" in near-white. Unselected, it greys out
+                        // like every other coin (handled by the generic branch below).
+                        const name = ReddCoin.coin_name;
+                        const head = name[0..ReddCoin.wordmark_split];
+                        const tail = name[ReddCoin.wordmark_split..];
+                        const redd = (zz.Style{}).bold(true).fg(zz.Color.hex(ReddCoin.coin_color)).render(a, head) catch head;
+                        const cn = (zz.Style{}).bold(true).fg(zz.Color.hex(ReddCoin.coin_color_alt)).render(a, tail) catch tail;
+                        try out.writer.print("{s}{s}{s}", .{ marker, redd, cn });
+                        used = name.len;
+                    } else if (e == .spiderbyte and is_sel) {
+                        // SpiderByte's two-tone wordmark when selected: "Spider" in
+                        // white, "Byte" in the brand colour. Unselected, it greys out
+                        // like every other coin (handled by the generic branch below).
+                        const name = SpiderByte.coin_name;
+                        const head = name[0..SpiderByte.wordmark_split];
+                        const tail = name[SpiderByte.wordmark_split..];
+                        const sp = (zz.Style{}).bold(true).fg(zz.Color.hex(SpiderByte.wordmark_head_color)).render(a, head) catch head;
+                        const bt = (zz.Style{}).bold(true).fg(zz.Color.hex(SpiderByte.coin_color)).render(a, tail) catch tail;
+                        try out.writer.print("{s}{s}{s}", .{ marker, sp, bt });
+                        used = name.len;
+                    } else {
+                        const text = entryLabel(e);
+                        const label = (zz.Style{}).bold(is_sel).fg(navColor(e, is_sel)).render(a, text) catch text;
+                        try out.writer.print("{s}{s}", .{ marker, label });
+                        used = text.len;
+                    }
+                    if (nav_label_w > used) try out.writer.splatByteAll(' ', nav_label_w - used);
+                },
             } else {
                 try out.writer.splatByteAll(' ', col_w);
             }
@@ -6664,6 +6744,24 @@ pub const App = struct {
         return out.toOwnedSlice();
     }
 };
+
+/// Keep at most `max_h` newline-terminated rows of `screen`. ZigZag's renderer
+/// never clips vertically either: a frame taller than the terminal scrolls the
+/// top rows (Home + nav) off-screen. Trimming the tall detail pane here keeps
+/// the whole frame within the terminal instead. Rows count `\n`s, matching
+/// `renderWithLog`'s accounting. `max_h == 0` (height unknown) is a no-op, and
+/// a screen that already fits comes back untouched — no copy either way.
+fn clipToHeight(screen: []const u8, max_h: usize) []const u8 {
+    if (max_h == 0) return screen;
+    var rows: usize = 0;
+    for (screen, 0..) |c, idx| {
+        if (c == '\n') {
+            rows += 1;
+            if (rows == max_h) return screen[0 .. idx + 1];
+        }
+    }
+    return screen;
+}
 
 /// Clip every logical line of `screen` to `max_w` visible columns. ZigZag's
 /// renderer (`program.zig`) prints each line verbatim and never clips, so a line
@@ -8658,7 +8756,7 @@ test "the wallet modal renders its menu centered over the dashboard" {
     defer arena.deinit();
     const a = arena.allocator();
 
-    const screen = try App.renderTwoPane(a, app.selected, &.{}, "right pane\n");
+    const screen = try App.renderTwoPane(a, app.selected, &.{}, "right pane\n", 0);
     const out = try app.renderModalOver(a, screen, 80, 24);
 
     // The modal's title and both locked-state actions appear in the composited
@@ -8808,7 +8906,7 @@ test "the external-wallet setup menu renders its create/restore choices" {
     defer arena.deinit();
     const a = arena.allocator();
 
-    const screen = try App.renderTwoPane(a, app.selected, &.{}, "right pane\n");
+    const screen = try App.renderTwoPane(a, app.selected, &.{}, "right pane\n", 0);
     const out = try app.renderModalOver(a, screen, 80, 24);
 
     try std.testing.expect(std.mem.indexOf(u8, out, "Nerva Wallet") != null);
@@ -8893,13 +8991,13 @@ test "left bar paints only the selected coin in its brand colour, the rest grey"
     const grey_seq = try seq(a, zz.Color.hex(nav_dim_color));
 
     // Select Nexa: its brand colour shows, Divi (unselected) is greyed instead.
-    const screen = try App.renderTwoPane(a, nexa_idx, &.{}, "");
+    const screen = try App.renderTwoPane(a, nexa_idx, &.{}, "", 0);
     try std.testing.expect(std.mem.indexOf(u8, screen, nexa_seq) != null);
     try std.testing.expect(std.mem.indexOf(u8, screen, grey_seq) != null);
     try std.testing.expect(std.mem.indexOf(u8, screen, divi_seq) == null);
 
     // Switching the selection to Divi flips which one carries its brand colour.
-    const screen2 = try App.renderTwoPane(a, divi_idx, &.{}, "");
+    const screen2 = try App.renderTwoPane(a, divi_idx, &.{}, "", 0);
     try std.testing.expect(std.mem.indexOf(u8, screen2, divi_seq) != null);
     try std.testing.expect(std.mem.indexOf(u8, screen2, nexa_seq) == null);
 }
@@ -8916,18 +9014,105 @@ test "left-nav shows an update arrow only for non-selected coins with a pending 
     updates[nexa_idx] = true;
 
     // Home selected → Nexa is non-selected → it carries the ⬆ marker.
-    const screen = try App.renderTwoPane(a, home_idx, &updates, "");
+    const screen = try App.renderTwoPane(a, home_idx, &updates, "", 0);
     try std.testing.expect(std.mem.indexOf(u8, screen, "⬆") != null);
 
     // No pending updates → no arrow anywhere.
     const none = [_]bool{false} ** entries.len;
-    const screen2 = try App.renderTwoPane(a, home_idx, &none, "");
+    const screen2 = try App.renderTwoPane(a, home_idx, &none, "", 0);
     try std.testing.expect(std.mem.indexOf(u8, screen2, "⬆") == null);
 
     // When the updating coin is selected, its selection arrow takes the marker
     // slot — no ⬆ doubled up (the detail badge covers it there).
-    const screen3 = try App.renderTwoPane(a, nexa_idx, &updates, "");
+    const screen3 = try App.renderTwoPane(a, nexa_idx, &updates, "", 0);
     try std.testing.expect(std.mem.indexOf(u8, screen3, "⬆") == null);
+}
+
+test "navWindow keeps the selection visible and flags the hidden sides" {
+    // Everything fits (or the height is unbounded) → the whole list, no
+    // indicators — the large-terminal fast path.
+    var w = navWindow(3, 10, 10);
+    try std.testing.expectEqual(NavWindow{ .start = 0, .len = 10, .more_above = false, .more_below = false }, w);
+    w = navWindow(3, 10, 99);
+    try std.testing.expectEqual(NavWindow{ .start = 0, .len = 10, .more_above = false, .more_below = false }, w);
+
+    // Overflow, selection at the top: window anchors at 0, only "below" flagged,
+    // and the indicator eats the bottom row of a 5-row viewport (4 coins shown).
+    w = navWindow(0, 10, 5);
+    try std.testing.expectEqual(NavWindow{ .start = 0, .len = 4, .more_above = false, .more_below = true }, w);
+
+    // Selection in the middle: both sides flagged, both edge rows become
+    // indicators, and the selection sits inside the visible slice.
+    w = navWindow(5, 10, 5);
+    try std.testing.expect(w.more_above and w.more_below);
+    try std.testing.expectEqual(@as(usize, 3), w.len);
+    try std.testing.expect(5 >= w.start and 5 < w.start + w.len);
+
+    // Selection at the end: window clamps to the tail, only "above" flagged.
+    w = navWindow(9, 10, 5);
+    try std.testing.expect(w.more_above and !w.more_below);
+    try std.testing.expect(9 >= w.start and 9 < w.start + w.len);
+
+    // 1–2 rows are too tight for indicators: the selection is still shown.
+    w = navWindow(5, 10, 1);
+    try std.testing.expectEqual(NavWindow{ .start = 5, .len = 1, .more_above = false, .more_below = false }, w);
+    w = navWindow(5, 10, 2);
+    try std.testing.expect(5 >= w.start and 5 < w.start + w.len);
+    try std.testing.expect(!w.more_above and !w.more_below);
+
+    // Zero rows: nothing visible, nothing flagged (Home-only nav).
+    w = navWindow(5, 10, 0);
+    try std.testing.expectEqual(@as(usize, 0), w.len);
+    try std.testing.expect(!w.more_above and !w.more_below);
+}
+
+test "left bar windows the coins to the nav height with Home pinned on top" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    // Needs enough coins that a 5-row nav actually overflows.
+    if (entries.len <= 5) return error.SkipZigTest;
+
+    // Select the last coin with only 5 nav rows: Home stays on the first row,
+    // the selection marker is drawn (the selected coin is in the window — its
+    // label may be a two-tone wordmark, so the marker is the reliable probe),
+    // the alphabetically-first coin has scrolled out, and the "more above"
+    // indicator marks the hidden stretch. Exactly 5 rows come back.
+    const last_idx = entries.len - 1;
+    const screen = try App.renderTwoPane(a, last_idx, &.{}, "", 5);
+    var it = std.mem.splitScalar(u8, screen, '\n');
+    try std.testing.expect(std.mem.indexOf(u8, it.next().?, home_brand_text) != null);
+    try std.testing.expect(std.mem.indexOf(u8, screen, "❯") != null);
+    try std.testing.expect(std.mem.indexOf(u8, screen, entryLabel(entries[1])) == null);
+    try std.testing.expect(std.mem.indexOf(u8, screen, "↑ ···") != null);
+    try std.testing.expect(std.mem.indexOf(u8, screen, "↓ ···") == null);
+    try std.testing.expectEqual(@as(usize, 5), std.mem.count(u8, screen, "\n"));
+
+    // Selecting the first coin flips the picture: the window sits at the top,
+    // the last coin is the one hidden, and the hidden stretch is below.
+    const screen2 = try App.renderTwoPane(a, 1, &.{}, "", 5);
+    try std.testing.expect(std.mem.indexOf(u8, screen2, "❯") != null);
+    try std.testing.expect(std.mem.indexOf(u8, screen2, entryLabel(entries[last_idx])) == null);
+    try std.testing.expect(std.mem.indexOf(u8, screen2, "↓ ···") != null);
+    try std.testing.expect(std.mem.indexOf(u8, screen2, "↑ ···") == null);
+
+    // A viewport that fits everything renders byte-identically to the
+    // unbounded call — the large-terminal regression guard.
+    const bounded = try App.renderTwoPane(a, 1, &.{}, "right\n", entries.len + 2);
+    const unbounded = try App.renderTwoPane(a, 1, &.{}, "right\n", 0);
+    try std.testing.expectEqualStrings(unbounded, bounded);
+}
+
+test "clipToHeight keeps at most max_h rows and the top intact" {
+    // Fits → returned untouched (same pointer, no copy); 0 (unknown) is a no-op.
+    const fits = "a\nb\n";
+    try std.testing.expectEqual(fits.ptr, clipToHeight(fits, 5).ptr);
+    try std.testing.expectEqual(fits.ptr, clipToHeight(fits, 0).ptr);
+
+    // Overflow → exactly max_h newline-terminated rows, first row intact.
+    const clipped = clipToHeight("one\ntwo\nthree\nfour\n", 2);
+    try std.testing.expectEqualStrings("one\ntwo\n", clipped);
 }
 
 test "Home summary lists coins with a pending update" {
@@ -9014,7 +9199,7 @@ test "per-coin activity is independent and stays inside the right pane" {
 
     // The two-pane layout still lists every coin on the left, whatever each is
     // doing — the activity is confined to the right of the separator.
-    const screen = try App.renderTwoPane(a, app.selected, &.{}, divi_pane);
+    const screen = try App.renderTwoPane(a, app.selected, &.{}, divi_pane, 0);
     try std.testing.expect(std.mem.indexOf(u8, screen, Nexa.coin_name) != null);
     try std.testing.expect(std.mem.indexOf(u8, screen, Divi.coin_name) != null);
     try std.testing.expect(std.mem.indexOf(u8, screen, "│") != null);
