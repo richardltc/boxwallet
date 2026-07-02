@@ -16,12 +16,23 @@ pub const CoinAuth = struct {
     data_dir: []const u8 = "",
 };
 
+/// One JSON-RPC error object (`{"code":N,"message":"..."}`), for callers that
+/// need the daemon's actual failure reason (invalid address, insufficient
+/// funds, wallet locked, ...) rather than a generic "it failed."
+pub const RpcError = struct {
+    code: i64 = 0,
+    message: []const u8 = "",
+};
+
 /// JSON-RPC response envelope. Daemons reply with
 /// `{ "result": <T>, "error": ..., "id": ... }`.
-/// `error` and `id` are dropped via `ignore_unknown_fields` at parse time.
+/// `id` is dropped via `ignore_unknown_fields` at parse time; `error` is kept
+/// (as `?RpcError`) for callers that want the daemon's own message on
+/// failure — most callers only read `.result` and are unaffected.
 pub fn JsonRpcResponse(comptime T: type) type {
     return struct {
         result: ?T = null,
+        @"error": ?RpcError = null,
     };
 }
 
@@ -363,6 +374,14 @@ pub const WalletTx = struct {
     amount: f64, // positive magnitude; `direction` carries the sign
     time: i64, // unix seconds
     confirmations: i64,
+};
+
+/// Outcome of a send attempt, normalized for display. `failed` carries the
+/// daemon's own message (invalid address / insufficient funds / wallet
+/// locked / ...) verbatim — never collapsed to a generic "failed."
+pub const SendResult = union(enum) {
+    ok: []const u8, // txid
+    failed: []const u8, // human-readable reason
 };
 
 /// How far a wallet rescan has progressed — `scanned` blocks of `target`. Reported
