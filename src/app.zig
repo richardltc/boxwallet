@@ -754,6 +754,54 @@ const QuickSyncModal = struct {
     }
 };
 
+/// The Send prompt — enter a destination address, an amount, confirm, then
+/// broadcast. A standalone modal (not folded into the wallet `Modal`'s
+/// `WalletAction`, which is tightly coupled to the password/wallet-menu flow
+/// and has no room for an address+amount payload) so it can own its own
+/// worker and inputs cleanly, mirroring `QuickSyncModal`'s shape.
+const SendModal = struct {
+    const Stage = enum {
+        /// Type/paste the destination address.
+        address,
+        /// Enter the amount to send.
+        amount,
+        /// Yes/No: send exactly this amount to this address? Shows the full,
+        /// untruncated address — the one typo safety net a machine can't
+        /// provide (format validation catches malformed addresses, not
+        /// wrong-but-valid ones).
+        confirm,
+        /// The send RPC is in flight (outcome read from the Activity).
+        working,
+        /// Success (txid) or the daemon's own failure reason.
+        result,
+    };
+
+    stage: Stage = .address,
+    /// The entry the prompt acts on, so the worker/reap target the right
+    /// Activity even if the left-nav selection moves while it's open.
+    coin_idx: usize = 0,
+    /// Confirm-menu cursor (0 = Yes, 1 = No).
+    sel: u8 = 0,
+    /// Set when the amount field failed to parse (non-numeric, zero, or
+    /// negative) — never for "exceeds balance", since the cached balance can
+    /// be stale; the daemon's own live check is the real gate.
+    bad_input: bool = false,
+    /// Whether the finished send succeeded (tints the result line).
+    ok: bool = false,
+    /// Outcome text shown in the `result` stage: the txid or the daemon's own
+    /// failure reason (fixed buffer — no allocation).
+    msg_buf: [256]u8 = undefined,
+    msg_len: usize = 0,
+
+    fn setMsg(self: *SendModal, ok: bool, text: []const u8) void {
+        self.ok = ok;
+        const n = @min(text.len, self.msg_buf.len);
+        @memcpy(self.msg_buf[0..n], text[0..n]);
+        self.msg_len = n;
+        self.stage = .result;
+    }
+};
+
 /// A first-start prune preset: a menu label and the target it sets, in MiB
 /// (matching the daemon's `prune=` units; 0 = full node). 1 GB is taken as
 /// 1000 MiB so the size reads back cleanly as "N GB" on the Settings tab.
@@ -1011,6 +1059,29 @@ const Activity = struct {
     /// Error name from a failed action (static, program-lifetime), published with
     /// the `wallet_done` edge.
     wallet_err: []const u8 = "",
+
+    // --- send worker (the Send tab) -----------------------------------------
+    // A short-lived worker runs one `sendtoaddress`-style RPC so the UI never
+    // blocks on it. Same synchronization edge as the wallet-action worker:
+    // the worker stores `send_done` with release, the UI loads it with
+    // acquire, and that pairing publishes `send_ok`/`send_result_buf`.
+    // Standalone rather than folded into `wallet_thread`/`WalletAction` —
+    // that pipeline is tightly coupled to the password/wallet-menu flow and
+    // has no room for an address+amount payload.
+    send_thread: ?std.Thread = null,
+    /// The destination address for the in-flight send, copied in before the
+    /// worker is spawned.
+    send_addr_buf: [128]u8 = undefined,
+    send_addr_len: usize = 0,
+    send_amount: f64 = 0,
+    /// Set true (release) by the worker when the send finishes.
+    send_done: std.atomic.Value(bool) = .init(false),
+    /// Whether the finished send succeeded. Published by the `send_done` edge.
+    send_ok: bool = false,
+    /// The txid (success) or the daemon's own failure reason (rejection) —
+    /// never a generic "it failed." Published by the `send_done` edge.
+    send_result_buf: [256]u8 = undefined,
+    send_result_len: usize = 0,
 
     // --- external wallet process (Monero-style coins, e.g. Nerva) -----------
     // For `coin.hasExternalWallet()` coins the wallet is a *second* process
@@ -1575,6 +1646,64 @@ const Activity = struct {
             // daemon-stopped file swap driven by the tick reap loop.
             .restore_file_offline => unreachable,
         }
+    }
+
+    /// Send worker. Runs one `sendtoaddress`-style RPC on a private arena
+    /// (bounded, isolated) and publishes the outcome, reaped by the UI once
+    /// `send_done` is observed. Unlike `runWalletAction`, a daemon-side
+    /// rejection (invalid address, insufficient funds, locked wallet) isn't a
+    /// Zig error — it's a normal `SendResult.failed` outcome, carrying the
+    /// daemon's own message; only a genuine transport/setup failure falls
+    /// into the `catch` (and even then, `@errorName` is the best available
+    /// reason, matching how `runWalletAction` handles its own catch-all).
+    fn runSend(self: *Activity) void {
+        var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+        defer arena.deinit();
+        const a = arena.allocator();
+
+        const outcome: models.SendResult = self.doSend(a) catch |err| .{ .failed = @errorName(err) };
+        switch (outcome) {
+            .ok => |txid| {
+                self.send_ok = true;
+                self.stashSendResult(txid);
+            },
+            .failed => |msg| {
+                self.send_ok = false;
+                self.stashSendResult(msg);
+            },
+        }
+        self.send_done.store(true, .release);
+    }
+
+    /// Resolve the coin's RPC credentials and dispatch the in-flight send.
+    /// The address/amount come from `send_addr_buf`/`send_amount` (the UI
+    /// copied them in before spawning).
+    fn doSend(self: *Activity, a: std.mem.Allocator) !models.SendResult {
+        var threaded: std.Io.Threaded = .init(a, .{});
+        defer threaded.deinit();
+        const io = threaded.io();
+
+        const data_dir = try self.coin.dataDir(a, self.home_dir);
+        const auth = try conf.readAuth(
+            a,
+            io,
+            data_dir,
+            self.coin.confFile(),
+            self.coin.rpcDefaultUsername(),
+            self.coin.rpcDefaultPort(),
+        );
+
+        const address = self.send_addr_buf[0..self.send_addr_len];
+        return self.coin.walletSend(a, auth, address, self.send_amount);
+    }
+
+    /// Copy `text` (a txid or a failure reason) into the bounded
+    /// `send_result_buf`, truncating if it somehow runs long — same shape as
+    /// the transaction/receive-address cache copies elsewhere in this file.
+    fn stashSendResult(self: *Activity, text: []const u8) void {
+        const n = @min(text.len, self.send_result_buf.len);
+        @memcpy(self.send_result_buf[0..n], text[0..n]);
+        self.send_result_len = n;
     }
 
     /// The wallet *process*'s own RPC endpoint (127.0.0.1 + the capability's bound
@@ -2715,6 +2844,10 @@ pub const App = struct {
     /// other modals; while set it owns keyboard input and is composited over the
     /// dashboard, same as the wallet/QuickSync modals.
     prune_modal: ?PruneModal = null,
+    /// The open Send prompt, or null. Mutually exclusive with the other
+    /// modals; while set it owns keyboard input and is composited over the
+    /// dashboard, same as the others.
+    send_modal: ?SendModal = null,
     /// Masked passphrase entry for the wallet modal. Persistent (its backing
     /// buffer outlives a single modal), created in `init` and freed in `deinit`;
     /// its value is cleared whenever the modal closes or an action is sent.
@@ -2725,6 +2858,13 @@ pub const App = struct {
     /// Visible entry for a custom prune amount in GB (prune prompt). Persistent
     /// like the others; digits only, cleared whenever the prompt opens.
     prune_input: zz.TextInput,
+    /// Visible entry for a send destination address. Persistent like the
+    /// others; unrestricted characters (base58/bech32), cleared whenever the
+    /// Send modal opens.
+    send_addr_input: zz.TextInput,
+    /// Visible entry for a send amount. Persistent like the others; digits
+    /// and one decimal point, cleared whenever the Send modal opens.
+    send_amount_input: zz.TextInput,
     /// File browser for the restore-from-file flow (external-wallet coins).
     /// Persistent; navigated on demand, freed in `deinit`.
     file_picker: zz.components.FilePicker,
@@ -2829,6 +2969,8 @@ pub const App = struct {
             .pw_input = zz.TextInput.init(ctx.persistent_allocator),
             .seed_input = zz.TextInput.init(ctx.persistent_allocator),
             .prune_input = zz.TextInput.init(ctx.persistent_allocator),
+            .send_addr_input = zz.TextInput.init(ctx.persistent_allocator),
+            .send_amount_input = zz.TextInput.init(ctx.persistent_allocator),
             .file_picker = zz.components.FilePicker.init(ctx.persistent_allocator),
         };
         // The wallet passphrase field masks its input and stays a fixed width.
@@ -2843,6 +2985,13 @@ pub const App = struct {
         // capped at a handful of digits.
         self.prune_input.setWidth(10);
         self.prune_input.setCharLimit(6);
+        // The send-address field is wide enough for any realistic coin address
+        // and generous on length (unrestricted characters — base58/bech32).
+        self.send_addr_input.setWidth(modal_inner_w - 6);
+        self.send_addr_input.setCharLimit(128);
+        // The send-amount field is a plain decimal number — visible, narrow.
+        self.send_amount_input.setWidth(20);
+        self.send_amount_input.setCharLimit(20);
         // The file browser is for picking a wallet file, in a modest viewport
         // that fits the centered modal. `file_only` must stay false: ZigZag
         // implements it by hiding every directory from the listing (not just
@@ -2931,6 +3080,8 @@ pub const App = struct {
         self.pw_input.deinit();
         self.seed_input.deinit();
         self.prune_input.deinit();
+        self.send_addr_input.deinit();
+        self.send_amount_input.deinit();
         self.file_picker.deinit();
         if (self.install_root_owned) self.allocator.free(self.install_root);
         if (self.home_dir_owned) self.allocator.free(self.home_dir);
@@ -2958,6 +3109,10 @@ pub const App = struct {
                 }
                 if (self.modal != null) {
                     self.modalKey(k);
+                    return .none;
+                }
+                if (self.send_modal != null) {
+                    self.sendModalKey(k);
                     return .none;
                 }
                 // Detail-pane tabs only exist for a selected coin, not the Home
@@ -2989,6 +3144,7 @@ pub const App = struct {
                     .right => if (on_coin) {
                         self.active_tab = cycleTab(self.active_tab, 1);
                     },
+                    .enter => if (on_coin and self.active_tab == .send) self.openSendModal(),
                     else => {},
                 }
             },
@@ -3386,6 +3542,9 @@ pub const App = struct {
                         // up and polls.
                         act.receive_addr_len = 0;
                         act.poll_receive_addr_len = 0;
+                        // Drop any stashed send address/result too, for the same reason.
+                        act.send_addr_len = 0;
+                        act.send_result_len = 0;
                         // Drop any rescan indicator — the wallet's gone with the node.
                         act.rescanning = false;
                         act.poll_rescanning.store(0, .monotonic);
@@ -3496,6 +3655,24 @@ pub const App = struct {
                         self.qs_modal.?.setMsg(act.qs_err);
                     if (coin_opt) |c| self.logf("{s}: QuickSync download failed ({s})", .{ c.coinName(), act.qs_err });
                 }
+            }
+
+            // Settle a finished send: join the worker, log the outcome, and — if
+            // the Send modal is still open for this coin — show the txid or the
+            // daemon's own failure reason. Re-poll promptly so the balance and
+            // transaction list reflect the send immediately.
+            if (act.send_thread != null and act.send_done.load(.acquire)) {
+                act.send_thread.?.join();
+                act.send_thread = null;
+                const ok = act.send_ok;
+                const result = act.send_result_buf[0..act.send_result_len];
+                if (self.coinAt(i)) |c| {
+                    self.logf("{s}: {s}", .{ c.coinName(), if (ok) "sent" else "send failed" });
+                }
+                if (self.send_modal != null and self.send_modal.?.coin_idx == i) {
+                    self.send_modal.?.setMsg(ok, result);
+                }
+                self.last_poll_ns = 0;
             }
 
             // External wallet (Monero-style) process lifecycle: bring it up
@@ -3989,7 +4166,7 @@ pub const App = struct {
         const act = &self.activities[self.selected];
         if (act.busy()) return;
         if (act.update_await_stop or act.update_restart) return; // already updating
-        if (self.modal != null or self.qs_modal != null or self.update_modal != null) return;
+        if (self.modal != null or self.qs_modal != null or self.update_modal != null or self.send_modal != null) return;
         // from_len stays 0: the prompt reads "reinstall the bundled version"
         // rather than "X → Y", since this isn't tied to a newer release.
         self.update_modal = .{ .coin_idx = self.selected, .reinstall = true };
@@ -4035,7 +4212,7 @@ pub const App = struct {
         const act = &self.activities[self.selected];
         if (!act.update_available or act.busy()) return;
         if (act.update_await_stop or act.update_restart) return; // already updating
-        if (self.modal != null or self.qs_modal != null or self.update_modal != null) return;
+        if (self.modal != null or self.qs_modal != null or self.update_modal != null or self.send_modal != null) return;
 
         var m: UpdateModal = .{ .coin_idx = self.selected };
         const iv = act.installedVersion();
@@ -4291,6 +4468,142 @@ pub const App = struct {
         const act = &self.activities[m.coin_idx];
         self.qs_modal = null;
         if (coin) |c| self.beginDaemonStart(c, act);
+    }
+
+    /// Open the Send prompt for the selected coin. Resets both inputs and
+    /// starts focus on the address field. Reachable only via `enter` on the
+    /// Send tab, which is itself gated behind the same modal-priority chain
+    /// every other modal-opening key already is (`update`'s `.key` switch),
+    /// so no other modal can be open when this runs.
+    fn openSendModal(self: *App) void {
+        self.send_modal = .{ .coin_idx = self.selected };
+        self.send_addr_input.setValue("") catch {};
+        self.send_amount_input.setValue("") catch {};
+        self.send_addr_input.focus();
+        self.send_amount_input.blur();
+    }
+
+    fn closeSendModal(self: *App) void {
+        self.send_modal = null;
+    }
+
+    /// Handle a keypress while the Send prompt is open. `address` collects
+    /// the destination (unrestricted characters — paste included, for free,
+    /// via `TextInput.handleKey`'s own `.paste` handling); `amount` collects
+    /// a decimal number (digits + one `.`); `confirm` is a plain Yes/No
+    /// (mirrors `qsModalKey`'s `.confirm` exactly); `working` can't be
+    /// cancelled (matches "no cancelling a download in flight"); `result`
+    /// closes on any key (matches the wallet modal's own result stage).
+    fn sendModalKey(self: *App, k: zz.KeyEvent) void {
+        if (self.send_modal == null) return;
+        const m = &self.send_modal.?;
+        switch (m.stage) {
+            .address => switch (k.key) {
+                .escape => self.closeSendModal(),
+                .enter => if (self.send_addr_input.getValue().len > 0) {
+                    self.send_addr_input.blur();
+                    self.send_amount_input.focus();
+                    m.stage = .amount;
+                },
+                else => self.send_addr_input.handleKey(k),
+            },
+            .amount => switch (k.key) {
+                .escape => self.closeSendModal(),
+                .enter => self.trySendAmount(),
+                // Digits and (one) decimal point only. Typing clears a prior
+                // parse error.
+                .char => |c| {
+                    if (c >= '0' and c <= '9') {
+                        m.bad_input = false;
+                        self.send_amount_input.handleKey(k);
+                    } else if (c == '.' and std.mem.indexOfScalar(u8, self.send_amount_input.getValue(), '.') == null) {
+                        m.bad_input = false;
+                        self.send_amount_input.handleKey(k);
+                    }
+                },
+                // Backspace/paste/cursor moves edit the field.
+                else => self.send_amount_input.handleKey(k),
+            },
+            .confirm => switch (k.key) {
+                .escape => self.closeSendModal(),
+                .up => m.sel = 0,
+                .down => m.sel = 1,
+                .char => |c| switch (c) {
+                    'k' => m.sel = 0,
+                    'j' => m.sel = 1,
+                    'y' => self.submitSend(),
+                    'n' => self.closeSendModal(),
+                    else => {},
+                },
+                .enter => if (m.sel == 0) self.submitSend() else self.closeSendModal(),
+                else => {},
+            },
+            // No cancelling a send in flight — let it finish (or fail) and reap.
+            .working => {},
+            .result => self.closeSendModal(),
+        }
+    }
+
+    /// Parse and validate the amount field, advancing to `.confirm` on
+    /// success. Only checks "is this a valid positive number" — deliberately
+    /// *not* "does it exceed the cached balance", since that figure can be
+    /// stale in either direction; the daemon's own live check
+    /// ("Insufficient funds") is the real, always-correct gate.
+    fn trySendAmount(self: *App) void {
+        const m = &self.send_modal.?;
+        const text = std.mem.trim(u8, self.send_amount_input.getValue(), " \t");
+        const amount = std.fmt.parseFloat(f64, text) catch {
+            m.bad_input = true;
+            return;
+        };
+        if (amount <= 0) {
+            m.bad_input = true;
+            return;
+        }
+        m.bad_input = false;
+        m.sel = 0;
+        m.stage = .confirm;
+    }
+
+    /// User confirmed: copy the address/amount into the target Activity and
+    /// spawn the send worker. Mirrors `submitWalletAction`/
+    /// `startQuickSyncDownload`'s shape.
+    fn submitSend(self: *App) void {
+        if (self.send_modal == null) return;
+        const m = &self.send_modal.?;
+        const coin = self.coinAt(m.coin_idx) orelse return;
+        const act = &self.activities[m.coin_idx];
+
+        // Reap any in-flight poll / prior send worker so this one doesn't race
+        // them on `act.coin`/`home_dir`.
+        if (act.poll_thread) |t| {
+            t.join();
+            act.poll_thread = null;
+        }
+        if (act.send_thread) |t| {
+            t.join();
+            act.send_thread = null;
+        }
+
+        const addr = self.send_addr_input.getValue();
+        const n = @min(addr.len, act.send_addr_buf.len);
+        @memcpy(act.send_addr_buf[0..n], addr[0..n]);
+        act.send_addr_len = n;
+
+        const amount_text = std.mem.trim(u8, self.send_amount_input.getValue(), " \t");
+        act.send_amount = std.fmt.parseFloat(f64, amount_text) catch 0;
+
+        act.coin = coin;
+        act.home_dir = self.home_dir;
+        act.send_ok = false;
+        act.send_done.store(false, .monotonic);
+
+        act.send_thread = std.Thread.spawn(.{}, Activity.runSend, .{act}) catch {
+            m.setMsg(false, "couldn't start the send worker");
+            return;
+        };
+        m.stage = .working;
+        self.logf("{s}: sending…", .{coin.coinName()});
     }
 
     /// Open the first-start prune prompt for `coin`. Resets the cursor to the
@@ -4934,6 +5247,10 @@ pub const App = struct {
                 const box = self.renderPruneModal(a) catch break :blk screen;
                 break :blk overlayBox(a, screen, box, ctx.width, ctx.height) catch screen;
             }
+            if (self.send_modal != null) {
+                const box = self.renderSendModal(a) catch break :blk screen;
+                break :blk overlayBox(a, screen, box, ctx.width, ctx.height) catch screen;
+            }
             if (self.modal == null) break :blk screen;
             break :blk self.renderModalOver(a, screen, ctx.width, ctx.height) catch screen;
         };
@@ -5383,7 +5700,10 @@ pub const App = struct {
                 try renderReceiveTab(a, act)
             else
                 try renderPlaceholderTab(a, self.active_tab),
-            else => try renderPlaceholderTab(a, self.active_tab),
+            .send => if (coin.supportsSend())
+                try renderSendTab(a, coin, act)
+            else
+                try renderPlaceholderTab(a, self.active_tab),
         };
 
         return std.fmt.allocPrint(a, "{s}\n\n{s}\n\n{s}\n\n{s}", .{ head_line, description, tab_strip, body });
@@ -5539,6 +5859,18 @@ pub const App = struct {
         defer qr.deinit();
         const qr_block = try renderQrHalfBlock(a, qr);
         return std.fmt.allocPrint(a, "Receive\n\nAddress: {s}{s}\n\n{s}", .{ addr, hint, qr_block });
+    }
+
+    /// The Send tab body: the coin's cached available balance and a hint to
+    /// open the Send prompt. Only reached for a coin whose `supportsSend()`
+    /// is true; every other coin's `.send` case still falls through to
+    /// `renderPlaceholderTab`. The actual address/amount entry happens in
+    /// `SendModal` (opened by `enter`), not here — see the Context note on
+    /// why free-text entry needs a modal's exclusive keyboard ownership.
+    fn renderSendTab(a: std.mem.Allocator, coin: Coin, act: *const Activity) ![]const u8 {
+        const balance = formatBalance(a, act.balance_avail, coin.coinNameAbbrev(), coin.balanceDecimals());
+        const hint = (zz.Style{}).dim(true).render(a, "(press Enter to send)") catch "(press Enter to send)";
+        return std.fmt.allocPrint(a, "Send\n\nAvailable: {s}\n\n{s}", .{ balance, hint });
     }
 
     /// True black/white for the QR render — ZigZag's *named* `.black`/
@@ -6111,6 +6443,97 @@ pub const App = struct {
         else
             plain;
         try modalRow(w, vbar, inner_w, text, zz.width(plain));
+    }
+
+    /// Render the Send prompt box. Mirrors `renderPruneModal`'s chrome
+    /// (brand-coloured rule + rows) and its text-input-stage shape
+    /// (`self.xxx_input.view(a)` embedded in a row); the confirm stage shows
+    /// the **full, untruncated address** — the one typo safety net a machine
+    /// can't provide.
+    fn renderSendModal(self: *const App, a: std.mem.Allocator) ![]const u8 {
+        const m = self.send_modal.?;
+        const coin = self.coinAt(m.coin_idx) orelse return error.NoCoin;
+        const act = &self.activities[m.coin_idx];
+        const brand = zz.Color.hex(coin.coinColor());
+        const inner_w = modal_inner_w;
+        const vbar = (zz.Style{}).fg(brand).render(a, "│") catch "│";
+
+        var out: std.Io.Writer.Allocating = .init(a);
+        errdefer out.deinit();
+
+        const title = try std.fmt.allocPrint(a, "{s} — send", .{coin.coinName()});
+        try modalRule(a, &out.writer, brand, inner_w, "┌", "┐", title);
+        try modalRow(&out.writer, vbar, inner_w, "", 0);
+
+        switch (m.stage) {
+            .address => {
+                const field = try self.send_addr_input.view(a);
+                const text = try std.fmt.allocPrint(a, "To: {s}", .{field});
+                try modalRow(&out.writer, vbar, inner_w, text, zz.width("To: ") + zz.width(field));
+            },
+            .amount => {
+                const field = try self.send_amount_input.view(a);
+                const text = try std.fmt.allocPrint(a, "Amount: {s}", .{field});
+                try modalRow(&out.writer, vbar, inner_w, text, zz.width("Amount: ") + zz.width(field));
+                try modalRow(&out.writer, vbar, inner_w, "", 0);
+                const balance = formatBalance(a, act.balance_avail, coin.coinNameAbbrev(), coin.balanceDecimals());
+                const avail = try std.fmt.allocPrint(a, "Available: {s}", .{balance});
+                const avail_styled = (zz.Style{}).dim(true).render(a, avail) catch avail;
+                try modalRow(&out.writer, vbar, inner_w, avail_styled, zz.width(avail));
+                if (m.bad_input) {
+                    const warn = "Enter a positive amount.";
+                    const styled = (zz.Style{}).fg(.red).render(a, warn) catch warn;
+                    try modalRow(&out.writer, vbar, inner_w, styled, zz.width(warn));
+                }
+            },
+            .confirm => {
+                // The full, untruncated address — deliberately not shortened.
+                const addr = self.send_addr_input.getValue();
+                const amount_text = std.mem.trim(u8, self.send_amount_input.getValue(), " \t");
+                const amount = std.fmt.parseFloat(f64, amount_text) catch 0;
+                var buf: [64]u8 = undefined;
+                const detail = try std.fmt.allocPrint(a, "Send {s} {s} to {s}? This cannot be undone.", .{
+                    formatAmount(&buf, amount, coin.balanceDecimals()), coin.coinNameAbbrev(), addr,
+                });
+                try wrapIntoRows(a, &out.writer, vbar, inner_w, detail, (zz.Style{}));
+                try modalRow(&out.writer, vbar, inner_w, "", 0);
+                const labels = [_][]const u8{ "Yes — send it", "No — cancel" };
+                for (labels, 0..) |lbl, i| {
+                    const sel = i == m.sel;
+                    const plain = try std.fmt.allocPrint(a, "{s}{s}", .{ if (sel) "❯ " else "  ", lbl });
+                    const text = if (sel)
+                        ((zz.Style{}).bold(true).fg(brand).render(a, plain) catch plain)
+                    else
+                        plain;
+                    try modalRow(&out.writer, vbar, inner_w, text, zz.width(plain));
+                }
+            },
+            .working => {
+                try modalRow(&out.writer, vbar, inner_w, "Sending…", zz.width("Sending…"));
+            },
+            .result => {
+                const lead = if (m.ok)
+                    ((zz.Style{}).fg(.green).render(a, "Sent. Txid:") catch "Sent. Txid:")
+                else
+                    ((zz.Style{}).fg(.red).render(a, "Send failed:") catch "Send failed:");
+                try modalRow(&out.writer, vbar, inner_w, lead, zz.width(if (m.ok) "Sent. Txid:" else "Send failed:"));
+                try wrapIntoRows(a, &out.writer, vbar, inner_w, m.msg_buf[0..m.msg_len], (zz.Style{}).dim(true));
+            },
+        }
+
+        try modalRow(&out.writer, vbar, inner_w, "", 0);
+        const hint = switch (m.stage) {
+            .address => "enter: next   esc: cancel",
+            .amount => "enter: next   esc: cancel",
+            .confirm => "enter: select   esc: cancel",
+            .working => "please wait…",
+            .result => "press any key to close",
+        };
+        const hint_styled = (zz.Style{}).dim(true).render(a, hint) catch hint;
+        try modalRow(&out.writer, vbar, inner_w, hint_styled, zz.width(hint));
+        try modalRule(a, &out.writer, brand, inner_w, "└", "┘", "");
+
+        return out.toOwnedSlice();
     }
 
     /// Render the update-confirm prompt box. Mirrors `renderQuickSyncModal`'s
@@ -7334,6 +7757,150 @@ test "copyReceiveAddress no-ops without a cached address, logs otherwise" {
     try std.testing.expectEqual(before + 1, app.log_count);
     const last = app.log_lines[(app.log_count - 1) % log_capacity].buf[0..app.log_lines[(app.log_count - 1) % log_capacity].len];
     try std.testing.expect(std.mem.indexOf(u8, last, "clipboard") != null);
+}
+
+test "trySendAmount rejects non-numeric/zero/negative, accepts a valid positive amount" {
+    if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
+    const allocator = std.testing.allocator;
+
+    var threaded: std.Io.Threaded = .init(allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    var env = std.process.Environ.Map.init(allocator);
+    defer env.deinit();
+    try env.put("HOME", "/home/tester");
+    var ctx = zz.Context.init(allocator, allocator, io, &env);
+
+    var app: App = undefined;
+    _ = app.init(&ctx);
+    defer app.deinit();
+
+    app.send_modal = .{ .coin_idx = 1, .stage = .amount };
+
+    // Non-numeric.
+    try app.send_amount_input.setValue("abc");
+    app.trySendAmount();
+    try std.testing.expect(app.send_modal.?.bad_input);
+    try std.testing.expectEqual(SendModal.Stage.amount, app.send_modal.?.stage);
+
+    // Zero and negative are both rejected too.
+    try app.send_amount_input.setValue("0");
+    app.trySendAmount();
+    try std.testing.expect(app.send_modal.?.bad_input);
+    try std.testing.expectEqual(SendModal.Stage.amount, app.send_modal.?.stage);
+
+    // A cached balance of 0 does NOT block a positive amount client-side —
+    // that check is deliberately left to the daemon's own live "Insufficient
+    // funds" response (see the plan's rationale: the cached balance can be
+    // stale in either direction).
+    app.activities[1].balance_avail = 0;
+    try app.send_amount_input.setValue("1.5");
+    app.trySendAmount();
+    try std.testing.expect(!app.send_modal.?.bad_input);
+    try std.testing.expectEqual(SendModal.Stage.confirm, app.send_modal.?.stage);
+}
+
+test "renderSendModal shows the untruncated address and formatted amount at confirm" {
+    if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
+    const allocator = std.testing.allocator;
+
+    var threaded: std.Io.Threaded = .init(allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    var env = std.process.Environ.Map.init(allocator);
+    defer env.deinit();
+    try env.put("HOME", "/home/tester");
+    var ctx = zz.Context.init(allocator, allocator, io, &env);
+
+    var app: App = undefined;
+    _ = app.init(&ctx);
+    defer app.deinit();
+
+    // Find whichever coin slot actually supports Send (currently SpiderByte
+    // only), rather than hardcoding its index in `entries`.
+    var send_idx: usize = 0;
+    for (0..app.activities.len) |i| {
+        if (app.coinAt(i)) |c| {
+            if (c.supportsSend()) {
+                send_idx = i;
+                break;
+            }
+        }
+    }
+    try std.testing.expect(send_idx != 0);
+
+    const addr = "XmM8G6mfvJvqfxLnf78EE7oGDwtvfxKz9y";
+    try app.send_addr_input.setValue(addr);
+    try app.send_amount_input.setValue("1.5");
+    app.send_modal = .{ .coin_idx = send_idx, .stage = .confirm };
+
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+    const box = try app.renderSendModal(arena.allocator());
+    try std.testing.expect(std.mem.indexOf(u8, box, addr) != null);
+    try std.testing.expect(std.mem.indexOf(u8, box, "1.50000000") != null);
+}
+
+test "the Send tab only shows the balance/hint for a coin that supports it" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    var app: App = undefined;
+    app.disk_used = 0;
+    app.disk_total = 0;
+    app.mem_used = 0;
+    app.mem_total = 0;
+    app.active_tab = .send;
+
+    // Nexa has no `wallet_send` wired — its Send tab must keep showing the
+    // generic placeholder (per-coin rule: don't break other coins).
+    {
+        var nexa: Nexa = .{};
+        const coin = nexa.coin();
+        try std.testing.expect(!coin.supportsSend());
+
+        var act: Activity = .{
+            .coin = coin,
+            .home_dir = "",
+            .spinner = App.makeSpinner(),
+            .daemon_spinner = App.makeSpinner(),
+            .sync_spinner = zz.Spinner.init(),
+        };
+        act.installed = true;
+        act.daemon.store(@intFromEnum(DaemonState.running), .release);
+        act.poll_completed = true;
+
+        const pane = try App.renderCoin(&app, a, coin, &act);
+        try std.testing.expect(std.mem.indexOf(u8, pane, "Coming soon.") != null);
+    }
+
+    // SpiderByte supports it — the balance/hint show up live instead.
+    {
+        var spb: SpiderByte = .{};
+        const coin = spb.coin();
+        try std.testing.expect(coin.supportsSend());
+
+        var act: Activity = .{
+            .coin = coin,
+            .home_dir = "",
+            .spinner = App.makeSpinner(),
+            .daemon_spinner = App.makeSpinner(),
+            .sync_spinner = zz.Spinner.init(),
+        };
+        act.installed = true;
+        act.daemon.store(@intFromEnum(DaemonState.running), .release);
+        act.poll_completed = true;
+        act.has_balance = true;
+        act.balance_avail = 3.0;
+
+        const pane = try App.renderCoin(&app, a, coin, &act);
+        try std.testing.expect(std.mem.indexOf(u8, pane, "Coming soon.") == null);
+        try std.testing.expect(std.mem.indexOf(u8, pane, "3.00000000") != null);
+        try std.testing.expect(std.mem.indexOf(u8, pane, "press Enter to send") != null);
+    }
 }
 
 test "a successful poll folds peers, staking, heights and sync into the display" {

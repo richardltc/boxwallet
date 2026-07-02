@@ -481,6 +481,19 @@ pub const Coin = struct {
             auth: models.CoinAuth,
             force_new: bool,
         ) anyerror![]const u8 = null,
+        /// Optional: send `amount` to `address`. Returns the outcome rather
+        /// than erroring on a daemon-side rejection (invalid address,
+        /// insufficient funds, locked wallet) — those are normal, expected
+        /// outcomes to show the user, not exceptional. Non-null marks a coin
+        /// whose Send tab is live; `supportsSend` keys off this being
+        /// non-null.
+        wallet_send: ?*const fn (
+            ptr: *anyopaque,
+            allocator: std.mem.Allocator,
+            auth: models.CoinAuth,
+            address: []const u8,
+            amount: f64,
+        ) anyerror!models.SendResult = null,
         /// Optional: encrypt the (currently unencrypted) wallet with `passphrase`.
         /// Bitcoin-derived daemons stop themselves after this — the caller restarts
         /// them. Paired with `wallet_security_state`; null when unsupported.
@@ -791,6 +804,27 @@ pub const Coin = struct {
     ) ![]const u8 {
         const f = self.vtable.wallet_receive_address orelse return error.Unsupported;
         return f(self.ptr, allocator, auth, force_new);
+    }
+
+    /// Whether this coin can send funds over RPC (drives the Send tab). True
+    /// iff the coin wires `wallet_send`.
+    pub fn supportsSend(self: Coin) bool {
+        return self.vtable.wallet_send != null;
+    }
+
+    /// Send `amount` to `address`. Errors `error.Unsupported` if the coin
+    /// reports no send capability (`supportsSend` false); otherwise returns
+    /// the outcome (success or a daemon-reported failure reason) rather than
+    /// erroring on a rejected send.
+    pub fn walletSend(
+        self: Coin,
+        allocator: std.mem.Allocator,
+        auth: models.CoinAuth,
+        address: []const u8,
+        amount: f64,
+    ) !models.SendResult {
+        const f = self.vtable.wallet_send orelse return error.Unsupported;
+        return f(self.ptr, allocator, auth, address, amount);
     }
 
     /// Encrypt the wallet with `passphrase`. Errors `error.Unsupported` if the

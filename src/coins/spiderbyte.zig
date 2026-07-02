@@ -385,6 +385,38 @@ pub const SpiderByte = struct {
         return if (force_new) "getnewaddress" else "getaccountaddress";
     }
 
+    /// Send `amount` SPB to `address` via `sendtoaddress`. The daemon does its
+    /// own address validation, lock-state check, and balance check —
+    /// `SendResult` carries whichever of those (or success) came back,
+    /// verbatim, rather than collapsing a rejected send into a generic error.
+    pub fn sendToAddress(allocator: std.mem.Allocator, auth: models.CoinAuth, address: []const u8, amount: f64) !models.SendResult {
+        const addr_q = try rpc.jsonQuote(allocator, address);
+        defer allocator.free(addr_q);
+        var amount_buf: [32]u8 = undefined;
+        const params = try std.fmt.allocPrint(allocator, "[{s},{s}]", .{ addr_q, formatSendAmount(&amount_buf, amount) });
+        defer allocator.free(params);
+
+        var parsed = try rpc.callParsedParams([]const u8, allocator, auth, "sendtoaddress", params);
+        defer parsed.deinit();
+        if (parsed.value.result) |txid| return .{ .ok = try allocator.dupe(u8, txid) };
+        if (parsed.value.@"error") |e| return .{ .failed = try allocator.dupe(u8, e.message) };
+        return .{ .failed = "no response from daemon" };
+    }
+
+    /// Format `amount` as a fixed 8-decimal-place string (never scientific
+    /// notation) for splicing into the `sendtoaddress` params array — split
+    /// out as a pure helper so the formatting is unit-testable without a live
+    /// daemon. The daemon itself rounds to 6dp (`rpcwallet.cpp`: "amount is a
+    /// real and is rounded to the nearest 0.000001"), so 8dp is a safe, exact
+    /// superset that matches the display convention used everywhere else in
+    /// this coin file. Returns a slice into `buf` (sized for any sane amount;
+    /// callers pass a `[32]u8`).
+    fn formatSendAmount(buf: []u8, amount: f64) []const u8 {
+        var w = std.Io.Writer.fixed(buf);
+        w.printFloat(amount, .{ .mode = .decimal, .precision = 8 }) catch return "0.00000000";
+        return w.buffered();
+    }
+
     /// Encrypt the wallet with `passphrase`. spiderbyted stops itself afterwards
     /// (the caller restarts it). The passphrase is JSON-escaped before splicing.
     pub fn walletEncrypt(allocator: std.mem.Allocator, auth: models.CoinAuth, passphrase: []const u8) !void {
@@ -564,6 +596,7 @@ pub const SpiderByte = struct {
         .wallet_balance = vtWalletBalance,
         .wallet_transactions = vtWalletTransactions,
         .wallet_receive_address = vtWalletReceiveAddress,
+        .wallet_send = vtWalletSend,
         .wallet_encrypt = vtWalletEncrypt,
         .wallet_unlock = vtWalletUnlock,
         .wallet_lock = vtWalletLock,
@@ -702,6 +735,15 @@ pub const SpiderByte = struct {
         force_new: bool,
     ) anyerror![]const u8 {
         return receiveAddress(allocator, auth, force_new);
+    }
+    fn vtWalletSend(
+        _: *anyopaque,
+        allocator: std.mem.Allocator,
+        auth: models.CoinAuth,
+        address: []const u8,
+        amount: f64,
+    ) anyerror!models.SendResult {
+        return sendToAddress(allocator, auth, address, amount);
     }
     fn vtWalletEncrypt(
         _: *anyopaque,
@@ -982,6 +1024,57 @@ test "coin vtable exposes wallet_receive_address for SpiderByte" {
     var spb: SpiderByte = .{};
     const c = spb.coin();
     try std.testing.expect(c.supportsReceiveAddress());
+}
+
+test "formatSendAmount is a fixed 8dp decimal, never scientific notation" {
+    var buf: [32]u8 = undefined;
+    try std.testing.expectEqualStrings("0.10000000", SpiderByte.formatSendAmount(&buf, 0.1));
+    try std.testing.expectEqualStrings("1.50000000", SpiderByte.formatSendAmount(&buf, 1.5));
+    try std.testing.expectEqualStrings("0.00000000", SpiderByte.formatSendAmount(&buf, 0));
+    try std.testing.expectEqualStrings("1234567.00000000", SpiderByte.formatSendAmount(&buf, 1_234_567));
+}
+
+test "parses a sendtoaddress success reply (bare txid string, error null)" {
+    const allocator = std.testing.allocator;
+    const raw = "{\"result\":\"a1b2c3d4e5f6\",\"error\":null,\"id\":\"boxwallet\"}";
+
+    var parsed = try std.json.parseFromSlice(
+        models.JsonRpcResponse([]const u8),
+        allocator,
+        raw,
+        .{ .ignore_unknown_fields = true, .allocate = .alloc_always },
+    );
+    defer parsed.deinit();
+
+    try std.testing.expectEqualStrings("a1b2c3d4e5f6", parsed.value.result.?);
+    try std.testing.expect(parsed.value.@"error" == null);
+}
+
+test "parses a sendtoaddress failure reply (result null, error object with the daemon's real message)" {
+    const allocator = std.testing.allocator;
+    // Matches the real daemon's shape (rpcwallet.cpp/bitcoinrpc.cpp): a
+    // rejected send comes back as a proper JSON-RPC error, not a generic
+    // failure — this is the exact case the new `models.RpcError` plumbing
+    // exists to preserve.
+    const raw = "{\"result\":null,\"error\":{\"code\":-4,\"message\":\"Insufficient funds\"},\"id\":\"boxwallet\"}";
+
+    var parsed = try std.json.parseFromSlice(
+        models.JsonRpcResponse([]const u8),
+        allocator,
+        raw,
+        .{ .ignore_unknown_fields = true, .allocate = .alloc_always },
+    );
+    defer parsed.deinit();
+
+    try std.testing.expect(parsed.value.result == null);
+    try std.testing.expectEqual(@as(i64, -4), parsed.value.@"error".?.code);
+    try std.testing.expectEqualStrings("Insufficient funds", parsed.value.@"error".?.message);
+}
+
+test "coin vtable exposes wallet_send for SpiderByte" {
+    var spb: SpiderByte = .{};
+    const c = spb.coin();
+    try std.testing.expect(c.supportsSend());
 }
 
 test "no upstream bundle: install is unsupported" {
