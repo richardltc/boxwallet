@@ -331,6 +331,10 @@ pub const Coin = struct {
         coin_description: *const fn (ptr: *anyopaque) []const u8,
         /// The coin's brand colour as a `#RRGGBB` hex string, for the frontend.
         coin_color: *const fn (ptr: *anyopaque) []const u8,
+        /// The coin's own donation/tip address (in that coin's currency —
+        /// addresses aren't cross-chain compatible), shown on every tab of the
+        /// coin's detail pane to invite users to fund BoxWallet development.
+        tip_address: *const fn (ptr: *anyopaque) []const u8,
         /// Optional: a two-tone wordmark for the coin's name (see `Wordmark`).
         /// Null for coins whose name is drawn in a single colour.
         wordmark: ?*const fn (ptr: *anyopaque) Wordmark = null,
@@ -607,6 +611,11 @@ pub const Coin = struct {
     /// The coin's brand colour as a `#RRGGBB` hex string.
     pub fn coinColor(self: Coin) []const u8 {
         return self.vtable.coin_color(self.ptr);
+    }
+    /// The coin's own donation/tip address, for the "TIP" line on the detail
+    /// pane.
+    pub fn tipAddress(self: Coin) []const u8 {
+        return self.vtable.tip_address(self.ptr);
     }
     /// The coin's two-tone wordmark, or null if its name is a single colour.
     pub fn wordmark(self: Coin) ?Wordmark {

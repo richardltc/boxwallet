@@ -33,6 +33,10 @@ pub const Nerva = struct {
     pub const coin_description = "ASIC-resistant, CPU-mined private CryptoNote coin.";
     /// Nerva brand colour (`#RRGGBB`), for tinting the coin in the frontend.
     pub const coin_color = "#344769";
+    /// Donation address for BoxWallet development, in Nerva's own
+    /// currency.
+    /// TODO(richard): replace with the real XNV tip address.
+    pub const tip_address = "TODO-XNV-TIP-ADDRESS-NOT-SET";
     /// Nerva is proof-of-work (CPU-mined, Monero-derived) — no wallet staking.
     pub const proof_of_stake = false;
     pub const conf_file = "nerva.conf";
@@ -926,6 +930,7 @@ pub const Nerva = struct {
         .coin_name_abbrev = vtCoinNameAbbrev,
         .coin_description = vtCoinDescription,
         .coin_color = vtCoinColor,
+        .tip_address = vtTipAddress,
         .core_version = vtCoreVersion,
         .proof_of_stake = vtProofOfStake,
         .balance_decimals = vtBalanceDecimals,
@@ -959,6 +964,9 @@ pub const Nerva = struct {
     }
     fn vtCoinColor(_: *anyopaque) []const u8 {
         return coin_color;
+    }
+    fn vtTipAddress(_: *anyopaque) []const u8 {
+        return tip_address;
     }
     fn vtCoreVersion(_: *anyopaque) []const u8 {
         return core_version;

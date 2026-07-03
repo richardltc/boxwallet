@@ -55,6 +55,10 @@ pub const Epic = struct {
     pub const coin_description = "Private, scalable Mimblewimble cryptocurrency.";
     /// Epic brand colour (`#RRGGBB`), for tinting the coin in the frontend.
     pub const coin_color = "#deac55";
+    /// Donation address for BoxWallet development, in Epic's own
+    /// currency.
+    /// TODO(richard): replace with the real EPIC tip address.
+    pub const tip_address = "TODO-EPIC-TIP-ADDRESS-NOT-SET";
     /// Epic is proof-of-work (MimbleWimble) — no wallet staking.
     pub const proof_of_stake = false;
 
@@ -1921,6 +1925,7 @@ pub const Epic = struct {
         .coin_name_abbrev = vtCoinNameAbbrev,
         .coin_description = vtCoinDescription,
         .coin_color = vtCoinColor,
+        .tip_address = vtTipAddress,
         .core_version = vtCoreVersion,
         .proof_of_stake = vtProofOfStake,
         .conf_file = vtConfFile,
@@ -1951,6 +1956,9 @@ pub const Epic = struct {
     }
     fn vtCoinColor(_: *anyopaque) []const u8 {
         return coin_color;
+    }
+    fn vtTipAddress(_: *anyopaque) []const u8 {
+        return tip_address;
     }
     fn vtCoreVersion(_: *anyopaque) []const u8 {
         return core_version;

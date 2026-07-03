@@ -28,6 +28,10 @@ pub const Litecoin = struct {
     pub const coin_description = "The silver to Bitcoin's gold — fast, low-fee payments.";
     /// Litecoin brand colour (`#RRGGBB`), for tinting the coin in the frontend.
     pub const coin_color = "#345D9D";
+    /// Donation address for BoxWallet development, in Litecoin's own
+    /// currency.
+    /// TODO(richard): replace with the real LTC tip address.
+    pub const tip_address = "TODO-LTC-TIP-ADDRESS-NOT-SET";
     /// Litecoin is proof-of-work (scrypt) — no wallet staking.
     pub const proof_of_stake = false;
     pub const conf_file = "litecoin.conf";
@@ -334,6 +338,7 @@ pub const Litecoin = struct {
         .coin_name_abbrev = vtCoinNameAbbrev,
         .coin_description = vtCoinDescription,
         .coin_color = vtCoinColor,
+        .tip_address = vtTipAddress,
         .core_version = vtCoreVersion,
         .proof_of_stake = vtProofOfStake,
         .conf_file = vtConfFile,
@@ -371,6 +376,9 @@ pub const Litecoin = struct {
     }
     fn vtCoinColor(_: *anyopaque) []const u8 {
         return coin_color;
+    }
+    fn vtTipAddress(_: *anyopaque) []const u8 {
+        return tip_address;
     }
     fn vtCoreVersion(_: *anyopaque) []const u8 {
         return core_version;
