@@ -573,6 +573,102 @@ pub const Ergo = struct {
         return .{ .scanned = st.walletHeight, .target = full };
     }
 
+    // --- Receive address + send (REST wallet) -----------------------------
+    //
+    // Both ride the node's own REST wallet, authenticated with the fixed
+    // api_key and gated by the app on the wallet being open. There is **no**
+    // Transactions view for Ergo: the node's `/wallet/transactions` entries
+    // carry no timestamp, and their inputs are box references without values,
+    // so an honest per-transaction amount/date can't be derived from it — the
+    // tab keeps its placeholder rather than showing made-up figures.
+
+    /// `GET /wallet/deriveNextKey` result — the freshly-derived address.
+    const ErgoDeriveNext = struct {
+        address: []const u8 = "",
+    };
+
+    /// The wallet's receive address. `force_new` false returns the **last**
+    /// entry of `GET /wallet/addresses` — the most recently derived key, i.e.
+    /// the current address, stable across sessions; true derives a fresh key
+    /// (`GET /wallet/deriveNextKey`), which then becomes that last entry.
+    /// `auth` unused (fixed api_key).
+    pub fn walletReceiveAddress(
+        allocator: std.mem.Allocator,
+        auth: models.CoinAuth,
+        force_new: bool,
+    ) anyerror![]const u8 {
+        _ = auth;
+        if (force_new) {
+            const raw = try restRequest(allocator, .GET, "/wallet/deriveNextKey", api_key);
+            defer allocator.free(raw);
+            var parsed = try std.json.parseFromSlice(ErgoDeriveNext, allocator, raw, .{ .ignore_unknown_fields = true, .allocate = .alloc_always });
+            defer parsed.deinit();
+            if (parsed.value.address.len == 0) return error.EmptyRpcResult;
+            return allocator.dupe(u8, parsed.value.address);
+        }
+
+        const raw = try restRequest(allocator, .GET, "/wallet/addresses", api_key);
+        defer allocator.free(raw);
+        var parsed = try std.json.parseFromSlice([][]const u8, allocator, raw, .{ .ignore_unknown_fields = true, .allocate = .alloc_always });
+        defer parsed.deinit();
+        const addrs = parsed.value;
+        if (addrs.len == 0) return error.EmptyRpcResult;
+        return allocator.dupe(u8, addrs[addrs.len - 1]);
+    }
+
+    /// Send `amount` ERG to `address` via `POST /wallet/payment/send` (a
+    /// one-element PaymentRequest array; `value` is nanoErg). The node does its
+    /// own address validation and balance check — `SendResult` carries its
+    /// failure `detail`/`reason` (or the success tx id) verbatim. Requires the
+    /// wallet unlocked, which the node itself enforces.
+    pub fn walletSend(
+        allocator: std.mem.Allocator,
+        auth: models.CoinAuth,
+        address: []const u8,
+        amount: f64,
+    ) anyerror!models.SendResult {
+        _ = auth;
+        const nano = nanoFromAmount(amount) orelse return .{ .failed = "invalid amount" };
+        const addr_q = try rpc.jsonQuote(allocator, address);
+        defer allocator.free(addr_q);
+        const body = try std.fmt.allocPrint(
+            allocator,
+            "[{{\"address\":{s},\"value\":{d},\"assets\":[]}}]",
+            .{ addr_q, nano },
+        );
+        defer allocator.free(body);
+
+        const resp = try restCall(allocator, .POST, "/wallet/payment/send", api_key, body);
+        defer allocator.free(resp.body);
+        if (resp.status == .ok) {
+            // The reply is the new transaction's id as a bare JSON string.
+            if (std.json.parseFromSlice([]const u8, allocator, resp.body, .{ .allocate = .alloc_always })) |parsed| {
+                defer parsed.deinit();
+                return .{ .ok = try allocator.dupe(u8, parsed.value) };
+            } else |_| {
+                return .{ .ok = try allocator.dupe(u8, std.mem.trim(u8, resp.body, " \"\r\n")) };
+            }
+        }
+        // A rejected send carries Ergo's error JSON — surface its real reason.
+        if (std.json.parseFromSlice(ErgoError, allocator, resp.body, .{ .ignore_unknown_fields = true, .allocate = .alloc_always })) |parsed| {
+            defer parsed.deinit();
+            const msg = if (parsed.value.detail.len > 0) parsed.value.detail else parsed.value.reason;
+            if (msg.len > 0) return .{ .failed = try allocator.dupe(u8, msg) };
+        } else |_| {}
+        return .{ .failed = "wallet request failed" };
+    }
+
+    /// Convert a user-entered ERG amount to integer nanoErg (rounded to the
+    /// nearest nanoErg). Null for anything unusable — non-finite, non-positive,
+    /// or too large for the API's int64 value — so a bad amount is rejected
+    /// before any request.
+    fn nanoFromAmount(amount: f64) ?i64 {
+        if (!std.math.isFinite(amount) or amount <= 0) return null;
+        const scaled = @round(amount * nano_per_erg);
+        if (scaled >= @as(f64, @floatFromInt(std.math.maxInt(i64)))) return null;
+        return @intFromFloat(scaled);
+    }
+
     /// Overwrite a secret-bearing buffer with zeros before freeing it, so a
     /// password/seed/mnemonic doesn't linger in freed heap.
     fn wipeFree(allocator: std.mem.Allocator, buf: []u8) void {
@@ -819,12 +915,37 @@ pub const Ergo = struct {
         .launch_mode = vtLaunchMode,
         .daemon_argv = vtDaemonArgv,
         .request_stop = vtRequestStop,
+        // No `.wallet_transactions`: the node's `/wallet/transactions` carries no
+        // timestamps or input values, so an honest history can't be shown (see
+        // the receive/send section above) — the tab keeps its placeholder.
+        .wallet_receive_address = vtWalletReceiveAddress,
+        .wallet_send = vtWalletSend,
         // Ergo's wallet is in-daemon (REST) but Monero-shaped (create → mnemonic,
         // restore, unlock/lock), so it rides the external-wallet setup flow rather
         // than the bitcoin in-daemon wallet hooks. Balance flows through
         // `external_wallet.balance`, gated on the wallet being open.
         .external_wallet = &external_wallet,
     };
+
+    // Receive/send ride the node's REST wallet: `app.zig` calls them only once
+    // the wallet is open; the passed auth is unused (fixed api_key).
+    fn vtWalletReceiveAddress(
+        _: *anyopaque,
+        allocator: std.mem.Allocator,
+        auth: models.CoinAuth,
+        force_new: bool,
+    ) anyerror![]const u8 {
+        return walletReceiveAddress(allocator, auth, force_new);
+    }
+    fn vtWalletSend(
+        _: *anyopaque,
+        allocator: std.mem.Allocator,
+        auth: models.CoinAuth,
+        address: []const u8,
+        amount: f64,
+    ) anyerror!models.SendResult {
+        return walletSend(allocator, auth, address, amount);
+    }
 
     fn vtCoinName(_: *anyopaque) []const u8 {
         return coin_name;
@@ -1336,4 +1457,68 @@ test "the rescan body requests a full scan from genesis" {
     var parsed = try std.json.parseFromSlice(Body, allocator, Ergo.rescan_body, .{});
     defer parsed.deinit();
     try std.testing.expectEqual(@as(i64, 0), parsed.value.fromHeight);
+}
+
+test "parses /wallet/addresses and picks the last (current) address" {
+    const allocator = std.testing.allocator;
+
+    // The node returns every derived address, oldest first — the last entry is
+    // the most recently derived, i.e. the current receive address.
+    const raw =
+        \\["9f4QF8AD1nQ3nJahQVkMj8hFSVVzVom77b52JU7EW71Zexg6N8v","9hFxq2XJUxwWfvyDLLZCtxguDvKyPvSQiZbxvvV5f6t9r4gDsFs"]
+    ;
+    var parsed = try std.json.parseFromSlice([][]const u8, allocator, raw, .{ .allocate = .alloc_always });
+    defer parsed.deinit();
+    const addrs = parsed.value;
+    try std.testing.expectEqual(@as(usize, 2), addrs.len);
+    try std.testing.expectEqualStrings("9hFxq2XJUxwWfvyDLLZCtxguDvKyPvSQiZbxvvV5f6t9r4gDsFs", addrs[addrs.len - 1]);
+}
+
+test "parses /wallet/deriveNextKey into the freshly-derived address" {
+    const allocator = std.testing.allocator;
+    const raw =
+        \\{"derivationPath":"m/44'/429'/0'/0/2","address":"9etm7ZuqiJj3rQCsPYT6nSmYAe3hCbVVFtQpM8SIMcqvtWpHtNv"}
+    ;
+    var parsed = try std.json.parseFromSlice(Ergo.ErgoDeriveNext, allocator, raw, .{ .ignore_unknown_fields = true });
+    defer parsed.deinit();
+    try std.testing.expectEqualStrings("9etm7ZuqiJj3rQCsPYT6nSmYAe3hCbVVFtQpM8SIMcqvtWpHtNv", parsed.value.address);
+}
+
+test "nanoFromAmount converts ERG to nanoErg and rejects bad amounts" {
+    try std.testing.expectEqual(@as(?i64, 1_500_000_000), Ergo.nanoFromAmount(1.5));
+    try std.testing.expectEqual(@as(?i64, 1), Ergo.nanoFromAmount(0.000000001));
+    try std.testing.expect(Ergo.nanoFromAmount(0) == null);
+    try std.testing.expect(Ergo.nanoFromAmount(-1.0) == null);
+    try std.testing.expect(Ergo.nanoFromAmount(std.math.inf(f64)) == null);
+    try std.testing.expect(Ergo.nanoFromAmount(1e30) == null);
+}
+
+test "payment/send replies parse: bare txid string on success, ErgoError on rejection" {
+    const allocator = std.testing.allocator;
+
+    // Success: the new transaction id as a bare JSON string.
+    {
+        var parsed = try std.json.parseFromSlice([]const u8, allocator, "\"b4bb32f1f0f2a3c9\"", .{ .allocate = .alloc_always });
+        defer parsed.deinit();
+        try std.testing.expectEqualStrings("b4bb32f1f0f2a3c9", parsed.value);
+    }
+    // Rejection: Ergo's error JSON, whose detail carries the human reason.
+    {
+        const raw =
+            \\{"error":400,"reason":"bad.request","detail":"Bad request Not enough boxes to assemble a transaction"}
+        ;
+        var parsed = try std.json.parseFromSlice(Ergo.ErgoError, allocator, raw, .{ .ignore_unknown_fields = true });
+        defer parsed.deinit();
+        try std.testing.expectEqualStrings("Bad request Not enough boxes to assemble a transaction", parsed.value.detail);
+    }
+}
+
+test "coin vtable exposes receive + send but no transaction history for Ergo" {
+    var e: Ergo = .{};
+    const c = e.coin();
+    try std.testing.expect(c.supportsReceiveAddress());
+    try std.testing.expect(c.supportsSend());
+    // No honest history is derivable from /wallet/transactions (no timestamps,
+    // no input values) — the Transactions tab keeps its placeholder.
+    try std.testing.expect(!c.supportsTransactions());
 }

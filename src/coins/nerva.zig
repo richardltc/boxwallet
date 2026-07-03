@@ -860,6 +860,186 @@ pub const Nerva = struct {
         };
     }
 
+    // --- Transactions / receive / send (wallet RPC) ----------------------
+    //
+    // These ride the same `nerva-wallet-rpc` process as balance, so the app
+    // hands them the wallet endpoint (`extWalletAuth`) and polls them only
+    // once the wallet is open.
+
+    /// One `get_transfers` entry (the subset BoxWallet uses). `confirmations`
+    /// is absent on Nerva's older wallet-rpc vintage (defaults 0), in which
+    /// case it's derived from the wallet height. A coinbase (mined) credit
+    /// arrives in the `in` bucket with `type == "block"`.
+    const TransferEntry = struct {
+        amount: u64 = 0,
+        timestamp: i64 = 0,
+        height: i64 = 0,
+        confirmations: i64 = 0,
+        @"type": []const u8 = "",
+    };
+
+    /// `get_transfers` groups entries by state; direction falls out of the
+    /// bucket (`in` received, `out`/`pending` sent, `pool` incoming-unconfirmed).
+    const GetTransfersResult = struct {
+        in: []TransferEntry = &.{},
+        out: []TransferEntry = &.{},
+        pending: []TransferEntry = &.{},
+        pool: []TransferEntry = &.{},
+    };
+    const HeightResult = struct { height: i64 = 0 };
+    const AddressResult = struct { address: []const u8 = "" };
+    const TransferResult = struct { tx_hash: []const u8 = "" };
+
+    /// The open wallet's most recent transactions, newest-first, via the wallet
+    /// RPC's `get_transfers`. The reply spans the wallet's whole history (the
+    /// RPC has no count cap), but it's parsed into minimal entries and freed on
+    /// return — only the `limit` newest normalized rows survive.
+    fn walletTransactions(
+        allocator: std.mem.Allocator,
+        wallet_auth: models.CoinAuth,
+        limit: usize,
+    ) anyerror![]models.WalletTx {
+        var parsed = try walletCall(GetTransfersResult, allocator, wallet_auth, "get_transfers", "{\"in\":true,\"out\":true,\"pending\":true,\"pool\":true}");
+        defer parsed.deinit();
+        const r = parsed.value.result orelse return error.EmptyRpcResult;
+
+        // Wallet height, to derive confirmations for entries the older
+        // wallet-rpc reports without a confirmations field. Best-effort — an
+        // unavailable height just leaves those rows at 0 confirmations.
+        const tip = walletChainHeight(allocator, wallet_auth);
+        return mapTransfers(allocator, r, tip, limit);
+    }
+
+    /// The wallet's synced chain height, trying the newer `get_height` name
+    /// first and the original `getheight` for older vintages. 0 when neither
+    /// answers (best-effort — used only for the confirmations fallback).
+    fn walletChainHeight(allocator: std.mem.Allocator, wallet_auth: models.CoinAuth) i64 {
+        inline for (.{ "get_height", "getheight" }) |method| {
+            if (walletCall(HeightResult, allocator, wallet_auth, method, "{}")) |parsed| {
+                var p = parsed;
+                defer p.deinit();
+                if (p.value.result) |h| {
+                    if (h.height > 0) return h.height;
+                }
+            } else |_| {}
+        }
+        return 0;
+    }
+
+    /// Flatten the four `get_transfers` buckets into normalized `WalletTx`es,
+    /// newest-first, capped at `limit`. Split out from `walletTransactions` so
+    /// the mapping/ordering is unit-testable without a wallet process.
+    fn mapTransfers(allocator: std.mem.Allocator, r: GetTransfersResult, tip: i64, limit: usize) ![]models.WalletTx {
+        const total = r.in.len + r.out.len + r.pending.len + r.pool.len;
+        const all = try allocator.alloc(models.WalletTx, total);
+        defer allocator.free(all);
+        var n: usize = 0;
+        for (r.in) |e| {
+            // A coinbase credit (type "block") was minted by the wallet itself.
+            const direction: models.TxDirection = if (std.mem.eql(u8, e.@"type", "block")) .stake else .received;
+            all[n] = mapEntry(e, direction, tip);
+            n += 1;
+        }
+        for (r.out) |e| {
+            all[n] = mapEntry(e, .sent, tip);
+            n += 1;
+        }
+        for (r.pending) |e| {
+            all[n] = mapEntry(e, .sent, tip);
+            n += 1;
+        }
+        for (r.pool) |e| {
+            all[n] = mapEntry(e, .received, tip);
+            n += 1;
+        }
+        std.mem.sort(models.WalletTx, all[0..n], {}, newerFirst);
+
+        const out = try allocator.alloc(models.WalletTx, @min(n, limit));
+        @memcpy(out, all[0..out.len]);
+        return out;
+    }
+
+    /// One entry → the normalized row. Confirmations prefer the entry's own
+    /// field; a vintage that omits it falls back to `tip − height` (0 for a
+    /// pool/pending entry, whose height is 0).
+    fn mapEntry(e: TransferEntry, direction: models.TxDirection, tip: i64) models.WalletTx {
+        const confs = if (e.confirmations > 0)
+            e.confirmations
+        else if (e.height > 0 and tip > e.height)
+            tip - e.height
+        else
+            0;
+        return .{
+            .direction = direction,
+            .amount = @as(f64, @floatFromInt(e.amount)) / atomic_per_xnv,
+            .time = e.timestamp,
+            .confirmations = confs,
+        };
+    }
+
+    /// Sort helper: newest (largest timestamp) first.
+    fn newerFirst(_: void, lhs: models.WalletTx, rhs: models.WalletTx) bool {
+        return lhs.time > rhs.time;
+    }
+
+    /// The open wallet's receive address (`get_address`, account 0). CryptoNote
+    /// stealth addressing keeps a reused address private, so the main address
+    /// is the stable "current" one; an explicit user-requested rotation asks
+    /// for a fresh subaddress (`create_address`) — on a vintage that predates
+    /// subaddresses the error propagates and the UI keeps the current address.
+    fn walletReceiveAddress(
+        allocator: std.mem.Allocator,
+        wallet_auth: models.CoinAuth,
+        force_new: bool,
+    ) anyerror![]const u8 {
+        const method: []const u8 = if (force_new) "create_address" else "get_address";
+        var parsed = try walletCall(AddressResult, allocator, wallet_auth, method, "{\"account_index\":0}");
+        defer parsed.deinit();
+        const r = parsed.value.result orelse return error.EmptyRpcResult;
+        if (r.address.len == 0) return error.EmptyRpcResult;
+        return allocator.dupe(u8, r.address); // parsed.deinit() frees its arena below us
+    }
+
+    /// Send `amount` XNV to `address` via the wallet RPC `transfer`. The wallet
+    /// does its own address validation and balance check — `SendResult` carries
+    /// whichever of those (or the success tx hash) came back, verbatim. The
+    /// amount is converted to integer atomic units before splicing.
+    fn walletSend(
+        allocator: std.mem.Allocator,
+        wallet_auth: models.CoinAuth,
+        address: []const u8,
+        amount: f64,
+    ) anyerror!models.SendResult {
+        const atomic = atomicFromAmount(amount) orelse return .{ .failed = "invalid amount" };
+        const addr_q = try rpc.jsonQuote(allocator, address);
+        defer allocator.free(addr_q);
+        const params = try std.fmt.allocPrint(
+            allocator,
+            "{{\"destinations\":[{{\"amount\":{d},\"address\":{s}}}],\"get_tx_key\":true}}",
+            .{ atomic, addr_q },
+        );
+        defer allocator.free(params);
+
+        var parsed = try walletCall(TransferResult, allocator, wallet_auth, "transfer", params);
+        defer parsed.deinit();
+        if (parsed.value.result) |r| {
+            if (r.tx_hash.len > 0) return .{ .ok = try allocator.dupe(u8, r.tx_hash) };
+        }
+        if (parsed.value.@"error") |e| return .{ .failed = try allocator.dupe(u8, e.message) };
+        return .{ .failed = "no response from wallet" };
+    }
+
+    /// Convert a user-entered XNV amount to integer atomic units (rounded to
+    /// the nearest atomic). Null for anything unusable — non-finite,
+    /// non-positive, or too large for u64 — so a bad amount is rejected before
+    /// any RPC.
+    fn atomicFromAmount(amount: f64) ?u64 {
+        if (!std.math.isFinite(amount) or amount <= 0) return null;
+        const scaled = @round(amount * atomic_per_xnv);
+        if (scaled >= @as(f64, @floatFromInt(std.math.maxInt(u64)))) return null;
+        return @intFromFloat(scaled);
+    }
+
     /// Produce the canonical form of a user-entered seed for the wallet RPC:
     /// every word lowercased and joined by single spaces, with leading/trailing and
     /// repeated whitespace collapsed. Monero's English wordlist is all lowercase and
@@ -948,10 +1128,42 @@ pub const Nerva = struct {
         .launch_mode = vtLaunchMode,
         .daemon_argv = vtDaemonArgv,
         .request_stop = vtRequestStop,
+        .wallet_transactions = vtWalletTransactions,
+        .wallet_receive_address = vtWalletReceiveAddress,
+        .wallet_send = vtWalletSend,
         .external_wallet = &external_wallet,
         .on_synced = vtOnSynced,
         .sync_accelerator = &sync_accelerator,
     };
+
+    // The three hooks below ride the wallet process's endpoint: for an
+    // external-wallet coin, `app.zig` passes `extWalletAuth()` (never the
+    // daemon's auth) and calls them only once the wallet is open.
+    fn vtWalletTransactions(
+        _: *anyopaque,
+        allocator: std.mem.Allocator,
+        wallet_auth: models.CoinAuth,
+        limit: usize,
+    ) anyerror![]models.WalletTx {
+        return walletTransactions(allocator, wallet_auth, limit);
+    }
+    fn vtWalletReceiveAddress(
+        _: *anyopaque,
+        allocator: std.mem.Allocator,
+        wallet_auth: models.CoinAuth,
+        force_new: bool,
+    ) anyerror![]const u8 {
+        return walletReceiveAddress(allocator, wallet_auth, force_new);
+    }
+    fn vtWalletSend(
+        _: *anyopaque,
+        allocator: std.mem.Allocator,
+        wallet_auth: models.CoinAuth,
+        address: []const u8,
+        amount: f64,
+    ) anyerror!models.SendResult {
+        return walletSend(allocator, wallet_auth, address, amount);
+    }
 
     fn vtCoinName(_: *anyopaque) []const u8 {
         return coin_name;
@@ -1510,4 +1722,100 @@ test "Nerva wires the external-wallet capability" {
     try std.testing.expect(c.hasExternalWalletProcess());
     try std.testing.expect(c.supportsWalletReplace());
     try std.testing.expectEqualStrings(Nerva.wallet_rpc_port, ew.rpc_port.?());
+}
+
+test "parses a get_transfers reply into bucketed TransferEntry lists" {
+    const allocator = std.testing.allocator;
+
+    // Canned wallet-rpc reply (subset): one mined credit (type "block"), one
+    // plain receive, one outgoing spend. Extra per-entry fields (txid/fee/...)
+    // are dropped via ignore_unknown_fields; this older vintage reports no
+    // confirmations field, so it defaults to 0.
+    const raw =
+        \\{"id":"0","jsonrpc":"2.0","result":{"in":[
+        \\{"txid":"aa","type":"block","amount":5000000000000,"timestamp":100,"height":1000},
+        \\{"txid":"bb","type":"in","amount":2500000000000,"timestamp":200,"height":1400}
+        \\],"out":[{"txid":"cc","type":"out","amount":1250000000000,"timestamp":300,"height":1490}]}}
+    ;
+
+    var parsed = try std.json.parseFromSlice(
+        models.JsonRpcResponse(Nerva.GetTransfersResult),
+        allocator,
+        raw,
+        .{ .ignore_unknown_fields = true, .allocate = .alloc_always },
+    );
+    defer parsed.deinit();
+
+    const r = parsed.value.result.?;
+    try std.testing.expectEqual(@as(usize, 2), r.in.len);
+    try std.testing.expectEqual(@as(usize, 1), r.out.len);
+    try std.testing.expectEqualStrings("block", r.in[0].@"type");
+    try std.testing.expectEqual(@as(u64, 2500000000000), r.in[1].amount);
+    try std.testing.expectEqual(@as(i64, 0), r.in[0].confirmations);
+}
+
+test "mapTransfers flattens buckets newest-first with derived confirmations, capped at limit" {
+    const allocator = std.testing.allocator;
+
+    var in = [_]Nerva.TransferEntry{
+        .{ .@"type" = "block", .amount = 5_000_000_000_000, .timestamp = 100, .height = 1000 }, // mined → stake
+        .{ .@"type" = "in", .amount = 2_500_000_000_000, .timestamp = 200, .height = 1400 },
+    };
+    var out = [_]Nerva.TransferEntry{
+        .{ .@"type" = "out", .amount = 1_250_000_000_000, .timestamp = 300, .height = 1490 },
+    };
+    var pool = [_]Nerva.TransferEntry{
+        .{ .amount = 750_000_000_000, .timestamp = 400, .height = 0 }, // incoming, unconfirmed
+    };
+    const r: Nerva.GetTransfersResult = .{ .in = &in, .out = &out, .pool = &pool };
+
+    const txs = try Nerva.mapTransfers(allocator, r, 1500, 32);
+    defer allocator.free(txs);
+
+    try std.testing.expectEqual(@as(usize, 4), txs.len);
+    // Newest-first: the pool entry (t=400) leads, the mined credit (t=100) trails.
+    try std.testing.expectEqual(models.TxDirection.received, txs[0].direction);
+    try std.testing.expectEqual(@as(i64, 0), txs[0].confirmations); // height 0 → unconfirmed
+    try std.testing.expectEqual(models.TxDirection.sent, txs[1].direction);
+    try std.testing.expectEqual(@as(i64, 10), txs[1].confirmations); // 1500 - 1490
+    try std.testing.expectEqual(models.TxDirection.received, txs[2].direction);
+    try std.testing.expectEqual(models.TxDirection.stake, txs[3].direction);
+    try std.testing.expectApproxEqAbs(@as(f64, 5.0), txs[3].amount, 1e-9); // atomic → whole XNV
+
+    // The per-entry confirmations field wins over the derived height gap when a
+    // newer vintage reports it.
+    var confirmed = [_]Nerva.TransferEntry{
+        .{ .@"type" = "in", .amount = 1, .timestamp = 1, .height = 1400, .confirmations = 42 },
+    };
+    const r2: Nerva.GetTransfersResult = .{ .in = &confirmed };
+    const t2 = try Nerva.mapTransfers(allocator, r2, 1500, 32);
+    defer allocator.free(t2);
+    try std.testing.expectEqual(@as(i64, 42), t2[0].confirmations);
+
+    // The cap keeps only the newest rows.
+    const capped = try Nerva.mapTransfers(allocator, r, 1500, 2);
+    defer allocator.free(capped);
+    try std.testing.expectEqual(@as(usize, 2), capped.len);
+    try std.testing.expectEqual(@as(i64, 400), capped[0].time);
+    try std.testing.expectEqual(@as(i64, 300), capped[1].time);
+}
+
+test "atomicFromAmount converts XNV to atomic units and rejects bad amounts" {
+    try std.testing.expectEqual(@as(?u64, 1_500_000_000_000), Nerva.atomicFromAmount(1.5));
+    try std.testing.expectEqual(@as(?u64, 1), Nerva.atomicFromAmount(0.000000000001));
+    // Zero/negative/non-finite amounts are rejected before any RPC.
+    try std.testing.expect(Nerva.atomicFromAmount(0) == null);
+    try std.testing.expect(Nerva.atomicFromAmount(-1.0) == null);
+    try std.testing.expect(Nerva.atomicFromAmount(std.math.inf(f64)) == null);
+    try std.testing.expect(Nerva.atomicFromAmount(std.math.nan(f64)) == null);
+    // Amounts that would overflow u64 atomic units are rejected too.
+    try std.testing.expect(Nerva.atomicFromAmount(1e30) == null);
+}
+
+test "coin vtable exposes transactions, receive address, and send for Nerva" {
+    var n: Nerva = .{};
+    const c = n.coin();
+    try std.testing.expect(c.supportsTransactions());
+    try std.testing.expect(c.supportsReceiveAddress());
+    try std.testing.expect(c.supportsSend());
 }

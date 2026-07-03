@@ -1887,6 +1887,148 @@ pub const Epic = struct {
         };
     }
 
+    // --- Transactions (Owner API `retrieve_txs`) --------------------------
+    //
+    // MimbleWimble has no on-chain addresses and its transactions are built
+    // *interactively* (a slate exchanged between sender and receiver — over a
+    // listener or an epicbox relay), so BoxWallet can't offer a fire-and-forget
+    // Send or a Receive address for Epic; those tabs keep their placeholder.
+    // The wallet's own transaction log, however, is honest data the Owner API
+    // reports directly — so the Transactions tab is live.
+
+    /// One `retrieve_txs` TxLogEntry (the subset BoxWallet uses). Amounts are
+    /// integer-base-unit strings; `creation_ts` is an RFC-3339 timestamp;
+    /// `confirmed` is the only settlement state the wallet reports (no count).
+    const TxLogEntry = struct {
+        tx_type: []const u8 = "",
+        creation_ts: []const u8 = "",
+        confirmed: bool = false,
+        amount_credited: []const u8 = "0",
+        amount_debited: []const u8 = "0",
+    };
+
+    /// Stand-in confirmation count for a `confirmed` entry — the wallet reports
+    /// settlement only as a boolean, so a settled transaction is given a value
+    /// safely past any frontend's "settled" threshold and an unsettled one 0.
+    const confirmed_sentinel: i64 = 9999;
+
+    /// The open wallet's most recent transactions, newest-first, via the Owner
+    /// API's `retrieve_txs` (needs the cached token — `error.WalletLocked` when
+    /// no wallet is open, same as the balance read). The reply spans the whole
+    /// tx log, but only the `limit` newest normalized rows survive; the
+    /// decrypted reply is wiped before free like every Owner-API buffer.
+    fn epicTransactions(
+        allocator: std.mem.Allocator,
+        auth: models.CoinAuth,
+        limit: usize,
+    ) anyerror![]models.WalletTx {
+        var token_buf: [128]u8 = undefined;
+        const tn = Session.get(&token_buf) orelse return error.WalletLocked;
+
+        var threaded: std.Io.Threaded = .init(allocator, .{});
+        defer threaded.deinit();
+
+        const params = try std.fmt.allocPrint(
+            allocator,
+            "{{\"token\":\"{s}\",\"refresh_from_node\":true,\"tx_id\":null,\"tx_slate_id\":null}}",
+            .{token_buf[0..tn]},
+        );
+        defer allocator.free(params);
+
+        const r = try secureRpc(allocator, threaded.io(), auth, "retrieve_txs", params);
+        defer {
+            @memset(r, 0);
+            allocator.free(r);
+        }
+        if (!innerSucceeded(r)) return error.WalletTransactionsFailed;
+        return parseTxLog(allocator, r, limit);
+    }
+
+    /// Map a decrypted `retrieve_txs` reply — `{"result":{"Ok":[<bool>,
+    /// [entries…]]}}` — into normalized `WalletTx`es, newest-first, capped at
+    /// `limit`. Cancelled entries are dropped. Pulled out as a pure function so
+    /// the parse is unit-testable without a wallet.
+    fn parseTxLog(allocator: std.mem.Allocator, inner: []const u8, limit: usize) ![]models.WalletTx {
+        const Env = struct {
+            result: ?struct { Ok: ?struct { bool, []TxLogEntry } = null } = null,
+        };
+        var parsed = try std.json.parseFromSlice(Env, allocator, inner, .{
+            .ignore_unknown_fields = true,
+            .allocate = .alloc_always,
+        });
+        defer parsed.deinit();
+        const ok = (parsed.value.result orelse return error.WalletTransactionsFailed).Ok orelse
+            return error.WalletTransactionsFailed;
+        const entries = ok[1];
+
+        const all = try allocator.alloc(models.WalletTx, entries.len);
+        defer allocator.free(all);
+        var n: usize = 0;
+        for (entries) |e| {
+            const direction = directionFromTxType(e.tx_type) orelse continue;
+            const credited = std.fmt.parseInt(u64, e.amount_credited, 10) catch 0;
+            const debited = std.fmt.parseInt(u64, e.amount_debited, 10) catch 0;
+            // The wallet's net movement: a receive credits more than it debits, a
+            // send the reverse (the difference includes the fee).
+            const net = if (credited >= debited) credited - debited else debited - credited;
+            all[n] = .{
+                .direction = direction,
+                .amount = @as(f64, @floatFromInt(net)) / epic_base,
+                .time = parseRfc3339(e.creation_ts) orelse 0,
+                .confirmations = if (e.confirmed) confirmed_sentinel else 0,
+            };
+            n += 1;
+        }
+        std.mem.sort(models.WalletTx, all[0..n], {}, newerFirst);
+
+        const out = try allocator.alloc(models.WalletTx, @min(n, limit));
+        @memcpy(out, all[0..out.len]);
+        return out;
+    }
+
+    /// Map a TxLogEntry's `tx_type` (grin's TxLogEntryType names) to the
+    /// normalized direction. A `ConfirmedCoinbase` was mined by the wallet
+    /// itself; cancelled entries have no direction (null — dropped).
+    fn directionFromTxType(tx_type: []const u8) ?models.TxDirection {
+        if (std.mem.eql(u8, tx_type, "TxReceived")) return .received;
+        if (std.mem.eql(u8, tx_type, "TxSent")) return .sent;
+        if (std.mem.eql(u8, tx_type, "ConfirmedCoinbase")) return .stake;
+        return null;
+    }
+
+    /// Sort helper: newest (largest timestamp) first.
+    fn newerFirst(_: void, lhs: models.WalletTx, rhs: models.WalletTx) bool {
+        return lhs.time > rhs.time;
+    }
+
+    /// Parse the leading `YYYY-MM-DDTHH:MM:SS` of an RFC-3339 timestamp into
+    /// unix seconds (UTC). The wallet serializes `creation_ts` with fractional
+    /// seconds and a `Z` suffix, both ignored. Null on malformed input.
+    fn parseRfc3339(ts: []const u8) ?i64 {
+        if (ts.len < 19) return null;
+        if (ts[4] != '-' or ts[7] != '-' or (ts[10] != 'T' and ts[10] != ' ') or ts[13] != ':' or ts[16] != ':') return null;
+        const year = std.fmt.parseInt(i64, ts[0..4], 10) catch return null;
+        const month = std.fmt.parseInt(i64, ts[5..7], 10) catch return null;
+        const day = std.fmt.parseInt(i64, ts[8..10], 10) catch return null;
+        const hour = std.fmt.parseInt(i64, ts[11..13], 10) catch return null;
+        const minute = std.fmt.parseInt(i64, ts[14..16], 10) catch return null;
+        const second = std.fmt.parseInt(i64, ts[17..19], 10) catch return null;
+        if (month < 1 or month > 12 or day < 1 or day > 31 or hour > 23 or minute > 59 or second > 60) return null;
+        return daysFromCivil(year, month, day) * 86_400 + hour * 3_600 + minute * 60 + second;
+    }
+
+    /// Days since the unix epoch for a civil (proleptic Gregorian) date —
+    /// Howard Hinnant's `days_from_civil` algorithm.
+    fn daysFromCivil(y_in: i64, m: i64, d: i64) i64 {
+        const y = if (m <= 2) y_in - 1 else y_in;
+        const era = @divFloor(y, 400);
+        const yoe = y - era * 400;
+        const mp = @mod(m + 9, 12);
+        const doy = @divFloor(153 * mp + 2, 5) + d - 1;
+        const doe = yoe * 365 + @divFloor(yoe, 4) - @divFloor(yoe, 100) + doy;
+        return era * 146_097 + doe - 719_468;
+    }
+
     /// Count whitespace-separated words in a seed phrase (for picking the restore
     /// `mnemonic_length`). The daemon does the real validation.
     fn wordCount(seed: []const u8) usize {
@@ -1942,8 +2084,24 @@ pub const Epic = struct {
         .daemon_argv = vtDaemonArgv,
         .request_stop = vtRequestStop,
         .wallet_path = vtWalletPath,
+        // Only transactions: MimbleWimble transactions are interactive slate
+        // exchanges, so there is no fire-and-forget Send or on-chain Receive
+        // address to offer (see the `retrieve_txs` section above) — those tabs
+        // keep their placeholder.
+        .wallet_transactions = vtWalletTransactions,
         .external_wallet = &external_wallet,
     };
+
+    // Rides the wallet process's encrypted Owner API: `app.zig` passes
+    // `extWalletAuth()` and calls it only once the wallet is open.
+    fn vtWalletTransactions(
+        _: *anyopaque,
+        allocator: std.mem.Allocator,
+        wallet_auth: models.CoinAuth,
+        limit: usize,
+    ) anyerror![]models.WalletTx {
+        return epicTransactions(allocator, wallet_auth, limit);
+    }
 
     fn vtCoinName(_: *anyopaque) []const u8 {
         return coin_name;
@@ -2586,4 +2744,73 @@ test "scanErrLine lifts the last ERROR line (sans timestamp) from scan output" {
     );
     // No ERROR line → empty, so the caller falls back to a generic message.
     try std.testing.expectEqualStrings("", Epic.scanErrLine("INFO all good\nWARN minor\n"));
+}
+
+test "parseTxLog maps a retrieve_txs reply newest-first, dropping cancelled entries" {
+    const allocator = std.testing.allocator;
+
+    // A decrypted retrieve_txs inner reply (subset): a mined coinbase, a
+    // confirmed receive, an unconfirmed send (fee folded into the debit), and a
+    // cancelled receive that must be dropped. Amounts are 1e8-base strings.
+    const inner =
+        \\{"id":1,"jsonrpc":"2.0","result":{"Ok":[true,[
+        \\{"id":0,"tx_type":"ConfirmedCoinbase","creation_ts":"2026-01-01T00:00:00.000000000Z","confirmed":true,"amount_credited":"1600000000","amount_debited":"0"},
+        \\{"id":1,"tx_type":"TxReceived","creation_ts":"2026-01-02T12:30:00.5Z","confirmed":true,"amount_credited":"250000000","amount_debited":"0"},
+        \\{"id":2,"tx_type":"TxReceivedCancelled","creation_ts":"2026-01-03T00:00:00Z","confirmed":false,"amount_credited":"100000000","amount_debited":"0"},
+        \\{"id":3,"tx_type":"TxSent","creation_ts":"2026-01-04T08:00:00Z","confirmed":false,"amount_credited":"0","amount_debited":"125000000"}
+        \\]]}}
+    ;
+
+    const txs = try Epic.parseTxLog(allocator, inner, 32);
+    defer allocator.free(txs);
+
+    // Cancelled entry dropped, the rest newest-first.
+    try std.testing.expectEqual(@as(usize, 3), txs.len);
+    try std.testing.expectEqual(models.TxDirection.sent, txs[0].direction);
+    try std.testing.expectApproxEqAbs(@as(f64, 1.25), txs[0].amount, 1e-9);
+    try std.testing.expectEqual(@as(i64, 0), txs[0].confirmations); // unconfirmed
+    try std.testing.expectEqual(models.TxDirection.received, txs[1].direction);
+    try std.testing.expectApproxEqAbs(@as(f64, 2.5), txs[1].amount, 1e-9);
+    try std.testing.expect(txs[1].confirmations > 0); // settled (boolean → sentinel)
+    try std.testing.expectEqual(models.TxDirection.stake, txs[2].direction);
+    try std.testing.expectApproxEqAbs(@as(f64, 16.0), txs[2].amount, 1e-9);
+
+    // The cap keeps only the newest rows.
+    const capped = try Epic.parseTxLog(allocator, inner, 1);
+    defer allocator.free(capped);
+    try std.testing.expectEqual(@as(usize, 1), capped.len);
+    try std.testing.expectEqual(models.TxDirection.sent, capped[0].direction);
+}
+
+test "directionFromTxType maps grin TxLogEntryType names" {
+    try std.testing.expectEqual(models.TxDirection.received, Epic.directionFromTxType("TxReceived").?);
+    try std.testing.expectEqual(models.TxDirection.sent, Epic.directionFromTxType("TxSent").?);
+    // A coinbase the wallet mined itself.
+    try std.testing.expectEqual(models.TxDirection.stake, Epic.directionFromTxType("ConfirmedCoinbase").?);
+    // Cancelled entries have no direction — dropped.
+    try std.testing.expect(Epic.directionFromTxType("TxReceivedCancelled") == null);
+    try std.testing.expect(Epic.directionFromTxType("TxSentCancelled") == null);
+    try std.testing.expect(Epic.directionFromTxType("something-unknown") == null);
+}
+
+test "parseRfc3339 converts the wallet's creation_ts to unix seconds" {
+    // Epoch and a known round-trip (2026-01-02T12:30:00Z = 1767357000).
+    try std.testing.expectEqual(@as(?i64, 0), Epic.parseRfc3339("1970-01-01T00:00:00Z"));
+    try std.testing.expectEqual(@as(?i64, 1767357000), Epic.parseRfc3339("2026-01-02T12:30:00.987654321Z"));
+    // Leap-day handling (2024-02-29T00:00:00Z = 1709164800).
+    try std.testing.expectEqual(@as(?i64, 1709164800), Epic.parseRfc3339("2024-02-29T00:00:00Z"));
+    // Malformed inputs read as null (the row shows no date rather than garbage).
+    try std.testing.expect(Epic.parseRfc3339("") == null);
+    try std.testing.expect(Epic.parseRfc3339("2026-13-01T00:00:00Z") == null);
+    try std.testing.expect(Epic.parseRfc3339("garbage-not-a-date!!") == null);
+}
+
+test "coin vtable exposes transactions but no send/receive for Epic (interactive MimbleWimble)" {
+    var e: Epic = .{};
+    const c = e.coin();
+    try std.testing.expect(c.supportsTransactions());
+    // Slate-exchange transactions can't be a fire-and-forget RPC, and there is
+    // no on-chain receive address — both tabs keep their placeholder.
+    try std.testing.expect(!c.supportsSend());
+    try std.testing.expect(!c.supportsReceiveAddress());
 }

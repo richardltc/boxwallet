@@ -1708,6 +1708,13 @@ const Activity = struct {
     /// The address/amount come from `send_addr_buf`/`send_amount` (the UI
     /// copied them in before spawning).
     fn doSend(self: *Activity, a: std.mem.Allocator) !models.SendResult {
+        const address = self.send_addr_buf[0..self.send_addr_len];
+
+        // An external-wallet coin (Monero-style) sends from its *wallet*
+        // process — its endpoint + per-session creds, no daemon conf to read.
+        if (self.coin.hasExternalWallet())
+            return self.coin.walletSend(a, self.extWalletAuth(), address, self.send_amount);
+
         var threaded: std.Io.Threaded = .init(a, .{});
         defer threaded.deinit();
         const io = threaded.io();
@@ -1722,7 +1729,6 @@ const Activity = struct {
             self.coin.rpcDefaultPort(),
         );
 
-        const address = self.send_addr_buf[0..self.send_addr_len];
         return self.coin.walletSend(a, auth, address, self.send_amount);
     }
 
@@ -2218,8 +2224,16 @@ const Activity = struct {
         // incoming payment shows up promptly no matter what the user's
         // looking at. Best-effort: a hiccup just leaves the last cached list,
         // so a blip doesn't blank the tab.
-        if (self.coin.supportsTransactions()) {
-            if (self.coin.walletTransactions(a, auth, tx_cache_cap)) |txs| {
+        // For an external-wallet coin (Monero-style), the transactions /
+        // receive-address RPCs live on the *wallet* process, not the daemon —
+        // so they get its endpoint + per-session creds, and are polled only
+        // once the wallet has been opened this session (before that the wallet
+        // RPC has no wallet to answer for). Bitcoin-family coins keep the
+        // daemon's own auth.
+        const wallet_rpc_ready = !self.coin.hasExternalWallet() or self.ext_wallet_open.load(.monotonic) != 0;
+        const wallet_rpc_auth = if (self.coin.hasExternalWallet()) self.extWalletAuth() else auth;
+        if (self.coin.supportsTransactions() and wallet_rpc_ready) {
+            if (self.coin.walletTransactions(a, wallet_rpc_auth, tx_cache_cap)) |txs| {
                 const n = @min(txs.len, tx_cache_cap);
                 @memcpy(self.poll_tx_buf[0..n], txs[0..n]);
                 self.poll_tx_count = n;
@@ -2233,8 +2247,8 @@ const Activity = struct {
         // their consent. Fetched once (no cached address yet) or when the
         // user explicitly asked for a new one via the Receive tab's "New
         // address" key — never otherwise.
-        if (self.coin.supportsReceiveAddress() and (self.receive_addr_len == 0 or self.want_new_receive_address)) {
-            if (self.coin.walletReceiveAddress(a, auth, self.want_new_receive_address)) |addr| {
+        if (self.coin.supportsReceiveAddress() and wallet_rpc_ready and (self.receive_addr_len == 0 or self.want_new_receive_address)) {
+            if (self.coin.walletReceiveAddress(a, wallet_rpc_auth, self.want_new_receive_address)) |addr| {
                 const n = @min(addr.len, self.poll_receive_addr_buf.len);
                 @memcpy(self.poll_receive_addr_buf[0..n], addr[0..n]);
                 self.poll_receive_addr_len = n;
@@ -7638,6 +7652,72 @@ test "renderTransactionsTab lists cached transactions newest-first with date and
     try std.testing.expect(recv_pos < stake_pos);
 }
 
+/// Test-only stub: a minimal coin wiring only the *required* vtable hooks and
+/// none of the optional wallet features. It stands in for "a coin that hasn't
+/// adopted transactions/receive/send" in the placeholder tests below, now that
+/// every live coin has — those tabs must keep showing the generic placeholder
+/// for such a coin. The live-call hooks are never reached by the render path
+/// under test, so they just error.
+const BareCoin = struct {
+    fn coin(self: *BareCoin) Coin {
+        return .{ .ptr = self, .vtable = &vtable };
+    }
+    const vtable: Coin.VTable = .{
+        .coin_name = vtStr("BareCoin"),
+        .coin_name_abbrev = vtStr("BARE"),
+        .coin_description = vtStr("A coin with no optional features wired."),
+        .coin_color = vtStr("#808080"),
+        .tip_address = vtStr("BARE-TIP"),
+        .core_version = vtStr("0.0.0"),
+        .proof_of_stake = vtPos,
+        .conf_file = vtStr("bare.conf"),
+        .daemon_file = vtStr("bared"),
+        .rpc_default_port = vtStr("0"),
+        .rpc_default_username = vtStr("barerpc"),
+        .blockchain_state = vtState,
+        .daemon_info = vtInfo,
+        .data_dir = vtDataDir,
+        .is_installed = vtInstalled,
+        .install = vtInstall,
+        .prepare_conf = vtPrepare,
+        .launch_mode = vtLaunch,
+        .daemon_argv = vtArgv,
+    };
+    /// Comptime helper: a vtable fn returning the given static string.
+    fn vtStr(comptime s: []const u8) *const fn (*anyopaque) []const u8 {
+        return struct {
+            fn f(_: *anyopaque) []const u8 {
+                return s;
+            }
+        }.f;
+    }
+    fn vtPos(_: *anyopaque) bool {
+        return false;
+    }
+    fn vtState(_: *anyopaque, _: std.mem.Allocator, _: models.CoinAuth) anyerror!models.BlockchainState {
+        return error.Unsupported;
+    }
+    fn vtInfo(_: *anyopaque, _: std.mem.Allocator, _: models.CoinAuth) anyerror!models.DaemonInfo {
+        return error.Unsupported;
+    }
+    fn vtDataDir(_: *anyopaque, _: std.mem.Allocator, _: []const u8) anyerror![]const u8 {
+        return error.Unsupported;
+    }
+    fn vtInstalled(_: *anyopaque, _: std.mem.Allocator, _: []const u8) bool {
+        return true;
+    }
+    fn vtInstall(_: *anyopaque, _: std.mem.Allocator, _: []const u8, _: ?install_mod.Progress) anyerror!void {
+        return error.Unsupported;
+    }
+    fn vtPrepare(_: *anyopaque, _: std.mem.Allocator, _: std.Io, _: []const u8, _: []const u8) anyerror!void {}
+    fn vtLaunch(_: *anyopaque) Coin.LaunchMode {
+        return .fork;
+    }
+    fn vtArgv(_: *anyopaque, _: std.mem.Allocator, _: []const u8, _: []const u8) anyerror![]const []const u8 {
+        return error.Unsupported;
+    }
+};
+
 test "the Transactions tab only shows live data for a coin that supports it" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
@@ -7650,12 +7730,12 @@ test "the Transactions tab only shows live data for a coin that supports it" {
     app.mem_total = 0;
     app.active_tab = .transactions;
 
-    // Nexa has no `wallet_transactions` wired — its Transactions tab must keep
-    // showing the generic placeholder, unaffected by this SpiderByte-only
-    // feature (per-coin rule: don't break other coins).
+    // A coin with no `wallet_transactions` wired must keep showing the generic
+    // placeholder, unaffected by the feature (per-coin rule: don't break other
+    // coins). Every live coin wires it now, so the stub stands in.
     {
-        var nexa: Nexa = .{};
-        const coin = nexa.coin();
+        var bare: BareCoin = .{};
+        const coin = bare.coin();
         try std.testing.expect(!coin.supportsTransactions());
 
         var act: Activity = .{
@@ -7763,12 +7843,12 @@ test "the Receive tab only shows a live address for a coin that supports it" {
     app.mem_total = 0;
     app.active_tab = .receive;
 
-    // Nexa has no `wallet_receive_address` wired — its Receive tab must keep
-    // showing the generic placeholder (per-coin rule: don't break other
-    // coins).
+    // A coin with no `wallet_receive_address` wired must keep showing the
+    // generic placeholder (per-coin rule: don't break other coins). Every live
+    // coin wires it now, so the stub stands in.
     {
-        var nexa: Nexa = .{};
-        const coin = nexa.coin();
+        var bare: BareCoin = .{};
+        const coin = bare.coin();
         try std.testing.expect(!coin.supportsReceiveAddress());
 
         var act: Activity = .{
@@ -7980,11 +8060,12 @@ test "the Send tab only shows the balance/hint for a coin that supports it" {
     app.mem_total = 0;
     app.active_tab = .send;
 
-    // Nexa has no `wallet_send` wired — its Send tab must keep showing the
-    // generic placeholder (per-coin rule: don't break other coins).
+    // A coin with no `wallet_send` wired must keep showing the generic
+    // placeholder (per-coin rule: don't break other coins). Every live coin
+    // wires it now, so the stub stands in.
     {
-        var nexa: Nexa = .{};
-        const coin = nexa.coin();
+        var bare: BareCoin = .{};
+        const coin = bare.coin();
         try std.testing.expect(!coin.supportsSend());
 
         var act: Activity = .{

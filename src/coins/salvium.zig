@@ -753,7 +753,7 @@ pub const Salvium = struct {
         allocator: std.mem.Allocator,
         wallet_auth: models.CoinAuth,
     ) anyerror!models.WalletBalance {
-        var parsed = try walletCall(WalletBalanceResult, allocator, wallet_auth, "get_balance", "{\"account_index\":0,\"asset_type\":\"SAL1\"}");
+        var parsed = try walletCall(WalletBalanceResult, allocator, wallet_auth, "get_balance", "{\"account_index\":0,\"asset_type\":\"" ++ primary_asset ++ "\"}");
         defer parsed.deinit();
         const r = parsed.value.result orelse return error.EmptyRpcResult;
         return atomicToBalance(r.balance, r.unlocked_balance);
@@ -766,6 +766,177 @@ pub const Salvium = struct {
             .total = @as(f64, @floatFromInt(balance)) / atomic_per_sal,
             .available = @as(f64, @floatFromInt(unlocked)) / atomic_per_sal,
         };
+    }
+
+    // --- Transactions / receive / send (wallet RPC) ----------------------
+    //
+    // These ride the same `salvium-wallet-rpc` process as balance, so the app
+    // hands them the wallet endpoint (`extWalletAuth`) and polls them only
+    // once the wallet is open.
+
+    /// Salvium is multi-asset; the primary coin's asset tag, as `get_balance`
+    /// already pins and `transfer` requires for its source/dest assets.
+    const primary_asset = "SAL1";
+
+    /// `transaction_type::TRANSFER` from Salvium's `cryptonote_protocol/enums.h`
+    /// — the `tx_type` a plain send must carry (0 is UNSET, which the wallet
+    /// rejects).
+    const tx_type_transfer = 3;
+
+    /// One `get_transfers` entry (the subset BoxWallet uses). Salvium's modern
+    /// wallet-rpc reports `confirmations` per entry; `asset_type` tags which
+    /// asset the amount is in, and a coinbase (mined) credit arrives in the
+    /// `in` bucket with `type == "block"`.
+    const TransferEntry = struct {
+        amount: u64 = 0,
+        timestamp: i64 = 0,
+        confirmations: i64 = 0,
+        asset_type: []const u8 = "",
+        @"type": []const u8 = "",
+    };
+
+    /// `get_transfers` groups entries by state; direction falls out of the
+    /// bucket (`in` received, `out`/`pending` sent, `pool` incoming-unconfirmed).
+    const GetTransfersResult = struct {
+        in: []TransferEntry = &.{},
+        out: []TransferEntry = &.{},
+        pending: []TransferEntry = &.{},
+        pool: []TransferEntry = &.{},
+    };
+    const AddressResult = struct { address: []const u8 = "" };
+    const TransferResult = struct { tx_hash: []const u8 = "" };
+
+    /// The open wallet's most recent transactions, newest-first, via the wallet
+    /// RPC's `get_transfers`. The reply spans the wallet's whole history (the
+    /// RPC has no count cap), but it's parsed into minimal entries and freed on
+    /// return — only the `limit` newest normalized rows survive.
+    fn walletTransactions(
+        allocator: std.mem.Allocator,
+        wallet_auth: models.CoinAuth,
+        limit: usize,
+    ) anyerror![]models.WalletTx {
+        var parsed = try walletCall(GetTransfersResult, allocator, wallet_auth, "get_transfers", "{\"in\":true,\"out\":true,\"pending\":true,\"pool\":true,\"account_index\":0}");
+        defer parsed.deinit();
+        const r = parsed.value.result orelse return error.EmptyRpcResult;
+        return mapTransfers(allocator, r, limit);
+    }
+
+    /// Whether an entry's amount is denominated in the primary coin. Entries
+    /// for other assets are dropped rather than shown with a SAL-scaled amount;
+    /// an empty tag (a vintage that doesn't report one) passes.
+    fn isPrimaryAsset(asset_type: []const u8) bool {
+        return asset_type.len == 0 or std.mem.eql(u8, asset_type, primary_asset);
+    }
+
+    /// Flatten the four `get_transfers` buckets into normalized `WalletTx`es,
+    /// newest-first, capped at `limit`. Split out from `walletTransactions` so
+    /// the mapping/ordering is unit-testable without a wallet process.
+    fn mapTransfers(allocator: std.mem.Allocator, r: GetTransfersResult, limit: usize) ![]models.WalletTx {
+        const total = r.in.len + r.out.len + r.pending.len + r.pool.len;
+        const all = try allocator.alloc(models.WalletTx, total);
+        defer allocator.free(all);
+        var n: usize = 0;
+        for (r.in) |e| {
+            if (!isPrimaryAsset(e.asset_type)) continue;
+            // A coinbase credit (type "block") was minted by the wallet itself.
+            const direction: models.TxDirection = if (std.mem.eql(u8, e.@"type", "block")) .stake else .received;
+            all[n] = mapEntry(e, direction);
+            n += 1;
+        }
+        for (r.out) |e| {
+            if (!isPrimaryAsset(e.asset_type)) continue;
+            all[n] = mapEntry(e, .sent);
+            n += 1;
+        }
+        for (r.pending) |e| {
+            if (!isPrimaryAsset(e.asset_type)) continue;
+            all[n] = mapEntry(e, .sent);
+            n += 1;
+        }
+        for (r.pool) |e| {
+            if (!isPrimaryAsset(e.asset_type)) continue;
+            all[n] = mapEntry(e, .received);
+            n += 1;
+        }
+        std.mem.sort(models.WalletTx, all[0..n], {}, newerFirst);
+
+        const out = try allocator.alloc(models.WalletTx, @min(n, limit));
+        @memcpy(out, all[0..out.len]);
+        return out;
+    }
+
+    /// One entry → the normalized row (atomic units → whole SAL).
+    fn mapEntry(e: TransferEntry, direction: models.TxDirection) models.WalletTx {
+        return .{
+            .direction = direction,
+            .amount = @as(f64, @floatFromInt(e.amount)) / atomic_per_sal,
+            .time = e.timestamp,
+            .confirmations = e.confirmations,
+        };
+    }
+
+    /// Sort helper: newest (largest timestamp) first.
+    fn newerFirst(_: void, lhs: models.WalletTx, rhs: models.WalletTx) bool {
+        return lhs.time > rhs.time;
+    }
+
+    /// The open wallet's receive address (`get_address`, account 0). CryptoNote
+    /// stealth addressing keeps a reused address private, so the main address
+    /// is the stable "current" one; an explicit user-requested rotation mints a
+    /// fresh subaddress (`create_address`).
+    fn walletReceiveAddress(
+        allocator: std.mem.Allocator,
+        wallet_auth: models.CoinAuth,
+        force_new: bool,
+    ) anyerror![]const u8 {
+        const method: []const u8 = if (force_new) "create_address" else "get_address";
+        var parsed = try walletCall(AddressResult, allocator, wallet_auth, method, "{\"account_index\":0}");
+        defer parsed.deinit();
+        const r = parsed.value.result orelse return error.EmptyRpcResult;
+        if (r.address.len == 0) return error.EmptyRpcResult;
+        return allocator.dupe(u8, r.address); // parsed.deinit() frees its arena below us
+    }
+
+    /// Send `amount` SAL to `address` via the wallet RPC `transfer`. Salvium's
+    /// `transfer` extends Monero's with the asset pair and a transaction type —
+    /// a plain send is `SAL1 → SAL1` with `tx_type` TRANSFER. The wallet does
+    /// its own address validation and balance check — `SendResult` carries
+    /// whichever of those (or the success tx hash) came back, verbatim. The
+    /// amount is converted to integer atomic units before splicing.
+    fn walletSend(
+        allocator: std.mem.Allocator,
+        wallet_auth: models.CoinAuth,
+        address: []const u8,
+        amount: f64,
+    ) anyerror!models.SendResult {
+        const atomic = atomicFromAmount(amount) orelse return .{ .failed = "invalid amount" };
+        const addr_q = try rpc.jsonQuote(allocator, address);
+        defer allocator.free(addr_q);
+        const params = try std.fmt.allocPrint(
+            allocator,
+            "{{\"destinations\":[{{\"amount\":{d},\"address\":{s}}}],\"source_asset\":\"{s}\",\"dest_asset\":\"{s}\",\"tx_type\":{d},\"get_tx_key\":true}}",
+            .{ atomic, addr_q, primary_asset, primary_asset, tx_type_transfer },
+        );
+        defer allocator.free(params);
+
+        var parsed = try walletCall(TransferResult, allocator, wallet_auth, "transfer", params);
+        defer parsed.deinit();
+        if (parsed.value.result) |r| {
+            if (r.tx_hash.len > 0) return .{ .ok = try allocator.dupe(u8, r.tx_hash) };
+        }
+        if (parsed.value.@"error") |e| return .{ .failed = try allocator.dupe(u8, e.message) };
+        return .{ .failed = "no response from wallet" };
+    }
+
+    /// Convert a user-entered SAL amount to integer atomic units (rounded to
+    /// the nearest atomic). Null for anything unusable — non-finite,
+    /// non-positive, or too large for u64 — so a bad amount is rejected before
+    /// any RPC.
+    fn atomicFromAmount(amount: f64) ?u64 {
+        if (!std.math.isFinite(amount) or amount <= 0) return null;
+        const scaled = @round(amount * atomic_per_sal);
+        if (scaled >= @as(f64, @floatFromInt(std.math.maxInt(u64)))) return null;
+        return @intFromFloat(scaled);
     }
 
     /// Produce the canonical form of a user-entered seed for the wallet RPC:
@@ -856,8 +1027,40 @@ pub const Salvium = struct {
         .launch_mode = vtLaunchMode,
         .daemon_argv = vtDaemonArgv,
         .request_stop = vtRequestStop,
+        .wallet_transactions = vtWalletTransactions,
+        .wallet_receive_address = vtWalletReceiveAddress,
+        .wallet_send = vtWalletSend,
         .external_wallet = &external_wallet,
     };
+
+    // The three hooks below ride the wallet process's endpoint: for an
+    // external-wallet coin, `app.zig` passes `extWalletAuth()` (never the
+    // daemon's auth) and calls them only once the wallet is open.
+    fn vtWalletTransactions(
+        _: *anyopaque,
+        allocator: std.mem.Allocator,
+        wallet_auth: models.CoinAuth,
+        limit: usize,
+    ) anyerror![]models.WalletTx {
+        return walletTransactions(allocator, wallet_auth, limit);
+    }
+    fn vtWalletReceiveAddress(
+        _: *anyopaque,
+        allocator: std.mem.Allocator,
+        wallet_auth: models.CoinAuth,
+        force_new: bool,
+    ) anyerror![]const u8 {
+        return walletReceiveAddress(allocator, wallet_auth, force_new);
+    }
+    fn vtWalletSend(
+        _: *anyopaque,
+        allocator: std.mem.Allocator,
+        wallet_auth: models.CoinAuth,
+        address: []const u8,
+        amount: f64,
+    ) anyerror!models.SendResult {
+        return walletSend(allocator, wallet_auth, address, amount);
+    }
 
     fn vtCoinName(_: *anyopaque) []const u8 {
         return coin_name;
@@ -1297,4 +1500,81 @@ test "Salvium wires the external-wallet capability" {
     try std.testing.expect(c.hasExternalWalletProcess());
     try std.testing.expect(c.supportsWalletReplace());
     try std.testing.expectEqualStrings(Salvium.wallet_rpc_port, ew.rpc_port.?());
+}
+
+test "parses a get_transfers reply into bucketed TransferEntry lists (asset-tagged)" {
+    const allocator = std.testing.allocator;
+
+    // Canned wallet-rpc reply (subset): a mined credit, a SAL1 receive, and an
+    // entry in a different asset (dropped by the mapper). Extra fields
+    // (txid/fee/height/...) fall away via ignore_unknown_fields.
+    const raw =
+        \\{"id":"0","jsonrpc":"2.0","result":{"in":[
+        \\{"txid":"aa","type":"block","asset_type":"SAL1","amount":500000000,"timestamp":100,"confirmations":900},
+        \\{"txid":"bb","type":"in","asset_type":"SAL1","amount":250000000,"timestamp":200,"confirmations":10},
+        \\{"txid":"cc","type":"in","asset_type":"VSD","amount":42,"timestamp":250,"confirmations":5}
+        \\],"out":[{"txid":"dd","type":"out","asset_type":"SAL1","amount":125000000,"timestamp":300,"confirmations":1}]}}
+    ;
+
+    var parsed = try std.json.parseFromSlice(
+        models.JsonRpcResponse(Salvium.GetTransfersResult),
+        allocator,
+        raw,
+        .{ .ignore_unknown_fields = true, .allocate = .alloc_always },
+    );
+    defer parsed.deinit();
+
+    const r = parsed.value.result.?;
+    try std.testing.expectEqual(@as(usize, 3), r.in.len);
+    try std.testing.expectEqual(@as(usize, 1), r.out.len);
+    try std.testing.expectEqualStrings("block", r.in[0].@"type");
+    try std.testing.expectEqual(@as(i64, 10), r.in[1].confirmations);
+
+    const txs = try Salvium.mapTransfers(allocator, r, 32);
+    defer allocator.free(txs);
+
+    // The VSD entry is dropped (its amount isn't SAL-denominated); the rest come
+    // back newest-first with 8-decimal atomic amounts scaled to whole SAL.
+    try std.testing.expectEqual(@as(usize, 3), txs.len);
+    try std.testing.expectEqual(models.TxDirection.sent, txs[0].direction);
+    try std.testing.expectEqual(@as(i64, 1), txs[0].confirmations);
+    try std.testing.expectEqual(models.TxDirection.received, txs[1].direction);
+    try std.testing.expectApproxEqAbs(@as(f64, 2.5), txs[1].amount, 1e-9);
+    try std.testing.expectEqual(models.TxDirection.stake, txs[2].direction);
+    try std.testing.expectApproxEqAbs(@as(f64, 5.0), txs[2].amount, 1e-9);
+}
+
+test "mapTransfers caps at limit, newest-first" {
+    const allocator = std.testing.allocator;
+    var in = [_]Salvium.TransferEntry{
+        .{ .@"type" = "in", .amount = 1, .timestamp = 100, .confirmations = 3 },
+        .{ .@"type" = "in", .amount = 2, .timestamp = 300, .confirmations = 1 },
+    };
+    var out = [_]Salvium.TransferEntry{
+        .{ .@"type" = "out", .amount = 3, .timestamp = 200, .confirmations = 2 },
+    };
+    const r: Salvium.GetTransfersResult = .{ .in = &in, .out = &out };
+
+    const txs = try Salvium.mapTransfers(allocator, r, 2);
+    defer allocator.free(txs);
+    try std.testing.expectEqual(@as(usize, 2), txs.len);
+    try std.testing.expectEqual(@as(i64, 300), txs[0].time);
+    try std.testing.expectEqual(@as(i64, 200), txs[1].time);
+}
+
+test "atomicFromAmount converts SAL to 8-decimal atomic units and rejects bad amounts" {
+    try std.testing.expectEqual(@as(?u64, 150_000_000), Salvium.atomicFromAmount(1.5));
+    try std.testing.expectEqual(@as(?u64, 1), Salvium.atomicFromAmount(0.00000001));
+    try std.testing.expect(Salvium.atomicFromAmount(0) == null);
+    try std.testing.expect(Salvium.atomicFromAmount(-1.0) == null);
+    try std.testing.expect(Salvium.atomicFromAmount(std.math.inf(f64)) == null);
+    try std.testing.expect(Salvium.atomicFromAmount(1e30) == null);
+}
+
+test "coin vtable exposes transactions, receive address, and send for Salvium" {
+    var s: Salvium = .{};
+    const c = s.coin();
+    try std.testing.expect(c.supportsTransactions());
+    try std.testing.expect(c.supportsReceiveAddress());
+    try std.testing.expect(c.supportsSend());
 }

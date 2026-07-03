@@ -252,6 +252,46 @@ pub const Litecoin = struct {
         return .unlocked;
     }
 
+    /// Map Litecoin's `listtransactions` `category` to the normalized direction.
+    /// `"generate"`/`"immature"`/`"orphan"` are coinbase (mined) rewards at their
+    /// maturity stages — the normalized `.stake` covers a mined block reward on a
+    /// proof-of-work coin (see `models.TxDirection`). Anything else has no
+    /// direction (null; the caller drops it).
+    fn directionFromCategory(category: []const u8) ?models.TxDirection {
+        if (std.mem.eql(u8, category, "receive")) return .received;
+        if (std.mem.eql(u8, category, "send")) return .sent;
+        if (std.mem.eql(u8, category, "generate") or
+            std.mem.eql(u8, category, "immature") or
+            std.mem.eql(u8, category, "orphan")) return .stake;
+        return null;
+    }
+
+    /// The wallet's most recent transactions, newest-first — the shared
+    /// bitcoin-family `listtransactions` flow with Litecoin's category map.
+    pub fn walletTransactions(allocator: std.mem.Allocator, auth: models.CoinAuth, limit: usize) ![]models.WalletTx {
+        return rpc.walletTransactions(allocator, auth, limit, directionFromCategory);
+    }
+
+    /// Marker label that tracks the wallet's current receive address. Litecoin's
+    /// Core-0.21 base removed the accounts API (and with it any stable "current
+    /// address" RPC), so the shared label flow keeps exactly one address under
+    /// this label — see `rpc.receiveAddressLabeled`.
+    const receive_label = "boxwallet-receive";
+
+    /// The wallet's receive address: the labelled current one (minted on first
+    /// use), or a fresh mint on an explicit user-requested rotation
+    /// (`force_new` — only ever called on demand, never polled).
+    pub fn receiveAddress(allocator: std.mem.Allocator, auth: models.CoinAuth, force_new: bool) ![]const u8 {
+        return rpc.receiveAddressLabeled(allocator, auth, force_new, receive_label);
+    }
+
+    /// Send `amount` LTC to `address` via `sendtoaddress` (8-decimal amounts).
+    /// The daemon's own rejection reason (invalid address, insufficient funds,
+    /// locked wallet) rides back verbatim in the `SendResult`.
+    pub fn sendToAddress(allocator: std.mem.Allocator, auth: models.CoinAuth, address: []const u8, amount: f64) !models.SendResult {
+        return rpc.sendToAddress(allocator, auth, address, amount, 8);
+    }
+
     /// Encrypt the wallet with `passphrase`. litecoind stops itself afterwards (the
     /// caller restarts it). The passphrase is JSON-escaped before splicing.
     pub fn walletEncrypt(allocator: std.mem.Allocator, auth: models.CoinAuth, passphrase: []const u8) !void {
@@ -358,6 +398,9 @@ pub const Litecoin = struct {
         .ensure_wallet = vtEnsureWallet,
         .wallet_security_state = vtWalletSecurityState,
         .wallet_balance = vtWalletBalance,
+        .wallet_transactions = vtWalletTransactions,
+        .wallet_receive_address = vtWalletReceiveAddress,
+        .wallet_send = vtWalletSend,
         .wallet_encrypt = vtWalletEncrypt,
         .wallet_unlock = vtWalletUnlock,
         .wallet_lock = vtWalletLock,
@@ -486,6 +529,31 @@ pub const Litecoin = struct {
     ) anyerror!models.WalletBalance {
         return walletBalance(allocator, auth);
     }
+    fn vtWalletTransactions(
+        _: *anyopaque,
+        allocator: std.mem.Allocator,
+        auth: models.CoinAuth,
+        limit: usize,
+    ) anyerror![]models.WalletTx {
+        return walletTransactions(allocator, auth, limit);
+    }
+    fn vtWalletReceiveAddress(
+        _: *anyopaque,
+        allocator: std.mem.Allocator,
+        auth: models.CoinAuth,
+        force_new: bool,
+    ) anyerror![]const u8 {
+        return receiveAddress(allocator, auth, force_new);
+    }
+    fn vtWalletSend(
+        _: *anyopaque,
+        allocator: std.mem.Allocator,
+        auth: models.CoinAuth,
+        address: []const u8,
+        amount: f64,
+    ) anyerror!models.SendResult {
+        return sendToAddress(allocator, auth, address, amount);
+    }
     fn vtWalletEncrypt(
         _: *anyopaque,
         allocator: std.mem.Allocator,
@@ -602,6 +670,27 @@ test "maps getwalletinfo unlocked_until to the wallet security state" {
     try std.testing.expectEqual(models.WalletSecurity.unencrypted, Litecoin.securityFromUnlockedUntil(null));
     try std.testing.expectEqual(models.WalletSecurity.locked, Litecoin.securityFromUnlockedUntil(0));
     try std.testing.expectEqual(models.WalletSecurity.unlocked, Litecoin.securityFromUnlockedUntil(1893456000));
+}
+
+test "directionFromCategory maps listtransactions categories to normalized direction" {
+    try std.testing.expectEqual(models.TxDirection.received, Litecoin.directionFromCategory("receive").?);
+    try std.testing.expectEqual(models.TxDirection.sent, Litecoin.directionFromCategory("send").?);
+    // Coinbase (mined) rewards at their maturity stages — Litecoin is
+    // proof-of-work, so the normalized `.stake` here means a mined block reward.
+    try std.testing.expectEqual(models.TxDirection.stake, Litecoin.directionFromCategory("generate").?);
+    try std.testing.expectEqual(models.TxDirection.stake, Litecoin.directionFromCategory("immature").?);
+    try std.testing.expectEqual(models.TxDirection.stake, Litecoin.directionFromCategory("orphan").?);
+    // No direction — dropped by the shared mapper.
+    try std.testing.expect(Litecoin.directionFromCategory("move") == null);
+    try std.testing.expect(Litecoin.directionFromCategory("something-unknown") == null);
+}
+
+test "coin vtable exposes transactions, receive address, and send for Litecoin" {
+    var ltc: Litecoin = .{};
+    const c = ltc.coin();
+    try std.testing.expect(c.supportsTransactions());
+    try std.testing.expect(c.supportsReceiveAddress());
+    try std.testing.expect(c.supportsSend());
 }
 
 test "pruning: offered when unset, then applied value is read back and not re-offered" {

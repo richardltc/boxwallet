@@ -234,6 +234,46 @@ pub const Nexa = struct {
         return .unlocked;
     }
 
+    /// Map Nexa's `listtransactions` `category` to the normalized direction.
+    /// `"generate"`/`"immature"`/`"orphan"` are coinbase (mined) rewards at their
+    /// maturity stages — the normalized `.stake` covers a mined block reward on a
+    /// proof-of-work coin (see `models.TxDirection`). Anything else (`"move"`)
+    /// has no direction (null; the caller drops it).
+    fn directionFromCategory(category: []const u8) ?models.TxDirection {
+        if (std.mem.eql(u8, category, "receive")) return .received;
+        if (std.mem.eql(u8, category, "send")) return .sent;
+        if (std.mem.eql(u8, category, "generate") or
+            std.mem.eql(u8, category, "immature") or
+            std.mem.eql(u8, category, "orphan")) return .stake;
+        return null;
+    }
+
+    /// The wallet's most recent transactions, newest-first — the shared
+    /// bitcoin-family `listtransactions` flow with Nexa's category map.
+    pub fn walletTransactions(allocator: std.mem.Allocator, auth: models.CoinAuth, limit: usize) ![]models.WalletTx {
+        return rpc.walletTransactions(allocator, auth, limit, directionFromCategory);
+    }
+
+    /// The wallet's receive address. Nexa's Bitcoin-Unlimited-derived wallet
+    /// keeps the accounts API, so the shared accounts flow applies:
+    /// `getaccountaddress ""` for the stable current address, `getnewaddress`
+    /// (no params — its first parameter is the address *type*, defaulting to
+    /// p2pkt) on an explicit user-requested rotation (`force_new` — only ever
+    /// called on demand, never polled).
+    pub fn receiveAddress(allocator: std.mem.Allocator, auth: models.CoinAuth, force_new: bool) ![]const u8 {
+        return rpc.receiveAddressAccount(allocator, auth, force_new);
+    }
+
+    /// Send `amount` NEXA to `address` via `sendtoaddress`, at Nexa's
+    /// **2-decimal** denomination (1 NEXA = 100 satoshi; the daemon parses
+    /// amounts as 2-place fixed-point and rejects anything finer — matching
+    /// `balanceDecimals`). The daemon's own rejection reason (invalid address,
+    /// insufficient funds, locked wallet) rides back verbatim in the
+    /// `SendResult`.
+    pub fn sendToAddress(allocator: std.mem.Allocator, auth: models.CoinAuth, address: []const u8, amount: f64) !models.SendResult {
+        return rpc.sendToAddress(allocator, auth, address, amount, 2);
+    }
+
     /// Encrypt the wallet with `passphrase`. nexad stops itself afterwards (the
     /// caller restarts it). The passphrase is JSON-escaped before splicing.
     pub fn walletEncrypt(allocator: std.mem.Allocator, auth: models.CoinAuth, passphrase: []const u8) !void {
@@ -295,6 +335,9 @@ pub const Nexa = struct {
         .request_stop = vtRequestStop,
         .wallet_security_state = vtWalletSecurityState,
         .wallet_balance = vtWalletBalance,
+        .wallet_transactions = vtWalletTransactions,
+        .wallet_receive_address = vtWalletReceiveAddress,
+        .wallet_send = vtWalletSend,
         .wallet_encrypt = vtWalletEncrypt,
         .wallet_unlock = vtWalletUnlock,
         .wallet_lock = vtWalletLock,
@@ -419,6 +462,31 @@ pub const Nexa = struct {
     ) anyerror!models.WalletBalance {
         return walletBalance(allocator, auth);
     }
+    fn vtWalletTransactions(
+        _: *anyopaque,
+        allocator: std.mem.Allocator,
+        auth: models.CoinAuth,
+        limit: usize,
+    ) anyerror![]models.WalletTx {
+        return walletTransactions(allocator, auth, limit);
+    }
+    fn vtWalletReceiveAddress(
+        _: *anyopaque,
+        allocator: std.mem.Allocator,
+        auth: models.CoinAuth,
+        force_new: bool,
+    ) anyerror![]const u8 {
+        return receiveAddress(allocator, auth, force_new);
+    }
+    fn vtWalletSend(
+        _: *anyopaque,
+        allocator: std.mem.Allocator,
+        auth: models.CoinAuth,
+        address: []const u8,
+        amount: f64,
+    ) anyerror!models.SendResult {
+        return sendToAddress(allocator, auth, address, amount);
+    }
     fn vtWalletEncrypt(
         _: *anyopaque,
         allocator: std.mem.Allocator,
@@ -541,6 +609,30 @@ test "coin vtable dispatches to Nexa metadata" {
     try std.testing.expect(!c.needsWallet());
     // But its wallet is manageable over RPC — the `w` menu is available.
     try std.testing.expect(c.supportsWallet());
+}
+
+test "directionFromCategory maps listtransactions categories to normalized direction" {
+    try std.testing.expectEqual(models.TxDirection.received, Nexa.directionFromCategory("receive").?);
+    try std.testing.expectEqual(models.TxDirection.sent, Nexa.directionFromCategory("send").?);
+    // Coinbase (mined) rewards at their maturity stages — Nexa is proof-of-work,
+    // so the normalized `.stake` here means a mined block reward.
+    try std.testing.expectEqual(models.TxDirection.stake, Nexa.directionFromCategory("generate").?);
+    try std.testing.expectEqual(models.TxDirection.stake, Nexa.directionFromCategory("immature").?);
+    try std.testing.expectEqual(models.TxDirection.stake, Nexa.directionFromCategory("orphan").?);
+    // No direction — dropped by the shared mapper.
+    try std.testing.expect(Nexa.directionFromCategory("move") == null);
+    try std.testing.expect(Nexa.directionFromCategory("something-unknown") == null);
+}
+
+test "coin vtable exposes transactions, receive address, and send for Nexa" {
+    var nexa: Nexa = .{};
+    const c = nexa.coin();
+    try std.testing.expect(c.supportsTransactions());
+    try std.testing.expect(c.supportsReceiveAddress());
+    try std.testing.expect(c.supportsSend());
+    // Send amounts are formatted at the same 2-decimal denomination the
+    // balances are displayed to (the daemon rejects finer precision).
+    try std.testing.expectEqual(@as(u8, 2), c.balanceDecimals());
 }
 
 test "walletPath points at the daemon's default wallet.dat" {
