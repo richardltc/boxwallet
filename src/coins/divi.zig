@@ -18,6 +18,10 @@ pub const Divi = struct {
     pub const coin_description = "Proof-of-stake coin with one-click tiered masternodes.";
     /// Divi brand colour (`#RRGGBB`), for tinting the coin in the frontend.
     pub const coin_color = "#ED295A";
+    /// Donation address for BoxWallet development, in Divi's own
+    /// currency.
+    /// TODO(richard): replace with the real DIVI tip address.
+    pub const tip_address = "TODO-DIVI-TIP-ADDRESS-NOT-SET";
     /// Divi is proof-of-stake — the wallet can stake.
     pub const proof_of_stake = true;
     pub const conf_file = "divi.conf";
@@ -276,6 +280,7 @@ pub const Divi = struct {
         .coin_name_abbrev = vtCoinNameAbbrev,
         .coin_description = vtCoinDescription,
         .coin_color = vtCoinColor,
+        .tip_address = vtTipAddress,
         .core_version = vtCoreVersion,
         .proof_of_stake = vtProofOfStake,
         .conf_file = vtConfFile,
@@ -311,6 +316,9 @@ pub const Divi = struct {
     }
     fn vtCoinColor(_: *anyopaque) []const u8 {
         return coin_color;
+    }
+    fn vtTipAddress(_: *anyopaque) []const u8 {
+        return tip_address;
     }
     fn vtCoreVersion(_: *anyopaque) []const u8 {
         return core_version;

@@ -3159,6 +3159,7 @@ pub const App = struct {
                         'l' => self.log_visible = !self.log_visible,
                         'c' => if (on_coin and self.active_tab == .receive) self.copyReceiveAddress(ctx),
                         'n' => if (on_coin and self.active_tab == .receive) self.requestNewReceiveAddress(),
+                        't' => if (on_coin) self.copyTipAddress(ctx),
                         // Jump straight to a tab by number (1 = Home … 5 = Settings).
                         '1'...'5' => if (on_coin) {
                             self.active_tab = @enumFromInt(c - '1');
@@ -4322,6 +4323,21 @@ pub const App = struct {
         self.logf("{s}: {s}", .{
             coin.coinName(),
             if (copied) "address copied to clipboard" else "clipboard copy not supported by this terminal",
+        });
+    }
+
+    /// Copy the selected coin's tip/donation address to the system clipboard
+    /// via OSC 52 (`ctx.setClipboard`). Logs the outcome either way, mirroring
+    /// `copyReceiveAddress`. Reads straight from `coin.tipAddress()` — no
+    /// cached-buffer indirection needed since the tip address is a static
+    /// per-coin constant, not a live RPC result.
+    fn copyTipAddress(self: *App, ctx: *zz.Context) void {
+        const coin = self.selectedCoin() orelse return;
+        const addr = coin.tipAddress();
+        const copied = ctx.setClipboard(addr) catch false;
+        self.logf("{s}: {s}", .{
+            coin.coinName(),
+            if (copied) "tip address copied to clipboard" else "clipboard copy not supported by this terminal",
         });
     }
 
@@ -5746,7 +5762,18 @@ pub const App = struct {
                 try renderPlaceholderTab(a, self.active_tab),
         };
 
-        return std.fmt.allocPrint(a, "{s}\n\n{s}\n\n{s}\n\n{s}", .{ head_line, description, tab_strip, body });
+        // TIP line: persists across every tab (mirrors description/tab_strip),
+        // inviting a small donation in the coin's own currency to fund
+        // BoxWallet development. `t` copies the address, mirroring the
+        // Receive tab's `c`.
+        const tip_hint = (zz.Style{}).dim(true).render(a, "  (t: copy)") catch "  (t: copy)";
+        const tip_text = try std.fmt.allocPrint(
+            a,
+            "Enjoying BoxWallet? Tip {s}: {s}{s}",
+            .{ coin.coinNameAbbrev(), coin.tipAddress(), tip_hint },
+        );
+
+        return std.fmt.allocPrint(a, "{s}\n\n{s}\n\n{s}\n\n{s}\n\n{s}", .{ head_line, description, tab_strip, body, tip_text });
     }
 
     /// One-line tab strip for the coin detail pane: the active tab in the coin's

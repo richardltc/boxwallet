@@ -35,6 +35,10 @@ pub const Salvium = struct {
     /// Salvium brand colour (`#RRGGBB`), for tinting the coin in the frontend.
     /// The green from Salvium's official brand-assets coin icon.
     pub const coin_color = "#0AEB85";
+    /// Donation address for BoxWallet development, in Salvium's own
+    /// currency.
+    /// TODO(richard): replace with the real SAL tip address.
+    pub const tip_address = "TODO-SAL-TIP-ADDRESS-NOT-SET";
     /// Salvium is proof-of-work (RandomX, Monero-derived) — no wallet staking.
     pub const proof_of_stake = false;
     pub const conf_file = "salvium.conf";
@@ -835,6 +839,7 @@ pub const Salvium = struct {
         .coin_name_abbrev = vtCoinNameAbbrev,
         .coin_description = vtCoinDescription,
         .coin_color = vtCoinColor,
+        .tip_address = vtTipAddress,
         .core_version = vtCoreVersion,
         .proof_of_stake = vtProofOfStake,
         .conf_file = vtConfFile,
@@ -865,6 +870,9 @@ pub const Salvium = struct {
     }
     fn vtCoinColor(_: *anyopaque) []const u8 {
         return coin_color;
+    }
+    fn vtTipAddress(_: *anyopaque) []const u8 {
+        return tip_address;
     }
     fn vtCoreVersion(_: *anyopaque) []const u8 {
         return core_version;

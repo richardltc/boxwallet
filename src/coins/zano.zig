@@ -41,6 +41,10 @@ pub const Zano = struct {
     pub const coin_description = "Privacy chain with confidential assets and hybrid PoW/PoS.";
     /// Zano brand colour (`#RRGGBB`), for tinting the coin in the frontend.
     pub const coin_color = "#274cff";
+    /// Donation address for BoxWallet development, in Zano's own
+    /// currency.
+    /// TODO(richard): replace with the real ZANO tip address.
+    pub const tip_address = "TODO-ZANO-TIP-ADDRESS-NOT-SET";
     /// Zano is a hybrid PoW/PoS coin — it exposes a staking status.
     pub const proof_of_stake = true;
     pub const conf_file = "zano.conf";
@@ -712,6 +716,7 @@ pub const Zano = struct {
         .coin_name_abbrev = vtCoinNameAbbrev,
         .coin_description = vtCoinDescription,
         .coin_color = vtCoinColor,
+        .tip_address = vtTipAddress,
         .core_version = vtCoreVersion,
         .proof_of_stake = vtProofOfStake,
         .balance_decimals = vtBalanceDecimals,
@@ -743,6 +748,9 @@ pub const Zano = struct {
     }
     fn vtCoinColor(_: *anyopaque) []const u8 {
         return coin_color;
+    }
+    fn vtTipAddress(_: *anyopaque) []const u8 {
+        return tip_address;
     }
     fn vtCoreVersion(_: *anyopaque) []const u8 {
         return core_version;

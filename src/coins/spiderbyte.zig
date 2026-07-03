@@ -38,6 +38,10 @@ pub const SpiderByte = struct {
     pub const coin_description = "Lightweight, eco-friendly proof-of-stake coin.";
     /// SpiderByte brand colour (`#RRGGBB`), for tinting the coin in the frontend.
     pub const coin_color = "#f72585";
+    /// Donation address for BoxWallet development, in SpiderByte's own
+    /// currency.
+    /// TODO(richard): replace with the real SPB tip address.
+    pub const tip_address = "TODO-SPB-TIP-ADDRESS-NOT-SET";
     /// Two-tone wordmark: the nav and detail pane draw "Spider" in
     /// `wordmark_head_color` (white) and "Byte" in `coin_color`, split after
     /// "Spider" — the reverse colour assignment from ReddCoin's "Redd"+"Coin".
@@ -575,6 +579,7 @@ pub const SpiderByte = struct {
         .coin_name_abbrev = vtCoinNameAbbrev,
         .coin_description = vtCoinDescription,
         .coin_color = vtCoinColor,
+        .tip_address = vtTipAddress,
         .wordmark = vtWordmark,
         .core_version = vtCoreVersion,
         .proof_of_stake = vtProofOfStake,
@@ -616,6 +621,9 @@ pub const SpiderByte = struct {
     }
     fn vtCoinColor(_: *anyopaque) []const u8 {
         return coin_color;
+    }
+    fn vtTipAddress(_: *anyopaque) []const u8 {
+        return tip_address;
     }
     /// "Spider" in `wordmark_head_color` (white), "Byte" in `coin_color`.
     fn vtWordmark(_: *anyopaque) Coin.Wordmark {

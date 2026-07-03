@@ -32,6 +32,10 @@ pub const ReddCoin = struct {
     pub const coin_description = "The social currency — staking-powered tipping.";
     /// ReddCoin brand colour (`#RRGGBB`), for tinting the coin in the frontend.
     pub const coin_color = "#e30613";
+    /// Donation address for BoxWallet development, in ReddCoin's own
+    /// currency.
+    /// TODO(richard): replace with the real RDD tip address.
+    pub const tip_address = "TODO-RDD-TIP-ADDRESS-NOT-SET";
     /// Secondary brand colour for the "Coin" half of the wordmark — the nav draws
     /// "Redd" in `coin_color` and "Coin" in this near-white. Split after "Redd".
     pub const coin_color_alt = "#f0f0f0";
@@ -345,6 +349,7 @@ pub const ReddCoin = struct {
         .coin_name_abbrev = vtCoinNameAbbrev,
         .coin_description = vtCoinDescription,
         .coin_color = vtCoinColor,
+        .tip_address = vtTipAddress,
         .wordmark = vtWordmark,
         .core_version = vtCoreVersion,
         .proof_of_stake = vtProofOfStake,
@@ -384,6 +389,9 @@ pub const ReddCoin = struct {
     }
     fn vtCoinColor(_: *anyopaque) []const u8 {
         return coin_color;
+    }
+    fn vtTipAddress(_: *anyopaque) []const u8 {
+        return tip_address;
     }
     /// "Redd" in `coin_color`, "Coin" in `coin_color_alt`.
     fn vtWordmark(_: *anyopaque) Coin.Wordmark {
