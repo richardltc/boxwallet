@@ -237,6 +237,202 @@ pub fn ensureWallet(
     return error.WalletNotReady;
 }
 
+// --- Bitcoin-family wallet RPC helpers -------------------------------------
+//
+// The transactions / receive-address / send surface is the same JSON-RPC shape
+// on every bitcoin-derived daemon (`listtransactions` / `getnewaddress` & co /
+// `sendtoaddress`), so — like `ensureWallet` and `networkHeight` above — the
+// mechanics live here once and each coin calls in with its own parameters: its
+// category→direction map (stake/mint categories differ per fork), its amount
+// denomination (Nexa is 2dp, everyone else 8dp), and which address-RPC
+// generation its daemon speaks (accounts-era vs label-based).
+
+/// One bitcoin-style `listtransactions` entry (the subset BoxWallet uses).
+pub const ListTxEntry = struct {
+    category: []const u8 = "",
+    amount: f64 = 0,
+    time: i64 = 0,
+    confirmations: i64 = 0,
+};
+
+/// The wallet's most recent transactions, newest-first, via
+/// `listtransactions "*" <limit> 0`. Every bitcoin-derived daemon returns the
+/// window oldest-to-newest (upstream `rpcwallet.cpp` builds it ascending), so
+/// the result is reversed here. `dir_fn` is the coin's own category map;
+/// entries it maps to null (`"move"`, unknown categories) are dropped.
+pub fn walletTransactions(
+    allocator: std.mem.Allocator,
+    auth: models.CoinAuth,
+    limit: usize,
+    dir_fn: *const fn ([]const u8) ?models.TxDirection,
+) ![]models.WalletTx {
+    const params = try std.fmt.allocPrint(allocator, "[\"*\",{d},0]", .{limit});
+    defer allocator.free(params);
+    var parsed = try callParsedParams([]ListTxEntry, allocator, auth, "listtransactions", params);
+    defer parsed.deinit();
+
+    const raw = parsed.value.result orelse return error.EmptyRpcResult;
+    return mapListTransactions(allocator, raw, dir_fn);
+}
+
+/// Reverse `raw` (oldest-to-newest, as the daemon returns it) into newest-first
+/// `WalletTx`es, mapping each `category` via `dir_fn` and dropping entries with
+/// no mapped direction. Split out from `walletTransactions` so the
+/// mapping/ordering logic is unit-testable without a live RPC call. Two passes
+/// (count, then fill) so the returned slice is allocated at its exact final
+/// length — callers free exactly what was allocated.
+pub fn mapListTransactions(
+    allocator: std.mem.Allocator,
+    raw: []const ListTxEntry,
+    dir_fn: *const fn ([]const u8) ?models.TxDirection,
+) ![]models.WalletTx {
+    var count: usize = 0;
+    for (raw) |r| {
+        if (dir_fn(r.category) != null) count += 1;
+    }
+
+    var out = try allocator.alloc(models.WalletTx, count);
+    var n: usize = 0;
+    var i = raw.len;
+    while (i > 0) {
+        i -= 1;
+        const direction = dir_fn(raw[i].category) orelse continue;
+        out[n] = .{
+            .direction = direction,
+            // A "send" amount arrives negated (ValueFromAmount(-nDebit) upstream);
+            // `direction` carries the sign for the frontend.
+            .amount = @abs(raw[i].amount),
+            .time = raw[i].time,
+            .confirmations = raw[i].confirmations,
+        };
+        n += 1;
+    }
+    return out;
+}
+
+/// The wallet's receive address on an **accounts-era** daemon (Divi, Nexa —
+/// pre-0.17 wallet RPC). `force_new` false reads the stable "current" address
+/// via `getaccountaddress ""` (which upstream silently rotates once it's been
+/// paid); true mints a fresh key via `getnewaddress` (no params, so the default
+/// account/address type applies on every such daemon) — only ever called on an
+/// explicit user-requested rotation, never polled. Caller owns the result.
+pub fn receiveAddressAccount(
+    allocator: std.mem.Allocator,
+    auth: models.CoinAuth,
+    force_new: bool,
+) ![]const u8 {
+    const method: []const u8 = if (force_new) "getnewaddress" else "getaccountaddress";
+    const params: []const u8 = if (force_new) "[]" else "[\"\"]";
+    var parsed = try callParsedParams([]const u8, allocator, auth, method, params);
+    defer parsed.deinit();
+    const addr = parsed.value.result orelse return error.EmptyRpcResult;
+    return allocator.dupe(u8, addr); // parsed.deinit() frees its arena below us
+}
+
+/// Per-address value in a `getaddressesbylabel` reply — only the keys (the
+/// addresses) matter, so the object is parsed into the smallest struct that
+/// keeps memory flat.
+const LabeledAddressInfo = struct { purpose: []const u8 = "" };
+
+/// The wallet's receive address on a **label-based** daemon (Bitcoin Core 0.17+
+/// forks, which removed the accounts API and with it any "current address"
+/// RPC). BoxWallet recreates the stable-current-address semantics with a marker
+/// label: the address under `label` is the current one.
+///
+///   * `force_new` false: return the address holding `label`, minting the first
+///     one (`getnewaddress <label>`) on a fresh wallet (`getaddressesbylabel`
+///     answers -11 / no result until then).
+///   * `force_new` true (explicit user-requested rotation): move any previous
+///     address off the marker label first (`setlabel <addr> ""` — the old
+///     address still belongs to the wallet and stays spendable/watched; the
+///     label is only BoxWallet's "current" pointer), then mint a fresh labelled
+///     one. Keeping exactly one address under the label is what makes the
+///     "current" read stable across sessions even after rotations.
+///
+/// Caller owns the result.
+pub fn receiveAddressLabeled(
+    allocator: std.mem.Allocator,
+    auth: models.CoinAuth,
+    force_new: bool,
+    label: []const u8,
+) ![]const u8 {
+    const label_q = try jsonQuote(allocator, label);
+    defer allocator.free(label_q);
+    const label_params = try std.fmt.allocPrint(allocator, "[{s}]", .{label_q});
+    defer allocator.free(label_params);
+
+    if (!force_new) {
+        var parsed = try callParsedParams(std.json.ArrayHashMap(LabeledAddressInfo), allocator, auth, "getaddressesbylabel", label_params);
+        defer parsed.deinit();
+        if (parsed.value.result) |labeled| {
+            const addrs = labeled.map.keys();
+            if (addrs.len > 0) return allocator.dupe(u8, addrs[0]);
+        }
+        // No labelled address yet (fresh wallet answers error -11) — fall
+        // through and mint the first one.
+    } else {
+        // Best-effort: a failed relabel only means an extra address keeps the
+        // marker label; the fresh mint below still becomes a valid current.
+        var parsed = callParsedParams(std.json.ArrayHashMap(LabeledAddressInfo), allocator, auth, "getaddressesbylabel", label_params) catch null;
+        if (parsed) |*p| {
+            defer p.deinit();
+            if (p.value.result) |labeled| {
+                for (labeled.map.keys()) |addr| {
+                    const addr_q = try jsonQuote(allocator, addr);
+                    defer allocator.free(addr_q);
+                    const sp = try std.fmt.allocPrint(allocator, "[{s},\"\"]", .{addr_q});
+                    defer allocator.free(sp);
+                    callExpectOk(allocator, auth, "setlabel", sp) catch {};
+                }
+            }
+        }
+    }
+
+    var parsed = try callParsedParams([]const u8, allocator, auth, "getnewaddress", label_params);
+    defer parsed.deinit();
+    const addr = parsed.value.result orelse return error.EmptyRpcResult;
+    return allocator.dupe(u8, addr);
+}
+
+/// Send `amount` to `address` via `sendtoaddress`. The daemon does its own
+/// address validation, lock-state check, and balance check — `SendResult`
+/// carries whichever of those (or the success txid) came back, verbatim,
+/// rather than collapsing a rejected send into a generic error. `decimals` is
+/// the coin's amount denomination (8 for the bitcoin-lineage coins, 2 for
+/// Nexa, whose daemon parses amounts as fixed-point with 2 places and rejects
+/// anything finer).
+pub fn sendToAddress(
+    allocator: std.mem.Allocator,
+    auth: models.CoinAuth,
+    address: []const u8,
+    amount: f64,
+    decimals: u8,
+) !models.SendResult {
+    const addr_q = try jsonQuote(allocator, address);
+    defer allocator.free(addr_q);
+    var amount_buf: [64]u8 = undefined;
+    const params = try std.fmt.allocPrint(allocator, "[{s},{s}]", .{ addr_q, formatAmountFixed(&amount_buf, amount, decimals) });
+    defer allocator.free(params);
+
+    var parsed = try callParsedParams([]const u8, allocator, auth, "sendtoaddress", params);
+    defer parsed.deinit();
+    if (parsed.value.result) |txid| return .{ .ok = try allocator.dupe(u8, txid) };
+    if (parsed.value.@"error") |e| return .{ .failed = try allocator.dupe(u8, e.message) };
+    return .{ .failed = "no response from daemon" };
+}
+
+/// Format `amount` as a fixed `decimals`-place decimal string (never scientific
+/// notation) for splicing into an RPC params array — split out as a pure helper
+/// so the formatting is unit-testable without a live daemon. Returns a slice
+/// into `buf` (callers pass a `[64]u8`, ample for any sane amount); a value too
+/// large to format falls back to "0", which every daemon rejects as a too-small
+/// amount rather than sending anything unintended.
+pub fn formatAmountFixed(buf: []u8, amount: f64, decimals: u8) []const u8 {
+    var w = std.Io.Writer.fixed(buf);
+    w.printFloat(amount, .{ .mode = .decimal, .precision = decimals }) catch return "0";
+    return w.buffered();
+}
+
 /// Cheap TCP liveness probe for a daemon's RPC endpoint. A successful connect
 /// proves the daemon is bound and accepting connections — i.e. *up* — regardless
 /// of whether it answers an RPC promptly. This is the distinction that matters
@@ -862,6 +1058,119 @@ test "daemonReachable reads an unparseable endpoint as not reachable" {
         .rpc_user = "",
         .rpc_password = "",
     }));
+}
+
+test "formatAmountFixed is a fixed decimal at the coin's denomination, never scientific" {
+    var buf: [64]u8 = undefined;
+    // 8dp — the bitcoin-lineage denomination.
+    try std.testing.expectEqualStrings("0.10000000", formatAmountFixed(&buf, 0.1, 8));
+    try std.testing.expectEqualStrings("1.50000000", formatAmountFixed(&buf, 1.5, 8));
+    try std.testing.expectEqualStrings("1234567.00000000", formatAmountFixed(&buf, 1_234_567, 8));
+    // 2dp — Nexa's denomination (its daemon rejects finer precision).
+    try std.testing.expectEqualStrings("0.10", formatAmountFixed(&buf, 0.1, 2));
+    try std.testing.expectEqualStrings("1234567.00", formatAmountFixed(&buf, 1_234_567, 2));
+}
+
+/// Minimal category map for the mapListTransactions test — the real per-coin
+/// maps live in the coin files with their own tests.
+fn testDirFromCategory(category: []const u8) ?models.TxDirection {
+    if (std.mem.eql(u8, category, "receive")) return .received;
+    if (std.mem.eql(u8, category, "send")) return .sent;
+    if (std.mem.eql(u8, category, "generate")) return .stake;
+    return null;
+}
+
+test "mapListTransactions reverses to newest-first, maps categories, drops unmapped, and takes abs(amount)" {
+    const allocator = std.testing.allocator;
+
+    // The daemon returns oldest-to-newest; a "send" amount already arrives
+    // negated (ValueFromAmount(-nDebit) upstream).
+    const raw = [_]ListTxEntry{
+        .{ .category = "generate", .amount = 5.0, .time = 100, .confirmations = 500 }, // oldest
+        .{ .category = "receive", .amount = 2.5, .time = 200, .confirmations = 10 },
+        .{ .category = "move", .amount = 1.0, .time = 250, .confirmations = 10 }, // dropped: unmapped
+        .{ .category = "send", .amount = -1.25, .time = 300, .confirmations = 1 }, // newest
+    };
+
+    const txs = try mapListTransactions(allocator, &raw, testDirFromCategory);
+    defer allocator.free(txs);
+
+    // "move" dropped, so 4 raw entries → 3 mapped, newest-first.
+    try std.testing.expectEqual(@as(usize, 3), txs.len);
+    try std.testing.expectEqual(models.TxDirection.sent, txs[0].direction);
+    try std.testing.expectApproxEqAbs(@as(f64, 1.25), txs[0].amount, 1e-9);
+    try std.testing.expectEqual(@as(i64, 300), txs[0].time);
+    try std.testing.expectEqual(models.TxDirection.received, txs[1].direction);
+    try std.testing.expectEqual(models.TxDirection.stake, txs[2].direction);
+    try std.testing.expectEqual(@as(i64, 500), txs[2].confirmations);
+}
+
+test "parses a listtransactions reply into ListTxEntry entries" {
+    const allocator = std.testing.allocator;
+
+    // A canned reply shaped like a bitcoin-core listtransactions result, with the
+    // fields BoxWallet doesn't use (address/label/txid/...) dropped via
+    // ignore_unknown_fields.
+    const raw =
+        \\{"result":[
+        \\{"address":"bc1qabc","category":"receive","amount":2.5,"label":"","confirmations":10,"time":200},
+        \\{"address":"bc1qdef","category":"send","amount":-1.25,"fee":-0.0001,"confirmations":1,"time":300}
+        \\],"error":null,"id":"boxwallet"}
+    ;
+
+    var parsed = try std.json.parseFromSlice(
+        models.JsonRpcResponse([]ListTxEntry),
+        allocator,
+        raw,
+        .{ .ignore_unknown_fields = true, .allocate = .alloc_always },
+    );
+    defer parsed.deinit();
+
+    const r = parsed.value.result.?;
+    try std.testing.expectEqual(@as(usize, 2), r.len);
+    try std.testing.expectEqualStrings("receive", r[0].category);
+    try std.testing.expectApproxEqAbs(@as(f64, 2.5), r[0].amount, 1e-9);
+    try std.testing.expectEqualStrings("send", r[1].category);
+    try std.testing.expectApproxEqAbs(@as(f64, -1.25), r[1].amount, 1e-9);
+}
+
+test "parses a getaddressesbylabel reply (dynamic address keys) and its -11 miss" {
+    const allocator = std.testing.allocator;
+
+    // The current labelled address is the object key — dynamic, so it parses via
+    // std.json.ArrayHashMap rather than a fixed struct.
+    {
+        const raw =
+            \\{"result":{"bc1qcurrentaddress":{"purpose":"receive"}},"error":null,"id":"boxwallet"}
+        ;
+        var parsed = try std.json.parseFromSlice(
+            models.JsonRpcResponse(std.json.ArrayHashMap(LabeledAddressInfo)),
+            allocator,
+            raw,
+            .{ .ignore_unknown_fields = true, .allocate = .alloc_always },
+        );
+        defer parsed.deinit();
+        const addrs = parsed.value.result.?.map.keys();
+        try std.testing.expectEqual(@as(usize, 1), addrs.len);
+        try std.testing.expectEqualStrings("bc1qcurrentaddress", addrs[0]);
+    }
+
+    // A fresh wallet answers error -11 ("No addresses with label ..."): result is
+    // null, which receiveAddressLabeled treats as "mint the first one".
+    {
+        const raw =
+            \\{"result":null,"error":{"code":-11,"message":"No addresses with label boxwallet-receive"},"id":"boxwallet"}
+        ;
+        var parsed = try std.json.parseFromSlice(
+            models.JsonRpcResponse(std.json.ArrayHashMap(LabeledAddressInfo)),
+            allocator,
+            raw,
+            .{ .ignore_unknown_fields = true, .allocate = .alloc_always },
+        );
+        defer parsed.deinit();
+        try std.testing.expect(parsed.value.result == null);
+        try std.testing.expectEqual(@as(i64, -11), parsed.value.@"error".?.code);
+    }
 }
 
 test "basic auth header is correctly base64-encoded" {

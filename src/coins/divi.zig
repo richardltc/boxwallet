@@ -238,6 +238,50 @@ pub const Divi = struct {
         return .unknown;
     }
 
+    /// Map Divi's `listtransactions` `category` to the normalized direction.
+    /// Divi (PIVX-derived) has its own reward categories on top of the classic
+    /// set (upstream `ParseTransactionDetails`): `"stake_reward"` /
+    /// `"stake_reward+"` for PoS stakes, `"mn_reward"` for masternode payouts,
+    /// and `"lottery"` for lottery-block wins — all protocol rewards the wallet
+    /// minted/earned itself, so they map to the normalized `.stake`, as do the
+    /// classic coinbase `"generate"`/`"immature"`/`"orphan"`. `"darksent"` is
+    /// still money leaving the wallet (a private send), so it reads as sent.
+    /// Anything else (`"move"`) has no direction (null; the caller drops it).
+    fn directionFromCategory(category: []const u8) ?models.TxDirection {
+        if (std.mem.eql(u8, category, "receive")) return .received;
+        if (std.mem.eql(u8, category, "send") or
+            std.mem.eql(u8, category, "darksent")) return .sent;
+        if (std.mem.eql(u8, category, "stake_reward") or
+            std.mem.eql(u8, category, "stake_reward+") or
+            std.mem.eql(u8, category, "mn_reward") or
+            std.mem.eql(u8, category, "lottery") or
+            std.mem.eql(u8, category, "generate") or
+            std.mem.eql(u8, category, "immature") or
+            std.mem.eql(u8, category, "orphan")) return .stake;
+        return null;
+    }
+
+    /// The wallet's most recent transactions, newest-first — the shared
+    /// bitcoin-family `listtransactions` flow with Divi's category map.
+    pub fn walletTransactions(allocator: std.mem.Allocator, auth: models.CoinAuth, limit: usize) ![]models.WalletTx {
+        return rpc.walletTransactions(allocator, auth, limit, directionFromCategory);
+    }
+
+    /// The wallet's receive address. Divi's PIVX-era wallet keeps the accounts
+    /// API, so the shared accounts flow applies: `getaccountaddress ""` for the
+    /// stable current address, `getnewaddress` on an explicit user-requested
+    /// rotation (`force_new` — only ever called on demand, never polled).
+    pub fn receiveAddress(allocator: std.mem.Allocator, auth: models.CoinAuth, force_new: bool) ![]const u8 {
+        return rpc.receiveAddressAccount(allocator, auth, force_new);
+    }
+
+    /// Send `amount` DIVI to `address` via `sendtoaddress` (8-decimal amounts).
+    /// The daemon's own rejection reason (invalid address, insufficient funds,
+    /// locked wallet) rides back verbatim in the `SendResult`.
+    pub fn sendToAddress(allocator: std.mem.Allocator, auth: models.CoinAuth, address: []const u8, amount: f64) !models.SendResult {
+        return rpc.sendToAddress(allocator, auth, address, amount, 8);
+    }
+
     /// Encrypt the wallet with `passphrase`. divid stops itself afterwards (the
     /// caller restarts it). The passphrase is JSON-escaped before splicing.
     pub fn walletEncrypt(allocator: std.mem.Allocator, auth: models.CoinAuth, passphrase: []const u8) !void {
@@ -299,6 +343,9 @@ pub const Divi = struct {
         .request_stop = vtRequestStop,
         .wallet_security_state = vtWalletSecurityState,
         .wallet_balance = vtWalletBalance,
+        .wallet_transactions = vtWalletTransactions,
+        .wallet_receive_address = vtWalletReceiveAddress,
+        .wallet_send = vtWalletSend,
         .wallet_encrypt = vtWalletEncrypt,
         .wallet_unlock = vtWalletUnlock,
         .wallet_lock = vtWalletLock,
@@ -418,6 +465,31 @@ pub const Divi = struct {
         auth: models.CoinAuth,
     ) anyerror!models.WalletBalance {
         return walletBalance(allocator, auth);
+    }
+    fn vtWalletTransactions(
+        _: *anyopaque,
+        allocator: std.mem.Allocator,
+        auth: models.CoinAuth,
+        limit: usize,
+    ) anyerror![]models.WalletTx {
+        return walletTransactions(allocator, auth, limit);
+    }
+    fn vtWalletReceiveAddress(
+        _: *anyopaque,
+        allocator: std.mem.Allocator,
+        auth: models.CoinAuth,
+        force_new: bool,
+    ) anyerror![]const u8 {
+        return receiveAddress(allocator, auth, force_new);
+    }
+    fn vtWalletSend(
+        _: *anyopaque,
+        allocator: std.mem.Allocator,
+        auth: models.CoinAuth,
+        address: []const u8,
+        amount: f64,
+    ) anyerror!models.SendResult {
+        return sendToAddress(allocator, auth, address, amount);
     }
     fn vtWalletEncrypt(
         _: *anyopaque,
@@ -592,6 +664,33 @@ test "walletPath points at the daemon's default wallet.dat" {
     defer allocator.free(wf.path);
     try std.testing.expectEqualStrings("/home/alice/.divi/wallet.dat", wf.path);
     try std.testing.expect(wf.keys == null);
+}
+
+test "directionFromCategory maps listtransactions categories to normalized direction" {
+    try std.testing.expectEqual(models.TxDirection.received, Divi.directionFromCategory("receive").?);
+    try std.testing.expectEqual(models.TxDirection.sent, Divi.directionFromCategory("send").?);
+    // A private send is still money leaving the wallet.
+    try std.testing.expectEqual(models.TxDirection.sent, Divi.directionFromCategory("darksent").?);
+    // Divi's protocol rewards — stakes, masternode payouts, lottery wins — plus
+    // the classic coinbase categories all read as the normalized stake direction.
+    try std.testing.expectEqual(models.TxDirection.stake, Divi.directionFromCategory("stake_reward").?);
+    try std.testing.expectEqual(models.TxDirection.stake, Divi.directionFromCategory("stake_reward+").?);
+    try std.testing.expectEqual(models.TxDirection.stake, Divi.directionFromCategory("mn_reward").?);
+    try std.testing.expectEqual(models.TxDirection.stake, Divi.directionFromCategory("lottery").?);
+    try std.testing.expectEqual(models.TxDirection.stake, Divi.directionFromCategory("generate").?);
+    try std.testing.expectEqual(models.TxDirection.stake, Divi.directionFromCategory("immature").?);
+    try std.testing.expectEqual(models.TxDirection.stake, Divi.directionFromCategory("orphan").?);
+    // No direction — dropped by the shared mapper.
+    try std.testing.expect(Divi.directionFromCategory("move") == null);
+    try std.testing.expect(Divi.directionFromCategory("something-unknown") == null);
+}
+
+test "coin vtable exposes transactions, receive address, and send for Divi" {
+    var divi: Divi = .{};
+    const c = divi.coin();
+    try std.testing.expect(c.supportsTransactions());
+    try std.testing.expect(c.supportsReceiveAddress());
+    try std.testing.expect(c.supportsSend());
 }
 
 test "maps getwalletinfo balances to available + total" {

@@ -660,6 +660,159 @@ pub const Zano = struct {
         };
     }
 
+    // --- Transactions / receive / send (wallet RPC) ----------------------
+    //
+    // These ride the same per-open `simplewallet` server as balance, so the app
+    // hands them the wallet endpoint (`extWalletAuth`) and polls them only once
+    // the wallet is open.
+
+    /// One `get_recent_txs_and_info` transfer entry (the subset BoxWallet
+    /// uses). `is_income` marks money arriving; `is_mining` marks a coinbase —
+    /// on Zano's PoS chain that's a staked block reward. `is_service` marks
+    /// housekeeping transactions (asset ops etc.) with no displayable amount.
+    /// `height` is 0 while unconfirmed.
+    const RecentTxEntry = struct {
+        amount: u64 = 0,
+        timestamp: i64 = 0,
+        height: i64 = 0,
+        is_income: bool = false,
+        is_mining: bool = false,
+        is_service: bool = false,
+    };
+
+    /// `get_recent_txs_and_info`'s provision info (subset): the wallet's synced
+    /// height, for deriving confirmations. The field really is spelled
+    /// `curent_height` upstream.
+    const ProvisionInfo = struct { curent_height: i64 = 0 };
+
+    const RecentTxsResult = struct {
+        transfers: []RecentTxEntry = &.{},
+        pi: ProvisionInfo = .{},
+    };
+    const AddressResult = struct { address: []const u8 = "" };
+    const TransferResult = struct { tx_hash: []const u8 = "" };
+
+    /// Zano's standard transaction fee, in atomic units (0.01 ZANO — the
+    /// network's fixed minimum, `TX_DEFAULT_FEE` upstream). `transfer` requires
+    /// an explicit fee.
+    const default_fee_atomic: u64 = 10_000_000_000;
+
+    /// Decoys per input for `transfer`. Zano's post-Zarcanum outputs use 15+.
+    const default_mixin = 15;
+
+    /// The open wallet's most recent transactions, newest-first, via
+    /// `get_recent_txs_and_info` — which already returns newest-first (default
+    /// order `FROM_END_TO_BEGIN`) and takes a `count` cap, so only `limit`
+    /// entries ever cross the wire.
+    fn walletTransactions(
+        allocator: std.mem.Allocator,
+        wallet_auth: models.CoinAuth,
+        limit: usize,
+    ) anyerror![]models.WalletTx {
+        const params = try std.fmt.allocPrint(
+            allocator,
+            "{{\"count\":{d},\"offset\":0,\"update_provision_info\":true}}",
+            .{limit},
+        );
+        defer allocator.free(params);
+        var parsed = try walletCall(RecentTxsResult, allocator, wallet_auth, "get_recent_txs_and_info", params);
+        defer parsed.deinit();
+        const r = parsed.value.result orelse return error.EmptyRpcResult;
+        return mapRecentTxs(allocator, r.transfers, r.pi.curent_height, limit);
+    }
+
+    /// Map the (already newest-first) transfer entries to normalized
+    /// `WalletTx`es, dropping service/zero-amount housekeeping entries.
+    /// Confirmations derive from the wallet height (`tip − height`, 0 while
+    /// unconfirmed). Split out so the mapping is unit-testable without a
+    /// wallet process.
+    fn mapRecentTxs(allocator: std.mem.Allocator, transfers: []const RecentTxEntry, tip: i64, limit: usize) ![]models.WalletTx {
+        var count: usize = 0;
+        for (transfers) |e| {
+            if (!(e.is_service or e.amount == 0)) count += 1;
+        }
+
+        var out = try allocator.alloc(models.WalletTx, @min(count, limit));
+        var n: usize = 0;
+        for (transfers) |e| {
+            if (n == out.len) break;
+            if (e.is_service or e.amount == 0) continue;
+            const direction: models.TxDirection = if (e.is_mining)
+                .stake // a coinbase on Zano's PoS chain is a staked block reward
+            else if (e.is_income)
+                .received
+            else
+                .sent;
+            out[n] = .{
+                .direction = direction,
+                .amount = @as(f64, @floatFromInt(e.amount)) / atomic_per_zano,
+                .time = e.timestamp,
+                .confirmations = if (e.height > 0 and tip > e.height) tip - e.height else 0,
+            };
+            n += 1;
+        }
+        return out;
+    }
+
+    /// The open wallet's receive address (`getaddress`). A Zano wallet has one
+    /// stealth address for its lifetime (no subaddresses over this RPC), and
+    /// CryptoNote stealth addressing keeps reuse private — so `force_new` still
+    /// returns the same address rather than erroring the Receive tab's rotate
+    /// key.
+    fn walletReceiveAddress(
+        allocator: std.mem.Allocator,
+        wallet_auth: models.CoinAuth,
+        force_new: bool,
+    ) anyerror![]const u8 {
+        _ = force_new;
+        var parsed = try walletCall(AddressResult, allocator, wallet_auth, "getaddress", "{}");
+        defer parsed.deinit();
+        const r = parsed.value.result orelse return error.EmptyRpcResult;
+        if (r.address.len == 0) return error.EmptyRpcResult;
+        return allocator.dupe(u8, r.address); // parsed.deinit() frees its arena below us
+    }
+
+    /// Send `amount` ZANO to `address` via the wallet RPC `transfer`, with the
+    /// network's standard fee and mixin. The wallet does its own address
+    /// validation and balance check — `SendResult` carries whichever of those
+    /// (or the success tx hash) came back, verbatim. The amount is converted to
+    /// integer atomic units before splicing.
+    fn walletSend(
+        allocator: std.mem.Allocator,
+        wallet_auth: models.CoinAuth,
+        address: []const u8,
+        amount: f64,
+    ) anyerror!models.SendResult {
+        const atomic = atomicFromAmount(amount) orelse return .{ .failed = "invalid amount" };
+        const addr_q = try rpc.jsonQuote(allocator, address);
+        defer allocator.free(addr_q);
+        const params = try std.fmt.allocPrint(
+            allocator,
+            "{{\"destinations\":[{{\"amount\":{d},\"address\":{s}}}],\"fee\":{d},\"mixin\":{d}}}",
+            .{ atomic, addr_q, default_fee_atomic, default_mixin },
+        );
+        defer allocator.free(params);
+
+        var parsed = try walletCall(TransferResult, allocator, wallet_auth, "transfer", params);
+        defer parsed.deinit();
+        if (parsed.value.result) |r| {
+            if (r.tx_hash.len > 0) return .{ .ok = try allocator.dupe(u8, r.tx_hash) };
+        }
+        if (parsed.value.@"error") |e| return .{ .failed = try allocator.dupe(u8, e.message) };
+        return .{ .failed = "no response from wallet" };
+    }
+
+    /// Convert a user-entered ZANO amount to integer atomic units (rounded to
+    /// the nearest atomic). Null for anything unusable — non-finite,
+    /// non-positive, or too large for u64 — so a bad amount is rejected before
+    /// any RPC.
+    fn atomicFromAmount(amount: f64) ?u64 {
+        if (!std.math.isFinite(amount) or amount <= 0) return null;
+        const scaled = @round(amount * atomic_per_zano);
+        if (scaled >= @as(f64, @floatFromInt(std.math.maxInt(u64)))) return null;
+        return @intFromFloat(scaled);
+    }
+
     /// Restore-from-seed is deferred: Zano's `--restore-wallet` prompts for the seed
     /// interactively with no non-interactive flag, so BoxWallet doesn't offer it yet
     /// (the setup menu hides it via `supports_seed_restore = false`). The hook stays
@@ -734,8 +887,40 @@ pub const Zano = struct {
         .daemon_argv = vtDaemonArgv,
         // No `.request_stop`: zanod exposes no shutdown RPC, so app.zig stops it
         // by terminating the process (see the requestStop note above).
+        .wallet_transactions = vtWalletTransactions,
+        .wallet_receive_address = vtWalletReceiveAddress,
+        .wallet_send = vtWalletSend,
         .external_wallet = &external_wallet,
     };
+
+    // The three hooks below ride the wallet server's endpoint: for an
+    // external-wallet coin, `app.zig` passes `extWalletAuth()` (never the
+    // daemon's auth) and calls them only once the wallet is open.
+    fn vtWalletTransactions(
+        _: *anyopaque,
+        allocator: std.mem.Allocator,
+        wallet_auth: models.CoinAuth,
+        limit: usize,
+    ) anyerror![]models.WalletTx {
+        return walletTransactions(allocator, wallet_auth, limit);
+    }
+    fn vtWalletReceiveAddress(
+        _: *anyopaque,
+        allocator: std.mem.Allocator,
+        wallet_auth: models.CoinAuth,
+        force_new: bool,
+    ) anyerror![]const u8 {
+        return walletReceiveAddress(allocator, wallet_auth, force_new);
+    }
+    fn vtWalletSend(
+        _: *anyopaque,
+        allocator: std.mem.Allocator,
+        wallet_auth: models.CoinAuth,
+        address: []const u8,
+        amount: f64,
+    ) anyerror!models.SendResult {
+        return walletSend(allocator, wallet_auth, address, amount);
+    }
 
     fn vtCoinName(_: *anyopaque) []const u8 {
         return coin_name;
@@ -1123,4 +1308,79 @@ test "restore-from-file streams an external wallet file in as the managed wallet
     var buf: [64]u8 = undefined;
     const n = try f.readPositionalAll(io, &buf, 0);
     try std.testing.expectEqualStrings("ZANOWALLETBYTES", buf[0..n]);
+}
+
+test "parses a get_recent_txs_and_info reply (transfers + provision info)" {
+    const allocator = std.testing.allocator;
+
+    // Canned reply (subset): a staked block reward (is_mining), an incoming
+    // payment, an outgoing spend still in the pool (height 0), and a service
+    // entry the mapper drops. Note upstream's `curent_height` spelling.
+    const raw =
+        \\{"id":"0","jsonrpc":"2.0","result":{"pi":{"balance":1,"curent_height":2000,
+        \\"transfer_entries_count":3,"transfers_count":3,"unlocked_balance":1},
+        \\"transfers":[
+        \\{"amount":1250000000000,"timestamp":400,"height":0,"is_income":false,"is_mining":false,"is_service":false},
+        \\{"amount":2500000000000,"timestamp":300,"height":1990,"is_income":true,"is_mining":false,"is_service":false},
+        \\{"amount":0,"timestamp":250,"height":1985,"is_income":false,"is_mining":false,"is_service":true},
+        \\{"amount":5000000000000,"timestamp":100,"height":1000,"is_income":true,"is_mining":true,"is_service":false}
+        \\]}}
+    ;
+
+    var parsed = try std.json.parseFromSlice(
+        models.JsonRpcResponse(Zano.RecentTxsResult),
+        allocator,
+        raw,
+        .{ .ignore_unknown_fields = true, .allocate = .alloc_always },
+    );
+    defer parsed.deinit();
+
+    const r = parsed.value.result.?;
+    try std.testing.expectEqual(@as(usize, 4), r.transfers.len);
+    try std.testing.expectEqual(@as(i64, 2000), r.pi.curent_height);
+
+    const txs = try Zano.mapRecentTxs(allocator, r.transfers, r.pi.curent_height, 32);
+    defer allocator.free(txs);
+
+    // Service entry dropped; order preserved (the RPC already returns
+    // newest-first); confirmations derived from the wallet height.
+    try std.testing.expectEqual(@as(usize, 3), txs.len);
+    try std.testing.expectEqual(models.TxDirection.sent, txs[0].direction);
+    try std.testing.expectEqual(@as(i64, 0), txs[0].confirmations); // height 0 → unconfirmed
+    try std.testing.expectEqual(models.TxDirection.received, txs[1].direction);
+    try std.testing.expectEqual(@as(i64, 10), txs[1].confirmations); // 2000 - 1990
+    try std.testing.expectApproxEqAbs(@as(f64, 2.5), txs[1].amount, 1e-9);
+    try std.testing.expectEqual(models.TxDirection.stake, txs[2].direction);
+    try std.testing.expectApproxEqAbs(@as(f64, 5.0), txs[2].amount, 1e-9);
+}
+
+test "mapRecentTxs caps at limit" {
+    const allocator = std.testing.allocator;
+    const transfers = [_]Zano.RecentTxEntry{
+        .{ .amount = 1, .timestamp = 300, .height = 1999, .is_income = true },
+        .{ .amount = 2, .timestamp = 200, .height = 1998, .is_income = true },
+        .{ .amount = 3, .timestamp = 100, .height = 1997, .is_income = true },
+    };
+    const txs = try Zano.mapRecentTxs(allocator, &transfers, 2000, 2);
+    defer allocator.free(txs);
+    try std.testing.expectEqual(@as(usize, 2), txs.len);
+    try std.testing.expectEqual(@as(i64, 300), txs[0].time);
+    try std.testing.expectEqual(@as(i64, 200), txs[1].time);
+}
+
+test "atomicFromAmount converts ZANO to 12-decimal atomic units and rejects bad amounts" {
+    try std.testing.expectEqual(@as(?u64, 1_500_000_000_000), Zano.atomicFromAmount(1.5));
+    try std.testing.expectEqual(@as(?u64, 1), Zano.atomicFromAmount(0.000000000001));
+    try std.testing.expect(Zano.atomicFromAmount(0) == null);
+    try std.testing.expect(Zano.atomicFromAmount(-1.0) == null);
+    try std.testing.expect(Zano.atomicFromAmount(std.math.inf(f64)) == null);
+    try std.testing.expect(Zano.atomicFromAmount(1e30) == null);
+}
+
+test "coin vtable exposes transactions, receive address, and send for Zano" {
+    var z: Zano = .{};
+    const c = z.coin();
+    try std.testing.expect(c.supportsTransactions());
+    try std.testing.expect(c.supportsReceiveAddress());
+    try std.testing.expect(c.supportsSend());
 }

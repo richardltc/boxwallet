@@ -281,6 +281,50 @@ pub const ReddCoin = struct {
         return .unlocked;
     }
 
+    /// Map ReddCoin's `listtransactions` `category` to the normalized direction.
+    /// ReddCoin 4.x categorizes PoSV coinstakes with dedicated categories
+    /// (upstream `PushCoinStakeCategory`): `"stake"` (mature), `"stake-mint"`
+    /// (immature), `"stake-orphan"` — all a stake reward at some maturity stage.
+    /// `"generate"`/`"immature"`/`"orphan"` are the plain coinbase categories from
+    /// the coin's early PoW era. Anything else has no direction (null; dropped).
+    fn directionFromCategory(category: []const u8) ?models.TxDirection {
+        if (std.mem.eql(u8, category, "receive")) return .received;
+        if (std.mem.eql(u8, category, "send")) return .sent;
+        if (std.mem.eql(u8, category, "stake") or
+            std.mem.eql(u8, category, "stake-mint") or
+            std.mem.eql(u8, category, "stake-orphan") or
+            std.mem.eql(u8, category, "generate") or
+            std.mem.eql(u8, category, "immature") or
+            std.mem.eql(u8, category, "orphan")) return .stake;
+        return null;
+    }
+
+    /// The wallet's most recent transactions, newest-first — the shared
+    /// bitcoin-family `listtransactions` flow with ReddCoin's category map.
+    pub fn walletTransactions(allocator: std.mem.Allocator, auth: models.CoinAuth, limit: usize) ![]models.WalletTx {
+        return rpc.walletTransactions(allocator, auth, limit, directionFromCategory);
+    }
+
+    /// Marker label that tracks the wallet's current receive address. ReddCoin's
+    /// Core-22 base removed the accounts API (and with it any stable "current
+    /// address" RPC), so the shared label flow keeps exactly one address under
+    /// this label — see `rpc.receiveAddressLabeled`.
+    const receive_label = "boxwallet-receive";
+
+    /// The wallet's receive address: the labelled current one (minted on first
+    /// use), or a fresh mint on an explicit user-requested rotation
+    /// (`force_new` — only ever called on demand, never polled).
+    pub fn receiveAddress(allocator: std.mem.Allocator, auth: models.CoinAuth, force_new: bool) ![]const u8 {
+        return rpc.receiveAddressLabeled(allocator, auth, force_new, receive_label);
+    }
+
+    /// Send `amount` RDD to `address` via `sendtoaddress` (8-decimal amounts).
+    /// The daemon's own rejection reason (invalid address, insufficient funds,
+    /// locked wallet) rides back verbatim in the `SendResult`.
+    pub fn sendToAddress(allocator: std.mem.Allocator, auth: models.CoinAuth, address: []const u8, amount: f64) !models.SendResult {
+        return rpc.sendToAddress(allocator, auth, address, amount, 8);
+    }
+
     /// Encrypt the wallet with `passphrase`. reddcoind stops itself afterwards (the
     /// caller restarts it). The passphrase is JSON-escaped before splicing.
     pub fn walletEncrypt(allocator: std.mem.Allocator, auth: models.CoinAuth, passphrase: []const u8) !void {
@@ -370,6 +414,9 @@ pub const ReddCoin = struct {
         .ensure_wallet = vtEnsureWallet,
         .wallet_security_state = vtWalletSecurityState,
         .wallet_balance = vtWalletBalance,
+        .wallet_transactions = vtWalletTransactions,
+        .wallet_receive_address = vtWalletReceiveAddress,
+        .wallet_send = vtWalletSend,
         .wallet_encrypt = vtWalletEncrypt,
         .wallet_unlock = vtWalletUnlock,
         .wallet_lock = vtWalletLock,
@@ -502,6 +549,31 @@ pub const ReddCoin = struct {
         auth: models.CoinAuth,
     ) anyerror!models.WalletBalance {
         return walletBalance(allocator, auth);
+    }
+    fn vtWalletTransactions(
+        _: *anyopaque,
+        allocator: std.mem.Allocator,
+        auth: models.CoinAuth,
+        limit: usize,
+    ) anyerror![]models.WalletTx {
+        return walletTransactions(allocator, auth, limit);
+    }
+    fn vtWalletReceiveAddress(
+        _: *anyopaque,
+        allocator: std.mem.Allocator,
+        auth: models.CoinAuth,
+        force_new: bool,
+    ) anyerror![]const u8 {
+        return receiveAddress(allocator, auth, force_new);
+    }
+    fn vtWalletSend(
+        _: *anyopaque,
+        allocator: std.mem.Allocator,
+        auth: models.CoinAuth,
+        address: []const u8,
+        amount: f64,
+    ) anyerror!models.SendResult {
+        return sendToAddress(allocator, auth, address, amount);
     }
     fn vtWalletEncrypt(
         _: *anyopaque,
@@ -687,6 +759,31 @@ test "coin vtable dispatches to ReddCoin metadata" {
     // Bitcoin-core wallet over RPC: the `w` menu and the balance lines are both on.
     try std.testing.expect(c.supportsWallet());
     try std.testing.expect(c.supportsBalance());
+}
+
+test "directionFromCategory maps listtransactions categories to normalized direction" {
+    try std.testing.expectEqual(models.TxDirection.received, ReddCoin.directionFromCategory("receive").?);
+    try std.testing.expectEqual(models.TxDirection.sent, ReddCoin.directionFromCategory("send").?);
+    // ReddCoin 4.x PoSV coinstakes carry dedicated categories (upstream
+    // `PushCoinStakeCategory`) — all map to the normalized stake direction.
+    try std.testing.expectEqual(models.TxDirection.stake, ReddCoin.directionFromCategory("stake").?);
+    try std.testing.expectEqual(models.TxDirection.stake, ReddCoin.directionFromCategory("stake-mint").?);
+    try std.testing.expectEqual(models.TxDirection.stake, ReddCoin.directionFromCategory("stake-orphan").?);
+    // Plain coinbase categories from the coin's early PoW era.
+    try std.testing.expectEqual(models.TxDirection.stake, ReddCoin.directionFromCategory("generate").?);
+    try std.testing.expectEqual(models.TxDirection.stake, ReddCoin.directionFromCategory("immature").?);
+    try std.testing.expectEqual(models.TxDirection.stake, ReddCoin.directionFromCategory("orphan").?);
+    // No direction — dropped by the shared mapper.
+    try std.testing.expect(ReddCoin.directionFromCategory("move") == null);
+    try std.testing.expect(ReddCoin.directionFromCategory("something-unknown") == null);
+}
+
+test "coin vtable exposes transactions, receive address, and send for ReddCoin" {
+    var rdd: ReddCoin = .{};
+    const c = rdd.coin();
+    try std.testing.expect(c.supportsTransactions());
+    try std.testing.expect(c.supportsReceiveAddress());
+    try std.testing.expect(c.supportsSend());
 }
 
 test "walletPath points at the bitcoin-core BoxWallet directory" {
