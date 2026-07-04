@@ -491,8 +491,16 @@ const MoneroExchange = struct { status: u16, www_authenticate: ?[]u8, body: []u8
 
 /// POST `payload` to `path` on `auth`'s endpoint, answering a Digest challenge
 /// when `auth.rpc_user` is set. `timeout_ms` bounds each blocking socket op on
-/// POSIX. Returns the raw response body (caller owns it); `401` after the retry
-/// (or with no usable challenge) is `error.AuthFailed`.
+/// POSIX. Returns the raw response body (caller owns it); a `401` we can't satisfy
+/// is `error.AuthFailed`.
+///
+/// **The challenge and the authenticated reply MUST share one TCP connection.**
+/// Monero's epee HTTP server binds each Digest nonce to the connection it was issued
+/// on, so an authed request sent over a *fresh* socket is always rejected with `401`
+/// even with a perfectly-correct response — which is exactly what a
+/// connection-per-request client hits (and why `curl`, which keeps the socket alive,
+/// works). So the POSIX path opens a single socket, sends the unauthenticated request
+/// keep-alive, and answers the challenge on that same socket.
 pub fn moneroPost(
     allocator: std.mem.Allocator,
     auth: models.CoinAuth,
@@ -500,11 +508,38 @@ pub fn moneroPost(
     payload: []const u8,
     timeout_ms: u32,
 ) ![]u8 {
-    const first = try moneroExchange(allocator, auth, path, payload, timeout_ms, null);
+    if (builtin.os.tag == .windows)
+        return moneroPostWindows(allocator, auth, path, payload);
+    return moneroPostPosix(allocator, auth, path, payload, timeout_ms);
+}
 
-    // No auth required (daemon RPC), or a non-401 reply: hand the body back as-is,
-    // mirroring the bitcoin-style "parse the body regardless of status" contract.
-    if (first.status != 401 or auth.rpc_user.len == 0) {
+/// POSIX transport for `moneroPost`: one socket for the whole exchange so the Digest
+/// nonce stays valid across the challenge → authed-reply round-trip (see `moneroPost`).
+fn moneroPostPosix(
+    allocator: std.mem.Allocator,
+    auth: models.CoinAuth,
+    path: []const u8,
+    payload: []const u8,
+    timeout_ms: u32,
+) ![]u8 {
+    const posix = std.posix;
+    const sock = try posixConnect(auth, timeout_ms);
+    defer _ = posix.system.close(sock);
+
+    // Phase 1 — unauthenticated. Keep the connection open (no `Connection: close`)
+    // for authed endpoints so the challenge can be answered on this same socket; a
+    // keyless daemon RPC has nothing to answer, so it closes after the one reply.
+    const authed = auth.rpc_user.len != 0;
+    {
+        const req = try buildMoneroRequest(allocator, auth, path, payload, null, !authed);
+        defer allocator.free(req);
+        try sockWriteAll(sock, req);
+    }
+    const first = try posixReadResponse(allocator, sock);
+
+    // Keyless daemon RPC, or a non-401 reply: hand the body back as-is (bitcoin-style
+    // "parse the body regardless of status"). A 401 with no creds to answer is fatal.
+    if (!authed or first.status != 401) {
         if (first.www_authenticate) |w| allocator.free(w);
         if (first.status == 401) {
             allocator.free(first.body);
@@ -513,8 +548,7 @@ pub fn moneroPost(
         return first.body;
     }
 
-    // Authenticated wallet RPC: compute the Digest response and retry once with a
-    // fresh nonce (Monero challenges every request, so there's no nonce to reuse).
+    // Phase 2 — answer the Digest challenge on the SAME connection, then close.
     allocator.free(first.body);
     const challenge = first.www_authenticate orelse return error.AuthFailed;
     defer allocator.free(challenge);
@@ -524,8 +558,12 @@ pub fn moneroPost(
     const av = (try digestAuthValue(allocator, threaded.io(), challenge, auth.rpc_user, auth.rpc_password, "POST", path)) orelse
         return error.AuthFailed;
     defer allocator.free(av);
-
-    const second = try moneroExchange(allocator, auth, path, payload, timeout_ms, av);
+    {
+        const req = try buildMoneroRequest(allocator, auth, path, payload, av, true);
+        defer allocator.free(req);
+        try sockWriteAll(sock, req);
+    }
+    const second = try posixReadResponse(allocator, sock);
     if (second.www_authenticate) |w| allocator.free(w);
     if (second.status == 401) {
         allocator.free(second.body);
@@ -534,30 +572,46 @@ pub fn moneroPost(
     return second.body;
 }
 
-/// One HTTP round-trip for `moneroPost`. `authorization`, when given, is sent as
-/// the `Authorization` header value. Returns the status, any `WWW-Authenticate`
-/// value (owned), and the body (owned) — it never turns a `401` into an error so
-/// the caller can drive the digest retry.
-fn moneroExchange(
-    allocator: std.mem.Allocator,
-    auth: models.CoinAuth,
-    path: []const u8,
-    payload: []const u8,
-    timeout_ms: u32,
-    authorization: ?[]const u8,
-) !MoneroExchange {
-    if (builtin.os.tag == .windows)
-        return moneroExchangeWindows(allocator, auth, path, payload, authorization);
+/// Wait until the Monero-family wallet RPC at `auth` answers an authenticated request,
+/// so callers don't fire wallet ops (open/create/restore) into a `*-wallet-rpc` that is
+/// still binding its port or bringing up its auth subsystem — that startup window
+/// otherwise surfaces as a spurious `error.AuthFailed` (or a connect failure). Polls
+/// `get_version` (a keyless-of-wallet method that still exercises the digest handshake)
+/// on a short step, tolerating the connect-refused/401 the window produces, until the
+/// RPC replies cleanly or `timeout_ms` of wall-clock elapses. Best-effort: returns true
+/// once ready, false if the budget runs out.
+pub fn moneroWalletReady(allocator: std.mem.Allocator, auth: models.CoinAuth, timeout_ms: u32) bool {
+    var threaded: std.Io.Threaded = .init(allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
 
+    // Counter-driven wait, mirroring `app.zig`'s `launchWalletServer`: during a real
+    // startup the probe fails fast (connect-refused / 401 return instantly on
+    // loopback), so `waited` tracks wall time closely; the per-attempt cap is only a
+    // backstop against a socket that accepts but never answers.
+    var waited: u32 = 0;
+    const step: u32 = 250;
+    while (waited < timeout_ms) : (waited += step) {
+        if (moneroPost(allocator, auth, "/json_rpc", "{\"jsonrpc\":\"2.0\",\"id\":\"0\",\"method\":\"get_version\"}", 2000)) |body| {
+            allocator.free(body);
+            return true;
+        } else |_| {}
+        io.sleep(.fromMilliseconds(step), .awake) catch {};
+    }
+    return false;
+}
+
+/// Connect a blocking IPv4 TCP socket to `auth`'s endpoint, with send/recv timeouts
+/// so a wedged peer can't hang the caller. Caller owns the socket (`close`).
+fn posixConnect(auth: models.CoinAuth, timeout_ms: u32) !std.posix.socket_t {
     const posix = std.posix;
-
     const ip = parseIp4(auth.ip_address) catch return error.InvalidRpcAddress;
     const port = std.fmt.parseInt(u16, auth.port, 10) catch return error.InvalidRpcAddress;
 
     const sock_rc = posix.system.socket(posix.AF.INET, posix.SOCK.STREAM, 0);
     if (posix.errno(sock_rc) != .SUCCESS) return error.RpcConnectFailed;
     const sock: posix.socket_t = @intCast(sock_rc);
-    defer _ = posix.system.close(sock);
+    errdefer _ = posix.system.close(sock);
 
     const tv = posix.timeval{
         .sec = @intCast(timeout_ms / 1000),
@@ -572,21 +626,41 @@ fn moneroExchange(
     };
     if (posix.errno(posix.system.connect(sock, @ptrCast(&addr), @sizeOf(posix.sockaddr.in))) != .SUCCESS)
         return error.RpcConnectFailed;
+    return sock;
+}
 
+/// Build the raw HTTP/1.1 POST for a Monero endpoint. `authorization`, when given, is
+/// sent as the `Authorization` header. `close` adds `Connection: close`; omit it to
+/// leave the connection keep-alive so a Digest challenge can be answered on the same
+/// socket (epee ties the nonce to the connection — see `moneroPost`). Caller frees.
+fn buildMoneroRequest(
+    allocator: std.mem.Allocator,
+    auth: models.CoinAuth,
+    path: []const u8,
+    payload: []const u8,
+    authorization: ?[]const u8,
+    close: bool,
+) ![]u8 {
     const auth_line = if (authorization) |a|
         try std.fmt.allocPrint(allocator, "Authorization: {s}\r\n", .{a})
     else
         try allocator.dupe(u8, "");
     defer allocator.free(auth_line);
 
-    const req = try std.fmt.allocPrint(
+    const conn_line = if (close) "Connection: close\r\n" else "";
+    return std.fmt.allocPrint(
         allocator,
-        "POST {s} HTTP/1.1\r\nHost: {s}:{s}\r\nContent-Type: application/json\r\nContent-Length: {d}\r\n{s}Connection: close\r\n\r\n{s}",
-        .{ path, auth.ip_address, auth.port, payload.len, auth_line, payload },
+        "POST {s} HTTP/1.1\r\nHost: {s}:{s}\r\nContent-Type: application/json\r\nContent-Length: {d}\r\n{s}{s}\r\n{s}",
+        .{ path, auth.ip_address, auth.port, payload.len, auth_line, conn_line, payload },
     );
-    defer allocator.free(req);
-    try sockWriteAll(sock, req);
+}
 
+/// Read one HTTP response off `sock`: parse the status line, capture any
+/// `WWW-Authenticate` value (owned), and return the body (owned), stopping at
+/// `Content-Length` so it works on a kept-alive connection (no EOF to wait for). It
+/// never turns a `401` into an error, so the caller can drive the digest exchange.
+fn posixReadResponse(allocator: std.mem.Allocator, sock: std.posix.socket_t) !MoneroExchange {
+    const posix = std.posix;
     const max_response = 1 << 20;
     var resp: std.Io.Writer.Allocating = .init(allocator);
     defer resp.deinit();
@@ -624,16 +698,17 @@ fn moneroExchange(
     return .{ .status = status, .www_authenticate = www, .body = try allocator.dupe(u8, body) };
 }
 
-/// `std.http.Client` round-trip — the Windows path for `moneroExchange` (raw
-/// POSIX sockets there would need `WSAStartup`). No socket timeout (the request
-/// is tiny localhost JSON), but it reads the status + headers so digest works.
-fn moneroExchangeWindows(
+/// Windows transport for `moneroPost` (raw POSIX sockets there would need
+/// `WSAStartup`). Uses **one** `std.http.Client` for the whole exchange so its
+/// connection pool reuses the same kept-alive connection for the authed retry — the
+/// same single-connection requirement the POSIX path meets explicitly (see
+/// `moneroPost`). No socket timeout (the request is tiny localhost JSON).
+fn moneroPostWindows(
     allocator: std.mem.Allocator,
     auth: models.CoinAuth,
     path: []const u8,
     payload: []const u8,
-    authorization: ?[]const u8,
-) !MoneroExchange {
+) ![]u8 {
     var threaded: std.Io.Threaded = .init(allocator, .{});
     defer threaded.deinit();
 
@@ -644,6 +719,42 @@ fn moneroExchangeWindows(
     defer allocator.free(url);
     const uri = try std.Uri.parse(url);
 
+    const first = try windowsExchange(allocator, &client, uri, payload, null);
+    if (auth.rpc_user.len == 0 or first.status != 401) {
+        if (first.www_authenticate) |w| allocator.free(w);
+        if (first.status == 401) {
+            allocator.free(first.body);
+            return error.AuthFailed;
+        }
+        return first.body;
+    }
+
+    allocator.free(first.body);
+    const challenge = first.www_authenticate orelse return error.AuthFailed;
+    defer allocator.free(challenge);
+    const av = (try digestAuthValue(allocator, threaded.io(), challenge, auth.rpc_user, auth.rpc_password, "POST", path)) orelse
+        return error.AuthFailed;
+    defer allocator.free(av);
+
+    const second = try windowsExchange(allocator, &client, uri, payload, av);
+    if (second.www_authenticate) |w| allocator.free(w);
+    if (second.status == 401) {
+        allocator.free(second.body);
+        return error.AuthFailed;
+    }
+    return second.body;
+}
+
+/// One request/response on a shared `std.http.Client` (so the connection pool can
+/// reuse a kept-alive connection across the digest handshake). Returns status, any
+/// `WWW-Authenticate` (owned), and the body (owned).
+fn windowsExchange(
+    allocator: std.mem.Allocator,
+    client: *std.http.Client,
+    uri: std.Uri,
+    payload: []const u8,
+    authorization: ?[]const u8,
+) !MoneroExchange {
     var extra: [2]std.http.Header = undefined;
     var nh: usize = 0;
     extra[nh] = .{ .name = "content-type", .value = "application/json" };
@@ -1058,6 +1169,20 @@ test "daemonReachable reads an unparseable endpoint as not reachable" {
         .rpc_user = "",
         .rpc_password = "",
     }));
+}
+
+test "moneroWalletReady gives up (returns false) once the budget elapses" {
+    // With an unprobeable endpoint every `get_version` attempt fails immediately, so
+    // the readiness wait can only ever time out — this pins the loop's terminate-on-
+    // budget behaviour (no hang) without needing a live wallet-rpc. A tiny budget
+    // keeps the test fast; the live "becomes ready" path is exercised end-to-end.
+    const allocator = std.testing.allocator;
+    try std.testing.expect(!moneroWalletReady(allocator, .{
+        .ip_address = "not-an-ip",
+        .port = "19085",
+        .rpc_user = "u",
+        .rpc_password = "p",
+    }, 300));
 }
 
 test "formatAmountFixed is a fixed decimal at the coin's denomination, never scientific" {
