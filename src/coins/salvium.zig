@@ -29,7 +29,7 @@ const Coin = @import("../coin.zig").Coin;
 pub const Salvium = struct {
     /// Whether the coin is exposed in the nav. False keeps it out of the left
     /// bar entirely (registered but hidden) until it's ready for users.
-    pub const live = false;
+    pub const live = true;
     pub const coin_name = "Salvium";
     pub const coin_name_abbrev = "SAL";
     /// One-line description shown under the coin name on the detail pane.
@@ -39,8 +39,7 @@ pub const Salvium = struct {
     pub const coin_color = "#0AEB85";
     /// Donation address for BoxWallet development, in Salvium's own
     /// currency.
-    /// TODO(richard): replace with the real SAL tip address.
-    pub const tip_address = "TODO-SAL-TIP-ADDRESS-NOT-SET";
+    pub const tip_address = "SC1siDYDKePFx2yx6cLwQLKikiXfJ8nz8jPEw9Cncr5M13rRkwJojLNLwEEFD9yPyz8v9WQuuaext3Zi462efUcYfidDE1tQ6mV";
     /// Salvium is proof-of-work (RandomX, Monero-derived) — no wallet staking.
     pub const proof_of_stake = false;
     pub const conf_file = "salvium.conf";
@@ -643,10 +642,13 @@ pub const Salvium = struct {
         // timeout is a backstop against any vintage that ignores both.
         const argv = [_][]const u8{
             cli_path,
-            "--generate-from-json", spec_path,
+            "--generate-from-json",
+            spec_path,
             "--offline",
-            "--log-level",          "0",
-            "--command",            "exit",
+            "--log-level",
+            "0",
+            "--command",
+            "exit",
         };
         const res = std.process.run(allocator, io, .{
             .argv = &argv,
@@ -791,7 +793,7 @@ pub const Salvium = struct {
         timestamp: i64 = 0,
         confirmations: i64 = 0,
         asset_type: []const u8 = "",
-        @"type": []const u8 = "",
+        type: []const u8 = "",
     };
 
     /// `get_transfers` groups entries by state; direction falls out of the
@@ -838,7 +840,7 @@ pub const Salvium = struct {
         for (r.in) |e| {
             if (!isPrimaryAsset(e.asset_type)) continue;
             // A coinbase credit (type "block") was minted by the wallet itself.
-            const direction: models.TxDirection = if (std.mem.eql(u8, e.@"type", "block")) .stake else .received;
+            const direction: models.TxDirection = if (std.mem.eql(u8, e.type, "block")) .stake else .received;
             all[n] = mapEntry(e, direction);
             n += 1;
         }
@@ -1612,7 +1614,7 @@ test "parses a get_transfers reply into bucketed TransferEntry lists (asset-tagg
     const r = parsed.value.result.?;
     try std.testing.expectEqual(@as(usize, 3), r.in.len);
     try std.testing.expectEqual(@as(usize, 1), r.out.len);
-    try std.testing.expectEqualStrings("block", r.in[0].@"type");
+    try std.testing.expectEqualStrings("block", r.in[0].type);
     try std.testing.expectEqual(@as(i64, 10), r.in[1].confirmations);
 
     const txs = try Salvium.mapTransfers(allocator, r, 32);
@@ -1632,11 +1634,11 @@ test "parses a get_transfers reply into bucketed TransferEntry lists (asset-tagg
 test "mapTransfers caps at limit, newest-first" {
     const allocator = std.testing.allocator;
     var in = [_]Salvium.TransferEntry{
-        .{ .@"type" = "in", .amount = 1, .timestamp = 100, .confirmations = 3 },
-        .{ .@"type" = "in", .amount = 2, .timestamp = 300, .confirmations = 1 },
+        .{ .type = "in", .amount = 1, .timestamp = 100, .confirmations = 3 },
+        .{ .type = "in", .amount = 2, .timestamp = 300, .confirmations = 1 },
     };
     var out = [_]Salvium.TransferEntry{
-        .{ .@"type" = "out", .amount = 3, .timestamp = 200, .confirmations = 2 },
+        .{ .type = "out", .amount = 3, .timestamp = 200, .confirmations = 2 },
     };
     const r: Salvium.GetTransfersResult = .{ .in = &in, .out = &out };
 
