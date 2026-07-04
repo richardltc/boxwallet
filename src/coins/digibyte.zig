@@ -26,8 +26,7 @@ pub const DigiByte = struct {
     pub const coin_color = "#0066CC";
     /// Donation address for BoxWallet development, in DigiByte's own
     /// currency.
-    /// TODO(richard): replace with the real DGB tip address.
-    pub const tip_address = "TODO-DGB-TIP-ADDRESS-NOT-SET";
+    pub const tip_address = "dgb1qqhd2rgrt4059vzz94yaezc9m03wgqq8my9dp57";
     /// DigiByte is proof-of-work (multi-algo) — no wallet staking.
     pub const proof_of_stake = false;
     pub const conf_file = "digibyte.conf";

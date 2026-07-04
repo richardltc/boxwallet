@@ -30,8 +30,7 @@ pub const Bitcoin = struct {
     pub const coin_color = "#F7931A";
     /// Donation address for BoxWallet development, in Bitcoin's own
     /// currency.
-    /// TODO(richard): replace with the real BTC tip address.
-    pub const tip_address = "TODO-BTC-TIP-ADDRESS-NOT-SET";
+    pub const tip_address = "bc1qrxknutr7expz277w0kvjsx2p72ga5r8wrvcqe5";
     /// Bitcoin is proof-of-work (SHA-256) — no wallet staking.
     pub const proof_of_stake = false;
     pub const conf_file = "bitcoin.conf";
