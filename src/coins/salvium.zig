@@ -159,6 +159,14 @@ pub const Salvium = struct {
     /// can't wedge the worker.
     const wallet_timeout_ms: u32 = 60_000;
 
+    /// Budget (ms) to wait for `salvium-wallet-rpc` to become ready — i.e. answer an
+    /// authenticated request — before the first wallet op. The service is spawned
+    /// detached (see `app.zig`'s `ensureWalletRpc`) and returns immediately, so a
+    /// create/restore/open fired straight after can race its startup and get a
+    /// spurious `AuthFailed`. Gating on `rpc.moneroWalletReady` closes that window.
+    /// Matches the wallet-service wait budget the launch-with-password path uses.
+    const wallet_ready_timeout_ms: u32 = 25_000;
+
     /// Fetch + parse `get_info`. Caller must `deinit` the returned `Parsed`.
     fn fetchInfo(
         allocator: std.mem.Allocator,
@@ -531,6 +539,9 @@ pub const Salvium = struct {
         password: []const u8,
         detail: *Coin.WalletErrSink,
     ) anyerror!models.Seed {
+        // Don't fire into a still-starting wallet-rpc (races → spurious AuthFailed).
+        if (!rpc.moneroWalletReady(allocator, wallet_auth, wallet_ready_timeout_ms))
+            return error.WalletServiceNotReady;
         const qpw = try rpc.jsonQuote(allocator, password);
         defer allocator.free(qpw);
         {
@@ -732,6 +743,10 @@ pub const Salvium = struct {
         password: []const u8,
         detail: *Coin.WalletErrSink,
     ) anyerror!void {
+        // The restore/open paths reach here right after the wallet-rpc is spawned;
+        // wait for it to answer auth so a startup race can't look like a bad password.
+        if (!rpc.moneroWalletReady(allocator, wallet_auth, wallet_ready_timeout_ms))
+            return error.WalletServiceNotReady;
         const qpw = try rpc.jsonQuote(allocator, password);
         defer allocator.free(qpw);
         const params = try std.fmt.allocPrint(
