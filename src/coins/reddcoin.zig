@@ -34,8 +34,7 @@ pub const ReddCoin = struct {
     pub const coin_color = "#e30613";
     /// Donation address for BoxWallet development, in ReddCoin's own
     /// currency.
-    /// TODO(richard): replace with the real RDD tip address.
-    pub const tip_address = "TODO-RDD-TIP-ADDRESS-NOT-SET";
+    pub const tip_address = "Ri9AGKMp14tLm9kc7W7e2TWM3sR4oo1fki";
     /// Secondary brand colour for the "Coin" half of the wordmark — the nav draws
     /// "Redd" in `coin_color` and "Coin" in this near-white. Split after "Redd".
     pub const coin_color_alt = "#f0f0f0";

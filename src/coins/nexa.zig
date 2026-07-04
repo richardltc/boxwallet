@@ -20,8 +20,7 @@ pub const Nexa = struct {
     pub const coin_color = "#FEE043";
     /// Donation address for BoxWallet development, in Nexa's own
     /// currency.
-    /// TODO(richard): replace with the real NEXA tip address.
-    pub const tip_address = "TODO-NEXA-TIP-ADDRESS-NOT-SET";
+    pub const tip_address = "nexa:nqtsq5g57va7z3jh78vk606nj90m629w9uwrrtkwnejj3lk6";
     /// Nexa is proof-of-work — no wallet staking.
     pub const proof_of_stake = false;
     pub const conf_file = "nexa.conf";

@@ -30,8 +30,7 @@ pub const Litecoin = struct {
     pub const coin_color = "#345D9D";
     /// Donation address for BoxWallet development, in Litecoin's own
     /// currency.
-    /// TODO(richard): replace with the real LTC tip address.
-    pub const tip_address = "TODO-LTC-TIP-ADDRESS-NOT-SET";
+    pub const tip_address = "ltc1qdzccuuf2nr73rs58vtgn242sf6csw3v3azpzpq";
     /// Litecoin is proof-of-work (scrypt) — no wallet staking.
     pub const proof_of_stake = false;
     pub const conf_file = "litecoin.conf";
