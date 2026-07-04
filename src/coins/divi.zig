@@ -15,13 +15,12 @@ pub const Divi = struct {
     pub const coin_name = "Divi";
     pub const coin_name_abbrev = "DIVI";
     /// One-line description shown under the coin name on the detail pane.
-    pub const coin_description = "Proof-of-stake coin with one-click tiered masternodes.";
+    pub const coin_description = "Proof-of-stake coin with blockchain lottery.";
     /// Divi brand colour (`#RRGGBB`), for tinting the coin in the frontend.
     pub const coin_color = "#ED295A";
     /// Donation address for BoxWallet development, in Divi's own
     /// currency.
-    /// TODO(richard): replace with the real DIVI tip address.
-    pub const tip_address = "TODO-DIVI-TIP-ADDRESS-NOT-SET";
+    pub const tip_address = "DKHL4vUMS9BWcwhT4Y8NMJ62yYxLgeBdZb";
     /// Divi is proof-of-stake — the wallet can stake.
     pub const proof_of_stake = true;
     pub const conf_file = "divi.conf";
