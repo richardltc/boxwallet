@@ -258,12 +258,16 @@ const DaemonState = enum { stopped, starting, running, stopping };
 /// historically showed (status, sync/disk/memory bars, install activity, daemon
 /// button); the rest are scaffolded panes filled in later. The coin name and
 /// balance header stay pinned above the tabs regardless of which is active.
+/// `mining` sits last (past `settings`) so the 1–5 muscle memory of the first
+/// five tabs is identical on every coin — it only exists (strip, cycling, the
+/// `6` jump) for a coin whose daemon mines in-process (`supportsMining`).
 const DetailTab = enum {
     home,
     transactions,
     receive,
     send,
     settings,
+    mining,
 
     fn label(self: DetailTab) []const u8 {
         return switch (self) {
@@ -272,16 +276,45 @@ const DetailTab = enum {
             .receive => "Receive",
             .send => "Send",
             .settings => "Settings",
+            .mining => "Mining",
         };
     }
 };
 
 /// Step to the next/previous detail tab, wrapping around the ends. `delta` is
-/// +1 (right) or -1 (left).
-fn cycleTab(t: DetailTab, delta: i2) DetailTab {
+/// +1 (right) or -1 (left). `has_mining` is the coin's `supportsMining()`:
+/// without it the Mining tab doesn't exist for this coin, so the cycle skips
+/// straight over it (settings wraps to home).
+fn cycleTab(t: DetailTab, delta: i2, has_mining: bool) DetailTab {
     const n: i32 = @typeInfo(DetailTab).@"enum".fields.len;
-    const next = @mod(@as(i32, @intFromEnum(t)) + delta, n);
-    return @enumFromInt(next);
+    var next: DetailTab = t;
+    // At most two steps: one lands on .mining, the second skips past it.
+    for (0..2) |_| {
+        next = @enumFromInt(@mod(@as(i32, @intFromEnum(next)) + delta, n));
+        if (next != .mining or has_mining) break;
+    }
+    return next;
+}
+
+/// The machine's logical CPU thread count, bounding the Mining prompt (and
+/// shown in its hint so the user knows the range). Falls back to 1 when the
+/// OS query fails — the safe lower bound.
+fn cpuThreadCount() u32 {
+    const n = std.Thread.getCpuCount() catch return 1;
+    return @intCast(std.math.clamp(n, 1, 9999));
+}
+
+/// A human-readable reason for a failed mining start/stop: the error names the
+/// user is likely to hit are mapped into plain language; anything unfamiliar
+/// passes through verbatim rather than collapsing to a generic "failed".
+fn miningFailureText(err_name: []const u8) []const u8 {
+    if (std.mem.eql(u8, err_name, "DaemonStillSyncing"))
+        return "The daemon is still syncing — mining can start once the chain is synced.";
+    if (std.mem.eql(u8, err_name, "MiningStartRejected"))
+        return "The daemon refused to start mining.";
+    if (std.mem.eql(u8, err_name, "MiningStopRejected"))
+        return "The daemon refused to stop mining.";
+    return err_name;
 }
 
 /// Chain sync progress. `syncing` shows a spinner ("Syncing"), `synced` a green
@@ -838,6 +871,50 @@ const SendModal = struct {
     }
 };
 
+/// The Mining prompt — opened by `enter` on the Mining tab of a coin whose
+/// daemon mines in-process (Nerva). Two entry stages, chosen by the miner's
+/// current state: idle opens at `threads` (how many CPU threads to mine on,
+/// typed into `mining_input`), active opens at `confirm_stop` (a plain
+/// Yes/No). Both funnel into the same worker → `working` → `result` tail the
+/// Send prompt uses.
+const MiningModal = struct {
+    const Stage = enum {
+        /// Type the CPU thread count to mine on (1..the machine's threads).
+        threads,
+        /// Yes/No: stop the running miner?
+        confirm_stop,
+        /// The start/stop RPC is in flight (outcome read from the Activity).
+        working,
+        /// Success or the failure reason.
+        result,
+    };
+
+    stage: Stage = .threads,
+    /// The entry the prompt acts on, so the worker/reap target the right
+    /// Activity even if the left-nav selection moves while it's open.
+    coin_idx: usize = 0,
+    /// Whether the in-flight op is a start (labels/messages); stops are the
+    /// `confirm_stop` path.
+    starting: bool = true,
+    /// Confirm-menu cursor (0 = Yes, 1 = No).
+    sel: u8 = 0,
+    /// Set when the thread-count field failed to parse or is out of range.
+    bad_input: bool = false,
+    /// Whether the finished op succeeded (tints the result line).
+    ok: bool = false,
+    /// Outcome text shown in the `result` stage (fixed buffer — no allocation).
+    msg_buf: [256]u8 = undefined,
+    msg_len: usize = 0,
+
+    fn setMsg(self: *MiningModal, ok: bool, text: []const u8) void {
+        self.ok = ok;
+        const n = @min(text.len, self.msg_buf.len);
+        @memcpy(self.msg_buf[0..n], text[0..n]);
+        self.msg_len = n;
+        self.stage = .result;
+    }
+};
+
 /// A first-start prune preset: a menu label and the target it sets, in MiB
 /// (matching the daemon's `prune=` units; 0 = full node). 1 GB is taken as
 /// 1000 MiB so the size reads back cleanly as "N GB" on the Settings tab.
@@ -1030,6 +1107,14 @@ const Activity = struct {
     poll_balance_total: std.atomic.Value(u64) = .init(0),
     poll_balance_avail: std.atomic.Value(u64) = .init(0),
     poll_has_balance: std.atomic.Value(u8) = .init(0),
+    /// Latest polled mining state, for coins whose daemon mines in-process
+    /// (`supportsMining` — Nerva). `poll_has_mining` gates them so the Mining
+    /// tab reads "checking…" until the first successful fetch rather than a
+    /// misleading "not mining". Published by the `poll_done` edge.
+    poll_mining_active: std.atomic.Value(u8) = .init(0),
+    poll_mining_threads: std.atomic.Value(u32) = .init(0),
+    poll_mining_speed: std.atomic.Value(u64) = .init(0),
+    poll_has_mining: std.atomic.Value(u8) = .init(0),
     /// Latest polled wallet rescan progress, for an in-daemon external wallet that
     /// re-scans after a restore (Ergo, via `ExternalWallet.rescan_progress`).
     /// `poll_rescanning` gates the scanned/target heights: 1 while a rescan is in
@@ -1121,6 +1206,31 @@ const Activity = struct {
     /// never a generic "it failed." Published by the `send_done` edge.
     send_result_buf: [256]u8 = undefined,
     send_result_len: usize = 0,
+
+    // --- mining worker (the Mining tab) --------------------------------------
+    // A short-lived worker runs one start_mining/stop_mining RPC so the UI
+    // never blocks on it. Same synchronization edge as the send worker: the
+    // worker stores `mining_done` with release, the UI loads it with acquire,
+    // and that pairing publishes `mining_ok`/`mining_err`.
+    mining_thread: ?std.Thread = null,
+    /// Whether the in-flight op is a start (routes the worker and labels the
+    /// reap log line).
+    mining_starting: bool = true,
+    /// CPU thread count for an in-flight start, copied in before spawn.
+    mining_threads_req: u32 = 0,
+    /// The payout address for an in-flight start — the wallet's own cached
+    /// receive address, copied in before the worker is spawned (the cache
+    /// itself is rewritten on the UI thread every poll, so the worker must not
+    /// read it directly).
+    mining_addr_buf: [128]u8 = undefined,
+    mining_addr_len: usize = 0,
+    /// Set true (release) by the worker when the op finishes.
+    mining_done: std.atomic.Value(bool) = .init(false),
+    /// Whether the finished op succeeded. Published by the `mining_done` edge.
+    mining_ok: bool = false,
+    /// Error name from a failed op (static, program-lifetime), published with
+    /// the `mining_done` edge.
+    mining_err: []const u8 = "",
 
     // --- external wallet process (Monero-style coins, e.g. Nerva) -----------
     // For `coin.hasExternalWallet()` coins the wallet is a *second* process
@@ -1324,6 +1434,14 @@ const Activity = struct {
     /// Whether the wallet is actively staking. Only shown for proof-of-stake
     /// coins; live staking polling lands later — for now this stays false.
     staking: bool = false,
+    /// Live mining state (Mining tab), folded in from the poll for coins whose
+    /// daemon mines in-process. `has_mining` gates the readout — false until
+    /// the first successful fetch, so the tab shows "checking…" rather than a
+    /// premature "not mining". Cleared on daemon stop.
+    mining_active: bool = false,
+    mining_threads: u32 = 0,
+    mining_speed: u64 = 0,
+    has_mining: bool = false,
     /// The daemon's warm-up phase while it's coming up (Loading/Verifying/…), or
     /// `none` once it's responsive. Folded in from `poll_phase` on each poll reap;
     /// drives the Wallet line's "loading" readout.
@@ -1759,6 +1877,51 @@ const Activity = struct {
         self.send_result_len = n;
     }
 
+    /// Mining worker. Runs one start_mining/stop_mining RPC on a private arena
+    /// (bounded, isolated) and publishes the outcome, reaped by the UI once
+    /// `mining_done` is observed. Same shape as `runWalletAction`.
+    fn runMining(self: *Activity) void {
+        var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+        defer arena.deinit();
+        const a = arena.allocator();
+
+        if (self.doMining(a)) {
+            self.mining_ok = true;
+        } else |err| {
+            self.mining_err = @errorName(err);
+            self.mining_ok = false;
+        }
+        self.mining_done.store(true, .release);
+    }
+
+    /// Resolve the coin's RPC credentials and dispatch the in-flight mining op.
+    /// The miner lives in the *daemon* (unlike send/balance, which ride the
+    /// wallet process for external-wallet coins), so this always talks to the
+    /// daemon's own endpoint. The payout address/thread count come from
+    /// `mining_addr_buf`/`mining_threads_req` (the UI copied them in before
+    /// spawning).
+    fn doMining(self: *Activity, a: std.mem.Allocator) !void {
+        var threaded: std.Io.Threaded = .init(a, .{});
+        defer threaded.deinit();
+        const io = threaded.io();
+
+        const data_dir = try self.coin.dataDir(a, self.home_dir);
+        const auth = try conf.readAuth(
+            a,
+            io,
+            data_dir,
+            self.coin.confFile(),
+            self.coin.rpcDefaultUsername(),
+            self.coin.rpcDefaultPort(),
+        );
+
+        if (self.mining_starting) {
+            try self.coin.miningStart(a, auth, self.mining_addr_buf[0..self.mining_addr_len], self.mining_threads_req);
+        } else {
+            try self.coin.miningStop(a, auth);
+        }
+    }
+
     /// The wallet *process*'s own RPC endpoint (127.0.0.1 + the capability's bound
     /// port), with the per-session `--rpc-login` credentials so the HTTP digest
     /// handshake succeeds — distinct from the daemon's `CoinAuth`. Only valid for
@@ -1960,6 +2123,15 @@ const Activity = struct {
         const an = @min(self.poll_receive_addr_len, self.receive_addr_buf.len);
         @memcpy(self.receive_addr_buf[0..an], self.poll_receive_addr_buf[0..an]);
         self.receive_addr_len = an;
+
+        // Live mining state (staged by the poll worker; gated so the tab shows
+        // "checking…" until the first successful fetch).
+        if (self.poll_has_mining.load(.monotonic) != 0) {
+            self.mining_active = self.poll_mining_active.load(.monotonic) != 0;
+            self.mining_threads = self.poll_mining_threads.load(.monotonic);
+            self.mining_speed = self.poll_mining_speed.load(.monotonic);
+            self.has_mining = true;
+        }
 
         // Wallet rescan progress (external in-daemon wallets only). The flag is
         // always adopted — clearing it the moment the scan catches up returns the
@@ -2234,6 +2406,19 @@ const Activity = struct {
                 self.poll_balance_total.store(@bitCast(bal.total), .monotonic);
                 self.poll_balance_avail.store(@bitCast(bal.available), .monotonic);
                 self.poll_has_balance.store(1, .monotonic);
+            } else |_| {}
+        }
+
+        // Live mining state (Mining tab), for coins whose daemon mines
+        // in-process — every poll, so the hashrate readout stays current.
+        // Best-effort: a hiccup just leaves the last value, so a blip doesn't
+        // flicker the tab.
+        if (self.coin.supportsMining()) {
+            if (self.coin.miningStatus(a, auth)) |ms| {
+                self.poll_mining_active.store(@intFromBool(ms.active), .monotonic);
+                self.poll_mining_threads.store(ms.threads, .monotonic);
+                self.poll_mining_speed.store(ms.speed, .monotonic);
+                self.poll_has_mining.store(1, .monotonic);
             } else |_| {}
         }
 
@@ -2909,6 +3094,10 @@ pub const App = struct {
     /// modals; while set it owns keyboard input and is composited over the
     /// dashboard, same as the others.
     send_modal: ?SendModal = null,
+    /// The open Mining prompt, or null. Mutually exclusive with the other
+    /// modals; while set it owns keyboard input and is composited over the
+    /// dashboard, same as the others.
+    mining_modal: ?MiningModal = null,
     /// Masked passphrase entry for the wallet modal. Persistent (its backing
     /// buffer outlives a single modal), created in `init` and freed in `deinit`;
     /// its value is cleared whenever the modal closes or an action is sent.
@@ -2926,6 +3115,9 @@ pub const App = struct {
     /// Visible entry for a send amount. Persistent like the others; digits
     /// and one decimal point, cleared whenever the Send modal opens.
     send_amount_input: zz.TextInput,
+    /// Visible entry for the Mining prompt's CPU thread count. Persistent like
+    /// the others; digits only, cleared whenever the prompt opens.
+    mining_input: zz.TextInput,
     /// File browser for the restore-from-file flow (external-wallet coins).
     /// Persistent; navigated on demand, freed in `deinit`.
     file_picker: zz.components.FilePicker,
@@ -3032,6 +3224,7 @@ pub const App = struct {
             .prune_input = zz.TextInput.init(ctx.persistent_allocator),
             .send_addr_input = zz.TextInput.init(ctx.persistent_allocator),
             .send_amount_input = zz.TextInput.init(ctx.persistent_allocator),
+            .mining_input = zz.TextInput.init(ctx.persistent_allocator),
             .file_picker = zz.components.FilePicker.init(ctx.persistent_allocator),
         };
         // The wallet passphrase field masks its input and stays a fixed width.
@@ -3053,6 +3246,9 @@ pub const App = struct {
         // The send-amount field is a plain decimal number — visible, narrow.
         self.send_amount_input.setWidth(20);
         self.send_amount_input.setCharLimit(20);
+        // The mining thread-count field takes a small integer — visible, tiny.
+        self.mining_input.setWidth(6);
+        self.mining_input.setCharLimit(4);
         // The file browser is for picking a wallet file, in a modest viewport
         // that fits the centered modal. `file_only` must stay false: ZigZag
         // implements it by hiding every directory from the listing (not just
@@ -3143,6 +3339,7 @@ pub const App = struct {
         self.prune_input.deinit();
         self.send_addr_input.deinit();
         self.send_amount_input.deinit();
+        self.mining_input.deinit();
         self.file_picker.deinit();
         if (self.install_root_owned) self.allocator.free(self.install_root);
         if (self.home_dir_owned) self.allocator.free(self.home_dir);
@@ -3176,9 +3373,16 @@ pub const App = struct {
                     self.sendModalKey(k);
                     return .none;
                 }
+                if (self.mining_modal != null) {
+                    self.miningModalKey(k);
+                    return .none;
+                }
                 // Detail-pane tabs only exist for a selected coin, not the Home
-                // screen — so left/right and the 1-5 jumps are live only then.
+                // screen — so left/right and the numbered jumps are live only
+                // then. The Mining tab exists only for a coin that mines, so
+                // its jump/cycle stop is gated per coin.
                 const on_coin = self.selectedCoin() != null;
+                const has_mining = if (self.selectedCoin()) |c| c.supportsMining() else false;
                 switch (k.key) {
                     .char => |c| switch (c) {
                         'q' => return .quit,
@@ -3196,21 +3400,27 @@ pub const App = struct {
                         // action (openStakeModal checks the capability itself).
                         'S' => if (on_coin and self.active_tab == .send) self.openStakeModal(),
                         't' => if (on_coin) self.copyTipAddress(ctx),
-                        // Jump straight to a tab by number (1 = Home … 5 = Settings).
-                        '1'...'5' => if (on_coin) {
-                            self.active_tab = @enumFromInt(c - '1');
+                        // Jump straight to a tab by number (1 = Home … 5 =
+                        // Settings, 6 = Mining on coins that mine).
+                        '1'...'6' => if (on_coin) {
+                            const t: DetailTab = @enumFromInt(c - '1');
+                            if (t != .mining or has_mining) self.active_tab = t;
                         },
                         else => {},
                     },
                     .up => self.move(-1),
                     .down => self.move(1),
                     .left => if (on_coin) {
-                        self.active_tab = cycleTab(self.active_tab, -1);
+                        self.active_tab = cycleTab(self.active_tab, -1, has_mining);
                     },
                     .right => if (on_coin) {
-                        self.active_tab = cycleTab(self.active_tab, 1);
+                        self.active_tab = cycleTab(self.active_tab, 1, has_mining);
                     },
-                    .enter => if (on_coin and self.active_tab == .send) self.openSendModal(),
+                    .enter => if (on_coin) switch (self.active_tab) {
+                        .send => self.openSendModal(),
+                        .mining => self.openMiningModal(),
+                        else => {},
+                    },
                     else => {},
                 }
             },
@@ -3603,6 +3813,16 @@ pub const App = struct {
                         // Drop the cached transaction list — the daemon's gone.
                         act.tx_count = 0;
                         act.poll_tx_count = 0;
+                        // The miner died with the daemon — clear its readout so
+                        // the Mining tab doesn't show a stale hashrate.
+                        act.mining_active = false;
+                        act.mining_threads = 0;
+                        act.mining_speed = 0;
+                        act.has_mining = false;
+                        act.poll_mining_active.store(0, .monotonic);
+                        act.poll_mining_threads.store(0, .monotonic);
+                        act.poll_mining_speed.store(0, .monotonic);
+                        act.poll_has_mining.store(0, .monotonic);
                         // Drop the cached receive address too — re-fetched fresh
                         // (the stable "current" address) next time the daemon comes
                         // up and polls.
@@ -3737,6 +3957,32 @@ pub const App = struct {
                 }
                 if (self.send_modal != null and self.send_modal.?.coin_idx == i) {
                     self.send_modal.?.setMsg(ok, result);
+                }
+                self.last_poll_ns = 0;
+            }
+
+            // Settle a finished mining start/stop: join the worker, log the
+            // outcome, and — if the Mining prompt is still open for this coin —
+            // show it there too. Re-poll promptly so the tab's status/hashrate
+            // reflects the change immediately.
+            if (act.mining_thread != null and act.mining_done.load(.acquire)) {
+                act.mining_thread.?.join();
+                act.mining_thread = null;
+                const ok = act.mining_ok;
+                if (self.coinAt(i)) |c| {
+                    if (ok)
+                        self.logf("{s}: mining {s}", .{ c.coinName(), if (act.mining_starting) "started" else "stopped" })
+                    else
+                        self.logf("{s}: mining {s} failed ({s})", .{ c.coinName(), if (act.mining_starting) "start" else "stop", act.mining_err });
+                }
+                if (self.mining_modal != null and self.mining_modal.?.coin_idx == i) {
+                    if (ok) {
+                        // Success needs no lingering box — the tab behind it now
+                        // shows the live state.
+                        self.mining_modal = null;
+                    } else {
+                        self.mining_modal.?.setMsg(false, miningFailureText(act.mining_err));
+                    }
                 }
                 self.last_poll_ns = 0;
             }
@@ -4232,7 +4478,7 @@ pub const App = struct {
         const act = &self.activities[self.selected];
         if (act.busy()) return;
         if (act.update_await_stop or act.update_restart) return; // already updating
-        if (self.modal != null or self.qs_modal != null or self.update_modal != null or self.send_modal != null) return;
+        if (self.modal != null or self.qs_modal != null or self.update_modal != null or self.send_modal != null or self.mining_modal != null) return;
         // from_len stays 0: the prompt reads "reinstall the bundled version"
         // rather than "X → Y", since this isn't tied to a newer release.
         self.update_modal = .{ .coin_idx = self.selected, .reinstall = true };
@@ -4278,7 +4524,7 @@ pub const App = struct {
         const act = &self.activities[self.selected];
         if (!act.update_available or act.busy()) return;
         if (act.update_await_stop or act.update_restart) return; // already updating
-        if (self.modal != null or self.qs_modal != null or self.update_modal != null or self.send_modal != null) return;
+        if (self.modal != null or self.qs_modal != null or self.update_modal != null or self.send_modal != null or self.mining_modal != null) return;
 
         var m: UpdateModal = .{ .coin_idx = self.selected };
         const iv = act.installedVersion();
@@ -4702,6 +4948,134 @@ pub const App = struct {
         };
         m.stage = .working;
         self.logf("{s}: {s}…", .{ coin.coinName(), if (m.mode == .stake) "staking" else "sending" });
+    }
+
+    /// Open the Mining prompt for the selected coin — thread-count entry when
+    /// the miner is idle, a stop confirm when it's running. A no-op for coins
+    /// without mining, while the daemon isn't running, or (for a start) before
+    /// the wallet's payout address is cached — the Mining tab explains each of
+    /// those states in place, so a dead Enter isn't mysterious. Reachable only
+    /// via `enter` on the Mining tab, which sits behind the same
+    /// modal-priority chain every other modal-opening key does.
+    fn openMiningModal(self: *App) void {
+        const coin = self.selectedCoin() orelse return;
+        if (!coin.supportsMining()) return;
+        const act = &self.activities[self.selected];
+        if (act.daemonState() != .running) return;
+        if (act.mining_active) {
+            self.mining_modal = .{ .coin_idx = self.selected, .stage = .confirm_stop, .starting = false };
+            return;
+        }
+        // A start pays block rewards to the wallet's own receive address,
+        // cached once the wallet has been opened this session.
+        if (act.receive_addr_len == 0) return;
+        self.mining_modal = .{ .coin_idx = self.selected, .stage = .threads, .starting = true };
+        self.mining_input.setValue("") catch {};
+        self.mining_input.focus();
+    }
+
+    fn closeMiningModal(self: *App) void {
+        self.mining_modal = null;
+    }
+
+    /// Handle a keypress while the Mining prompt is open. `threads` collects
+    /// a small integer (digits only); `confirm_stop` is a plain Yes/No
+    /// (mirrors the Send prompt's `.confirm`); `working` can't be cancelled;
+    /// `result` closes on any key.
+    fn miningModalKey(self: *App, k: zz.KeyEvent) void {
+        if (self.mining_modal == null) return;
+        const m = &self.mining_modal.?;
+        switch (m.stage) {
+            .threads => switch (k.key) {
+                .escape => self.closeMiningModal(),
+                .enter => self.tryMiningThreads(),
+                // Digits only. Typing clears a prior parse error.
+                .char => |c| if (c >= '0' and c <= '9') {
+                    m.bad_input = false;
+                    self.mining_input.handleKey(k);
+                },
+                // Backspace/paste/cursor moves edit the field.
+                else => self.mining_input.handleKey(k),
+            },
+            .confirm_stop => switch (k.key) {
+                .escape => self.closeMiningModal(),
+                .up => m.sel = 0,
+                .down => m.sel = 1,
+                .char => |c| switch (c) {
+                    'k' => m.sel = 0,
+                    'j' => m.sel = 1,
+                    'y' => self.submitMining(0),
+                    'n' => self.closeMiningModal(),
+                    else => {},
+                },
+                .enter => if (m.sel == 0) self.submitMining(0) else self.closeMiningModal(),
+                else => {},
+            },
+            // No cancelling an op in flight — let it finish (or fail) and reap.
+            .working => {},
+            .result => self.closeMiningModal(),
+        }
+    }
+
+    /// Parse and validate the thread-count field: an integer from 1 to the
+    /// machine's own CPU thread count. More threads than the machine has only
+    /// adds scheduler thrash for no hashrate, so it's rejected with the range
+    /// shown rather than clamped silently.
+    fn tryMiningThreads(self: *App) void {
+        const m = &self.mining_modal.?;
+        const text = std.mem.trim(u8, self.mining_input.getValue(), " \t");
+        const threads = std.fmt.parseInt(u32, text, 10) catch {
+            m.bad_input = true;
+            return;
+        };
+        if (threads < 1 or threads > cpuThreadCount()) {
+            m.bad_input = true;
+            return;
+        }
+        m.bad_input = false;
+        self.submitMining(threads);
+    }
+
+    /// User committed: copy the payout address/thread count into the target
+    /// Activity and spawn the mining worker. Mirrors `submitSend`'s shape.
+    /// `threads` is ignored for a stop (`m.starting` false).
+    fn submitMining(self: *App, threads: u32) void {
+        if (self.mining_modal == null) return;
+        const m = &self.mining_modal.?;
+        const coin = self.coinAt(m.coin_idx) orelse return;
+        const act = &self.activities[m.coin_idx];
+
+        // Reap any in-flight poll / prior mining worker so this one doesn't
+        // race them on `act.coin`/`home_dir`.
+        if (act.poll_thread) |t| {
+            t.join();
+            act.poll_thread = null;
+        }
+        if (act.mining_thread) |t| {
+            t.join();
+            act.mining_thread = null;
+        }
+
+        // A start pays the wallet's cached receive address — copied out of the
+        // poll-rewritten cache into the worker's own stable buffer.
+        const addr = act.receive_addr_buf[0..act.receive_addr_len];
+        const n = @min(addr.len, act.mining_addr_buf.len);
+        @memcpy(act.mining_addr_buf[0..n], addr[0..n]);
+        act.mining_addr_len = n;
+        act.mining_threads_req = threads;
+        act.mining_starting = m.starting;
+
+        act.coin = coin;
+        act.home_dir = self.home_dir;
+        act.mining_ok = false;
+        act.mining_done.store(false, .monotonic);
+
+        act.mining_thread = std.Thread.spawn(.{}, Activity.runMining, .{act}) catch {
+            m.setMsg(false, "couldn't start the mining worker");
+            return;
+        };
+        m.stage = .working;
+        self.logf("{s}: {s}…", .{ coin.coinName(), if (m.starting) "starting miner" else "stopping miner" });
     }
 
     /// Open the first-start prune prompt for `coin`. Resets the cursor to the
@@ -5360,6 +5734,10 @@ pub const App = struct {
                 const box = self.renderSendModal(a) catch break :blk screen;
                 break :blk overlayBox(a, screen, box, ctx.width, ctx.height) catch screen;
             }
+            if (self.mining_modal != null) {
+                const box = self.renderMiningModal(a) catch break :blk screen;
+                break :blk overlayBox(a, screen, box, ctx.width, ctx.height) catch screen;
+            }
             if (self.modal == null) break :blk screen;
             break :blk self.renderModalOver(a, screen, ctx.width, ctx.height) catch screen;
         };
@@ -5761,7 +6139,7 @@ pub const App = struct {
         // the name/version row.
         const description = coin.coinDescription();
 
-        const tab_strip = try renderTabStrip(a, brand, self.active_tab);
+        const tab_strip = try renderTabStrip(a, brand, self.active_tab, coin.supportsMining());
         const body: []const u8 = switch (self.active_tab) {
             .home => try std.fmt.allocPrint(a,
                 \\{s}
@@ -5813,6 +6191,10 @@ pub const App = struct {
                 try renderSendTab(a, coin, act)
             else
                 try renderPlaceholderTab(a, self.active_tab),
+            .mining => if (coin.supportsMining())
+                try renderMiningTab(a, act)
+            else
+                try renderPlaceholderTab(a, self.active_tab),
         };
 
         // TIP line: persists across every tab (mirrors description/tab_strip),
@@ -5831,16 +6213,21 @@ pub const App = struct {
 
     /// One-line tab strip for the coin detail pane: the active tab in the coin's
     /// brand colour (bold), the others dimmed, with a dim hint on how to switch.
-    fn renderTabStrip(a: std.mem.Allocator, brand: zz.Color, active: DetailTab) ![]const u8 {
+    /// The Mining tab only exists for coins that mine (`has_mining`), so it —
+    /// and the hint's key range — are gated on that.
+    fn renderTabStrip(a: std.mem.Allocator, brand: zz.Color, active: DetailTab, has_mining: bool) ![]const u8 {
         var strip: []const u8 = "";
         inline for (std.meta.tags(DetailTab), 0..) |t, i| {
-            const styled = if (t == active)
-                try (zz.Style{}).bold(true).fg(brand).render(a, t.label())
-            else
-                try (zz.Style{}).dim(true).render(a, t.label());
-            strip = if (i == 0) styled else try std.fmt.allocPrint(a, "{s}   {s}", .{ strip, styled });
+            if (t != .mining or has_mining) {
+                const styled = if (t == active)
+                    try (zz.Style{}).bold(true).fg(brand).render(a, t.label())
+                else
+                    try (zz.Style{}).dim(true).render(a, t.label());
+                strip = if (i == 0) styled else try std.fmt.allocPrint(a, "{s}   {s}", .{ strip, styled });
+            }
         }
-        const hint = try (zz.Style{}).dim(true).render(a, "   (←/→ or 1-5 to switch tabs)");
+        const hint_text = if (has_mining) "   (←/→ or 1-6 to switch tabs)" else "   (←/→ or 1-5 to switch tabs)";
+        const hint = try (zz.Style{}).dim(true).render(a, hint_text);
         return std.fmt.allocPrint(a, "{s}{s}", .{ strip, hint });
     }
 
@@ -5994,6 +6381,60 @@ pub const App = struct {
         const hint_text = if (coin.supportsStakeAction()) "(Enter: send   S: stake)" else "(press Enter to send)";
         const hint = (zz.Style{}).dim(true).render(a, hint_text) catch hint_text;
         return std.fmt.allocPrint(a, "Send\n\nAvailable: {s}\n\n{s}", .{ balance, hint });
+    }
+
+    /// The Mining tab body: the daemon's live CPU-miner state (active/idle,
+    /// thread count, hashrate) with the Enter action's hint — or, when Enter
+    /// would be a no-op (daemon down, status unknown, no payout address yet),
+    /// a line saying what to do instead, so a dead key isn't mysterious. Only
+    /// reached for a coin whose `supportsMining()` is true; every other
+    /// coin's `.mining` case still falls through to `renderPlaceholderTab`.
+    /// Reads only the cached `act` fields — no RPC/disk IO in the render path.
+    fn renderMiningTab(a: std.mem.Allocator, act: *const Activity) ![]const u8 {
+        if (act.daemonState() != .running) {
+            const note = "Mining runs inside the daemon — start it (s) first.";
+            return std.fmt.allocPrint(a, "Mining\n\n{s}", .{note});
+        }
+        if (!act.has_mining) {
+            return std.fmt.allocPrint(a, "Mining\n\nChecking miner status…", .{});
+        }
+        if (act.mining_active) {
+            var rate_buf: [32]u8 = undefined;
+            const rate = formatHashrate(&rate_buf, act.mining_speed);
+            const status = (zz.Style{}).bold(true).fg(.green).render(a, "Mining") catch "Mining";
+            const line = try std.fmt.allocPrint(a, "Status: {s} — {d} thread{s} at {s}", .{
+                status, act.mining_threads, if (act.mining_threads == 1) "" else "s", rate,
+            });
+            const hint_text = "(Enter: stop mining)";
+            const hint = (zz.Style{}).dim(true).render(a, hint_text) catch hint_text;
+            return std.fmt.allocPrint(a, "Mining\n\n{s}\n\n{s}", .{ line, hint });
+        }
+        const status = (zz.Style{}).dim(true).render(a, "Not mining") catch "Not mining";
+        const cpus = try std.fmt.allocPrint(a, "CPU threads available: {d}", .{cpuThreadCount()});
+        // Starting needs the wallet's receive address (rewards have to go
+        // somewhere) — until the wallet has been opened this session, say so
+        // instead of offering a dead Enter.
+        const hint_text: []const u8 = if (act.receive_addr_len == 0)
+            "Open your wallet (w) first — mining pays block rewards to its address."
+        else
+            "(Enter: start mining)";
+        const hint = (zz.Style{}).dim(true).render(a, hint_text) catch hint_text;
+        return std.fmt.allocPrint(a, "Mining\n\nStatus: {s}\n{s}\n\n{s}", .{ status, cpus, hint });
+    }
+
+    /// Format a hashrate into `buf`: plain H/s below a kilohash, otherwise
+    /// kH/s / MH/s / GH/s to two decimals. Returns a slice into `buf` — no
+    /// allocation (callers pass a `[32]u8`).
+    fn formatHashrate(buf: []u8, speed: u64) []const u8 {
+        const f = @as(f64, @floatFromInt(speed));
+        return if (speed >= 1_000_000_000)
+            std.fmt.bufPrint(buf, "{d:.2} GH/s", .{f / 1_000_000_000}) catch "?"
+        else if (speed >= 1_000_000)
+            std.fmt.bufPrint(buf, "{d:.2} MH/s", .{f / 1_000_000}) catch "?"
+        else if (speed >= 1_000)
+            std.fmt.bufPrint(buf, "{d:.2} kH/s", .{f / 1_000}) catch "?"
+        else
+            std.fmt.bufPrint(buf, "{d} H/s", .{speed}) catch "?";
     }
 
     /// True black/white for the QR render — ZigZag's *named* `.black`/
@@ -6680,6 +7121,85 @@ pub const App = struct {
         return out.toOwnedSlice();
     }
 
+    /// Render the Mining prompt box. Mirrors `renderSendModal`'s chrome
+    /// (brand-coloured rule + rows); the entry stage collects a CPU thread
+    /// count instead of an address/amount.
+    fn renderMiningModal(self: *const App, a: std.mem.Allocator) ![]const u8 {
+        const m = self.mining_modal.?;
+        const coin = self.coinAt(m.coin_idx) orelse return error.NoCoin;
+        const brand = zz.Color.hex(coin.coinColor());
+        const inner_w = modal_inner_w;
+        const vbar = (zz.Style{}).fg(brand).render(a, "│") catch "│";
+
+        var out: std.Io.Writer.Allocating = .init(a);
+        errdefer out.deinit();
+
+        const title = try std.fmt.allocPrint(a, "{s} — mining", .{coin.coinName()});
+        try modalRule(a, &out.writer, brand, inner_w, "┌", "┐", title);
+        try modalRow(&out.writer, vbar, inner_w, "", 0);
+
+        switch (m.stage) {
+            .threads => {
+                const field = try self.mining_input.view(a);
+                const text = try std.fmt.allocPrint(a, "CPU threads: {s}", .{field});
+                try modalRow(&out.writer, vbar, inner_w, text, zz.width("CPU threads: ") + zz.width(field));
+                try modalRow(&out.writer, vbar, inner_w, "", 0);
+                const cpus = try std.fmt.allocPrint(a, "This machine has {d} CPU threads. Mining uses real CPU and power; leave some threads free for other work.", .{cpuThreadCount()});
+                try wrapIntoRows(a, &out.writer, vbar, inner_w, cpus, (zz.Style{}).dim(true));
+                if (m.bad_input) {
+                    const warn = try std.fmt.allocPrint(a, "Enter a number from 1 to {d}.", .{cpuThreadCount()});
+                    const styled = (zz.Style{}).fg(.red).render(a, warn) catch warn;
+                    try modalRow(&out.writer, vbar, inner_w, styled, zz.width(warn));
+                }
+            },
+            .confirm_stop => {
+                try wrapIntoRows(a, &out.writer, vbar, inner_w, "Stop mining?", (zz.Style{}));
+                try modalRow(&out.writer, vbar, inner_w, "", 0);
+                const labels = [_][]const u8{ "Yes — stop it", "No — keep mining" };
+                for (labels, 0..) |lbl, i| {
+                    const sel = i == m.sel;
+                    const plain = try std.fmt.allocPrint(a, "{s}{s}", .{ if (sel) "❯ " else "  ", lbl });
+                    const text = if (sel)
+                        ((zz.Style{}).bold(true).fg(brand).render(a, plain) catch plain)
+                    else
+                        plain;
+                    try modalRow(&out.writer, vbar, inner_w, text, zz.width(plain));
+                }
+            },
+            .working => {
+                const busy = if (m.starting) "Starting the miner…" else "Stopping the miner…";
+                try modalRow(&out.writer, vbar, inner_w, busy, zz.width(busy));
+            },
+            .result => {
+                // Success closes the prompt from the reap, so only failures land
+                // here — but keep both tints in case that ever changes.
+                const lead_plain = if (m.ok)
+                    "Done."
+                else
+                    (if (m.starting) "Couldn't start mining:" else "Couldn't stop mining:");
+                const lead = if (m.ok)
+                    ((zz.Style{}).fg(.green).render(a, lead_plain) catch lead_plain)
+                else
+                    ((zz.Style{}).fg(.red).render(a, lead_plain) catch lead_plain);
+                try modalRow(&out.writer, vbar, inner_w, lead, zz.width(lead_plain));
+                try wrapIntoRows(a, &out.writer, vbar, inner_w, m.msg_buf[0..m.msg_len], (zz.Style{}).dim(true));
+            },
+        }
+
+        try modalRow(&out.writer, vbar, inner_w, "", 0);
+        const hint = switch (m.stage) {
+            .threads => "enter: start   esc: cancel",
+            .confirm_stop => "enter: select   esc: cancel",
+            .working => "please wait…",
+            .result => "press any key to close",
+        };
+        const hint_styled = (zz.Style{}).dim(true).render(a, hint) catch hint;
+        try modalRow(&out.writer, vbar, inner_w, hint_styled, zz.width(hint));
+        try modalRule(a, &out.writer, brand, inner_w, "└", "┘", "");
+
+        return out.toOwnedSlice();
+    }
+
     /// Render the update-confirm prompt box. Mirrors `renderQuickSyncModal`'s
     /// chrome (brand-coloured rule + rows), but it's confirm-only — the actual
     /// stop/install/restart progress shows in the main pane afterwards.
@@ -7248,16 +7768,25 @@ test "formatBlockTime renders the tip block timestamp as UTC date/time (no label
 }
 
 test "cycleTab steps through the detail tabs and wraps at both ends" {
-    // Forward from each tab.
-    try std.testing.expectEqual(DetailTab.transactions, cycleTab(.home, 1));
-    try std.testing.expectEqual(DetailTab.receive, cycleTab(.transactions, 1));
-    try std.testing.expectEqual(DetailTab.send, cycleTab(.receive, 1));
-    try std.testing.expectEqual(DetailTab.settings, cycleTab(.send, 1));
-    // Forward off the last tab wraps to the first.
-    try std.testing.expectEqual(DetailTab.home, cycleTab(.settings, 1));
-    // Backward off the first tab wraps to the last.
-    try std.testing.expectEqual(DetailTab.settings, cycleTab(.home, -1));
-    try std.testing.expectEqual(DetailTab.send, cycleTab(.settings, -1));
+    // Forward from each tab (a coin without mining — the Mining tab doesn't
+    // exist for it, so the cycle skips straight over it).
+    try std.testing.expectEqual(DetailTab.transactions, cycleTab(.home, 1, false));
+    try std.testing.expectEqual(DetailTab.receive, cycleTab(.transactions, 1, false));
+    try std.testing.expectEqual(DetailTab.send, cycleTab(.receive, 1, false));
+    try std.testing.expectEqual(DetailTab.settings, cycleTab(.send, 1, false));
+    // Forward off the last tab wraps to the first, past the absent Mining tab.
+    try std.testing.expectEqual(DetailTab.home, cycleTab(.settings, 1, false));
+    // Backward off the first tab wraps to the last, past the absent Mining tab.
+    try std.testing.expectEqual(DetailTab.settings, cycleTab(.home, -1, false));
+    try std.testing.expectEqual(DetailTab.send, cycleTab(.settings, -1, false));
+}
+
+test "cycleTab includes the Mining tab only for coins that mine" {
+    // A mining coin (Nerva) cycles settings → mining → home in both directions.
+    try std.testing.expectEqual(DetailTab.mining, cycleTab(.settings, 1, true));
+    try std.testing.expectEqual(DetailTab.home, cycleTab(.mining, 1, true));
+    try std.testing.expectEqual(DetailTab.mining, cycleTab(.home, -1, true));
+    try std.testing.expectEqual(DetailTab.settings, cycleTab(.mining, -1, true));
 }
 
 test "usageColor steps green → amber → red at the 75/90 thresholds" {
@@ -8265,6 +8794,232 @@ test "the Send tab only shows the balance/hint for a coin that supports it" {
         try std.testing.expect(std.mem.indexOf(u8, pane, "Coming soon.") == null);
         try std.testing.expect(std.mem.indexOf(u8, pane, "3.00000000") != null);
         try std.testing.expect(std.mem.indexOf(u8, pane, "press Enter to send") != null);
+    }
+}
+
+test "the Mining tab only exists for coins that mine, and walks its states" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    var app: App = undefined;
+    app.disk_used = 0;
+    app.disk_total = 0;
+    app.mem_used = 0;
+    app.mem_total = 0;
+    app.active_tab = .mining;
+
+    // A coin without mining: no Mining tab in the strip (the hint stays 1-5),
+    // and the body — were it somehow reached — is the generic placeholder.
+    {
+        var bare: BareCoin = .{};
+        const coin = bare.coin();
+        try std.testing.expect(!coin.supportsMining());
+
+        var act: Activity = .{
+            .coin = coin,
+            .home_dir = "",
+            .spinner = App.makeSpinner(),
+            .daemon_spinner = App.makeSpinner(),
+            .sync_spinner = zz.Spinner.init(),
+        };
+        act.installed = true;
+        act.daemon.store(@intFromEnum(DaemonState.running), .release);
+        act.poll_completed = true;
+
+        const pane = try App.renderCoin(&app, a, coin, &act);
+        try std.testing.expect(std.mem.indexOf(u8, pane, "Coming soon.") != null);
+        // The strip omits the tab — its jump-key hint stays 1-5. (The
+        // placeholder body is titled "Mining", so the label itself can't
+        // distinguish strip from body here.)
+        try std.testing.expect(std.mem.indexOf(u8, pane, "1-5 to switch tabs") != null);
+    }
+
+    // Nerva mines: the strip gains the tab (and the 6 key), and the body
+    // reflects daemon state → status fetch → idle (with/without a payout
+    // address) → active.
+    {
+        var n: Nerva = .{};
+        const coin = n.coin();
+        try std.testing.expect(coin.supportsMining());
+
+        var act: Activity = .{
+            .coin = coin,
+            .home_dir = "",
+            .spinner = App.makeSpinner(),
+            .daemon_spinner = App.makeSpinner(),
+            .sync_spinner = zz.Spinner.init(),
+        };
+        act.installed = true;
+        act.poll_completed = true;
+
+        // Daemon down → say how to get mining (it lives in the daemon).
+        const down = try App.renderCoin(&app, a, coin, &act);
+        try std.testing.expect(std.mem.indexOf(u8, down, "start it (s) first") != null);
+        try std.testing.expect(std.mem.indexOf(u8, down, "1-6 to switch tabs") != null);
+
+        // Running, no status fetched yet → checking, not a false "not mining".
+        act.daemon.store(@intFromEnum(DaemonState.running), .release);
+        const checking = try App.renderCoin(&app, a, coin, &act);
+        try std.testing.expect(std.mem.indexOf(u8, checking, "Checking miner status…") != null);
+
+        // Idle without the wallet opened → the payout-address hint, not a dead
+        // Enter.
+        act.has_mining = true;
+        const idle = try App.renderCoin(&app, a, coin, &act);
+        try std.testing.expect(std.mem.indexOf(u8, idle, "Not mining") != null);
+        try std.testing.expect(std.mem.indexOf(u8, idle, "Open your wallet (w) first") != null);
+
+        // Idle with a cached address → ready to start.
+        @memcpy(act.receive_addr_buf[0..4], "NV1x");
+        act.receive_addr_len = 4;
+        const ready = try App.renderCoin(&app, a, coin, &act);
+        try std.testing.expect(std.mem.indexOf(u8, ready, "Enter: start mining") != null);
+
+        // Actively mining → thread count + hashrate + the stop hint.
+        act.mining_active = true;
+        act.mining_threads = 3;
+        act.mining_speed = 1250;
+        const active = try App.renderCoin(&app, a, coin, &act);
+        try std.testing.expect(std.mem.indexOf(u8, active, "3 threads at 1.25 kH/s") != null);
+        try std.testing.expect(std.mem.indexOf(u8, active, "Enter: stop mining") != null);
+    }
+}
+
+test "formatHashrate scales H/s through kH/s, MH/s, and GH/s" {
+    var buf: [32]u8 = undefined;
+    try std.testing.expectEqualStrings("0 H/s", App.formatHashrate(&buf, 0));
+    try std.testing.expectEqualStrings("999 H/s", App.formatHashrate(&buf, 999));
+    try std.testing.expectEqualStrings("1.25 kH/s", App.formatHashrate(&buf, 1250));
+    try std.testing.expectEqualStrings("2.50 MH/s", App.formatHashrate(&buf, 2_500_000));
+    try std.testing.expectEqualStrings("1.00 GH/s", App.formatHashrate(&buf, 1_000_000_000));
+}
+
+test "miningFailureText maps the known reasons and passes others through" {
+    try std.testing.expect(std.mem.indexOf(u8, miningFailureText("DaemonStillSyncing"), "still syncing") != null);
+    try std.testing.expect(std.mem.indexOf(u8, miningFailureText("MiningStartRejected"), "refused to start") != null);
+    try std.testing.expect(std.mem.indexOf(u8, miningFailureText("MiningStopRejected"), "refused to stop") != null);
+    try std.testing.expectEqualStrings("SomethingNew", miningFailureText("SomethingNew"));
+}
+
+test "the Mining prompt only opens on a mining coin with a running daemon" {
+    if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
+    const allocator = std.testing.allocator;
+
+    var threaded: std.Io.Threaded = .init(allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    var env = std.process.Environ.Map.init(allocator);
+    defer env.deinit();
+    try env.put("HOME", "/home/tester");
+    var ctx = zz.Context.init(allocator, allocator, io, &env);
+
+    var app: App = undefined;
+    _ = app.init(&ctx);
+    defer app.deinit();
+
+    var plain_idx: ?usize = null;
+    var mining_idx: ?usize = null;
+    for (0..app.activities.len) |i| {
+        if (app.coinAt(i)) |c| {
+            if (c.supportsMining()) {
+                if (mining_idx == null) mining_idx = i;
+            } else if (plain_idx == null) plain_idx = i;
+        }
+    }
+    try std.testing.expect(plain_idx != null);
+    try std.testing.expect(mining_idx != null);
+
+    // A coin without mining: Enter never opens the prompt.
+    app.selected = plain_idx.?;
+    app.openMiningModal();
+    try std.testing.expect(app.mining_modal == null);
+
+    // A mining coin with its daemon down: still refused (the tab says why).
+    app.selected = mining_idx.?;
+    app.openMiningModal();
+    try std.testing.expect(app.mining_modal == null);
+
+    // Daemon up but no payout address cached yet (wallet never opened this
+    // session): a start would have nowhere to send rewards, so refused.
+    const act = &app.activities[mining_idx.?];
+    act.daemon.store(@intFromEnum(DaemonState.running), .release);
+    app.openMiningModal();
+    try std.testing.expect(app.mining_modal == null);
+
+    // Address cached → opens at the thread-count stage.
+    @memcpy(act.receive_addr_buf[0..4], "NV1x");
+    act.receive_addr_len = 4;
+    app.openMiningModal();
+    try std.testing.expect(app.mining_modal != null);
+    try std.testing.expectEqual(MiningModal.Stage.threads, app.mining_modal.?.stage);
+
+    // With the miner already running it opens at the stop confirm instead.
+    app.mining_modal = null;
+    act.mining_active = true;
+    app.openMiningModal();
+    try std.testing.expect(app.mining_modal != null);
+    try std.testing.expectEqual(MiningModal.Stage.confirm_stop, app.mining_modal.?.stage);
+    try std.testing.expect(!app.mining_modal.?.starting);
+}
+
+test "renderMiningModal shows the thread prompt, stop confirm, and a failure" {
+    if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
+    const allocator = std.testing.allocator;
+
+    var threaded: std.Io.Threaded = .init(allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    var env = std.process.Environ.Map.init(allocator);
+    defer env.deinit();
+    try env.put("HOME", "/home/tester");
+    var ctx = zz.Context.init(allocator, allocator, io, &env);
+
+    var app: App = undefined;
+    _ = app.init(&ctx);
+    defer app.deinit();
+
+    var mining_idx: usize = 0;
+    for (0..app.activities.len) |i| {
+        if (app.coinAt(i)) |c| {
+            if (c.supportsMining()) {
+                mining_idx = i;
+                break;
+            }
+        }
+    }
+    try std.testing.expect(mining_idx != 0);
+
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    // Thread-count stage: the field plus the machine's own CPU count.
+    try app.mining_input.setValue("4");
+    app.mining_modal = .{ .coin_idx = mining_idx, .stage = .threads };
+    {
+        const box = try app.renderMiningModal(a);
+        try std.testing.expect(std.mem.indexOf(u8, box, "CPU threads:") != null);
+        try std.testing.expect(std.mem.indexOf(u8, box, "This machine has") != null);
+    }
+
+    // Stop confirm.
+    app.mining_modal = .{ .coin_idx = mining_idx, .stage = .confirm_stop, .starting = false };
+    {
+        const box = try app.renderMiningModal(a);
+        try std.testing.expect(std.mem.indexOf(u8, box, "Stop mining?") != null);
+        try std.testing.expect(std.mem.indexOf(u8, box, "Yes — stop it") != null);
+    }
+
+    // A failed start surfaces the mapped reason, not a generic "failed".
+    app.mining_modal = .{ .coin_idx = mining_idx, .stage = .working };
+    app.mining_modal.?.setMsg(false, miningFailureText("DaemonStillSyncing"));
+    {
+        const box = try app.renderMiningModal(a);
+        try std.testing.expect(std.mem.indexOf(u8, box, "Couldn't start mining:") != null);
+        try std.testing.expect(std.mem.indexOf(u8, box, "still syncing") != null);
     }
 }
 

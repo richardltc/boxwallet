@@ -270,6 +270,96 @@ pub const Nerva = struct {
         allocator.free(reply);
     }
 
+    // --- Mining (in-daemon CPU miner) -------------------------------------
+    //
+    // Nerva is CPU-mined and nervad carries the miner in-process, driven over
+    // Monero's *direct* daemon endpoints (`/mining_status`, `/start_mining`,
+    // `/stop_mining` — bare JSON objects with a `status` field, not `/json_rpc`
+    // methods; the same transport as `/stop_daemon`). The payout address is the
+    // managed wallet's own receive address, supplied by the frontend.
+
+    /// Subset of `/mining_status`'s reply. Defaults keep the parse resilient to
+    /// fields an older vintage omits.
+    const MiningStatusReply = struct {
+        status: []const u8 = "",
+        active: bool = false,
+        speed: u64 = 0,
+        threads_count: u32 = 0,
+    };
+
+    /// The bare `{ "status": … }` reply shape of `/start_mining`/`/stop_mining`
+    /// — anything but "OK" is the daemon refusing.
+    const StatusReply = struct { status: []const u8 = "" };
+
+    /// Live `/mining_status`, normalized. Threads/speed are zeroed when the
+    /// miner is idle so a stale last-run figure can't read as current.
+    pub fn miningStatus(allocator: std.mem.Allocator, auth: models.CoinAuth) !models.MiningStatus {
+        const raw = try rpc.moneroPost(allocator, auth, "/mining_status", "{}", status_timeout_ms);
+        defer allocator.free(raw);
+        const parsed = try std.json.parseFromSlice(MiningStatusReply, allocator, raw, .{ .ignore_unknown_fields = true });
+        defer parsed.deinit();
+        return mapMiningStatus(parsed.value);
+    }
+
+    /// `/mining_status` reply → normalized model. Pure, so it's unit-testable
+    /// without a daemon.
+    fn mapMiningStatus(r: MiningStatusReply) models.MiningStatus {
+        return .{
+            .active = r.active,
+            .threads = if (r.active) r.threads_count else 0,
+            .speed = if (r.active) r.speed else 0,
+        };
+    }
+
+    /// The `/start_mining` request body: rewards to `address`, `threads` CPU
+    /// threads, and plain foreground mining — no background/battery heuristics
+    /// (BoxWallet targets always-on machines, and the user asked for exactly
+    /// this many threads). Split out from `startMining` so it's unit-testable.
+    /// Caller owns the returned slice.
+    fn startMiningParams(allocator: std.mem.Allocator, address: []const u8, threads: u32) ![]u8 {
+        const qaddr = try rpc.jsonQuote(allocator, address);
+        defer allocator.free(qaddr);
+        return std.fmt.allocPrint(
+            allocator,
+            "{{\"miner_address\":{s},\"threads_count\":{d},\"do_background_mining\":false,\"ignore_battery\":true}}",
+            .{ qaddr, threads },
+        );
+    }
+
+    /// Ask nervad to start mining. A daemon-side refusal is surfaced as a
+    /// specific error, not swallowed (see `expectStatusOk`).
+    pub fn startMining(
+        allocator: std.mem.Allocator,
+        auth: models.CoinAuth,
+        address: []const u8,
+        threads: u32,
+    ) !void {
+        const body = try startMiningParams(allocator, address, threads);
+        defer allocator.free(body);
+        const raw = try rpc.moneroPost(allocator, auth, "/start_mining", body, status_timeout_ms);
+        defer allocator.free(raw);
+        try expectStatusOk(allocator, raw, error.MiningStartRejected);
+    }
+
+    /// Ask nervad to stop mining.
+    pub fn stopMining(allocator: std.mem.Allocator, auth: models.CoinAuth) !void {
+        const raw = try rpc.moneroPost(allocator, auth, "/stop_mining", "{}", status_timeout_ms);
+        defer allocator.free(raw);
+        try expectStatusOk(allocator, raw, error.MiningStopRejected);
+    }
+
+    /// Check a direct-endpoint reply's `status`: "OK" passes, "BUSY" (the
+    /// daemon is still syncing — mining can't start yet) gets its own error so
+    /// the user is told to wait rather than shown a generic failure, and
+    /// anything else maps to `reject`.
+    fn expectStatusOk(allocator: std.mem.Allocator, raw: []const u8, reject: anyerror) !void {
+        const parsed = try std.json.parseFromSlice(StatusReply, allocator, raw, .{ .ignore_unknown_fields = true });
+        defer parsed.deinit();
+        if (std.mem.eql(u8, parsed.value.status, "OK")) return;
+        if (std.ascii.eqlIgnoreCase(parsed.value.status, "BUSY")) return error.DaemonStillSyncing;
+        return reject;
+    }
+
     // --- Files / paths ---------------------------------------------------
 
     /// The daemon's default data directory (`~/.nerva`, `%APPDATA%\nerva` on
@@ -1131,6 +1221,9 @@ pub const Nerva = struct {
         .wallet_transactions = vtWalletTransactions,
         .wallet_receive_address = vtWalletReceiveAddress,
         .wallet_send = vtWalletSend,
+        .mining_status = vtMiningStatus,
+        .mining_start = vtMiningStart,
+        .mining_stop = vtMiningStop,
         .external_wallet = &external_wallet,
         .on_synced = vtOnSynced,
         .sync_accelerator = &sync_accelerator,
@@ -1163,6 +1256,32 @@ pub const Nerva = struct {
         amount: f64,
     ) anyerror!models.SendResult {
         return walletSend(allocator, wallet_auth, address, amount);
+    }
+
+    // The mining trio rides the *daemon's* endpoint (the miner lives in
+    // nervad), so `app.zig` passes the daemon auth — never the wallet's.
+    fn vtMiningStatus(
+        _: *anyopaque,
+        allocator: std.mem.Allocator,
+        auth: models.CoinAuth,
+    ) anyerror!models.MiningStatus {
+        return miningStatus(allocator, auth);
+    }
+    fn vtMiningStart(
+        _: *anyopaque,
+        allocator: std.mem.Allocator,
+        auth: models.CoinAuth,
+        address: []const u8,
+        threads: u32,
+    ) anyerror!void {
+        return startMining(allocator, auth, address, threads);
+    }
+    fn vtMiningStop(
+        _: *anyopaque,
+        allocator: std.mem.Allocator,
+        auth: models.CoinAuth,
+    ) anyerror!void {
+        return stopMining(allocator, auth);
     }
 
     fn vtCoinName(_: *anyopaque) []const u8 {
@@ -1818,4 +1937,75 @@ test "coin vtable exposes transactions, receive address, and send for Nerva" {
     try std.testing.expect(c.supportsTransactions());
     try std.testing.expect(c.supportsReceiveAddress());
     try std.testing.expect(c.supportsSend());
+}
+
+// --- Mining tests ---------------------------------------------------------
+
+test "parses /mining_status into a normalized MiningStatus" {
+    const allocator = std.testing.allocator;
+
+    // Canned direct-endpoint reply (subset) — actively mining on 4 threads.
+    // Extra fields (address, bg_* battery knobs) drop via ignore_unknown_fields.
+    const raw =
+        \\{"status":"OK","active":true,"speed":1250,"threads_count":4,
+        \\"address":"NV1abc","do_background_mining":false,"untrusted":false}
+    ;
+    var parsed = try std.json.parseFromSlice(
+        Nerva.MiningStatusReply,
+        allocator,
+        raw,
+        .{ .ignore_unknown_fields = true },
+    );
+    defer parsed.deinit();
+
+    const ms = Nerva.mapMiningStatus(parsed.value);
+    try std.testing.expect(ms.active);
+    try std.testing.expectEqual(@as(u32, 4), ms.threads);
+    try std.testing.expectEqual(@as(u64, 1250), ms.speed);
+}
+
+test "an idle miner reads as inactive with zeroed threads/speed" {
+    // Some vintages keep the last-run speed/threads in the reply when idle —
+    // the mapping zeroes them so the tab can't show a stale hashrate.
+    const ms = Nerva.mapMiningStatus(.{ .status = "OK", .active = false, .speed = 900, .threads_count = 2 });
+    try std.testing.expect(!ms.active);
+    try std.testing.expectEqual(@as(u32, 0), ms.threads);
+    try std.testing.expectEqual(@as(u64, 0), ms.speed);
+}
+
+test "startMiningParams builds the /start_mining body (foreground, no battery heuristics)" {
+    const allocator = std.testing.allocator;
+
+    const body = try Nerva.startMiningParams(allocator, "NV1abc", 3);
+    defer allocator.free(body);
+    try std.testing.expectEqualStrings(
+        "{\"miner_address\":\"NV1abc\",\"threads_count\":3,\"do_background_mining\":false,\"ignore_battery\":true}",
+        body,
+    );
+
+    // The address is JSON-escaped, so a hostile string can't break the body.
+    const quoted = try Nerva.startMiningParams(allocator, "a\"b", 1);
+    defer allocator.free(quoted);
+    try std.testing.expect(std.mem.indexOf(u8, quoted, "\"miner_address\":\"a\\\"b\"") != null);
+}
+
+test "expectStatusOk passes OK and maps BUSY / refusals to specific errors" {
+    const allocator = std.testing.allocator;
+
+    try Nerva.expectStatusOk(allocator, "{\"status\":\"OK\"}", error.MiningStartRejected);
+    // BUSY = daemon still syncing — its own error so the user knows to wait.
+    try std.testing.expectError(
+        error.DaemonStillSyncing,
+        Nerva.expectStatusOk(allocator, "{\"status\":\"BUSY\"}", error.MiningStartRejected),
+    );
+    // Any other refusal maps to the caller's reject error.
+    try std.testing.expectError(
+        error.MiningStartRejected,
+        Nerva.expectStatusOk(allocator, "{\"status\":\"Failed, mining not started\"}", error.MiningStartRejected),
+    );
+}
+
+test "coin vtable exposes the mining capability for Nerva" {
+    var n: Nerva = .{};
+    try std.testing.expect(n.coin().supportsMining());
 }
