@@ -13,11 +13,13 @@ const Coin = @import("../coin.zig").Coin;
 ///
 /// Two things set Salvium apart from the bitcoin-core coins:
 ///
-///   * **Distribution** — every target ships a single `.zip` whose three binaries
-///     (`salviumd`, `salvium-wallet-cli`, `salvium-wallet-rpc`) sit at the archive
-///     root — no `bin/` subdir and no versioned wrapper dir — so they extract
-///     straight into the install root with no promote step. `std.zip` doesn't
-///     restore the unix executable bit, so `install` re-sets it on POSIX.
+///   * **Distribution** — each supported target (Linux x86_64/aarch64, Windows
+///     x64; upstream stopped shipping macOS builds after 1.1.1b) is a single
+///     `.zip` whose three binaries (`salviumd`, `salvium-wallet-cli`,
+///     `salvium-wallet-rpc`) sit at the archive root — no `bin/` subdir and no
+///     versioned wrapper dir — so they extract straight into the install root
+///     with no promote step. `std.zip` doesn't restore the unix executable bit,
+///     so `install` re-sets it on POSIX.
 ///   * **RPC** — Monero's daemon RPC, not the bitcoin JSON-RPC. `get_info` is a
 ///     `POST /json_rpc` method returning a flat result; sync is derived from
 ///     `height` vs `target_height` (0 once caught up) and the `synchronized` flag,
@@ -53,7 +55,7 @@ pub const Salvium = struct {
     /// path has a username to write (the daemon ignores it).
     pub const rpc_default_username = "salviumrpc";
     pub const rpc_default_port = "19081";
-    pub const core_version = "1.1.1b";
+    pub const core_version = "1.1.3c";
 
     // Binary names. Windows appends `.exe`. The wallet CLI is `salvium-wallet-cli`;
     // there's no `*-tx` helper. `salvium-wallet-rpc` drives the (external) wallet —
@@ -89,17 +91,14 @@ pub const Salvium = struct {
 
     // The per-target release asset name (without the `.zip`). Every Salvium bundle
     // is a `.zip`; the names follow Salvium's own asset naming — Linux carries the
-    // build's `ubuntu22.04-linux` tag, macOS/Windows their short tags. No 32-bit
-    // Linux, no ARM Windows build is published.
+    // build's `ubuntu22.04-linux` tag, Windows its short tag. No 32-bit Linux or
+    // ARM Windows build is published, and upstream stopped shipping **macOS**
+    // binaries after 1.1.1b (the 1.1.3c release carries none), so macOS resolves
+    // no download (`error.UnsupportedPlatform` at install time).
     const asset: ?[]const u8 = switch (builtin.os.tag) {
         .linux => switch (builtin.cpu.arch) {
             .x86_64 => "salvium-v" ++ core_version ++ "-ubuntu22.04-linux-x86_64",
             .aarch64 => "salvium-v" ++ core_version ++ "-ubuntu22.04-linux-aarch64",
-            else => null,
-        },
-        .macos => switch (builtin.cpu.arch) {
-            .x86_64 => "salvium-v" ++ core_version ++ "-macos-x86_64",
-            .aarch64 => "salvium-v" ++ core_version ++ "-macos-aarch64",
             else => null,
         },
         .windows => switch (builtin.cpu.arch) {
@@ -939,6 +938,72 @@ pub const Salvium = struct {
         return @intFromFloat(scaled);
     }
 
+    // --- Staking (wallet RPC) ---------------------------------------------
+    //
+    // Salvium staking is an explicit protocol action, not the
+    // passive stakes-while-unlocked model of the PoS coins: a **stake
+    // transaction** locks the amount for `stake_lock_blocks`, the protocol
+    // accrues yield on it, and principal + yield return to the wallet
+    // automatically when the term ends (arriving as an incoming transfer).
+    // Over the wallet RPC a stake is the `transfer` method with Salvium's
+    // stake `tx_type` — mirroring what the upstream CLI's `stake` command
+    // builds: destination = the wallet's own **main address** (wallet2 permits
+    // stakes from/to account 0 only), assets `SAL1 → SAL1`, and
+    // `unlock_time = STAKE_LOCK_PERIOD` (the RPC server passes `unlock_time`
+    // straight through, so BoxWallet must supply it exactly as the CLI does).
+
+    /// `transaction_type::STAKE` from Salvium's `cryptonote_protocol/enums.h`.
+    const tx_type_stake = 6;
+
+    /// Mainnet stake term, in blocks: `STAKE_LOCK_PERIOD = 30*24*30` upstream
+    /// (`cryptonote_config.h`) — 21,600 blocks ≈ 30 days at the 120 s target.
+    const stake_lock_blocks = 21_600;
+
+    /// One-line staking description for the frontend's Stake prompt.
+    pub const stake_hint = "Locks the amount for ~30 days (21,600 blocks). Principal plus accrued yield return to this wallet automatically when the term ends.";
+
+    /// Stake `amount` SAL: a `transfer` of the amount back to the wallet's own
+    /// main address with the stake tx_type and the protocol's lock period. The
+    /// wallet does its own balance/term validation — `SendResult` carries its
+    /// rejection reason (or the success tx hash) verbatim.
+    fn walletStake(
+        allocator: std.mem.Allocator,
+        wallet_auth: models.CoinAuth,
+        amount: f64,
+    ) anyerror!models.SendResult {
+        const atomic = atomicFromAmount(amount) orelse return .{ .failed = "invalid amount" };
+
+        // The stake pays the wallet itself: its main (account 0) address, which
+        // is exactly what `get_address` reports.
+        const addr = try walletReceiveAddress(allocator, wallet_auth, false);
+        defer allocator.free(addr);
+        const addr_q = try rpc.jsonQuote(allocator, addr);
+        defer allocator.free(addr_q);
+
+        const params = try stakeParams(allocator, addr_q, atomic);
+        defer allocator.free(params);
+
+        var parsed = try walletCall(TransferResult, allocator, wallet_auth, "transfer", params);
+        defer parsed.deinit();
+        if (parsed.value.result) |r| {
+            if (r.tx_hash.len > 0) return .{ .ok = try allocator.dupe(u8, r.tx_hash) };
+        }
+        if (parsed.value.@"error") |e| return .{ .failed = try allocator.dupe(u8, e.message) };
+        return .{ .failed = "no response from wallet" };
+    }
+
+    /// Build the stake `transfer` params (`addr_q` is the already-JSON-quoted
+    /// own address). Split out as a pure helper so the exact request shape —
+    /// stake tx_type, lock period, SAL1 asset pair — is unit-testable without a
+    /// wallet process.
+    fn stakeParams(allocator: std.mem.Allocator, addr_q: []const u8, atomic: u64) ![]u8 {
+        return std.fmt.allocPrint(
+            allocator,
+            "{{\"destinations\":[{{\"amount\":{d},\"address\":{s}}}],\"source_asset\":\"{s}\",\"dest_asset\":\"{s}\",\"tx_type\":{d},\"unlock_time\":{d},\"get_tx_key\":true}}",
+            .{ atomic, addr_q, primary_asset, primary_asset, tx_type_stake, stake_lock_blocks },
+        );
+    }
+
     /// Produce the canonical form of a user-entered seed for the wallet RPC:
     /// every word lowercased and joined by single spaces, with leading/trailing and
     /// repeated whitespace collapsed. Monero's English wordlist is all lowercase and
@@ -1030,6 +1095,8 @@ pub const Salvium = struct {
         .wallet_transactions = vtWalletTransactions,
         .wallet_receive_address = vtWalletReceiveAddress,
         .wallet_send = vtWalletSend,
+        .wallet_stake = vtWalletStake,
+        .stake_hint = vtStakeHint,
         .external_wallet = &external_wallet,
     };
 
@@ -1060,6 +1127,17 @@ pub const Salvium = struct {
         amount: f64,
     ) anyerror!models.SendResult {
         return walletSend(allocator, wallet_auth, address, amount);
+    }
+    fn vtWalletStake(
+        _: *anyopaque,
+        allocator: std.mem.Allocator,
+        wallet_auth: models.CoinAuth,
+        amount: f64,
+    ) anyerror!models.SendResult {
+        return walletStake(allocator, wallet_auth, amount);
+    }
+    fn vtStakeHint(_: *anyopaque) []const u8 {
+        return stake_hint;
     }
 
     fn vtCoinName(_: *anyopaque) []const u8 {
@@ -1257,6 +1335,13 @@ test "platform selection resolves a zip bundle for the build target" {
         try std.testing.expect(std.mem.indexOf(u8, dl.url, "salvium-v" ++ Salvium.core_version) != null);
         try std.testing.expectEqual(install_mod.Format.zip, dl.format);
         try std.testing.expect(std.mem.endsWith(u8, dl.url, ".zip"));
+    }
+
+    // Upstream stopped publishing macOS binaries after 1.1.1b, so macOS must
+    // resolve no download (a clear UnsupportedPlatform at install time, not a
+    // 404 mid-download).
+    if (builtin.os.tag == .macos) {
+        try std.testing.expect(Salvium.download == null);
     }
 
     // Binary names carry `.exe` only on Windows.
@@ -1577,4 +1662,34 @@ test "coin vtable exposes transactions, receive address, and send for Salvium" {
     try std.testing.expect(c.supportsTransactions());
     try std.testing.expect(c.supportsReceiveAddress());
     try std.testing.expect(c.supportsSend());
+}
+
+test "stakeParams builds the CLI-equivalent stake transfer request" {
+    const allocator = std.testing.allocator;
+
+    // 1.5 SAL staked back to the wallet's own (already-quoted) address. The
+    // request must mirror what upstream simplewallet's `stake` builds: the
+    // SAL1→SAL1 asset pair, the STAKE tx_type (6), and the mainnet
+    // STAKE_LOCK_PERIOD (21600) as unlock_time — the RPC server passes
+    // unlock_time straight through, so omitting it would stake with no term.
+    const params = try Salvium.stakeParams(allocator, "\"SaLvAddR1\"", 150_000_000);
+    defer allocator.free(params);
+
+    try std.testing.expectEqualStrings(
+        "{\"destinations\":[{\"amount\":150000000,\"address\":\"SaLvAddR1\"}]," ++
+            "\"source_asset\":\"SAL1\",\"dest_asset\":\"SAL1\"," ++
+            "\"tx_type\":6,\"unlock_time\":21600,\"get_tx_key\":true}",
+        params,
+    );
+}
+
+test "coin vtable exposes the stake action for Salvium" {
+    var s: Salvium = .{};
+    const c = s.coin();
+    try std.testing.expect(c.supportsStakeAction());
+    // The prompt's description names the ~30-day term so the user knows funds
+    // lock before confirming.
+    try std.testing.expect(std.mem.indexOf(u8, c.stakeHint(), "30 days") != null);
+    // Distinct from the passive PoS coins: Salvium itself is proof-of-work.
+    try std.testing.expect(!c.isProofOfStake());
 }

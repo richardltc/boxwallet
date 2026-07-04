@@ -805,6 +805,13 @@ const SendModal = struct {
         result,
     };
 
+    /// What the prompt does with the amount. `stake` (coins wiring
+    /// `wallet_stake` — Salvium) reuses the same machinery minus the address
+    /// stage: a stake pays the wallet's own address, so the flow starts at
+    /// `amount` and the coin supplies the destination itself.
+    const Mode = enum { send, stake };
+
+    mode: Mode = .send,
     stage: Stage = .address,
     /// The entry the prompt acts on, so the worker/reap target the right
     /// Activity even if the left-nav selection moves while it's open.
@@ -1103,6 +1110,9 @@ const Activity = struct {
     send_addr_buf: [128]u8 = undefined,
     send_addr_len: usize = 0,
     send_amount: f64 = 0,
+    /// True when the in-flight "send" is a stake (the Stake prompt) — routes
+    /// the worker to `walletStake`, which needs no destination address.
+    send_is_stake: bool = false,
     /// Set true (release) by the worker when the send finishes.
     send_done: std.atomic.Value(bool) = .init(false),
     /// Whether the finished send succeeded. Published by the `send_done` edge.
@@ -1710,10 +1720,15 @@ const Activity = struct {
     fn doSend(self: *Activity, a: std.mem.Allocator) !models.SendResult {
         const address = self.send_addr_buf[0..self.send_addr_len];
 
-        // An external-wallet coin (Monero-style) sends from its *wallet*
+        // An external-wallet coin (Monero-style) sends/stakes from its *wallet*
         // process — its endpoint + per-session creds, no daemon conf to read.
-        if (self.coin.hasExternalWallet())
-            return self.coin.walletSend(a, self.extWalletAuth(), address, self.send_amount);
+        if (self.coin.hasExternalWallet()) {
+            const wallet_auth = self.extWalletAuth();
+            return if (self.send_is_stake)
+                self.coin.walletStake(a, wallet_auth, self.send_amount)
+            else
+                self.coin.walletSend(a, wallet_auth, address, self.send_amount);
+        }
 
         var threaded: std.Io.Threaded = .init(a, .{});
         defer threaded.deinit();
@@ -1729,7 +1744,10 @@ const Activity = struct {
             self.coin.rpcDefaultPort(),
         );
 
-        return self.coin.walletSend(a, auth, address, self.send_amount);
+        return if (self.send_is_stake)
+            self.coin.walletStake(a, auth, self.send_amount)
+        else
+            self.coin.walletSend(a, auth, address, self.send_amount);
     }
 
     /// Copy `text` (a txid or a failure reason) into the bounded
@@ -3173,6 +3191,10 @@ pub const App = struct {
                         'l' => self.log_visible = !self.log_visible,
                         'c' => if (on_coin and self.active_tab == .receive) self.copyReceiveAddress(ctx),
                         'n' => if (on_coin and self.active_tab == .receive) self.requestNewReceiveAddress(),
+                        // Capital S — lowercase 's' toggles the daemon. Opens the
+                        // Stake prompt on the Send tab for coins with a stake
+                        // action (openStakeModal checks the capability itself).
+                        'S' => if (on_coin and self.active_tab == .send) self.openStakeModal(),
                         't' => if (on_coin) self.copyTipAddress(ctx),
                         // Jump straight to a tab by number (1 = Home … 5 = Settings).
                         '1'...'5' => if (on_coin) {
@@ -4542,6 +4564,20 @@ pub const App = struct {
         self.send_amount_input.blur();
     }
 
+    /// Open the Stake prompt — the Send modal in `stake` mode. A stake pays the
+    /// wallet's own address (the coin supplies it), so the flow skips the
+    /// address stage and starts at the amount. No-op for coins without a stake
+    /// action.
+    fn openStakeModal(self: *App) void {
+        const coin = self.selectedCoin() orelse return;
+        if (!coin.supportsStakeAction()) return;
+        self.send_modal = .{ .coin_idx = self.selected, .mode = .stake, .stage = .amount };
+        self.send_addr_input.setValue("") catch {};
+        self.send_amount_input.setValue("") catch {};
+        self.send_addr_input.blur();
+        self.send_amount_input.focus();
+    }
+
     fn closeSendModal(self: *App) void {
         self.send_modal = null;
     }
@@ -4651,6 +4687,9 @@ pub const App = struct {
 
         const amount_text = std.mem.trim(u8, self.send_amount_input.getValue(), " \t");
         act.send_amount = std.fmt.parseFloat(f64, amount_text) catch 0;
+        // Stake mode: no destination was collected (the coin pays the wallet's
+        // own address itself) — the flag routes the worker to `walletStake`.
+        act.send_is_stake = m.mode == .stake;
 
         act.coin = coin;
         act.home_dir = self.home_dir;
@@ -4662,7 +4701,7 @@ pub const App = struct {
             return;
         };
         m.stage = .working;
-        self.logf("{s}: sending…", .{coin.coinName()});
+        self.logf("{s}: {s}…", .{ coin.coinName(), if (m.mode == .stake) "staking" else "sending" });
     }
 
     /// Open the first-start prune prompt for `coin`. Resets the cursor to the
@@ -5950,7 +5989,10 @@ pub const App = struct {
     /// why free-text entry needs a modal's exclusive keyboard ownership.
     fn renderSendTab(a: std.mem.Allocator, coin: Coin, act: *const Activity) ![]const u8 {
         const balance = formatBalance(a, act.balance_avail, coin.coinNameAbbrev(), coin.balanceDecimals());
-        const hint = (zz.Style{}).dim(true).render(a, "(press Enter to send)") catch "(press Enter to send)";
+        // Coins with a stake action (Salvium) get the extra key in the hint;
+        // capital S because lowercase 's' toggles the daemon.
+        const hint_text = if (coin.supportsStakeAction()) "(Enter: send   S: stake)" else "(press Enter to send)";
+        const hint = (zz.Style{}).dim(true).render(a, hint_text) catch hint_text;
         return std.fmt.allocPrint(a, "Send\n\nAvailable: {s}\n\n{s}", .{ balance, hint });
     }
 
@@ -6542,7 +6584,8 @@ pub const App = struct {
         var out: std.Io.Writer.Allocating = .init(a);
         errdefer out.deinit();
 
-        const title = try std.fmt.allocPrint(a, "{s} — send", .{coin.coinName()});
+        const staking = m.mode == .stake;
+        const title = try std.fmt.allocPrint(a, "{s} — {s}", .{ coin.coinName(), if (staking) "stake" else "send" });
         try modalRule(a, &out.writer, brand, inner_w, "┌", "┐", title);
         try modalRow(&out.writer, vbar, inner_w, "", 0);
 
@@ -6561,6 +6604,12 @@ pub const App = struct {
                 const avail = try std.fmt.allocPrint(a, "Available: {s}", .{balance});
                 const avail_styled = (zz.Style{}).dim(true).render(a, avail) catch avail;
                 try modalRow(&out.writer, vbar, inner_w, avail_styled, zz.width(avail));
+                // Staking locks funds for a term — say so before an amount is
+                // committed, with the coin's own description of the deal.
+                if (staking and coin.stakeHint().len > 0) {
+                    try modalRow(&out.writer, vbar, inner_w, "", 0);
+                    try wrapIntoRows(a, &out.writer, vbar, inner_w, coin.stakeHint(), (zz.Style{}).dim(true));
+                }
                 if (m.bad_input) {
                     const warn = "Enter a positive amount.";
                     const styled = (zz.Style{}).fg(.red).render(a, warn) catch warn;
@@ -6568,17 +6617,26 @@ pub const App = struct {
                 }
             },
             .confirm => {
-                // The full, untruncated address — deliberately not shortened.
-                const addr = self.send_addr_input.getValue();
                 const amount_text = std.mem.trim(u8, self.send_amount_input.getValue(), " \t");
                 const amount = std.fmt.parseFloat(f64, amount_text) catch 0;
                 var buf: [64]u8 = undefined;
-                const detail = try std.fmt.allocPrint(a, "Send {s} {s} to {s}? This cannot be undone.", .{
-                    formatAmount(&buf, amount, coin.balanceDecimals()), coin.coinNameAbbrev(), addr,
-                });
+                const detail = if (staking)
+                    try std.fmt.allocPrint(a, "Stake {s} {s}? {s}", .{
+                        formatAmount(&buf, amount, coin.balanceDecimals()), coin.coinNameAbbrev(), coin.stakeHint(),
+                    })
+                else blk: {
+                    // The full, untruncated address — deliberately not shortened.
+                    const addr = self.send_addr_input.getValue();
+                    break :blk try std.fmt.allocPrint(a, "Send {s} {s} to {s}? This cannot be undone.", .{
+                        formatAmount(&buf, amount, coin.balanceDecimals()), coin.coinNameAbbrev(), addr,
+                    });
+                };
                 try wrapIntoRows(a, &out.writer, vbar, inner_w, detail, (zz.Style{}));
                 try modalRow(&out.writer, vbar, inner_w, "", 0);
-                const labels = [_][]const u8{ "Yes — send it", "No — cancel" };
+                const labels = if (staking)
+                    [_][]const u8{ "Yes — stake it", "No — cancel" }
+                else
+                    [_][]const u8{ "Yes — send it", "No — cancel" };
                 for (labels, 0..) |lbl, i| {
                     const sel = i == m.sel;
                     const plain = try std.fmt.allocPrint(a, "{s}{s}", .{ if (sel) "❯ " else "  ", lbl });
@@ -6590,14 +6648,19 @@ pub const App = struct {
                 }
             },
             .working => {
-                try modalRow(&out.writer, vbar, inner_w, "Sending…", zz.width("Sending…"));
+                const busy = if (staking) "Staking…" else "Sending…";
+                try modalRow(&out.writer, vbar, inner_w, busy, zz.width(busy));
             },
             .result => {
-                const lead = if (m.ok)
-                    ((zz.Style{}).fg(.green).render(a, "Sent. Txid:") catch "Sent. Txid:")
+                const lead_plain = if (m.ok)
+                    (if (staking) "Staked. Txid:" else "Sent. Txid:")
                 else
-                    ((zz.Style{}).fg(.red).render(a, "Send failed:") catch "Send failed:");
-                try modalRow(&out.writer, vbar, inner_w, lead, zz.width(if (m.ok) "Sent. Txid:" else "Send failed:"));
+                    (if (staking) "Stake failed:" else "Send failed:");
+                const lead = if (m.ok)
+                    ((zz.Style{}).fg(.green).render(a, lead_plain) catch lead_plain)
+                else
+                    ((zz.Style{}).fg(.red).render(a, lead_plain) catch lead_plain);
+                try modalRow(&out.writer, vbar, inner_w, lead, zz.width(lead_plain));
                 try wrapIntoRows(a, &out.writer, vbar, inner_w, m.msg_buf[0..m.msg_len], (zz.Style{}).dim(true));
             },
         }
@@ -8046,6 +8109,102 @@ test "renderSendModal shows the untruncated address and formatted amount at conf
     const box = try app.renderSendModal(arena.allocator());
     try std.testing.expect(std.mem.indexOf(u8, box, addr) != null);
     try std.testing.expect(std.mem.indexOf(u8, box, "1.50000000") != null);
+}
+
+test "the Stake prompt refuses to open for a coin without the stake action" {
+    if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
+    const allocator = std.testing.allocator;
+
+    var threaded: std.Io.Threaded = .init(allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    var env = std.process.Environ.Map.init(allocator);
+    defer env.deinit();
+    try env.put("HOME", "/home/tester");
+    var ctx = zz.Context.init(allocator, allocator, io, &env);
+
+    var app: App = undefined;
+    _ = app.init(&ctx);
+    defer app.deinit();
+
+    // A send-capable coin *without* the stake action (only Salvium wires it,
+    // and it's not in the nav while its `live` flag is false): 'S' must be a
+    // no-op — no modal opens.
+    var plain_idx: usize = 0;
+    for (0..app.activities.len) |i| {
+        if (app.coinAt(i)) |c| {
+            if (c.supportsSend() and !c.supportsStakeAction()) {
+                plain_idx = i;
+                break;
+            }
+        }
+    }
+    try std.testing.expect(plain_idx != 0);
+    app.selected = plain_idx;
+    app.openStakeModal();
+    try std.testing.expect(app.send_modal == null);
+}
+
+test "renderSendModal in stake mode shows stake wording, no destination" {
+    if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
+    const allocator = std.testing.allocator;
+
+    var threaded: std.Io.Threaded = .init(allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    var env = std.process.Environ.Map.init(allocator);
+    defer env.deinit();
+    try env.put("HOME", "/home/tester");
+    var ctx = zz.Context.init(allocator, allocator, io, &env);
+
+    var app: App = undefined;
+    _ = app.init(&ctx);
+    defer app.deinit();
+
+    // Any send-capable coin can render the stake-mode chrome (Salvium itself
+    // isn't in a nav slot while its `live` flag is false; its own lock-term
+    // hint text is covered by the salvium.zig tests).
+    var send_idx: usize = 0;
+    for (0..app.activities.len) |i| {
+        if (app.coinAt(i)) |c| {
+            if (c.supportsSend()) {
+                send_idx = i;
+                break;
+            }
+        }
+    }
+    try std.testing.expect(send_idx != 0);
+
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    // Confirm stage: stake wording (with the amount), not send-to-address —
+    // a stake pays the wallet's own address, so no destination is shown.
+    try app.send_amount_input.setValue("2.5");
+    app.send_modal = .{ .coin_idx = send_idx, .mode = .stake, .stage = .confirm };
+    {
+        const box = try app.renderSendModal(a);
+        try std.testing.expect(std.mem.indexOf(u8, box, "Stake 2.50000000") != null);
+        try std.testing.expect(std.mem.indexOf(u8, box, "Yes — stake it") != null);
+        try std.testing.expect(std.mem.indexOf(u8, box, "Send ") == null);
+    }
+
+    // Working/result stages carry the stake wording too.
+    app.send_modal = .{ .coin_idx = send_idx, .mode = .stake, .stage = .working };
+    {
+        const box = try app.renderSendModal(a);
+        try std.testing.expect(std.mem.indexOf(u8, box, "Staking…") != null);
+    }
+    app.send_modal = .{ .coin_idx = send_idx, .mode = .stake, .stage = .result };
+    app.send_modal.?.setMsg(true, "a1b2c3");
+    {
+        const box = try app.renderSendModal(a);
+        try std.testing.expect(std.mem.indexOf(u8, box, "Staked. Txid:") != null);
+        try std.testing.expect(std.mem.indexOf(u8, box, "a1b2c3") != null);
+    }
 }
 
 test "the Send tab only shows the balance/hint for a coin that supports it" {
