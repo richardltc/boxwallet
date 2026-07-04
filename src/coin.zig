@@ -498,6 +498,24 @@ pub const Coin = struct {
             address: []const u8,
             amount: f64,
         ) anyerror!models.SendResult = null,
+        /// Optional: **stake** `amount` — lock it for the coin's staking term to
+        /// earn protocol yield (Salvium: a stake transaction paying the wallet's
+        /// own address; principal + yield return to the wallet automatically when
+        /// the term ends). Like `wallet_send`, returns the outcome rather than
+        /// erroring on a daemon-side rejection. Non-null marks a coin with an
+        /// explicit stake *action* (distinct from `proof_of_stake`, the passive
+        /// stakes-while-unlocked coins); `supportsStakeAction` keys off this.
+        wallet_stake: ?*const fn (
+            ptr: *anyopaque,
+            allocator: std.mem.Allocator,
+            auth: models.CoinAuth,
+            amount: f64,
+        ) anyerror!models.SendResult = null,
+        /// Optional: a one-line description of what staking does on this coin
+        /// (term length, how returns arrive), shown in the Stake prompt so the
+        /// user knows what they're agreeing to before locking funds. Paired with
+        /// `wallet_stake`; null reads as empty.
+        stake_hint: ?*const fn (ptr: *anyopaque) []const u8 = null,
         /// Optional: encrypt the (currently unencrypted) wallet with `passphrase`.
         /// Bitcoin-derived daemons stop themselves after this — the caller restarts
         /// them. Paired with `wallet_security_state`; null when unsupported.
@@ -834,6 +852,34 @@ pub const Coin = struct {
     ) !models.SendResult {
         const f = self.vtable.wallet_send orelse return error.Unsupported;
         return f(self.ptr, allocator, auth, address, amount);
+    }
+
+    /// Whether this coin offers an explicit stake action (drives the Send tab's
+    /// Stake prompt). True iff the coin wires `wallet_stake`. Distinct from
+    /// `isProofOfStake` (coins that stake passively while unlocked).
+    pub fn supportsStakeAction(self: Coin) bool {
+        return self.vtable.wallet_stake != null;
+    }
+
+    /// Stake `amount` for the coin's staking term. Errors `error.Unsupported`
+    /// if the coin has no stake action (`supportsStakeAction` false); otherwise
+    /// returns the outcome (success or a daemon-reported failure reason) rather
+    /// than erroring on a rejected stake.
+    pub fn walletStake(
+        self: Coin,
+        allocator: std.mem.Allocator,
+        auth: models.CoinAuth,
+        amount: f64,
+    ) !models.SendResult {
+        const f = self.vtable.wallet_stake orelse return error.Unsupported;
+        return f(self.ptr, allocator, auth, amount);
+    }
+
+    /// The coin's one-line staking description for the Stake prompt, or "" when
+    /// none is wired.
+    pub fn stakeHint(self: Coin) []const u8 {
+        if (self.vtable.stake_hint) |f| return f(self.ptr);
+        return "";
     }
 
     /// Encrypt the wallet with `passphrase`. Errors `error.Unsupported` if the
