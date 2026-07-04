@@ -402,6 +402,18 @@ pub const RescanProgress = struct {
     }
 };
 
+/// Live CPU-mining state from a daemon that mines in-process (the CryptoNote
+/// coins — Nerva's `mining_status`). Scalar-only, so it owns no memory, can be
+/// carried through the poll worker's atomics, and needs no `deinit`.
+pub const MiningStatus = struct {
+    /// Whether the daemon is currently mining.
+    active: bool = false,
+    /// How many CPU threads the miner is running on (0 when not mining).
+    threads: u32 = 0,
+    /// Current hashrate in hashes per second (0 when not mining).
+    speed: u64 = 0,
+};
+
 /// Coin-agnostic snapshot from a daemon's `getinfo` — the live "is it healthy"
 /// numbers a frontend shows alongside chain sync (peer count, block height,
 /// whether the wallet is staking). Scalar-only, so it owns no memory and needs

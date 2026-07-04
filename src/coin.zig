@@ -516,6 +516,33 @@ pub const Coin = struct {
         /// user knows what they're agreeing to before locking funds. Paired with
         /// `wallet_stake`; null reads as empty.
         stake_hint: ?*const fn (ptr: *anyopaque) []const u8 = null,
+        /// Optional: the daemon's live CPU-mining state (whether it's mining, on
+        /// how many threads, at what hashrate), normalized to `MiningStatus`.
+        /// Non-null marks a coin whose daemon mines in-process (the CryptoNote
+        /// CPU coins — Nerva) and lights up the Mining tab; `supportsMining`
+        /// keys off this. Wired together with `mining_start`/`mining_stop`.
+        mining_status: ?*const fn (
+            ptr: *anyopaque,
+            allocator: std.mem.Allocator,
+            auth: models.CoinAuth,
+        ) anyerror!models.MiningStatus = null,
+        /// Optional: start the daemon mining on `threads` CPU threads, paying
+        /// block rewards to `address` (the wallet's own receive address — the
+        /// frontend supplies its cached one, so mining always pays the wallet
+        /// the user can see). Paired with `mining_status`.
+        mining_start: ?*const fn (
+            ptr: *anyopaque,
+            allocator: std.mem.Allocator,
+            auth: models.CoinAuth,
+            address: []const u8,
+            threads: u32,
+        ) anyerror!void = null,
+        /// Optional: stop the daemon mining. Paired with `mining_status`.
+        mining_stop: ?*const fn (
+            ptr: *anyopaque,
+            allocator: std.mem.Allocator,
+            auth: models.CoinAuth,
+        ) anyerror!void = null,
         /// Optional: encrypt the (currently unencrypted) wallet with `passphrase`.
         /// Bitcoin-derived daemons stop themselves after this — the caller restarts
         /// them. Paired with `wallet_security_state`; null when unsupported.
@@ -880,6 +907,48 @@ pub const Coin = struct {
     pub fn stakeHint(self: Coin) []const u8 {
         if (self.vtable.stake_hint) |f| return f(self.ptr);
         return "";
+    }
+
+    /// Whether this coin's daemon mines in-process (drives the Mining tab).
+    /// True iff the coin wires the full status/start/stop trio.
+    pub fn supportsMining(self: Coin) bool {
+        return self.vtable.mining_status != null and
+            self.vtable.mining_start != null and
+            self.vtable.mining_stop != null;
+    }
+
+    /// The daemon's live mining state. Errors `error.Unsupported` if the coin
+    /// doesn't mine (`supportsMining` false).
+    pub fn miningStatus(
+        self: Coin,
+        allocator: std.mem.Allocator,
+        auth: models.CoinAuth,
+    ) !models.MiningStatus {
+        const f = self.vtable.mining_status orelse return error.Unsupported;
+        return f(self.ptr, allocator, auth);
+    }
+
+    /// Start mining on `threads` CPU threads, paying block rewards to
+    /// `address`. Errors `error.Unsupported` if the coin doesn't mine.
+    pub fn miningStart(
+        self: Coin,
+        allocator: std.mem.Allocator,
+        auth: models.CoinAuth,
+        address: []const u8,
+        threads: u32,
+    ) !void {
+        const f = self.vtable.mining_start orelse return error.Unsupported;
+        return f(self.ptr, allocator, auth, address, threads);
+    }
+
+    /// Stop mining. Errors `error.Unsupported` if the coin doesn't mine.
+    pub fn miningStop(
+        self: Coin,
+        allocator: std.mem.Allocator,
+        auth: models.CoinAuth,
+    ) !void {
+        const f = self.vtable.mining_stop orelse return error.Unsupported;
+        return f(self.ptr, allocator, auth);
     }
 
     /// Encrypt the wallet with `passphrase`. Errors `error.Unsupported` if the
