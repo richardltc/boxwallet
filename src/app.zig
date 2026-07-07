@@ -6316,17 +6316,57 @@ pub const App = struct {
         if (act.tx_count == 0) {
             return "Transactions\n\nNo transactions yet.";
         }
-        var body: []const u8 = "";
-        for (act.tx_buf[0..act.tx_count], 0..) |tx, i| {
+
+        // Fixed-width, aligned columns so the rows read as a table rather than a
+        // ragged list. The date is always "YYYY-MM-DD HH:MM" (16 cells); the
+        // amount column right-aligns to the widest figure so decimal points line
+        // up. Cells are ASCII here, so byte length equals display width — we can
+        // pad the plain text *before* applying colour (padding a pre-styled string
+        // would count the ANSI escape bytes and misalign the grid).
+        const date_w: usize = 16;
+        var amount_w: usize = "Amount".len;
+        for (act.tx_buf[0..act.tx_count]) |tx| {
+            var buf: [64]u8 = undefined;
+            amount_w = @max(amount_w, formatAmount(&buf, tx.amount, decimals).len);
+        }
+
+        // Header row (dim), indented past the direction glyph so its labels sit
+        // over their columns.
+        const header_plain = try std.fmt.allocPrint(a, "    {s}   {s}   Status", .{
+            try padCell(a, "Date", date_w, false),
+            try padCell(a, "Amount", amount_w, true),
+        });
+        var body: []const u8 = (zz.Style{}).dim(true).render(a, header_plain) catch header_plain;
+
+        for (act.tx_buf[0..act.tx_count]) |tx| {
             const glyph = txDirectionGlyph(a, tx.direction);
             const date = try formatBlockTime(a, tx.time);
             var buf: [64]u8 = undefined;
             const amount = formatAmount(&buf, tx.amount, decimals);
             const conf_text = txConfirmationText(a, tx.confirmations);
-            const line = try std.fmt.allocPrint(a, "{s}  {s}  {s}  {s}", .{ glyph, date, amount, conf_text });
-            body = if (i == 0) line else try std.fmt.allocPrint(a, "{s}\n{s}", .{ body, line });
+            const line = try std.fmt.allocPrint(a, "  {s} {s}   {s}   {s}", .{
+                glyph,
+                try padCell(a, date, date_w, false),
+                try padCell(a, amount, amount_w, true),
+                conf_text,
+            });
+            body = try std.fmt.allocPrint(a, "{s}\n{s}", .{ body, line });
         }
         return std.fmt.allocPrint(a, "Transactions\n\n{s}", .{body});
+    }
+
+    /// Pad an ASCII cell to `width` display cells with spaces, on the left when
+    /// `right` (right-aligned, e.g. amounts) or on the right otherwise. Returns
+    /// `text` unchanged when it already meets/exceeds the width. Caller-owned
+    /// arena memory; only used on ASCII cells so byte length is display width.
+    fn padCell(a: std.mem.Allocator, text: []const u8, width: usize, right: bool) ![]const u8 {
+        if (text.len >= width) return text;
+        const spaces = try a.alloc(u8, width - text.len);
+        @memset(spaces, ' ');
+        return if (right)
+            std.fmt.allocPrint(a, "{s}{s}", .{ spaces, text })
+        else
+            std.fmt.allocPrint(a, "{s}{s}", .{ text, spaces });
     }
 
     /// A transaction counts as settled once it has more than this many
@@ -8236,6 +8276,10 @@ test "renderTransactionsTab lists cached transactions newest-first with date and
 
     const body = try App.renderTransactionsTab(a, &act, 8);
     try std.testing.expect(std.mem.indexOf(u8, body, "Transactions") != null);
+    // A column header sits above the rows.
+    try std.testing.expect(std.mem.indexOf(u8, body, "Date") != null);
+    try std.testing.expect(std.mem.indexOf(u8, body, "Amount") != null);
+    try std.testing.expect(std.mem.indexOf(u8, body, "Status") != null);
     // Each row carries its glyph, the formatted date, the formatted amount, and
     // a confirmation status.
     try std.testing.expect(std.mem.indexOf(u8, body, "↓") != null);
