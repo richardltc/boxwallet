@@ -1426,8 +1426,9 @@ const Activity = struct {
     balance_avail: f64 = 0,
     has_balance: bool = false,
     /// Wallet rescan progress, folded in from the poll for an external wallet that
-    /// re-scans after a restore (Ergo). `rescanning` gates the heights: true while a
-    /// rescan is in flight, driving the "Rescanning… X%" wallet-line indicator.
+    /// re-scans after a restore (Ergo, and the Monero-family wallet-rpc background
+    /// refresh — Salvium/Nerva). `rescanning` gates the heights: true while a rescan
+    /// is in flight, driving the "Rescanning… X%" wallet-line indicator.
     rescan_scanned: u64 = 0,
     rescan_target: u64 = 0,
     rescanning: bool = false,
@@ -2485,14 +2486,25 @@ const Activity = struct {
                 self.poll_balance_total.store(@bitCast(bal.total), .monotonic);
                 self.poll_balance_avail.store(@bitCast(bal.available), .monotonic);
                 self.poll_has_balance.store(1, .monotonic);
-            } else |_| {}
+            } else |err| {
+                // The wallet-rpc says no wallet is open — it was restarted (e.g. a
+                // daemon bounce) and never re-opened, so our "open" flag is stale.
+                // Drop it: the wallet line reverts to "Locked", balance polling
+                // pauses, and `w` re-prompts to unlock (mirrors the Ergo-relock and
+                // kill-wallet-rpc paths). Any other error is transient — leave the
+                // last value so the balance doesn't flicker.
+                if (err == error.WalletClosed) self.ext_wallet_open.store(0, .monotonic);
+            }
 
-            // Rescan progress — for an in-daemon wallet that re-scans after a
-            // restore (Ergo). Non-null means a rescan is in flight: publish the
-            // heights and flag it; null (caught up / n/a) clears the flag. Best-
+            // Rescan progress — for a wallet that re-scans after a restore (Ergo's
+            // in-daemon wallet, or a Monero-family wallet-rpc background refresh —
+            // Salvium/Nerva). The
+            // scanned height comes from the wallet; the target (tip) from the daemon,
+            // so both auths are passed. Non-null means a rescan is in flight: publish
+            // the heights and flag it; null (caught up / n/a) clears the flag. Best-
             // effort: a read hiccup leaves the last value so the bar doesn't flicker.
             if (ew.rescan_progress) |rescanProgress| {
-                if (rescanProgress(a, self.extWalletAuth())) |maybe| {
+                if (rescanProgress(a, self.extWalletAuth(), auth)) |maybe| {
                     if (maybe) |rp| {
                         self.poll_rescan_scanned.store(@intCast(@max(rp.scanned, 0)), .monotonic);
                         self.poll_rescan_target.store(@intCast(@max(rp.target, 0)), .monotonic);
@@ -6017,9 +6029,10 @@ pub const App = struct {
             if (!daemon_up) break :blk (zz.Style{}).fg(.brightBlack).render(a, "Unknown") catch "Unknown";
             if (!act.ext_wallet_exists) break :blk (zz.Style{}).bold(true).fg(.yellow).render(a, "No wallet") catch "No wallet";
             if (!ext_open) break :blk (zz.Style{}).bold(true).fg(.yellow).render(a, "Locked") catch "Locked";
-            // An open wallet that's mid-rescan (Ergo, after a restore) reports its
-            // progress instead of a bare "Unlocked" — the scan can take many minutes
-            // on a low-spec box, so the user needs to see it's working.
+            // An open wallet that's mid-rescan (Ergo, or a Monero-family wallet like
+            // Salvium/Nerva after a restore) reports its progress instead of a bare
+            // "Unlocked" — the scan can take many minutes on a low-spec box, so the
+            // user needs to see it's working.
             if (act.rescanning) {
                 const pct = models.RescanProgress.fraction(.{
                     .scanned = @intCast(act.rescan_scanned),

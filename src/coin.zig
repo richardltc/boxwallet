@@ -157,15 +157,21 @@ pub const Coin = struct {
             allocator: std.mem.Allocator,
             wallet_auth: models.CoinAuth,
         ) anyerror!models.WalletBalance,
-        /// Optional: report wallet rescan progress for an in-daemon wallet that
-        /// re-scans the chain after a restore (Ergo, whose node scans only forward,
-        /// so a restored seed's history is recovered by an explicit rescan-from-0).
-        /// Returns null when the wallet isn't rescanning (caught up, locked, or the
-        /// chain height isn't known yet) or for coins where it doesn't apply. The UI
-        /// shows a "Rescanning… X%" indicator while it's non-null.
+        /// Optional: report wallet rescan progress for a wallet that re-scans the
+        /// chain after a restore. Two shapes use it: an in-daemon wallet whose node
+        /// scans only forward (Ergo, where a restored seed's history is recovered by
+        /// an explicit rescan-from-0), and a process-backed Monero-style wallet whose
+        /// `wallet-rpc` background-refreshes a restored wallet from height 0. The
+        /// scanned height comes from the *wallet* (`wallet_auth`); the target (chain
+        /// tip) comes from the *daemon* (`daemon_auth`) — for an in-daemon wallet the
+        /// two auths address the same process, so a coin that sources its own tip can
+        /// ignore `daemon_auth`. Returns null when the wallet isn't rescanning (caught
+        /// up, locked, or the chain height isn't known yet) or for coins where it
+        /// doesn't apply. The UI shows a "Rescanning… X%" indicator while non-null.
         rescan_progress: ?*const fn (
             allocator: std.mem.Allocator,
             wallet_auth: models.CoinAuth,
+            daemon_auth: models.CoinAuth,
         ) anyerror!?models.RescanProgress = null,
         /// Optional: whether the wallet is currently unlocked *at the daemon*. Only
         /// meaningful for an in-daemon wallet (Ergo) whose node outlives the app and
