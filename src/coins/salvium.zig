@@ -1016,6 +1016,14 @@ pub const Salvium = struct {
     /// its own address validation and balance check — `SendResult` carries
     /// whichever of those (or the success tx hash) came back, verbatim. The
     /// amount is converted to integer atomic units before splicing.
+    ///
+    /// Each destination must also carry its own `asset_type`: since the Carrot
+    /// hard fork (HF13) the wallet's input selector filters candidate outputs by
+    /// `output.asset_type == destination.asset_type`, and it reads that only from
+    /// the per-destination field — the top-level `source_asset`/`dest_asset`
+    /// aren't consulted for it. Omitting it leaves the destination asset empty,
+    /// so no SAL1 output matches and the wallet rejects the tx with "no input
+    /// candidates provided" despite an ample unlocked balance.
     fn walletSend(
         allocator: std.mem.Allocator,
         wallet_auth: models.CoinAuth,
@@ -1027,8 +1035,8 @@ pub const Salvium = struct {
         defer allocator.free(addr_q);
         const params = try std.fmt.allocPrint(
             allocator,
-            "{{\"destinations\":[{{\"amount\":{d},\"address\":{s}}}],\"source_asset\":\"{s}\",\"dest_asset\":\"{s}\",\"tx_type\":{d},\"get_tx_key\":true}}",
-            .{ atomic, addr_q, primary_asset, primary_asset, tx_type_transfer },
+            "{{\"destinations\":[{{\"amount\":{d},\"address\":{s},\"asset_type\":\"{s}\"}}],\"source_asset\":\"{s}\",\"dest_asset\":\"{s}\",\"tx_type\":{d},\"get_tx_key\":true}}",
+            .{ atomic, addr_q, primary_asset, primary_asset, primary_asset, tx_type_transfer },
         );
         defer allocator.free(params);
 
@@ -1109,12 +1117,15 @@ pub const Salvium = struct {
     /// Build the stake `transfer` params (`addr_q` is the already-JSON-quoted
     /// own address). Split out as a pure helper so the exact request shape —
     /// stake tx_type, lock period, SAL1 asset pair — is unit-testable without a
-    /// wallet process.
+    /// wallet process. The destination carries its own `asset_type` for the same
+    /// reason `walletSend` does: post-Carrot input selection matches candidate
+    /// outputs against the per-destination asset, so omitting it yields "no input
+    /// candidates provided" even with a fully unlocked balance.
     fn stakeParams(allocator: std.mem.Allocator, addr_q: []const u8, atomic: u64) ![]u8 {
         return std.fmt.allocPrint(
             allocator,
-            "{{\"destinations\":[{{\"amount\":{d},\"address\":{s}}}],\"source_asset\":\"{s}\",\"dest_asset\":\"{s}\",\"tx_type\":{d},\"unlock_time\":{d},\"get_tx_key\":true}}",
-            .{ atomic, addr_q, primary_asset, primary_asset, tx_type_stake, stake_lock_blocks },
+            "{{\"destinations\":[{{\"amount\":{d},\"address\":{s},\"asset_type\":\"{s}\"}}],\"source_asset\":\"{s}\",\"dest_asset\":\"{s}\",\"tx_type\":{d},\"unlock_time\":{d},\"get_tx_key\":true}}",
+            .{ atomic, addr_q, primary_asset, primary_asset, primary_asset, tx_type_stake, stake_lock_blocks },
         );
     }
 
@@ -1851,11 +1862,14 @@ test "stakeParams builds the CLI-equivalent stake transfer request" {
     // SAL1→SAL1 asset pair, the STAKE tx_type (6), and the mainnet
     // STAKE_LOCK_PERIOD (21600) as unlock_time — the RPC server passes
     // unlock_time straight through, so omitting it would stake with no term.
+    // The destination itself must also carry `asset_type` — post-Carrot input
+    // selection filters candidate outputs by the per-destination asset, so
+    // without it the wallet finds no inputs ("no input candidates provided").
     const params = try Salvium.stakeParams(allocator, "\"SaLvAddR1\"", 150_000_000);
     defer allocator.free(params);
 
     try std.testing.expectEqualStrings(
-        "{\"destinations\":[{\"amount\":150000000,\"address\":\"SaLvAddR1\"}]," ++
+        "{\"destinations\":[{\"amount\":150000000,\"address\":\"SaLvAddR1\",\"asset_type\":\"SAL1\"}]," ++
             "\"source_asset\":\"SAL1\",\"dest_asset\":\"SAL1\"," ++
             "\"tx_type\":6,\"unlock_time\":21600,\"get_tx_key\":true}",
         params,
