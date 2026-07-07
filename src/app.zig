@@ -6387,16 +6387,17 @@ pub const App = struct {
         return (zz.Style{}).bold(true).fg(.yellow).render(a, text) catch text;
     }
 
-    /// The direction glyph for one Transactions row: bold green ↓ (received),
-    /// bold red ↑ (sent), or a bold yellow `*` for a stake reward — this daemon
-    /// reports a stake credit the same way a mined block reward would be (see
+    /// The direction glyph for one Transactions row: bold green ▼ (received),
+    /// bold red ▲ (sent), or a bold yellow ★ for a stake reward — heavy filled
+    /// shapes so the direction reads at a glance. This daemon reports a stake
+    /// credit the same way a mined block reward would be (see
     /// `SpiderByte.directionFromCategory`), so it's neither "received from" nor
     /// "sent to" anyone; the coins were minted by the wallet itself.
     fn txDirectionGlyph(a: std.mem.Allocator, direction: models.TxDirection) []const u8 {
         return switch (direction) {
-            .received => (zz.Style{}).bold(true).fg(.green).render(a, "↓") catch "↓",
-            .sent => (zz.Style{}).bold(true).fg(.red).render(a, "↑") catch "↑",
-            .stake => (zz.Style{}).bold(true).fg(.yellow).render(a, "*") catch "*",
+            .received => (zz.Style{}).bold(true).fg(.green).render(a, "▼") catch "▼",
+            .sent => (zz.Style{}).bold(true).fg(.red).render(a, "▲") catch "▲",
+            .stake => (zz.Style{}).bold(true).fg(.yellow).render(a, "★") catch "★",
         };
     }
 
@@ -8217,18 +8218,18 @@ test "txDirectionGlyph colors received/sent/stake distinctly" {
     const a = arena.allocator();
 
     const received = App.txDirectionGlyph(a, .received);
-    try std.testing.expect(std.mem.indexOf(u8, received, "↓") != null);
+    try std.testing.expect(std.mem.indexOf(u8, received, "▼") != null);
 
     const sent = App.txDirectionGlyph(a, .sent);
-    try std.testing.expect(std.mem.indexOf(u8, sent, "↑") != null);
+    try std.testing.expect(std.mem.indexOf(u8, sent, "▲") != null);
 
-    // Stake is a `*`, not an arrow — this daemon reports a stake credit the
+    // Stake is a ★, not an arrow — this daemon reports a stake credit the
     // same way a mined block reward would be, so it's neither received-from
     // nor sent-to anyone.
     const stake = App.txDirectionGlyph(a, .stake);
-    try std.testing.expect(std.mem.indexOf(u8, stake, "*") != null);
-    try std.testing.expect(std.mem.indexOf(u8, stake, "↓") == null);
-    try std.testing.expect(std.mem.indexOf(u8, stake, "↑") == null);
+    try std.testing.expect(std.mem.indexOf(u8, stake, "★") != null);
+    try std.testing.expect(std.mem.indexOf(u8, stake, "▼") == null);
+    try std.testing.expect(std.mem.indexOf(u8, stake, "▲") == null);
 }
 
 test "txConfirmationText shows the raw count at/below the threshold, 'Confirmed' above it" {
@@ -8282,13 +8283,13 @@ test "renderTransactionsTab lists cached transactions newest-first with date and
     try std.testing.expect(std.mem.indexOf(u8, body, "Status") != null);
     // Each row carries its glyph, the formatted date, the formatted amount, and
     // a confirmation status.
-    try std.testing.expect(std.mem.indexOf(u8, body, "↓") != null);
+    try std.testing.expect(std.mem.indexOf(u8, body, "▼") != null);
     try std.testing.expect(std.mem.indexOf(u8, body, "2.50000000") != null);
     try std.testing.expect(std.mem.indexOf(u8, body, "Confirmed") != null);
-    try std.testing.expect(std.mem.indexOf(u8, body, "↑") != null);
+    try std.testing.expect(std.mem.indexOf(u8, body, "▲") != null);
     try std.testing.expect(std.mem.indexOf(u8, body, "1.25000000") != null);
     try std.testing.expect(std.mem.indexOf(u8, body, "0 confirmations") != null);
-    try std.testing.expect(std.mem.indexOf(u8, body, "*") != null);
+    try std.testing.expect(std.mem.indexOf(u8, body, "★") != null);
     try std.testing.expect(std.mem.indexOf(u8, body, "5.00000000") != null);
     try std.testing.expect(std.mem.indexOf(u8, body, "6 confirmations") != null);
 
