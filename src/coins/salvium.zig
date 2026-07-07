@@ -450,7 +450,18 @@ pub const Salvium = struct {
     // `query_key` returns the requested key (the mnemonic, for create display).
     // `create_wallet`/`open_wallet` return an empty object on success, so an
     // absent `result` (Monero put an `error` in its place) signals failure.
-    const WalletBalanceResult = struct { balance: u64 = 0, unlocked_balance: u64 = 0 };
+
+    // One asset's balances within a `get_balance` reply. Salvium is multi-asset, so
+    // — unlike single-asset Monero's flat top-level `balance` — the reply is a
+    // `balances` array with one entry per asset the wallet holds, each tagged with
+    // its `asset_type`. Atomic-unit integers; unlisted fields (per_subaddress, etc.)
+    // are ignored.
+    const WalletAssetBalance = struct {
+        balance: u64 = 0,
+        unlocked_balance: u64 = 0,
+        asset_type: []const u8 = "",
+    };
+    const WalletBalanceResult = struct { balances: []const WalletAssetBalance = &.{} };
     const QueryKeyResult = struct { key: []const u8 = "" };
     const EmptyResult = struct {};
 
@@ -588,6 +599,14 @@ pub const Salvium = struct {
         // wallet-rpc exposes.
         try cliGenerateFromSeed(allocator, install_root, home, password, normalized, detail);
         try walletOpen(allocator, wallet_auth, password, detail);
+        // No explicit rescan is issued here. `salvium-wallet-rpc` auto-refreshes a
+        // freshly opened wallet in the background — starting immediately (its last-
+        // refresh clock initializes to the minimum time) and scanning in bounded
+        // 256-block chunks that yield the single server thread between them. A
+        // blocking `refresh` RPC would instead monopolize that one thread for the
+        // whole genesis-to-tip scan, stalling every status/`get_height` poll (and
+        // so the "Rescanning… X%" readout) until it finished. Progress is surfaced
+        // by `walletRescanProgress`, which the poll worker calls each tick.
     }
 
     /// Restore the managed wallet from `seed` by driving a one-shot
@@ -763,16 +782,44 @@ pub const Salvium = struct {
     /// Read the open wallet's balance. `balance` is the total (includes locked and
     /// unconfirmed); `unlocked_balance` is spendable now — exactly the Total /
     /// Available split the frontend renders. Salvium is multi-asset, so the request
-    /// pins `asset_type` to the primary coin (SAL1); the reply's flat
-    /// `balance`/`unlocked_balance` are for that asset (extra fields are ignored).
+    /// pins `asset_type` to the primary coin (SAL1) and the reply comes back as a
+    /// per-asset `balances` array; `primaryAssetBalance` pulls the SAL1 entry out.
     fn walletBalance(
         allocator: std.mem.Allocator,
         wallet_auth: models.CoinAuth,
     ) anyerror!models.WalletBalance {
         var parsed = try walletCall(WalletBalanceResult, allocator, wallet_auth, "get_balance", "{\"account_index\":0,\"asset_type\":\"" ++ primary_asset ++ "\"}");
         defer parsed.deinit();
-        const r = parsed.value.result orelse return error.EmptyRpcResult;
-        return atomicToBalance(r.balance, r.unlocked_balance);
+        if (parsed.value.result) |r| return primaryAssetBalance(r.balances);
+        // No result → the wallet-rpc returned an error. "No wallet file" (-13) means
+        // no wallet is open: the wallet-rpc was restarted (e.g. a daemon bounce) and
+        // never re-opened. Surface it distinctly so the app can revert the wallet
+        // line to "Locked" rather than showing a stale balance; any other error is
+        // transient and the poll leaves the last value in place.
+        if (walletIsClosed(parsed.value.@"error")) return error.WalletClosed;
+        return error.EmptyRpcResult;
+    }
+
+    /// True if a wallet-RPC `error` reports that no wallet is open. Monero returns
+    /// code -13 (`WALLET_RPC_ERROR_CODE_NO_WALLET_FILE`) with a "No wallet file"
+    /// message; matching either is robust across fork/vintage wording changes.
+    fn walletIsClosed(err: ?RpcErrObj) bool {
+        const e = err orelse return false;
+        return e.code == -13 or containsIgnoreCase(e.message, "no wallet");
+    }
+
+    /// Pick the primary-asset (SAL1) entry out of a `get_balance` reply's per-asset
+    /// `balances` array and map it to the normalized model. The wallet omits any
+    /// zero-balance asset from the array (and a freshly restored wallet still
+    /// rescanning may not have seen a SAL1 output yet), so a missing entry is a
+    /// legitimate zero balance — not an error. Pure, so it's unit-testable without a
+    /// wallet process.
+    fn primaryAssetBalance(balances: []const WalletAssetBalance) models.WalletBalance {
+        for (balances) |b| {
+            if (std.mem.eql(u8, b.asset_type, primary_asset))
+                return atomicToBalance(b.balance, b.unlocked_balance);
+        }
+        return atomicToBalance(0, 0);
     }
 
     /// Map Monero atomic balances to the normalized `WalletBalance`. Pure, so it's
@@ -782,6 +829,56 @@ pub const Salvium = struct {
             .total = @as(f64, @floatFromInt(balance)) / atomic_per_sal,
             .available = @as(f64, @floatFromInt(unlocked)) / atomic_per_sal,
         };
+    }
+
+    /// One-field subset of `get_height`'s wallet-RPC result: how far the wallet's
+    /// own background refresh has scanned the chain (a block count, i.e. tip+1).
+    const WalletHeightResult = struct { height: u64 = 0 };
+
+    /// Blocks of slack below the daemon tip within which the wallet counts as
+    /// "caught up". Steady-state, the wallet can trail the tip by a block between
+    /// 20-second auto-refreshes; this margin keeps that from flickering the
+    /// "Rescanning…" readout. A genuine restore rescans from height 0 (millions of
+    /// blocks), so the margin never hides real progress. Pure heuristic — the
+    /// scanned/target heights it gates are honest.
+    const rescan_done_slack: i64 = 4;
+
+    /// Report how far the wallet's background refresh has scanned a freshly restored
+    /// wallet, so the UI can show "Rescanning… X%". `salvium-wallet-rpc`
+    /// auto-refreshes an open wallet in 256-block chunks (see `walletRestoreSeed`),
+    /// advancing its `get_height` as it goes. The scanned height is that wallet
+    /// `get_height` (`wallet_auth`); the target is the daemon's chain tip from
+    /// `get_info` (`daemon_auth`) — wallet and daemon are separate processes, so
+    /// both auths are needed. Returns null when the wallet is within
+    /// `rescan_done_slack` of the tip (caught up) or the tip isn't known yet, which
+    /// clears the indicator. Best-effort: a read error propagates and the poll
+    /// worker treats it as "no progress this tick" (keeping the last value).
+    fn walletRescanProgress(
+        allocator: std.mem.Allocator,
+        wallet_auth: models.CoinAuth,
+        daemon_auth: models.CoinAuth,
+    ) anyerror!?models.RescanProgress {
+        var info = try fetchInfo(allocator, daemon_auth);
+        defer info.deinit();
+        const di = info.value.result orelse return null;
+        const tip = @max(di.target_height, di.height);
+        if (tip <= 0) return null;
+
+        var parsed = try walletCall(WalletHeightResult, allocator, wallet_auth, "get_height", "{}");
+        defer parsed.deinit();
+        const wh = parsed.value.result orelse return null;
+        return rescanFrom(@intCast(wh.height), tip);
+    }
+
+    /// Decide the rescan readout from the wallet's `scanned` height and the daemon
+    /// `tip`. Null = caught up (within `rescan_done_slack` of the tip) or the tip
+    /// isn't known yet, which clears the "Rescanning…" indicator; otherwise the
+    /// scanned/target pair to show. Pure, so it's unit-testable without either
+    /// process.
+    fn rescanFrom(scanned: i64, tip: i64) ?models.RescanProgress {
+        if (tip <= 0) return null;
+        if (scanned >= tip - rescan_done_slack) return null;
+        return .{ .scanned = scanned, .target = tip };
     }
 
     // --- Transactions / receive / send (wallet RPC) ----------------------
@@ -1083,6 +1180,7 @@ pub const Salvium = struct {
         .open = walletOpen,
         .remove = walletRemove,
         .balance = walletBalance,
+        .rescan_progress = walletRescanProgress,
     };
 
     // --- vtable plumbing -------------------------------------------------
@@ -1453,12 +1551,17 @@ test "prepareConf writes a Monero-valid conf salviumd can parse (no bitcoin keys
 
 // --- External wallet (Monero wallet-rpc) tests ---------------------------
 
-test "get_balance atomic units map to SAL Total/Available (8 decimals)" {
+test "get_balance parses the per-asset balances array and maps SAL1 to Total/Available" {
     const allocator = std.testing.allocator;
 
-    // 1.5 SAL total, 1.0 SAL unlocked, in 1e8 atomic units.
+    // Salvium's real (multi-asset) shape: a `balances` array, one entry per held
+    // asset, each tagged with its `asset_type` — NOT a flat top-level balance. 1.5
+    // SAL total / 1.0 SAL unlocked in 1e8 atomic units, plus an unrelated asset to
+    // prove `primaryAssetBalance` selects SAL1 rather than the first/any entry.
     const raw =
-        \\{"id":"0","jsonrpc":"2.0","result":{"balance":150000000,"unlocked_balance":100000000}}
+        \\{"id":"0","jsonrpc":"2.0","result":{"balances":[
+        \\{"asset_type":"SALUSD","balance":999,"unlocked_balance":999},
+        \\{"asset_type":"SAL1","balance":150000000,"unlocked_balance":100000000,"blocks_to_unlock":0}]}}
     ;
     var parsed = try std.json.parseFromSlice(
         models.JsonRpcResponse(Salvium.WalletBalanceResult),
@@ -1468,12 +1571,71 @@ test "get_balance atomic units map to SAL Total/Available (8 decimals)" {
     );
     defer parsed.deinit();
 
-    const r = parsed.value.result.?;
-    const bal = Salvium.atomicToBalance(r.balance, r.unlocked_balance);
+    const bal = Salvium.primaryAssetBalance(parsed.value.result.?.balances);
     try std.testing.expectApproxEqAbs(@as(f64, 1.5), bal.total, 1e-9);
     try std.testing.expectApproxEqAbs(@as(f64, 1.0), bal.available, 1e-9);
     // Total ahead of available → funds still settling.
     try std.testing.expect(bal.hasPending());
+
+    // A reply with no SAL1 entry (the wallet omits any zero-balance asset, and a
+    // mid-rescan wallet may not have seen a SAL1 output yet) → honest zero, not an
+    // error and not some other asset's amount.
+    const none =
+        \\{"id":"0","jsonrpc":"2.0","result":{"balances":[]}}
+    ;
+    var p2 = try std.json.parseFromSlice(
+        models.JsonRpcResponse(Salvium.WalletBalanceResult),
+        allocator,
+        none,
+        .{ .ignore_unknown_fields = true },
+    );
+    defer p2.deinit();
+    const zero = Salvium.primaryAssetBalance(p2.value.result.?.balances);
+    try std.testing.expectEqual(@as(f64, 0), zero.total);
+    try std.testing.expectEqual(@as(f64, 0), zero.available);
+}
+
+test "walletIsClosed flags a -13 / no-wallet-file error so the app reverts to Locked" {
+    const E = Salvium.RpcErrObj;
+    // Monero's "no wallet open" — by code and by message; either alone suffices.
+    try std.testing.expect(Salvium.walletIsClosed(E{ .code = -13, .message = "No wallet file" }));
+    try std.testing.expect(Salvium.walletIsClosed(E{ .code = -1, .message = "No wallet file" }));
+    try std.testing.expect(Salvium.walletIsClosed(E{ .code = -13, .message = "" }));
+    // An unrelated wallet-RPC error must NOT read as closed (that would wrongly
+    // lock a working wallet on a transient hiccup).
+    try std.testing.expect(!Salvium.walletIsClosed(E{ .code = -32601, .message = "Method not found" }));
+    // No error object at all → not closed.
+    try std.testing.expect(!Salvium.walletIsClosed(null));
+}
+
+test "get_height parses the wallet's scanned height and rescanFrom gates on the tip" {
+    const allocator = std.testing.allocator;
+
+    // A wallet mid-rescan: scanned 900k of a chain the daemon reports at 1.5M.
+    const raw =
+        \\{"id":"0","jsonrpc":"2.0","result":{"height":900000}}
+    ;
+    var parsed = try std.json.parseFromSlice(
+        Salvium.WalletEnvelope(Salvium.WalletHeightResult),
+        allocator,
+        raw,
+        .{ .ignore_unknown_fields = true },
+    );
+    defer parsed.deinit();
+    const scanned: i64 = @intCast(parsed.value.result.?.height);
+    try std.testing.expectEqual(@as(i64, 900_000), scanned);
+
+    // Mid-scan → a live scanned/target pair the UI renders as "Rescanning… X%".
+    const mid = Salvium.rescanFrom(scanned, 1_500_000).?;
+    try std.testing.expectEqual(@as(i64, 900_000), mid.scanned);
+    try std.testing.expectEqual(@as(i64, 1_500_000), mid.target);
+
+    // Caught up (equal heights) → null clears the indicator.
+    try std.testing.expectEqual(@as(?models.RescanProgress, null), Salvium.rescanFrom(1_500_000, 1_500_000));
+    // Within the slack of the tip (steady-state 1-block lag) → still caught up.
+    try std.testing.expectEqual(@as(?models.RescanProgress, null), Salvium.rescanFrom(1_499_999, 1_500_000));
+    // Tip not known yet (daemon hasn't answered a height) → null, no divide by zero.
+    try std.testing.expectEqual(@as(?models.RescanProgress, null), Salvium.rescanFrom(0, 0));
 }
 
 test "isValidSeed accepts a 25-word phrase and rejects other counts" {

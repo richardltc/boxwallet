@@ -551,14 +551,18 @@ pub const Ergo = struct {
     /// `walletRestoreSeed`); the node resets `walletHeight` to 0 and scans up toward
     /// the chain tip, so progress is `walletHeight / fullHeight`. Null when the
     /// wallet is locked/uninitialized, the tip height isn't known yet, or the wallet
-    /// is within `rescan_done_slack` of the tip (caught up). `auth` unused (fixed
-    /// api_key). Best-effort: any read error propagates to the caller, which treats
-    /// it as "no progress info this tick".
+    /// is within `rescan_done_slack` of the tip (caught up). Both auths are unused:
+    /// Ergo's wallet and node are one process, reached with the fixed api_key, so
+    /// the scanned height and the tip both come from `fetchInfo`/`walletStatus`.
+    /// Best-effort: any read error propagates to the caller, which treats it as "no
+    /// progress info this tick".
     pub fn walletRescanProgress(
         allocator: std.mem.Allocator,
         auth: models.CoinAuth,
+        daemon_auth: models.CoinAuth,
     ) anyerror!?models.RescanProgress {
         _ = auth;
+        _ = daemon_auth;
         const st = try walletStatus(allocator);
         if (!st.isInitialized or !st.isUnlocked) return null;
 
