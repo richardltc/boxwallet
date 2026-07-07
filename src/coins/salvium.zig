@@ -902,6 +902,7 @@ pub const Salvium = struct {
     /// `in` bucket with `type == "block"`.
     const TransferEntry = struct {
         amount: u64 = 0,
+        fee: u64 = 0,
         timestamp: i64 = 0,
         confirmations: i64 = 0,
         asset_type: []const u8 = "",
@@ -958,12 +959,12 @@ pub const Salvium = struct {
         }
         for (r.out) |e| {
             if (!isPrimaryAsset(e.asset_type)) continue;
-            all[n] = mapEntry(e, .sent);
+            all[n] = mapOutEntry(e);
             n += 1;
         }
         for (r.pending) |e| {
             if (!isPrimaryAsset(e.asset_type)) continue;
-            all[n] = mapEntry(e, .sent);
+            all[n] = mapOutEntry(e);
             n += 1;
         }
         for (r.pool) |e| {
@@ -976,6 +977,28 @@ pub const Salvium = struct {
         const out = try allocator.alloc(models.WalletTx, @min(n, limit));
         @memcpy(out, all[0..out.len]);
         return out;
+    }
+
+    /// Map an outgoing (`out`/`pending`) entry, distinguishing a stake from a
+    /// plain send. A Salvium **stake** doesn't pay a counterparty: the wallet
+    /// locks the principal back to itself, so wallet2 reports the entry with
+    /// `amount == 0` and folds the locked principal (plus the network fee) into
+    /// `fee` — a normal send instead carries the sent value in `amount`. Left as
+    /// a raw send, a stake would show up as a misleading 0-value row, so detect
+    /// it (amount 0, nonzero fee) and surface the staked value from `fee` under
+    /// the `.stake` direction. The reported `fee` is principal + network fee, so
+    /// the displayed amount is the total that left the wallet for the stake
+    /// (a stake of 100 reads as ~100 plus the sub-SAL fee) — the two can't be
+    /// separated from this entry, and showing what actually left is honest.
+    fn mapOutEntry(e: TransferEntry) models.WalletTx {
+        if (e.amount == 0 and e.fee > 0) {
+            return mapEntry(.{
+                .amount = e.fee,
+                .timestamp = e.timestamp,
+                .confirmations = e.confirmations,
+            }, .stake);
+        }
+        return mapEntry(e, .sent);
     }
 
     /// One entry → the normalized row (atomic units → whole SAL).
@@ -1817,6 +1840,29 @@ test "parses a get_transfers reply into bucketed TransferEntry lists (asset-tagg
     try std.testing.expectApproxEqAbs(@as(f64, 2.5), txs[1].amount, 1e-9);
     try std.testing.expectEqual(models.TxDirection.stake, txs[2].direction);
     try std.testing.expectApproxEqAbs(@as(f64, 5.0), txs[2].amount, 1e-9);
+}
+
+test "mapTransfers surfaces a Salvium stake (amount 0, principal in fee) as a stake row" {
+    const allocator = std.testing.allocator;
+    // Two out entries: a plain send (value in `amount`) and a stake, which
+    // wallet2 reports with amount 0 and the locked principal+fee in `fee`
+    // (10_000_762_560 atomic = ~100.0076 SAL).
+    var out = [_]Salvium.TransferEntry{
+        .{ .type = "out", .asset_type = "SAL1", .amount = 125000000, .fee = 500000, .timestamp = 100, .confirmations = 5 },
+        .{ .type = "out", .asset_type = "SAL1", .amount = 0, .fee = 10_000_762_560, .timestamp = 200, .confirmations = 1 },
+    };
+    const r: Salvium.GetTransfersResult = .{ .out = &out };
+
+    const txs = try Salvium.mapTransfers(allocator, r, 32);
+    defer allocator.free(txs);
+
+    try std.testing.expectEqual(@as(usize, 2), txs.len);
+    // Newest-first: the stake row leads; its amount comes from `fee`, not the
+    // zero `amount`, and it's flagged as a stake rather than a 0-value send.
+    try std.testing.expectEqual(models.TxDirection.stake, txs[0].direction);
+    try std.testing.expectApproxEqAbs(@as(f64, 100.0076256), txs[0].amount, 1e-7);
+    try std.testing.expectEqual(models.TxDirection.sent, txs[1].direction);
+    try std.testing.expectApproxEqAbs(@as(f64, 1.25), txs[1].amount, 1e-9);
 }
 
 test "mapTransfers caps at limit, newest-first" {
