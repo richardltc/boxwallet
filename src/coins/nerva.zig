@@ -51,7 +51,7 @@ pub const Nerva = struct {
     /// path has a username to write (the daemon ignores it).
     pub const rpc_default_username = "nervarpc";
     pub const rpc_default_port = "17566";
-    pub const core_version = "0.2.3.0";
+    pub const core_version = "0.3.0.0";
 
     // Binary names. Windows appends `.exe`. The wallet CLI is `nerva-wallet-cli`;
     // there's no `*-tx` helper. `nerva-wallet-rpc` drives the (external) wallet —
@@ -839,10 +839,13 @@ pub const Nerva = struct {
         // timeout is a backstop against any vintage that ignores both.
         const argv = [_][]const u8{
             cli_path,
-            "--generate-from-json", spec_path,
+            "--generate-from-json",
+            spec_path,
             "--offline",
-            "--log-level",          "0",
-            "--command",            "exit",
+            "--log-level",
+            "0",
+            "--command",
+            "exit",
         };
         const res = std.process.run(allocator, io, .{
             .argv = &argv,
@@ -980,7 +983,7 @@ pub const Nerva = struct {
         timestamp: i64 = 0,
         height: i64 = 0,
         confirmations: i64 = 0,
-        @"type": []const u8 = "",
+        type: []const u8 = "",
     };
 
     /// `get_transfers` groups entries by state; direction falls out of the
@@ -1041,7 +1044,7 @@ pub const Nerva = struct {
         var n: usize = 0;
         for (r.in) |e| {
             // A coinbase credit (type "block") was minted by the wallet itself.
-            const direction: models.TxDirection = if (std.mem.eql(u8, e.@"type", "block")) .stake else .received;
+            const direction: models.TxDirection = if (std.mem.eql(u8, e.type, "block")) .stake else .received;
             all[n] = mapEntry(e, direction, tip);
             n += 1;
         }
@@ -1883,7 +1886,7 @@ test "parses a get_transfers reply into bucketed TransferEntry lists" {
     const r = parsed.value.result.?;
     try std.testing.expectEqual(@as(usize, 2), r.in.len);
     try std.testing.expectEqual(@as(usize, 1), r.out.len);
-    try std.testing.expectEqualStrings("block", r.in[0].@"type");
+    try std.testing.expectEqualStrings("block", r.in[0].type);
     try std.testing.expectEqual(@as(u64, 2500000000000), r.in[1].amount);
     try std.testing.expectEqual(@as(i64, 0), r.in[0].confirmations);
 }
@@ -1892,11 +1895,11 @@ test "mapTransfers flattens buckets newest-first with derived confirmations, cap
     const allocator = std.testing.allocator;
 
     var in = [_]Nerva.TransferEntry{
-        .{ .@"type" = "block", .amount = 5_000_000_000_000, .timestamp = 100, .height = 1000 }, // mined → stake
-        .{ .@"type" = "in", .amount = 2_500_000_000_000, .timestamp = 200, .height = 1400 },
+        .{ .type = "block", .amount = 5_000_000_000_000, .timestamp = 100, .height = 1000 }, // mined → stake
+        .{ .type = "in", .amount = 2_500_000_000_000, .timestamp = 200, .height = 1400 },
     };
     var out = [_]Nerva.TransferEntry{
-        .{ .@"type" = "out", .amount = 1_250_000_000_000, .timestamp = 300, .height = 1490 },
+        .{ .type = "out", .amount = 1_250_000_000_000, .timestamp = 300, .height = 1490 },
     };
     var pool = [_]Nerva.TransferEntry{
         .{ .amount = 750_000_000_000, .timestamp = 400, .height = 0 }, // incoming, unconfirmed
@@ -1919,7 +1922,7 @@ test "mapTransfers flattens buckets newest-first with derived confirmations, cap
     // The per-entry confirmations field wins over the derived height gap when a
     // newer vintage reports it.
     var confirmed = [_]Nerva.TransferEntry{
-        .{ .@"type" = "in", .amount = 1, .timestamp = 1, .height = 1400, .confirmations = 42 },
+        .{ .type = "in", .amount = 1, .timestamp = 1, .height = 1400, .confirmations = 42 },
     };
     const r2: Nerva.GetTransfersResult = .{ .in = &confirmed };
     const t2 = try Nerva.mapTransfers(allocator, r2, 1500, 32);
