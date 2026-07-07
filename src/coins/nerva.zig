@@ -955,8 +955,22 @@ pub const Nerva = struct {
     ) anyerror!models.WalletBalance {
         var parsed = try walletCall(WalletBalanceResult, allocator, wallet_auth, "get_balance", "{\"account_index\":0}");
         defer parsed.deinit();
-        const r = parsed.value.result orelse return error.EmptyRpcResult;
-        return atomicToBalance(r.balance, r.unlocked_balance);
+        if (parsed.value.result) |r| return atomicToBalance(r.balance, r.unlocked_balance);
+        // No result → the wallet-rpc returned an error. "No wallet file" (-13) means
+        // no wallet is open: the wallet-rpc was restarted (e.g. a daemon bounce) and
+        // never re-opened. Surface it distinctly so the app can revert the wallet
+        // line to "Locked" rather than showing a stale balance; any other error is
+        // transient and the poll leaves the last value in place.
+        if (walletIsClosed(parsed.value.@"error")) return error.WalletClosed;
+        return error.EmptyRpcResult;
+    }
+
+    /// True if a wallet-RPC `error` reports that no wallet is open. Monero returns
+    /// code -13 (`WALLET_RPC_ERROR_CODE_NO_WALLET_FILE`) with a "No wallet file"
+    /// message; matching either is robust across fork/vintage wording changes.
+    fn walletIsClosed(err: ?RpcErrObj) bool {
+        const e = err orelse return false;
+        return e.code == -13 or containsIgnoreCase(e.message, "no wallet");
     }
 
     /// Map Monero atomic balances to the normalized `WalletBalance`. Pure, so it's
@@ -966,6 +980,49 @@ pub const Nerva = struct {
             .total = @as(f64, @floatFromInt(balance)) / atomic_per_xnv,
             .available = @as(f64, @floatFromInt(unlocked)) / atomic_per_xnv,
         };
+    }
+
+    /// Blocks of slack below the daemon tip within which the wallet counts as
+    /// "caught up". Steady-state, the wallet can trail the tip by a block between
+    /// the wallet-rpc's periodic auto-refreshes; this margin keeps that from
+    /// flickering the "Rescanning…" readout. A genuine restore rescans from height 0
+    /// (millions of blocks), so the margin never hides real progress.
+    const rescan_done_slack: i64 = 4;
+
+    /// Report how far the wallet's background refresh has scanned a freshly restored
+    /// wallet, so the UI can show "Rescanning… X%". `nerva-wallet-rpc` auto-refreshes
+    /// an open wallet in the background (see `walletRestoreSeed` — no blocking
+    /// refresh is issued), advancing its `get_height` as it goes. The scanned height
+    /// is that wallet height (`wallet_auth`); the target is the daemon's chain tip
+    /// from `get_info` (`daemon_auth`) — wallet and daemon are separate processes, so
+    /// both auths are needed. Returns null when the wallet is within
+    /// `rescan_done_slack` of the tip (caught up) or a height isn't known yet, which
+    /// clears the indicator. Best-effort: a read error leaves the poll's last value.
+    fn walletRescanProgress(
+        allocator: std.mem.Allocator,
+        wallet_auth: models.CoinAuth,
+        daemon_auth: models.CoinAuth,
+    ) anyerror!?models.RescanProgress {
+        var info = try fetchInfo(allocator, daemon_auth);
+        defer info.deinit();
+        const di = info.value.result orelse return null;
+        const tip = @max(di.target_height, di.height);
+        // `walletChainHeight` is best-effort and returns 0 when the wallet-rpc can't
+        // answer (e.g. no wallet open) — treat that as "nothing to show".
+        const scanned = walletChainHeight(allocator, wallet_auth);
+        if (scanned <= 0) return null;
+        return rescanFrom(scanned, tip);
+    }
+
+    /// Decide the rescan readout from the wallet's `scanned` height and the daemon
+    /// `tip`. Null = caught up (within `rescan_done_slack` of the tip) or the tip
+    /// isn't known yet, which clears the "Rescanning…" indicator; otherwise the
+    /// scanned/target pair to show. Pure, so it's unit-testable without either
+    /// process.
+    fn rescanFrom(scanned: i64, tip: i64) ?models.RescanProgress {
+        if (tip <= 0) return null;
+        if (scanned >= tip - rescan_done_slack) return null;
+        return .{ .scanned = scanned, .target = tip };
     }
 
     // --- Transactions / receive / send (wallet RPC) ----------------------
@@ -1209,6 +1266,7 @@ pub const Nerva = struct {
         .open = walletOpen,
         .remove = walletRemove,
         .balance = walletBalance,
+        .rescan_progress = walletRescanProgress,
     };
 
     // --- vtable plumbing -------------------------------------------------
@@ -1768,6 +1826,31 @@ test "walletRpcError maps known Monero messages to specific errors" {
     // Unfamiliar message / no error object → the caller's fallback.
     try std.testing.expect(Nerva.walletRpcError(E{ .message = "something new" }, error.WalletRestoreFailed) == error.WalletRestoreFailed);
     try std.testing.expect(Nerva.walletRpcError(null, error.WalletRestoreFailed) == error.WalletRestoreFailed);
+}
+
+test "walletIsClosed flags a -13 / no-wallet-file error so the app reverts to Locked" {
+    const E = Nerva.RpcErrObj;
+    // Monero's "no wallet open" — by code and by message; either alone suffices.
+    try std.testing.expect(Nerva.walletIsClosed(E{ .code = -13, .message = "No wallet file" }));
+    try std.testing.expect(Nerva.walletIsClosed(E{ .code = -1, .message = "No wallet file" }));
+    try std.testing.expect(Nerva.walletIsClosed(E{ .code = -13, .message = "" }));
+    // An unrelated wallet-RPC error must NOT read as closed (that would wrongly
+    // lock a working wallet on a transient hiccup).
+    try std.testing.expect(!Nerva.walletIsClosed(E{ .code = -32601, .message = "Method not found" }));
+    // No error object at all → not closed.
+    try std.testing.expect(!Nerva.walletIsClosed(null));
+}
+
+test "rescanFrom shows progress mid-scan and clears when caught up or tip unknown" {
+    // Mid-scan → a live scanned/target pair the UI renders as "Rescanning… X%".
+    const mid = Nerva.rescanFrom(900_000, 1_500_000).?;
+    try std.testing.expectEqual(@as(i64, 900_000), mid.scanned);
+    try std.testing.expectEqual(@as(i64, 1_500_000), mid.target);
+    // Caught up (equal heights) and within-slack (steady-state 1-block lag) → null.
+    try std.testing.expectEqual(@as(?models.RescanProgress, null), Nerva.rescanFrom(1_500_000, 1_500_000));
+    try std.testing.expectEqual(@as(?models.RescanProgress, null), Nerva.rescanFrom(1_499_999, 1_500_000));
+    // Tip not known yet (daemon hasn't answered a height) → null, no divide by zero.
+    try std.testing.expectEqual(@as(?models.RescanProgress, null), Nerva.rescanFrom(0, 0));
 }
 
 test "walletProcessArgv binds wallet-rpc to localhost and points it at the daemon" {
