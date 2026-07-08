@@ -295,6 +295,111 @@ pub const Coin = struct {
         ) anyerror!?i64,
     };
 
+    /// One lock tier a stablecoin can be minted at: longer locks demand less
+    /// collateral. `duration` is the human label ("30 days", "10 years");
+    /// `ratio_pct` the required collateral ratio in percent (500 == 500%, i.e.
+    /// $5 of collateral per $1 minted).
+    pub const StablecoinTier = struct {
+        tier: u8,
+        duration: []const u8,
+        ratio_pct: u32,
+    };
+
+    /// An optional **stablecoin** capability — a USD-denominated asset issued on
+    /// the coin's own chain by locking the coin as collateral (DigiByte's
+    /// DigiDollar). Coins with one get a dedicated detail-pane tab (named
+    /// `name`) covering the full lifecycle: mint (lock collateral at a chosen
+    /// tier), send/receive, positions (vaults), and redeem (burn the stablecoin
+    /// to release the collateral once the timelock expires).
+    ///
+    /// All amounts are **integer USD cents** (`models.Stablecoin*`), matching
+    /// the daemon's unit. Every hook takes the *daemon's* RPC auth — the
+    /// stablecoin wallet RPCs live in the coin's own wallet, not a separate
+    /// process. Hooks return `SendResult`-style outcomes where a daemon-side
+    /// rejection (locked wallet, timelock not expired, price stale) is a normal
+    /// outcome to show verbatim, not an exceptional error.
+    pub const Stablecoin = struct {
+        /// Display name — the tab label ("DigiDollar").
+        name: []const u8,
+        /// Short unit symbol ("DD").
+        symbol: []const u8,
+        /// Smallest / largest amount the daemon will mint in one transaction,
+        /// in cents, for the mint prompt's bounds hint.
+        min_mint_cents: i64,
+        max_mint_cents: i64,
+        /// The chain's block interval in seconds (DigiByte: 15), so the
+        /// pre-activation countdown can turn "N blocks to go" into wall-clock
+        /// time. 0 = unknown (the UI shows blocks only).
+        block_seconds: u32 = 0,
+        /// The mintable lock tiers, in tier order (index == tier number).
+        tiers: []const StablecoinTier,
+        /// Live system state: deployment (activation) status, oracle price,
+        /// supply/collateral/health, whether minting is currently blocked.
+        info: *const fn (
+            allocator: std.mem.Allocator,
+            auth: models.CoinAuth,
+        ) anyerror!models.StablecoinInfo,
+        /// The wallet's stablecoin balance, in cents.
+        balance: *const fn (
+            allocator: std.mem.Allocator,
+            auth: models.CoinAuth,
+        ) anyerror!models.StablecoinBalance,
+        /// The wallet's stablecoin deposit address. `force_new` mints a fresh
+        /// one (the user's explicit rotation); otherwise the current/first
+        /// existing address is reused. Caller owns the returned slice.
+        receive_address: *const fn (
+            allocator: std.mem.Allocator,
+            auth: models.CoinAuth,
+            force_new: bool,
+        ) anyerror![]const u8,
+        /// The wallet's most recent stablecoin transactions, newest-first,
+        /// capped at `limit`. Caller owns the returned slice.
+        transactions: *const fn (
+            allocator: std.mem.Allocator,
+            auth: models.CoinAuth,
+            limit: usize,
+        ) anyerror![]models.StablecoinTx,
+        /// The wallet's collateral positions (vaults), capped at `limit`.
+        /// Caller owns the returned slice.
+        positions: *const fn (
+            allocator: std.mem.Allocator,
+            auth: models.CoinAuth,
+            limit: usize,
+        ) anyerror![]models.StablecoinPosition,
+        /// How much collateral (in the coin's own units) minting `cents` at
+        /// `tier` would lock right now, so the user sees the cost before
+        /// confirming.
+        estimate_collateral: *const fn (
+            allocator: std.mem.Allocator,
+            auth: models.CoinAuth,
+            cents: i64,
+            tier: u8,
+        ) anyerror!f64,
+        /// Mint `cents` of stablecoin at lock `tier`, locking collateral.
+        mint: *const fn (
+            allocator: std.mem.Allocator,
+            auth: models.CoinAuth,
+            cents: i64,
+            tier: u8,
+        ) anyerror!models.SendResult,
+        /// Send `cents` of stablecoin to `address`.
+        send: *const fn (
+            allocator: std.mem.Allocator,
+            auth: models.CoinAuth,
+            address: []const u8,
+            cents: i64,
+        ) anyerror!models.SendResult,
+        /// Redeem the position `position_id` (its full `cents` amount — the
+        /// daemon requires redeeming whole vaults), burning the stablecoin and
+        /// unlocking its collateral.
+        redeem: *const fn (
+            allocator: std.mem.Allocator,
+            auth: models.CoinAuth,
+            position_id: []const u8,
+            cents: i64,
+        ) anyerror!models.SendResult,
+    };
+
     /// How a coin's daemon is launched.
     ///   - `fork`: the daemon forks itself into the background and the launcher
     ///     exits (bitcoin-derived `*coind -daemon`); the launcher waits on it and
@@ -647,6 +752,10 @@ pub const Coin = struct {
         /// prompt). Null for coins with no prune prompt. `pruning`/`offersPrunePrompt`
         /// key off this.
         pruning: ?*const Pruning = null,
+        /// Optional: the stablecoin capability (DigiByte's DigiDollar). Null for
+        /// coins with no chain-issued stablecoin. `stablecoin`/`supportsStablecoin`
+        /// key off this; non-null lights up the coin's stablecoin tab.
+        stablecoin: ?*const Stablecoin = null,
     };
 
     pub fn coinName(self: Coin) []const u8 {
@@ -1166,5 +1275,18 @@ pub const Coin = struct {
     pub fn pruningState(self: Coin, allocator: std.mem.Allocator, home_dir: []const u8) !?i64 {
         const pr = self.vtable.pruning orelse return null;
         return pr.current(allocator, home_dir);
+    }
+
+    /// Whether this coin issues a chain-native stablecoin (drives the
+    /// stablecoin tab — DigiByte's DigiDollar). True iff the coin wires
+    /// `stablecoin`.
+    pub fn supportsStablecoin(self: Coin) bool {
+        return self.vtable.stablecoin != null;
+    }
+
+    /// The stablecoin capability, or null when the coin has none
+    /// (`supportsStablecoin` false). Callers use the fn pointers directly.
+    pub fn stablecoin(self: Coin) ?*const Stablecoin {
+        return self.vtable.stablecoin;
     }
 };

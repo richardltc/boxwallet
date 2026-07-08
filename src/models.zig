@@ -384,6 +384,114 @@ pub const SendResult = union(enum) {
     failed: []const u8, // human-readable reason
 };
 
+// --- Stablecoin (DigiDollar) -----------------------------------------------
+//
+// Normalized models for a coin-issued stablecoin (DigiByte's DigiDollar — DD
+// minted against locked DGB collateral). Amounts are **integer USD cents**
+// (10000 == $100.00) end to end, matching the daemon's own unit, so no float
+// rounding can creep into money figures. All of these are scalar-only /
+// bounded-buffer, for the same reason as `WalletTx`: fixed-capacity caches of
+// them are memcpy'd across the poll-worker/UI-thread boundary.
+
+/// A stablecoin wallet balance, in integer cents. `confirmed` is spendable;
+/// `pending` is still settling in the mempool.
+pub const StablecoinBalance = struct {
+    confirmed_cents: i64 = 0,
+    pending_cents: i64 = 0,
+
+    /// The headline figure — confirmed plus everything still settling.
+    pub fn totalCents(self: StablecoinBalance) i64 {
+        return self.confirmed_cents + self.pending_cents;
+    }
+};
+
+/// What a stablecoin transaction did, normalized from the daemon's `category`.
+/// `mint` created new stablecoin against locked collateral; `redeem` burned it
+/// and released the collateral; `sent`/`received` are plain transfers.
+pub const StablecoinTxKind = enum { mint, sent, received, redeem };
+
+/// One stablecoin transaction, normalized for display. Scalar-only, like
+/// `WalletTx`.
+pub const StablecoinTx = struct {
+    kind: StablecoinTxKind,
+    amount_cents: i64, // positive magnitude; `kind` carries the sign
+    time: i64, // unix seconds
+    confirmations: i64,
+};
+
+/// One collateral position (vault): stablecoin minted against locked collateral
+/// that can be redeemed — burned to release the collateral — once its timelock
+/// expires. `id` is the mint transaction hash (the daemon's position handle),
+/// held in a bounded buffer so the struct stays memcpy-safe.
+pub const StablecoinPosition = struct {
+    id_buf: [64]u8 = undefined,
+    id_len: usize = 0,
+    /// The stablecoin amount minted (and the amount a redeem must burn — the
+    /// daemon requires redeeming the full vault), in cents.
+    amount_cents: i64 = 0,
+    /// The lock tier the position was minted at (indexes the coin's tier table).
+    tier: u8 = 0,
+    /// Block height at which the timelock expires and the vault can be redeemed.
+    unlock_height: i64 = 0,
+    /// The daemon's own "this can be redeemed now" verdict (timelock expired,
+    /// confirmed, unspent) — the field the integration guide says to filter on.
+    can_redeem: bool = false,
+
+    pub fn id(self: *const StablecoinPosition) []const u8 {
+        return self.id_buf[0..self.id_len];
+    }
+
+    pub fn setId(self: *StablecoinPosition, txid: []const u8) void {
+        const n = @min(txid.len, self.id_buf.len);
+        @memcpy(self.id_buf[0..n], txid[0..n]);
+        self.id_len = n;
+    }
+};
+
+/// Live stablecoin system state, folded from the daemon's info RPCs. Everything
+/// is best-effort past `active`: a daemon mid-warmup (or an oracle hiccup)
+/// leaves the affected figures at their zero values rather than erroring the
+/// whole snapshot.
+pub const StablecoinInfo = struct {
+    /// Whether the consensus feature is ACTIVE on this network (BIP9 status
+    /// "active"). Until it is, minting/sending/redeeming are gated off and the
+    /// UI explains the deployment status instead.
+    active: bool = false,
+    /// The raw BIP9 deployment status ("defined"/"started"/"locked_in"/
+    /// "active"/"failed"), for the pre-activation readout. Bounded buffer.
+    status_buf: [24]u8 = undefined,
+    status_len: usize = 0,
+    /// The block height the feature activates at (the daemon's
+    /// `activation_height` once known, else its `min_activation_height`), so a
+    /// pre-activation UI can count down to it. 0 = unknown.
+    activation_height: i64 = 0,
+    /// Oracle consensus price of the collateral coin in **micro-USD per coin**
+    /// (1_000_000 == $1.00). 0 = unknown/unavailable.
+    price_micro_usd: u64 = 0,
+    /// Whether the oracle price is stale (old enough that minting against it
+    /// is blocked) — surfaced so the user knows why a mint might refuse.
+    price_stale: bool = false,
+    /// System-wide stablecoin supply, in cents. 0 when unknown.
+    total_supply_cents: i64 = 0,
+    /// Total collateral locked system-wide, in the collateral coin's units.
+    total_collateral: f64 = 0,
+    /// System health: aggregate collateral ratio, percent (e.g. 312.5). 0 when
+    /// unknown.
+    health_ratio: f64 = 0,
+    /// Whether the protocol's volatility protection currently blocks minting.
+    minting_blocked: bool = false,
+
+    pub fn status(self: *const StablecoinInfo) []const u8 {
+        return self.status_buf[0..self.status_len];
+    }
+
+    pub fn setStatus(self: *StablecoinInfo, s: []const u8) void {
+        const n = @min(s.len, self.status_buf.len);
+        @memcpy(self.status_buf[0..n], s[0..n]);
+        self.status_len = n;
+    }
+};
+
 /// How far a wallet rescan has progressed — `scanned` blocks of `target`. Reported
 /// by an in-daemon wallet that re-scans the chain after a restore (Ergo, whose node
 /// only scans forward, so a restored seed's history is found by an explicit

@@ -258,9 +258,12 @@ const DaemonState = enum { stopped, starting, running, stopping };
 /// historically showed (status, sync/disk/memory bars, install activity, daemon
 /// button); the rest are scaffolded panes filled in later. The coin name and
 /// balance header stay pinned above the tabs regardless of which is active.
-/// `mining` sits last (past `settings`) so the 1–5 muscle memory of the first
-/// five tabs is identical on every coin — it only exists (strip, cycling, the
-/// `6` jump) for a coin whose daemon mines in-process (`supportsMining`).
+/// The capability tabs sit last (past `settings`) so the 1–5 muscle memory of
+/// the first five tabs is identical on every coin — `mining` exists only for a
+/// coin whose daemon mines in-process (`supportsMining`), `digidollar` only for
+/// a coin with a chain-native stablecoin (`supportsStablecoin`). The numbered
+/// jumps map over the *visible* strip (see `visibleTabAt`), so each coin's tabs
+/// are always a contiguous 1..N.
 const DetailTab = enum {
     home,
     transactions,
@@ -268,6 +271,7 @@ const DetailTab = enum {
     send,
     settings,
     mining,
+    digidollar,
 
     fn label(self: DetailTab) []const u8 {
         return switch (self) {
@@ -277,21 +281,57 @@ const DetailTab = enum {
             .send => "Send",
             .settings => "Settings",
             .mining => "Mining",
+            .digidollar => "DigiDollar",
         };
     }
 };
 
+/// Whether `t` exists on the current coin's strip — the two capability tabs
+/// only exist where the coin wires the capability.
+fn tabVisible(t: DetailTab, has_mining: bool, has_stablecoin: bool) bool {
+    return switch (t) {
+        .mining => has_mining,
+        .digidollar => has_stablecoin,
+        else => true,
+    };
+}
+
+/// How many tabs the current coin shows — 5 plus its capability tabs. Drives
+/// the strip hint's "1-N".
+fn visibleTabCount(has_mining: bool, has_stablecoin: bool) usize {
+    var n: usize = 0;
+    inline for (std.meta.tags(DetailTab)) |t| {
+        if (tabVisible(t, has_mining, has_stablecoin)) n += 1;
+    }
+    return n;
+}
+
+/// The `idx`-th (0-based) *visible* tab for the current coin, or null past the
+/// end. The numbered jumps go through this so tab numbers are positional over
+/// what's on screen: a coin with a stablecoin tab (and no mining) gets it on
+/// `6`, exactly where a mining coin's Mining tab sits.
+fn visibleTabAt(idx: usize, has_mining: bool, has_stablecoin: bool) ?DetailTab {
+    var n: usize = 0;
+    inline for (std.meta.tags(DetailTab)) |t| {
+        if (tabVisible(t, has_mining, has_stablecoin)) {
+            if (n == idx) return t;
+            n += 1;
+        }
+    }
+    return null;
+}
+
 /// Step to the next/previous detail tab, wrapping around the ends. `delta` is
-/// +1 (right) or -1 (left). `has_mining` is the coin's `supportsMining()`:
-/// without it the Mining tab doesn't exist for this coin, so the cycle skips
-/// straight over it (settings wraps to home).
-fn cycleTab(t: DetailTab, delta: i2, has_mining: bool) DetailTab {
+/// +1 (right) or -1 (left). Tabs the coin doesn't have (`tabVisible` false) are
+/// skipped straight over, so the cycle only ever lands on the visible strip.
+fn cycleTab(t: DetailTab, delta: i2, has_mining: bool, has_stablecoin: bool) DetailTab {
     const n: i32 = @typeInfo(DetailTab).@"enum".fields.len;
     var next: DetailTab = t;
-    // At most two steps: one lands on .mining, the second skips past it.
-    for (0..2) |_| {
+    // At most enum-length steps: enough to skip past every hidden tab even if
+    // they sit adjacent at the wrap point.
+    for (0..@typeInfo(DetailTab).@"enum".fields.len) |_| {
         next = @enumFromInt(@mod(@as(i32, @intFromEnum(next)) + delta, n));
-        if (next != .mining or has_mining) break;
+        if (tabVisible(next, has_mining, has_stablecoin)) break;
     }
     return next;
 }
@@ -915,6 +955,168 @@ const MiningModal = struct {
     }
 };
 
+/// Which stablecoin op the Activity's stablecoin worker runs. `estimate` is
+/// the mint flow's pre-confirm collateral quote; the rest are the real
+/// transactions.
+const StablecoinOp = enum { estimate, mint, send, redeem };
+
+/// How many recent stablecoin transactions / collateral positions are cached
+/// per coin for the stablecoin tab. Bounded like `tx_cache_cap`, per the
+/// memory rule.
+const sc_tx_cache_cap: usize = 10;
+const sc_pos_cache_cap: usize = 8;
+
+/// The stablecoin (DigiDollar) prompt — opened by `enter` on the stablecoin
+/// tab of a coin with the capability. A small action menu fans out into the
+/// three flows, all funnelling into the same confirm → working → result tail
+/// the Send prompt uses:
+///
+///   mint:   amount → tier → estimating (collateral quote) → confirm
+///   send:   address → amount → confirm
+///   redeem: position (pick a redeemable vault) → confirm
+///
+/// The mint confirm shows the estimated collateral before anything is
+/// committed — locking thousands of DGB is exactly the kind of action the
+/// "don't lose the user's money to a typo" rule wants spelled out first.
+const StablecoinModal = struct {
+    const Stage = enum {
+        /// Choose mint / send / redeem.
+        menu,
+        /// Type the recipient stablecoin address (send flow).
+        address,
+        /// Enter the USD amount (mint and send flows).
+        amount,
+        /// Pick a lock tier (mint flow).
+        tier,
+        /// The collateral estimate RPC is in flight (mint flow).
+        estimating,
+        /// Pick which redeemable position to redeem (redeem flow).
+        position,
+        /// Yes/No, with the full details spelled out.
+        confirm,
+        /// The mint/send/redeem RPC is in flight (outcome read from the Activity).
+        working,
+        /// Success (txid + collateral detail) or the daemon's own failure reason.
+        result,
+    };
+
+    const Mode = enum { mint, send, redeem };
+
+    stage: Stage = .menu,
+    mode: Mode = .mint,
+    /// The entry the prompt acts on, so the worker/reap target the right
+    /// Activity even if the left-nav selection moves while it's open.
+    coin_idx: usize = 0,
+    /// Cursor on the action menu (0 = mint, 1 = send, 2 = redeem).
+    menu_sel: u8 = 0,
+    /// Cursor on the tier list (mint flow).
+    tier_sel: u8 = 0,
+    /// Cursor over the redeemable positions (redeem flow).
+    pos_sel: u8 = 0,
+    /// Confirm-menu cursor (0 = Yes, 1 = No).
+    sel: u8 = 0,
+    /// Set when the amount field failed to parse or is outside the mint bounds.
+    bad_input: bool = false,
+    /// The amount being minted/sent/redeemed, in integer cents (parsed at the
+    /// amount stage; copied from the chosen position for a redeem).
+    cents: i64 = 0,
+    /// Estimated collateral (coin units) for the pending mint, from the
+    /// estimate worker. Negative = the estimate failed; the confirm still
+    /// proceeds but says the figure is unavailable (the daemon re-checks the
+    /// real requirement at mint time regardless).
+    estimate: f64 = -1,
+    /// The chosen position's redeem handle (redeem flow), copied out of the
+    /// poll cache at selection time so a mid-flow poll refresh can't swap the
+    /// target under the confirm.
+    pos_id_buf: [64]u8 = undefined,
+    pos_id_len: usize = 0,
+    /// Whether the finished op succeeded (tints the result line).
+    ok: bool = false,
+    /// Outcome text shown in the `result` stage (fixed buffer — no allocation).
+    msg_buf: [256]u8 = undefined,
+    msg_len: usize = 0,
+
+    fn setMsg(self: *StablecoinModal, ok: bool, text: []const u8) void {
+        self.ok = ok;
+        const n = @min(text.len, self.msg_buf.len);
+        @memcpy(self.msg_buf[0..n], text[0..n]);
+        self.msg_len = n;
+        self.stage = .result;
+    }
+
+    fn posId(self: *const StablecoinModal) []const u8 {
+        return self.pos_id_buf[0..self.pos_id_len];
+    }
+};
+
+/// How many of the coin's cached vaults are redeemable right now — the redeem
+/// picker's list length.
+fn redeemableCount(act: *const Activity) usize {
+    var n: usize = 0;
+    for (act.sc_pos_buf[0..act.sc_pos_count]) |*p| {
+        if (p.can_redeem) n += 1;
+    }
+    return n;
+}
+
+/// The `idx`-th redeemable vault in the coin's cached position list (cache
+/// order), or null past the end. The redeem picker walks only redeemable
+/// vaults — locked ones are shown on the tab, not offered for redemption.
+fn redeemablePositionAt(act: *const Activity, idx: usize) ?*const models.StablecoinPosition {
+    var n: usize = 0;
+    for (act.sc_pos_buf[0..act.sc_pos_count]) |*p| {
+        if (!p.can_redeem) continue;
+        if (n == idx) return p;
+        n += 1;
+    }
+    return null;
+}
+
+/// Parse a typed USD amount ("125", "125.5", "125.50") into integer cents,
+/// or null when it isn't a plain non-negative dollars figure (empty, a bare
+/// ".", more than 2 decimal places, stray characters, overflow). Integer
+/// arithmetic only — money never rides through a float here.
+fn parseDollarsToCents(text: []const u8) ?i64 {
+    const t = std.mem.trim(u8, text, " \t");
+    if (t.len == 0) return null;
+    var dollars: []const u8 = t;
+    var frac: []const u8 = "";
+    if (std.mem.indexOfScalar(u8, t, '.')) |dot| {
+        dollars = t[0..dot];
+        frac = t[dot + 1 ..];
+        if (frac.len > 2) return null;
+        if (dollars.len == 0 and frac.len == 0) return null;
+    }
+    var cents: i64 = 0;
+    if (dollars.len > 0) {
+        const d = std.fmt.parseInt(i64, dollars, 10) catch return null;
+        if (d < 0) return null;
+        cents = std.math.mul(i64, d, 100) catch return null;
+    }
+    if (frac.len > 0) {
+        var f = std.fmt.parseInt(i64, frac, 10) catch return null;
+        if (f < 0) return null;
+        if (frac.len == 1) f *= 10;
+        cents = std.math.add(i64, cents, f) catch return null;
+    }
+    return cents;
+}
+
+/// Format integer cents as a dollars figure ("$1234.56", "-$0.05") into `buf`
+/// — no allocation (callers pass a `[32]u8`).
+fn formatCents(buf: []u8, cents: i64) []const u8 {
+    const abs: u64 = @abs(cents);
+    return std.fmt.bufPrint(buf, "{s}${d}.{d:0>2}", .{
+        if (cents < 0) "-" else "", abs / 100, abs % 100,
+    }) catch "?";
+}
+
+/// Format an oracle price in micro-USD per coin ("$0.014230") into `buf` — six
+/// decimals, since sub-cent coins are the normal case. No allocation.
+fn formatMicroUsd(buf: []u8, micro: u64) []const u8 {
+    return std.fmt.bufPrint(buf, "${d}.{d:0>6}", .{ micro / 1_000_000, micro % 1_000_000 }) catch "?";
+}
+
 /// A first-start prune preset: a menu label and the target it sets, in MiB
 /// (matching the daemon's `prune=` units; 0 = full node). 1 GB is taken as
 /// 1000 MiB so the size reads back cleanly as "N GB" on the Settings tab.
@@ -1231,6 +1433,76 @@ const Activity = struct {
     /// Error name from a failed op (static, program-lifetime), published with
     /// the `mining_done` edge.
     mining_err: []const u8 = "",
+
+    // --- stablecoin worker (the DigiDollar tab) ------------------------------
+    // A short-lived worker runs one stablecoin RPC (a collateral estimate, or
+    // a mint/send/redeem) so the UI never blocks on it. Same synchronization
+    // edge as the send worker: the worker stores `sc_done` with release, the
+    // UI loads it with acquire, and that pairing publishes
+    // `sc_ok`/`sc_estimate`/`sc_result_buf`.
+    sc_thread: ?std.Thread = null,
+    /// Which op is in flight (routes the worker).
+    sc_op: StablecoinOp = .estimate,
+    /// The amount for the in-flight op, in integer cents, copied in before spawn.
+    sc_cents: i64 = 0,
+    /// The lock tier for an in-flight estimate/mint, copied in before spawn.
+    sc_tier: u8 = 0,
+    /// The destination address for an in-flight send, copied in before spawn.
+    sc_send_addr_buf: [128]u8 = undefined,
+    sc_send_addr_len: usize = 0,
+    /// The position handle for an in-flight redeem, copied in before spawn.
+    sc_position_buf: [64]u8 = undefined,
+    sc_position_len: usize = 0,
+    /// Set true (release) by the worker when the op finishes.
+    sc_done: std.atomic.Value(bool) = .init(false),
+    /// Whether the finished op succeeded. Published by the `sc_done` edge.
+    sc_ok: bool = false,
+    /// A finished estimate's collateral figure (coin units). Published by the
+    /// `sc_done` edge.
+    sc_estimate: f64 = 0,
+    /// The txid (success, possibly with a collateral detail) or the daemon's
+    /// own failure reason. Published by the `sc_done` edge.
+    sc_result_buf: [256]u8 = undefined,
+    sc_result_len: usize = 0,
+
+    // --- stablecoin poll caches ----------------------------------------------
+    // Live DigiDollar state for the stablecoin tab, only ever populated for a
+    // coin whose `supportsStablecoin()` is true. Same staging/fold pattern as
+    // the transaction/receive-address caches: the poll worker writes the
+    // `poll_sc_*` fields before storing `poll_done` (release), and the UI folds
+    // them after observing it (acquire). All fixed-capacity, per the memory rule.
+    /// System state (deployment status, oracle price, supply/health), gated by
+    /// `sc_has_info` so the tab reads "checking…" until the first fetch.
+    sc_info: models.StablecoinInfo = .{},
+    sc_has_info: bool = false,
+    poll_sc_info: models.StablecoinInfo = .{},
+    poll_sc_has_info: bool = false,
+    /// The wallet's stablecoin balance (cents), gated by `sc_has_balance`.
+    sc_balance: models.StablecoinBalance = .{},
+    sc_has_balance: bool = false,
+    poll_sc_balance: models.StablecoinBalance = .{},
+    poll_sc_has_balance: bool = false,
+    /// Recent stablecoin transactions, newest-first.
+    sc_tx_buf: [sc_tx_cache_cap]models.StablecoinTx = undefined,
+    sc_tx_count: usize = 0,
+    poll_sc_tx_buf: [sc_tx_cache_cap]models.StablecoinTx = undefined,
+    poll_sc_tx_count: usize = 0,
+    /// Collateral positions (vaults).
+    sc_pos_buf: [sc_pos_cache_cap]models.StablecoinPosition = undefined,
+    sc_pos_count: usize = 0,
+    poll_sc_pos_buf: [sc_pos_cache_cap]models.StablecoinPosition = undefined,
+    poll_sc_pos_count: usize = 0,
+    /// The stablecoin deposit address — like the coin's own receive address,
+    /// fetched once (or on an explicit "new address"), never re-polled, so the
+    /// displayed address can't rotate out from under the user.
+    sc_addr_buf: [128]u8 = undefined,
+    sc_addr_len: usize = 0,
+    poll_sc_addr_buf: [128]u8 = undefined,
+    poll_sc_addr_len: usize = 0,
+    /// Set at the pre-spawn staging point (never while a poll is in flight)
+    /// when the user pressed the stablecoin tab's "New address" key; consumed
+    /// by `fetchStatus` whether or not the fetch succeeded.
+    want_new_sc_address: bool = false,
 
     // --- external wallet process (Monero-style coins, e.g. Nerva) -----------
     // For `coin.hasExternalWallet()` coins the wallet is a *second* process
@@ -1878,6 +2150,87 @@ const Activity = struct {
         self.send_result_len = n;
     }
 
+    /// Stablecoin worker. Runs one DigiDollar RPC (estimate / mint / send /
+    /// redeem) on a private arena and publishes the outcome, reaped by the UI
+    /// once `sc_done` is observed. Same shape as `runSend`.
+    fn runStablecoin(self: *Activity) void {
+        var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+        defer arena.deinit();
+        const a = arena.allocator();
+
+        self.doStablecoin(a) catch |err| {
+            self.sc_ok = false;
+            self.stashScResult(@errorName(err));
+        };
+        self.sc_done.store(true, .release);
+    }
+
+    /// Resolve the daemon's RPC credentials and dispatch the in-flight
+    /// stablecoin op. The payload (cents/tier/address/position) was copied in
+    /// by the UI before spawning. The stablecoin RPCs live in the coin's own
+    /// in-daemon wallet, so this always talks to the daemon's endpoint.
+    fn doStablecoin(self: *Activity, a: std.mem.Allocator) !void {
+        const sc = self.coin.stablecoin() orelse return error.Unsupported;
+
+        var threaded: std.Io.Threaded = .init(a, .{});
+        defer threaded.deinit();
+        const io = threaded.io();
+
+        const data_dir = try self.coin.dataDir(a, self.home_dir);
+        const auth = try conf.readAuth(
+            a,
+            io,
+            data_dir,
+            self.coin.confFile(),
+            self.coin.rpcDefaultUsername(),
+            self.coin.rpcDefaultPort(),
+        );
+
+        switch (self.sc_op) {
+            .estimate => {
+                self.sc_estimate = try sc.estimate_collateral(a, auth, self.sc_cents, self.sc_tier);
+                self.sc_ok = true;
+                self.sc_result_len = 0;
+            },
+            .mint => self.adoptScOutcome(try sc.mint(a, auth, self.sc_cents, self.sc_tier)),
+            .send => self.adoptScOutcome(try sc.send(
+                a,
+                auth,
+                self.sc_send_addr_buf[0..self.sc_send_addr_len],
+                self.sc_cents,
+            )),
+            .redeem => self.adoptScOutcome(try sc.redeem(
+                a,
+                auth,
+                self.sc_position_buf[0..self.sc_position_len],
+                self.sc_cents,
+            )),
+        }
+    }
+
+    /// Publish a mint/send/redeem outcome: the txid (success) or the daemon's
+    /// own rejection reason, verbatim.
+    fn adoptScOutcome(self: *Activity, outcome: models.SendResult) void {
+        switch (outcome) {
+            .ok => |txid| {
+                self.sc_ok = true;
+                self.stashScResult(txid);
+            },
+            .failed => |msg| {
+                self.sc_ok = false;
+                self.stashScResult(msg);
+            },
+        }
+    }
+
+    /// Copy `text` into the bounded `sc_result_buf` — same shape as
+    /// `stashSendResult`.
+    fn stashScResult(self: *Activity, text: []const u8) void {
+        const n = @min(text.len, self.sc_result_buf.len);
+        @memcpy(self.sc_result_buf[0..n], text[0..n]);
+        self.sc_result_len = n;
+    }
+
     /// Mining worker. Runs one start_mining/stop_mining RPC on a private arena
     /// (bounded, isolated) and publishes the outcome, reaped by the UI once
     /// `mining_done` is observed. Same shape as `runWalletAction`.
@@ -2133,6 +2486,28 @@ const Activity = struct {
             self.mining_speed = self.poll_mining_speed.load(.monotonic);
             self.has_mining = true;
         }
+
+        // Stablecoin caches (staged by the poll worker before `poll_done`),
+        // same ordering rationale as the version/transaction buffers. The
+        // info/balance snapshots are gated so the tab reads "checking…" until
+        // the first successful fetch.
+        if (self.poll_sc_has_info) {
+            self.sc_info = self.poll_sc_info;
+            self.sc_has_info = true;
+        }
+        if (self.poll_sc_has_balance) {
+            self.sc_balance = self.poll_sc_balance;
+            self.sc_has_balance = true;
+        }
+        const sct = @min(self.poll_sc_tx_count, self.sc_tx_buf.len);
+        @memcpy(self.sc_tx_buf[0..sct], self.poll_sc_tx_buf[0..sct]);
+        self.sc_tx_count = sct;
+        const scp = @min(self.poll_sc_pos_count, self.sc_pos_buf.len);
+        @memcpy(self.sc_pos_buf[0..scp], self.poll_sc_pos_buf[0..scp]);
+        self.sc_pos_count = scp;
+        const sca = @min(self.poll_sc_addr_len, self.sc_addr_buf.len);
+        @memcpy(self.sc_addr_buf[0..sca], self.poll_sc_addr_buf[0..sca]);
+        self.sc_addr_len = sca;
 
         // Wallet rescan progress (external in-daemon wallets only). The flag is
         // always adopted — clearing it the moment the scan catches up returns the
@@ -2458,6 +2833,50 @@ const Activity = struct {
                 self.poll_receive_addr_len = n;
             } else |_| {}
             self.want_new_receive_address = false; // consumed either way
+        }
+
+        // Stablecoin (DigiDollar) state, for the coin that has one. The system
+        // info (deployment status / oracle price / supply) and the wallet's
+        // balance, transactions and positions are refreshed every poll — so an
+        // incoming DD payment or a vault's expiring timelock shows up promptly —
+        // each best-effort (a hiccup leaves the last staged value). The deposit
+        // address follows the coin receive address's consent rule: fetched once,
+        // or on the user's explicit "new address", never re-polled.
+        if (self.coin.stablecoin()) |sc| {
+            if (sc.info(a, auth)) |inf| {
+                self.poll_sc_info = inf;
+                self.poll_sc_has_info = true;
+            } else |_| {}
+            // Until the feature activates on-chain, every other DD RPC refuses
+            // ("DigiDollar is not yet active on this blockchain" — verified on
+            // 9.26.4), so skip the four wallet-side calls rather than burning
+            // dead round-trips each poll. The moment `active` flips, the same
+            // poll cycle starts fetching them.
+            const dd_active = self.poll_sc_has_info and self.poll_sc_info.active;
+            if (dd_active) {
+                if (sc.balance(a, auth)) |bal| {
+                    self.poll_sc_balance = bal;
+                    self.poll_sc_has_balance = true;
+                } else |_| {}
+                if (sc.transactions(a, auth, sc_tx_cache_cap)) |txs| {
+                    const n = @min(txs.len, sc_tx_cache_cap);
+                    @memcpy(self.poll_sc_tx_buf[0..n], txs[0..n]);
+                    self.poll_sc_tx_count = n;
+                } else |_| {}
+                if (sc.positions(a, auth, sc_pos_cache_cap)) |ps| {
+                    const n = @min(ps.len, sc_pos_cache_cap);
+                    @memcpy(self.poll_sc_pos_buf[0..n], ps[0..n]);
+                    self.poll_sc_pos_count = n;
+                } else |_| {}
+                if (self.sc_addr_len == 0 or self.want_new_sc_address) {
+                    if (sc.receive_address(a, auth, self.want_new_sc_address)) |addr| {
+                        const n = @min(addr.len, self.poll_sc_addr_buf.len);
+                        @memcpy(self.poll_sc_addr_buf[0..n], addr[0..n]);
+                        self.poll_sc_addr_len = n;
+                    } else |_| {}
+                    self.want_new_sc_address = false; // consumed either way
+                }
+            }
         }
 
         // Re-adopt a still-unlocked in-daemon wallet after an app restart. The Ergo
@@ -3110,6 +3529,14 @@ pub const App = struct {
     /// modals; while set it owns keyboard input and is composited over the
     /// dashboard, same as the others.
     mining_modal: ?MiningModal = null,
+    /// The open stablecoin (DigiDollar) prompt, or null. Mutually exclusive
+    /// with the other modals; while set it owns keyboard input and is
+    /// composited over the dashboard, same as the others.
+    sc_modal: ?StablecoinModal = null,
+    /// A "New address" request from the stablecoin tab's `n` key, waiting to
+    /// be staged onto the selected coin's `Activity` at the next poll spawn —
+    /// the stablecoin twin of `pending_new_receive_address`.
+    pending_new_sc_address: bool = false,
     /// Masked passphrase entry for the wallet modal. Persistent (its backing
     /// buffer outlives a single modal), created in `init` and freed in `deinit`;
     /// its value is cleared whenever the modal closes or an action is sent.
@@ -3338,6 +3765,18 @@ pub const App = struct {
                 t.join();
                 act.wallet_setup_thread = null;
             }
+            if (act.send_thread) |t| {
+                t.join();
+                act.send_thread = null;
+            }
+            if (act.mining_thread) |t| {
+                t.join();
+                act.mining_thread = null;
+            }
+            if (act.sc_thread) |t| {
+                t.join();
+                act.sc_thread = null;
+            }
             // Tear down the external wallet process so it doesn't outlive the app.
             self.killWalletRpc(act);
             // Secrets may still be resident if a worker was in flight at shutdown —
@@ -3389,12 +3828,18 @@ pub const App = struct {
                     self.miningModalKey(k);
                     return .none;
                 }
+                if (self.sc_modal != null) {
+                    self.scModalKey(k);
+                    return .none;
+                }
                 // Detail-pane tabs only exist for a selected coin, not the Home
                 // screen — so left/right and the numbered jumps are live only
-                // then. The Mining tab exists only for a coin that mines, so
-                // its jump/cycle stop is gated per coin.
+                // then. The capability tabs (Mining, DigiDollar) exist only for
+                // a coin wiring the capability, so their jump/cycle stops are
+                // gated per coin.
                 const on_coin = self.selectedCoin() != null;
                 const has_mining = if (self.selectedCoin()) |c| c.supportsMining() else false;
+                const has_sc = if (self.selectedCoin()) |c| c.supportsStablecoin() else false;
                 switch (k.key) {
                     .char => |c| switch (c) {
                         'q' => return .quit,
@@ -3405,32 +3850,39 @@ pub const App = struct {
                         'k' => self.move(-1),
                         'j' => self.move(1),
                         'l' => self.log_visible = !self.log_visible,
-                        'c' => if (on_coin and self.active_tab == .receive) self.copyReceiveAddress(ctx),
-                        'n' => if (on_coin and self.active_tab == .receive) self.requestNewReceiveAddress(),
+                        'c' => if (on_coin and self.active_tab == .receive)
+                            self.copyReceiveAddress(ctx)
+                        else if (on_coin and self.active_tab == .digidollar)
+                            self.copyStablecoinAddress(ctx),
+                        'n' => if (on_coin and self.active_tab == .receive)
+                            self.requestNewReceiveAddress()
+                        else if (on_coin and self.active_tab == .digidollar)
+                            self.requestNewStablecoinAddress(),
                         // Capital S — lowercase 's' toggles the daemon. Opens the
                         // Stake prompt on the Send tab for coins with a stake
                         // action (openStakeModal checks the capability itself).
                         'S' => if (on_coin and self.active_tab == .send) self.openStakeModal(),
                         't' => if (on_coin) self.copyTipAddress(ctx),
-                        // Jump straight to a tab by number (1 = Home … 5 =
-                        // Settings, 6 = Mining on coins that mine).
-                        '1'...'6' => if (on_coin) {
-                            const t: DetailTab = @enumFromInt(c - '1');
-                            if (t != .mining or has_mining) self.active_tab = t;
+                        // Jump straight to a tab by number, positional over the
+                        // *visible* strip (1 = Home … 5 = Settings, 6 = the
+                        // coin's capability tab when it has one).
+                        '1'...'7' => if (on_coin) {
+                            if (visibleTabAt(c - '1', has_mining, has_sc)) |t| self.active_tab = t;
                         },
                         else => {},
                     },
                     .up => self.move(-1),
                     .down => self.move(1),
                     .left => if (on_coin) {
-                        self.active_tab = cycleTab(self.active_tab, -1, has_mining);
+                        self.active_tab = cycleTab(self.active_tab, -1, has_mining, has_sc);
                     },
                     .right => if (on_coin) {
-                        self.active_tab = cycleTab(self.active_tab, 1, has_mining);
+                        self.active_tab = cycleTab(self.active_tab, 1, has_mining, has_sc);
                     },
                     .enter => if (on_coin) switch (self.active_tab) {
                         .send => self.openSendModal(),
                         .mining => self.openMiningModal(),
+                        .digidollar => self.openStablecoinModal(),
                         else => {},
                     },
                     else => {},
@@ -3840,6 +4292,18 @@ pub const App = struct {
                         // up and polls.
                         act.receive_addr_len = 0;
                         act.poll_receive_addr_len = 0;
+                        // Drop the stablecoin caches — the daemon (and the wallet
+                        // answering the DD RPCs) is gone with it.
+                        act.sc_has_info = false;
+                        act.poll_sc_has_info = false;
+                        act.sc_has_balance = false;
+                        act.poll_sc_has_balance = false;
+                        act.sc_tx_count = 0;
+                        act.poll_sc_tx_count = 0;
+                        act.sc_pos_count = 0;
+                        act.poll_sc_pos_count = 0;
+                        act.sc_addr_len = 0;
+                        act.poll_sc_addr_len = 0;
                         // Drop any stashed send address/result too, for the same reason.
                         act.send_addr_len = 0;
                         act.send_result_len = 0;
@@ -3997,6 +4461,41 @@ pub const App = struct {
                     }
                 }
                 self.last_poll_ns = 0;
+            }
+
+            // Settle a finished stablecoin op: join the worker and — if the
+            // prompt is still open for this coin — advance it. An estimate
+            // resolves into the mint confirm (a failed estimate just reads as
+            // "figure unavailable"; the daemon computes and enforces the real
+            // collateral at mint time regardless). A real op shows the txid or
+            // the daemon's own failure reason, and re-polls promptly so the DD
+            // balance/positions reflect it immediately.
+            if (act.sc_thread != null and act.sc_done.load(.acquire)) {
+                act.sc_thread.?.join();
+                act.sc_thread = null;
+                const ok = act.sc_ok;
+                if (self.sc_modal != null and self.sc_modal.?.coin_idx == i) {
+                    const m = &self.sc_modal.?;
+                    if (m.stage == .estimating) {
+                        m.estimate = if (ok) act.sc_estimate else -1;
+                        m.sel = 0;
+                        m.stage = .confirm;
+                    } else if (m.stage == .working) {
+                        m.setMsg(ok, act.sc_result_buf[0..act.sc_result_len]);
+                    }
+                }
+                if (act.sc_op != .estimate) {
+                    if (self.coinAt(i)) |c| {
+                        const what: []const u8 = switch (act.sc_op) {
+                            .mint => "mint",
+                            .send => "stablecoin send",
+                            .redeem => "redeem",
+                            .estimate => unreachable,
+                        };
+                        self.logf("{s}: {s} {s}", .{ c.coinName(), what, if (ok) "succeeded" else "failed" });
+                    }
+                    self.last_poll_ns = 0;
+                }
             }
 
             // External wallet (Monero-style) process lifecycle: bring it up
@@ -4201,6 +4700,9 @@ pub const App = struct {
                     // reading it (no poll is in flight while this runs).
                     act.want_new_receive_address = self.pending_new_receive_address;
                     self.pending_new_receive_address = false;
+                    // Same staging rule for a stablecoin "New address" request.
+                    act.want_new_sc_address = self.pending_new_sc_address;
+                    self.pending_new_sc_address = false;
                     // Announce the first status check for this selection; the
                     // matching "received" line follows when the poll is reaped.
                     if (!act.status_logged)
@@ -4490,7 +4992,7 @@ pub const App = struct {
         const act = &self.activities[self.selected];
         if (act.busy()) return;
         if (act.update_await_stop or act.update_restart) return; // already updating
-        if (self.modal != null or self.qs_modal != null or self.update_modal != null or self.send_modal != null or self.mining_modal != null) return;
+        if (self.modal != null or self.qs_modal != null or self.update_modal != null or self.send_modal != null or self.mining_modal != null or self.sc_modal != null) return;
         // from_len stays 0: the prompt reads "reinstall the bundled version"
         // rather than "X → Y", since this isn't tied to a newer release.
         self.update_modal = .{ .coin_idx = self.selected, .reinstall = true };
@@ -4536,7 +5038,7 @@ pub const App = struct {
         const act = &self.activities[self.selected];
         if (!act.update_available or act.busy()) return;
         if (act.update_await_stop or act.update_restart) return; // already updating
-        if (self.modal != null or self.qs_modal != null or self.update_modal != null or self.send_modal != null or self.mining_modal != null) return;
+        if (self.modal != null or self.qs_modal != null or self.update_modal != null or self.send_modal != null or self.mining_modal != null or self.sc_modal != null) return;
 
         var m: UpdateModal = .{ .coin_idx = self.selected };
         const iv = act.installedVersion();
@@ -4646,6 +5148,328 @@ pub const App = struct {
         if (!act.installed or act.poll_thread != null) return;
         self.pending_new_receive_address = true;
         self.last_poll_ns = 0;
+    }
+
+    /// Copy the selected coin's cached stablecoin deposit address to the
+    /// clipboard — the stablecoin tab's twin of `copyReceiveAddress`.
+    fn copyStablecoinAddress(self: *App, ctx: *zz.Context) void {
+        const coin = self.selectedCoin() orelse return;
+        const sc = coin.stablecoin() orelse return;
+        const act = &self.activities[self.selected];
+        if (act.sc_addr_len == 0) return;
+        const addr = act.sc_addr_buf[0..act.sc_addr_len];
+        const copied = ctx.setClipboard(addr) catch false;
+        if (copied)
+            self.logf("{s}: {s} address copied to clipboard", .{ coin.coinName(), sc.name })
+        else
+            self.logf("{s}: clipboard copy not supported by this terminal", .{coin.coinName()});
+    }
+
+    /// Request a fresh stablecoin deposit address on the next poll — the
+    /// stablecoin tab's twin of `requestNewReceiveAddress`.
+    fn requestNewStablecoinAddress(self: *App) void {
+        const act = &self.activities[self.selected];
+        if (!act.installed or act.poll_thread != null) return;
+        self.pending_new_sc_address = true;
+        self.last_poll_ns = 0;
+    }
+
+    /// Open the stablecoin prompt for the selected coin — a no-op unless the
+    /// coin has the capability, its daemon is running, and the feature is
+    /// ACTIVE on-chain (the tab explains each of those states in place, so a
+    /// dead Enter isn't mysterious). Reachable only via `enter` on the
+    /// stablecoin tab, behind the same modal-priority chain as the others.
+    fn openStablecoinModal(self: *App) void {
+        const coin = self.selectedCoin() orelse return;
+        if (!coin.supportsStablecoin()) return;
+        const act = &self.activities[self.selected];
+        if (act.daemonState() != .running) return;
+        if (!act.sc_has_info or !act.sc_info.active) return;
+        self.sc_modal = .{ .coin_idx = self.selected };
+        self.send_addr_input.setValue("") catch {};
+        self.send_amount_input.setValue("") catch {};
+        self.send_addr_input.blur();
+        self.send_amount_input.blur();
+    }
+
+    fn closeStablecoinModal(self: *App) void {
+        self.sc_modal = null;
+    }
+
+    /// Handle a keypress while the stablecoin prompt is open. The action menu
+    /// fans out into the mint (amount → tier → estimate → confirm), send
+    /// (address → amount → confirm) and redeem (position → confirm) flows; the
+    /// text stages reuse the Send prompt's address/amount inputs (the modal
+    /// chain guarantees the two prompts are never open together). `working`/
+    /// `estimating` can't be cancelled; `result` closes on any key.
+    fn scModalKey(self: *App, k: zz.KeyEvent) void {
+        if (self.sc_modal == null) return;
+        const m = &self.sc_modal.?;
+        switch (m.stage) {
+            .menu => switch (k.key) {
+                .escape => self.closeStablecoinModal(),
+                .up => m.menu_sel -|= 1,
+                .down => m.menu_sel = @min(m.menu_sel + 1, 2),
+                .char => |c| switch (c) {
+                    'k' => m.menu_sel -|= 1,
+                    'j' => m.menu_sel = @min(m.menu_sel + 1, 2),
+                    else => {},
+                },
+                .enter => self.scChooseAction(),
+                else => {},
+            },
+            .address => switch (k.key) {
+                .escape => self.closeStablecoinModal(),
+                .enter => if (self.send_addr_input.getValue().len > 0) {
+                    self.send_addr_input.blur();
+                    self.send_amount_input.setValue("") catch {};
+                    self.send_amount_input.focus();
+                    m.stage = .amount;
+                },
+                else => self.send_addr_input.handleKey(k),
+            },
+            .amount => switch (k.key) {
+                .escape => self.closeStablecoinModal(),
+                .enter => self.tryScAmount(),
+                // Digits and (one) decimal point only. Typing clears a prior
+                // parse error.
+                .char => |c| {
+                    if (c >= '0' and c <= '9') {
+                        m.bad_input = false;
+                        self.send_amount_input.handleKey(k);
+                    } else if (c == '.' and std.mem.indexOfScalar(u8, self.send_amount_input.getValue(), '.') == null) {
+                        m.bad_input = false;
+                        self.send_amount_input.handleKey(k);
+                    }
+                },
+                else => self.send_amount_input.handleKey(k),
+            },
+            .tier => self.scTierKey(k),
+            // No cancelling the estimate — it resolves into the confirm.
+            .estimating => {},
+            .position => self.scPositionKey(k),
+            .confirm => switch (k.key) {
+                .escape => self.closeStablecoinModal(),
+                .up => m.sel = 0,
+                .down => m.sel = 1,
+                .char => |c| switch (c) {
+                    'k' => m.sel = 0,
+                    'j' => m.sel = 1,
+                    'y' => self.submitScOp(),
+                    'n' => self.closeStablecoinModal(),
+                    else => {},
+                },
+                .enter => if (m.sel == 0) self.submitScOp() else self.closeStablecoinModal(),
+                else => {},
+            },
+            // No cancelling an op in flight — let it finish (or fail) and reap.
+            .working => {},
+            .result => self.closeStablecoinModal(),
+        }
+    }
+
+    /// The action menu's Enter: set the chosen mode and open its first stage.
+    fn scChooseAction(self: *App) void {
+        const m = &self.sc_modal.?;
+        m.bad_input = false;
+        switch (m.menu_sel) {
+            0 => {
+                m.mode = .mint;
+                m.stage = .amount;
+                self.send_amount_input.setValue("") catch {};
+                self.send_amount_input.focus();
+            },
+            1 => {
+                m.mode = .send;
+                m.stage = .address;
+                self.send_addr_input.setValue("") catch {};
+                self.send_addr_input.focus();
+            },
+            else => {
+                m.mode = .redeem;
+                m.stage = .position;
+                m.pos_sel = 0;
+            },
+        }
+    }
+
+    /// Keys on the mint flow's tier list: walk the coin's tier table, Enter
+    /// kicks the collateral estimate.
+    fn scTierKey(self: *App, k: zz.KeyEvent) void {
+        const m = &self.sc_modal.?;
+        const coin = self.coinAt(m.coin_idx) orelse return;
+        const sc = coin.stablecoin() orelse return;
+        const last: u8 = @intCast(sc.tiers.len - 1);
+        switch (k.key) {
+            .escape => self.closeStablecoinModal(),
+            .up => m.tier_sel -|= 1,
+            .down => m.tier_sel = @min(m.tier_sel + 1, last),
+            .char => |c| switch (c) {
+                'k' => m.tier_sel -|= 1,
+                'j' => m.tier_sel = @min(m.tier_sel + 1, last),
+                else => {},
+            },
+            .enter => self.submitScEstimate(),
+            else => {},
+        }
+    }
+
+    /// Keys on the redeem flow's position picker: walk the redeemable vaults,
+    /// Enter locks the chosen one into the modal and advances to the confirm.
+    fn scPositionKey(self: *App, k: zz.KeyEvent) void {
+        const m = &self.sc_modal.?;
+        const act = &self.activities[m.coin_idx];
+        const count = redeemableCount(act);
+        switch (k.key) {
+            .escape => self.closeStablecoinModal(),
+            .up => m.pos_sel -|= 1,
+            .down => if (count > 0) {
+                m.pos_sel = @min(m.pos_sel + 1, @as(u8, @intCast(count - 1)));
+            },
+            .char => |c| switch (c) {
+                'k' => m.pos_sel -|= 1,
+                'j' => if (count > 0) {
+                    m.pos_sel = @min(m.pos_sel + 1, @as(u8, @intCast(count - 1)));
+                },
+                else => {},
+            },
+            .enter => self.scChoosePosition(),
+            else => {},
+        }
+    }
+
+    /// Parse and validate the USD amount, advancing on success. A mint is
+    /// checked against the capability's own min/max bounds up front (the
+    /// daemon would reject it anyway — failing here saves the round trip); a
+    /// send only needs to be positive, with the daemon's live balance check as
+    /// the real, always-correct gate.
+    fn tryScAmount(self: *App) void {
+        const m = &self.sc_modal.?;
+        const coin = self.coinAt(m.coin_idx) orelse return;
+        const sc = coin.stablecoin() orelse return;
+        const cents = parseDollarsToCents(self.send_amount_input.getValue()) orelse {
+            m.bad_input = true;
+            return;
+        };
+        if (cents <= 0 or
+            (m.mode == .mint and (cents < sc.min_mint_cents or cents > sc.max_mint_cents)))
+        {
+            m.bad_input = true;
+            return;
+        }
+        m.cents = cents;
+        m.bad_input = false;
+        self.send_amount_input.blur();
+        if (m.mode == .mint) {
+            m.tier_sel = 0;
+            m.stage = .tier;
+        } else {
+            m.sel = 0;
+            m.stage = .confirm;
+        }
+    }
+
+    /// The position picker's Enter: copy the chosen vault's handle/amount into
+    /// the modal (so a mid-flow poll refresh can't swap the target under the
+    /// confirm) and advance.
+    fn scChoosePosition(self: *App) void {
+        const m = &self.sc_modal.?;
+        const act = &self.activities[m.coin_idx];
+        const p = redeemablePositionAt(act, m.pos_sel) orelse return;
+        const id = p.id();
+        const n = @min(id.len, m.pos_id_buf.len);
+        @memcpy(m.pos_id_buf[0..n], id[0..n]);
+        m.pos_id_len = n;
+        m.cents = p.amount_cents;
+        m.sel = 0;
+        m.stage = .confirm;
+    }
+
+    /// Reap any in-flight poll / prior stablecoin worker so a new spawn doesn't
+    /// race them on `act.coin`/`home_dir` — mirrors `submitSend`'s reaps.
+    fn reapForScSpawn(act: *Activity) void {
+        if (act.poll_thread) |t| {
+            t.join();
+            act.poll_thread = null;
+        }
+        if (act.sc_thread) |t| {
+            t.join();
+            act.sc_thread = null;
+        }
+    }
+
+    /// Tier chosen: kick the collateral-estimate worker so the mint confirm can
+    /// spell out roughly how much DGB will be locked. If the worker can't even
+    /// spawn, fall through to the confirm without a figure — the estimate is a
+    /// courtesy; the daemon computes (and enforces) the real requirement at
+    /// mint time.
+    fn submitScEstimate(self: *App) void {
+        if (self.sc_modal == null) return;
+        const m = &self.sc_modal.?;
+        const coin = self.coinAt(m.coin_idx) orelse return;
+        const act = &self.activities[m.coin_idx];
+        reapForScSpawn(act);
+
+        act.coin = coin;
+        act.home_dir = self.home_dir;
+        act.sc_op = .estimate;
+        act.sc_cents = m.cents;
+        act.sc_tier = m.tier_sel;
+        act.sc_ok = false;
+        act.sc_done.store(false, .monotonic);
+        act.sc_thread = std.Thread.spawn(.{}, Activity.runStablecoin, .{act}) catch {
+            m.estimate = -1;
+            m.sel = 0;
+            m.stage = .confirm;
+            return;
+        };
+        m.stage = .estimating;
+    }
+
+    /// User confirmed: copy the payload onto the target Activity and spawn the
+    /// worker. Mirrors `submitSend`'s shape.
+    fn submitScOp(self: *App) void {
+        if (self.sc_modal == null) return;
+        const m = &self.sc_modal.?;
+        const coin = self.coinAt(m.coin_idx) orelse return;
+        const sc = coin.stablecoin() orelse return;
+        const act = &self.activities[m.coin_idx];
+        reapForScSpawn(act);
+
+        act.coin = coin;
+        act.home_dir = self.home_dir;
+        act.sc_cents = m.cents;
+        act.sc_tier = m.tier_sel;
+        switch (m.mode) {
+            .mint => act.sc_op = .mint,
+            .send => {
+                act.sc_op = .send;
+                const addr = self.send_addr_input.getValue();
+                const n = @min(addr.len, act.sc_send_addr_buf.len);
+                @memcpy(act.sc_send_addr_buf[0..n], addr[0..n]);
+                act.sc_send_addr_len = n;
+            },
+            .redeem => {
+                act.sc_op = .redeem;
+                const id = m.posId();
+                const n = @min(id.len, act.sc_position_buf.len);
+                @memcpy(act.sc_position_buf[0..n], id[0..n]);
+                act.sc_position_len = n;
+            },
+        }
+        act.sc_ok = false;
+        act.sc_done.store(false, .monotonic);
+        act.sc_thread = std.Thread.spawn(.{}, Activity.runStablecoin, .{act}) catch {
+            m.setMsg(false, "couldn't start the worker");
+            return;
+        };
+        m.stage = .working;
+        const verb: []const u8 = switch (m.mode) {
+            .mint => "minting",
+            .send => "sending",
+            .redeem => "redeeming",
+        };
+        self.logf("{s}: {s} {s}…", .{ coin.coinName(), verb, sc.name });
     }
 
     fn tryToggleDaemon(self: *App) void {
@@ -5750,6 +6574,10 @@ pub const App = struct {
                 const box = self.renderMiningModal(a) catch break :blk screen;
                 break :blk overlayBox(a, screen, box, ctx.width, ctx.height) catch screen;
             }
+            if (self.sc_modal != null) {
+                const box = self.renderStablecoinModal(a) catch break :blk screen;
+                break :blk overlayBox(a, screen, box, ctx.width, ctx.height) catch screen;
+            }
             if (self.modal == null) break :blk screen;
             break :blk self.renderModalOver(a, screen, ctx.width, ctx.height) catch screen;
         };
@@ -6152,7 +6980,7 @@ pub const App = struct {
         // the name/version row.
         const description = coin.coinDescription();
 
-        const tab_strip = try renderTabStrip(a, brand, self.active_tab, coin.supportsMining());
+        const tab_strip = try renderTabStrip(a, brand, self.active_tab, coin);
         const body: []const u8 = switch (self.active_tab) {
             .home => try std.fmt.allocPrint(a,
                 \\{s}
@@ -6208,6 +7036,10 @@ pub const App = struct {
                 try renderMiningTab(a, act)
             else
                 try renderPlaceholderTab(a, self.active_tab),
+            .digidollar => if (coin.stablecoin()) |sc|
+                try renderStablecoinTab(a, sc, act)
+            else
+                try renderPlaceholderTab(a, self.active_tab),
         };
 
         // TIP line: persists across every tab (mirrors description/tab_strip),
@@ -6226,20 +7058,24 @@ pub const App = struct {
 
     /// One-line tab strip for the coin detail pane: the active tab in the coin's
     /// brand colour (bold), the others dimmed, with a dim hint on how to switch.
-    /// The Mining tab only exists for coins that mine (`has_mining`), so it —
-    /// and the hint's key range — are gated on that.
-    fn renderTabStrip(a: std.mem.Allocator, brand: zz.Color, active: DetailTab, has_mining: bool) ![]const u8 {
+    /// The capability tabs (Mining, DigiDollar) only exist for coins wiring the
+    /// capability, so they — and the hint's key range — are gated per coin. The
+    /// stablecoin tab is labelled with the capability's own name.
+    fn renderTabStrip(a: std.mem.Allocator, brand: zz.Color, active: DetailTab, coin: Coin) ![]const u8 {
+        const has_mining = coin.supportsMining();
+        const has_sc = coin.supportsStablecoin();
         var strip: []const u8 = "";
         inline for (std.meta.tags(DetailTab), 0..) |t, i| {
-            if (t != .mining or has_mining) {
+            if (tabVisible(t, has_mining, has_sc)) {
+                const lbl = if (t == .digidollar) coin.stablecoin().?.name else t.label();
                 const styled = if (t == active)
-                    try (zz.Style{}).bold(true).fg(brand).render(a, t.label())
+                    try (zz.Style{}).bold(true).fg(brand).render(a, lbl)
                 else
-                    try (zz.Style{}).dim(true).render(a, t.label());
+                    try (zz.Style{}).dim(true).render(a, lbl);
                 strip = if (i == 0) styled else try std.fmt.allocPrint(a, "{s}   {s}", .{ strip, styled });
             }
         }
-        const hint_text = if (has_mining) "   (←/→ or 1-6 to switch tabs)" else "   (←/→ or 1-5 to switch tabs)";
+        const hint_text = try std.fmt.allocPrint(a, "   (←/→ or 1-{d} to switch tabs)", .{visibleTabCount(has_mining, has_sc)});
         const hint = try (zz.Style{}).dim(true).render(a, hint_text);
         return std.fmt.allocPrint(a, "{s}{s}", .{ strip, hint });
     }
@@ -6474,6 +7310,183 @@ pub const App = struct {
             "(Enter: start mining)";
         const hint = (zz.Style{}).dim(true).render(a, hint_text) catch hint_text;
         return std.fmt.allocPrint(a, "Mining\n\nStatus: {s}\n{s}\n\n{s}", .{ status, cpus, hint });
+    }
+
+    /// The stablecoin (DigiDollar) tab body: activation status (pre-mainnet
+    /// aware — the whole feature is gated behind a BIP9 deployment), the
+    /// oracle price and system stats, the wallet's DD balance and deposit
+    /// address, its collateral positions (vaults), and its recent DD
+    /// transactions, with the action hints. Only reached for a coin whose
+    /// `supportsStablecoin()` is true; every other coin's `.digidollar` case
+    /// still falls through to `renderPlaceholderTab`. Reads only the cached
+    /// `act` fields — no RPC/disk IO in the render path.
+    fn renderStablecoinTab(a: std.mem.Allocator, sc: *const Coin.Stablecoin, act: *const Activity) ![]const u8 {
+        if (act.daemonState() != .running) {
+            return std.fmt.allocPrint(a, "{s}\n\n{s} lives on the coin's own chain — start the daemon (s) first.", .{ sc.name, sc.name });
+        }
+        if (!act.sc_has_info) {
+            return std.fmt.allocPrint(a, "{s}\n\nChecking {s} status…", .{ sc.name, sc.name });
+        }
+        const info = &act.sc_info;
+        if (std.mem.eql(u8, info.status(), "unsupported")) {
+            return std.fmt.allocPrint(a, "{s}\n\nThis daemon doesn't support {s} — update the coin (u) to a newer core.", .{ sc.name, sc.name });
+        }
+
+        var out: std.Io.Writer.Allocating = .init(a);
+        errdefer out.deinit();
+        try out.writer.print("{s}\n", .{sc.name});
+
+        // Activation status. Everything below still renders pre-activation
+        // (the user can watch the oracle come alive), but the actions stay
+        // gated until the network flips to "active".
+        if (info.active) {
+            const on = (zz.Style{}).bold(true).fg(.green).render(a, "Active") catch "Active";
+            try out.writer.print("\nStatus: {s}\n", .{on});
+        } else {
+            const off = (zz.Style{}).bold(true).fg(.yellow).render(a, "Not active yet") catch "Not active yet";
+            const st = if (info.status_len > 0) info.status() else "unknown";
+            const detail = (zz.Style{}).dim(true).render(
+                a,
+                try std.fmt.allocPrint(a, "(deployment status: {s})", .{st}),
+            ) catch "";
+            try out.writer.print("\nStatus: {s}  {s}\n", .{ off, detail });
+            // DigiDollar shipped in the mainnet release with a scheduled
+            // activation height — count down to it, with a wall-clock ETA once
+            // the local chain height and block interval are known.
+            if (info.activation_height > 0) {
+                var line = try std.fmt.allocPrint(a, "Activates at block {d}", .{info.activation_height});
+                const remaining = info.activation_height - @as(i64, @intCast(act.blocks_cur));
+                if (act.blocks_cur > 0 and remaining > 0) {
+                    line = try std.fmt.allocPrint(a, "{s} — {d} blocks to go", .{ line, remaining });
+                    if (sc.block_seconds > 0) {
+                        const eta = try formatDurationApprox(a, remaining * @as(i64, sc.block_seconds));
+                        if (eta.len > 0)
+                            line = try std.fmt.allocPrint(a, "{s} (≈ {s})", .{ line, eta });
+                    }
+                }
+                const line_dim = (zz.Style{}).dim(true).render(a, line) catch line;
+                try out.writer.print("{s}\n", .{line_dim});
+            }
+        }
+
+        // Oracle price (micro-USD per coin) and system-wide stats, when known.
+        if (info.price_micro_usd > 0) {
+            var pbuf: [32]u8 = undefined;
+            const price = formatMicroUsd(&pbuf, info.price_micro_usd);
+            const stale: []const u8 = if (info.price_stale)
+                (zz.Style{}).bold(true).fg(.red).render(a, "  (stale)") catch "  (stale)"
+            else
+                "";
+            try out.writer.print("Oracle price: {s} / coin{s}\n", .{ price, stale });
+        } else {
+            const unknown = (zz.Style{}).dim(true).render(a, "Oracle price: unknown") catch "Oracle price: unknown";
+            try out.writer.print("{s}\n", .{unknown});
+        }
+        if (info.total_supply_cents > 0 or info.total_collateral > 0) {
+            var sbuf: [32]u8 = undefined;
+            const stats = try std.fmt.allocPrint(a, "Supply: {s}   Locked collateral: {d:.0}   Health: {d:.0}%", .{
+                formatCents(&sbuf, info.total_supply_cents), info.total_collateral, info.health_ratio,
+            });
+            const stats_dim = (zz.Style{}).dim(true).render(a, stats) catch stats;
+            try out.writer.print("{s}\n", .{stats_dim});
+        }
+        if (info.minting_blocked) {
+            const warn = "Minting is temporarily blocked by the protocol's volatility protection.";
+            const warn_s = (zz.Style{}).fg(.yellow).render(a, warn) catch warn;
+            try out.writer.print("{s}\n", .{warn_s});
+        }
+
+        // Wallet balance ($), pending shown the moment it's seen.
+        if (act.sc_has_balance) {
+            var bbuf: [32]u8 = undefined;
+            const bal_plain = formatCents(&bbuf, act.sc_balance.confirmed_cents);
+            const bal = (zz.Style{}).bold(true).render(a, bal_plain) catch bal_plain;
+            var pend: []const u8 = "";
+            if (act.sc_balance.pending_cents != 0) {
+                var pbuf2: [32]u8 = undefined;
+                const p = try std.fmt.allocPrint(a, "  (+{s} pending)", .{formatCents(&pbuf2, act.sc_balance.pending_cents)});
+                pend = (zz.Style{}).bold(true).fg(.yellow).render(a, p) catch p;
+            }
+            try out.writer.print("\nBalance: {s} {s}{s}\n", .{ bal, sc.symbol, pend });
+        }
+
+        // Deposit address (fetched once by the poll; `n` mints a new one).
+        // Address RPCs refuse pre-activation, so the row only appears once the
+        // feature is live (or an address is already cached).
+        if (act.sc_addr_len > 0) {
+            const hint = (zz.Style{}).dim(true).render(a, "  (c: copy   n: new address)") catch "";
+            try out.writer.print("Address: {s}{s}\n", .{ act.sc_addr_buf[0..act.sc_addr_len], hint });
+        } else if (info.active) {
+            const fetching = (zz.Style{}).dim(true).render(a, "Address: fetching…") catch "Address: fetching…";
+            try out.writer.print("{s}\n", .{fetching});
+        }
+
+        // Collateral positions (vaults): amount, tier terms, unlock height, and
+        // whether the daemon says it's redeemable now.
+        if (act.sc_pos_count > 0) {
+            try out.writer.print("\nVaults:\n", .{});
+            for (act.sc_pos_buf[0..act.sc_pos_count]) |*p| {
+                var abuf: [32]u8 = undefined;
+                const amount = formatCents(&abuf, p.amount_cents);
+                const terms = if (p.tier < sc.tiers.len)
+                    try std.fmt.allocPrint(a, "{s}, {d}% collateral", .{ sc.tiers[p.tier].duration, sc.tiers[p.tier].ratio_pct })
+                else
+                    try std.fmt.allocPrint(a, "tier {d}", .{p.tier});
+                const state = if (p.can_redeem)
+                    (zz.Style{}).bold(true).fg(.green).render(a, "redeemable") catch "redeemable"
+                else
+                    (zz.Style{}).dim(true).render(a, try std.fmt.allocPrint(a, "locked until block {d}", .{p.unlock_height})) catch "locked";
+                try out.writer.print("  {s}  ({s})  {s}\n", .{ amount, terms, state });
+            }
+        }
+
+        // Recent stablecoin transactions, newest-first (cached by the poll).
+        if (act.sc_tx_count > 0) {
+            try out.writer.print("\nRecent {s} transactions:\n", .{sc.name});
+            for (act.sc_tx_buf[0..act.sc_tx_count]) |tx| {
+                const glyph = scTxGlyph(a, tx.kind);
+                const word = try padCell(a, scTxWord(tx.kind), 8, false);
+                const date = try formatBlockTime(a, tx.time);
+                var abuf: [32]u8 = undefined;
+                const amount = try padCell(a, formatCents(&abuf, tx.amount_cents), 12, true);
+                const conf_text = txConfirmationText(a, tx.confirmations);
+                try out.writer.print("  {s} {s} {s}   {s}   {s}\n", .{ glyph, word, date, amount, conf_text });
+            }
+        }
+
+        // Action hint — or why the actions aren't live yet.
+        const hint_text: []const u8 = if (info.active)
+            "(Enter: mint / send / redeem)"
+        else
+            "Mint, send and redeem unlock once the feature activates on this network.";
+        const hint = (zz.Style{}).dim(true).render(a, hint_text) catch hint_text;
+        try out.writer.print("\n{s}", .{hint});
+
+        return out.toOwnedSlice();
+    }
+
+    /// The direction glyph for a stablecoin transaction row: ▼/▲ mirror the
+    /// coin Transactions tab; a mint is ★ (the wallet created the DD itself,
+    /// like a stake/mined reward) and a redeem ◆ (the DD was burned to unlock
+    /// collateral — neither sent nor received).
+    fn scTxGlyph(a: std.mem.Allocator, kind: models.StablecoinTxKind) []const u8 {
+        return switch (kind) {
+            .received => (zz.Style{}).bold(true).fg(.green).render(a, "▼") catch "▼",
+            .sent => (zz.Style{}).bold(true).fg(.red).render(a, "▲") catch "▲",
+            .mint => (zz.Style{}).bold(true).fg(.yellow).render(a, "★") catch "★",
+            .redeem => (zz.Style{}).bold(true).fg(.cyan).render(a, "◆") catch "◆",
+        };
+    }
+
+    /// The category word beside the glyph — spelled out because mint/redeem
+    /// aren't obvious from an arrow alone.
+    fn scTxWord(kind: models.StablecoinTxKind) []const u8 {
+        return switch (kind) {
+            .received => "received",
+            .sent => "sent",
+            .mint => "mint",
+            .redeem => "redeem",
+        };
     }
 
     /// Format a hashrate into `buf`: plain H/s below a kilohash, otherwise
@@ -7254,6 +8267,203 @@ pub const App = struct {
         return out.toOwnedSlice();
     }
 
+    /// Render the stablecoin (DigiDollar) prompt box. Mirrors
+    /// `renderSendModal`'s chrome; the action menu fans out into the mint /
+    /// send / redeem flows. Every confirm spells the full details out — the
+    /// mint one includes the estimated DGB collateral, since locking
+    /// collateral for months or years is exactly the choice that must never
+    /// ride on a typo.
+    fn renderStablecoinModal(self: *const App, a: std.mem.Allocator) ![]const u8 {
+        const m = self.sc_modal.?;
+        const coin = self.coinAt(m.coin_idx) orelse return error.NoCoin;
+        const sc = coin.stablecoin() orelse return error.NoCoin;
+        const act = &self.activities[m.coin_idx];
+        const brand = zz.Color.hex(coin.coinColor());
+        const inner_w = modal_inner_w;
+        const vbar = (zz.Style{}).fg(brand).render(a, "│") catch "│";
+
+        var out: std.Io.Writer.Allocating = .init(a);
+        errdefer out.deinit();
+
+        const title = try std.fmt.allocPrint(a, "{s} — {s}", .{ coin.coinName(), sc.name });
+        try modalRule(a, &out.writer, brand, inner_w, "┌", "┐", title);
+        try modalRow(&out.writer, vbar, inner_w, "", 0);
+
+        switch (m.stage) {
+            .menu => {
+                const labels = [_][]const u8{
+                    "Mint — lock collateral, create new DD",
+                    "Send — pay DD to an address",
+                    "Redeem — burn DD, unlock collateral",
+                };
+                for (labels, 0..) |lbl, i| {
+                    const sel = i == m.menu_sel;
+                    const plain = try std.fmt.allocPrint(a, "{s}{s}", .{ if (sel) "❯ " else "  ", lbl });
+                    const text = if (sel)
+                        ((zz.Style{}).bold(true).fg(brand).render(a, plain) catch plain)
+                    else
+                        plain;
+                    try modalRow(&out.writer, vbar, inner_w, text, zz.width(plain));
+                }
+            },
+            .address => {
+                const field = try self.send_addr_input.view(a);
+                const text = try std.fmt.allocPrint(a, "To: {s}", .{field});
+                try modalRow(&out.writer, vbar, inner_w, text, zz.width("To: ") + zz.width(field));
+            },
+            .amount => {
+                const field = try self.send_amount_input.view(a);
+                const text = try std.fmt.allocPrint(a, "Amount (USD): {s}", .{field});
+                try modalRow(&out.writer, vbar, inner_w, text, zz.width("Amount (USD): ") + zz.width(field));
+                try modalRow(&out.writer, vbar, inner_w, "", 0);
+                if (m.mode == .mint) {
+                    var lo: [32]u8 = undefined;
+                    var hi: [32]u8 = undefined;
+                    const bounds = try std.fmt.allocPrint(a, "Mint between {s} and {s}. The fee is paid in {s}.", .{
+                        formatCents(&lo, sc.min_mint_cents), formatCents(&hi, sc.max_mint_cents), coin.coinNameAbbrev(),
+                    });
+                    try wrapIntoRows(a, &out.writer, vbar, inner_w, bounds, (zz.Style{}).dim(true));
+                } else {
+                    var bbuf: [32]u8 = undefined;
+                    const avail = try std.fmt.allocPrint(a, "Available: {s} {s}. The fee is paid in {s}.", .{
+                        formatCents(&bbuf, act.sc_balance.confirmed_cents), sc.symbol, coin.coinNameAbbrev(),
+                    });
+                    try wrapIntoRows(a, &out.writer, vbar, inner_w, avail, (zz.Style{}).dim(true));
+                }
+                if (m.bad_input) {
+                    const warn = "Enter a valid USD amount (up to 2 decimals, within the bounds).";
+                    const styled = (zz.Style{}).fg(.red).render(a, warn) catch warn;
+                    try wrapIntoRows(a, &out.writer, vbar, inner_w, styled, (zz.Style{}));
+                }
+            },
+            .tier => {
+                const head = "Lock tier — longer locks need less collateral:";
+                try wrapIntoRows(a, &out.writer, vbar, inner_w, head, (zz.Style{}).dim(true));
+                try modalRow(&out.writer, vbar, inner_w, "", 0);
+                for (sc.tiers) |t| {
+                    const sel = t.tier == m.tier_sel;
+                    const plain = try std.fmt.allocPrint(a, "{s}{s} — {d}% collateral", .{
+                        if (sel) "❯ " else "  ", t.duration, t.ratio_pct,
+                    });
+                    const text = if (sel)
+                        ((zz.Style{}).bold(true).fg(brand).render(a, plain) catch plain)
+                    else
+                        plain;
+                    try modalRow(&out.writer, vbar, inner_w, text, zz.width(plain));
+                }
+            },
+            .estimating => {
+                const busy = "Estimating the collateral required…";
+                try modalRow(&out.writer, vbar, inner_w, busy, zz.width(busy));
+            },
+            .position => {
+                const count = redeemableCount(act);
+                if (count == 0) {
+                    const none = "No redeemable vaults yet — a vault can be redeemed once its timelock expires.";
+                    try wrapIntoRows(a, &out.writer, vbar, inner_w, none, (zz.Style{}).dim(true));
+                } else {
+                    const head = "Redeem which vault? (the full amount is redeemed)";
+                    try wrapIntoRows(a, &out.writer, vbar, inner_w, head, (zz.Style{}).dim(true));
+                    try modalRow(&out.writer, vbar, inner_w, "", 0);
+                    var i: usize = 0;
+                    while (redeemablePositionAt(act, i)) |p| : (i += 1) {
+                        const sel = i == m.pos_sel;
+                        var abuf: [32]u8 = undefined;
+                        const terms = if (p.tier < sc.tiers.len) sc.tiers[p.tier].duration else "?";
+                        const plain = try std.fmt.allocPrint(a, "{s}{s}  ({s} lock)", .{
+                            if (sel) "❯ " else "  ", formatCents(&abuf, p.amount_cents), terms,
+                        });
+                        const text = if (sel)
+                            ((zz.Style{}).bold(true).fg(brand).render(a, plain) catch plain)
+                        else
+                            plain;
+                        try modalRow(&out.writer, vbar, inner_w, text, zz.width(plain));
+                    }
+                }
+            },
+            .confirm => {
+                var abuf: [32]u8 = undefined;
+                const amount = formatCents(&abuf, m.cents);
+                const detail: []const u8 = switch (m.mode) {
+                    .mint => blk: {
+                        const terms = if (m.tier_sel < sc.tiers.len) sc.tiers[m.tier_sel].duration else "?";
+                        if (m.estimate >= 0) {
+                            break :blk try std.fmt.allocPrint(a, "Mint {s} of {s}, locking about {d:.2} {s} as collateral for {s}? The collateral cannot be unlocked before the timelock expires. This cannot be undone.", .{
+                                amount, sc.name, m.estimate, coin.coinNameAbbrev(), terms,
+                            });
+                        }
+                        break :blk try std.fmt.allocPrint(a, "Mint {s} of {s}, locking {s} as collateral for {s}? (The exact collateral couldn't be estimated — the daemon computes and enforces it.) This cannot be undone.", .{
+                            amount, sc.name, coin.coinNameAbbrev(), terms,
+                        });
+                    },
+                    // The full, untruncated address — deliberately not shortened.
+                    .send => try std.fmt.allocPrint(a, "Send {s} of {s} to {s}? This cannot be undone.", .{
+                        amount, sc.name, self.send_addr_input.getValue(),
+                    }),
+                    .redeem => try std.fmt.allocPrint(a, "Redeem {s} from this vault? The {s} is burned and its {s} collateral returns to your wallet.", .{
+                        amount, sc.name, coin.coinNameAbbrev(),
+                    }),
+                };
+                try wrapIntoRows(a, &out.writer, vbar, inner_w, detail, (zz.Style{}));
+                try modalRow(&out.writer, vbar, inner_w, "", 0);
+                const yes: []const u8 = switch (m.mode) {
+                    .mint => "Yes — mint it",
+                    .send => "Yes — send it",
+                    .redeem => "Yes — redeem it",
+                };
+                const labels = [_][]const u8{ yes, "No — cancel" };
+                for (labels, 0..) |lbl, i| {
+                    const sel = i == m.sel;
+                    const plain = try std.fmt.allocPrint(a, "{s}{s}", .{ if (sel) "❯ " else "  ", lbl });
+                    const text = if (sel)
+                        ((zz.Style{}).bold(true).fg(brand).render(a, plain) catch plain)
+                    else
+                        plain;
+                    try modalRow(&out.writer, vbar, inner_w, text, zz.width(plain));
+                }
+            },
+            .working => {
+                const busy: []const u8 = switch (m.mode) {
+                    .mint => "Minting…",
+                    .send => "Sending…",
+                    .redeem => "Redeeming…",
+                };
+                try modalRow(&out.writer, vbar, inner_w, busy, zz.width(busy));
+            },
+            .result => {
+                const lead_plain: []const u8 = if (m.ok) switch (m.mode) {
+                    .mint => "Minted. Txid:",
+                    .send => "Sent. Txid:",
+                    .redeem => "Redeemed. Txid:",
+                } else switch (m.mode) {
+                    .mint => "Mint failed:",
+                    .send => "Send failed:",
+                    .redeem => "Redeem failed:",
+                };
+                const lead = if (m.ok)
+                    ((zz.Style{}).fg(.green).render(a, lead_plain) catch lead_plain)
+                else
+                    ((zz.Style{}).fg(.red).render(a, lead_plain) catch lead_plain);
+                try modalRow(&out.writer, vbar, inner_w, lead, zz.width(lead_plain));
+                try wrapIntoRows(a, &out.writer, vbar, inner_w, m.msg_buf[0..m.msg_len], (zz.Style{}).dim(true));
+            },
+        }
+
+        try modalRow(&out.writer, vbar, inner_w, "", 0);
+        const hint = switch (m.stage) {
+            .menu, .tier, .position => "enter: select   esc: cancel",
+            .address, .amount => "enter: next   esc: cancel",
+            .confirm => "enter: select   esc: cancel",
+            .estimating, .working => "please wait…",
+            .result => "press any key to close",
+        };
+        const hint_styled = (zz.Style{}).dim(true).render(a, hint) catch hint;
+        try modalRow(&out.writer, vbar, inner_w, hint_styled, zz.width(hint));
+        try modalRule(a, &out.writer, brand, inner_w, "└", "┘", "");
+
+        return out.toOwnedSlice();
+    }
+
     /// Render the update-confirm prompt box. Mirrors `renderQuickSyncModal`'s
     /// chrome (brand-coloured rule + rows), but it's confirm-only — the actual
     /// stop/install/restart progress shows in the main pane afterwards.
@@ -7664,15 +8874,15 @@ fn bar(a: std.mem.Allocator, current: u64, total: u64) ![]const u8 {
     return coloredBar(a, current, total, zz.Color.hex(app_color));
 }
 
-/// Human "behind by …" text from `secs` seconds behind the chain tip: the most
-/// significant non-zero unit among years/months/weeks/days/hours/minutes, plus
-/// the next unit down when it's also non-zero (e.g. "2 years and 3 months
-/// behind", "5 days behind", "1 hour and 30 minutes behind"). Returns "" when
-/// under a minute
-/// behind (effectively caught up) or when `secs <= 0`. The day-and-up units are
-/// calendar approximations (year = 365d, month = 30d, week = 7d); hours and
-/// minutes are exact — a "roughly how far back" readout, not a precise duration.
-fn formatBehind(a: std.mem.Allocator, secs: i64) ![]const u8 {
+/// Human approximate duration from `secs`: the most significant non-zero unit
+/// among years/months/weeks/days/hours/minutes, plus the next unit down when
+/// it's also non-zero (e.g. "2 years and 3 months", "5 days", "1 hour and 30
+/// minutes"). Returns "" under a minute or when `secs <= 0`. The day-and-up
+/// units are calendar approximations (year = 365d, month = 30d, week = 7d);
+/// hours and minutes are exact — a "roughly how long" readout, not a precise
+/// duration. Wrapped by `formatBehind` (sync lag) and used bare by the
+/// stablecoin activation countdown.
+fn formatDurationApprox(a: std.mem.Allocator, secs: i64) ![]const u8 {
     if (secs < std.time.s_per_min) return "";
     var rem: u64 = @intCast(secs);
 
@@ -7702,11 +8912,19 @@ fn formatBehind(a: std.mem.Allocator, secs: i64) ![]const u8 {
     // contiguous ("3 months and 1 week", never "2 years and 1 day").
     if (i + 1 < counts.len and counts[i + 1] != 0) {
         const j = i + 1;
-        return std.fmt.allocPrint(a, "{s} and {d} {s} behind", .{
+        return std.fmt.allocPrint(a, "{s} and {d} {s}", .{
             primary, counts[j], if (counts[j] == 1) singular[j] else plural[j],
         });
     }
-    return std.fmt.allocPrint(a, "{s} behind", .{primary});
+    return primary;
+}
+
+/// Human "behind by …" text from `secs` seconds behind the chain tip — see
+/// `formatDurationApprox` for the unit rules. "" when effectively caught up.
+fn formatBehind(a: std.mem.Allocator, secs: i64) ![]const u8 {
+    const d = try formatDurationApprox(a, secs);
+    if (d.len == 0) return "";
+    return std.fmt.allocPrint(a, "{s} behind", .{d});
 }
 
 /// Human date/time of the block at unix timestamp `unix_secs`, as
@@ -7822,25 +9040,94 @@ test "formatBlockTime renders the tip block timestamp as UTC date/time (no label
 }
 
 test "cycleTab steps through the detail tabs and wraps at both ends" {
-    // Forward from each tab (a coin without mining — the Mining tab doesn't
-    // exist for it, so the cycle skips straight over it).
-    try std.testing.expectEqual(DetailTab.transactions, cycleTab(.home, 1, false));
-    try std.testing.expectEqual(DetailTab.receive, cycleTab(.transactions, 1, false));
-    try std.testing.expectEqual(DetailTab.send, cycleTab(.receive, 1, false));
-    try std.testing.expectEqual(DetailTab.settings, cycleTab(.send, 1, false));
-    // Forward off the last tab wraps to the first, past the absent Mining tab.
-    try std.testing.expectEqual(DetailTab.home, cycleTab(.settings, 1, false));
-    // Backward off the first tab wraps to the last, past the absent Mining tab.
-    try std.testing.expectEqual(DetailTab.settings, cycleTab(.home, -1, false));
-    try std.testing.expectEqual(DetailTab.send, cycleTab(.settings, -1, false));
+    // Forward from each tab (a coin with neither capability tab — Mining and
+    // DigiDollar don't exist for it, so the cycle skips straight over both).
+    try std.testing.expectEqual(DetailTab.transactions, cycleTab(.home, 1, false, false));
+    try std.testing.expectEqual(DetailTab.receive, cycleTab(.transactions, 1, false, false));
+    try std.testing.expectEqual(DetailTab.send, cycleTab(.receive, 1, false, false));
+    try std.testing.expectEqual(DetailTab.settings, cycleTab(.send, 1, false, false));
+    // Forward off the last tab wraps to the first, past the absent capability tabs.
+    try std.testing.expectEqual(DetailTab.home, cycleTab(.settings, 1, false, false));
+    // Backward off the first tab wraps to the last, past the absent capability tabs.
+    try std.testing.expectEqual(DetailTab.settings, cycleTab(.home, -1, false, false));
+    try std.testing.expectEqual(DetailTab.send, cycleTab(.settings, -1, false, false));
 }
 
 test "cycleTab includes the Mining tab only for coins that mine" {
     // A mining coin (Nerva) cycles settings → mining → home in both directions.
-    try std.testing.expectEqual(DetailTab.mining, cycleTab(.settings, 1, true));
-    try std.testing.expectEqual(DetailTab.home, cycleTab(.mining, 1, true));
-    try std.testing.expectEqual(DetailTab.mining, cycleTab(.home, -1, true));
-    try std.testing.expectEqual(DetailTab.settings, cycleTab(.mining, -1, true));
+    try std.testing.expectEqual(DetailTab.mining, cycleTab(.settings, 1, true, false));
+    try std.testing.expectEqual(DetailTab.home, cycleTab(.mining, 1, true, false));
+    try std.testing.expectEqual(DetailTab.mining, cycleTab(.home, -1, true, false));
+    try std.testing.expectEqual(DetailTab.settings, cycleTab(.mining, -1, true, false));
+}
+
+test "cycleTab includes the DigiDollar tab only for stablecoin coins" {
+    // A stablecoin coin (DigiByte) cycles settings → digidollar → home, skipping
+    // the absent Mining tab in both directions.
+    try std.testing.expectEqual(DetailTab.digidollar, cycleTab(.settings, 1, false, true));
+    try std.testing.expectEqual(DetailTab.home, cycleTab(.digidollar, 1, false, true));
+    try std.testing.expectEqual(DetailTab.digidollar, cycleTab(.home, -1, false, true));
+    try std.testing.expectEqual(DetailTab.settings, cycleTab(.digidollar, -1, false, true));
+}
+
+test "numbered tab jumps are positional over the visible strip" {
+    // Plain coin: 1-5, nothing on 6.
+    try std.testing.expectEqual(DetailTab.home, visibleTabAt(0, false, false).?);
+    try std.testing.expectEqual(DetailTab.settings, visibleTabAt(4, false, false).?);
+    try std.testing.expect(visibleTabAt(5, false, false) == null);
+    // Mining coin: 6 = Mining.
+    try std.testing.expectEqual(DetailTab.mining, visibleTabAt(5, true, false).?);
+    // Stablecoin coin: 6 = DigiDollar (contiguous — no dead 6 where Mining
+    // would sit).
+    try std.testing.expectEqual(DetailTab.digidollar, visibleTabAt(5, false, true).?);
+    try std.testing.expect(visibleTabAt(6, false, true) == null);
+    // Hint ranges follow the same counts.
+    try std.testing.expectEqual(@as(usize, 5), visibleTabCount(false, false));
+    try std.testing.expectEqual(@as(usize, 6), visibleTabCount(false, true));
+    try std.testing.expectEqual(@as(usize, 6), visibleTabCount(true, false));
+}
+
+test "parseDollarsToCents parses plain USD amounts and rejects everything else" {
+    // Whole dollars, one and two decimals.
+    try std.testing.expectEqual(@as(i64, 12500), parseDollarsToCents("125").?);
+    try std.testing.expectEqual(@as(i64, 12550), parseDollarsToCents("125.5").?);
+    try std.testing.expectEqual(@as(i64, 12550), parseDollarsToCents("125.50").?);
+    try std.testing.expectEqual(@as(i64, 5), parseDollarsToCents(".05").?);
+    try std.testing.expectEqual(@as(i64, 10000), parseDollarsToCents(" 100 ").?);
+    try std.testing.expectEqual(@as(i64, 0), parseDollarsToCents("0").?);
+    // Rejected: empty, bare dot, >2 decimals, stray characters, negatives.
+    try std.testing.expect(parseDollarsToCents("") == null);
+    try std.testing.expect(parseDollarsToCents(".") == null);
+    try std.testing.expect(parseDollarsToCents("1.234") == null);
+    try std.testing.expect(parseDollarsToCents("12a") == null);
+    try std.testing.expect(parseDollarsToCents("-5") == null);
+    try std.testing.expect(parseDollarsToCents("1.2.3") == null);
+}
+
+test "formatCents and formatMicroUsd render money at fixed precision" {
+    var buf: [32]u8 = undefined;
+    try std.testing.expectEqualStrings("$125.50", formatCents(&buf, 12550));
+    try std.testing.expectEqualStrings("$0.05", formatCents(&buf, 5));
+    try std.testing.expectEqualStrings("$100000.00", formatCents(&buf, 10_000_000));
+    try std.testing.expectEqualStrings("-$1.25", formatCents(&buf, -125));
+    // Oracle price: micro-USD per coin, six decimals (sub-cent coins are normal).
+    try std.testing.expectEqualStrings("$0.014230", formatMicroUsd(&buf, 14_230));
+    try std.testing.expectEqualStrings("$1.000000", formatMicroUsd(&buf, 1_000_000));
+}
+
+test "redeemablePositionAt walks only the redeemable vaults, in cache order" {
+    var act: Activity = .{};
+    act.sc_pos_count = 3;
+    act.sc_pos_buf[0] = .{ .amount_cents = 100, .can_redeem = false };
+    act.sc_pos_buf[1] = .{ .amount_cents = 200, .can_redeem = true };
+    act.sc_pos_buf[2] = .{ .amount_cents = 300, .can_redeem = true };
+    act.sc_pos_buf[1].setId("aa");
+    act.sc_pos_buf[2].setId("bb");
+
+    try std.testing.expectEqual(@as(usize, 2), redeemableCount(&act));
+    try std.testing.expectEqual(@as(i64, 200), redeemablePositionAt(&act, 0).?.amount_cents);
+    try std.testing.expectEqualStrings("bb", redeemablePositionAt(&act, 1).?.id());
+    try std.testing.expect(redeemablePositionAt(&act, 2) == null);
 }
 
 test "usageColor steps green → amber → red at the 75/90 thresholds" {
@@ -9020,6 +10307,135 @@ test "the Mining prompt only opens on a mining coin with a running daemon" {
     try std.testing.expect(app.mining_modal != null);
     try std.testing.expectEqual(MiningModal.Stage.confirm_stop, app.mining_modal.?.stage);
     try std.testing.expect(!app.mining_modal.?.starting);
+}
+
+test "renderStablecoinTab walks the daemon-down, checking, pre-activation, and live states" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    var dgb: DigiByte = .{};
+    const sc = dgb.coin().stablecoin().?;
+    var act: Activity = .{};
+
+    // Daemon down → the tab says to start it rather than showing a dead pane.
+    const down = try App.renderStablecoinTab(a, sc, &act);
+    try std.testing.expect(std.mem.indexOf(u8, down, "start the daemon") != null);
+
+    // Daemon up, no info fetched yet → "checking".
+    act.daemon.store(@intFromEnum(DaemonState.running), .release);
+    const checking = try App.renderStablecoinTab(a, sc, &act);
+    try std.testing.expect(std.mem.indexOf(u8, checking, "Checking") != null);
+
+    // Pre-activation (live on mainnet, waiting for the activation height):
+    // status shown, countdown to the activation block, actions locked. No
+    // "Address: fetching…" — the address RPC refuses until activation.
+    act.sc_has_info = true;
+    act.sc_info.setStatus("locked_in");
+    act.sc_info.activation_height = 23_627_520;
+    act.blocks_cur = 23_600_000;
+    const pre = try App.renderStablecoinTab(a, sc, &act);
+    try std.testing.expect(std.mem.indexOf(u8, pre, "Not active yet") != null);
+    try std.testing.expect(std.mem.indexOf(u8, pre, "locked_in") != null);
+    try std.testing.expect(std.mem.indexOf(u8, pre, "Activates at block 23627520") != null);
+    try std.testing.expect(std.mem.indexOf(u8, pre, "27520 blocks to go") != null);
+    // 27,520 blocks × 15 s ≈ 4.8 days → the ETA leads with days.
+    try std.testing.expect(std.mem.indexOf(u8, pre, "4 days") != null);
+    try std.testing.expect(std.mem.indexOf(u8, pre, "unlock once the feature activates") != null);
+    try std.testing.expect(std.mem.indexOf(u8, pre, "fetching") == null);
+
+    // Live: balance, oracle price, address, a redeemable vault, a mint row.
+    act.sc_info.active = true;
+    act.sc_info.price_micro_usd = 14_230;
+    act.sc_has_balance = true;
+    act.sc_balance = .{ .confirmed_cents = 12550, .pending_cents = 500 };
+    const addr = "DD1exampleaddress";
+    @memcpy(act.sc_addr_buf[0..addr.len], addr);
+    act.sc_addr_len = addr.len;
+    act.sc_pos_count = 1;
+    act.sc_pos_buf[0] = .{ .amount_cents = 10000, .tier = 4, .unlock_height = 19_000_000, .can_redeem = true };
+    act.sc_pos_buf[0].setId("aa11");
+    act.sc_tx_count = 1;
+    act.sc_tx_buf[0] = .{ .kind = .mint, .amount_cents = 10000, .time = 1_780_410_720, .confirmations = 12 };
+    const live = try App.renderStablecoinTab(a, sc, &act);
+    try std.testing.expect(std.mem.indexOf(u8, live, "$125.50") != null);
+    try std.testing.expect(std.mem.indexOf(u8, live, "$5.00 pending") != null);
+    try std.testing.expect(std.mem.indexOf(u8, live, addr) != null);
+    try std.testing.expect(std.mem.indexOf(u8, live, "$0.014230") != null);
+    try std.testing.expect(std.mem.indexOf(u8, live, "redeemable") != null);
+    try std.testing.expect(std.mem.indexOf(u8, live, "1 year") != null);
+    try std.testing.expect(std.mem.indexOf(u8, live, "mint") != null);
+    try std.testing.expect(std.mem.indexOf(u8, live, "Enter: mint / send / redeem") != null);
+}
+
+test "openStablecoinModal gates on capability, daemon state, and on-chain activation" {
+    if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
+    const allocator = std.testing.allocator;
+
+    var threaded: std.Io.Threaded = .init(allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    var env = std.process.Environ.Map.init(allocator);
+    defer env.deinit();
+    try env.put("HOME", "/home/tester");
+    var ctx = zz.Context.init(allocator, allocator, io, &env);
+
+    var app: App = undefined;
+    _ = app.init(&ctx);
+    defer app.deinit();
+
+    var plain_idx: ?usize = null;
+    var sc_idx: ?usize = null;
+    for (0..app.activities.len) |i| {
+        if (app.coinAt(i)) |c| {
+            if (c.supportsStablecoin()) {
+                if (sc_idx == null) sc_idx = i;
+            } else if (plain_idx == null) plain_idx = i;
+        }
+    }
+    try std.testing.expect(plain_idx != null);
+    // DigiByte is registered, so a stablecoin coin exists.
+    try std.testing.expect(sc_idx != null);
+
+    // A coin without the capability: Enter never opens the prompt.
+    app.selected = plain_idx.?;
+    app.openStablecoinModal();
+    try std.testing.expect(app.sc_modal == null);
+
+    // The stablecoin coin with its daemon down: refused (the tab says why).
+    app.selected = sc_idx.?;
+    app.openStablecoinModal();
+    try std.testing.expect(app.sc_modal == null);
+
+    // Daemon up but the feature not yet ACTIVE on-chain (the pre-mainnet
+    // state): still refused — the actions unlock only once the BIP9
+    // deployment flips to "active".
+    const act = &app.activities[sc_idx.?];
+    act.daemon.store(@intFromEnum(DaemonState.running), .release);
+    act.sc_has_info = true;
+    act.sc_info.active = false;
+    app.openStablecoinModal();
+    try std.testing.expect(app.sc_modal == null);
+
+    // Active → opens at the action menu.
+    act.sc_info.active = true;
+    app.openStablecoinModal();
+    try std.testing.expect(app.sc_modal != null);
+    try std.testing.expectEqual(StablecoinModal.Stage.menu, app.sc_modal.?.stage);
+
+    // Choose "Mint": an amount below the $100 minimum is rejected in place;
+    // a valid one advances to the tier picker with the exact cents parsed.
+    app.scChooseAction();
+    try std.testing.expectEqual(StablecoinModal.Stage.amount, app.sc_modal.?.stage);
+    try app.send_amount_input.setValue("50");
+    app.tryScAmount();
+    try std.testing.expect(app.sc_modal.?.bad_input);
+    try std.testing.expectEqual(StablecoinModal.Stage.amount, app.sc_modal.?.stage);
+    try app.send_amount_input.setValue("250.75");
+    app.tryScAmount();
+    try std.testing.expectEqual(StablecoinModal.Stage.tier, app.sc_modal.?.stage);
+    try std.testing.expectEqual(@as(i64, 25075), app.sc_modal.?.cents);
 }
 
 test "renderMiningModal shows the thread prompt, stop confirm, and a failure" {
