@@ -18,6 +18,13 @@ daemons from a single TUI — no browser, no Electron, no cloud.
 | ReddCoin | RDD |
 | Zano | ZANO |
 
+DigiByte includes a **DigiDollar** tab (DigiByte core v9.26+): mint DD against
+locked DGB collateral at a chosen lock tier, send/receive DD, watch the oracle
+DGB/USD price and system health, and redeem vaults once their timelock expires.
+The tab tracks the on-chain BIP9 deployment — before the mainnet activation
+height it counts down to the activation block, and the mint/send/redeem
+actions unlock automatically the moment the chain reaches it.
+
 ## Install
 
 Download the latest binary for your platform from the

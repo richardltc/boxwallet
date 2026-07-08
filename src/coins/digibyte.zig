@@ -355,6 +355,431 @@ pub const DigiByte = struct {
         return "getnetworkinfo";
     }
 
+    // --- DigiDollar (DD) ---------------------------------------------------
+    //
+    // DigiByte's chain-native USD stablecoin: DD is minted by locking DGB as
+    // collateral at a chosen lock tier (longer lock → less collateral), moved
+    // with its own wallet RPCs, and redeemed — burned to unlock the collateral —
+    // once the tier's timelock expires. Shipped in core v9.26 behind a BIP9
+    // deployment, so everything here also works *before* mainnet activation:
+    // `ddInfo` reports the deployment status and the UI gates the actions on it.
+    //
+    // RPC surface verified against a live digibyted v9.26.4 (`help <rpc>` +
+    // live replies, 2026-07-08). Amounts are **integer USD cents** on the wire
+    // (10000 == $100.00) — integers are passed through verbatim so no float
+    // ever touches a money amount we send. The oracle price rides in micro-USD
+    // per DGB (1_000_000 == $1.00). Fees are paid in DGB, not DD.
+    //
+    // Pre-activation behaviour (verified): every DD RPC except
+    // `getdigidollardeploymentinfo` errors with "DigiDollar is not yet active
+    // on this blockchain" until the chain reaches the activation height — so
+    // the frontend polls only the deployment info until `active` flips.
+
+    /// Lock tiers, from the DigiDollar spec: tier index == the `tier` RPC
+    /// argument; ratio is the required collateral in percent of the minted
+    /// value at the oracle price.
+    const dd_tiers = [_]Coin.StablecoinTier{
+        .{ .tier = 0, .duration = "1 hour", .ratio_pct = 1000 },
+        .{ .tier = 1, .duration = "30 days", .ratio_pct = 500 },
+        .{ .tier = 2, .duration = "90 days", .ratio_pct = 400 },
+        .{ .tier = 3, .duration = "180 days", .ratio_pct = 350 },
+        .{ .tier = 4, .duration = "1 year", .ratio_pct = 300 },
+        .{ .tier = 5, .duration = "2 years", .ratio_pct = 275 },
+        .{ .tier = 6, .duration = "3 years", .ratio_pct = 250 },
+        .{ .tier = 7, .duration = "5 years", .ratio_pct = 225 },
+        .{ .tier = 8, .duration = "7 years", .ratio_pct = 212 },
+        .{ .tier = 9, .duration = "10 years", .ratio_pct = 200 },
+    };
+
+    /// The stablecoin capability handed to the frontend — lights up the
+    /// DigiDollar tab on DigiByte's detail pane. Mint bounds are the daemon's
+    /// own consensus limits ($100 minimum, $100,000 maximum per mint).
+    const stablecoin_cap: Coin.Stablecoin = .{
+        .name = "DigiDollar",
+        .symbol = "DD",
+        .min_mint_cents = 10_000,
+        .max_mint_cents = 10_000_000,
+        // 15-second blocks, for the pre-activation countdown's wall-clock ETA.
+        .block_seconds = 15,
+        .tiers = &dd_tiers,
+        .info = ddInfo,
+        .balance = ddBalance,
+        .receive_address = ddReceiveAddress,
+        .transactions = ddTransactions,
+        .positions = ddPositions,
+        .estimate_collateral = ddEstimateCollateral,
+        .mint = ddMint,
+        .send = ddSend,
+        .redeem = ddRedeem,
+    };
+
+    /// A JSON number that may arrive as an integer, float, or decimal string
+    /// (the guide shows DGB figures as "decimal strings"), normalized to f64.
+    fn jsonNumber(v: std.json.Value) ?f64 {
+        return switch (v) {
+            .integer => |i| @floatFromInt(i),
+            .float => |f| f,
+            .number_string, .string => |s| std.fmt.parseFloat(f64, s) catch null,
+            else => null,
+        };
+    }
+
+    /// Round a parsed JSON amount to integer cents. Cents fit f64 exactly up to
+    /// 2^53 (~$90 quadrillion), far past any DD figure; `lossyCast` saturates
+    /// rather than trapping on garbage input.
+    fn centsFrom(v: f64) i64 {
+        return std.math.lossyCast(i64, @round(v));
+    }
+
+    // Raw RPC reply shapes (DigiByte-specific, so they live here, not in
+    // models.zig), the field subsets BoxWallet uses — verified against the
+    // daemon's own `help <rpc>` documentation. All parsed with
+    // `ignore_unknown_fields` and defaulted, so an omitted optional field
+    // degrades to its zero value instead of failing the poll.
+
+    const DdBalanceResult = struct {
+        confirmed: f64 = 0,
+        unconfirmed: f64 = 0,
+    };
+
+    const DdDeploymentInfo = struct {
+        /// Whether DigiDollar is active right now — the authoritative gate.
+        enabled: bool = false,
+        /// BIP9 status: defined / started / locked_in / active / failed.
+        status: []const u8 = "",
+        /// Earliest height the deployment can activate at (always present).
+        min_activation_height: i64 = 0,
+        /// The actual activation height, present only once active.
+        activation_height: ?i64 = null,
+    };
+
+    const DdOraclePrice = struct {
+        price_micro_usd: f64 = 0,
+        is_stale: bool = false,
+    };
+
+    const DdStats = struct {
+        health_percentage: f64 = 0,
+        total_collateral_dgb: f64 = 0,
+        total_dd_supply: f64 = 0,
+        /// Why minting is restricted: "none", "oracle_unavailable", or
+        /// "err_active".
+        minting_restricted_reason: []const u8 = "none",
+    };
+
+    const DdAddressEntry = struct {
+        address: []const u8 = "",
+    };
+
+    const DdTxEntry = struct {
+        category: []const u8 = "",
+        amount: f64 = 0,
+        time: i64 = 0,
+        confirmations: i64 = 0,
+    };
+
+    const DdPositionEntry = struct {
+        position_id: []const u8 = "",
+        /// The DD minted by this position, in cents (what a redeem must burn).
+        dd_minted: f64 = 0,
+        lock_tier: i64 = 0,
+        unlock_height: i64 = 0,
+        /// pending / active / unlocked / redeemed.
+        status: []const u8 = "",
+        can_redeem: bool = false,
+    };
+
+    const DdEstimate = struct {
+        /// Minimum consensus DGB collateral for the mint.
+        required_dgb: f64 = 0,
+        /// What the wallet's mint builder will actually lock (consensus
+        /// minimum plus its safety margin) — the honest figure to show.
+        wallet_collateral_dgb: ?f64 = null,
+    };
+
+    /// Live DigiDollar system state: the BIP9 deployment status (the anchor —
+    /// if this call fails, the snapshot fails; it's also the only DD RPC that
+    /// answers before activation), then the oracle price and the system-wide
+    /// stats — supply/collateral/health plus the mint-restriction reason —
+    /// each best-effort (pre-activation both error, leaving zero values).
+    pub fn ddInfo(allocator: std.mem.Allocator, auth: models.CoinAuth) !models.StablecoinInfo {
+        var out: models.StablecoinInfo = .{};
+
+        {
+            var parsed = try rpc.callParsed(DdDeploymentInfo, allocator, auth, "getdigidollardeploymentinfo");
+            defer parsed.deinit();
+            if (parsed.value.result) |r| {
+                out.setStatus(r.status);
+                out.active = r.enabled;
+                out.activation_height = r.activation_height orelse r.min_activation_height;
+            } else if (parsed.value.@"error") |e| {
+                // A daemon without the DD RPCs (pre-9.26) answers "Method not
+                // found" — report that as a distinct status so the tab can say
+                // "needs a newer core" instead of spinning on "checking…".
+                if (std.ascii.indexOfIgnoreCase(e.message, "not found") != null) {
+                    out.setStatus("unsupported");
+                    return out;
+                }
+                return error.EmptyRpcResult;
+            } else return error.EmptyRpcResult;
+        }
+
+        if (rpc.callParsed(DdOraclePrice, allocator, auth, "getoracleprice")) |parsed_const| {
+            var parsed = parsed_const;
+            defer parsed.deinit();
+            if (parsed.value.result) |r| {
+                out.price_micro_usd = std.math.lossyCast(u64, @round(@max(r.price_micro_usd, 0)));
+                out.price_stale = r.is_stale;
+            }
+        } else |_| {}
+
+        if (rpc.callParsed(DdStats, allocator, auth, "getdigidollarstats")) |parsed_const| {
+            var parsed = parsed_const;
+            defer parsed.deinit();
+            if (parsed.value.result) |r| {
+                out.total_supply_cents = centsFrom(r.total_dd_supply);
+                out.total_collateral = r.total_collateral_dgb;
+                out.health_ratio = r.health_percentage;
+                out.minting_blocked = ddMintRestricted(r.minting_restricted_reason);
+            }
+        } else |_| {}
+
+        return out;
+    }
+
+    /// Whether the stats' `minting_restricted_reason` means minting is blocked
+    /// right now ("none"/empty = fine; anything else — "oracle_unavailable",
+    /// "err_active" — blocks).
+    fn ddMintRestricted(reason: []const u8) bool {
+        return reason.len > 0 and !std.mem.eql(u8, reason, "none");
+    }
+
+    /// The wallet's DD balance via `getdigidollarbalance` (no args = the whole
+    /// wallet, minconf 1) — integer cents on the wire.
+    pub fn ddBalance(allocator: std.mem.Allocator, auth: models.CoinAuth) !models.StablecoinBalance {
+        var parsed = try rpc.callParsed(DdBalanceResult, allocator, auth, "getdigidollarbalance");
+        defer parsed.deinit();
+        const r = parsed.value.result orelse return error.EmptyRpcResult;
+        return .{
+            .confirmed_cents = centsFrom(r.confirmed),
+            .pending_cents = centsFrom(r.unconfirmed),
+        };
+    }
+
+    /// The wallet's DD deposit address. Reuses the first existing address
+    /// (including still-empty generated ones — `include_empty=true` — so a
+    /// fresh session doesn't mint a new address every launch); generates one
+    /// via `getdigidollaraddress` when none exists or on an explicit
+    /// user-requested rotation (`force_new`). Caller owns the result.
+    pub fn ddReceiveAddress(allocator: std.mem.Allocator, auth: models.CoinAuth, force_new: bool) ![]const u8 {
+        if (!force_new) {
+            if (rpc.callParsedParams([]const DdAddressEntry, allocator, auth, "listdigidollaraddresses", "[false,0,true]")) |parsed_const| {
+                var parsed = parsed_const;
+                defer parsed.deinit();
+                if (parsed.value.result) |rows| {
+                    if (rows.len > 0 and rows[0].address.len > 0)
+                        return allocator.dupe(u8, rows[0].address);
+                }
+            } else |_| {}
+        }
+        var parsed = try rpc.callParsed([]const u8, allocator, auth, "getdigidollaraddress");
+        defer parsed.deinit();
+        const addr = parsed.value.result orelse return error.EmptyRpcResult;
+        return allocator.dupe(u8, addr);
+    }
+
+    /// Map a `listdigidollartxs` category to the normalized kind.
+    /// `redeem_change` (the daemon's internal change row of a redemption) and
+    /// unknown categories are dropped (null).
+    fn ddTxKind(category: []const u8) ?models.StablecoinTxKind {
+        if (std.mem.eql(u8, category, "mint")) return .mint;
+        if (std.mem.eql(u8, category, "send")) return .sent;
+        if (std.mem.eql(u8, category, "receive")) return .received;
+        if (std.mem.eql(u8, category, "redeem")) return .redeem;
+        return null;
+    }
+
+    /// The wallet's most recent DD transactions, newest-first, via
+    /// `listdigidollartxs <limit>`. The reply's ordering isn't documented, so
+    /// the mapped rows are explicitly sorted newest-first by timestamp rather
+    /// than trusting the daemon's order (see `mapDdTransactions`).
+    pub fn ddTransactions(allocator: std.mem.Allocator, auth: models.CoinAuth, limit: usize) ![]models.StablecoinTx {
+        const params = try std.fmt.allocPrint(allocator, "[{d}]", .{limit});
+        defer allocator.free(params);
+        var parsed = try rpc.callParsedParams([]const DdTxEntry, allocator, auth, "listdigidollartxs", params);
+        defer parsed.deinit();
+        const raw = parsed.value.result orelse return error.EmptyRpcResult;
+        return mapDdTransactions(allocator, raw);
+    }
+
+    /// Normalize `raw` and sort it newest-first by timestamp, dropping
+    /// categories with no mapped kind. Two passes so the slice is allocated at
+    /// its exact final length (same shape as `rpc.mapListTransactions`).
+    fn mapDdTransactions(allocator: std.mem.Allocator, raw: []const DdTxEntry) ![]models.StablecoinTx {
+        var count: usize = 0;
+        for (raw) |r| {
+            if (ddTxKind(r.category) != null) count += 1;
+        }
+        var out = try allocator.alloc(models.StablecoinTx, count);
+        var n: usize = 0;
+        for (raw) |r| {
+            const kind = ddTxKind(r.category) orelse continue;
+            out[n] = .{
+                .kind = kind,
+                // Send rows arrive negated; `kind` carries the sign.
+                .amount_cents = centsFrom(@abs(r.amount)),
+                .time = r.time,
+                .confirmations = r.confirmations,
+            };
+            n += 1;
+        }
+        std.mem.sort(models.StablecoinTx, out, {}, struct {
+            fn newerFirst(_: void, a: models.StablecoinTx, b: models.StablecoinTx) bool {
+                return a.time > b.time;
+            }
+        }.newerFirst);
+        return out;
+    }
+
+    /// The wallet's collateral positions (vaults) via
+    /// `listdigidollarpositions false` (all positions — `active_only` defaults
+    /// to true, which would hide freshly-unlocked vaults), capped at `limit`.
+    /// Fully-redeemed positions are dropped (`mapDdPositions`) — they're
+    /// history, already visible as `redeem` rows in the transaction list.
+    pub fn ddPositions(allocator: std.mem.Allocator, auth: models.CoinAuth, limit: usize) ![]models.StablecoinPosition {
+        var parsed = try rpc.callParsedParams([]const DdPositionEntry, allocator, auth, "listdigidollarpositions", "[false]");
+        defer parsed.deinit();
+        const raw = parsed.value.result orelse return error.EmptyRpcResult;
+        return mapDdPositions(allocator, raw, limit);
+    }
+
+    /// Normalize raw position rows, skipping any without an id (nothing to
+    /// redeem them by) and any already redeemed. Split out for offline tests.
+    fn mapDdPositions(allocator: std.mem.Allocator, raw: []const DdPositionEntry, limit: usize) ![]models.StablecoinPosition {
+        var count: usize = 0;
+        for (raw) |r| {
+            if (count >= limit) break;
+            if (ddPositionShown(r)) count += 1;
+        }
+        var out = try allocator.alloc(models.StablecoinPosition, count);
+        var n: usize = 0;
+        for (raw) |r| {
+            if (n >= count) break;
+            if (!ddPositionShown(r)) continue;
+            out[n] = .{
+                .amount_cents = centsFrom(r.dd_minted),
+                .tier = std.math.lossyCast(u8, r.lock_tier),
+                .unlock_height = r.unlock_height,
+                .can_redeem = r.can_redeem,
+            };
+            out[n].setId(r.position_id);
+            n += 1;
+        }
+        return out;
+    }
+
+    /// Whether a raw position row belongs on the tab: it must carry an id, and
+    /// not be fully redeemed already.
+    fn ddPositionShown(r: DdPositionEntry) bool {
+        return r.position_id.len > 0 and !std.mem.eql(u8, r.status, "redeemed");
+    }
+
+    /// How much DGB minting `cents` at `tier` would lock right now, via
+    /// `estimatecollateral`. Prefers `wallet_collateral_dgb` (what the wallet's
+    /// mint builder will actually lock, safety margin included) over the bare
+    /// consensus minimum `required_dgb`.
+    pub fn ddEstimateCollateral(allocator: std.mem.Allocator, auth: models.CoinAuth, cents: i64, tier: u8) !f64 {
+        const params = try std.fmt.allocPrint(allocator, "[{d},{d}]", .{ cents, tier });
+        defer allocator.free(params);
+        var parsed = try rpc.callParsedParams(DdEstimate, allocator, auth, "estimatecollateral", params);
+        defer parsed.deinit();
+        const r = parsed.value.result orelse return error.EmptyRpcResult;
+        return r.wallet_collateral_dgb orelse r.required_dgb;
+    }
+
+    /// Mint `cents` of DD at lock `tier` (`mintdigidollar <cents> <tier>`),
+    /// locking DGB collateral until the tier's unlock height. Success carries
+    /// the txid plus the locked-DGB figure; a daemon rejection (locked wallet,
+    /// stale oracle price, below-minimum amount) rides back verbatim.
+    pub fn ddMint(allocator: std.mem.Allocator, auth: models.CoinAuth, cents: i64, tier: u8) !models.SendResult {
+        const params = try std.fmt.allocPrint(allocator, "[{d},{d}]", .{ cents, tier });
+        defer allocator.free(params);
+        return ddOp(allocator, auth, "mintdigidollar", params, "dgb_collateral", "locked");
+    }
+
+    /// Send `cents` of DD to `address` (`senddigidollar <addr> <cents>`). The
+    /// integer amount is cents by the RPC's own convention; the miner fee is
+    /// paid in DGB, so the wallet needs a little DGB alongside the DD.
+    pub fn ddSend(allocator: std.mem.Allocator, auth: models.CoinAuth, address: []const u8, cents: i64) !models.SendResult {
+        const addr_q = try rpc.jsonQuote(allocator, address);
+        defer allocator.free(addr_q);
+        const params = try std.fmt.allocPrint(allocator, "[{s},{d}]", .{ addr_q, cents });
+        defer allocator.free(params);
+        return ddOp(allocator, auth, "senddigidollar", params, null, "");
+    }
+
+    /// Redeem position `position_id` in full (`redeemdigidollar <id> <cents>` —
+    /// the daemon requires the whole vault amount), burning the DD and
+    /// unlocking its DGB collateral. Success carries the unlocked-DGB figure.
+    pub fn ddRedeem(allocator: std.mem.Allocator, auth: models.CoinAuth, position_id: []const u8, cents: i64) !models.SendResult {
+        const id_q = try rpc.jsonQuote(allocator, position_id);
+        defer allocator.free(id_q);
+        const params = try std.fmt.allocPrint(allocator, "[{s},{d}]", .{ id_q, cents });
+        defer allocator.free(params);
+        return ddOp(allocator, auth, "redeemdigidollar", params, "dgb_unlocked", "unlocked");
+    }
+
+    /// Run one DD wallet op and normalize the outcome (`SendResult`): the
+    /// daemon's own rejection message rides back verbatim, success carries the
+    /// txid — plus, when `detail_key` names a DGB figure in the reply, a
+    /// "(<verb> N DGB)" suffix so the user sees what the op did to their
+    /// collateral.
+    fn ddOp(
+        allocator: std.mem.Allocator,
+        auth: models.CoinAuth,
+        method: []const u8,
+        params: []const u8,
+        detail_key: ?[]const u8,
+        detail_verb: []const u8,
+    ) !models.SendResult {
+        var parsed = try rpc.callParsedParams(std.json.Value, allocator, auth, method, params);
+        defer parsed.deinit();
+        return ddOutcome(allocator, parsed.value, detail_key, detail_verb);
+    }
+
+    /// The pure mapping half of `ddOp`, split out for offline tests.
+    fn ddOutcome(
+        allocator: std.mem.Allocator,
+        resp: models.JsonRpcResponse(std.json.Value),
+        detail_key: ?[]const u8,
+        detail_verb: []const u8,
+    ) !models.SendResult {
+        if (resp.@"error") |e| return .{ .failed = try allocator.dupe(u8, e.message) };
+        const result = resp.result orelse return .{ .failed = try allocator.dupe(u8, "no response from daemon") };
+        const txid: []const u8 = switch (result) {
+            .string => |s| s,
+            .object => |o| blk: {
+                const t = o.get("txid") orelse break :blk "";
+                break :blk switch (t) {
+                    .string => |s| s,
+                    else => "",
+                };
+            },
+            else => "",
+        };
+        if (txid.len == 0) return .{ .failed = try allocator.dupe(u8, "unexpected reply from daemon") };
+        if (detail_key) |key| {
+            if (result == .object) {
+                if (result.object.get(key)) |field| {
+                    if (jsonNumber(field)) |dgb| {
+                        return .{ .ok = try std.fmt.allocPrint(allocator, "{s} ({s} {d} DGB)", .{ txid, detail_verb, dgb }) };
+                    }
+                }
+            }
+        }
+        return .{ .ok = try allocator.dupe(u8, txid) };
+    }
+
     // --- vtable plumbing -------------------------------------------------
 
     const vtable: Coin.VTable = .{
@@ -389,6 +814,7 @@ pub const DigiByte = struct {
         .wallet_unlock = vtWalletUnlock,
         .wallet_lock = vtWalletLock,
         .warmup_probe_method = vtWarmupProbeMethod,
+        .stablecoin = &stablecoin_cap,
     };
 
     fn vtCoinName(_: *anyopaque) []const u8 {
@@ -810,6 +1236,255 @@ test "maps getwalletinfo unlocked_until to the wallet security state" {
     try std.testing.expectEqual(models.WalletSecurity.unencrypted, DigiByte.securityFromUnlockedUntil(null));
     try std.testing.expectEqual(models.WalletSecurity.locked, DigiByte.securityFromUnlockedUntil(0));
     try std.testing.expectEqual(models.WalletSecurity.unlocked, DigiByte.securityFromUnlockedUntil(1893456000));
+}
+
+test "DigiDollar: capability is wired with the full tier table and mint bounds" {
+    var dgb: DigiByte = .{};
+    const c = dgb.coin();
+    try std.testing.expect(c.supportsStablecoin());
+    const sc = c.stablecoin().?;
+    try std.testing.expectEqualStrings("DigiDollar", sc.name);
+    try std.testing.expectEqualStrings("DD", sc.symbol);
+    // $100 minimum, $100,000 maximum per mint (consensus limits).
+    try std.testing.expectEqual(@as(i64, 10_000), sc.min_mint_cents);
+    try std.testing.expectEqual(@as(i64, 10_000_000), sc.max_mint_cents);
+    // Ten tiers, index == tier number, ratios strictly easing as locks lengthen.
+    try std.testing.expectEqual(@as(usize, 10), sc.tiers.len);
+    for (sc.tiers, 0..) |t, i| {
+        try std.testing.expectEqual(@as(u8, @intCast(i)), t.tier);
+        if (i > 0) try std.testing.expect(t.ratio_pct < sc.tiers[i - 1].ratio_pct);
+    }
+    try std.testing.expectEqual(@as(u32, 1000), sc.tiers[0].ratio_pct);
+    try std.testing.expectEqual(@as(u32, 200), sc.tiers[9].ratio_pct);
+}
+
+test "DigiDollar: parses getdigidollarbalance cents into StablecoinBalance" {
+    const allocator = std.testing.allocator;
+    const raw =
+        \\{"result":{"confirmed":12550,"unconfirmed":500,"total":13050},
+        \\"error":null,"id":"boxwallet"}
+    ;
+    var parsed = try std.json.parseFromSlice(
+        models.JsonRpcResponse(DigiByte.DdBalanceResult),
+        allocator,
+        raw,
+        .{ .ignore_unknown_fields = true },
+    );
+    defer parsed.deinit();
+    const r = parsed.value.result.?;
+    const bal: models.StablecoinBalance = .{
+        .confirmed_cents = DigiByte.centsFrom(r.confirmed),
+        .pending_cents = DigiByte.centsFrom(r.unconfirmed),
+    };
+    try std.testing.expectEqual(@as(i64, 12550), bal.confirmed_cents); // $125.50
+    try std.testing.expectEqual(@as(i64, 500), bal.pending_cents);
+    try std.testing.expectEqual(@as(i64, 13050), bal.totalCents());
+}
+
+test "DigiDollar: maps listdigidollartxs categories, drops redeem_change, reverses to newest-first" {
+    const allocator = std.testing.allocator;
+    // Oldest-to-newest, as the daemon returns the window. Send rows negated.
+    const raw = [_]DigiByte.DdTxEntry{
+        .{ .category = "mint", .amount = 10000, .time = 100, .confirmations = 50 },
+        .{ .category = "send", .amount = -2500, .time = 200, .confirmations = 20 },
+        .{ .category = "redeem_change", .amount = 1, .time = 200, .confirmations = 20 },
+        .{ .category = "receive", .amount = 750, .time = 300, .confirmations = 3 },
+        .{ .category = "redeem", .amount = 10000, .time = 400, .confirmations = 1 },
+    };
+    const txs = try DigiByte.mapDdTransactions(allocator, &raw);
+    defer allocator.free(txs);
+    try std.testing.expectEqual(@as(usize, 4), txs.len);
+    // Newest first; redeem_change dropped.
+    try std.testing.expectEqual(models.StablecoinTxKind.redeem, txs[0].kind);
+    try std.testing.expectEqual(models.StablecoinTxKind.received, txs[1].kind);
+    try std.testing.expectEqual(models.StablecoinTxKind.sent, txs[2].kind);
+    try std.testing.expectEqual(models.StablecoinTxKind.mint, txs[3].kind);
+    // Send magnitude is positive; the kind carries the sign.
+    try std.testing.expectEqual(@as(i64, 2500), txs[2].amount_cents);
+    try std.testing.expectEqual(@as(i64, 300), txs[1].time);
+}
+
+test "DigiDollar: maps positions (dd_minted/lock_tier), skipping id-less and redeemed rows" {
+    const allocator = std.testing.allocator;
+    const raw = [_]DigiByte.DdPositionEntry{
+        .{ .position_id = "aa11", .dd_minted = 10000, .lock_tier = 4, .unlock_height = 19_000_000, .status = "active", .can_redeem = false },
+        .{ .position_id = "bb22", .dd_minted = 50000, .lock_tier = 1, .unlock_height = 18_500_000, .status = "unlocked", .can_redeem = true },
+        .{ .position_id = "cc33", .dd_minted = 25000, .status = "redeemed" }, // history — dropped
+        .{ .dd_minted = 999 }, // no id → unusable, skipped
+    };
+    const ps = try DigiByte.mapDdPositions(allocator, &raw, 8);
+    defer allocator.free(ps);
+    try std.testing.expectEqual(@as(usize, 2), ps.len);
+    try std.testing.expectEqualStrings("aa11", ps[0].id());
+    try std.testing.expectEqual(@as(i64, 10000), ps[0].amount_cents);
+    try std.testing.expectEqual(@as(u8, 4), ps[0].tier);
+    try std.testing.expect(!ps[0].can_redeem);
+    try std.testing.expectEqualStrings("bb22", ps[1].id());
+    try std.testing.expectEqual(@as(i64, 50000), ps[1].amount_cents);
+    try std.testing.expectEqual(@as(u8, 1), ps[1].tier);
+    try std.testing.expect(ps[1].can_redeem);
+}
+
+test "DigiDollar: estimatecollateral prefers the wallet's real lock figure over the consensus minimum" {
+    const allocator = std.testing.allocator;
+    // Field subset as documented by `digibyted help estimatecollateral` (9.26.4).
+    const raw =
+        \\{"result":{"required_dgb":41666.67,"minimum_required_dgb":41666.67,
+        \\"wallet_collateral_dgb":42083.33,"collateral_safety_margin_dgb":416.66,
+        \\"dd_amount":10000,"lock_tier":4,"lock_days":365,"base_ratio":300,
+        \\"dca_multiplier":1.0,"effective_ratio":300,"oracle_price_micro_usd":14230,
+        \\"usd_value":100.0},"error":null,"id":"boxwallet"}
+    ;
+    var parsed = try std.json.parseFromSlice(
+        models.JsonRpcResponse(DigiByte.DdEstimate),
+        allocator,
+        raw,
+        .{ .ignore_unknown_fields = true },
+    );
+    defer parsed.deinit();
+    const r = parsed.value.result.?;
+    try std.testing.expectApproxEqAbs(@as(f64, 42083.33), r.wallet_collateral_dgb orelse r.required_dgb, 1e-9);
+    // Without the wallet figure, the consensus minimum is the fallback.
+    const bare: DigiByte.DdEstimate = .{ .required_dgb = 41666.67 };
+    try std.testing.expectApproxEqAbs(@as(f64, 41666.67), bare.wallet_collateral_dgb orelse bare.required_dgb, 1e-9);
+}
+
+test "DigiDollar: ddOutcome maps success (txid + DGB detail) and daemon rejection verbatim" {
+    const allocator = std.testing.allocator;
+
+    // A mint success: txid + collateral figure → "(locked N DGB)" suffix.
+    {
+        const raw =
+            \\{"result":{"txid":"cafe01","dd_minted":10000,"dgb_collateral":"41666.67",
+            \\"lock_tier":4,"unlock_height":19000000},"error":null,"id":"boxwallet"}
+        ;
+        var parsed = try std.json.parseFromSlice(
+            models.JsonRpcResponse(std.json.Value),
+            allocator,
+            raw,
+            .{ .ignore_unknown_fields = true },
+        );
+        defer parsed.deinit();
+        const outcome = try DigiByte.ddOutcome(allocator, parsed.value, "dgb_collateral", "locked");
+        defer allocator.free(outcome.ok);
+        try std.testing.expectEqualStrings("cafe01 (locked 41666.67 DGB)", outcome.ok);
+    }
+
+    // A daemon rejection rides back verbatim — never a generic "failed".
+    {
+        const raw =
+            \\{"result":null,"error":{"code":-4,"message":"Timelock has not expired"},
+            \\"id":"boxwallet"}
+        ;
+        var parsed = try std.json.parseFromSlice(
+            models.JsonRpcResponse(std.json.Value),
+            allocator,
+            raw,
+            .{ .ignore_unknown_fields = true },
+        );
+        defer parsed.deinit();
+        const outcome = try DigiByte.ddOutcome(allocator, parsed.value, "dgb_unlocked", "unlocked");
+        defer allocator.free(outcome.failed);
+        try std.testing.expectEqualStrings("Timelock has not expired", outcome.failed);
+    }
+
+    // A send success with no detail key: bare txid.
+    {
+        const raw =
+            \\{"result":{"txid":"beef02","to_address":"DD1x","amount":5000,
+            \\"status":"broadcast"},"error":null,"id":"boxwallet"}
+        ;
+        var parsed = try std.json.parseFromSlice(
+            models.JsonRpcResponse(std.json.Value),
+            allocator,
+            raw,
+            .{ .ignore_unknown_fields = true },
+        );
+        defer parsed.deinit();
+        const outcome = try DigiByte.ddOutcome(allocator, parsed.value, null, "");
+        defer allocator.free(outcome.ok);
+        try std.testing.expectEqualStrings("beef02", outcome.ok);
+    }
+}
+
+test "DigiDollar: ddInfo mapping gates on `enabled` and carries the activation height" {
+    const allocator = std.testing.allocator;
+
+    // Pre-activation deployment reply, exactly as a live 9.26.4 mainnet
+    // daemon answered it (status "defined", enabled false, activation height
+    // published up front).
+    {
+        const raw =
+            \\{"result":{"enabled":false,"bit":23,"start_time":1780272000,
+            \\"timeout":1811808000,"min_activation_height":23627520,
+            \\"status":"defined","oracle_activation_height":23627520,
+            \\"oracle_pubkey_count":35},"error":null,"id":"boxwallet"}
+        ;
+        var parsed = try std.json.parseFromSlice(
+            models.JsonRpcResponse(DigiByte.DdDeploymentInfo),
+            allocator,
+            raw,
+            .{ .ignore_unknown_fields = true },
+        );
+        defer parsed.deinit();
+        const r = parsed.value.result.?;
+        var info: models.StablecoinInfo = .{};
+        info.setStatus(r.status);
+        info.active = r.enabled;
+        info.activation_height = r.activation_height orelse r.min_activation_height;
+        try std.testing.expectEqualStrings("defined", info.status());
+        try std.testing.expect(!info.active);
+        try std.testing.expectEqual(@as(i64, 23_627_520), info.activation_height);
+    }
+
+    // Mint gate: only "none"/empty means minting is allowed.
+    try std.testing.expect(!DigiByte.ddMintRestricted("none"));
+    try std.testing.expect(!DigiByte.ddMintRestricted(""));
+    try std.testing.expect(DigiByte.ddMintRestricted("oracle_unavailable"));
+    try std.testing.expect(DigiByte.ddMintRestricted("err_active"));
+
+    // Oracle price: micro-USD figure + top-level staleness flag (per
+    // `help getoracleprice`).
+    {
+        const raw =
+            \\{"result":{"price_micro_usd":14230,"price_cents":1,"price_usd":0.01423,
+            \\"last_update_height":23700000,"is_stale":true,"oracle_count":12,
+            \\"status":"warning"},"error":null,"id":"boxwallet"}
+        ;
+        var parsed = try std.json.parseFromSlice(
+            models.JsonRpcResponse(DigiByte.DdOraclePrice),
+            allocator,
+            raw,
+            .{ .ignore_unknown_fields = true },
+        );
+        defer parsed.deinit();
+        const r = parsed.value.result.?;
+        try std.testing.expectApproxEqAbs(@as(f64, 14230), r.price_micro_usd, 1e-9);
+        try std.testing.expect(r.is_stale);
+    }
+
+    // System stats: health/collateral/supply + the mint-restriction reason
+    // (per `help getdigidollarstats`).
+    {
+        const raw =
+            \\{"result":{"health_percentage":312.5,"health_status":"healthy",
+            \\"total_collateral_dgb":123456.78,"total_dd_supply":5000000,
+            \\"oracle_price_micro_usd":14230,"oracle_available":true,
+            \\"minting_restricted_reason":"none","is_emergency":false},
+            \\"error":null,"id":"boxwallet"}
+        ;
+        var parsed = try std.json.parseFromSlice(
+            models.JsonRpcResponse(DigiByte.DdStats),
+            allocator,
+            raw,
+            .{ .ignore_unknown_fields = true },
+        );
+        defer parsed.deinit();
+        const r = parsed.value.result.?;
+        try std.testing.expectApproxEqAbs(@as(f64, 312.5), r.health_percentage, 1e-9);
+        try std.testing.expectEqual(@as(i64, 5_000_000), DigiByte.centsFrom(r.total_dd_supply));
+        try std.testing.expect(!DigiByte.ddMintRestricted(r.minting_restricted_reason));
+    }
 }
 
 test "maps getwalletinfo balances to available + total" {
