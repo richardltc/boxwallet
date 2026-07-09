@@ -729,6 +729,13 @@ pub const Coin = struct {
         /// `getnetworkinfo`); null for coins with no such warm-up (Ergo, Zano,
         /// Nerva), whose loading phase is always reported as `none`.
         warmup_probe_method: ?*const fn (ptr: *anyopaque) []const u8 = null,
+        /// Optional: classify a warm-up phase from a `debug.log` tail, for
+        /// NovaCoin-era daemons (SpiderByte) that predate the `-28` RPC warm-up —
+        /// their RPC is up while the block index loads but can't answer yet, so a
+        /// poll just fails and the only signal is a marker they log. Called only
+        /// when the RPC probe found no phase and the daemon is believed up. Null
+        /// for coins whose warm-up is fully visible over RPC (the common case).
+        warmup_phase_from_log: ?*const fn (ptr: *anyopaque, tail: []const u8) models.LoadingPhase = null,
         /// Optional: the external-wallet capability (Monero-style coins whose
         /// wallet is a separate RPC process). Null for coins with an in-daemon
         /// wallet or none. `hasExternalWallet` keys off this being non-null.
@@ -1163,6 +1170,14 @@ pub const Coin = struct {
     pub fn warmupProbeMethod(self: Coin) ?[]const u8 {
         if (self.vtable.warmup_probe_method) |f| return f(self.ptr);
         return null;
+    }
+
+    /// Classify the daemon's warm-up phase from a `debug.log` tail, for coins
+    /// whose warm-up isn't visible over RPC. Returns `.none` for coins that don't
+    /// wire the hook (so the caller falls back to whatever the RPC probe found).
+    pub fn warmupPhaseFromLog(self: Coin, tail: []const u8) models.LoadingPhase {
+        if (self.vtable.warmup_phase_from_log) |f| return f(self.ptr, tail);
+        return .none;
     }
 
     /// Whether this coin drives the external-wallet setup flow (create-returns-seed

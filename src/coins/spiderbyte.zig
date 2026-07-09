@@ -523,10 +523,33 @@ pub const SpiderByte = struct {
         try sd.copyFile(src_base, dd, "wallet.dat", io, .{});
     }
 
-    /// This daemon answers `getinfo` immediately on startup (no bitcoin-style
-    /// "-28 warm-up" phase), so probe it for liveness/warm-up.
+    /// This daemon answers `getinfo` immediately *once its RPC is up* (no
+    /// bitcoin-style "-28 warm-up" phase), so probe it for liveness/warm-up.
     pub fn warmupProbeMethod() []const u8 {
         return "getinfo";
+    }
+
+    /// Classify the daemon's warm-up phase from a `debug.log` tail. This
+    /// NovaCoin-era daemon predates the `-28` RPC warm-up: it starts its RPC
+    /// server *before* reading the on-disk block index (minutes, on a deep chain),
+    /// but can't serve `getinfo` until that load — and the wallet load after it —
+    /// finish, so a poll mid-load just fails, indistinguishable from a dead node.
+    /// The daemon logs a `Loading block index...` line when it begins and nothing
+    /// of substance until it finishes with `Done loading`, so if the most recent
+    /// of those two markers is the start line, it's still loading. No percentage
+    /// is reported: the legacy code emits none. `.none` otherwise (including once
+    /// loading has completed), so a transient RPC blip on an already-running node
+    /// doesn't masquerade as a fresh load.
+    ///
+    /// Note the daemon's own RPC access log ("ThreadRPCServer method=getinfo",
+    /// written once per BoxWallet poll) piles up after the start marker during the
+    /// load, so the caller must pass a tail long enough to still contain it.
+    pub fn warmupPhaseFromLog(tail: []const u8) models.LoadingPhase {
+        const start = std.mem.lastIndexOf(u8, tail, "Loading block index") orelse return .none;
+        // "Done loading" after the last load marker ⇒ init finished (RPC about to
+        // serve); its absence ⇒ still mid-load.
+        if (std.mem.indexOf(u8, tail[start..], "Done loading") != null) return .none;
+        return .loading_block_index;
     }
 
     // --- pure helpers (unit-tested without a daemon) ---------------------
@@ -608,6 +631,7 @@ pub const SpiderByte = struct {
         .wallet_backup = vtWalletBackup,
         .wallet_restore_file_offline = vtWalletRestoreFileOffline,
         .warmup_probe_method = vtWarmupProbeMethod,
+        .warmup_phase_from_log = vtWarmupPhaseFromLog,
     };
 
     fn vtCoinName(_: *anyopaque) []const u8 {
@@ -795,6 +819,9 @@ pub const SpiderByte = struct {
     }
     fn vtWarmupProbeMethod(_: *anyopaque) []const u8 {
         return warmupProbeMethod();
+    }
+    fn vtWarmupPhaseFromLog(_: *anyopaque, tail: []const u8) models.LoadingPhase {
+        return warmupPhaseFromLog(tail);
     }
 };
 
@@ -1264,4 +1291,61 @@ test "walletPath points at the NovaCoin-era wallet.dat under the data dir" {
     defer allocator.free(wf.path);
     try std.testing.expectEqualStrings("/home/alice/.SpiderByte/wallet.dat", wf.path);
     try std.testing.expect(wf.keys == null);
+}
+
+test "warmupPhaseFromLog reports loading only while the block index is being read" {
+    // Mid-load: the daemon has logged the start marker and nothing since (it's
+    // blocked reading blkindex.dat for minutes) → still loading.
+    const mid_load =
+        \\SpiderByte version v7.0.0.1
+        \\Default data directory /home/alice/.SpiderByte
+        \\Loading block index...
+    ;
+    try std.testing.expectEqual(models.LoadingPhase.loading_block_index, SpiderByte.warmupPhaseFromLog(mid_load));
+
+    // Realistic mid-load tail: the RPC is up during the load, so each failed
+    // BoxWallet poll appends a getinfo access line after the start marker. The
+    // marker must still win over that spam (the caller sizes the tail for it).
+    const mid_load_spam =
+        \\Loading block index...
+        \\ThreadRPCServer method=getinfo
+        \\ThreadRPCServer method=getinfo
+        \\ThreadRPCServer method=getinfo
+    ;
+    try std.testing.expectEqual(models.LoadingPhase.loading_block_index, SpiderByte.warmupPhaseFromLog(mid_load_spam));
+
+    // Init finished: "Done loading" follows the load marker → not loading (the RPC
+    // is about to come up, so the normal getinfo poll takes over).
+    const done =
+        \\Loading block index...
+        \\LoadBlockIndex(): hashBestChain=7a69a024 height=10760482
+        \\Verifying last 2500 blocks at level 1
+        \\ block index          398473ms
+        \\Loading wallet...
+        \\Done loading
+    ;
+    try std.testing.expectEqual(models.LoadingPhase.none, SpiderByte.warmupPhaseFromLog(done));
+
+    // A long-running node's log tail (the start marker has scrolled off) → not a
+    // fresh load, so a transient RPC blip can't masquerade as one.
+    const running =
+        \\received block 0000abcd
+        \\UpdateTip: new best=0000abcd height=10760500
+    ;
+    try std.testing.expectEqual(models.LoadingPhase.none, SpiderByte.warmupPhaseFromLog(running));
+
+    // Empty tail (no debug.log yet) → nothing to report.
+    try std.testing.expectEqual(models.LoadingPhase.none, SpiderByte.warmupPhaseFromLog(""));
+}
+
+test "coin vtable routes warmupPhaseFromLog through to the SpiderByte classifier" {
+    var spb: SpiderByte = .{};
+    const c = spb.coin();
+    try std.testing.expectEqual(
+        models.LoadingPhase.loading_block_index,
+        c.warmupPhaseFromLog("Loading block index...\n"),
+    );
+    // A coin that doesn't wire the hook stays `.none` — verified here so the
+    // default path (most coins) is covered too.
+    try std.testing.expectEqual(models.LoadingPhase.none, c.warmupPhaseFromLog("random log line\n"));
 }

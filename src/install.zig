@@ -481,6 +481,91 @@ pub fn readVersionMarker(
     return allocator.dupe(u8, trimmed) catch null;
 }
 
+/// The load-time-marker filename for a coin: `.<daemon_file>.loadms`, kept beside
+/// the version marker in the install root. Caller owns the returned slice.
+fn loadMsMarkerName(allocator: std.mem.Allocator, daemon_file: []const u8) ![]u8 {
+    return std.fmt.allocPrint(allocator, ".{s}.loadms", .{daemon_file});
+}
+
+/// Record how long the daemon's last block-index load took (milliseconds), so the
+/// next load can show a rough time estimate. Overwrites any prior marker; creates
+/// the install root if absent. Used by NovaCoin-era coins whose load exposes no
+/// in-daemon progress readout (see `Coin.warmup_phase_from_log`).
+pub fn writeLoadMsMarker(
+    allocator: std.mem.Allocator,
+    dest_root: []const u8,
+    daemon_file: []const u8,
+    ms: u32,
+) !void {
+    var threaded: std.Io.Threaded = .init(allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    const name = try loadMsMarkerName(allocator, daemon_file);
+    defer allocator.free(name);
+
+    var buf: [16]u8 = undefined;
+    const text = try std.fmt.bufPrint(&buf, "{d}", .{ms});
+
+    var dir = try std.Io.Dir.cwd().createDirPathOpen(io, dest_root, .{});
+    defer dir.close(io);
+    try dir.writeFile(io, .{ .sub_path = name, .data = text });
+}
+
+/// Read the recorded last block-index-load duration in milliseconds, or null when
+/// there's no marker or it can't be parsed. Bounded buffer — the value is a short
+/// integer.
+pub fn readLoadMsMarker(
+    allocator: std.mem.Allocator,
+    dest_root: []const u8,
+    daemon_file: []const u8,
+) ?u32 {
+    var threaded: std.Io.Threaded = .init(allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    const name = loadMsMarkerName(allocator, daemon_file) catch return null;
+    defer allocator.free(name);
+
+    var dir = std.Io.Dir.cwd().openDir(io, dest_root, .{}) catch return null;
+    defer dir.close(io);
+    var f = dir.openFile(io, name, .{}) catch return null;
+    defer f.close(io);
+
+    var buf: [16]u8 = undefined;
+    const n = f.readPositionalAll(io, &buf, 0) catch return null;
+    const trimmed = std.mem.trim(u8, buf[0..n], " \t\r\n");
+    return std.fmt.parseInt(u32, trimmed, 10) catch null;
+}
+
+test "load-ms marker round-trips, and reads null when absent or unparseable" {
+    const allocator = std.testing.allocator;
+    const root = "test-loadms-marker-root";
+    const daemon = "spiderbyted";
+
+    var threaded: std.Io.Threaded = .init(allocator, .{});
+    defer threaded.deinit();
+    std.Io.Dir.cwd().deleteTree(threaded.io(), root) catch {};
+    defer std.Io.Dir.cwd().deleteTree(threaded.io(), root) catch {};
+
+    // Absent → null.
+    try std.testing.expect(readLoadMsMarker(allocator, root, daemon) == null);
+
+    // Written then read back.
+    try writeLoadMsMarker(allocator, root, daemon, 398_473);
+    try std.testing.expectEqual(@as(?u32, 398_473), readLoadMsMarker(allocator, root, daemon));
+
+    // Overwritten with a newer figure.
+    try writeLoadMsMarker(allocator, root, daemon, 401_000);
+    try std.testing.expectEqual(@as(?u32, 401_000), readLoadMsMarker(allocator, root, daemon));
+
+    // Garbage marker reads as null (treated as unknown).
+    var dir = try std.Io.Dir.cwd().createDirPathOpen(threaded.io(), root, .{});
+    defer dir.close(threaded.io());
+    try dir.writeFile(threaded.io(), .{ .sub_path = ".spiderbyted.loadms", .data = "not-a-number" });
+    try std.testing.expect(readLoadMsMarker(allocator, root, daemon) == null);
+}
+
 test "version marker round-trips, and reads null when absent or empty" {
     const allocator = std.testing.allocator;
     const root = "test-version-marker-root";
