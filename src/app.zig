@@ -7265,7 +7265,7 @@ pub const App = struct {
         var amount_w: usize = "Amount".len;
         for (act.tx_buf[0..act.tx_count]) |tx| {
             var buf: [64]u8 = undefined;
-            amount_w = @max(amount_w, formatAmount(&buf, tx.amount, decimals).len);
+            amount_w = @max(amount_w, trimTrailingZeros(formatAmount(&buf, tx.amount, decimals)).len);
         }
 
         // Header row (dim), indented past the direction glyph so its labels sit
@@ -7280,7 +7280,7 @@ pub const App = struct {
             const glyph = txDirectionGlyph(a, tx.direction);
             const date = try formatBlockTime(a, tx.time);
             var buf: [64]u8 = undefined;
-            const amount = formatAmount(&buf, tx.amount, decimals);
+            const amount = trimTrailingZeros(formatAmount(&buf, tx.amount, decimals));
             const conf_text = txConfirmationText(a, tx.confirmations);
             const line = try std.fmt.allocPrint(a, "  {s} {s}   {s}   {s}", .{
                 glyph,
@@ -7707,6 +7707,21 @@ pub const App = struct {
             gi += frac.len;
         }
         return buf[0..gi];
+    }
+
+    /// Trim trailing zeros from a fixed-decimal string produced by `formatAmount`
+    /// (e.g. "498.00000000" → "498", "2.50000000" → "2.5"; "1.25000000" is
+    /// unaffected past its non-zero digits → "1.25"). Drops the decimal point too
+    /// if nothing is left after it. Strings with no '.' pass through unchanged.
+    /// Operates on the slice in place — no allocation. Used only for the
+    /// Transactions tab's amount column; balance figures elsewhere keep their
+    /// full fixed precision (see `formatAmount`'s doc comment).
+    fn trimTrailingZeros(s: []const u8) []const u8 {
+        const dot = std.mem.indexOfScalar(u8, s, '.') orelse return s;
+        var end = s.len;
+        while (end > dot + 1 and s[end - 1] == '0') : (end -= 1) {}
+        if (end == dot + 1) end -= 1; // nothing left after the dot — drop it too
+        return s[0..end];
     }
 
     /// Format a coin balance as `formatAmount` (at `decimals` places) followed by
@@ -9724,21 +9739,24 @@ test "renderTransactionsTab lists cached transactions newest-first with date and
     // Each row carries its glyph, the formatted date, the formatted amount, and
     // a confirmation status.
     try std.testing.expect(std.mem.indexOf(u8, body, "▼") != null);
-    try std.testing.expect(std.mem.indexOf(u8, body, "2.50000000") != null);
+    try std.testing.expect(std.mem.indexOf(u8, body, "2.5") != null);
     try std.testing.expect(std.mem.indexOf(u8, body, "Confirmed") != null);
     try std.testing.expect(std.mem.indexOf(u8, body, "▲") != null);
-    try std.testing.expect(std.mem.indexOf(u8, body, "1.25000000") != null);
+    try std.testing.expect(std.mem.indexOf(u8, body, "1.25") != null);
     try std.testing.expect(std.mem.indexOf(u8, body, "0 confirmations") != null);
     try std.testing.expect(std.mem.indexOf(u8, body, "★") != null);
-    try std.testing.expect(std.mem.indexOf(u8, body, "5.00000000") != null);
+    // A round-number amount (5.0) trims to a bare "5", padded to the amount
+    // column width — right-aligned with leading spaces, so "     5" (not a
+    // bare "5", which would also match spurious digits elsewhere in the body).
+    try std.testing.expect(std.mem.indexOf(u8, body, "     5") != null);
     try std.testing.expect(std.mem.indexOf(u8, body, "6 confirmations") != null);
 
     // Row order in the rendered text follows `tx_buf`'s order (newest-first is
     // `mapTransactions`'s job on the SpiderByte side; this just proves the
     // renderer preserves whatever order the cache holds) — the received row
     // (index 0) appears before the stake row (index 2).
-    const recv_pos = std.mem.indexOf(u8, body, "2.50000000").?;
-    const stake_pos = std.mem.indexOf(u8, body, "5.00000000").?;
+    const recv_pos = std.mem.indexOf(u8, body, "▼").?;
+    const stake_pos = std.mem.indexOf(u8, body, "★").?;
     try std.testing.expect(recv_pos < stake_pos);
 }
 
@@ -9864,7 +9882,8 @@ test "the Transactions tab only shows live data for a coin that supports it" {
 
         const pane = try App.renderCoin(&app, a, coin, &act);
         try std.testing.expect(std.mem.indexOf(u8, pane, "Coming soon.") == null);
-        try std.testing.expect(std.mem.indexOf(u8, pane, "3.00000000") != null);
+        // 3.0 trims to a bare "3", right-aligned to the "Amount" header's width.
+        try std.testing.expect(std.mem.indexOf(u8, pane, "     3") != null);
     }
 }
 
@@ -11876,6 +11895,17 @@ test "formatBalance shows fixed decimals and appends the coin abbrev" {
     const big = App.formatBalance(a, 1234567.5, "XNV", 8);
     defer a.free(big);
     try std.testing.expectEqualStrings("1,234,567.50000000 XNV", big);
+}
+
+test "trimTrailingZeros drops trailing zeros and a bare decimal point" {
+    // All-zero fraction collapses to a bare integer.
+    try std.testing.expectEqualStrings("498", App.trimTrailingZeros("498.00000000"));
+    // Partial trim keeps the significant fractional digits.
+    try std.testing.expectEqualStrings("2.5", App.trimTrailingZeros("2.50000000"));
+    // No trailing zeros to trim — unchanged.
+    try std.testing.expectEqualStrings("1.23456789", App.trimTrailingZeros("1.23456789"));
+    // No decimal point at all (e.g. a 0-decimal coin) — passes through unchanged.
+    try std.testing.expectEqualStrings("498", App.trimTrailingZeros("498"));
 }
 
 test "the header balance shows Total always and Available only while funds settle" {
