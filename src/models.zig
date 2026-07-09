@@ -214,6 +214,13 @@ pub const LoadingPhase = enum {
     rewinding,
     verifying,
     calculating,
+    /// A NovaCoin-era daemon (e.g. SpiderByte) reading its on-disk block index at
+    /// startup. These predate the `-28` RPC warm-up: the RPC is up while the index
+    /// loads but can't answer until it (and the wallet) finish, so a poll just
+    /// fails; the phase is instead detected from a "Loading block index…" marker
+    /// the daemon logs to `debug.log`. Like the others it carries no percentage —
+    /// the legacy code emits none.
+    loading_block_index,
 };
 
 /// Normalized wallet security state — the coin-agnostic view a frontend renders

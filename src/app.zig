@@ -422,6 +422,7 @@ fn loadingPhaseText(p: models.LoadingPhase) []const u8 {
         .rewinding => "Rewinding…",
         .verifying => "Verifying…",
         .calculating => "Calculating money supply…",
+        .loading_block_index => "Loading block index…",
     };
 }
 
@@ -447,10 +448,30 @@ fn renderStatus(a: std.mem.Allocator, act: *const Activity, brand: zz.Color) []c
         null;
     const text = if (bp) |v|
         std.fmt.allocPrint(a, "{s} {d:.2}%", .{ r.text, @as(f64, @floatFromInt(v)) / 100.0 }) catch r.text
+    else if (r.block_index_load and act.load_eta_pct > 0)
+        // A rough, time-based estimate (elapsed vs the last load's duration), not
+        // real progress — the tilde flags it as approximate, and it holds at 99%
+        // rather than claiming done if this load overruns. Absent on the first-ever
+        // load (no prior duration → `load_eta_pct` 0), where it's just the label.
+        std.fmt.allocPrint(a, "{s} ~{d}%", .{ r.text, act.load_eta_pct }) catch r.text
     else
         r.text;
     const value = (zz.Style{}).bold(true).fg(r.col).render(a, text) catch text;
     return std.fmt.allocPrint(a, "{s}: {s}", .{ label, value }) catch value;
+}
+
+/// A rough, time-based progress estimate for a block-index load: elapsed (`now_ns`
+/// − `start_ns`, monotonic) as a percentage of `last_ms` (the previous load's
+/// duration). 0 when either input is unknown (no estimate yet) or the clock reads
+/// backwards. Otherwise clamped to 1..99 — never 0 once underway, and never 100
+/// (only the daemon actually answering proves it's done), so an overrunning load
+/// just holds at 99%.
+fn loadEtaPercent(start_ns: i64, now_ns: i64, last_ms: u32) u8 {
+    if (start_ns == 0 or last_ms == 0) return 0;
+    const elapsed_ms = @divTrunc(now_ns - start_ns, std.time.ns_per_ms);
+    if (elapsed_ms < 0) return 0;
+    const pct = @divTrunc(elapsed_ms * 100, @as(i64, last_ms));
+    return @intCast(std.math.clamp(pct, 1, 99));
 }
 
 /// A coin's live status as plain data: the word(s) shown on the Status line, the
@@ -471,6 +492,11 @@ const StatusReadout = struct {
     /// (`Activity.load_pct_bp`). Kept off `text` for the same reason as
     /// `presync_pct`.
     load_progress: bool = false,
+    /// True only on the "Loading block index…" line (NovaCoin-era daemons),
+    /// signalling `renderStatus` to append a rough, time-based `~NN%` estimate
+    /// from `load_timer_start_ms`/`last_load_ms` when a prior load duration is
+    /// known. Kept off `text` for the same reason as `presync_pct`.
+    block_index_load: bool = false,
 };
 
 /// Resolve a coin's current status. Priority, highest first: installing
@@ -511,6 +537,17 @@ fn statusReadout(act: *const Activity) StatusReadout {
                     .col = .yellow,
                     .active = true,
                     .load_progress = true,
+                };
+            }
+            // A NovaCoin-era block-index load has no in-daemon percentage; let
+            // `renderStatus` append a rough time-based `~NN%` when a prior load
+            // duration is known.
+            if (act.loading_phase == .loading_block_index) {
+                break :blk .{
+                    .text = loadingPhaseText(act.loading_phase),
+                    .col = .yellow,
+                    .active = true,
+                    .block_index_load = true,
                 };
             }
             break :blk .{ .text = loadingPhaseText(act.loading_phase), .col = .yellow, .active = true };
@@ -1726,6 +1763,20 @@ const Activity = struct {
     /// live percentage when `debug.log` carries one of those lines.
     load_stage: LoadStage = .none,
     load_pct_bp: u32 = 0,
+    /// Monotonic ns (the tick's `t.timestamp`) when this run's block-index load was
+    /// first observed (`loading_phase == .loading_block_index`), or 0 when not
+    /// timing one. Paired with `last_load_ms` to show a rough time-based estimate
+    /// while a NovaCoin-era daemon (SpiderByte) loads — that load exposes no
+    /// in-daemon progress, so the only gauge is "how long it took last time".
+    load_timer_start_ns: i64 = 0,
+    /// How long the previous block-index load took (ms), read from the coin's
+    /// `.<daemon>.loadms` marker when timing starts; 0 = unknown (first ever load,
+    /// so no estimate is shown). Persisted on each clean load completion.
+    last_load_ms: u32 = 0,
+    /// The current block-index-load estimate as a whole percent (1..99), or 0 for
+    /// "no estimate" (not loading, or no prior duration). Recomputed each tick from
+    /// the two fields above so `renderStatus` stays a pure read.
+    load_eta_pct: u8 = 0,
     /// Headers/blocks sync progress (current vs total). Populated by the live
     /// sync poll later; 0/0 renders an empty bar.
     headers_cur: u64 = 0,
@@ -2677,7 +2728,7 @@ const Activity = struct {
             return;
         };
 
-        const phase: models.LoadingPhase = blk: {
+        var phase: models.LoadingPhase = blk: {
             const auth = conf.readAuth(
                 a,
                 io,
@@ -2688,13 +2739,30 @@ const Activity = struct {
             ) catch break :blk .none;
             break :blk rpc.loadingPhase(a, auth, method) catch .none;
         };
+
+        // Both the block-index-load window and its finer sub-stages surface only
+        // in debug.log, so read the tail once and mine both from it. A generous
+        // tail: a NovaCoin daemon (SpiderByte) has its RPC up during the load, so
+        // our own ~1/s status polls each append a "ThreadRPCServer method=getinfo"
+        // line — minutes of that spam accrues after the "Loading block index…"
+        // marker, so a small tail would lose it partway through a long load.
+        var log_buf: [64 * 1024]u8 = undefined;
+        const tail = readDebugLogTail(io, data_dir, &log_buf);
+
+        // NovaCoin-era daemons (SpiderByte) predate the `-28` RPC warm-up: their
+        // RPC is up during the block-index load but can't serve `getinfo` yet
+        // (chain/wallet state is still null), so the probe above just fails. Let
+        // the coin recognise that window from the marker it logs instead, so the
+        // UI can say "Loading block index…" rather than a misleading
+        // "Waiting for peers…".
+        if (phase == .none) phase = self.coin.warmupPhaseFromLog(tail);
         self.poll_phase.store(@intFromEnum(phase), .monotonic);
 
         // RPC's "-28" warm-up message only ever says the coarse "Loading block
         // index..." for the whole loading window; some daemons (DigiByte)
         // additionally log a finer-grained percentage in debug.log — scrape it
         // the same way `presyncPercentBp` does for the headers presync pass.
-        const progress = loadProgressBp(io, data_dir);
+        const progress = parseLoadProgress(tail);
         self.poll_load_stage.store(@intFromEnum(progress.stage), .monotonic);
         self.poll_load_pct_bp.store(progress.pct_bp, .monotonic);
     }
@@ -3285,19 +3353,19 @@ const LoadProgress = struct {
     pct_bp: u32 = 0,
 };
 
-/// Read the block-loading sub-stage and percentage from the coin's
-/// `<datadir>/debug.log`, mirroring `presyncPercentBp`. Best-effort: any IO
-/// hiccup, or a coin whose log lacks these lines, yields `.{}` (`.none`/0).
-fn loadProgressBp(io: std.Io, data_dir: []const u8) LoadProgress {
-    var dir = std.Io.Dir.cwd().openDir(io, data_dir, .{}) catch return .{};
+/// Read the tail (up to `buf.len` bytes) of the coin's `<datadir>/debug.log` into
+/// `buf`, returning the slice actually read — empty on a missing file or any IO
+/// hiccup. Bounded by design: the log grows unboundedly, so only the tail is ever
+/// read (mirrors `presyncPercentBp`/`setDaemonErrFromDebugLog`).
+fn readDebugLogTail(io: std.Io, data_dir: []const u8, buf: []u8) []const u8 {
+    var dir = std.Io.Dir.cwd().openDir(io, data_dir, .{}) catch return &.{};
     defer dir.close(io);
-    var file = dir.openFile(io, "debug.log", .{}) catch return .{};
+    var file = dir.openFile(io, "debug.log", .{}) catch return &.{};
     defer file.close(io);
-    const stat = file.stat(io) catch return .{};
-    var buf: [4 * 1024]u8 = undefined;
+    const stat = file.stat(io) catch return &.{};
     const off = if (stat.size > buf.len) stat.size - buf.len else 0;
-    const n = file.readPositionalAll(io, &buf, off) catch return .{};
-    return parseLoadProgress(buf[0..n]);
+    const n = file.readPositionalAll(io, buf, off) catch return &.{};
+    return buf[0..n];
 }
 
 /// Extract the freshest block-loading sub-stage/percentage from a `debug.log`
@@ -4541,6 +4609,35 @@ pub const App = struct {
                 _ = act.sync_spinner.update(t.timestamp);
             }
 
+            // Time a NovaCoin-era block-index load (SpiderByte) so the next one can
+            // show a rough estimate — that load exposes no in-daemon progress, so
+            // "how long it took last time" is the only gauge. Start the clock when
+            // the phase first appears (reading the persisted figure then); when it
+            // clears with the daemon now answering — a clean finish, not a stop or
+            // crash — persist how long it actually took. Both the marker read and
+            // write fire once per load (guarded by `load_timer_start_ms`), not each
+            // tick.
+            if (act.daemonState() == .running and act.loading_phase == .loading_block_index) {
+                if (act.load_timer_start_ns == 0) {
+                    act.load_timer_start_ns = t.timestamp;
+                    act.last_load_ms = install_mod.readLoadMsMarker(self.allocator, act.install_root, act.coin.daemonFile()) orelse 0;
+                }
+                act.load_eta_pct = loadEtaPercent(act.load_timer_start_ns, t.timestamp, act.last_load_ms);
+            } else if (act.load_timer_start_ns != 0) {
+                const elapsed_ms = @divTrunc(t.timestamp - act.load_timer_start_ns, std.time.ns_per_ms);
+                act.load_timer_start_ns = 0;
+                act.load_eta_pct = 0;
+                // Persist only a plausibly-complete load: the daemon is answering now
+                // (so it really did finish), and the duration is in a sane range. A
+                // stop or crash mid-load leaves the daemon not-running and is
+                // discarded, so a partial time can't poison the estimate.
+                if (act.daemonState() == .running and elapsed_ms > 3_000 and elapsed_ms < 6 * 60 * 60 * 1000) {
+                    const ms: u32 = @intCast(elapsed_ms);
+                    install_mod.writeLoadMsMarker(self.allocator, act.install_root, act.coin.daemonFile(), ms) catch {};
+                    act.last_load_ms = ms;
+                }
+            }
+
             // Fold in a finished getinfo poll: take the live peer count and
             // staking flag, and — since a reply proves the daemon is up — mark it
             // running (covers a daemon started outside BoxWallet).
@@ -5540,6 +5637,11 @@ pub const App = struct {
         // Re-attempt the external wallet service for this daemon run (e.g. after a
         // reinstall added the wallet-rpc binary).
         act.wallet_rpc_attempted = false;
+        // Clean slate for the block-index-load timer — discard any value left
+        // dangling by a previous run that ended without a clean finish (e.g. a
+        // crash mid-load), so this run times from scratch.
+        act.load_timer_start_ns = 0;
+        act.load_eta_pct = 0;
         act.daemon.store(@intFromEnum(DaemonState.starting), .release);
 
         act.daemon_thread = std.Thread.spawn(.{}, Activity.runDaemon, .{act}) catch {
@@ -9497,6 +9599,57 @@ test "renderStatus shows the block-loading sub-stage and percentage during .load
     const verifying = renderStatus(a, &act, brand);
     try std.testing.expect(std.mem.indexOf(u8, verifying, "Verifying…") != null);
     try std.testing.expect(std.mem.indexOf(u8, verifying, "%") == null);
+}
+
+test "renderStatus shows a NovaCoin daemon's block-index load with no percentage" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const brand = zz.Color.hex(app_color);
+
+    // SpiderByte-style warm-up: the phase is detected from debug.log (not a `-28`
+    // reply), and outranks "Waiting for peers…" even though no peer has been seen
+    // yet (peers == 0).
+    var act: Activity = .{};
+    act.installed = true;
+    act.daemon = .init(@intFromEnum(DaemonState.running));
+    act.loading_phase = .loading_block_index;
+
+    // First-ever load: no prior duration → the bare label, no estimate.
+    const out = renderStatus(a, &act, brand);
+    try std.testing.expect(std.mem.indexOf(u8, out, "Loading block index…") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "%") == null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "Waiting for peers") == null);
+
+    // With an estimate available (computed on the tick), a rough ~NN% is appended.
+    act.load_eta_pct = 20;
+    const with_eta = renderStatus(a, &act, brand);
+    try std.testing.expect(std.mem.indexOf(u8, with_eta, "Loading block index… ~20%") != null);
+
+    // An overrunning load holds at ~99% (the tick clamps it), never claiming 100%.
+    act.load_eta_pct = 99;
+    const overrun = renderStatus(a, &act, brand);
+    try std.testing.expect(std.mem.indexOf(u8, overrun, "Loading block index… ~99%") != null);
+}
+
+test "loadEtaPercent estimates elapsed vs last load, clamped to 1..99" {
+    const ms = std.time.ns_per_ms;
+    // A non-zero monotonic base — 0 is the "not timing" sentinel for the start.
+    const base: i64 = 1_000_000 * ms;
+    // Unknown inputs → 0 (no estimate): start unset, or no prior duration.
+    try std.testing.expectEqual(@as(u8, 0), loadEtaPercent(0, base, 10_000));
+    try std.testing.expectEqual(@as(u8, 0), loadEtaPercent(base, base + 5_000 * ms, 0));
+    // Clock ran backwards → 0.
+    try std.testing.expectEqual(@as(u8, 0), loadEtaPercent(base + 10_000 * ms, base + 5_000 * ms, 10_000));
+
+    // Half-way through (by time) → ~50%.
+    try std.testing.expectEqual(@as(u8, 50), loadEtaPercent(base, base + 5_000 * ms, 10_000));
+
+    // Just begun → floored at 1% (never 0 — it's already underway).
+    try std.testing.expectEqual(@as(u8, 1), loadEtaPercent(base, base, 10_000));
+
+    // Overrun → capped at 99% (never 100 until the daemon answers).
+    try std.testing.expectEqual(@as(u8, 99), loadEtaPercent(base, base + 20_000 * ms, 10_000));
 }
 
 test "txDirectionGlyph colors received/sent/stake distinctly" {
