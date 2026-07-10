@@ -7251,7 +7251,8 @@ pub const App = struct {
                     try (zz.Style{}).bold(true).fg(brand).render(a, lbl)
                 else
                     try (zz.Style{}).dim(true).render(a, lbl);
-                strip = if (i == 0) styled else try std.fmt.allocPrint(a, "{s}   {s}", .{ strip, styled });
+                const sep = try (zz.Style{}).fg(zz.Color.hex("ffffff")).render(a, "|");
+                strip = if (i == 0) styled else try std.fmt.allocPrint(a, "{s}  {s}  {s}", .{ strip, sep, styled });
             }
         }
         const hint_text = try std.fmt.allocPrint(a, "   (←/→ or 1-{d} to switch tabs)", .{visibleTabCount(has_mining, has_sc)});
