@@ -322,14 +322,17 @@ pub const Nerva = struct {
     /// The `/start_mining` request body: rewards to `address`, `threads` CPU
     /// threads, and plain foreground mining — no background/battery heuristics
     /// (BoxWallet targets always-on machines, and the user asked for exactly
-    /// this many threads). Split out from `startMining` so it's unit-testable.
-    /// Caller owns the returned slice.
+    /// this many threads). `mining_affinity` (nervad 0.3.0.0's `KV_SERIALIZE_OPT`
+    /// field, off by default) is set so each miner thread is pinned to its own
+    /// CPU core — steadier hashrate on the low-spec, dedicated boxes we target.
+    /// Split out from `startMining` so it's unit-testable. Caller owns the
+    /// returned slice.
     fn startMiningParams(allocator: std.mem.Allocator, address: []const u8, threads: u32) ![]u8 {
         const qaddr = try rpc.jsonQuote(allocator, address);
         defer allocator.free(qaddr);
         return std.fmt.allocPrint(
             allocator,
-            "{{\"miner_address\":{s},\"threads_count\":{d},\"do_background_mining\":false,\"ignore_battery\":true}}",
+            "{{\"miner_address\":{s},\"threads_count\":{d},\"do_background_mining\":false,\"ignore_battery\":true,\"mining_affinity\":true}}",
             .{ qaddr, threads },
         );
     }
@@ -2074,13 +2077,13 @@ test "an idle miner reads as inactive with zeroed threads/speed" {
     try std.testing.expectEqual(@as(u64, 0), ms.speed);
 }
 
-test "startMiningParams builds the /start_mining body (foreground, no battery heuristics)" {
+test "startMiningParams builds the /start_mining body (foreground, no battery heuristics, thread affinity)" {
     const allocator = std.testing.allocator;
 
     const body = try Nerva.startMiningParams(allocator, "NV1abc", 3);
     defer allocator.free(body);
     try std.testing.expectEqualStrings(
-        "{\"miner_address\":\"NV1abc\",\"threads_count\":3,\"do_background_mining\":false,\"ignore_battery\":true}",
+        "{\"miner_address\":\"NV1abc\",\"threads_count\":3,\"do_background_mining\":false,\"ignore_battery\":true,\"mining_affinity\":true}",
         body,
     );
 
