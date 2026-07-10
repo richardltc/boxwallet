@@ -493,6 +493,22 @@ pub const Coin = struct {
             allocator: std.mem.Allocator,
             install_root: []const u8,
         ) bool,
+        /// Ask the *installed daemon binary* what version it is, by running it with
+        /// its version flag — no node started, no RPC, works with the daemon down.
+        ///
+        /// Only needed by a coin whose daemon doesn't report its version over RPC
+        /// (Zano's `getinfo` carries no `version` field). Without it, such a coin's
+        /// pre-marker install can never stamp a version marker, so update detection
+        /// stays silent forever. Coins whose `daemon_info` already carries a version
+        /// leave this null and are stamped from the live daemon instead.
+        ///
+        /// Caller owns the returned string. Errors when the binary is absent or its
+        /// output can't be parsed — the caller treats that as "version unknown".
+        installed_version_probe: ?*const fn (
+            ptr: *anyopaque,
+            allocator: std.mem.Allocator,
+            install_root: []const u8,
+        ) anyerror![]const u8 = null,
         /// Download + unarchive the daemon files into `install_root`,
         /// optionally reporting download/extract progress.
         install: *const fn (
@@ -839,6 +855,18 @@ pub const Coin = struct {
     }
     pub fn isInstalled(self: Coin, allocator: std.mem.Allocator, install_root: []const u8) bool {
         return self.vtable.is_installed(self.ptr, allocator, install_root);
+    }
+
+    /// The installed daemon binary's own version, probed offline. `null` when the
+    /// coin wires no probe (its daemon reports the version over RPC instead);
+    /// errors when the probe ran but couldn't answer. Caller owns the string.
+    pub fn probeInstalledVersion(
+        self: Coin,
+        allocator: std.mem.Allocator,
+        install_root: []const u8,
+    ) !?[]const u8 {
+        const f = self.vtable.installed_version_probe orelse return null;
+        return try f(self.ptr, allocator, install_root);
     }
     pub fn install(
         self: Coin,

@@ -1834,6 +1834,11 @@ const Activity = struct {
     /// that had none — so a pre-marker (legacy) install stops reading as "update
     /// available" without a reinstall. One-shot per session.
     version_stamp_done: bool = false,
+    /// Set once the offline `--version` probe has been attempted (see
+    /// `stampVersionFromBinary`). Separate from `version_stamp_done` so a probe that
+    /// *fails* — missing binary, unparseable banner — isn't retried on every poll,
+    /// spawning a process each time, while still leaving the RPC stamp free to fire.
+    version_probe_done: bool = false,
     /// Whether this coin's daemon is up. Drives the "daemon running" line.
     /// Written by the daemon-start worker (release) and read by the UI
     /// (acquire), so it's atomic like `phase`.
@@ -2795,7 +2800,54 @@ const Activity = struct {
             // bare spinner. Best-effort; a failure leaves it `none`.
             self.probeLoadingPhase(a);
         }
+        // Last resort for the version marker, once `fetchStatus` has had its go.
+        // Runs on this worker thread (never the UI thread) because it execs a
+        // process, and outside the branch above because it must work with the
+        // daemon down — that's the case the RPC stamp can't reach.
+        self.stampVersionFromBinary(a);
         self.poll_done.store(true, .release);
+    }
+
+    /// One-shot: stamp a missing version marker by asking the installed binary its
+    /// version, for a coin whose daemon doesn't report one over RPC (Zano).
+    ///
+    /// The RPC stamp in `fetchStatus` handles every coin whose `daemonInfo` carries
+    /// a version, and it has already run by now — so this only fires where that
+    /// couldn't: a pre-marker install of a coin wiring `installed_version_probe`.
+    /// Without it such an install reads as "up to date" forever, because
+    /// `refreshUpdateState` treats a missing marker as "can't vouch, don't nag" and
+    /// the absent marker is what suppresses the update prompt that would rewrite it.
+    ///
+    /// Best-effort throughout: install owns the marker, so an existing one is never
+    /// overwritten, and any failure just leaves the coin as it was.
+    fn stampVersionFromBinary(self: *Activity, a: std.mem.Allocator) void {
+        if (self.version_stamp_done or self.version_probe_done) return;
+        // Nothing to resolve paths against — refuse rather than probe a relative
+        // binary name off the cwd. Staged before every poll spawn, so this only
+        // guards against a future worker forgetting to.
+        if (self.install_root.len == 0) return;
+
+        // A marker already on disk means there's nothing to stamp — and the RPC
+        // path's stale-marker *correction* is the daemon's business, not ours.
+        if (install_mod.readVersionMarker(a, self.install_root, self.coin.daemonFile())) |m| {
+            a.free(m);
+            self.version_stamp_done = true;
+            return;
+        }
+
+        // Null = this coin needs no probe (its daemon reports the version over RPC).
+        // Leave `version_probe_done` clear: nothing was attempted, and the RPC stamp
+        // still owns the job on a later poll once the daemon answers.
+        const ver = self.coin.probeInstalledVersion(a, self.install_root) catch {
+            self.version_probe_done = true; // probe ran and failed; don't re-exec
+            return;
+        } orelse return;
+        defer a.free(ver);
+
+        self.version_probe_done = true;
+        if (ver.len == 0) return;
+        install_mod.writeVersionMarker(a, self.install_root, self.coin.daemonFile(), ver) catch return;
+        self.version_stamp_done = true;
     }
 
     /// Cheap "is the daemon up?" check after a failed status fetch: resolve the
@@ -4934,6 +4986,11 @@ pub const App = struct {
                 if (self.coinAt(i)) |coin| {
                     act.coin = coin;
                     act.home_dir = self.home_dir;
+                    // The poll worker reads the install root (the version marker and
+                    // the `--version` probe both live under it). Every other worker
+                    // stages it before spawning; polling never did, because until
+                    // now nothing on this path needed it — so it was still `""`.
+                    act.install_root = self.install_root;
                     act.poll_ok = false;
                     act.poll_alive = false;
                     act.poll_done.store(false, .monotonic);
