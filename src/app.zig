@@ -375,7 +375,7 @@ const SyncState = enum { idle, syncing, synced };
 /// down the right, back along the bottom, and up the left. It laps clockwise
 /// while connected (peers > 0) and anti-clockwise with no peers, so the
 /// direction of travel signals connectivity at a glance.
-const sync_track_cells = 5;
+const sync_track_cells = 4;
 
 /// The four braille glyphs the puck wears at each height of a cell, so it reads
 /// as a solid block riding the rectangle's edge: top row (dots 1+4), upper-mid
@@ -392,7 +392,7 @@ const sync_bottom = "⣀";
 /// same frame count and constant width, so `onTick` can swap `frames`
 /// mid-animation without the spinner's frame index going out of range or the
 /// status line jittering. Frames per lap = 2·cells + 4 (top `cells`, right 3,
-/// bottom `cells`-1, left 2) — at the spinner's 10fps, ~1.4s per lap at width 5.
+/// bottom `cells`-1, left 2) — at the spinner's 10fps, ~1.2s per lap at width 4.
 fn syncOrbitFrames(comptime clockwise: bool) *const [2 * sync_track_cells + 4][]const u8 {
     comptime {
         @setEvalBranchQuota(20_000);
@@ -546,18 +546,30 @@ fn renderStatus(a: std.mem.Allocator, act: *const Activity, brand: zz.Color) []c
     // the larger of the block/header denominators (block-validation catch-up for
     // BTC-style chains, network tip for single-height chains); if none exceeds the
     // current height yet, it falls back to "at N" rather than a bogus "N of N".
-    const text_h = if (r.show_blocks and act.blocks_cur > 0) blk: {
+    // The live status text ("Syncing blocks… 123,456 of 850,000", "Waiting for
+    // peers…", "Synced at 850,123") reads in BoxWallet green — one consistent
+    // brand colour for the status update itself, rather than a per-state cyan/
+    // yellow/green. Inactive states (Not installed / Idle) keep their grey.
+    const text_col: zz.Color = if (r.active) zz.Color.hex(app_color) else r.col;
+    const base = (zz.Style{}).bold(true).fg(text_col);
+    const value = if (r.show_blocks and act.blocks_cur > 0) blk: {
         var cur_buf: [64]u8 = undefined;
         const cur = App.formatAmount(&cur_buf, @floatFromInt(act.blocks_cur), 0);
         const total = @max(act.blocks_total, act.headers_total);
         if (r.sync_progress and total > act.blocks_cur) {
             var tot_buf: [64]u8 = undefined;
             const tot = App.formatAmount(&tot_buf, @floatFromInt(total), 0);
-            break :blk std.fmt.allocPrint(a, "{s} {s} of {s}", .{ text, cur, tot }) catch text;
+            // "of" is tinted in the coin's brand colour, the figures either side
+            // in BoxWallet green. The segments are rendered separately because
+            // nesting styles would reset the trailing figure back to the default
+            // colour rather than green after the brand-coloured "of".
+            const lead = base.render(a, std.fmt.allocPrint(a, "{s} {s} ", .{ text, cur }) catch text) catch text;
+            const of = (zz.Style{}).bold(true).fg(brand).render(a, "of") catch "of";
+            const trail = base.render(a, std.fmt.allocPrint(a, " {s}", .{tot}) catch tot) catch tot;
+            break :blk std.fmt.allocPrint(a, "{s}{s}{s}", .{ lead, of, trail }) catch text;
         }
-        break :blk std.fmt.allocPrint(a, "{s} at {s}", .{ text, cur }) catch text;
-    } else text;
-    const value = (zz.Style{}).bold(true).fg(r.col).render(a, text_h) catch text_h;
+        break :blk base.render(a, std.fmt.allocPrint(a, "{s} at {s}", .{ text, cur }) catch text) catch text;
+    } else base.render(a, text) catch text;
     return std.fmt.allocPrint(a, "{s}: {s}", .{ label, value }) catch value;
 }
 
@@ -3896,8 +3908,9 @@ pub const App = struct {
         self.file_picker.link_icon = "[L] ";
         self.file_picker.file_icon = "[F] ";
         self.file_picker.blur();
-        // Sync keeps the default braille dots; Running/Staking/Peers and the
-        // install progress use the heavier pulsing spinner (`makeSpinner`).
+        // Every animation is the same orbiting braille puck: Running/Staking/
+        // Peers and the install progress via `makeSpinner`, and the sync line
+        // via a bare `init()` whose frames `onTick` swaps cw/ccw by peer count.
         for (&self.activities) |*act| act.* = .{ .spinner = makeSpinner(), .daemon_spinner = makeSpinner(), .sync_spinner = zz.Spinner.init() };
         self.refreshSelectedInstalled();
         // Restore the persisted balance-privacy toggle (off if never set).
@@ -4424,6 +4437,11 @@ pub const App = struct {
             if (ds == .starting or ds == .stopping or act.awaitingStatus() or
                 (ds == .running and act.peers == 0))
             {
+                // Reverse the puck while the daemon is on its way down, so a stop
+                // reads as "unwinding" at a glance; every other loading state
+                // orbits clockwise. Assign `frames` directly (not `setFrames`,
+                // which resets the index and would freeze the animation).
+                act.daemon_spinner.frames = if (ds == .stopping) sync_frames_ccw else sync_frames_cw;
                 _ = act.daemon_spinner.update(t.timestamp);
             }
             if ((ds == .running or ds == .stopped) and act.daemon_thread != null) {
@@ -7807,14 +7825,16 @@ pub const App = struct {
         return body;
     }
 
-    /// A loading spinner tuned to read boldly at a status mark's size: heavy
-    /// pulsing block frames (█▓▒░), bold, and a touch faster than the default.
-    /// Used for the Running/Staking/Peers/Sync "loading" states and the install
-    /// progress so the motion is obvious rather than the faint braille default.
+    /// A loading spinner that matches the sync line: the same braille "puck"
+    /// orbiting the `sync_track_cells`-wide track, bold, at the default 10fps.
+    /// Used for the Running/Staking/Peers "loading" marks and the install
+    /// progress so every animation in the UI reads as the same travelling puck.
+    /// Clockwise only — the direction-signals-connectivity trick is the sync
+    /// line's alone; here it's just motion. Frames are a comptime constant, so
+    /// `setFrames` once at construction is enough (`update` advances the index).
     fn makeSpinner() zz.Spinner {
         var s = zz.Spinner.init();
-        s.setFrames(zz.Spinner.Styles.pulse);
-        s.setFps(12);
+        s.setFrames(sync_frames_cw);
         s.setStyle((zz.Style{}).bold(true).fg(.cyan).inline_style(true));
         return s;
     }
@@ -8625,7 +8645,9 @@ pub const App = struct {
                 for (sc.tiers) |t| {
                     const sel = t.tier == m.tier_sel;
                     const plain = try std.fmt.allocPrint(a, "{s}{s} — {d}% collateral", .{
-                        if (sel) "❯ " else "  ", t.duration, t.ratio_pct,
+                        if (sel) "❯ " else "  ",
+                        t.duration,
+                        t.ratio_pct,
                     });
                     const text = if (sel)
                         ((zz.Style{}).bold(true).fg(brand).render(a, plain) catch plain)
@@ -8653,7 +8675,9 @@ pub const App = struct {
                         var abuf: [32]u8 = undefined;
                         const terms = if (p.tier < sc.tiers.len) sc.tiers[p.tier].duration else "?";
                         const plain = try std.fmt.allocPrint(a, "{s}{s}  ({s} lock)", .{
-                            if (sel) "❯ " else "  ", formatCents(&abuf, p.amount_cents), terms,
+                            if (sel) "❯ " else "  ",
+                            formatCents(&abuf, p.amount_cents),
+                            terms,
                         });
                         const text = if (sel)
                             ((zz.Style{}).bold(true).fg(brand).render(a, plain) catch plain)
