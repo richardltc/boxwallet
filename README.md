@@ -5,6 +5,11 @@ daemons from a single TUI — no browser, no Electron, no cloud.
 
 ![Home screen](img/screenshot-home.png)
 
+Stepping through every coin in the nav — with balances hidden (`h`) for the
+recording:
+
+![Browsing the coins with balances hidden](img/demo-coins.gif)
+
 ## Why BoxWallet?
 
 - **Run your own nodes, keep your own keys.** BoxWallet manages real coin
