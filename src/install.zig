@@ -151,6 +151,54 @@ fn extractTarBz2(
     try untar(io, dest, &tr.interface, strip, progress);
 }
 
+/// Why a download stopped. These names *are* the user-facing message: `app.zig`
+/// prints `@errorName(err)` onto the coin pane ("status: ✗ HttpNotFound") and into
+/// the log, and every coin's `install` propagates them untouched through `try`.
+///
+/// They exist because one `DownloadFailed` for every failure hid the only thing
+/// worth knowing. A stale pinned URL (404), a rate-limited mirror (429), an
+/// upstream outage (5xx), a transport reset mid-body, and a full disk are five
+/// different problems with five different fixes — collapsing them forced a reader
+/// to reach for `/proc` to tell which had happened.
+pub const DownloadError = error{
+    /// 404 — the pinned URL is wrong, or upstream moved/withdrew the asset. For a
+    /// coin bundle this almost always means `core_version` and the build hash (or
+    /// whatever else the URL splices together) have drifted out of lockstep.
+    HttpNotFound,
+    /// 403 — reachable but refused. Often a mirror blocking the client.
+    HttpForbidden,
+    /// 401 — the asset is behind credentials we don't send.
+    HttpUnauthorized,
+    /// 429 — rate-limited. Retrying later is the fix, not a code change.
+    HttpTooManyRequests,
+    /// 5xx — upstream is broken. Nothing on our side to correct.
+    HttpServerError,
+    /// Any other non-200. Redirects are followed before we get here, so a 3xx
+    /// landing in this bucket means the redirect chain didn't resolve.
+    HttpUnexpectedStatus,
+    /// The transport died partway through the body (reset, timeout, DNS loss).
+    /// Distinct from the status errors: the request *was* accepted.
+    DownloadInterrupted,
+    /// The bytes arrived but couldn't be written — a full disk, a read-only or
+    /// unwritable install root. Nothing to do with the network.
+    DownloadWriteFailed,
+};
+
+/// Map a non-200 response onto the `DownloadError` that names it. Split out and
+/// pure so the mapping is unit-testable without a server to answer.
+fn statusError(status: std.http.Status) DownloadError {
+    return switch (status) {
+        .not_found => error.HttpNotFound,
+        .forbidden => error.HttpForbidden,
+        .unauthorized => error.HttpUnauthorized,
+        .too_many_requests => error.HttpTooManyRequests,
+        else => switch (status.class()) {
+            .server_error => error.HttpServerError,
+            else => error.HttpUnexpectedStatus,
+        },
+    };
+}
+
 /// Stream `url` to `<dest_dir>/<dest_name>` (creating `dest_dir` if missing),
 /// reporting download progress, **without** extracting anything. Caller owns the
 /// resulting file (it is not deleted here).
@@ -160,6 +208,10 @@ fn extractTarBz2(
 /// build is a self-extracting AppImage that must land on disk as a file and then
 /// be run with `--appimage-extract`. Memory stays flat: the body is streamed to
 /// disk in bounded chunks, never held in RAM.
+///
+/// Fails with a `DownloadError` naming *why* — see that error set. The destination
+/// file is only created once the response status is known good, so a rejected
+/// request leaves no truncated file behind.
 pub fn downloadFile(
     allocator: std.mem.Allocator,
     url: []const u8,
@@ -186,7 +238,8 @@ pub fn downloadFile(
 
     var redirect_buffer: [8 * 1024]u8 = undefined;
     var response = try req.receiveHead(&redirect_buffer);
-    if (response.head.status != .ok) return error.DownloadFailed;
+    // Checked before the destination file is created, so a 404 leaves no stub.
+    if (response.head.status != .ok) return statusError(response.head.status);
 
     const total = response.head.content_length orelse 0;
 
@@ -209,12 +262,17 @@ pub fn downloadFile(
     while (true) {
         const n = reader.stream(&out_writer.interface, .limited(256 * 1024)) catch |err| switch (err) {
             error.EndOfStream => break,
-            else => return error.DownloadFailed,
+            // Keep the two sides of the pipe apart: a dead transport and an
+            // unwritable disk look identical from here otherwise.
+            error.ReadFailed => return error.DownloadInterrupted,
+            error.WriteFailed => return error.DownloadWriteFailed,
         };
         received += n;
         report(progress, .download, received, total);
     }
-    try out_writer.interface.flush();
+    // The tail of the body is still buffered; a full disk surfaces here rather
+    // than in the loop above, so it gets the same name.
+    out_writer.interface.flush() catch return error.DownloadWriteFailed;
 }
 
 /// Extract a zip archive (read from the seekable `archive`) into the already-open
@@ -433,6 +491,62 @@ fn versionMarkerName(allocator: std.mem.Allocator, daemon_file: []const u8) ![]u
     return std.fmt.allocPrint(allocator, ".{s}.version", .{daemon_file});
 }
 
+/// Run `argv` to completion and return however much of its stdout fits in `out`,
+/// or `error.ChildFailed` if it exits non-zero. Generic: the caller supplies the
+/// command, so no coin knowledge lives here.
+///
+/// Built for short, chatty-once probes like `<daemon> --version`. Memory stays
+/// flat and no pipe is pumped: the child's stdout is redirected to a scratch file
+/// in `scratch_root` (unlinked on every path, like the daemon-startup stderr
+/// capture), which is then read back into the caller's fixed buffer. Anything the
+/// child prints beyond `out.len` is simply truncated — a version banner is one
+/// short line, and a runaway child can't grow our footprint.
+///
+/// stdin/stderr are `.ignore`d: a probe must never block on input, and its
+/// diagnostics aren't ours to surface.
+pub fn captureStdout(
+    allocator: std.mem.Allocator,
+    argv: []const []const u8,
+    scratch_root: []const u8,
+    scratch_name: []const u8,
+    out: []u8,
+) ![]u8 {
+    var threaded: std.Io.Threaded = .init(allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    // Open the scratch directory and work relative to it, rather than joining a
+    // path and using the `*Absolute` helpers: `createFileAbsolute` quietly accepts
+    // a relative path (it just forwards to the cwd) while `deleteFileAbsolute`
+    // asserts on one, so a caller passing a relative root would create the file,
+    // then panic in the cleanup `defer` — and leave the scratch file in the cwd.
+    // A `Dir` handle can't be asymmetric that way, and matches `downloadFile`.
+    var dir = try std.Io.Dir.cwd().createDirPathOpen(io, scratch_root, .{});
+    defer dir.close(io);
+
+    var file = try dir.createFile(io, scratch_name, .{ .read = true });
+    defer {
+        file.close(io);
+        dir.deleteFile(io, scratch_name) catch {};
+    }
+
+    var child = try std.process.spawn(io, .{
+        .argv = argv,
+        .stdin = .ignore,
+        .stdout = .{ .file = file },
+        .stderr = .ignore,
+        // Don't flash a console window for the probe (Windows).
+        .create_no_window = builtin.os.tag == .windows,
+    });
+    switch (try child.wait(io)) {
+        .exited => |code| if (code != 0) return error.ChildFailed,
+        else => return error.ChildFailed,
+    }
+
+    const n = try file.readPositionalAll(io, out, 0);
+    return out[0..n];
+}
+
 /// Record the version BoxWallet just installed, so an update check can compare the
 /// on-disk version against the binary's pinned `core_version` without the daemon
 /// running. Overwrites any prior marker; creates the install root if absent.
@@ -536,6 +650,70 @@ pub fn readLoadMsMarker(
     const n = f.readPositionalAll(io, &buf, 0) catch return null;
     const trimmed = std.mem.trim(u8, buf[0..n], " \t\r\n");
     return std.fmt.parseInt(u32, trimmed, 10) catch null;
+}
+
+test "captureStdout reads a child's stdout, and cleans up even when the child fails" {
+    // Drives real child processes, so it leans on `echo`/`sh` being present as
+    // binaries — true on Linux/macOS, not on Windows (they're shell builtins there).
+    // The code under test is portable; only this harness isn't.
+    if (builtin.os.tag == .windows) return error.SkipZigTest;
+
+    const allocator = std.testing.allocator;
+    var threaded: std.Io.Threaded = .init(allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    const root = ".test-capture-stdout";
+    std.Io.Dir.cwd().deleteTree(io, root) catch {};
+    defer std.Io.Dir.cwd().deleteTree(io, root) catch {};
+
+    var buf: [256]u8 = undefined;
+
+    // Happy path: stdout comes back, truncated to the caller's buffer.
+    const out = try captureStdout(allocator, &.{ "echo", "Zano v2.2.1.502[76a791c]" }, root, ".probe", &buf);
+    try std.testing.expectEqualStrings("Zano v2.2.1.502[76a791c]\n", out);
+
+    // A relative `scratch_root` must work rather than assert. This is the exact
+    // shape that panicked: `createFileAbsolute` accepts a relative path but
+    // `deleteFileAbsolute` asserts on one, so cleanup blew up after the child ran.
+    var dir = try std.Io.Dir.cwd().openDir(io, root, .{});
+    defer dir.close(io);
+    dir.access(io, ".probe", .{}) catch |e| {
+        // Expected: the scratch file was removed on the success path above.
+        try std.testing.expect(e == error.FileNotFound);
+    };
+
+    // Non-zero exit is an error, and the scratch file is still cleaned up.
+    try std.testing.expectError(
+        error.ChildFailed,
+        captureStdout(allocator, &.{ "sh", "-c", "echo out; exit 3" }, root, ".probe", &buf),
+    );
+    try std.testing.expectError(error.FileNotFound, dir.access(io, ".probe", .{}));
+}
+
+test "a download failure names the HTTP status rather than collapsing to one word" {
+    // The case that motivated this: a stale pinned URL (version and build hash out
+    // of lockstep) 404s, and the pane must say so instead of a generic "failed".
+    try std.testing.expectEqual(DownloadError.HttpNotFound, statusError(.not_found));
+    try std.testing.expectEqual(DownloadError.HttpForbidden, statusError(.forbidden));
+    try std.testing.expectEqual(DownloadError.HttpUnauthorized, statusError(.unauthorized));
+    try std.testing.expectEqual(DownloadError.HttpTooManyRequests, statusError(.too_many_requests));
+
+    // Every 5xx is upstream's problem, so they share one name.
+    try std.testing.expectEqual(DownloadError.HttpServerError, statusError(.internal_server_error));
+    try std.testing.expectEqual(DownloadError.HttpServerError, statusError(.bad_gateway));
+    try std.testing.expectEqual(DownloadError.HttpServerError, statusError(.service_unavailable));
+
+    // Anything else non-200, including an unresolved redirect (they're followed
+    // before the status is inspected, so reaching here means the chain failed).
+    try std.testing.expectEqual(DownloadError.HttpUnexpectedStatus, statusError(.bad_request));
+    try std.testing.expectEqual(DownloadError.HttpUnexpectedStatus, statusError(.found));
+    try std.testing.expectEqual(DownloadError.HttpUnexpectedStatus, statusError(.teapot));
+
+    // The names reach the user verbatim — `app.zig` renders `@errorName(err)` as
+    // "status: ✗ {s}", so a rename here silently rewrites the UI copy.
+    try std.testing.expectEqualStrings("HttpNotFound", @errorName(statusError(.not_found)));
+    try std.testing.expectEqualStrings("HttpServerError", @errorName(statusError(.bad_gateway)));
 }
 
 test "load-ms marker round-trips, and reads null when absent or unparseable" {
