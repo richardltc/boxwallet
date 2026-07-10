@@ -370,12 +370,86 @@ fn miningFailureText(err_name: []const u8) []const u8 {
 /// this defaults to `idle`.
 const SyncState = enum { idle, syncing, synced };
 
-/// Sync spinner frame orders. The default braille `dots` orbit one way
-/// ("clockwise"); the reversed list orbits the other. The sync line spins
-/// clockwise while connected (peers > 0) and anti-clockwise while it has no
-/// peers, so the direction signals connectivity at a glance.
-const sync_frames_cw = zz.Spinner.Styles.dots;
-const sync_frames_ccw = &[_][]const u8{ "⠏", "⠇", "⠧", "⠦", "⠴", "⠼", "⠸", "⠹", "⠙", "⠋" };
+/// The sync spinner is a two-dot braille "puck" that circulates a rectangular
+/// track `sync_track_cells` cells wide and one cell tall: along the top edge,
+/// down the right, back along the bottom, and up the left. It laps clockwise
+/// while connected (peers > 0) and anti-clockwise with no peers, so the
+/// direction of travel signals connectivity at a glance.
+const sync_track_cells = 5;
+
+/// The four braille glyphs the puck wears at each height of a cell, so it reads
+/// as a solid block riding the rectangle's edge: top row (dots 1+4), upper-mid
+/// (2+5), lower-mid (3+6), bottom row (7+8).
+const sync_top = "⠉";
+const sync_mid_hi = "⠒";
+const sync_mid_lo = "⠤";
+const sync_bottom = "⣀";
+
+/// Build one lap of the rectangular orbit at comptime as (cell, glyph) steps,
+/// then render each step into a `sync_track_cells`-wide frame (the puck glyph in
+/// its cell, blanks elsewhere). The clockwise lap runs top→right→bottom→left;
+/// the anti-clockwise lap is the same path reversed. Both directions produce the
+/// same frame count and constant width, so `onTick` can swap `frames`
+/// mid-animation without the spinner's frame index going out of range or the
+/// status line jittering. Frames per lap = 2·cells + 4 (top `cells`, right 3,
+/// bottom `cells`-1, left 2) — at the spinner's 10fps, ~1.4s per lap at width 5.
+fn syncOrbitFrames(comptime clockwise: bool) *const [2 * sync_track_cells + 4][]const u8 {
+    comptime {
+        @setEvalBranchQuota(20_000);
+        const W = sync_track_cells;
+        const Step = struct { cell: usize, ch: []const u8 };
+
+        var steps: [2 * W + 4]Step = undefined;
+        var n: usize = 0;
+        // Top edge, left → right.
+        var c: usize = 0;
+        while (c < W) : (c += 1) {
+            steps[n] = .{ .cell = c, .ch = sync_top };
+            n += 1;
+        }
+        // Right edge, descending the last cell (top corner already placed).
+        steps[n] = .{ .cell = W - 1, .ch = sync_mid_hi };
+        n += 1;
+        steps[n] = .{ .cell = W - 1, .ch = sync_mid_lo };
+        n += 1;
+        steps[n] = .{ .cell = W - 1, .ch = sync_bottom };
+        n += 1;
+        // Bottom edge, right → left (bottom-right corner already placed).
+        c = W - 1;
+        while (c > 0) : (c -= 1) {
+            steps[n] = .{ .cell = c - 1, .ch = sync_bottom };
+            n += 1;
+        }
+        // Left edge, ascending the first cell back toward the top (which the next
+        // lap re-places, so it isn't repeated here).
+        steps[n] = .{ .cell = 0, .ch = sync_mid_lo };
+        n += 1;
+        steps[n] = .{ .cell = 0, .ch = sync_mid_hi };
+        n += 1;
+
+        var frames: [2 * W + 4][]const u8 = undefined;
+        for (steps, 0..) |st, i| {
+            var s: []const u8 = "";
+            var cc: usize = 0;
+            while (cc < W) : (cc += 1) s = s ++ (if (cc == st.cell) st.ch else " ");
+            // Reverse the frame order for the anti-clockwise lap.
+            frames[if (clockwise) i else frames.len - 1 - i] = s;
+        }
+        const out = frames;
+        return &out;
+    }
+}
+
+const sync_frames_cw = syncOrbitFrames(true);
+const sync_frames_ccw = syncOrbitFrames(false);
+
+test "sync orbit frames: equal counts, every frame exactly sync_track_cells wide" {
+    // Equal length keeps the mid-animation `frames` swap in `onTick` in range.
+    try std.testing.expectEqual(sync_frames_cw.len, sync_frames_ccw.len);
+    // Constant display width keeps the status line from jittering frame to frame.
+    for (sync_frames_cw) |f| try std.testing.expectEqual(@as(usize, sync_track_cells), zz.width(f));
+    for (sync_frames_ccw) |f| try std.testing.expectEqual(@as(usize, sync_track_cells), zz.width(f));
+}
 
 /// Wallet encryption/lock status. Live wallet polling lands later — for now this
 /// defaults to `unknown`. Each state carries its own display text and colour.
@@ -4654,10 +4728,12 @@ pub const App = struct {
             }
 
             if (act.sync == .syncing) {
-                // Spin clockwise when connected, anti-clockwise with no peers.
-                // Assign `frames` directly (not `setFrames`, which would reset
-                // the index every tick and freeze the animation).
+                // Lap the track clockwise when connected, anti-clockwise with no
+                // peers. Assign `frames` directly (not `setFrames`, which would
+                // reset the index every tick and freeze the animation). Bold so
+                // the puck reads as a solid block riding the edge.
                 act.sync_spinner.frames = if (act.peers > 0) sync_frames_cw else sync_frames_ccw;
+                act.sync_spinner.spinner_style = act.sync_spinner.spinner_style.bold(true);
                 _ = act.sync_spinner.update(t.timestamp);
             }
 
