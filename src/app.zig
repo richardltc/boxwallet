@@ -34,6 +34,14 @@ const app_color = "#7ca071";
 /// per-platform `~/.boxwallet` dir resolved in `init`.
 const fallback_install_root = "boxwallet-coins";
 
+/// BoxWallet's own settings file (a plain `key=value` conf, read/written through
+/// `conf.readValue`/`conf.setValue`), kept alongside the coins under the install
+/// root. Currently holds just the `hide_balances` privacy toggle.
+const settings_file = "boxwallet.conf";
+
+/// What a wallet balance figure is replaced with while `App.hide_balances` is on.
+const balance_mask = "*****";
+
 /// Every coin registered in the left bar. Order here is irrelevant — `entries`
 /// sorts them alphabetically below — so a newly ported coin can be added in any
 /// position. Adding a coin is a matter of extending this list, the `App` field +
@@ -3608,6 +3616,14 @@ pub const App = struct {
     log_count: usize = 0,
     /// Whether the bottom log pane is shown; `l` toggles it.
     log_visible: bool = true,
+    /// Privacy toggle: when set, every wallet balance figure is masked with
+    /// `balance_mask` (`*****`) instead of the amount — for shoulder-surfers,
+    /// screen-shares, and screen recordings. `h` toggles it, and the choice is
+    /// persisted to `boxwallet.conf` under the install root so it survives a
+    /// restart (loaded in `init`, written in `toggleHideBalances`). Masks the
+    /// user's own holdings (header Total/Available, Send/Stake available, the
+    /// DigiDollar balance) — not public chain stats or transaction history.
+    hide_balances: bool = false,
     /// The open `w` wallet modal, or null when no modal is up. While set, the
     /// modal owns keyboard input and is composited over the dashboard.
     modal: ?Modal = null,
@@ -3810,6 +3826,8 @@ pub const App = struct {
         // install progress use the heavier pulsing spinner (`makeSpinner`).
         for (&self.activities) |*act| act.* = .{ .spinner = makeSpinner(), .daemon_spinner = makeSpinner(), .sync_spinner = zz.Spinner.init() };
         self.refreshSelectedInstalled();
+        // Restore the persisted balance-privacy toggle (off if never set).
+        self.hide_balances = self.loadHideBalances();
 
         // Take the first disk-usage sample now, synchronously, so the bar is
         // populated before the first frame is drawn rather than blank until the
@@ -3951,6 +3969,7 @@ pub const App = struct {
                         'k' => self.move(-1),
                         'j' => self.move(1),
                         'l' => self.log_visible = !self.log_visible,
+                        'h' => self.toggleHideBalances(),
                         'c' => if (on_coin and self.active_tab == .receive)
                             self.copyReceiveAddress(ctx)
                         else if (on_coin and self.active_tab == .digidollar)
@@ -4973,6 +4992,29 @@ pub const App = struct {
     /// Append a formatted line to the action log, prefixed with a UTC timestamp.
     /// Formats straight into the ring slot's fixed buffer (no allocation); an
     /// over-long line is truncated to the buffer rather than dropped.
+    /// Read the persisted `hide_balances` setting from `boxwallet.conf` under the
+    /// install root. Absent file/key (first run) reads as off. Best-effort — a read
+    /// error just falls back to off rather than failing startup.
+    fn loadHideBalances(self: *App) bool {
+        const raw = conf.readValue(self.allocator, self.io, self.install_root, settings_file, "hide_balances") catch return false;
+        const val = raw orelse return false;
+        defer self.allocator.free(val);
+        return std.mem.eql(u8, val, "1") or std.ascii.eqlIgnoreCase(val, "true");
+    }
+
+    /// Flip the balance-privacy toggle and persist it so it survives a restart.
+    /// Bound to `h`. The write is best-effort: if the conf can't be written the
+    /// toggle still takes effect for this session, with a note in the log.
+    fn toggleHideBalances(self: *App) void {
+        self.hide_balances = !self.hide_balances;
+        const value: []const u8 = if (self.hide_balances) "1" else "0";
+        conf.setValue(self.allocator, self.io, self.install_root, settings_file, "hide_balances", value) catch |err| {
+            self.logf("Balances {s} (couldn't save setting: {s})", .{ if (self.hide_balances) "hidden" else "shown", @errorName(err) });
+            return;
+        };
+        self.logf("Balances {s}", .{if (self.hide_balances) "hidden" else "shown"});
+    }
+
     fn logf(self: *App, comptime fmt: []const u8, args: anytype) void {
         const slot = &self.log_lines[self.log_count % log_capacity];
         const n = self.writeTimestamp(&slot.buf);
@@ -7040,9 +7082,11 @@ pub const App = struct {
             const abbrev = coin.coinNameAbbrev();
             const dp = coin.balanceDecimals();
             const bal: models.WalletBalance = .{ .total = act.balance_total, .available = act.balance_avail };
-            const total = balanceCorner(a, brand, "Total", act.balance_total, abbrev, .green, dp);
-            if (!bal.hasPending()) break :blk total;
-            const avail = balanceCorner(a, brand, "Available", act.balance_avail, abbrev, .yellow, dp);
+            const total = balanceCorner(a, brand, "Total", act.balance_total, abbrev, .green, dp, self.hide_balances);
+            // While hidden, drop Available entirely: it's shown only when funds are
+            // still settling, so keeping it would leak that pending funds exist.
+            if (self.hide_balances or !bal.hasPending()) break :blk total;
+            const avail = balanceCorner(a, brand, "Available", act.balance_avail, abbrev, .yellow, dp, self.hide_balances);
             break :blk std.fmt.allocPrint(a, "{s}   {s}", .{ total, avail }) catch total;
         } else "";
 
@@ -7164,7 +7208,7 @@ pub const App = struct {
             else
                 try renderPlaceholderTab(a, self.active_tab),
             .send => if (coin.supportsSend())
-                try renderSendTab(a, coin, act)
+                try renderSendTab(a, coin, act, self.hide_balances)
             else
                 try renderPlaceholderTab(a, self.active_tab),
             .mining => if (coin.supportsMining())
@@ -7172,7 +7216,7 @@ pub const App = struct {
             else
                 try renderPlaceholderTab(a, self.active_tab),
             .digidollar => if (coin.stablecoin()) |sc|
-                try renderStablecoinTab(a, sc, act)
+                try renderStablecoinTab(a, sc, act, self.hide_balances)
             else
                 try renderPlaceholderTab(a, self.active_tab),
         };
@@ -7399,8 +7443,11 @@ pub const App = struct {
     /// `renderPlaceholderTab`. The actual address/amount entry happens in
     /// `SendModal` (opened by `enter`), not here — see the Context note on
     /// why free-text entry needs a modal's exclusive keyboard ownership.
-    fn renderSendTab(a: std.mem.Allocator, coin: Coin, act: *const Activity) ![]const u8 {
-        const balance = formatBalance(a, act.balance_avail, coin.coinNameAbbrev(), coin.balanceDecimals());
+    fn renderSendTab(a: std.mem.Allocator, coin: Coin, act: *const Activity, hide: bool) ![]const u8 {
+        const balance = if (hide)
+            try std.fmt.allocPrint(a, "{s} {s}", .{ balance_mask, coin.coinNameAbbrev() })
+        else
+            formatBalance(a, act.balance_avail, coin.coinNameAbbrev(), coin.balanceDecimals());
         // Coins with a stake action (Salvium) get the extra key in the hint;
         // capital S because lowercase 's' toggles the daemon.
         const hint_text = if (coin.supportsStakeAction()) "(Enter: send   S: stake)" else "(press Enter to send)";
@@ -7455,7 +7502,7 @@ pub const App = struct {
     /// `supportsStablecoin()` is true; every other coin's `.digidollar` case
     /// still falls through to `renderPlaceholderTab`. Reads only the cached
     /// `act` fields — no RPC/disk IO in the render path.
-    fn renderStablecoinTab(a: std.mem.Allocator, sc: *const Coin.Stablecoin, act: *const Activity) ![]const u8 {
+    fn renderStablecoinTab(a: std.mem.Allocator, sc: *const Coin.Stablecoin, act: *const Activity, hide: bool) ![]const u8 {
         if (act.daemonState() != .running) {
             return std.fmt.allocPrint(a, "{s}\n\n{s} lives on the coin's own chain — start the daemon (s) first.", .{ sc.name, sc.name });
         }
@@ -7531,13 +7578,14 @@ pub const App = struct {
             try out.writer.print("{s}\n", .{warn_s});
         }
 
-        // Wallet balance ($), pending shown the moment it's seen.
+        // Wallet balance ($), pending shown the moment it's seen. Masked (and its
+        // pending note suppressed, so pending funds aren't leaked) while hidden.
         if (act.sc_has_balance) {
             var bbuf: [32]u8 = undefined;
-            const bal_plain = formatCents(&bbuf, act.sc_balance.confirmed_cents);
+            const bal_plain = if (hide) balance_mask else formatCents(&bbuf, act.sc_balance.confirmed_cents);
             const bal = (zz.Style{}).bold(true).render(a, bal_plain) catch bal_plain;
             var pend: []const u8 = "";
-            if (act.sc_balance.pending_cents != 0) {
+            if (!hide and act.sc_balance.pending_cents != 0) {
                 var pbuf2: [32]u8 = undefined;
                 const p = try std.fmt.allocPrint(a, "  (+{s} pending)", .{formatCents(&pbuf2, act.sc_balance.pending_cents)});
                 pend = (zz.Style{}).bold(true).fg(.yellow).render(a, p) catch p;
@@ -7767,11 +7815,14 @@ pub const App = struct {
     /// One styled balance figure for the header corner: `<label>: <amount> <abbrev>`
     /// with the label and abbrev in the coin's brand colour and the amount tinted
     /// by `num_color` (green for Total, yellow for a still-settling Available).
-    fn balanceCorner(a: std.mem.Allocator, brand: zz.Color, label: []const u8, value: f64, abbrev: []const u8, num_color: zz.Color, decimals: u8) []const u8 {
+    /// `hide` masks the figure with `balance_mask` (privacy toggle) instead of the
+    /// amount, keeping the label and abbrev.
+    fn balanceCorner(a: std.mem.Allocator, brand: zz.Color, label: []const u8, value: f64, abbrev: []const u8, num_color: zz.Color, decimals: u8, hide: bool) []const u8 {
         var buf: [64]u8 = undefined;
         const brand_sty = (zz.Style{}).bold(true).fg(brand);
         const lbl = brand_sty.render(a, std.fmt.allocPrint(a, "{s}:", .{label}) catch label) catch label;
-        const num = (zz.Style{}).bold(true).fg(num_color).render(a, formatAmount(&buf, value, decimals)) catch "?";
+        const fig: []const u8 = if (hide) balance_mask else formatAmount(&buf, value, decimals);
+        const num = (zz.Style{}).bold(true).fg(num_color).render(a, fig) catch "?";
         const abbr = brand_sty.render(a, abbrev) catch abbrev;
         return std.fmt.allocPrint(a, "{s} {s} {s}", .{ lbl, num, abbr }) catch lbl;
     }
@@ -8258,7 +8309,10 @@ pub const App = struct {
                 const text = try std.fmt.allocPrint(a, "Amount: {s}", .{field});
                 try modalRow(&out.writer, vbar, inner_w, text, zz.width("Amount: ") + zz.width(field));
                 try modalRow(&out.writer, vbar, inner_w, "", 0);
-                const balance = formatBalance(a, act.balance_avail, coin.coinNameAbbrev(), coin.balanceDecimals());
+                const balance = if (self.hide_balances)
+                    try std.fmt.allocPrint(a, "{s} {s}", .{ balance_mask, coin.coinNameAbbrev() })
+                else
+                    formatBalance(a, act.balance_avail, coin.coinNameAbbrev(), coin.balanceDecimals());
                 const avail = try std.fmt.allocPrint(a, "Available: {s}", .{balance});
                 const avail_styled = (zz.Style{}).dim(true).render(a, avail) catch avail;
                 try modalRow(&out.writer, vbar, inner_w, avail_styled, zz.width(avail));
@@ -8475,8 +8529,9 @@ pub const App = struct {
                     try wrapIntoRows(a, &out.writer, vbar, inner_w, bounds, (zz.Style{}).dim(true));
                 } else {
                     var bbuf: [32]u8 = undefined;
+                    const bal_fig: []const u8 = if (self.hide_balances) balance_mask else formatCents(&bbuf, act.sc_balance.confirmed_cents);
                     const avail = try std.fmt.allocPrint(a, "Available: {s} {s}. The fee is paid in {s}.", .{
-                        formatCents(&bbuf, act.sc_balance.confirmed_cents), sc.symbol, coin.coinNameAbbrev(),
+                        bal_fig, sc.symbol, coin.coinNameAbbrev(),
                     });
                     try wrapIntoRows(a, &out.writer, vbar, inner_w, avail, (zz.Style{}).dim(true));
                 }
@@ -9323,6 +9378,7 @@ test "action log renders in the bottom pane, sized to log_visible_lines" {
     var ctx = zz.Context.init(allocator, allocator, io, &env);
 
     var app: App = undefined;
+    app.hide_balances = false;
     _ = app.init(&ctx);
     defer app.deinit();
 
@@ -9865,6 +9921,7 @@ test "the Transactions tab only shows live data for a coin that supports it" {
     const a = arena.allocator();
 
     var app: App = undefined;
+    app.hide_balances = false;
     app.disk_used = 0;
     app.disk_total = 0;
     app.mem_used = 0;
@@ -9979,6 +10036,7 @@ test "the Receive tab only shows a live address for a coin that supports it" {
     const a = arena.allocator();
 
     var app: App = undefined;
+    app.hide_balances = false;
     app.disk_used = 0;
     app.disk_total = 0;
     app.mem_used = 0;
@@ -10048,6 +10106,7 @@ test "requestNewReceiveAddress stages a pending request and forces an immediate 
     var ctx = zz.Context.init(allocator, allocator, io, &env);
 
     var app: App = undefined;
+    app.hide_balances = false;
     _ = app.init(&ctx);
     defer app.deinit();
 
@@ -10083,6 +10142,7 @@ test "copyReceiveAddress no-ops without a cached address, logs otherwise" {
     var ctx = zz.Context.init(allocator, allocator, io, &env);
 
     var app: App = undefined;
+    app.hide_balances = false;
     _ = app.init(&ctx);
     defer app.deinit();
 
@@ -10120,6 +10180,7 @@ test "trySendAmount rejects non-numeric/zero/negative, accepts a valid positive 
     var ctx = zz.Context.init(allocator, allocator, io, &env);
 
     var app: App = undefined;
+    app.hide_balances = false;
     _ = app.init(&ctx);
     defer app.deinit();
 
@@ -10162,6 +10223,7 @@ test "renderSendModal shows the untruncated address and formatted amount at conf
     var ctx = zz.Context.init(allocator, allocator, io, &env);
 
     var app: App = undefined;
+    app.hide_balances = false;
     _ = app.init(&ctx);
     defer app.deinit();
 
@@ -10204,6 +10266,7 @@ test "the Stake prompt refuses to open for a coin without the stake action" {
     var ctx = zz.Context.init(allocator, allocator, io, &env);
 
     var app: App = undefined;
+    app.hide_balances = false;
     _ = app.init(&ctx);
     defer app.deinit();
 
@@ -10239,6 +10302,7 @@ test "renderSendModal in stake mode shows stake wording, no destination" {
     var ctx = zz.Context.init(allocator, allocator, io, &env);
 
     var app: App = undefined;
+    app.hide_balances = false;
     _ = app.init(&ctx);
     defer app.deinit();
 
@@ -10292,6 +10356,7 @@ test "the Send tab only shows the balance/hint for a coin that supports it" {
     const a = arena.allocator();
 
     var app: App = undefined;
+    app.hide_balances = false;
     app.disk_used = 0;
     app.disk_total = 0;
     app.mem_used = 0;
@@ -10353,6 +10418,7 @@ test "the Mining tab only exists for coins that mine, and walks its states" {
     const a = arena.allocator();
 
     var app: App = undefined;
+    app.hide_balances = false;
     app.disk_used = 0;
     app.disk_total = 0;
     app.mem_used = 0;
@@ -10466,6 +10532,7 @@ test "the Mining prompt only opens on a mining coin with a running daemon" {
     var ctx = zz.Context.init(allocator, allocator, io, &env);
 
     var app: App = undefined;
+    app.hide_balances = false;
     _ = app.init(&ctx);
     defer app.deinit();
 
@@ -10524,12 +10591,12 @@ test "renderStablecoinTab walks the daemon-down, checking, pre-activation, and l
     var act: Activity = .{};
 
     // Daemon down → the tab says to start it rather than showing a dead pane.
-    const down = try App.renderStablecoinTab(a, sc, &act);
+    const down = try App.renderStablecoinTab(a, sc, &act, false);
     try std.testing.expect(std.mem.indexOf(u8, down, "start the daemon") != null);
 
     // Daemon up, no info fetched yet → "checking".
     act.daemon.store(@intFromEnum(DaemonState.running), .release);
-    const checking = try App.renderStablecoinTab(a, sc, &act);
+    const checking = try App.renderStablecoinTab(a, sc, &act, false);
     try std.testing.expect(std.mem.indexOf(u8, checking, "Checking") != null);
 
     // Pre-activation (live on mainnet, waiting for the activation height):
@@ -10539,7 +10606,7 @@ test "renderStablecoinTab walks the daemon-down, checking, pre-activation, and l
     act.sc_info.setStatus("locked_in");
     act.sc_info.activation_height = 23_627_520;
     act.blocks_cur = 23_600_000;
-    const pre = try App.renderStablecoinTab(a, sc, &act);
+    const pre = try App.renderStablecoinTab(a, sc, &act, false);
     try std.testing.expect(std.mem.indexOf(u8, pre, "Not active yet") != null);
     try std.testing.expect(std.mem.indexOf(u8, pre, "locked_in") != null);
     try std.testing.expect(std.mem.indexOf(u8, pre, "Activates at block 23627520") != null);
@@ -10562,7 +10629,7 @@ test "renderStablecoinTab walks the daemon-down, checking, pre-activation, and l
     act.sc_pos_buf[0].setId("aa11");
     act.sc_tx_count = 1;
     act.sc_tx_buf[0] = .{ .kind = .mint, .amount_cents = 10000, .time = 1_780_410_720, .confirmations = 12 };
-    const live = try App.renderStablecoinTab(a, sc, &act);
+    const live = try App.renderStablecoinTab(a, sc, &act, false);
     try std.testing.expect(std.mem.indexOf(u8, live, "$125.50") != null);
     try std.testing.expect(std.mem.indexOf(u8, live, "$5.00 pending") != null);
     try std.testing.expect(std.mem.indexOf(u8, live, addr) != null);
@@ -10587,6 +10654,7 @@ test "openStablecoinModal gates on capability, daemon state, and on-chain activa
     var ctx = zz.Context.init(allocator, allocator, io, &env);
 
     var app: App = undefined;
+    app.hide_balances = false;
     _ = app.init(&ctx);
     defer app.deinit();
 
@@ -10657,6 +10725,7 @@ test "renderMiningModal shows the thread prompt, stop confirm, and a failure" {
     var ctx = zz.Context.init(allocator, allocator, io, &env);
 
     var app: App = undefined;
+    app.hide_balances = false;
     _ = app.init(&ctx);
     defer app.deinit();
 
@@ -10974,6 +11043,7 @@ test "start is a no-op until the coin is installed" {
     var ctx = zz.Context.init(allocator, allocator, io, &env);
 
     var app: App = undefined;
+    app.hide_balances = false;
     _ = app.init(&ctx);
     defer app.deinit();
 
@@ -11001,6 +11071,7 @@ test "stop is a no-op unless the daemon is running" {
     var ctx = zz.Context.init(allocator, allocator, io, &env);
 
     var app: App = undefined;
+    app.hide_balances = false;
     _ = app.init(&ctx);
     defer app.deinit();
 
@@ -11030,6 +11101,7 @@ test "stop defers the worker while a status poll is in flight" {
     var ctx = zz.Context.init(allocator, allocator, io, &env);
 
     var app: App = undefined;
+    app.hide_balances = false;
     _ = app.init(&ctx);
     defer app.deinit();
 
@@ -11103,6 +11175,7 @@ test "an explicit start clears the stopped-by-us latch" {
     var ctx = zz.Context.init(allocator, allocator, io, &env);
 
     var app: App = undefined;
+    app.hide_balances = false;
     _ = app.init(&ctx);
     defer app.deinit();
 
@@ -11139,6 +11212,7 @@ test "App.init resolves install_root from home dir and deinit frees it" {
     var ctx = zz.Context.init(allocator, allocator, io, &env);
 
     var app: App = undefined;
+    app.hide_balances = false;
     _ = app.init(&ctx);
     defer app.deinit();
 
@@ -11160,6 +11234,7 @@ test "renderDetail renders the selected coin generically through the Coin interf
     var ctx = zz.Context.init(allocator, allocator, io, &env);
 
     var app: App = undefined;
+    app.hide_balances = false;
     _ = app.init(&ctx);
     defer app.deinit();
 
@@ -11188,6 +11263,7 @@ test "coin pane renders a Disk bar from the app's disk-usage figure" {
     var ctx = zz.Context.init(allocator, allocator, io, &env);
 
     var app: App = undefined;
+    app.hide_balances = false;
     _ = app.init(&ctx);
     defer app.deinit();
 
@@ -11219,6 +11295,7 @@ test "coin pane renders a Memory line with the current used figure" {
     var ctx = zz.Context.init(allocator, allocator, io, &env);
 
     var app: App = undefined;
+    app.hide_balances = false;
     _ = app.init(&ctx);
     defer app.deinit();
 
@@ -11250,6 +11327,7 @@ test "the Status line reflects the daemon's live activity" {
     var ctx = zz.Context.init(allocator, allocator, io, &env);
 
     var app: App = undefined;
+    app.hide_balances = false;
     _ = app.init(&ctx);
     defer app.deinit();
 
@@ -11305,6 +11383,7 @@ test "the Wallet line advertises the w key once the wallet is manageable" {
     var ctx = zz.Context.init(allocator, allocator, io, &env);
 
     var app: App = undefined;
+    app.hide_balances = false;
     _ = app.init(&ctx);
     defer app.deinit();
 
@@ -11443,6 +11522,7 @@ test "the wallet modal renders its menu centered over the dashboard" {
     var ctx = zz.Context.init(allocator, allocator, io, &env);
 
     var app: App = undefined;
+    app.hide_balances = false;
     _ = app.init(&ctx);
     defer app.deinit();
 
@@ -11511,6 +11591,7 @@ test "Ergo's wallet menu offers unlock+replace when locked and lock+replace when
     var ctx = zz.Context.init(allocator, allocator, io, &env);
 
     var app: App = undefined;
+    app.hide_balances = false;
     _ = app.init(&ctx);
     defer app.deinit();
 
@@ -11592,6 +11673,7 @@ test "the external-wallet setup menu renders its create/restore choices" {
     var ctx = zz.Context.init(allocator, allocator, io, &env);
 
     var app: App = undefined;
+    app.hide_balances = false;
     _ = app.init(&ctx);
     defer app.deinit();
 
@@ -11830,6 +11912,7 @@ test "Home summary lists coins with a pending update" {
     var ctx = zz.Context.init(allocator, allocator, io, &env);
 
     var app: App = undefined;
+    app.hide_balances = false;
     _ = app.init(&ctx);
     defer app.deinit();
 
@@ -11873,6 +11956,7 @@ test "per-coin activity is independent and stays inside the right pane" {
     var ctx = zz.Context.init(allocator, allocator, io, &env);
 
     var app: App = undefined;
+    app.hide_balances = false;
     _ = app.init(&ctx);
     defer app.deinit();
 
@@ -11965,6 +12049,7 @@ test "the header balance shows Total always and Available only while funds settl
     // renderCoin only touches the disk/memory gauge fields and the active tab off
     // `self`; the rest of the App is unused, so a minimal stand-in is enough.
     var app: App = undefined;
+    app.hide_balances = false;
     app.disk_used = 0;
     app.disk_total = 0;
     app.mem_used = 0;
@@ -12003,4 +12088,45 @@ test "the header balance shows Total always and Available only while funds settl
         try std.testing.expect(std.mem.indexOf(u8, pane, "1,234.5") != null);
         try std.testing.expect(std.mem.indexOf(u8, pane, "Available") == null);
     }
+}
+
+test "hide_balances masks the header figure and drops Available" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    var nexa: Nexa = .{};
+    const coin = nexa.coin();
+
+    var act: Activity = .{
+        .coin = coin,
+        .home_dir = "",
+        .spinner = App.makeSpinner(),
+        .daemon_spinner = App.makeSpinner(),
+        .sync_spinner = zz.Spinner.init(),
+    };
+    act.installed = true;
+    act.daemon.store(@intFromEnum(DaemonState.running), .release);
+    act.poll_completed = true;
+    // Pending funds: without hiding this would surface a second "Available" figure.
+    act.has_balance = true;
+    act.balance_total = 1234.5;
+    act.balance_avail = 1000.0;
+
+    var app: App = undefined;
+    app.disk_used = 0;
+    app.disk_total = 0;
+    app.mem_used = 0;
+    app.mem_total = 0;
+    app.active_tab = .home;
+    app.hide_balances = true;
+
+    const pane = try App.renderCoin(&app, a, coin, &act);
+    // The label and abbrev stay; the amount is masked and no digits leak.
+    try std.testing.expect(std.mem.indexOf(u8, pane, "Total:") != null);
+    try std.testing.expect(std.mem.indexOf(u8, pane, balance_mask) != null);
+    try std.testing.expect(std.mem.indexOf(u8, pane, "1,234.5") == null);
+    try std.testing.expect(std.mem.indexOf(u8, pane, "1,000") == null);
+    // Available is suppressed while hidden so pending funds aren't implied.
+    try std.testing.expect(std.mem.indexOf(u8, pane, "Available") == null);
 }
