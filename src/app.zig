@@ -456,7 +456,26 @@ fn renderStatus(a: std.mem.Allocator, act: *const Activity, brand: zz.Color) []c
         std.fmt.allocPrint(a, "{s} ~{d}%", .{ r.text, act.load_eta_pct }) catch r.text
     else
         r.text;
-    const value = (zz.Style{}).bold(true).fg(r.col).render(a, text) catch text;
+    // Append the live chain height to the sync status so every coin shows how far
+    // it has reached. Skipped until a height is known (0), which also keeps it off
+    // the header-download phase where no block has been validated yet. While
+    // syncing it reads as progress toward the tip ("Syncing blocks… 123,456 of
+    // 850,000"); once synced it's the bare tip ("Synced at 850,123"). The tip is
+    // the larger of the block/header denominators (block-validation catch-up for
+    // BTC-style chains, network tip for single-height chains); if none exceeds the
+    // current height yet, it falls back to "at N" rather than a bogus "N of N".
+    const text_h = if (r.show_blocks and act.blocks_cur > 0) blk: {
+        var cur_buf: [64]u8 = undefined;
+        const cur = App.formatAmount(&cur_buf, @floatFromInt(act.blocks_cur), 0);
+        const total = @max(act.blocks_total, act.headers_total);
+        if (r.sync_progress and total > act.blocks_cur) {
+            var tot_buf: [64]u8 = undefined;
+            const tot = App.formatAmount(&tot_buf, @floatFromInt(total), 0);
+            break :blk std.fmt.allocPrint(a, "{s} {s} of {s}", .{ text, cur, tot }) catch text;
+        }
+        break :blk std.fmt.allocPrint(a, "{s} at {s}", .{ text, cur }) catch text;
+    } else text;
+    const value = (zz.Style{}).bold(true).fg(r.col).render(a, text_h) catch text_h;
     return std.fmt.allocPrint(a, "{s}: {s}", .{ label, value }) catch value;
 }
 
@@ -497,6 +516,18 @@ const StatusReadout = struct {
     /// from `load_timer_start_ms`/`last_load_ms` when a prior load duration is
     /// known. Kept off `text` for the same reason as `presync_pct`.
     block_index_load: bool = false,
+    /// True on the syncing/synced lines, signalling `renderStatus` to append the
+    /// current chain height ("Synced at 850,123" / "Syncing blocks… 123,456 of …").
+    /// Kept off `text` (which is logged verbatim on change) for the same reason as
+    /// `presync_pct` — the height moves every poll, so baking it in would churn the
+    /// log. Suppressed by `renderStatus` until a height is known (`blocks_cur > 0`),
+    /// which also keeps it off the header-download phase where no block is validated.
+    show_blocks: bool = false,
+    /// Set with `show_blocks` on the *syncing* lines only, so `renderStatus` renders
+    /// the height as progress toward the tip ("123,456 of 850,000") rather than the
+    /// bare "at N" it uses when synced. Falls back to "at N" if no larger total is
+    /// known yet (so it never reads a nonsensical "N of N").
+    sync_progress: bool = false,
 };
 
 /// Resolve a coin's current status. Priority, highest first: installing
@@ -574,9 +605,11 @@ fn statusReadout(act: *const Activity) StatusReadout {
                 .col = .cyan,
                 .active = true,
                 .presync_pct = is_presync,
+                .show_blocks = true,
+                .sync_progress = true,
             };
         } else if (act.sync == .synced)
-            .{ .text = "Synced", .col = .green, .active = true }
+            .{ .text = "Synced", .col = .green, .active = true, .show_blocks = true }
         else
             .{ .text = "Running", .col = .green, .active = true },
     };
