@@ -44,7 +44,7 @@ pub const Zano = struct {
     /// Donation address for BoxWallet development, in Zano's own
     /// currency.
     /// TODO(richard): replace with the real ZANO tip address.
-    pub const tip_address = "TODO-ZANO-TIP-ADDRESS-NOT-SET";
+    pub const tip_address = "ZxDHvWyQwKqi8ApBPhn3r9AnkRzBarAPCZvDkGQRnyPjjZs8WHL4PyfXyMipiJPTh6L8PHCp9LqNmMLp9NakETqL2gfpn92WP";
     /// Zano is a hybrid PoW/PoS coin — it exposes a staking status.
     pub const proof_of_stake = true;
     pub const conf_file = "zano.conf";
