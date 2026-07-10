@@ -9,13 +9,17 @@ daemons from a single TUI — no browser, no Electron, no cloud.
 
 | Coin | Abbrev |
 |------|--------|
+| Bitcoin | BTC |
 | DigiByte | DGB |
 | Divi | DIVI |
 | Epic Cash | EPIC |
 | Ergo | ERG |
+| Litecoin | LTC |
 | Nerva | XNV |
 | Nexa | NEXA |
 | ReddCoin | RDD |
+| Salvium | SAL |
+| SpiderByte | SPB |
 | Zano | ZANO |
 
 DigiByte includes a **DigiDollar** tab (DigiByte core v9.26+): mint DD against
@@ -28,7 +32,8 @@ actions unlock automatically the moment the chain reaches it.
 ## Install
 
 Download the latest binary for your platform from the
-[Releases](../../releases) page and run it — no install step needed.
+[Releases](https://codeberg.org/richardltc/BoxWallet/releases) page and run it —
+no install step needed.
 
 | Platform | File |
 |----------|------|
@@ -81,8 +86,8 @@ regular user), the swap can't happen; the Home pane explains why.
 Requires [Zig 0.16](https://ziglang.org/download/).
 
 ```sh
-git clone https://codeberg.org/boxwallet/boxwallet.git
-cd boxwallet
+git clone https://codeberg.org/richardltc/BoxWallet.git
+cd BoxWallet
 ZIG_GLOBAL_CACHE_DIR=zig-pkg zig build run     # launch the TUI
 ZIG_GLOBAL_CACHE_DIR=zig-pkg zig build test    # run offline unit tests
 ZIG_GLOBAL_CACHE_DIR=zig-pkg zig build release # cross-compile all release binaries
