@@ -26,7 +26,7 @@ const SpiderByte = @import("coins/spiderbyte.zig").SpiderByte;
 /// change how BoxWallet identifies itself in the UI. `app_color` is the brand
 /// hex used for the "BoxWallet" wording on the Home pane.
 pub const app_name = "BoxWallet TUI";
-pub const app_version = "0.7.10";
+pub const app_version = "0.7.11";
 const app_color = "#7ca071";
 
 /// Fallback install root used only if the home-dir-based path can't be built
@@ -40,7 +40,7 @@ const fallback_install_root = "boxwallet-coins";
 const settings_file = "boxwallet.conf";
 
 /// What a wallet balance figure is replaced with while `App.hide_balances` is on.
-const balance_mask = "*****";
+const balance_mask = "********";
 
 /// Every coin registered in the left bar. Order here is irrelevant — `entries`
 /// sorts them alphabetically below — so a newly ported coin can be added in any
