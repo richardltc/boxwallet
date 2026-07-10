@@ -87,9 +87,13 @@ pub const Zano = struct {
     // the URL can't be derived from the version alone. Bumping the version means
     // looking up the new hashed filename, which the GitHub release page publishes
     // in its PGP-signed notes (GitHub hosts no assets itself) — e.g.
-    // https://github.com/hyle-team/zano/releases/tag/2.1.17.469. This is the latest
+    // https://github.com/hyle-team/zano/releases/tag/2.2.1.502. This is the latest
     // stable `release`-channel build.
-    const appimage_build_hash = "1b1cc03";
+    //
+    // The hash must be bumped in lockstep with `core_version`: the two are spliced
+    // into one filename, and a mismatched pair resolves to a 404 rather than to the
+    // wrong build.
+    const appimage_build_hash = "76a791c";
     const appimage_url = "https://build.zano.org/builds/zano-linux-x64-release-v" ++
         core_version ++ "%5B" ++ appimage_build_hash ++ "%5D.AppImage";
     // Windows ships an official .zip (same build hash) carrying zanod.exe /
@@ -274,6 +278,67 @@ pub const Zano = struct {
         return install_mod.fileExists(allocator, install_root, sub);
     }
 
+    /// Absolute path of the installed daemon. Linux promotes `zanod` to the install
+    /// root; Windows keeps `zanod.exe` under the `zano/` bundle subdir, beside the
+    /// DLLs it loads. Caller owns the returned path.
+    fn daemonPath(allocator: std.mem.Allocator, install_root: []const u8) ![]u8 {
+        return if (builtin.os.tag == .windows)
+            std.fs.path.join(allocator, &.{ install_root, win_subdir, daemon_file })
+        else
+            std.fs.path.join(allocator, &.{ install_root, daemon_file });
+    }
+
+    /// Ask the installed `zanod` its version by running `zanod --version`.
+    ///
+    /// Zano's `getinfo` reports no `version` field, so the daemon can never stamp a
+    /// version marker over RPC the way the bitcoin forks do — a pre-marker install
+    /// would stay silently un-updatable. Probing the binary closes that gap, and it
+    /// works with the daemon stopped. `--version` prints one line and exits 0
+    /// without touching the data directory, so it's safe to run alongside a live
+    /// zanod (no LMDB lock contention).
+    ///
+    /// Caller owns the returned version string.
+    fn probeInstalledVersion(allocator: std.mem.Allocator, install_root: []const u8) anyerror![]const u8 {
+        const path = try daemonPath(allocator, install_root);
+        defer allocator.free(path);
+
+        // One short banner line; anything longer is a daemon we don't recognise.
+        var buf: [256]u8 = undefined;
+        const out = try install_mod.captureStdout(
+            allocator,
+            &.{ path, "--version" },
+            install_root,
+            ".zanod.probe",
+            &buf,
+        );
+        const ver = parseVersionOutput(out) orelse return error.UnrecognizedVersion;
+        return allocator.dupe(u8, ver);
+    }
+
+    /// Pull the bare version out of zanod's `--version` banner, which reads
+    /// `Zano v2.2.1.502[76a791c]` (simplewallet prefixes an extra word). Returns the
+    /// dotted-numeric run after the `v` — `2.2.1.502` — leaving off the build hash,
+    /// so it compares against the pinned `core_version` under `updater.isNewer`.
+    /// Null when no such run is present. A slice into `out`; pure, so it's testable
+    /// without a binary to run.
+    fn parseVersionOutput(out: []const u8) ?[]const u8 {
+        // Take the first line only: later lines are none of our business.
+        const line = out[0 .. std.mem.indexOfScalar(u8, out, '\n') orelse out.len];
+        var i: usize = 0;
+        while (i < line.len) : (i += 1) {
+            // A version starts at a digit that follows `v`, so `Zano` and any other
+            // leading words are skipped rather than mis-parsed.
+            if (!std.ascii.isDigit(line[i])) continue;
+            if (i == 0 or line[i - 1] != 'v') continue;
+            var j = i;
+            while (j < line.len and (std.ascii.isDigit(line[j]) or line[j] == '.')) j += 1;
+            // Trim a trailing dot so `v1.2.` can't yield a version ending in one.
+            while (j > i and line[j - 1] == '.') j -= 1;
+            return line[i..j];
+        }
+        return null;
+    }
+
     /// Download + unpack the Zano daemon files into `install_root`, optionally
     /// reporting progress.
     ///
@@ -373,10 +438,7 @@ pub const Zano = struct {
     /// which is glacially slow on the low-spec hardware BoxWallet targets. Letting
     /// predownload run gives a fresh node a recent DB to start from.
     pub fn daemonArgv(allocator: std.mem.Allocator, install_root: []const u8, _: []const u8) ![]const []const u8 {
-        const path = if (builtin.os.tag == .windows)
-            try std.fs.path.join(allocator, &.{ install_root, win_subdir, daemon_file })
-        else
-            try std.fs.path.join(allocator, &.{ install_root, daemon_file });
+        const path = try daemonPath(allocator, install_root);
         errdefer allocator.free(path);
         const argv = try allocator.alloc([]const u8, 2);
         argv[0] = path;
@@ -918,6 +980,9 @@ pub const Zano = struct {
         .daemon_info = vtDaemonInfo,
         .data_dir = vtDataDir,
         .is_installed = vtIsInstalled,
+        // Zano's `getinfo` carries no `version` field, so the marker can only be
+        // stamped by asking the binary itself (see `probeInstalledVersion`).
+        .installed_version_probe = vtProbeInstalledVersion,
         .install = vtInstall,
         .prepare_conf = vtPrepareConf,
         .launch_mode = vtLaunchMode,
@@ -1019,6 +1084,13 @@ pub const Zano = struct {
     }
     fn vtIsInstalled(_: *anyopaque, allocator: std.mem.Allocator, install_root: []const u8) bool {
         return isInstalled(allocator, install_root);
+    }
+    fn vtProbeInstalledVersion(
+        _: *anyopaque,
+        allocator: std.mem.Allocator,
+        install_root: []const u8,
+    ) anyerror![]const u8 {
+        return probeInstalledVersion(allocator, install_root);
     }
     fn vtInstall(
         _: *anyopaque,
@@ -1161,6 +1233,46 @@ test "platform selection: Linux x86_64 gets the AppImage, Windows the zip" {
         },
         else => try std.testing.expect(Zano.download_url == null),
     }
+}
+
+test "parseVersionOutput lifts the bare version out of zanod's --version banner" {
+    // The real banners, verbatim (zanod 2.2.1.502 / 2.1.15.457, and simplewallet,
+    // which prefixes an extra word before the `v`).
+    try std.testing.expectEqualStrings("2.2.1.502", Zano.parseVersionOutput("Zano v2.2.1.502[76a791c]\n").?);
+    try std.testing.expectEqualStrings("2.1.15.457", Zano.parseVersionOutput("Zano v2.1.15.457[8621a68]\n").?);
+    try std.testing.expectEqualStrings(
+        "2.2.1.502",
+        Zano.parseVersionOutput("Zano simplewallet v2.2.1.502[76a791c]\n").?,
+    );
+
+    // The build hash is dropped, so a freshly-installed binary's banner yields
+    // exactly the pinned `core_version` — the whole point of parsing rather than
+    // storing the banner, since the marker is compared against it verbatim.
+    const banner = "Zano v" ++ Zano.core_version ++ "[76a791c]";
+    const v = Zano.parseVersionOutput(banner).?;
+    try std.testing.expect(std.mem.indexOfScalar(u8, v, '[') == null);
+    try std.testing.expectEqualStrings(Zano.core_version, v);
+
+    // Only the first line is considered.
+    try std.testing.expectEqualStrings("1.2.3", Zano.parseVersionOutput("Zano v1.2.3\nnoise v9.9.9\n").?);
+    // A trailing dot never survives into the version.
+    try std.testing.expectEqualStrings("1.2", Zano.parseVersionOutput("Zano v1.2.").?);
+
+    // Nothing version-shaped: the caller treats null as "version unknown" rather
+    // than stamping a bogus marker.
+    try std.testing.expect(Zano.parseVersionOutput("") == null);
+    try std.testing.expect(Zano.parseVersionOutput("Zano\n") == null);
+    // Digits not preceded by `v` aren't a version (guards against a stray banner
+    // word like a year or a PID being mistaken for one).
+    try std.testing.expect(Zano.parseVersionOutput("Zano 2026 build\n") == null);
+}
+
+test "Zano wires the offline version probe the other coins don't need" {
+    var z: Zano = .{};
+    const c = z.coin();
+    // Zano's `getinfo` reports no `version`, so the marker can only come from the
+    // binary — the probe hook must be wired or a pre-marker install stays silent.
+    try std.testing.expect(c.vtable.installed_version_probe != null);
 }
 
 test "coin vtable dispatches to Zano metadata" {
