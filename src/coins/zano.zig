@@ -53,7 +53,7 @@ pub const Zano = struct {
     pub const home_dir_win = "ZANO";
     pub const rpc_default_username = "zanorpc";
     pub const rpc_default_port = "11211";
-    pub const core_version = "2.1.17.469";
+    pub const core_version = "2.2.1.502";
 
     // Binary names. Windows appends `.exe`; Linux uses the bare names. Zano's CLI
     // is `simplewallet`, and there's no `*-tx` helper (unlike the bitcoin coins).
@@ -143,18 +143,22 @@ pub const Zano = struct {
         version: []const u8 = "",
         /// Unix seconds of the local tip block, feeding `BlockchainState.tip_time`
         /// (the "block date / how far behind" hint while syncing). Only populated
-        /// when `getinfo` is asked for it — see `getinfo_flag_last_block`.
+        /// when `getinfo` is asked for it — see `getinfo_flags`.
         last_block_timestamp: i64 = 0,
     };
 
-    /// `getinfo`'s `flags` bit that fills in the last-block fields (notably
-    /// `last_block_timestamp`). Zano gates most of `getinfo`'s payload behind this
-    /// bitmask: with no `params` the daemon returns heights and peer counts but a
-    /// zeroed `last_block_timestamp`, so the sync hint would never render. This one
-    /// bit is as cheap as the bare call, unlike the expensive extras (hashrate,
-    /// output stats, performance counters) sitting behind the other bits — so the
-    /// status poll asks for exactly this and nothing more.
-    const getinfo_flag_last_block = 0x1;
+    /// The `getinfo` `flags` bit BoxWallet asks for. Zano gates most of `getinfo`'s
+    /// payload behind this bitmask: called with no `params` the daemon returns
+    /// heights and peer counts but a zeroed `last_block_timestamp`, so the sync hint
+    /// would never render.
+    ///
+    /// Upstream names this bit `COMMAND_RPC_GET_INFO_FLAG_POS_DIFFICULTY`, but it
+    /// also fills in the last-block fields we're actually after — it's the cheapest
+    /// bit that yields `last_block_timestamp` (only `..._TOTAL_COINS`, 0x400, does
+    /// so too). It costs the same as the bare call, unlike the expensive extras
+    /// (hashrate, output stats, performance counters) behind the other bits — so the
+    /// status poll asks for exactly this one and nothing more.
+    const getinfo_flags = 0x1;
 
     /// Bound (ms) on a status/stop RPC round-trip. A healthy zanod answers
     /// `getinfo` in milliseconds, but a *busy* one (its reply stalled behind the
@@ -172,7 +176,7 @@ pub const Zano = struct {
     /// handshake). The reply is the JSON-RPC envelope `{ "result": { … } }`.
     ///
     /// `params.flags` asks for the last-block fields on top of the default payload
-    /// (see `getinfo_flag_last_block`); an older daemon that predates `flags` simply
+    /// (see `getinfo_flags`); an older daemon that predates `flags` simply
     /// ignores it and leaves `last_block_timestamp` at 0, which the frontend treats
     /// as "no tip timestamp".
     fn fetchInfo(
@@ -181,7 +185,7 @@ pub const Zano = struct {
     ) !std.json.Parsed(models.JsonRpcResponse(ZanoGetInfo)) {
         const body = std.fmt.comptimePrint(
             "{{\"jsonrpc\":\"2.0\",\"id\":\"0\",\"method\":\"getinfo\",\"params\":{{\"flags\":{d}}}}}",
-            .{getinfo_flag_last_block},
+            .{getinfo_flags},
         );
         const raw = try rpc.moneroPost(allocator, auth, "/json_rpc", body, status_timeout_ms);
         defer allocator.free(raw);
