@@ -43,10 +43,6 @@ no install step needed.
 | macOS Apple Silicon | `boxwallet-macos-aarch64` |
 | Windows x86_64 | `boxwallet-windows-x86_64.exe` |
 
-Linux and macOS binaries are statically linked (musl) — they run on any
-distribution without library dependencies. Each release ships a `SHA256SUMS`
-file; verify with `sha256sum -c SHA256SUMS`.
-
 BoxWallet keeps coin daemons under `~/.boxwallet/` (Windows:
 `%USERPROFILE%\AppData\Roaming\BoxWallet\`). The binary itself can live anywhere.
 
