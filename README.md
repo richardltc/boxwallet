@@ -3,8 +3,6 @@
 A terminal-based cryptocurrency wallet manager. Install, start, and monitor coin
 daemons from a single TUI — no browser, no Electron, no cloud.
 
-![Home screen](img/screenshot-home.png)
-
 Stepping through every coin in the nav — with balances hidden (`h`) for the
 recording:
 
