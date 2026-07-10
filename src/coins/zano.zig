@@ -141,7 +141,20 @@ pub const Zano = struct {
         status: []const u8 = "",
         /// The daemon's software version (e.g. "2.1.17.469"), from `getinfo`.
         version: []const u8 = "",
+        /// Unix seconds of the local tip block, feeding `BlockchainState.tip_time`
+        /// (the "block date / how far behind" hint while syncing). Only populated
+        /// when `getinfo` is asked for it — see `getinfo_flag_last_block`.
+        last_block_timestamp: i64 = 0,
     };
+
+    /// `getinfo`'s `flags` bit that fills in the last-block fields (notably
+    /// `last_block_timestamp`). Zano gates most of `getinfo`'s payload behind this
+    /// bitmask: with no `params` the daemon returns heights and peer counts but a
+    /// zeroed `last_block_timestamp`, so the sync hint would never render. This one
+    /// bit is as cheap as the bare call, unlike the expensive extras (hashrate,
+    /// output stats, performance counters) sitting behind the other bits — so the
+    /// status poll asks for exactly this and nothing more.
+    const getinfo_flag_last_block = 0x1;
 
     /// Bound (ms) on a status/stop RPC round-trip. A healthy zanod answers
     /// `getinfo` in milliseconds, but a *busy* one (its reply stalled behind the
@@ -157,11 +170,20 @@ pub const Zano = struct {
     /// bitcoin-style JSON-RPC 1.0 call to root, so it goes through `moneroPost`
     /// (the daemon RPC is keyless on localhost — an empty user skips the digest
     /// handshake). The reply is the JSON-RPC envelope `{ "result": { … } }`.
+    ///
+    /// `params.flags` asks for the last-block fields on top of the default payload
+    /// (see `getinfo_flag_last_block`); an older daemon that predates `flags` simply
+    /// ignores it and leaves `last_block_timestamp` at 0, which the frontend treats
+    /// as "no tip timestamp".
     fn fetchInfo(
         allocator: std.mem.Allocator,
         auth: models.CoinAuth,
     ) !std.json.Parsed(models.JsonRpcResponse(ZanoGetInfo)) {
-        const raw = try rpc.moneroPost(allocator, auth, "/json_rpc", "{\"jsonrpc\":\"2.0\",\"id\":\"0\",\"method\":\"getinfo\"}", status_timeout_ms);
+        const body = std.fmt.comptimePrint(
+            "{{\"jsonrpc\":\"2.0\",\"id\":\"0\",\"method\":\"getinfo\",\"params\":{{\"flags\":{d}}}}}",
+            .{getinfo_flag_last_block},
+        );
+        const raw = try rpc.moneroPost(allocator, auth, "/json_rpc", body, status_timeout_ms);
         defer allocator.free(raw);
         return std.json.parseFromSlice(
             models.JsonRpcResponse(ZanoGetInfo),
@@ -188,6 +210,12 @@ pub const Zano = struct {
         defer parsed.deinit();
 
         const r = parsed.value.result orelse return error.EmptyRpcResult;
+        return mapInfo(allocator, r);
+    }
+
+    /// Map a parsed `getinfo` onto the normalized `BlockchainState`. Split out from
+    /// `blockchainState` so the mapping is unit-testable without a running zanod.
+    fn mapInfo(allocator: std.mem.Allocator, r: ZanoGetInfo) !models.BlockchainState {
         const tip = @max(r.max_net_seen_height, r.height);
         return .{
             // getinfo carries no chain name; Zano installs mainnet here.
@@ -200,6 +228,11 @@ pub const Zano = struct {
                 0,
             .synced = r.height > 0 and r.max_net_seen_height > 0 and r.height >= r.max_net_seen_height,
             .network_height = r.max_net_seen_height,
+            // Timestamp of the block being synced; the frontend derives "how far
+            // behind" from `now − tip_time`. 0 when the daemon hasn't reported one
+            // (fresh chain, or a build predating `getinfo`'s `flags`), which the
+            // frontend reads as "unavailable" and simply omits the hint.
+            .tip_time = r.last_block_timestamp,
         };
     }
 
@@ -1024,7 +1057,7 @@ test "parses getinfo into a synced BlockchainState (height caught up to the tip)
         \\{"id":"0","jsonrpc":"2.0","result":{"height":2500000,
         \\"max_net_seen_height":2500000,"synchronized_connections_count":8,
         \\"outgoing_connections_count":8,"incoming_connections_count":2,
-        \\"pos_allowed":true,"status":"OK"}}
+        \\"pos_allowed":true,"status":"OK","last_block_timestamp":1781007756}}
     ;
 
     var parsed = try std.json.parseFromSlice(
@@ -1035,22 +1068,37 @@ test "parses getinfo into a synced BlockchainState (height caught up to the tip)
     );
     defer parsed.deinit();
 
-    const r = parsed.value.result.?;
-    const tip = @max(r.max_net_seen_height, r.height);
-    const state: models.BlockchainState = .{
-        .chain = try allocator.dupe(u8, "mainnet"),
-        .blocks = r.height,
-        .headers = tip,
-        .verification_progress = 0,
-        .synced = r.height > 0 and r.max_net_seen_height > 0 and r.height >= r.max_net_seen_height,
-        .network_height = r.max_net_seen_height,
-    };
+    const state = try Zano.mapInfo(allocator, parsed.value.result.?);
     defer state.deinit(allocator);
 
     try std.testing.expectEqualStrings("mainnet", state.chain);
     try std.testing.expectEqual(@as(i64, 2500000), state.blocks);
     try std.testing.expectEqual(@as(i64, 2500000), state.network_height);
     try std.testing.expect(state.synced);
+    try std.testing.expectEqual(@as(i64, 1781007756), state.tip_time);
+}
+
+test "the tip block timestamp drives the sync hint, and is 0 when getinfo omits it" {
+    const allocator = std.testing.allocator;
+
+    // Mid-sync, with the last-block flag honoured: the tip timestamp rides through
+    // to `tip_time`, so the frontend can render "<block date>  N years behind".
+    const syncing = try Zano.mapInfo(allocator, .{
+        .height = 3_720_712,
+        .max_net_seen_height = 3_765_109,
+        .last_block_timestamp = 1_781_007_756,
+    });
+    defer syncing.deinit(allocator);
+    try std.testing.expectEqual(@as(i64, 1_781_007_756), syncing.tip_time);
+    try std.testing.expect(!syncing.synced);
+    // `seconds_behind` stays unsupplied: the frontend derives it from `now − tip_time`.
+    try std.testing.expectEqual(@as(i64, -1), syncing.seconds_behind);
+
+    // A daemon that never filled the field in (fresh chain, or a build predating
+    // `getinfo`'s `flags`) leaves `tip_time` at 0 — read as "no hint", not as 1970.
+    const quiet = try Zano.mapInfo(allocator, .{ .height = 1, .max_net_seen_height = 2 });
+    defer quiet.deinit(allocator);
+    try std.testing.expectEqual(@as(i64, 0), quiet.tip_time);
 }
 
 test "height behind the network tip reads as not synced" {
