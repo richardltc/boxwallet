@@ -5,6 +5,26 @@ daemons from a single TUI — no browser, no Electron, no cloud.
 
 ![Home screen](img/screenshot-home.png)
 
+## Why BoxWallet?
+
+- **Run your own nodes, keep your own keys.** BoxWallet manages real coin
+  daemons on your machine — full self-custody, no third-party wallet service
+  holding your funds or watching your balances.
+- **One tool for every coin.** Install, start, stop, and monitor many coins
+  from a single screen, instead of juggling a separate wallet app per coin.
+- **No install, no bloat.** A single binary — no browser, no Electron, no
+  background services. Download it, run it, done.
+- **Runs anywhere.** Linux, macOS, and Windows from the same interface, and
+  light enough for a Raspberry Pi, an old laptop, or a small VPS.
+- **Security first.** Seeds, keys, and passwords are held only as long as
+  needed and wiped from memory immediately after; daemons and wallet RPC are
+  bound to localhost only. Your secrets never touch a log or a remote server.
+- **Set up in seconds.** BoxWallet downloads and installs each coin's daemon
+  for you, then shows live sync progress, block height, and disk/memory usage
+  at a glance.
+- **Always current.** It updates itself in the background — no package manager,
+  no manual re-download.
+
 ## Supported coins
 
 | Coin | Abbrev |
