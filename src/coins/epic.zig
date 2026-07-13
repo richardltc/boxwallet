@@ -2492,6 +2492,7 @@ test "coin vtable dispatches to Epic metadata and the external wallet" {
     try std.testing.expect(!c.isProofOfStake());
     try std.testing.expectEqualStrings("3413", c.rpcDefaultPort());
     try std.testing.expectEqual(Coin.LaunchMode.foreground, c.launchMode());
+    try std.testing.expectEqual(@as(?[]const u8, null), c.daemonLogFile());
     // Epic drives a launch-with-password external wallet, backed by a separate
     // `epic-wallet owner_api` process the app (re)launches per-open with the password
     // (it won't serve without one). (The bitcoin-style in-daemon hooks —

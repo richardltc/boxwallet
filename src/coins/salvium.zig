@@ -349,6 +349,12 @@ pub const Salvium = struct {
         return .foreground;
     }
 
+    /// The daemon's log file under the data dir, whose tail is read for a
+    /// startup-failure reason when the daemon dies without saying why on stderr.
+    pub fn daemonLogFile() []const u8 {
+        return "salvium.log";
+    }
+
     /// `salviumd --non-interactive` so it runs as a server rather than opening its
     /// interactive console. Caller owns the returned slice and its strings.
     pub fn daemonArgv(allocator: std.mem.Allocator, install_root: []const u8, _: []const u8) ![]const []const u8 {
@@ -1239,6 +1245,7 @@ pub const Salvium = struct {
         .install = vtInstall,
         .prepare_conf = vtPrepareConf,
         .launch_mode = vtLaunchMode,
+        .daemon_log_file = vtDaemonLogFile,
         .daemon_argv = vtDaemonArgv,
         .request_stop = vtRequestStop,
         .wallet_transactions = vtWalletTransactions,
@@ -1373,6 +1380,9 @@ pub const Salvium = struct {
     }
     fn vtLaunchMode(_: *anyopaque) Coin.LaunchMode {
         return launchMode();
+    }
+    fn vtDaemonLogFile(_: *anyopaque) []const u8 {
+        return daemonLogFile();
     }
     fn vtDaemonArgv(
         _: *anyopaque,
@@ -1525,6 +1535,7 @@ test "coin vtable dispatches to Salvium metadata" {
     try std.testing.expectEqualStrings("salvium.conf", c.confFile());
     try std.testing.expectEqualStrings("19081", c.rpcDefaultPort());
     try std.testing.expectEqual(Coin.LaunchMode.foreground, c.launchMode());
+    try std.testing.expectEqualStrings("salvium.log", c.daemonLogFile().?);
 }
 
 test "walletPath reports the Monero wallet file plus its .keys companion" {

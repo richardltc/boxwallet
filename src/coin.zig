@@ -752,6 +752,14 @@ pub const Coin = struct {
         /// when the RPC probe found no phase and the daemon is believed up. Null
         /// for coins whose warm-up is fully visible over RPC (the common case).
         warmup_phase_from_log: ?*const fn (ptr: *anyopaque, tail: []const u8) models.LoadingPhase = null,
+        /// Optional: the daemon's own log file, as a name relative to the coin's
+        /// data dir (`debug.log` for bitcoin-derived daemons, `nerva.log` /
+        /// `salvium.log` / `zanod.log` for the epee family). Its tail is read to
+        /// surface a startup-failure reason for daemons whose fatal init errors
+        /// go to their log/console rather than stderr. Null for coins with no
+        /// fixed daemon log under the data dir (Ergo logs to the CWD; Epic's
+        /// failures land on stderr).
+        daemon_log_file: ?*const fn (ptr: *anyopaque) []const u8 = null,
         /// Optional: the external-wallet capability (Monero-style coins whose
         /// wallet is a separate RPC process). Null for coins with an in-daemon
         /// wallet or none. `hasExternalWallet` keys off this being non-null.
@@ -1206,6 +1214,14 @@ pub const Coin = struct {
     pub fn warmupPhaseFromLog(self: Coin, tail: []const u8) models.LoadingPhase {
         if (self.vtable.warmup_phase_from_log) |f| return f(self.ptr, tail);
         return .none;
+    }
+
+    /// The daemon's own log file name (relative to the coin's data dir), or null
+    /// for coins that declare none. Read (tail only) for a startup-failure reason
+    /// when the daemon died without saying why on stderr.
+    pub fn daemonLogFile(self: Coin) ?[]const u8 {
+        if (self.vtable.daemon_log_file) |f| return f(self.ptr);
+        return null;
     }
 
     /// Whether this coin drives the external-wallet setup flow (create-returns-seed

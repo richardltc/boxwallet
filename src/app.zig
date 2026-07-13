@@ -3274,20 +3274,38 @@ const Activity = struct {
         // command line (e.g. `java -jar … -c <conf>`) for foreground coins.
         const argv = try self.coin.daemonArgv(a, self.install_root, self.home_dir);
 
+        // Scratch file capturing the spawned process's stderr, read back for the
+        // failure reason when a start goes wrong. Per-daemon name so coins
+        // starting at once don't share the file.
+        const err_name = try std.fmt.allocPrint(a, ".{s}.startup", .{self.coin.daemonFile()});
+        const err_path = try std.fs.path.join(a, &.{ self.install_root, err_name });
+        var err_file = try std.Io.Dir.createFileAbsolute(io, err_path, .{ .read = true });
+        defer {
+            err_file.close(io);
+            // Unlink once read: a process that still holds its own fd keeps the
+            // now anonymous inode (which stays near-empty on a healthy run —
+            // fatal startup errors are stderr's traffic, routine logging goes to
+            // stdout), so its later writes are harmless rather than fatal. On
+            // Windows the delete fails while a live daemon holds the file open
+            // (caught); the next start truncates it instead.
+            std.Io.Dir.deleteFileAbsolute(io, err_path) catch {};
+        }
+
         // Foreground daemons run in their own process rather than forking and
         // exiting — Windows `*coind` (no `-daemon` support) and JVM apps like
         // Ergo's node. The POSIX "wait for the launcher to daemonize" model below
         // would block forever on them, so mirror Go's `cmd /C start /b`: spawn
         // detached and return without waiting. The process stays up on its own,
-        // and the status poll flips the UI to "running" once it answers. A
-        // pre-start failure can't be surfaced here (no launcher exit/stderr).
+        // and the status poll flips the UI to "running" once it answers. With no
+        // launcher exit code to consult, the fresh process is instead watched
+        // briefly for an early death (see below).
         if (self.coin.launchMode() == .foreground) {
-            const child = try std.process.spawn(io, .{
+            var child = try std.process.spawn(io, .{
                 .argv = argv,
                 .environ_map = self.environ_map,
                 .stdin = .ignore,
                 .stdout = .ignore,
-                .stderr = .ignore,
+                .stderr = .{ .file = err_file },
                 // Own process group: detach from BoxWallet's job group so the
                 // daemon outlives the app cleanly. Otherwise it stays in the
                 // terminal's foreground group — the shell won't reclaim the
@@ -3300,6 +3318,33 @@ const Activity = struct {
                 // Don't pop a console window for the background daemon (Windows).
                 .create_no_window = @import("builtin").os.tag == .windows,
             });
+
+            // Watch the fresh process briefly: a foreground daemon that dies
+            // during init (port clash, datadir lock, corrupt DB, a JVM that
+            // won't boot) does so within a few seconds, and this is the only way
+            // to tell "started" from "flashed and died". A healthy daemon just
+            // pays this window before "daemon running" is logged — slightly
+            // longer than `confirmAlive`'s, since a failing JVM takes a few
+            // seconds to go down.
+            var i: u8 = 0;
+            while (i < 12) : (i += 1) {
+                io.sleep(.fromMilliseconds(250), .awake) catch {};
+                const term = probeChild(io, &child) orelse continue;
+                // Died during init. Prefer its stderr; fall back to its own
+                // daemon log (the epee family reports fatal init errors there,
+                // not on stderr; a no-op for coins that declare no log), then to
+                // the bare exit status, so the log line always carries a reason.
+                var buf: [8 * 1024]u8 = undefined;
+                const n = err_file.readPositionalAll(io, &buf, 0) catch 0;
+                self.setDaemonErr(buf[0..n]);
+                if (self.daemon_err.len == 0) self.setDaemonErrFromDaemonLog(a, io);
+                if (self.daemon_err.len == 0) {
+                    var tbuf: [48]u8 = undefined;
+                    self.storeDaemonErr(termMessage(&tbuf, term));
+                }
+                return error.DaemonStartFailed;
+            }
+
             // Detached: deliberately not waited on, and in its own process
             // group, so it outlives this call free of the terminal. Retain the
             // handle so a coin with no shutdown RPC (zanod) can be killed on stop.
@@ -3311,17 +3356,6 @@ const Activity = struct {
         // itself into the background and the launcher exits, then wait on that
         // brief launcher.
         const forked = try std.mem.concat(a, []const u8, &.{ argv, &.{"-daemon"} });
-
-        // Per-daemon name so coins starting at once don't share the scratch file.
-        const err_name = try std.fmt.allocPrint(a, ".{s}.startup", .{self.coin.daemonFile()});
-        const err_path = try std.fs.path.join(a, &.{ self.install_root, err_name });
-        var err_file = try std.Io.Dir.createFileAbsolute(io, err_path, .{ .read = true });
-        defer {
-            err_file.close(io);
-            // Unlink once read: the daemon still holds its own fd to the now
-            // anonymous inode, so its later writes are harmless rather than fatal.
-            std.Io.Dir.deleteFileAbsolute(io, err_path) catch {};
-        }
 
         var child = try std.process.spawn(io, .{
             .argv = forked,
@@ -3339,7 +3373,7 @@ const Activity = struct {
                 // not, the reason is in its own debug.log (its daemonized stderr
                 // was redirected away from our scratch file), so surface that.
                 if (self.confirmAlive(io)) return;
-                self.setDaemonErrFromDebugLog(a, io);
+                self.setDaemonErrFromDaemonLog(a, io);
                 return error.DaemonStartFailed;
             },
             else => {},
@@ -3358,9 +3392,10 @@ const Activity = struct {
     /// present from the fork on). Returns false the moment it's seen gone.
     ///
     /// Liveness is by process name (like the Go `FindProcess`), so it needs no
-    /// RPC and works before the daemon opens its RPC port. On platforms without
-    /// `/proc` the check can't run, so it conservatively reports alive (we fall
-    /// back to trusting the launcher's exit code, the prior behaviour).
+    /// RPC and works before the daemon opens its RPC port. `/proc` on Linux,
+    /// `pgrep` elsewhere; where neither can run, `processAlive` conservatively
+    /// reports alive (we fall back to trusting the launcher's exit code, the
+    /// prior behaviour).
     fn confirmAlive(self: *Activity, io: std.Io) bool {
         const name = self.coin.daemonFile();
         var i: u8 = 0;
@@ -3371,16 +3406,19 @@ const Activity = struct {
         return true;
     }
 
-    /// Surface a failed start's reason from the coin's `<datadir>/debug.log` —
-    /// the daemonized child logs there, not to the stderr we captured. Reads only
-    /// the tail (bounded, the file grows unboundedly) and picks the most
-    /// error-like line. Best-effort: leaves `daemon_err` empty on any IO hiccup,
-    /// so the caller falls back to the generic launcher error name.
-    fn setDaemonErrFromDebugLog(self: *Activity, a: std.mem.Allocator, io: std.Io) void {
+    /// Surface a failed start's reason from the coin's own daemon log (e.g.
+    /// `<datadir>/debug.log`) — a daemonized child logs there rather than to the
+    /// stderr we captured, and the epee family (Nerva/Salvium/Zano) writes fatal
+    /// init errors to its log/console, not stderr. Reads only the tail (bounded,
+    /// the file grows unboundedly) and picks the most error-like line.
+    /// Best-effort: leaves `daemon_err` empty on any IO hiccup — or for a coin
+    /// that declares no daemon log — so the caller falls back further.
+    fn setDaemonErrFromDaemonLog(self: *Activity, a: std.mem.Allocator, io: std.Io) void {
+        const log_name = self.coin.daemonLogFile() orelse return;
         const data_dir = self.coin.dataDir(a, self.home_dir) catch return;
         var dir = std.Io.Dir.cwd().openDir(io, data_dir, .{}) catch return;
         defer dir.close(io);
-        var file = dir.openFile(io, "debug.log", .{}) catch return;
+        var file = dir.openFile(io, log_name, .{}) catch return;
         defer file.close(io);
         const stat = file.stat(io) catch return;
         // A modest tail keeps the read flat and biases toward the latest start
@@ -3416,12 +3454,21 @@ const Activity = struct {
 };
 
 /// Strip a bitcoin-style "YYYY-MM-DD HH:MM:SS " log prefix from `line` so the
-/// surfaced reason is just the message. Returns `line` unchanged if the prefix
-/// isn't there.
+/// surfaced reason is just the message. Fractional seconds (the epee family
+/// logs "…19:07:04.165") are consumed too, so the reason doesn't lead with an
+/// orphaned ".165". Returns `line` unchanged if the prefix isn't there.
 fn stripLogTimestamp(line: []const u8) []const u8 {
     if (line.len > 20 and line[4] == '-' and line[7] == '-' and
         line[10] == ' ' and line[13] == ':' and line[16] == ':')
-        return std.mem.trim(u8, line[19..], " \t");
+    {
+        var rest = line[19..];
+        if (rest.len > 0 and rest[0] == '.') {
+            var i: usize = 1;
+            while (i < rest.len and std.ascii.isDigit(rest[i])) i += 1;
+            rest = rest[i..];
+        }
+        return std.mem.trim(u8, rest, " \t");
+    }
     return line;
 }
 
@@ -3434,11 +3481,13 @@ fn stripLogTimestamp(line: []const u8) []const u8 {
 /// stripped. Returns a slice into `tail` (empty only if `tail` has no content).
 fn pickDebugLogError(tail: []const u8) []const u8 {
     // Deliberately omits bare "lock" ("block" contains it) — the datadir-lock
-    // message carries "cannot" anyway.
+    // message carries "cannot" anyway. "exception" and "failed to" carry the
+    // epee family's fatal shapes ("Exception in main!", "Failed to initialize
+    // p2p server") over its shutdown bookkeeping.
     const root_cause = [_][]const u8{
-        "incorrect", "corrupt", "no genesis", "wrong datadir",
-        "cannot",    "unable",  "denied",     "invalid",
-        "not found",
+        "incorrect", "corrupt",   "no genesis", "wrong datadir",
+        "cannot",    "unable",    "denied",     "invalid",
+        "not found", "exception", "failed to",
     };
     const generic = [_][]const u8{ "error", "abort", "fail", "exiting" };
 
@@ -3476,7 +3525,7 @@ const tx_cache_cap: usize = 20;
 /// during the throwaway presync pass; that percentage is the *only* place the
 /// pass's progress surfaces (RPC reports a frozen header height meanwhile). Reads
 /// only the tail (bounded — the log grows unboundedly), mirroring
-/// `setDaemonErrFromDebugLog`. Best-effort: any IO hiccup, or a non-Core coin
+/// `setDaemonErrFromDaemonLog`. Best-effort: any IO hiccup, or a non-Core coin
 /// whose log lacks the line, yields null.
 fn presyncPercentBp(io: std.Io, data_dir: []const u8) ?u32 {
     var dir = std.Io.Dir.cwd().openDir(io, data_dir, .{}) catch return null;
@@ -3535,7 +3584,7 @@ const LoadProgress = struct {
 /// Read the tail (up to `buf.len` bytes) of the coin's `<datadir>/debug.log` into
 /// `buf`, returning the slice actually read — empty on a missing file or any IO
 /// hiccup. Bounded by design: the log grows unboundedly, so only the tail is ever
-/// read (mirrors `presyncPercentBp`/`setDaemonErrFromDebugLog`).
+/// read (mirrors `presyncPercentBp`/`setDaemonErrFromDaemonLog`).
 fn readDebugLogTail(io: std.Io, data_dir: []const u8, buf: []u8) []const u8 {
     var dir = std.Io.Dir.cwd().openDir(io, data_dir, .{}) catch return &.{};
     defer dir.close(io);
@@ -3593,11 +3642,14 @@ fn containsIgnoreCase(haystack: []const u8, needle: []const u8) bool {
     return false;
 }
 
-/// True if a process named `name` (matched against `/proc/<pid>/comm`, which is
-/// truncated to 15 bytes) is currently running. Linux-only; returns true where
-/// `/proc` isn't available so callers don't treat "can't check" as "dead".
+/// True if a process named `name` is currently running. Linux matches against
+/// `/proc/<pid>/comm` (which is truncated to 15 bytes); POSIX systems without
+/// `/proc` (macOS) fall back to `pgrep -x`. Returns true where no probe can run
+/// (Windows) so callers don't treat "can't check" as "dead".
 fn processAlive(io: std.Io, name: []const u8) bool {
-    var proc = std.Io.Dir.cwd().openDir(io, "/proc", .{ .iterate = true }) catch return true;
+    if (@import("builtin").os.tag == .windows) return true;
+    var proc = std.Io.Dir.cwd().openDir(io, "/proc", .{ .iterate = true }) catch
+        return processAliveByPgrep(io, name);
     defer proc.close(io);
 
     // comm is truncated to TASK_COMM_LEN-1 (15) bytes.
@@ -3644,6 +3696,74 @@ fn signalProcessesByName(io: std.Io, name: []const u8, sig: std.posix.SIG) usize
         signaled += 1;
     }
     return signaled;
+}
+
+/// `pgrep -x` fallback for `processAlive` on POSIX systems without `/proc`
+/// (macOS): exit 0 = at least one live match, 1 = none. Anything else (pgrep
+/// missing or erroring) conservatively reads as alive, per the caller's
+/// contract.
+fn processAliveByPgrep(io: std.Io, name: []const u8) bool {
+    var child = std.process.spawn(io, .{
+        .argv = &.{ "pgrep", "-x", name },
+        .stdin = .ignore,
+        .stdout = .ignore,
+        .stderr = .ignore,
+    }) catch return true;
+    return switch (child.wait(io) catch return true) {
+        .exited => |code| code != 1,
+        else => true,
+    };
+}
+
+/// Non-blocking probe of a just-spawned child: null while it's still running,
+/// its exit Term once it has terminated. POSIX reaps via `wait4(NOHANG)`, so
+/// after a non-null return the child must not be `wait`ed on or `kill`ed again
+/// (std treats a double reap as a bug); Windows tests the process handle with a
+/// zero timeout and, once signaled, lets `child.wait` (immediate) collect the
+/// code and release the handles. A probe hiccup reads as "still running" so a
+/// live daemon is never declared dead by mistake.
+fn probeChild(io: std.Io, child: *std.process.Child) ?std.process.Child.Term {
+    if (@import("builtin").os.tag == .windows) {
+        const windows = std.os.windows;
+        const handle = child.id orelse return .{ .unknown = 0 };
+        var timeout: windows.LARGE_INTEGER = 0; // zero = test state, don't wait
+        switch (windows.ntdll.NtWaitForSingleObject(handle, .FALSE, &timeout)) {
+            windows.NTSTATUS.WAIT_0 => {},
+            else => return null, // TIMEOUT (still running), or can't tell
+        }
+        return child.wait(io) catch .{ .unknown = 0 };
+    }
+    const posix = std.posix;
+    const pid = child.id orelse return .{ .unknown = 0 };
+    var status: if (@import("builtin").link_libc) c_int else u32 = undefined;
+    const rc = posix.system.wait4(pid, &status, posix.W.NOHANG, null);
+    return switch (posix.errno(rc)) {
+        .SUCCESS => if (rc == 0) null else blk: {
+            child.id = null; // reaped right here; nothing left for wait/kill
+            break :blk std.Io.Threaded.statusToTerm(@bitCast(status));
+        },
+        .INTR => null, // retried on the next probe round
+        else => .{ .unknown = 0 }, // ECHILD — already gone
+    };
+}
+
+/// Render a child's exit Term as a short human reason for the failed-start log
+/// line ("exited with code 1", "killed by signal 11") — the last-resort
+/// `daemon_err` when a dead daemon left nothing in its stderr or debug.log.
+/// Copied out by `storeDaemonErr`, so a stack `buf` is fine.
+fn termMessage(buf: []u8, term: std.process.Child.Term) []const u8 {
+    return switch (term) {
+        .exited => |code| std.fmt.bufPrint(buf, "exited with code {d}", .{code}) catch "exited during startup",
+        .signal => |sig| if (std.posix.SIG == void)
+            "killed by a signal"
+        else
+            std.fmt.bufPrint(buf, "killed by signal {d}", .{@intFromEnum(sig)}) catch "killed by a signal",
+        .stopped => |sig| if (std.posix.SIG == void)
+            "stopped by a signal"
+        else
+            std.fmt.bufPrint(buf, "stopped by signal {d}", .{@intFromEnum(sig)}) catch "stopped by a signal",
+        .unknown => "exited during startup",
+    };
 }
 
 /// Bounded action log. One fixed-capacity line per entry, kept in a ring so the
@@ -9690,6 +9810,13 @@ test "debug.log helpers strip the timestamp and pick the root-cause line" {
     // A line without the prefix is returned untouched.
     try std.testing.expectEqualStrings("plain line", stripLogTimestamp("plain line"));
 
+    // An epee-style timestamp's fractional seconds are consumed too, so the
+    // reason doesn't lead with an orphaned ".165".
+    try std.testing.expectEqualStrings(
+        "ERROR\tException in main! Failed to initialize p2p server.",
+        stripLogTimestamp("2026-07-13 19:07:04.165\tERROR\tException in main! Failed to initialize p2p server."),
+    );
+
     try std.testing.expect(containsIgnoreCase("the ABORTED run", "aborted"));
     try std.testing.expect(!containsIgnoreCase("all good", "aborted"));
 
@@ -9721,6 +9848,22 @@ test "debug.log helpers strip the timestamp and pick the root-cause line" {
 
     // Nothing error-like → last non-empty line as a fallback.
     try std.testing.expectEqualStrings("all done", pickDebugLogError("starting\nall done\n"));
+}
+
+test "termMessage renders every Term variant as a short reason" {
+    var buf: [48]u8 = undefined;
+    try std.testing.expectEqualStrings("exited with code 1", termMessage(&buf, .{ .exited = 1 }));
+    try std.testing.expectEqualStrings("exited during startup", termMessage(&buf, .{ .unknown = 7 }));
+    if (std.posix.SIG != void) {
+        try std.testing.expectEqualStrings(
+            "killed by signal 9",
+            termMessage(&buf, .{ .signal = std.posix.SIG.KILL }),
+        );
+        try std.testing.expectEqualStrings(
+            "stopped by signal 19",
+            termMessage(&buf, .{ .stopped = std.posix.SIG.STOP }),
+        );
+    }
 }
 
 test "parsePresyncPercentBp extracts the latest presync percentage as basis points" {

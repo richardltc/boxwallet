@@ -169,8 +169,15 @@ ZIG_GLOBAL_CACHE_DIR=zig-pkg zig build release # cross-build all release binarie
   linux-arm64 is unsupported.
 - Starting the daemon (`app.zig` `launchDaemon`): POSIX uses `-daemon` (the
   launcher forks + exits; we wait on it and confirm liveness). Windows daemons
-  don't support `-daemon`, so they're spawned **detached** without waiting;
-  the status poll confirms the daemon came up.
+  don't support `-daemon`, and some coins (Ergo/Epic/Nerva/Salvium/Zano) run
+  foreground everywhere — those are spawned **detached** and watched briefly
+  for an early death, so an init failure is surfaced instead of reading as
+  started. Every failed start logs its reason in the action log, sourced from
+  the process's stderr (captured to a scratch file), else the coin's own daemon
+  log (the optional `daemon_log_file` vtable hook — `debug.log` for
+  bitcoin-derived coins, `nerva.log`/`salvium.log`/`zanod.log` for the epee
+  family, which reports fatal init errors to its log/stdout, not stderr), else
+  the bare exit status.
 - Left nav order: **Home is pinned to the top** of the left column; coins follow
   in **alphabetical order by label**. `app.zig` builds `entries` by
   comptime-sorting `coin_entries`, so registering a coin doesn't require placing

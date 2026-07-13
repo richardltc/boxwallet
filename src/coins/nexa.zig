@@ -179,6 +179,12 @@ pub const Nexa = struct {
         return if (builtin.os.tag == .windows) .foreground else .fork;
     }
 
+    /// The daemon's log file under the data dir, whose tail is read for a
+    /// startup-failure reason when the daemon dies without saying why on stderr.
+    pub fn daemonLogFile() []const u8 {
+        return "debug.log";
+    }
+
     /// The daemon binary path. The launcher appends `-daemon` itself for the fork
     /// path; on Windows it's spawned bare (detached).
     pub fn daemonArgv(allocator: std.mem.Allocator, install_root: []const u8, _: []const u8) ![]const []const u8 {
@@ -330,6 +336,7 @@ pub const Nexa = struct {
         .install = vtInstall,
         .prepare_conf = vtPrepareConf,
         .launch_mode = vtLaunchMode,
+        .daemon_log_file = vtDaemonLogFile,
         .daemon_argv = vtDaemonArgv,
         .request_stop = vtRequestStop,
         .wallet_security_state = vtWalletSecurityState,
@@ -431,6 +438,9 @@ pub const Nexa = struct {
     }
     fn vtLaunchMode(_: *anyopaque) Coin.LaunchMode {
         return launchMode();
+    }
+    fn vtDaemonLogFile(_: *anyopaque) []const u8 {
+        return daemonLogFile();
     }
     fn vtDaemonArgv(
         _: *anyopaque,
@@ -604,6 +614,7 @@ test "coin vtable dispatches to Nexa metadata" {
     try std.testing.expect(!c.isProofOfStake());
     try std.testing.expectEqualStrings("nexa.conf", c.confFile());
     try std.testing.expectEqualStrings("7227", c.rpcDefaultPort());
+    try std.testing.expectEqualStrings("debug.log", c.daemonLogFile().?);
     // Nexa's daemon auto-creates its wallet, so no explicit ensure step.
     try std.testing.expect(!c.needsWallet());
     // But its wallet is manageable over RPC — the `w` menu is available.
