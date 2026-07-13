@@ -525,6 +525,12 @@ pub const Nerva = struct {
         return .foreground;
     }
 
+    /// The daemon's log file under the data dir, whose tail is read for a
+    /// startup-failure reason when the daemon dies without saying why on stderr.
+    pub fn daemonLogFile() []const u8 {
+        return "nerva.log";
+    }
+
     /// `nervad --non-interactive` (so it runs as a server rather than opening its
     /// interactive console), plus `--quicksync <file>` when the quicksync block-hash
     /// file is present (fetched at install) so the first sync is fast. Passing
@@ -1295,6 +1301,7 @@ pub const Nerva = struct {
         .install = vtInstall,
         .prepare_conf = vtPrepareConf,
         .launch_mode = vtLaunchMode,
+        .daemon_log_file = vtDaemonLogFile,
         .daemon_argv = vtDaemonArgv,
         .request_stop = vtRequestStop,
         .wallet_transactions = vtWalletTransactions,
@@ -1451,6 +1458,9 @@ pub const Nerva = struct {
     }
     fn vtLaunchMode(_: *anyopaque) Coin.LaunchMode {
         return launchMode();
+    }
+    fn vtDaemonLogFile(_: *anyopaque) []const u8 {
+        return daemonLogFile();
     }
     fn vtDaemonArgv(
         _: *anyopaque,
@@ -1711,6 +1721,7 @@ test "coin vtable dispatches to Nerva metadata" {
     try std.testing.expectEqualStrings("nerva.conf", c.confFile());
     try std.testing.expectEqualStrings("17566", c.rpcDefaultPort());
     try std.testing.expectEqual(Coin.LaunchMode.foreground, c.launchMode());
+    try std.testing.expectEqualStrings("nerva.log", c.daemonLogFile().?);
 }
 
 test "walletPath reports the Monero wallet file plus its .keys companion" {

@@ -224,6 +224,12 @@ pub const DigiByte = struct {
         return if (builtin.os.tag == .windows) .foreground else .fork;
     }
 
+    /// The daemon's log file under the data dir, whose tail is read for a
+    /// startup-failure reason when the daemon dies without saying why on stderr.
+    pub fn daemonLogFile() []const u8 {
+        return "debug.log";
+    }
+
     /// The daemon binary path. The launcher appends `-daemon` itself for the fork
     /// path; on Windows it's spawned bare (detached).
     pub fn daemonArgv(allocator: std.mem.Allocator, install_root: []const u8, _: []const u8) ![]const []const u8 {
@@ -802,6 +808,7 @@ pub const DigiByte = struct {
         .install = vtInstall,
         .prepare_conf = vtPrepareConf,
         .launch_mode = vtLaunchMode,
+        .daemon_log_file = vtDaemonLogFile,
         .daemon_argv = vtDaemonArgv,
         .request_stop = vtRequestStop,
         .ensure_wallet = vtEnsureWallet,
@@ -901,6 +908,9 @@ pub const DigiByte = struct {
     }
     fn vtLaunchMode(_: *anyopaque) Coin.LaunchMode {
         return launchMode();
+    }
+    fn vtDaemonLogFile(_: *anyopaque) []const u8 {
+        return daemonLogFile();
     }
     fn vtDaemonArgv(
         _: *anyopaque,

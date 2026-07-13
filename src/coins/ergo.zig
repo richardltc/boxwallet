@@ -1236,6 +1236,7 @@ test "coin vtable dispatches to Ergo metadata" {
     try std.testing.expectEqualStrings("ergo.conf", c.confFile());
     try std.testing.expectEqualStrings("9053", c.rpcDefaultPort());
     try std.testing.expectEqual(Coin.LaunchMode.foreground, c.launchMode());
+    try std.testing.expectEqual(@as(?[]const u8, null), c.daemonLogFile());
     // Ergo drives the external-wallet setup flow, backed by the in-daemon REST
     // wallet (so no separate process), and reports balance through it — not via the
     // standalone `wallet_balance`/bitcoin `wallet_security_state` hooks.

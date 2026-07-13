@@ -430,6 +430,12 @@ pub const Zano = struct {
         return .foreground;
     }
 
+    /// The daemon's log file under the data dir, whose tail is read for a
+    /// startup-failure reason when the daemon dies without saying why on stderr.
+    pub fn daemonLogFile() []const u8 {
+        return "zanod.log";
+    }
+
     /// The full launch command: `zanod --no-console`. Caller owns the returned
     /// slice and every string in it.
     ///
@@ -986,6 +992,7 @@ pub const Zano = struct {
         .install = vtInstall,
         .prepare_conf = vtPrepareConf,
         .launch_mode = vtLaunchMode,
+        .daemon_log_file = vtDaemonLogFile,
         .daemon_argv = vtDaemonArgv,
         // No `.request_stop`: zanod exposes no shutdown RPC, so app.zig stops it
         // by terminating the process (see the requestStop note above).
@@ -1112,6 +1119,9 @@ pub const Zano = struct {
     }
     fn vtLaunchMode(_: *anyopaque) Coin.LaunchMode {
         return launchMode();
+    }
+    fn vtDaemonLogFile(_: *anyopaque) []const u8 {
+        return daemonLogFile();
     }
     fn vtDaemonArgv(
         _: *anyopaque,
@@ -1286,6 +1296,7 @@ test "coin vtable dispatches to Zano metadata" {
     try std.testing.expectEqualStrings("zanod", c.daemonFile());
     try std.testing.expectEqualStrings("11211", c.rpcDefaultPort());
     try std.testing.expectEqual(Coin.LaunchMode.foreground, c.launchMode());
+    try std.testing.expectEqualStrings("zanod.log", c.daemonLogFile().?);
     // zanod exposes no shutdown RPC, so the vtable leaves request_stop null and
     // app.zig stops it by killing the process.
     try std.testing.expect(!c.hasRpcStop());
