@@ -1809,10 +1809,16 @@ const Activity = struct {
     /// installed). Program-lifetime fixed buffer; versions are short.
     installed_version_buf: [32]u8 = undefined,
     installed_version_len: usize = 0,
-    /// True when the pinned `core_version` is newer than what's installed — or the
-    /// coin is installed but carries no version marker (a pre-existing binary we
-    /// can't vouch for). Recomputed whenever `installed` is refreshed; drives the
-    /// "update available" badge and the `u` action.
+    /// True when the pinned `core_version` is newer than the installed version.
+    /// Recomputed whenever `installed` is refreshed; drives the "update available"
+    /// badge and the `u` action.
+    ///
+    /// An installed coin with *no* version marker reads as **up to date**, not as
+    /// "update available" — see `refreshUpdateState`. That's only safe because the
+    /// marker always gets backfilled: from the live daemon for coins whose RPC
+    /// reports a version, and from `<daemon> --version` for those whose doesn't
+    /// (`stampVersionFromBinary`). A coin that has neither is invisible to update
+    /// detection no matter how stale it is.
     update_available: bool = false,
     /// Set while a one-click update is mid-sequence: `update_await_stop` means we've
     /// asked the daemon to stop and the reinstall fires once it's down;
@@ -2016,6 +2022,29 @@ const Activity = struct {
     /// The running daemon's self-reported version (empty when down/unknown).
     fn runningVersion(self: *const Activity) []const u8 {
         return self.version_buf[0..self.version_len];
+    }
+
+    /// The version of the daemon binary we believe is actually running: what the
+    /// daemon reports over RPC, else the marker recorded for the binary on disk.
+    ///
+    /// The fallback matters because the two Monero forks (Nerva, Salvium) report no
+    /// version over RPC at all, so `runningVersion` stays empty for them however long
+    /// the daemon is up — and they're precisely the coins whose marker is stamped by
+    /// probing the binary (`stampVersionFromBinary`). Since the daemon is launched
+    /// *from* that binary, the marker is a faithful stand-in. Empty only when neither
+    /// source knows.
+    fn effectiveVersion(self: *const Activity) []const u8 {
+        const rv = self.runningVersion();
+        return if (rv.len > 0) rv else self.installedVersion();
+    }
+
+    /// True when the daemon we're running isn't the version BoxWallet pins — drives
+    /// the warning on the "Running" line. False when no version is known at all
+    /// (nothing to assert), and false for a version that merely *spells* differently
+    /// (see `updater.differs`).
+    fn versionMismatch(self: *const Activity, pinned: []const u8) bool {
+        const v = self.effectiveVersion();
+        return v.len > 0 and updater.differs(v, pinned);
     }
 
     /// Recompute `update_available` / `installed_version` from the on-disk marker
@@ -7350,13 +7379,29 @@ pub const App = struct {
         // label is grey only when stopped and not awaiting (the red ✘ state).
         const daemon_label = statusLabel(a, brand, "Running", act.daemonState() != .stopped or awaiting);
         const daemon_mark: []const u8 = switch (act.daemonState()) {
-            // When up, show the tick plus the daemon's own reported version (once a
-            // poll has read it) — the live "what's actually running" figure, next to
-            // the bundled version in the header.
+            // When up, show the tick plus the version actually running — the daemon's
+            // own reported one, or the marker for the coins whose RPC reports none.
+            //
+            // When that disagrees with the version BoxWallet pins, say so loudly
+            // instead of dimming it: a daemon quietly running a release behind the pin
+            // is how a v0.2.2.0 nervad sat through Nerva's hard-fork release. The
+            // compare is `updater.differs`, not string equality, so a coin whose
+            // version merely *spells* differently (Nexa's "2.0.0" vs its pinned
+            // "2.0.0.0") doesn't raise a false alarm.
             .running => blk: {
                 const tick = statusMark(a, true);
-                const rv = act.runningVersion();
+                const rv = act.effectiveVersion();
                 if (rv.len == 0) break :blk tick;
+                const pinned = coin.coreVersion();
+                if (act.versionMismatch(pinned)) {
+                    const text = std.fmt.allocPrint(
+                        a,
+                        "v{s}  ⚠ not the bundled v{s} — press u to update",
+                        .{ rv, pinned },
+                    ) catch rv;
+                    const warn = (zz.Style{}).bold(true).fg(.yellow).render(a, text) catch text;
+                    break :blk std.fmt.allocPrint(a, "{s} {s}", .{ tick, warn }) catch tick;
+                }
                 const ver = (zz.Style{}).dim(true).render(a, std.fmt.allocPrint(a, "v{s}", .{rv}) catch rv) catch rv;
                 break :blk std.fmt.allocPrint(a, "{s} {s}", .{ tick, ver }) catch tick;
             },
@@ -9853,6 +9898,47 @@ test "refreshUpdateState flags an update when the marker trails the bundled vers
     try install_mod.writeVersionMarker(allocator, root, c.daemonFile(), "4.1.0");
     act.refreshUpdateState(allocator, c, root);
     try std.testing.expect(!act.update_available);
+}
+
+test "versionMismatch warns when the running daemon isn't the bundled version" {
+    const set = struct {
+        fn marker(x: *Activity, v: []const u8) void {
+            @memcpy(x.installed_version_buf[0..v.len], v);
+            x.installed_version_len = v.len;
+        }
+        fn reported(x: *Activity, v: []const u8) void {
+            @memcpy(x.version_buf[0..v.len], v);
+            x.version_len = v.len;
+        }
+    };
+
+    var act: Activity = .{};
+
+    // Nothing known → nothing to assert (no warning on a coin we've never polled).
+    try std.testing.expect(!act.versionMismatch("0.3.0.0"));
+
+    // The case this exists for: the daemon reports no version over RPC (Nerva), so
+    // the marker — stamped by probing the binary — stands in for it. v0.2.2.0 against
+    // a pinned v0.3.0.0 must warn, which is what silently didn't happen before.
+    set.marker(&act, "0.2.2.0");
+    try std.testing.expectEqualStrings("0.2.2.0", act.effectiveVersion());
+    try std.testing.expect(act.versionMismatch("0.3.0.0"));
+
+    // A daemon that *does* report its version over RPC takes precedence over the
+    // marker — it's the ground truth for what's actually running.
+    set.reported(&act, "0.3.0.0");
+    try std.testing.expectEqualStrings("0.3.0.0", act.effectiveVersion());
+    try std.testing.expect(!act.versionMismatch("0.3.0.0"));
+
+    // A version that merely spells differently is not a mismatch: Nexa's
+    // CLIENT_VERSION decodes to "2.0.0" while the coin pins "2.0.0.0". Warning here
+    // would put a permanent false alarm on every Nexa install.
+    set.reported(&act, "2.0.0");
+    try std.testing.expect(!act.versionMismatch("2.0.0.0"));
+
+    // Salvium's letter suffix likewise agrees with its pinned "1.1.3c".
+    set.reported(&act, "1.1.3c");
+    try std.testing.expect(!act.versionMismatch("1.1.3c"));
 }
 
 test "awaitingStatus animates only before the first poll of an installed coin" {

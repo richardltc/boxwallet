@@ -545,6 +545,31 @@ pub const DaemonInfo = struct {
     version: []const u8 = "",
 };
 
+/// Trim the build metadata from a daemon's reported version string. The epee
+/// daemons (Nerva, Salvium) report a `MONERO_VERSION_FULL`-style value where
+/// everything from the first `-` is build detail rather than the release:
+///
+///     "0.18.3.1-release"   → "0.18.3.1"
+///     "0.2.2.0-51ae77bda"  → "0.2.2.0"
+///     "1.1.3c-release"     → "1.1.3c"   (the letter is part of the release)
+///
+/// So the Running line and the version marker line up with the pinned
+/// `core_version` instead of carrying a commit hash. A plain "1.2.3" is untouched.
+/// Returns a slice of `raw`.
+pub fn trimBuildSuffix(raw: []const u8) []const u8 {
+    return raw[0 .. std.mem.indexOfScalar(u8, raw, '-') orelse raw.len];
+}
+
+test "trimBuildSuffix drops the build metadata the epee daemons append" {
+    try std.testing.expectEqualStrings("0.18.3.1", trimBuildSuffix("0.18.3.1-release"));
+    try std.testing.expectEqualStrings("0.2.2.0", trimBuildSuffix("0.2.2.0-51ae77bda"));
+    // Salvium's release letter is part of the version, not build metadata.
+    try std.testing.expectEqualStrings("1.1.3c", trimBuildSuffix("1.1.3c-release"));
+    // Nothing to trim.
+    try std.testing.expectEqualStrings("1.2.3", trimBuildSuffix("1.2.3"));
+    try std.testing.expectEqualStrings("", trimBuildSuffix(""));
+}
+
 /// Decode a bitcoin-style `CLIENT_VERSION` integer into a dotted version string.
 /// The encoding is `1000000*MAJOR + 10000*MINOR + 100*REVISION + BUILD` (e.g.
 /// 8260200 → "8.26.2"). The build component is dropped when zero so the common
