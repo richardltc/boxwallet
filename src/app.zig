@@ -119,6 +119,11 @@ const home_version_text = " v" ++ app_version;
 /// aligned across every row.
 const nav_label_w = @max(12, home_brand_text.len + home_version_text.len);
 
+/// Total width of a left-nav row: the 2-cell selection marker plus the label
+/// column. Also the click target — an x below this is in the nav, at or past it
+/// is the separator or the detail pane.
+const nav_col_w = 2 + nav_label_w;
+
 /// The colour a left-nav row is drawn in: its brand colour when `selected`, else
 /// a dim grey — so only the current coin shows its colour and the selection pops
 /// without a marker alone. Home is exempt: it keeps its brand colour always, as a
@@ -251,6 +256,42 @@ fn navWindow(sel: usize, total: usize, rows: usize) NavWindow {
         if (below) len -= 1;
     }
     return .{ .start = start, .len = len, .more_above = above and indicators, .more_below = below and indicators };
+}
+
+/// What a single left-nav row holds: an entry (index into `entries`), or one of
+/// the dim "the list continues this way" arrows.
+const NavRow = union(enum) { entry: usize, more_above, more_below };
+
+/// Lay the left-nav rows out top-to-bottom for a `nav_rows`-row viewport: Home
+/// pinned on the first row, then the visible coin window, bracketed by scroll
+/// indicators where the list runs past the window. Writes into `out` and returns
+/// how many rows were used.
+///
+/// The renderer and the mouse handler both go through here, so a click on screen
+/// row N lands on exactly the entry `renderTwoPane` drew on row N — the mapping
+/// can't drift out of sync with the layout.
+fn navRows(selected: usize, nav_rows: usize, out: *[entries.len + 2]NavRow) usize {
+    // One row is reserved for Home; the coin window gets the rest.
+    const total_coins = entries.len - 1;
+    const coin_rows = if (nav_rows == 0) total_coins else nav_rows - 1;
+    const w = navWindow(selected -| 1, total_coins, coin_rows);
+
+    var n: usize = 0;
+    out[n] = .{ .entry = 0 };
+    n += 1;
+    if (w.more_above) {
+        out[n] = .more_above;
+        n += 1;
+    }
+    for (w.start..w.start + w.len) |ci| {
+        out[n] = .{ .entry = ci + 1 };
+        n += 1;
+    }
+    if (w.more_below) {
+        out[n] = .more_below;
+        n += 1;
+    }
+    return n;
 }
 
 /// Where a coin's background install has got to. The UI reads this every frame
@@ -3969,9 +4010,17 @@ pub const App = struct {
     /// writable, so a restart wouldn't apply it — the Home pane says so instead
     /// of a "restart to apply" that wouldn't take.
     update_blocked: bool = false,
+    /// Whether mouse tracking is on (it is at startup — see `main.zig`). While on,
+    /// the terminal reports clicks to us instead of doing its own text selection,
+    /// so `m` turns it off to hand selection (and copy) back to the terminal.
+    mouse_on: bool = true,
 
     pub const Msg = union(enum) {
         key: zz.KeyEvent,
+        /// A click, drag, or wheel notch. ZigZag only routes these to us because
+        /// this field exists (see its `processMouseEvent`), and only while mouse
+        /// tracking is on.
+        mouse: zz.MouseEvent,
         /// Periodic tick (see the `.every` in `init`): advances the extract
         /// spinners and folds finished installs back into `installed`.
         tick: zz.msg.Tick,
@@ -4229,6 +4278,18 @@ pub const App = struct {
                         'j' => self.move(1),
                         'l' => self.log_visible = !self.log_visible,
                         'h' => self.toggleHideBalances(),
+                        // Mouse tracking claims the terminal's own click handling,
+                        // which is what normally drives select-to-copy. Toggling it
+                        // off hands that back, so an address in the detail pane can
+                        // be selected with the mouse the usual way.
+                        'm' => {
+                            self.mouse_on = !self.mouse_on;
+                            self.logf("{s}", .{if (self.mouse_on)
+                                "Mouse on — click the left bar to switch coin"
+                            else
+                                "Mouse off — terminal text selection restored (m: back on)"});
+                            return if (self.mouse_on) .enable_mouse else .disable_mouse;
+                        },
                         'c' => if (on_coin and self.active_tab == .receive)
                             self.copyReceiveAddress(ctx)
                         else if (on_coin and self.active_tab == .digidollar)
@@ -4267,9 +4328,70 @@ pub const App = struct {
                     else => {},
                 }
             },
+            .mouse => |m| self.onMouse(m, ctx),
             .tick => |t| self.onTick(t),
         }
         return .none;
+    }
+
+    /// Whether any modal is up. While one is, it owns the input — the dashboard
+    /// underneath is inert (the `.key` arm above enforces the same for keys).
+    fn modalOpen(self: *const App) bool {
+        return self.update_modal != null or self.qs_modal != null or self.prune_modal != null or
+            self.modal != null or self.send_modal != null or self.mining_modal != null or
+            self.sc_modal != null;
+    }
+
+    /// Handle a mouse event: click a left-nav row to select that coin, or wheel
+    /// over the nav to step the selection. Everything else — moves, drags,
+    /// releases, and anything outside the nav column — is ignored, so the mouse
+    /// can't reach an action that spends funds or starts a daemon; those stay on
+    /// the keyboard. A modal swallows the event entirely: its buttons aren't
+    /// hit-tested, and a stray click behind it must not move the dashboard.
+    fn onMouse(self: *App, m: zz.MouseEvent, ctx: *const zz.Context) void {
+        // `disable_mouse` only *asks* the terminal to stop reporting; a terminal or
+        // multiplexer that keeps sending anyway must not still move the selection —
+        // the user turned the mouse off precisely to select text with it. So the
+        // toggle is enforced here rather than trusted to the terminal.
+        if (!self.mouse_on) return;
+        if (self.modalOpen()) return;
+        if (m.event_type != .press) return;
+        if (m.x >= nav_col_w) return;
+
+        switch (m.button) {
+            // Wheel notches step the selection like j/k, so the list scrolls under
+            // the cursor. `move` clamps at both ends.
+            .wheel_up => self.move(-1),
+            .wheel_down => self.move(1),
+            .left => {
+                // Re-derive the rows exactly as this frame drew them, then map the
+                // clicked row to its entry. A click on a scroll-indicator row (or
+                // past the last row) selects nothing.
+                var rows: [entries.len + 2]NavRow = undefined;
+                const n = navRows(self.selected, self.navRowBudget(ctx.height), &rows);
+                if (m.y >= n) return;
+                switch (rows[m.y]) {
+                    .entry => |ei| {
+                        // Go through `move` rather than assigning `selected`, so a
+                        // click takes the same path as the arrow keys — refreshing
+                        // the newly selected coin and resetting its poll clock.
+                        const delta = @as(i32, @intCast(ei)) - @as(i32, @intCast(self.selected));
+                        if (delta != 0) self.move(delta);
+                    },
+                    .more_above, .more_below => {},
+                }
+            },
+            else => {},
+        }
+    }
+
+    /// How many terminal rows the two-pane block gets: everything the log pane
+    /// isn't using. 0 means "height unknown" (e.g. tests) and leaves it unbounded.
+    /// A known height always keeps at least one row, so a terminal shorter than
+    /// the log pane still stays bounded rather than falling into "unlimited".
+    fn navRowBudget(self: *const App, height: u16) usize {
+        if (height == 0) return 0;
+        return @max(1, @as(usize, height) -| (if (self.log_visible) @as(usize, log_pane_rows) else 0));
     }
 
     /// Handle a keypress while the wallet modal is open. Drives the modal's small
@@ -6986,13 +7108,8 @@ pub const App = struct {
         // The two-pane block gets whatever the log pane doesn't: windowing the
         // nav and clipping the detail pane to that budget keeps the whole frame
         // within the terminal, so the top row (Home) can never scroll off on a
-        // short terminal. Height 0 (unknown, e.g. tests) leaves both unbounded;
-        // a known height keeps at least one row so a terminal shorter than the
-        // log pane still stays bounded rather than falling into "unlimited".
-        const nav_rows: usize = if (ctx.height == 0)
-            0
-        else
-            @max(1, @as(usize, ctx.height) -| (if (self.log_visible) @as(usize, log_pane_rows) else 0));
+        // short terminal.
+        const nav_rows = self.navRowBudget(ctx.height);
         const top_full = renderTwoPane(a, self.selected, &updates, right, nav_rows) catch "render error";
         const top = clipToHeight(top_full, nav_rows);
         const screen = if (!self.log_visible)
@@ -7165,13 +7282,14 @@ pub const App = struct {
             return std.fmt.allocPrint(a,
                 \\{s} v{s}{s}{s}
                 \\
-                \\Select a coin on the left to manage it.
+                \\Select a coin on the left — click it, or:
                 \\
                 \\  up/down  navigate
                 \\  i        install selected coin
                 \\  s        start/stop selected coin's daemon
                 \\  w        wallet (encrypt / unlock / stake)
                 \\  l        toggle the log pane
+                \\  m        toggle the mouse (off = select text to copy)
                 \\  q        quit
             , .{ head, app_version, notice, coin_updates }) catch "alloc error";
         };
@@ -9002,33 +9120,14 @@ pub const App = struct {
     /// When everything fits the output is identical to the unwindowed render.
     fn renderTwoPane(a: std.mem.Allocator, selected: usize, updates: []const bool, right: []const u8, nav_rows: usize) ![]const u8 {
         // Marker (2 cells) + the label column. Empty rows pad to this full width.
-        const col_w = 2 + nav_label_w;
+        const col_w = nav_col_w;
         var out: std.Io.Writer.Allocating = .init(a);
         errdefer out.deinit();
 
         // Lay the nav rows out first: Home, an optional "more above" indicator,
         // the visible slice of coins, and an optional "more below" indicator.
-        // One row is reserved for Home; the coin window gets the rest.
-        const RowDesc = union(enum) { entry: usize, more_above, more_below };
-        const total_coins = entries.len - 1;
-        const coin_rows = if (nav_rows == 0) total_coins else nav_rows - 1;
-        const w = navWindow(selected -| 1, total_coins, coin_rows);
-        var desc: [entries.len + 2]RowDesc = undefined;
-        var desc_n: usize = 0;
-        desc[desc_n] = .{ .entry = 0 };
-        desc_n += 1;
-        if (w.more_above) {
-            desc[desc_n] = .more_above;
-            desc_n += 1;
-        }
-        for (w.start..w.start + w.len) |ci| {
-            desc[desc_n] = .{ .entry = ci + 1 };
-            desc_n += 1;
-        }
-        if (w.more_below) {
-            desc[desc_n] = .more_below;
-            desc_n += 1;
-        }
+        var desc: [entries.len + 2]NavRow = undefined;
+        const desc_n = navRows(selected, nav_rows, &desc);
 
         var rit = std.mem.splitScalar(u8, right, '\n');
         var i: usize = 0;
@@ -12148,6 +12247,44 @@ test "navWindow keeps the selection visible and flags the hidden sides" {
     w = navWindow(5, 10, 0);
     try std.testing.expectEqual(@as(usize, 0), w.len);
     try std.testing.expect(!w.more_above and !w.more_below);
+}
+
+test "navRows maps a clicked screen row to the entry drawn on it" {
+    var rows: [entries.len + 2]NavRow = undefined;
+
+    // Unbounded height (0): Home on row 0, then every coin in order — so row N
+    // is entry N, which is what a click on an uncrowded terminal must resolve to.
+    var n = navRows(0, 0, &rows);
+    try std.testing.expectEqual(entries.len, n);
+    for (0..entries.len) |i| try std.testing.expectEqual(NavRow{ .entry = i }, rows[i]);
+
+    // Home stays pinned on row 0 whatever is selected, and clicking it must land
+    // on Home rather than on whatever the coin window scrolled to that row.
+    n = navRows(entries.len - 1, 6, &rows);
+    try std.testing.expectEqual(NavRow{ .entry = 0 }, rows[0]);
+
+    // Scrolled window: the indicator rows are not entries, so a click on one
+    // selects nothing (rather than silently picking the coin behind the arrow).
+    // With the last coin selected in a 6-row nav, row 1 is the "more above" arrow.
+    try std.testing.expectEqual(NavRow.more_above, rows[1]);
+
+    // Every entry row still points at a real, in-range entry, and the selected
+    // coin is always on one of them — a click can never resolve out of bounds.
+    var saw_selected = false;
+    for (rows[0..n]) |r| switch (r) {
+        .entry => |ei| {
+            try std.testing.expect(ei < entries.len);
+            if (ei == entries.len - 1) saw_selected = true;
+        },
+        .more_above, .more_below => {},
+    };
+    try std.testing.expect(saw_selected);
+
+    // The rows never overrun the buffer, at any height.
+    for (0..entries.len + 4) |h| {
+        n = navRows(0, h, &rows);
+        try std.testing.expect(n <= rows.len);
+    }
 }
 
 test "left bar windows the coins to the nav height with Home pinned on top" {
