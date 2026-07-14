@@ -17,7 +17,12 @@ pub fn main(init: std.process.Init) !void {
     // launch, and we re-exec into the new binary — the user just restarts.
     applyStagedUpdate(init);
 
-    var program = try zz.Program(App).init(init.gpa, init.io, init.environ_map);
+    // Mouse tracking on: the left nav is clickable (and wheel-scrollable). It
+    // costs the terminal's own select-to-copy, so `m` turns it back off — see
+    // `App.mouse_on`. Defaults must otherwise match ZigZag's.
+    var program = try zz.Program(App).initWithOptions(init.gpa, init.io, init.environ_map, .{
+        .mouse = true,
+    });
     defer program.deinit();
     try program.run();
 }
