@@ -547,6 +547,68 @@ pub fn captureStdout(
     return out[0..n];
 }
 
+/// Pull the bare version out of a daemon's `--version` banner.
+///
+/// The daemons word their banners differently but agree on the shape — a dotted
+/// version introduced by a `v`, with build noise after it:
+///
+///     Zano v2.1.17.469[1b1cc03]
+///     NERVA 'Legacy Reborn' (v0.2.2.0-51ae77bda)
+///     Salvium 'One' (v1.1.3c-release, based on Monero 0.18.4.0-release)
+///
+/// So we take the first run that starts at a digit *immediately preceded by `v`* —
+/// which skips the leading words, and skips Salvium's trailing "based on Monero
+/// 0.18.4.0" decoy (no `v` in front of it). The run keeps alphanumerics as well as
+/// dots, so Salvium's `1.1.3c` survives intact rather than truncating to `1.1.3`
+/// and disagreeing with its pinned `core_version`; it stops at the first `[`, `-`
+/// or space, dropping the build hash. A trailing dot is trimmed so `v1.2.` can't
+/// yield a version ending in one.
+///
+/// Null when the banner carries no such run. Returns a slice into `out`. Pure, so
+/// it's testable without a binary to run.
+pub fn parseVersionBanner(out: []const u8) ?[]const u8 {
+    // First line only: later lines are none of our business.
+    const line = out[0 .. std.mem.indexOfScalar(u8, out, '\n') orelse out.len];
+    var i: usize = 0;
+    while (i < line.len) : (i += 1) {
+        if (!std.ascii.isDigit(line[i])) continue;
+        if (i == 0 or line[i - 1] != 'v') continue;
+        var j = i;
+        while (j < line.len and (std.ascii.isAlphanumeric(line[j]) or line[j] == '.')) j += 1;
+        while (j > i and line[j - 1] == '.') j -= 1;
+        return line[i..j];
+    }
+    return null;
+}
+
+/// Ask an installed binary its own version by running `<install_root>/<binary_file>
+/// --version` and parsing the banner.
+///
+/// This is the fallback for coins whose daemon reports no version over RPC (the
+/// Monero forks, Zano): without it a pre-marker install can never stamp a version
+/// marker, so update detection stays silent forever — the coin reads as up to date
+/// no matter how far behind it is. Probing the binary closes that gap, and unlike
+/// the RPC stamp it works with the daemon *stopped*.
+///
+/// `--version` prints one line and exits 0 without touching the data directory, so
+/// it's safe to run alongside a live daemon (no DB lock contention). Caller owns
+/// the returned string.
+pub fn probeBinaryVersion(
+    allocator: std.mem.Allocator,
+    install_root: []const u8,
+    binary_file: []const u8,
+    scratch_name: []const u8,
+) ![]const u8 {
+    const path = try std.fs.path.join(allocator, &.{ install_root, binary_file });
+    defer allocator.free(path);
+
+    // One short banner line; anything longer is a daemon we don't recognise.
+    var buf: [256]u8 = undefined;
+    const out = try captureStdout(allocator, &.{ path, "--version" }, install_root, scratch_name, &buf);
+    const ver = parseVersionBanner(out) orelse return error.UnrecognizedVersion;
+    return allocator.dupe(u8, ver);
+}
+
 /// Record the version BoxWallet just installed, so an update check can compare the
 /// on-disk version against the binary's pinned `core_version` without the daemon
 /// running. Overwrites any prior marker; creates the install root if absent.
@@ -772,6 +834,52 @@ test "version marker round-trips, and reads null when absent or empty" {
     // Empty/whitespace marker reads as null (treated as unknown).
     try writeVersionMarker(allocator, root, daemon, "  \n");
     try std.testing.expect(readVersionMarker(allocator, root, daemon) == null);
+}
+
+test "parseVersionBanner lifts the bare version out of the real --version banners" {
+    // Verbatim output of the installed binaries, so the parse is pinned to what the
+    // daemons actually print rather than what we imagine they print.
+    try std.testing.expectEqualStrings(
+        "2.1.17.469",
+        parseVersionBanner("Zano v2.1.17.469[1b1cc03]\n").?,
+    );
+    try std.testing.expectEqualStrings(
+        "0.2.2.0",
+        parseVersionBanner("NERVA 'Legacy Reborn' (v0.2.2.0-51ae77bda)\n").?,
+    );
+    // Salvium is the awkward one: a letter suffix that must survive (its pinned
+    // core_version is literally "1.1.3c"), and a trailing Monero version that must
+    // not be mistaken for its own — the decoy has no `v` in front of it.
+    try std.testing.expectEqualStrings(
+        "1.1.3c",
+        parseVersionBanner("Salvium 'One' (v1.1.3c-release, based on Monero 0.18.4.0-release)\n").?,
+    );
+}
+
+test "parseVersionBanner ignores build noise and unparseable banners" {
+    // Only the first line is considered.
+    try std.testing.expectEqualStrings("1.2.3", parseVersionBanner("Zano v1.2.3\nnoise v9.9.9\n").?);
+    // A trailing dot is trimmed rather than kept.
+    try std.testing.expectEqualStrings("1.2", parseVersionBanner("Zano v1.2.").?);
+    // No digit-after-`v` run at all → unknown, rather than a wrong guess.
+    try std.testing.expect(parseVersionBanner("") == null);
+    try std.testing.expect(parseVersionBanner("Zano\n") == null);
+    // A bare year isn't a version: it isn't introduced by a `v`.
+    try std.testing.expect(parseVersionBanner("Zano 2026 build\n") == null);
+}
+
+test "parseVersionBanner round-trips every pinned core_version it must match" {
+    // The marker this parse writes is compared against the coin's pinned
+    // core_version, so a banner carrying exactly the pinned version must parse back
+    // to it byte-for-byte — otherwise an up-to-date install reads as mismatched.
+    const cases = .{
+        .{ "Zano v2.2.1.502[76a791c]", "2.2.1.502" },
+        .{ "NERVA 'Legacy Remade' (v0.3.0.0-abc1234)", "0.3.0.0" },
+        .{ "Salvium 'One' (v1.1.3c-release, based on Monero 0.18.4.0-release)", "1.1.3c" },
+    };
+    inline for (cases) |c| {
+        try std.testing.expectEqualStrings(c[1], parseVersionBanner(c[0]).?);
+    }
 }
 
 test "installRoot builds ~/.boxwallet under the home dir (posix)" {

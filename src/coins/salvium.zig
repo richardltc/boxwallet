@@ -143,6 +143,10 @@ pub const Salvium = struct {
         mainnet: bool = false,
         testnet: bool = false,
         stagenet: bool = false,
+        /// The daemon's own version, e.g. "1.1.3c-release" (Salvium is Monero-0.18
+        /// derived, which carries this). Defaulted so a vintage that omits it parses
+        /// fine and just leaves the offline binary probe as the version source.
+        version: []const u8 = "",
     };
 
     /// Bound (ms) on a status/stop RPC round-trip. A healthy salviumd answers
@@ -245,6 +249,10 @@ pub const Salvium = struct {
             .blocks = r.height,
             .connections = r.outgoing_connections_count + r.incoming_connections_count,
             .staking_active = false,
+            // Freshly formatted on `allocator`, so it outlives `parsed`'s deinit. The
+            // build suffix is dropped so "1.1.3c-release" lines up with the pinned
+            // `core_version` ("1.1.3c") rather than reading as a mismatch.
+            .version = try allocator.dupe(u8, models.trimBuildSuffix(r.version)),
         };
     }
 
@@ -267,6 +275,23 @@ pub const Salvium = struct {
     /// `install_root`.
     pub fn isInstalled(allocator: std.mem.Allocator, install_root: []const u8) bool {
         return install_mod.fileExists(allocator, install_root, daemon_file);
+    }
+
+    /// Ask the installed `salviumd` its version by running `salviumd --version`, whose
+    /// banner reads:
+    ///
+    ///     Salvium 'One' (v1.1.3c-release, based on Monero 0.18.4.0-release)
+    ///
+    /// Salvium's `get_info` carries no `version` field, so — like Nerva and Zano — the
+    /// daemon can never stamp a version marker over RPC, and a pre-marker install
+    /// would read as up to date forever. The shared banner parser takes the run after
+    /// the `v`, so the letter suffix in `1.1.3c` survives (it's the pinned
+    /// `core_version` verbatim) and the trailing Monero version is not mistaken for
+    /// Salvium's own.
+    ///
+    /// Caller owns the returned version string.
+    fn probeInstalledVersion(allocator: std.mem.Allocator, install_root: []const u8) anyerror![]const u8 {
+        return install_mod.probeBinaryVersion(allocator, install_root, daemon_file, ".salviumd.probe");
     }
 
     /// Download + unpack the Salvium daemon files into `install_root`.
@@ -1242,6 +1267,7 @@ pub const Salvium = struct {
         .data_dir = vtDataDir,
         .wallet_path = vtWalletPath,
         .is_installed = vtIsInstalled,
+        .installed_version_probe = vtProbeInstalledVersion,
         .install = vtInstall,
         .prepare_conf = vtPrepareConf,
         .launch_mode = vtLaunchMode,
@@ -1359,6 +1385,13 @@ pub const Salvium = struct {
     }
     fn vtIsInstalled(_: *anyopaque, allocator: std.mem.Allocator, install_root: []const u8) bool {
         return isInstalled(allocator, install_root);
+    }
+    fn vtProbeInstalledVersion(
+        _: *anyopaque,
+        allocator: std.mem.Allocator,
+        install_root: []const u8,
+    ) anyerror![]const u8 {
+        return probeInstalledVersion(allocator, install_root);
     }
     fn vtInstall(
         _: *anyopaque,
@@ -1523,6 +1556,20 @@ test "daemonArgv runs the daemon non-interactive (no quicksync flag)" {
     try std.testing.expect(std.mem.endsWith(u8, argv[0], Salvium.daemon_file));
     try std.testing.expect(std.mem.startsWith(u8, argv[0], "/opt/bw"));
     try std.testing.expectEqualStrings("--non-interactive", argv[1]);
+}
+
+test "Salvium wires the offline version probe its RPC can't provide" {
+    var s: Salvium = .{};
+    const c = s.coin();
+    // Salvium's `get_info` reports no `version`, so the marker can only come from the
+    // binary — the probe hook must be wired or a pre-marker install stays silent.
+    try std.testing.expect(c.vtable.installed_version_probe != null);
+
+    // The probe must round-trip the pinned version exactly: Salvium's is the awkward
+    // `1.1.3c`, and a parser that dropped the letter would stamp `1.1.3` and read as
+    // a permanent mismatch against `core_version`.
+    const banner = "Salvium 'One' (v" ++ Salvium.core_version ++ "-release, based on Monero 0.18.4.0-release)";
+    try std.testing.expectEqualStrings(Salvium.core_version, install_mod.parseVersionBanner(banner).?);
 }
 
 test "coin vtable dispatches to Salvium metadata" {

@@ -449,6 +449,19 @@ pub fn isNewer(latest: []const u8, current: []const u8) bool {
     }
 }
 
+/// True when two dotted versions denote *different* releases — in either direction,
+/// unlike `isNewer`. Used to flag a daemon whose binary isn't the version BoxWallet
+/// pins, including the case where it's somehow *ahead* of the pin (a hand-installed
+/// binary), which an `isNewer`-only check would wave through.
+///
+/// Compares on `isNewer` in both directions rather than `mem.eql` so it inherits the
+/// component padding: "2.0.0" (Nexa's, decoded from its integer `CLIENT_VERSION`) and
+/// the pinned "2.0.0.0" are the same release and must not read as a mismatch. By the
+/// same token a suffix is ignored, so Salvium's "1.1.3c" and "1.1.3" agree.
+pub fn differs(a: []const u8, b: []const u8) bool {
+    return isNewer(a, b) or isNewer(b, a);
+}
+
 /// Parse the leading run of decimal digits of `s` as a number (0 if none).
 fn numericPrefix(s: []const u8) u64 {
     var v: u64 = 0;
@@ -493,6 +506,23 @@ fn parseChecksum(sums: []const u8, asset: []const u8) ?[32]u8 {
         return out;
     }
     return null;
+}
+
+test "differs flags a real version gap without tripping on formatting" {
+    // The case this was built for: a v0.2.2.0 nervad against a pinned v0.3.0.0.
+    try std.testing.expect(differs("0.2.2.0", "0.3.0.0"));
+    // Either direction — a binary somehow *ahead* of the pin is still worth flagging.
+    try std.testing.expect(differs("0.3.0.0", "0.2.2.0"));
+
+    // Same release, different spelling — must NOT read as a mismatch, or every Nexa
+    // install would show a false warning: its `CLIENT_VERSION` decodes to "2.0.0"
+    // while the coin pins "2.0.0.0".
+    try std.testing.expect(!differs("2.0.0", "2.0.0.0"));
+    // A letter suffix is likewise not a difference (Salvium's "1.1.3c").
+    try std.testing.expect(!differs("1.1.3c", "1.1.3"));
+    try std.testing.expect(!differs("1.1.3c", "1.1.3c"));
+    // Identical versions never differ.
+    try std.testing.expect(!differs("2.2.1.502", "2.2.1.502"));
 }
 
 test "isNewer compares dotted versions numerically" {

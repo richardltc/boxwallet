@@ -161,6 +161,10 @@ pub const Nerva = struct {
         mainnet: bool = false,
         testnet: bool = false,
         stagenet: bool = false,
+        /// The daemon's own version, e.g. "0.3.0.0-release". Present on 0.3.0.0; the
+        /// older 0.2.2.0 omits it, hence the default — an empty value just means the
+        /// offline binary probe (`probeInstalledVersion`) remains the version source.
+        version: []const u8 = "",
     };
 
     /// Bound (ms) on a status/stop RPC round-trip. A healthy nervad answers
@@ -268,6 +272,11 @@ pub const Nerva = struct {
             .blocks = r.height,
             .connections = r.outgoing_connections_count + r.incoming_connections_count,
             .staking_active = false,
+            // Freshly formatted on `allocator`, so it outlives `parsed`'s deinit. The
+            // build suffix is dropped so this lines up with the pinned `core_version`.
+            // Empty on a pre-0.3.0.0 daemon, which reports no version at all — the UI
+            // then falls back to the marker the binary probe stamped.
+            .version = try allocator.dupe(u8, models.trimBuildSuffix(r.version)),
         };
     }
 
@@ -383,6 +392,22 @@ pub const Nerva = struct {
     /// `install_root`.
     pub fn isInstalled(allocator: std.mem.Allocator, install_root: []const u8) bool {
         return install_mod.fileExists(allocator, install_root, daemon_file);
+    }
+
+    /// Ask the installed `nervad` its version by running `nervad --version`, whose
+    /// banner reads `NERVA 'Legacy Reborn' (v0.2.2.0-51ae77bda)`.
+    ///
+    /// Nerva's `get_info` carries no `version` field, so the daemon can never stamp a
+    /// version marker over RPC the way the bitcoin forks do. Without this probe a
+    /// pre-marker install reads as *up to date* forever — no update badge, and `u`
+    /// does nothing — which is exactly how a v0.2.2.0 daemon sat silently through the
+    /// v0.3.0.0 (Hard Fork 13) release. The probe also works with the daemon stopped,
+    /// and with its RPC wedged behind the blockchain lock mid-sync, which is when
+    /// this coin most needs answering.
+    ///
+    /// Caller owns the returned version string.
+    fn probeInstalledVersion(allocator: std.mem.Allocator, install_root: []const u8) anyerror![]const u8 {
+        return install_mod.probeBinaryVersion(allocator, install_root, daemon_file, ".nervad.probe");
     }
 
     /// Download + unpack the Nerva daemon files into `install_root`.
@@ -1298,6 +1323,7 @@ pub const Nerva = struct {
         .data_dir = vtDataDir,
         .wallet_path = vtWalletPath,
         .is_installed = vtIsInstalled,
+        .installed_version_probe = vtProbeInstalledVersion,
         .install = vtInstall,
         .prepare_conf = vtPrepareConf,
         .launch_mode = vtLaunchMode,
@@ -1437,6 +1463,13 @@ pub const Nerva = struct {
     }
     fn vtIsInstalled(_: *anyopaque, allocator: std.mem.Allocator, install_root: []const u8) bool {
         return isInstalled(allocator, install_root);
+    }
+    fn vtProbeInstalledVersion(
+        _: *anyopaque,
+        allocator: std.mem.Allocator,
+        install_root: []const u8,
+    ) anyerror![]const u8 {
+        return probeInstalledVersion(allocator, install_root);
     }
     fn vtInstall(
         _: *anyopaque,
@@ -1709,6 +1742,16 @@ test "quicksyncShouldOffer: only on a fresh, unsynced install without the file" 
     var n: Nerva = .{};
     try std.testing.expect(n.coin().syncAccelerator() != null);
     try std.testing.expectEqualStrings("QuickSync", n.coin().syncAccelerator().?.name);
+}
+
+test "Nerva wires the offline version probe its RPC can't provide" {
+    var n: Nerva = .{};
+    const c = n.coin();
+    // Nerva's `get_info` reports no `version`, so the version marker can only come
+    // from the binary itself. Without this hook a pre-marker install reads as up to
+    // date forever — which is how a v0.2.2.0 daemon sat silently through the
+    // v0.3.0.0 hard-fork release, showing no update badge.
+    try std.testing.expect(c.vtable.installed_version_probe != null);
 }
 
 test "coin vtable dispatches to Nerva metadata" {
