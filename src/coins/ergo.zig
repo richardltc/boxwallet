@@ -580,11 +580,11 @@ pub const Ergo = struct {
     // --- Receive address + send (REST wallet) -----------------------------
     //
     // Both ride the node's own REST wallet, authenticated with the fixed
-    // api_key and gated by the app on the wallet being open. There is **no**
-    // Transactions view for Ergo: the node's `/wallet/transactions` entries
-    // carry no timestamp, and their inputs are box references without values,
-    // so an honest per-transaction amount/date can't be derived from it — the
-    // tab keeps its placeholder rather than showing made-up figures.
+    // api_key and gated by the app on the wallet being open. Transaction history
+    // rides it too, but indirectly: the node's `/wallet/transactions` entries
+    // carry no timestamp and their inputs no values, so an honest amount/date
+    // can't come from that endpoint alone — each wallet tx is re-read through the
+    // extra index instead (see the transaction-history section below).
 
     /// `GET /wallet/deriveNextKey` result — the freshly-derived address.
     const ErgoDeriveNext = struct {
@@ -671,6 +671,168 @@ pub const Ergo = struct {
         const scaled = @round(amount * nano_per_erg);
         if (scaled >= @as(f64, @floatFromInt(std.math.maxInt(i64)))) return null;
         return @intFromFloat(scaled);
+    }
+
+    // --- Wallet transaction history (extra index) ------------------------
+    //
+    // Ergo's plain `/wallet/transactions` lists the wallet's txs but carries no
+    // timestamp and its inputs are bare box references with no value, so an
+    // honest sent-amount/date can't be derived from it alone. Instead each
+    // wallet tx is read back through the node's **extra index**
+    // (`GET /blockchain/transaction/byId`, enabled by `extraIndex` in the conf),
+    // which returns the block timestamp and every input/output valued and
+    // addressed — enough to compute the net effect on the wallet exactly.
+
+    /// One entry of `GET /wallet/transactions` — only the fields we order and
+    /// resolve by. The heavy inputs/outputs arrays are ignored: their inputs
+    /// carry no value anyway, which is why we re-read via the index below.
+    const ErgoWalletTxRef = struct {
+        id: []const u8 = "",
+        inclusionHeight: i64 = 0,
+    };
+
+    /// One box of an indexed transaction: the base58 `address` it pays to and
+    /// its nanoErg `value`. Present on both inputs and outputs once `extraIndex`
+    /// is on — the plain wallet endpoint gives neither for inputs.
+    const ErgoIndexedBox = struct {
+        address: []const u8 = "",
+        value: i64 = 0,
+    };
+
+    /// Subset of `IndexedErgoTransaction` (`GET /blockchain/transaction/byId`):
+    /// the block `timestamp` (unix ms), the confirmation count, and the valued
+    /// inputs/outputs (full boxes here, not the bare references the wallet
+    /// endpoint returns).
+    const ErgoIndexedTx = struct {
+        timestamp: i64 = 0,
+        numConfirmations: i64 = 0,
+        inputs: []const ErgoIndexedBox = &.{},
+        outputs: []const ErgoIndexedBox = &.{},
+    };
+
+    /// `GET /blockchain/indexedHeight` — how far the extra index has processed
+    /// (`indexedHeight`) against the node's block height (`fullHeight`). Built
+    /// during sync, so on a node that synced before `extraIndex` was turned on it
+    /// lags and must catch up.
+    const ErgoIndexedHeight = struct {
+        indexedHeight: i64 = 0,
+        fullHeight: i64 = 0,
+    };
+
+    /// How far the extra index may trail the chain tip and still count as ready —
+    /// a couple of blocks of slack for the gap between a block arriving and the
+    /// indexer processing it, without ever showing a partial history.
+    const index_ready_slack: i64 = 2;
+
+    /// Fetch `GET /blockchain/indexedHeight`. Errors `IndexUnavailable` when the
+    /// endpoint 404s, which is how a node with `extraIndex` off presents.
+    fn fetchIndexedHeight(allocator: std.mem.Allocator) !ErgoIndexedHeight {
+        const resp = try restCall(allocator, .GET, "/blockchain/indexedHeight", api_key, null);
+        defer allocator.free(resp.body);
+        if (resp.status != .ok) return error.IndexUnavailable;
+        var parsed = try std.json.parseFromSlice(ErgoIndexedHeight, allocator, resp.body, .{ .ignore_unknown_fields = true });
+        defer parsed.deinit();
+        return parsed.value;
+    }
+
+    /// Fetch one indexed transaction by id. Errors `TxNotIndexed` on a non-200
+    /// (e.g. an unconfirmed tx not yet in the index) so the caller can skip it.
+    /// Caller must `deinit` the returned `Parsed`.
+    fn fetchIndexedTx(allocator: std.mem.Allocator, id: []const u8) !std.json.Parsed(ErgoIndexedTx) {
+        const path = try std.fmt.allocPrint(allocator, "/blockchain/transaction/byId/{s}", .{id});
+        defer allocator.free(path);
+        const resp = try restCall(allocator, .GET, path, api_key, null);
+        defer allocator.free(resp.body);
+        if (resp.status != .ok) return error.TxNotIndexed;
+        return std.json.parseFromSlice(ErgoIndexedTx, allocator, resp.body, .{ .ignore_unknown_fields = true, .allocate = .alloc_always });
+    }
+
+    /// True if `addr` is one of the wallet's own addresses.
+    fn isWalletAddr(addr: []const u8, wallet_addrs: []const []const u8) bool {
+        for (wallet_addrs) |w| {
+            if (std.mem.eql(u8, addr, w)) return true;
+        }
+        return false;
+    }
+
+    /// Normalize one indexed transaction to a `WalletTx` against the wallet's
+    /// address set. The net effect on the wallet is `Σ(our outputs) − Σ(our
+    /// inputs)` in nanoErg: received when ≥ 0 (money in), sent otherwise (a
+    /// spend, whose change output back to us is already netted off). The
+    /// magnitude is shown in whole ERG; `timestamp` is unix ms → seconds.
+    fn walletTxFromIndexed(tx: ErgoIndexedTx, wallet_addrs: []const []const u8) models.WalletTx {
+        var net: i64 = 0; // nanoErg
+        for (tx.outputs) |o| {
+            if (isWalletAddr(o.address, wallet_addrs)) net += o.value;
+        }
+        for (tx.inputs) |in| {
+            if (isWalletAddr(in.address, wallet_addrs)) net -= in.value;
+        }
+        const net_erg = @as(f64, @floatFromInt(net)) / nano_per_erg;
+        return .{
+            .direction = if (net >= 0) .received else .sent,
+            .amount = @abs(net_erg),
+            .time = @divTrunc(tx.timestamp, 1000),
+            .confirmations = tx.numConfirmations,
+        };
+    }
+
+    /// The wallet's most recent transactions, newest-first, normalized to
+    /// `WalletTx`. Reads the wallet's tx-id list (`/wallet/transactions`) and its
+    /// address set (`/wallet/addresses`), then resolves each of the newest
+    /// `limit` ids through the extra index for an exact valued + dated row (see
+    /// the section note above). Gated on the index being present and caught up:
+    /// while it's still building — or if `extraIndex` is off entirely — this
+    /// returns an error so the tab shows nothing rather than a partial or guessed
+    /// history. `auth` is unused (fixed api_key).
+    pub fn walletTransactions(
+        allocator: std.mem.Allocator,
+        auth: models.CoinAuth,
+        limit: usize,
+    ) anyerror![]models.WalletTx {
+        _ = auth;
+
+        // Gate: the per-tx lookups below need a present, caught-up index.
+        const ih = try fetchIndexedHeight(allocator);
+        if (ih.fullHeight <= 0 or ih.indexedHeight < ih.fullHeight - index_ready_slack)
+            return error.IndexNotReady;
+
+        // The wallet's own addresses — to tell which boxes are ours.
+        const addrs_raw = try restRequest(allocator, .GET, "/wallet/addresses", api_key);
+        defer allocator.free(addrs_raw);
+        var addrs_parsed = try std.json.parseFromSlice([]const []const u8, allocator, addrs_raw, .{ .ignore_unknown_fields = true, .allocate = .alloc_always });
+        defer addrs_parsed.deinit();
+        const wallet_addrs = addrs_parsed.value;
+
+        // The wallet's tx ids + heights. A transient full read (the endpoint has
+        // no server-side count), parsed down to just the id/height we order by;
+        // only `limit` of them are resolved through the index below.
+        const list_raw = try restRequest(allocator, .GET, "/wallet/transactions", api_key);
+        defer allocator.free(list_raw);
+        var list_parsed = try std.json.parseFromSlice([]ErgoWalletTxRef, allocator, list_raw, .{ .ignore_unknown_fields = true, .allocate = .alloc_always });
+        defer list_parsed.deinit();
+        const refs = list_parsed.value;
+
+        // Newest first, by inclusion height.
+        std.mem.sort(ErgoWalletTxRef, refs, {}, struct {
+            fn lessThan(_: void, a: ErgoWalletTxRef, b: ErgoWalletTxRef) bool {
+                return a.inclusionHeight > b.inclusionHeight;
+            }
+        }.lessThan);
+
+        const out = try allocator.alloc(models.WalletTx, limit);
+        var n: usize = 0;
+        for (refs) |ref| {
+            if (n >= limit) break;
+            if (ref.id.len == 0) continue;
+            // An unconfirmed tx isn't in the index yet → skip; it appears once
+            // it's mined (the tab refreshes every poll).
+            var parsed = fetchIndexedTx(allocator, ref.id) catch continue;
+            defer parsed.deinit();
+            out[n] = walletTxFromIndexed(parsed.value, wallet_addrs);
+            n += 1;
+        }
+        return out[0..n];
     }
 
     /// Overwrite a secret-bearing buffer with zeros before freeing it, so a
@@ -793,6 +955,12 @@ pub const Ergo = struct {
         \\    directory = "{s}"
         \\    node {{
         \\        mining = false
+        \\        // Build the extra index (address/box/tx) during sync, so the
+        \\        // Transactions tab can read each wallet tx back valued + dated
+        \\        // via `/blockchain/*`. On a fresh install it costs no separate
+        \\        // phase — the index is built as blocks are applied; the price is
+        \\        // a larger DB and a little more indexing work per block.
+        \\        extraIndex = true
         \\    }}
         \\}}
         \\scorex {{
@@ -919,9 +1087,10 @@ pub const Ergo = struct {
         .launch_mode = vtLaunchMode,
         .daemon_argv = vtDaemonArgv,
         .request_stop = vtRequestStop,
-        // No `.wallet_transactions`: the node's `/wallet/transactions` carries no
-        // timestamps or input values, so an honest history can't be shown (see
-        // the receive/send section above) — the tab keeps its placeholder.
+        // Reads each wallet tx back through the node's extra index for an exact
+        // valued + dated row (see `walletTransactions`); gated on the index being
+        // caught up, else the tab stays empty rather than showing partial data.
+        .wallet_transactions = vtWalletTransactions,
         .wallet_receive_address = vtWalletReceiveAddress,
         .wallet_send = vtWalletSend,
         // Ergo's wallet is in-daemon (REST) but Monero-shaped (create → mnemonic,
@@ -949,6 +1118,14 @@ pub const Ergo = struct {
         amount: f64,
     ) anyerror!models.SendResult {
         return walletSend(allocator, auth, address, amount);
+    }
+    fn vtWalletTransactions(
+        _: *anyopaque,
+        allocator: std.mem.Allocator,
+        auth: models.CoinAuth,
+        limit: usize,
+    ) anyerror![]models.WalletTx {
+        return walletTransactions(allocator, auth, limit);
     }
 
     fn vtCoinName(_: *anyopaque) []const u8 {
@@ -1518,12 +1695,97 @@ test "payment/send replies parse: bare txid string on success, ErgoError on reje
     }
 }
 
-test "coin vtable exposes receive + send but no transaction history for Ergo" {
+test "coin vtable exposes receive + send + transaction history for Ergo" {
     var e: Ergo = .{};
     const c = e.coin();
     try std.testing.expect(c.supportsReceiveAddress());
     try std.testing.expect(c.supportsSend());
-    // No honest history is derivable from /wallet/transactions (no timestamps,
-    // no input values) — the Transactions tab keeps its placeholder.
-    try std.testing.expect(!c.supportsTransactions());
+    // History is derived by re-reading each wallet tx through the node's extra
+    // index (valued + dated), so the Transactions tab shows live data.
+    try std.testing.expect(c.supportsTransactions());
+}
+
+test "walletTxFromIndexed nets our outputs against our inputs" {
+    const ours_a = "9fRAWhdxEsTcdb8PhGNrZfwqa7h4o9Wpad";
+    const ours_b = "9hHDQb26AjnJUXxcqriqY1mnhpLuUeC";
+    const theirs = "9gKDVmfsA6J4b7kX8rVmn6Kv2SYb5sZ";
+    const wallet: []const []const u8 = &.{ ours_a, ours_b };
+
+    // A plain receive: one output pays 5 ERG to us, and the tx has no input of
+    // ours (someone else's boxes funded it). Net = +5 ERG, received.
+    {
+        const tx: Ergo.ErgoIndexedTx = .{
+            .timestamp = 1_700_000_000_000, // ms
+            .numConfirmations = 12,
+            .inputs = &.{.{ .address = theirs, .value = 5_000_000_000 }},
+            .outputs = &.{.{ .address = ours_a, .value = 5_000_000_000 }},
+        };
+        const wtx = Ergo.walletTxFromIndexed(tx, wallet);
+        try std.testing.expectEqual(models.TxDirection.received, wtx.direction);
+        try std.testing.expectApproxEqAbs(@as(f64, 5.0), wtx.amount, 1e-9);
+        try std.testing.expectEqual(@as(i64, 1_700_000_000), wtx.time); // ms → s
+        try std.testing.expectEqual(@as(i64, 12), wtx.confirmations);
+    }
+
+    // A send: we spend a 10 ERG input of ours, pay 3 ERG to a stranger, and take
+    // 6.9 ERG change back (0.1 ERG fee to a non-wallet miner box). Net to us =
+    // 6.9 − 10 = −3.1 ERG (the payment plus fee), sent.
+    {
+        const tx: Ergo.ErgoIndexedTx = .{
+            .timestamp = 1_700_000_500_000,
+            .numConfirmations = 1,
+            .inputs = &.{.{ .address = ours_a, .value = 10_000_000_000 }},
+            .outputs = &.{
+                .{ .address = theirs, .value = 3_000_000_000 },
+                .{ .address = ours_b, .value = 6_900_000_000 }, // change back to us
+                .{ .address = theirs, .value = 100_000_000 }, // miner fee box
+            },
+        };
+        const wtx = Ergo.walletTxFromIndexed(tx, wallet);
+        try std.testing.expectEqual(models.TxDirection.sent, wtx.direction);
+        try std.testing.expectApproxEqAbs(@as(f64, 3.1), wtx.amount, 1e-9);
+        try std.testing.expectEqual(@as(i64, 1), wtx.confirmations);
+    }
+}
+
+test "walletTxFromIndexed parses an indexed-tx JSON body and ignores unknown fields" {
+    const allocator = std.testing.allocator;
+    const ours = "9fRAWhdxEsTcdb8PhGNrZfwqa7h4o9Wpad";
+    const wallet: []const []const u8 = &.{ours};
+
+    // Trimmed shape of `/blockchain/transaction/byId` — extra fields (boxId,
+    // ergoTree, assets, spendingHeight, blockId, globalIndex, …) must be ignored.
+    const raw =
+        \\{"id":"abc","blockId":"deadbeef","inclusionHeight":100,"timestamp":1700000000000,
+        \\ "numConfirmations":7,"globalIndex":42,"size":300,
+        \\ "inputs":[{"boxId":"i0","value":8000000000,"address":"9gKDVmfsA6J4b7kX8rVmn6Kv2SYb5sZ","ergoTree":"00"}],
+        \\ "outputs":[{"boxId":"o0","value":7500000000,"address":"9fRAWhdxEsTcdb8PhGNrZfwqa7h4o9Wpad","ergoTree":"00","assets":[]},
+        \\            {"boxId":"o1","value":500000000,"address":"9gKDVmfsA6J4b7kX8rVmn6Kv2SYb5sZ","ergoTree":"00"}]}
+    ;
+    var parsed = try std.json.parseFromSlice(Ergo.ErgoIndexedTx, allocator, raw, .{ .ignore_unknown_fields = true, .allocate = .alloc_always });
+    defer parsed.deinit();
+
+    // Not ours in: 0; ours out: 7.5 ERG → received 7.5.
+    const wtx = Ergo.walletTxFromIndexed(parsed.value, wallet);
+    try std.testing.expectEqual(models.TxDirection.received, wtx.direction);
+    try std.testing.expectApproxEqAbs(@as(f64, 7.5), wtx.amount, 1e-9);
+    try std.testing.expectEqual(@as(i64, 1_700_000_000), wtx.time);
+    try std.testing.expectEqual(@as(i64, 7), wtx.confirmations);
+}
+
+test "the extra-index readiness gate holds until the index catches up" {
+    // While the index lags the tip by more than the slack, the tab must stay
+    // empty rather than read from a partial index; once within slack, it's ready.
+    const slack = Ergo.index_ready_slack;
+    const cases = .{
+        .{ Ergo.ErgoIndexedHeight{ .indexedHeight = 0, .fullHeight = 0 }, false }, // not synced
+        .{ Ergo.ErgoIndexedHeight{ .indexedHeight = 500, .fullHeight = 1000 }, false }, // catching up
+        .{ Ergo.ErgoIndexedHeight{ .indexedHeight = 1000 - slack, .fullHeight = 1000 }, true }, // within slack
+        .{ Ergo.ErgoIndexedHeight{ .indexedHeight = 1000, .fullHeight = 1000 }, true }, // caught up
+    };
+    inline for (cases) |c| {
+        const ih = c[0];
+        const ready = ih.fullHeight > 0 and ih.indexedHeight >= ih.fullHeight - slack;
+        try std.testing.expectEqual(c[1], ready);
+    }
 }
