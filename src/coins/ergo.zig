@@ -1073,6 +1073,7 @@ pub const Ergo = struct {
         .tip_address = vtTipAddress,
         .core_version = vtCoreVersion,
         .proof_of_stake = vtProofOfStake,
+        .has_header_presync = vtHasHeaderPresync,
         .balance_decimals = vtBalanceDecimals,
         .conf_file = vtConfFile,
         .daemon_file = vtDaemonFile,
@@ -1148,6 +1149,14 @@ pub const Ergo = struct {
     }
     fn vtProofOfStake(_: *anyopaque) bool {
         return proof_of_stake;
+    }
+    /// Ergo isn't bitcoin-derived and has no headers pre-synchronization pass —
+    /// it commits every header as it arrives. Its `headersHeight` therefore
+    /// tracks the tip and only creeps forward a block at a time once caught up,
+    /// which the frontend's stalled-header inference would otherwise misread as
+    /// a presync freeze for the whole (long) full-block download.
+    fn vtHasHeaderPresync(_: *anyopaque) bool {
+        return false;
     }
     /// ERG balances are denominated to 9 decimal places (1 ERG = 1e9 nanoERG, see
     /// `nano_per_erg`).
@@ -1788,4 +1797,13 @@ test "the extra-index readiness gate holds until the index catches up" {
         const ready = ih.fullHeight > 0 and ih.indexedHeight >= ih.fullHeight - slack;
         try std.testing.expectEqual(c[1], ready);
     }
+}
+
+test "Ergo declares no headers pre-synchronization pass" {
+    // Ergo isn't bitcoin-derived: it commits every header as it arrives, so the
+    // frontend's Core-only "stalled committed headers → presync" inference must
+    // never fire for it. Wiring this off is what keeps a node with headers at the
+    // tip and blocks still downloading from reading as "Pre-synching headers…".
+    var e: Ergo = .{};
+    try std.testing.expect(!e.coin().hasHeaderPresync());
 }

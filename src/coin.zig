@@ -760,6 +760,14 @@ pub const Coin = struct {
         /// fixed daemon log under the data dir (Ergo logs to the CWD; Epic's
         /// failures land on stderr).
         daemon_log_file: ?*const fn (ptr: *anyopaque) []const u8 = null,
+        /// Optional: whether this daemon has Bitcoin Core 24+'s headers
+        /// *pre-synchronization* pass, where headers are downloaded in a
+        /// throwaway anti-DoS pass without being committed. Null (the default)
+        /// means yes — every bitcoin-derived coin has it. Coins on a different
+        /// lineage (e.g. Ergo) wire this to `false` so the frontend's
+        /// "committed header height is stalled → presync" inference, which only
+        /// describes Core's behaviour, never fires for them.
+        has_header_presync: ?*const fn (ptr: *anyopaque) bool = null,
         /// Optional: the external-wallet capability (Monero-style coins whose
         /// wallet is a separate RPC process). Null for coins with an in-daemon
         /// wallet or none. `hasExternalWallet` keys off this being non-null.
@@ -1222,6 +1230,14 @@ pub const Coin = struct {
     pub fn daemonLogFile(self: Coin) ?[]const u8 {
         if (self.vtable.daemon_log_file) |f| return f(self.ptr);
         return null;
+    }
+
+    /// Whether the daemon has Core 24+'s headers pre-synchronization pass.
+    /// Defaults to true for coins that declare nothing — the bitcoin-derived
+    /// majority.
+    pub fn hasHeaderPresync(self: Coin) bool {
+        if (self.vtable.has_header_presync) |f| return f(self.ptr);
+        return true;
     }
 
     /// Whether this coin drives the external-wallet setup flow (create-returns-seed

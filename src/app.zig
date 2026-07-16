@@ -722,13 +722,11 @@ fn statusReadout(act: *const Activity) StatusReadout {
         else if (act.sync == .syncing) blk: {
             // Headers stream in first, then blocks validate against them. While
             // the Headers bar is still filling we're downloading headers;
-            // otherwise we're catching the blocks up. (A 0 header total means the
-            // tip isn't known yet — treat that as block catch-up rather than
-            // claiming a headers phase we can't measure.) Within the headers
-            // phase, a stalled committed-header height means the node is in Core
-            // 24+'s throwaway presync pass — say so, and let `renderStatus` append
-            // the live percentage, since the bar can't move.
-            const in_headers = act.headers_total > 0 and act.headers_cur < act.headers_total;
+            // otherwise we're catching the blocks up (see `inHeadersPhase`).
+            // Within the headers phase, a stalled committed-header height means
+            // the node is in Core 24+'s throwaway presync pass — say so, and let
+            // `renderStatus` append the live percentage, since the bar can't move.
+            const in_headers = act.inHeadersPhase();
             const is_presync = in_headers and act.presync;
             break :blk .{
                 .text = if (!in_headers)
@@ -1976,6 +1974,11 @@ const Activity = struct {
     /// would flip the "Pre-synching headers…"/"Syncing headers…" label back and
     /// forth every tick.
     presync: bool = false,
+    /// Mirror of `coin.hasHeaderPresync()`, staged beside `coin` on the poll path
+    /// so `applyPoll` needn't reach through the vtable (it also runs in tests that
+    /// build an `Activity` without a coin). False pins `presync` off for coins
+    /// with no such pass; true (the default) keeps Core's behaviour.
+    has_header_presync: bool = true,
     /// Previous poll's `headers_cur`, kept to tell a stalled (presync) committed-
     /// header height from one actively climbing.
     prev_headers_cur: u64 = 0,
@@ -2216,14 +2219,40 @@ const Activity = struct {
         // memory. The daemon drops its RPC port early in shutdown, so the first
         // failed probe means it's on its way down; cap the wait so a wedged
         // daemon doesn't pin the worker forever.
+        //
+        // A foreground daemon we launched is still our child, and an RPC shutdown
+        // exits it behind our back — nothing has waited on it. Reap it each round
+        // (and once more on the way out) so it doesn't sit as a zombie until the
+        // app quits; a fork coin's launcher was already waited on at spawn, and a
+        // prior-session daemon isn't ours, so both no-op here.
         var probe = std.heap.ArenaAllocator.init(std.heap.page_allocator);
         defer probe.deinit();
+        defer self.reapDaemonChild();
         var attempts: u8 = 0;
         while (attempts < 40) : (attempts += 1) {
             io.sleep(.fromMilliseconds(250), .awake) catch {};
             _ = probe.reset(.retain_capacity);
+            self.reapDaemonChild();
             _ = self.coin.daemonInfo(probe.allocator(), auth) catch return;
         }
+    }
+
+    /// Reap the retained foreground child if it has already exited, so it doesn't
+    /// linger as a zombie for the life of the app. A no-op when there's no handle,
+    /// when it was reaped already, or when it's still running (`WNOHANG`).
+    ///
+    /// A foreground daemon is deliberately not waited on at spawn — it has to
+    /// outlive `launchDaemon` — but we stay its parent, so *something* must
+    /// eventually reap it. The kill path does so inline; every other way it can
+    /// die (an RPC shutdown, or the process crashing on its own) needs this.
+    ///
+    /// `daemon_child` is serialized through `daemon_thread`, so call this either
+    /// from the daemon worker or from the UI thread with no worker in flight.
+    fn reapDaemonChild(self: *Activity) void {
+        if (@import("builtin").os.tag == .windows) return; // no zombies to reap
+        const child = self.daemon_child orelse return;
+        const pid = child.id orelse return; // already reaped
+        if (App.reapNoHang(pid)) self.daemon_child.?.id = null;
     }
 
     /// Stop a daemon that exposes no shutdown RPC (zanod) by terminating the
@@ -2814,10 +2843,17 @@ const Activity = struct {
         //      genuine multi-minute presync freeze still gets caught within a
         //      couple of poll ticks. Older forks that never log the presync line
         //      (e.g. DigiByte) rely entirely on this fallback.
-        const in_headers_phase = self.headers_total > 0 and self.headers_cur < self.headers_total;
-        const stalled = self.peers > 0 and in_headers_phase and self.headers_cur <= self.prev_headers_cur;
+        //
+        // Both signals are gated on the coin actually having the pass: on a
+        // non-Core lineage (Ergo) every header is committed as it arrives, so a
+        // header height that only creeps forward is just a node sitting at the
+        // tip with blocks still to fetch — not a presync freeze.
+        const in_headers_phase = self.inHeadersPhase();
+        const stalled = self.has_header_presync and self.peers > 0 and
+            in_headers_phase and self.headers_cur <= self.prev_headers_cur;
         self.presync_stall_polls = if (stalled) self.presync_stall_polls + 1 else 0;
-        const log_confirmed = in_headers_phase and self.poll_presync_found.load(.monotonic) != 0;
+        const log_confirmed = self.has_header_presync and in_headers_phase and
+            self.poll_presync_found.load(.monotonic) != 0;
         self.presync = log_confirmed or self.presync_stall_polls >= presync_stall_threshold;
         self.prev_headers_cur = self.headers_cur;
         self.presync_bp = self.poll_presync_bp.load(.monotonic);
@@ -2826,6 +2862,25 @@ const Activity = struct {
         self.tip_time = self.poll_tip_time.load(.monotonic);
         self.sync = if (self.poll_synced.load(.monotonic) != 0) .synced else .syncing;
         return true;
+    }
+
+    /// Whether the node is still downloading headers, as opposed to catching its
+    /// blocks up to headers it already has. A 0 total means the tip isn't known
+    /// yet — treat that as block catch-up rather than claiming a headers phase we
+    /// can't measure.
+    ///
+    /// The tip is allowed `header_tip_slack` of gap: a node whose headers sit at
+    /// the tip still reads a few blocks short of the best peer height, because the
+    /// chain advances and peers announce it before we commit it. Without the slack
+    /// that permanent last-few-blocks gap pins the headers phase on for the entire
+    /// full-block download — which is exactly the state a freshly-installed Ergo
+    /// node is in (headers at the tip, blocks a million behind). Real header sync
+    /// is thousands-to-millions of blocks short, far outside the slack, so this
+    /// only ever reclassifies the tail of the headers phase, where blocks are the
+    /// long pole anyway.
+    fn inHeadersPhase(self: *const Activity) bool {
+        if (self.headers_total == 0) return false;
+        return self.headers_cur + header_tip_slack < self.headers_total;
     }
 
     /// Whether a just-reaped poll should promote the daemon to `.running`. A reply —
@@ -3418,6 +3473,10 @@ const Activity = struct {
             // Detached: deliberately not waited on, and in its own process
             // group, so it outlives this call free of the terminal. Retain the
             // handle so a coin with no shutdown RPC (zanod) can be killed on stop.
+            // Reap whatever the last start left behind first — overwriting the
+            // handle drops our only reference to that pid, stranding its zombie
+            // for the life of the app if it died without being waited on.
+            self.reapDaemonChild();
             self.daemon_child = child;
             return;
         }
@@ -3583,6 +3642,13 @@ fn pickDebugLogError(tail: []const u8) []const u8 {
 /// confirm it directly. One stalled poll is noise (peer latency); this many in
 /// a row is a real freeze.
 const presync_stall_threshold: u32 = 2;
+
+/// How far short of the network tip the local header height may sit while still
+/// counting as "headers done" (see `Activity.inHeadersPhase`). Sized to absorb
+/// the routine lag between a peer announcing a block and us committing its
+/// header — tens of blocks on a fast chain — without swallowing a real header
+/// download, which is orders of magnitude further behind.
+const header_tip_slack: u64 = 100;
 
 /// How many of a coin's most recent transactions the Transactions tab caches
 /// and fetches per poll. Bounds both the RPC page size and the fixed-capacity
@@ -4748,6 +4814,12 @@ pub const App = struct {
         const poll_due = t.timestamp - self.last_poll_ns >= 2 * std.time.ns_per_s;
         for (&self.activities, 0..) |*act, i| {
             if (entries[i] == .home) continue;
+            // A foreground daemon that dies on its own — a JVM crash, an OOM
+            // kill, an operator `kill` — is never waited on by the start or stop
+            // paths, so reap it here. Skipped while a daemon worker is in flight,
+            // since that worker owns `daemon_child` (the join before
+            // `daemon_thread = null` publishes its writes to us).
+            if (act.daemon_thread == null) act.reapDaemonChild();
             const p = act.phaseOf();
             if (p == .extracting) {
                 _ = act.spinner.update(t.timestamp);
@@ -4853,10 +4925,16 @@ pub const App = struct {
                         // Forget the running version — the daemon's down.
                         act.version_len = 0;
                         act.poll_version_len = 0;
-                        // The retained foreground handle (if any) was killed and
-                        // reaped by the stop worker — drop it so a later start
-                        // doesn't reuse a dead pid.
-                        act.daemon_child = null;
+                        // Keep the retained foreground handle rather than dropping
+                        // it. The kill path reaps inline, but an RPC shutdown only
+                        // waits for the *port* to close — which the daemon does
+                        // early on its way down — so the process is often still
+                        // exiting right now. Dropping the handle here would strand
+                        // its zombie with nothing left holding the pid; instead
+                        // let the tick reap collect it once it's really gone. It
+                        // can't be mistaken for a live daemon: the reap nulls the
+                        // pid, and the next start reaps and overwrites it anyway.
+                        act.reapDaemonChild();
                         self.logf("{s}: daemon stopped", .{act.coin.coinName()});
                     } else self.logf("{s}: daemon failed to stop ({s})", .{ act.coin.coinName(), act.daemon_err }),
                 }
@@ -5256,6 +5334,7 @@ pub const App = struct {
             {
                 if (self.coinAt(i)) |coin| {
                     act.coin = coin;
+                    act.has_header_presync = coin.hasHeaderPresync();
                     act.home_dir = self.home_dir;
                     // The poll worker reads the install root (the version marker and
                     // the `--version` probe both live under it). Every other worker
@@ -11412,6 +11491,67 @@ test "a stalled committed-header height in the headers phase reads as presync" {
     try std.testing.expectEqualStrings("Syncing blocks…", statusReadout(&act).text);
 }
 
+test "a coin with no presync pass never reads as presync, however long its headers sit" {
+    // Regression test: a node whose headers are already at the tip while its
+    // blocks are far behind (a fresh Ergo install — headers commit as they
+    // arrive, blocks then take hours) has a committed-header height that barely
+    // moves for the whole block download. The Core-only stall inference read
+    // that as a presync freeze and pinned "Pre-synching headers…" on for the
+    // duration. Coins that wire `has_header_presync = false` opt out entirely.
+    const running = @intFromEnum(DaemonState.running);
+
+    var act: Activity = .{};
+    act.installed = true;
+    act.has_header_presync = false; // as Ergo's vtable reports
+    act.daemon = .init(running);
+    act.poll_ok = true;
+    act.poll_peers.store(30, .monotonic);
+    act.poll_synced.store(0, .monotonic);
+    // Live heights from a syncing mainnet node: headers at the tip (the 50-block
+    // gap is just peers announcing ahead of us), full blocks a million behind.
+    act.poll_network.store(1_830_324, .monotonic);
+    act.poll_headers.store(1_830_274, .monotonic);
+    act.poll_blocks.store(24_019, .monotonic);
+
+    // However many polls the header height sits still for, it stays block sync.
+    for (0..5) |_| {
+        try std.testing.expect(act.applyPoll());
+        try std.testing.expect(!act.presync);
+        try std.testing.expectEqualStrings("Syncing blocks…", statusReadout(&act).text);
+    }
+
+    // The log-confirmed signal is gated too: a coin with no presync pass can't
+    // be in one, whatever a scraped log line claims.
+    act.poll_presync_found.store(1, .monotonic);
+    try std.testing.expect(act.applyPoll());
+    try std.testing.expect(!act.presync);
+}
+
+test "headers within the tip slack count as complete, not a headers phase" {
+    // The local header height sits a few blocks short of the best peer height
+    // even when caught up — the chain moves and peers announce before we commit.
+    // That permanent gap must not read as "still downloading headers".
+    var act: Activity = .{};
+    act.headers_total = 1_830_324;
+
+    act.headers_cur = act.headers_total - header_tip_slack + 1; // inside the slack
+    try std.testing.expect(!act.inHeadersPhase());
+
+    act.headers_cur = act.headers_total - header_tip_slack; // exactly at the edge
+    try std.testing.expect(!act.inHeadersPhase());
+
+    act.headers_cur = act.headers_total - header_tip_slack - 1; // just outside
+    try std.testing.expect(act.inHeadersPhase());
+
+    // A real header download is orders of magnitude further behind — unaffected.
+    act.headers_cur = 3_000;
+    try std.testing.expect(act.inHeadersPhase());
+
+    // An unknown tip isn't a headers phase we can measure.
+    act.headers_total = 0;
+    try std.testing.expect(!act.inHeadersPhase());
+}
+
 test "a single momentary header stall during a real download doesn't flip to presync" {
     // Regression test: the old one-poll heuristic flagged presync (and flipped
     // the Status line/log back and forth) on any single tick where the header
@@ -12653,4 +12793,94 @@ test "hide_balances masks the header figure and drops Available" {
     try std.testing.expect(std.mem.indexOf(u8, pane, "1,000") == null);
     // Available is suppressed while hidden so pending funds aren't implied.
     try std.testing.expect(std.mem.indexOf(u8, pane, "Available") == null);
+}
+
+/// The process state letter from `/proc/<pid>/stat` ('Z' for a zombie), or null
+/// if the pid is gone. Parsed from the field after the `comm` column, which is
+/// parenthesised and may itself contain spaces — so scan from the *last* ')'.
+fn procState(io: std.Io, pid: std.posix.pid_t) ?u8 {
+    var path_buf: [64]u8 = undefined;
+    const path = std.fmt.bufPrint(&path_buf, "/proc/{d}/stat", .{pid}) catch return null;
+    var buf: [512]u8 = undefined;
+    var f = std.Io.Dir.openFileAbsolute(io, path, .{}) catch return null;
+    defer f.close(io);
+    const n = f.readPositionalAll(io, &buf, 0) catch return null;
+    const close = std.mem.lastIndexOfScalar(u8, buf[0..n], ')') orelse return null;
+    // "…) S …" — skip the ')' and the single space before the state letter.
+    if (close + 2 >= n) return null;
+    return buf[close + 2];
+}
+
+test "a foreground daemon that exits on its own is reaped, not left a zombie" {
+    // Regression test for real zombies observed in the wild: three defunct Ergo
+    // JVMs parented to a long-running BoxWallet. A foreground daemon is spawned
+    // detached and deliberately not waited on (it must outlive `launchDaemon`),
+    // but we stay its parent — so when it exits by any route other than the kill
+    // path (an RPC shutdown, or a crash), someone still has to wait on it. Before
+    // the fix nobody did, and it sat defunct for the life of the app.
+    if (@import("builtin").os.tag != .linux) return error.SkipZigTest; // needs /proc
+
+    var threaded: std.Io.Threaded = .init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    // Stands in for a foreground daemon that exits behind our back.
+    const child = try std.process.spawn(io, .{
+        .argv = &.{ "/bin/sh", "-c", "exit 0" },
+        .stdin = .ignore,
+        .stdout = .ignore,
+        .stderr = .ignore,
+    });
+    const pid = child.id.?;
+
+    var act: Activity = .{};
+    act.daemon_child = child;
+
+    // Let it exit. Unreaped, it must go defunct — that's the bug this guards.
+    var waited: u8 = 0;
+    while (waited < 100) : (waited += 1) {
+        if (procState(io, pid) == 'Z') break;
+        io.sleep(.fromMilliseconds(10), .awake) catch {};
+    }
+    try std.testing.expectEqual(@as(?u8, 'Z'), procState(io, pid));
+
+    // The tick reap collects it: the pid leaves the table and the handle is
+    // marked reaped so nothing waits on it twice.
+    act.reapDaemonChild();
+    try std.testing.expect(procState(io, pid) != 'Z');
+    try std.testing.expectEqual(@as(?std.posix.pid_t, null), act.daemon_child.?.id);
+
+    // Idempotent — the tick calls this on every frame.
+    act.reapDaemonChild();
+    try std.testing.expectEqual(@as(?std.posix.pid_t, null), act.daemon_child.?.id);
+}
+
+test "reaping is a no-op for a live child and when no daemon was launched here" {
+    if (@import("builtin").os.tag != .linux) return error.SkipZigTest; // needs /proc
+
+    // No handle (a daemon left by a prior session, or none started) — must not
+    // touch anything.
+    var none: Activity = .{};
+    none.reapDaemonChild();
+    try std.testing.expectEqual(@as(?std.process.Child, null), none.daemon_child);
+
+    // A *running* daemon must survive the tick reap — WNOHANG means "collect it
+    // if it's dead", never "wait for it".
+    var threaded: std.Io.Threaded = .init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    var child = try std.process.spawn(io, .{
+        .argv = &.{ "/bin/sh", "-c", "sleep 30" },
+        .stdin = .ignore,
+        .stdout = .ignore,
+        .stderr = .ignore,
+    });
+    const pid = child.id.?;
+    defer child.kill(io); // reaps as it kills
+
+    var live: Activity = .{};
+    live.daemon_child = child;
+    live.reapDaemonChild();
+    try std.testing.expectEqual(@as(?std.posix.pid_t, pid), live.daemon_child.?.id);
+    try std.testing.expect(procState(io, pid) != 'Z');
 }
