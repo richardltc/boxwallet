@@ -51,6 +51,12 @@ pub const Zano = struct {
     // Note the capital Z — Zano's POSIX data dir is `~/.Zano`, not `~/.zano`.
     pub const home_dir = ".Zano";
     pub const home_dir_win = "ZANO";
+    /// macOS data dir name. `null` means macOS uses the **POSIX** path
+    /// (`~/.Zano`) rather than a `Library/Application Support`
+    /// dir — Monero and its forks are explicit that it's "Unix & Mac:
+    /// ~/.CRYPTONOTE_NAME", unlike the bitcoin-derived coins. Not an oversight:
+    /// pointing this at a Library dir would orphan an existing wallet on macOS.
+    pub const home_dir_mac: ?[]const u8 = null;
     pub const rpc_default_username = "zanorpc";
     pub const rpc_default_port = "11211";
     pub const core_version = "2.2.1.502";
@@ -268,7 +274,7 @@ pub const Zano = struct {
 
     /// The daemon's default data directory (`~/.Zano`), where `zano.conf` lives.
     pub fn dataDir(allocator: std.mem.Allocator, home: []const u8) ![]const u8 {
-        return conf.dataDir(allocator, home, home_dir, home_dir_win);
+        return conf.dataDir(allocator, home, home_dir, home_dir_win, home_dir_mac);
     }
 
     /// The daemon binary's path *relative to the install root*. Linux promotes

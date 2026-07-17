@@ -26,6 +26,8 @@ pub const Divi = struct {
     pub const conf_file = "divi.conf";
     pub const home_dir = ".divi";
     pub const home_dir_win = "DIVI";
+    /// macOS data dir name. Divi Core: `~/Library/Application Support/DIVI`.
+    pub const home_dir_mac: ?[]const u8 = "DIVI";
     pub const rpc_default_username = "divirpc";
     pub const rpc_default_port = "51473";
     pub const core_version = "3.0.0";
@@ -133,7 +135,7 @@ pub const Divi = struct {
 
     /// The daemon's default data directory (`~/.divi`), where `divi.conf` lives.
     pub fn dataDir(allocator: std.mem.Allocator, home: []const u8) ![]const u8 {
-        return conf.dataDir(allocator, home, home_dir, home_dir_win);
+        return conf.dataDir(allocator, home, home_dir, home_dir_win, home_dir_mac);
     }
 
     /// The managed wallet's on-disk location (`<datadir>/wallet.dat`) — the

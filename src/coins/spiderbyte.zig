@@ -52,6 +52,13 @@ pub const SpiderByte = struct {
     pub const conf_file = "SpiderByte.conf";
     pub const home_dir = ".SpiderByte";
     pub const home_dir_win = "SpiderByte";
+    /// macOS data dir name. **Unverified and currently unreachable**: SpiderByte
+    /// publishes no bundle for any platform (`download` is null), so it can never
+    /// be installed and this path is never resolved. The name follows its
+    /// LitecoinPlus/bitcoin lineage convention rather than a read of the source,
+    /// which isn't published — confirm it against the daemon before shipping any
+    /// macOS build.
+    pub const home_dir_mac: ?[]const u8 = "SpiderByte";
     pub const rpc_default_username = "spiderbyterpc";
     /// JSON-RPC default port (P2P is 44351); BoxWallet pins it in the conf.
     pub const rpc_default_port = "44350";
@@ -203,7 +210,7 @@ pub const SpiderByte = struct {
     /// The daemon's default data directory (`~/.SpiderByte`), where
     /// `SpiderByte.conf` and the chain/wallet live.
     pub fn dataDir(allocator: std.mem.Allocator, home: []const u8) ![]const u8 {
-        return conf.dataDir(allocator, home, home_dir, home_dir_win);
+        return conf.dataDir(allocator, home, home_dir, home_dir_win, home_dir_mac);
     }
 
     /// The managed wallet's on-disk location — the single `wallet.dat` the daemon
