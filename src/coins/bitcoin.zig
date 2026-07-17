@@ -367,11 +367,34 @@ pub const Bitcoin = struct {
         .current = pruneCurrent,
     };
 
+    /// The directory `bitcoind` stores block files in. Its presence means a chain
+    /// already lives in the data dir — see `pruneShouldOffer`.
+    const chain_dir = "blocks";
+
     /// Offer the prune prompt only when the conf carries no `prune` setting yet —
-    /// so it's asked exactly once, and a conf the user already pruned is respected.
+    /// so it's asked exactly once, and a conf the user already pruned is respected
+    /// — **and** only when the data dir holds no chain yet.
+    ///
+    /// That second condition is what stops BoxWallet destroying someone else's
+    /// node. BoxWallet uses `~/.bitcoin`, which may well be an existing Bitcoin Core
+    /// node's, with a fully synced chain in it. An unpruned node carries no `prune`
+    /// key *by definition* — you only add one to opt in — so the conf check alone
+    /// reads a full node as "never asked" and offers to prune it. Accepting would
+    /// write `prune=` to their conf and have bitcoind discard block data
+    /// irreversibly: there's no un-prune without a full re-sync, and a pruned node
+    /// can no longer rescan an old wallet. A `blocks/` dir means someone was here
+    /// first, so the prompt is withheld and their node is left exactly as it was.
+    ///
+    /// This never suppresses the legitimate prompt: it's evaluated *before the
+    /// daemon's first start* (see `app.zig`'s start preflight), so a data dir
+    /// BoxWallet is setting up fresh has no `blocks/` yet and is still offered.
     fn pruneShouldOffer(allocator: std.mem.Allocator, home: []const u8) bool {
         const cur = pruneCurrent(allocator, home) catch return false;
-        return cur == null;
+        if (cur != null) return false;
+
+        const data_dir = dataDir(allocator, home) catch return false;
+        defer allocator.free(data_dir);
+        return !conf.dataDirHasEntry(allocator, data_dir, chain_dir);
     }
 
     /// Persist the chosen prune target (MiB; 0 = full node) to `bitcoin.conf`,
@@ -747,6 +770,47 @@ test "coin vtable exposes transactions, receive address, and send for Bitcoin" {
     try std.testing.expect(c.supportsTransactions());
     try std.testing.expect(c.supportsReceiveAddress());
     try std.testing.expect(c.supportsSend());
+}
+
+test "pruning is never offered for a chain that was already here" {
+    if (builtin.os.tag == .windows) return error.SkipZigTest;
+    const allocator = std.testing.allocator;
+    var c_inst: Bitcoin = .{};
+    const c = c_inst.coin();
+
+    // The scenario this guards: BoxWallet uses the daemon's standard data dir, so
+    // it may be an existing Bitcoin Core full node. An unpruned node has *no* `prune`
+    // key — that's what unpruned means — so without the chain check it reads as
+    // "never asked" and BoxWallet offers to prune someone else's node. Saying yes
+    // discards their block data irreversibly.
+    const home = "test-bitcoin-adopted-home";
+    var threaded: std.Io.Threaded = .init(allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    std.Io.Dir.cwd().deleteTree(io, home) catch {};
+    defer std.Io.Dir.cwd().deleteTree(io, home) catch {};
+
+    const data_dir = try Bitcoin.dataDir(allocator, home);
+    defer allocator.free(data_dir);
+
+    // A data dir that looks like an existing node: a `blocks/` dir, and a conf
+    // carrying no `prune` key (exactly what a full node's conf looks like).
+    {
+        var dd = try std.Io.Dir.cwd().createDirPathOpen(io, data_dir, .{});
+        defer dd.close(io);
+        try dd.writeFile(io, .{ .sub_path = Bitcoin.conf_file, .data = "rpcuser=someoneelse\n" });
+    }
+    {
+        const blocks = try std.fs.path.join(allocator, &.{ data_dir, "blocks" });
+        defer allocator.free(blocks);
+        var bd = try std.Io.Dir.cwd().createDirPathOpen(io, blocks, .{});
+        bd.close(io);
+    }
+
+    // No prune key is configured — but the prompt must still be withheld, because
+    // the chain isn't ours to prune.
+    try std.testing.expect((try c.pruningState(allocator, home)) == null);
+    try std.testing.expect(!c.offersPrunePrompt(allocator, home));
 }
 
 test "pruning: offered when unset, then applied value is read back and not re-offered" {
