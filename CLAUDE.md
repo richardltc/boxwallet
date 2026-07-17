@@ -42,6 +42,44 @@ convenience, prefer the safe one unless told otherwise.
 - **Bind local services to localhost only.** The daemon and wallet RPC are
   127.0.0.1-bound; keep it that way.
 
+## Share the user's data; never break it
+
+BoxWallet deliberately uses each coin daemon's **standard data directory** (the
+one it would pick with no `-datadir`), so it shares whatever is already on the
+machine. That's the point: a user with an existing node keeps their synced chain
+and their wallet shows up, instead of re-syncing hundreds of GB into a second
+copy. **A data dir may therefore already belong to another app** — Bitcoin Core,
+Divi Desktop, an existing `monerod` — holding a live wallet and a chain that took
+days to build.
+
+**Anything already on disk is the other app's property. Share it; never rewrite,
+reconfigure, or discard it.** The user's own words: if a wallet is already there
+and used by a different app, always respect it and never do anything that may
+break it. Concretely:
+
+- **Never make an irreversible change to data that was already there.** The worked
+  example is pruning: an unpruned node has no `prune` key *by definition*, so a
+  "has the user chosen yet?" check alone reads someone's full node as "never
+  asked" and offers to prune it — discarding their blocks with no un-prune short
+  of a full re-sync. `pruneShouldOffer` (`bitcoin.zig`/`litecoin.zig`) therefore
+  also requires that no chain (`blocks/`) is present. Ask the same question of any
+  new destructive action.
+- **Don't overwrite a conf you didn't write.** It carries settings that matter
+  (`prune-blockchain`, `out-peers`, Tor, a moved RPC port). Prefer `conf.populate`
+  (merges, preserves every other line) over `conf.writeConf` (clobbers). Where a
+  coin must write a whole conf, write it **only when absent** — see Monero's
+  `prepareConf`. Nerva/Salvium/Zano still clobber; that's tolerable only because
+  nobody else is likely to run them, and it is not a pattern to copy.
+- **Never delete what you didn't create.** A wallet-`remove` must not `deleteTree`
+  a directory BoxWallet didn't make.
+- **Use `conf.dataDirHasEntry`** to tell a dir BoxWallet created from one it
+  adopted — pass a marker the daemon itself creates (`blocks/`, the conf file).
+- **The one unavoidable risk is version skew.** BoxWallet runs its own pinned core
+  against their data; if theirs is older, starting ours can upgrade the chainstate
+  or wallet format so their app can't open it again. This can't be engineered away,
+  only made explicit — don't silently auto-update a daemon that another app also
+  drives.
+
 ## Memory is a first-class constraint
 
 BoxWallet is likely to run on **low-spec machines** (single-board computers, old
