@@ -16,6 +16,7 @@ const DigiByte = @import("coins/digibyte.zig").DigiByte;
 const Zano = @import("coins/zano.zig").Zano;
 const Nerva = @import("coins/nerva.zig").Nerva;
 const Salvium = @import("coins/salvium.zig").Salvium;
+const Monero = @import("coins/monero.zig").Monero;
 const ReddCoin = @import("coins/reddcoin.zig").ReddCoin;
 const Epic = @import("coins/epic.zig").Epic;
 const Litecoin = @import("coins/litecoin.zig").Litecoin;
@@ -49,14 +50,14 @@ const balance_mask = "********";
 /// pane renders generically through the `Coin` interface, so it needs no per-coin
 /// code. A coin whose per-coin `live` constant is false stays registered here but
 /// is dropped from `entries` — hidden from the nav entirely until it's ready.
-const Entry = enum { home, nexa, divi, ergo, digibyte, zano, nerva, reddcoin, epic, salvium, litecoin, bitcoin, spiderbyte };
-const coin_entries = [_]Entry{ .nexa, .divi, .ergo, .digibyte, .zano, .nerva, .reddcoin, .epic, .salvium, .litecoin, .bitcoin, .spiderbyte };
+const Entry = enum { home, nexa, divi, ergo, digibyte, zano, nerva, reddcoin, epic, salvium, litecoin, bitcoin, spiderbyte, monero };
+const coin_entries = [_]Entry{ .nexa, .divi, .ergo, .digibyte, .zano, .nerva, .reddcoin, .epic, .salvium, .litecoin, .bitcoin, .spiderbyte, .monero };
 
 /// The registered coin backends as their concrete types — the source of truth for
 /// the compile-time checks below. Must list the same coins as `coin_entries` (the
 /// length assertion in the guard catches a coin added to one list but not the
 /// other).
-const coin_types = .{ Nexa, Divi, Ergo, DigiByte, Zano, Nerva, ReddCoin, Epic, Salvium, Litecoin, Bitcoin, SpiderByte };
+const coin_types = .{ Nexa, Divi, Ergo, DigiByte, Zano, Nerva, ReddCoin, Epic, Salvium, Litecoin, Bitcoin, SpiderByte, Monero };
 
 // Compile-time guard: no two coins may declare the same executable filename. Every
 // coin promotes its binaries into the one shared install root (`~/.boxwallet`) and
@@ -70,6 +71,10 @@ const coin_types = .{ Nexa, Divi, Ergo, DigiByte, Zano, Nerva, ReddCoin, Epic, S
 comptime {
     if (coin_types.len != coin_entries.len)
         @compileError("coin_types and coin_entries must list the same coins");
+
+    // The pairwise scan below is O(names²) in comptime branches, and `names` grows
+    // with every coin registered, so the default 1000 doesn't cover the roster.
+    @setEvalBranchQuota(20_000);
 
     const exe_fields = .{ "daemon_file", "cli_file", "tx_file", "wallet_rpc_file" };
     var names: []const []const u8 = &.{};
@@ -99,6 +104,7 @@ fn entryLabel(e: Entry) []const u8 {
         .reddcoin => ReddCoin.coin_name,
         .epic => Epic.coin_name,
         .salvium => Salvium.coin_name,
+        .monero => Monero.coin_name,
         .litecoin => Litecoin.coin_name,
         .bitcoin => Bitcoin.coin_name,
         .spiderbyte => SpiderByte.coin_name,
@@ -148,6 +154,7 @@ fn entryColor(e: Entry) zz.Color {
         .reddcoin => zz.Color.hex(ReddCoin.coin_color),
         .epic => zz.Color.hex(Epic.coin_color),
         .salvium => zz.Color.hex(Salvium.coin_color),
+        .monero => zz.Color.hex(Monero.coin_color),
         .litecoin => zz.Color.hex(Litecoin.coin_color),
         .bitcoin => zz.Color.hex(Bitcoin.coin_color),
         .spiderbyte => zz.Color.hex(SpiderByte.coin_color),
@@ -200,6 +207,7 @@ fn entryLive(e: Entry) bool {
         .reddcoin => ReddCoin.live,
         .epic => Epic.live,
         .salvium => Salvium.live,
+        .monero => Monero.live,
         .litecoin => Litecoin.live,
         .bitcoin => Bitcoin.live,
         .spiderbyte => SpiderByte.live,
@@ -3989,6 +3997,7 @@ pub const App = struct {
     reddcoin: ReddCoin,
     epic: Epic,
     salvium: Salvium,
+    monero: Monero,
     litecoin: Litecoin,
     bitcoin: Bitcoin,
     spiderbyte: SpiderByte,
@@ -4172,6 +4181,7 @@ pub const App = struct {
             .reddcoin = .{},
             .epic = .{},
             .salvium = .{},
+            .monero = .{},
             .litecoin = .{},
             .bitcoin = .{},
             .spiderbyte = .{},
@@ -5597,6 +5607,7 @@ pub const App = struct {
             .reddcoin => @constCast(&self.reddcoin).coin(),
             .epic => @constCast(&self.epic).coin(),
             .salvium => @constCast(&self.salvium).coin(),
+            .monero => @constCast(&self.monero).coin(),
             .litecoin => @constCast(&self.litecoin).coin(),
             .bitcoin => @constCast(&self.bitcoin).coin(),
             .spiderbyte => @constCast(&self.spiderbyte).coin(),
