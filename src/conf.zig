@@ -2,6 +2,28 @@ const std = @import("std");
 const builtin = @import("builtin");
 const models = @import("models.zig");
 
+/// True if `data_dir` already contains `entry` (a file or a subdirectory).
+///
+/// The point of this is telling a data directory BoxWallet created from one it
+/// **adopted**. BoxWallet uses each daemon's standard data dir, so that directory
+/// may already belong to another wallet app (an existing `monerod`, Bitcoin Core,
+/// Divi Desktop) and hold a synced chain and a live wallet. Anything already on
+/// disk is the other app's property: share it, never rewrite or discard it.
+/// Callers pass a marker the daemon itself creates (a conf file, a `blocks/` dir)
+/// to ask "was someone here before me?" before doing anything irreversible.
+///
+/// A pure disk check — no daemon needed, and nothing held beyond a path.
+pub fn dataDirHasEntry(allocator: std.mem.Allocator, data_dir: []const u8, entry: []const u8) bool {
+    var threaded: std.Io.Threaded = .init(allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    var dir = std.Io.Dir.cwd().openDir(io, data_dir, .{}) catch return false;
+    defer dir.close(io);
+    dir.access(io, entry, .{}) catch return false;
+    return true;
+}
+
 /// Resolve a coin daemon's default data directory — where it writes its `.conf`
 /// and chain data when started without an explicit `-datadir`. Mirrors a
 /// bitcoin-derived daemon's platform default:

@@ -65,6 +65,7 @@ test {
     _ = @import("coins/reddcoin.zig");
     _ = @import("coins/epic.zig");
     _ = @import("coins/salvium.zig");
+    _ = @import("coins/monero.zig");
     _ = @import("coins/litecoin.zig");
     _ = @import("coins/bitcoin.zig");
     _ = @import("coins/spiderbyte.zig");
