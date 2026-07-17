@@ -2221,7 +2221,17 @@ const Activity = struct {
         // Ask the daemon to shut down. Bitcoin coins issue the JSON-RPC `stop`;
         // Ergo POSTs its REST `/node/shutdown`. The coin owns the request; the
         // probe loop below confirms it actually went down.
-        try self.coin.requestStop(a, auth);
+        //
+        // A failed request is **not** proof the daemon is still up, so it isn't
+        // returned here — only remembered. A busy daemon can act on the request and
+        // still not answer it: monerod under a heavy sync leaves the reply sitting
+        // behind starved RPC threads until the shutdown it just started tears the
+        // RPC server down, so the reply never lands and we see a read failure or a
+        // timeout for a stop that worked. Reporting that as "failed to stop" flips
+        // the daemon back to running, which then re-spawns the wallet service for a
+        // node that has already exited. The probe below is the real answer; the
+        // remembered error only speaks if the daemon is still answering at the end.
+        const req_err: ?anyerror = if (self.coin.requestStop(a, auth)) null else |err| err;
 
         // Probe on a small arena reset each round so the wait stays flat in
         // memory. The daemon drops its RPC port early in shutdown, so the first
@@ -2243,6 +2253,12 @@ const Activity = struct {
             self.reapDaemonChild();
             _ = self.coin.daemonInfo(probe.allocator(), auth) catch return;
         }
+
+        // Still answering after the whole wait: the daemon is genuinely up. If the
+        // stop request itself failed, that error is the honest reason to show;
+        // otherwise it took the request and is simply slow to go (it's already
+        // reported as stopped today, and that stands).
+        if (req_err) |err| return err;
     }
 
     /// Reap the retained foreground child if it has already exited, so it doesn't
