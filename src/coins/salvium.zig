@@ -49,6 +49,12 @@ pub const Salvium = struct {
     // the shared `conf.dataDir(posix, win)` produces.
     pub const home_dir = ".salvium";
     pub const home_dir_win = "salvium";
+    /// macOS data dir name. `null` means macOS uses the **POSIX** path
+    /// (`~/.salvium`) rather than a `Library/Application Support`
+    /// dir — Monero and its forks are explicit that it's "Unix & Mac:
+    /// ~/.CRYPTONOTE_NAME", unlike the bitcoin-derived coins. Not an oversight:
+    /// pointing this at a Library dir would orphan an existing wallet on macOS.
+    pub const home_dir_mac: ?[]const u8 = null;
 
     /// Unauthenticated by default; a value is kept only so the shared conf/readAuth
     /// path has a username to write (the daemon ignores it).
@@ -268,7 +274,7 @@ pub const Salvium = struct {
     /// The daemon's default data directory (`~/.salvium`, `%APPDATA%\salvium` on
     /// Windows), where `salvium.conf` and the chain live.
     pub fn dataDir(allocator: std.mem.Allocator, home: []const u8) ![]const u8 {
-        return conf.dataDir(allocator, home, home_dir, home_dir_win);
+        return conf.dataDir(allocator, home, home_dir, home_dir_win, home_dir_mac);
     }
 
     /// True if `salviumd` (`salviumd.exe` on Windows) is already present under

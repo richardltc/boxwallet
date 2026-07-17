@@ -26,6 +26,9 @@ pub const Nexa = struct {
     pub const conf_file = "nexa.conf";
     pub const home_dir = ".nexa";
     pub const home_dir_win = "NEXA";
+    /// macOS data dir name. Nexa: `~/Library/Application Support/nexa` (lowercase —
+    /// `CBaseChainParams::NEXA`), unlike the Windows `NEXA`.
+    pub const home_dir_mac: ?[]const u8 = "nexa";
     pub const rpc_default_username = "nexarpc";
     pub const rpc_default_port = "7227";
     pub const core_version = "2.1.0.0";
@@ -131,7 +134,7 @@ pub const Nexa = struct {
 
     /// The daemon's default data directory (`~/.nexa`), where `nexa.conf` lives.
     pub fn dataDir(allocator: std.mem.Allocator, home: []const u8) ![]const u8 {
-        return conf.dataDir(allocator, home, home_dir, home_dir_win);
+        return conf.dataDir(allocator, home, home_dir, home_dir_win, home_dir_mac);
     }
 
     /// The managed wallet's on-disk location (`<datadir>/wallet.dat`) — the

@@ -5,14 +5,16 @@ const models = @import("models.zig");
 /// True if `data_dir` already contains `entry` (a file or a subdirectory).
 ///
 /// The point of this is telling a data directory BoxWallet created from one it
-/// **adopted**. BoxWallet uses each daemon's standard data dir, so that directory
-/// may already belong to another wallet app (an existing `monerod`, Bitcoin Core,
-/// Divi Desktop) and hold a synced chain and a live wallet. Anything already on
-/// disk is the other app's property: share it, never rewrite or discard it.
-/// Callers pass a marker the daemon itself creates (a conf file, a `blocks/` dir)
-/// to ask "was someone here before me?" before doing anything irreversible.
+/// **adopted**. BoxWallet deliberately shares the daemon's standard data dir, so
+/// that directory may already belong to another wallet app (Bitcoin Core, Divi
+/// Desktop, an existing monerod) and hold a synced chain and a live wallet. The
+/// rule is that anything already on disk is the other app's property: BoxWallet
+/// shares it and must never rewrite or discard it. Callers use a marker entry the
+/// daemon itself creates (a bitcoin-derived coin's `blocks/`) to ask "was someone
+/// here before me?" before doing anything irreversible.
 ///
-/// A pure disk check — no daemon needed, and nothing held beyond a path.
+/// A pure disk check — no daemon needed, and nothing held beyond a path, so it's
+/// safe on the pre-start preflight path.
 pub fn dataDirHasEntry(allocator: std.mem.Allocator, data_dir: []const u8, entry: []const u8) bool {
     var threaded: std.Io.Threaded = .init(allocator, .{});
     defer threaded.deinit();
@@ -25,10 +27,31 @@ pub fn dataDirHasEntry(allocator: std.mem.Allocator, data_dir: []const u8, entry
 }
 
 /// Resolve a coin daemon's default data directory — where it writes its `.conf`
-/// and chain data when started without an explicit `-datadir`. Mirrors a
-/// bitcoin-derived daemon's platform default:
-///   - POSIX:   `<home>/<posix_name>`                 e.g. `~/.divi`
-///   - Windows: `<home>/AppData/Roaming/<win_name>`   e.g. `…\Roaming\DIVI`
+/// and chain data when started without an explicit `-datadir`:
+///   - Linux/other: `<home>/<posix_name>`                        e.g. `~/.divi`
+///   - macOS:       `<home>/Library/Application Support/<mac_name>`
+///   - Windows:     `<home>/AppData/Roaming/<win_name>`          e.g. `…\Roaming\DIVI`
+///
+/// BoxWallet passes no `-datadir`, so this **must** agree with what the daemon
+/// itself would pick — otherwise BoxWallet writes its conf and reads its RPC
+/// credentials from one directory while the daemon runs out of another. That was
+/// live for the bitcoin-derived coins on macOS, which resolved `~/.divi` while
+/// `divid` used `~/Library/Application Support/DIVI`.
+///
+/// **`mac_name` is required and none of the names is derivable from the others.**
+/// Each project picks its own capitalisation: `.bitcoin` → `Bitcoin`, `.nexa` →
+/// `nexa`, `.reddcoin` → `Reddcoin`. `win_name` can't stand in for it either — the
+/// two disagree for ReddCoin (`REDDCOIN` vs `Reddcoin`) and Nexa (`NEXA` vs
+/// `nexa`), which a case-insensitive Mac volume would paper over and a
+/// case-sensitive one would not.
+///
+/// **`mac_name` is nullable, and null is a real answer, not "unset":** it means the
+/// daemon uses its POSIX path on macOS as well. That's the whole CryptoNote family
+/// — Monero and its forks put the data dir at `~/.<name>` on Mac too ("Unix & Mac:
+/// ~/.CRYPTONOTE_NAME"). Their macOS path is *not* a `Library/Application Support`
+/// dir, so it can't be expressed by any name passed here. Having no default forces
+/// each coin to state which convention it follows; getting it wrong points a coin
+/// at an empty directory and orphans a live wallet.
 ///
 /// `home_dir` is the process home directory; the caller owns the returned slice.
 pub fn dataDir(
@@ -36,11 +59,35 @@ pub fn dataDir(
     home_dir: []const u8,
     posix_name: []const u8,
     win_name: []const u8,
+    mac_name: ?[]const u8,
 ) ![]const u8 {
-    return if (comptime builtin.os.tag == .windows)
-        std.fs.path.join(allocator, &.{ home_dir, "AppData", "Roaming", win_name })
-    else
-        std.fs.path.join(allocator, &.{ home_dir, posix_name });
+    return dataDirFor(allocator, home_dir, builtin.os.tag, posix_name, win_name, mac_name);
+}
+
+/// `dataDir` for an explicit `os`, rather than the build target.
+///
+/// Split out so the whole platform matrix is checkable from one native test run:
+/// a test compiled for Linux can't otherwise reach the macOS or Windows branch at
+/// all, and would pass while proving nothing about them — which is precisely how
+/// the macOS paths stayed wrong.
+pub fn dataDirFor(
+    allocator: std.mem.Allocator,
+    home_dir: []const u8,
+    os: std.Target.Os.Tag,
+    posix_name: []const u8,
+    win_name: []const u8,
+    mac_name: ?[]const u8,
+) ![]const u8 {
+    return switch (os) {
+        .windows => std.fs.path.join(allocator, &.{ home_dir, "AppData", "Roaming", win_name }),
+        // A null `mac_name` means macOS follows the POSIX layout (the CryptoNote
+        // family), not that it was forgotten — see `dataDir`.
+        .macos => if (mac_name) |m|
+            std.fs.path.join(allocator, &.{ home_dir, "Library", "Application Support", m })
+        else
+            std.fs.path.join(allocator, &.{ home_dir, posix_name }),
+        else => std.fs.path.join(allocator, &.{ home_dir, posix_name }),
+    };
 }
 
 /// Build RPC connection details for a coin daemon by reading its `conf_file`
@@ -388,12 +435,39 @@ pub fn freeAuth(allocator: std.mem.Allocator, auth: models.CoinAuth) void {
     allocator.free(auth.data_dir);
 }
 
-test "dataDir builds the coin home under the process home (posix)" {
-    if (builtin.os.tag == .windows) return error.SkipZigTest;
+test "dataDir builds the coin home per platform, macOS included" {
     const allocator = std.testing.allocator;
-    const dir = try dataDir(allocator, "/home/alice", ".divi", "DIVI");
-    defer allocator.free(dir);
-    try std.testing.expectEqualStrings("/home/alice/.divi", dir);
+
+    // Via `dataDirFor`, so all three branches are checked from one run. The old
+    // test only covered the build target's branch — which is why the macOS paths
+    // could be wrong for every bitcoin-derived coin without a test noticing.
+    const cases = [_]struct { os: std.Target.Os.Tag, want: []const u8 }{
+        .{ .os = .linux, .want = "/home/alice/.divi" },
+        // The bug this fixes: BoxWallet passes no `-datadir`, and `divid` on macOS
+        // uses `~/Library/Application Support/DIVI`. Resolving `~/.divi` here left
+        // BoxWallet writing its conf and reading its RPC creds from a directory the
+        // daemon never opened.
+        .{ .os = .macos, .want = "/home/alice/Library/Application Support/DIVI" },
+        .{ .os = .windows, .want = "/home/alice/AppData/Roaming/DIVI" },
+    };
+    for (cases) |c| {
+        const dir = try dataDirFor(allocator, "/home/alice", c.os, ".divi", "DIVI", "DIVI");
+        defer allocator.free(dir);
+        // Compare on '/' so the expectation reads the same regardless of the host's
+        // path separator.
+        const norm = try allocator.dupe(u8, dir);
+        defer allocator.free(norm);
+        std.mem.replaceScalar(u8, norm, '\\', '/');
+        try std.testing.expectEqualStrings(c.want, norm);
+    }
+
+    // The CryptoNote exception: Monero and its forks use `~/.<name>` on macOS too,
+    // so they pass their POSIX name as `mac_name`. A shared macOS branch that
+    // reached for the Windows name instead would relocate them on Mac and orphan a
+    // live wallet.
+    const xmr = try dataDirFor(allocator, "/home/alice", .macos, ".bitmonero", "bitmonero", null);
+    defer allocator.free(xmr);
+    try std.testing.expectEqualStrings("/home/alice/.bitmonero", xmr);
 }
 
 test "readAuth parses rpc creds from a conf and falls back to defaults" {
@@ -693,4 +767,65 @@ test "randomPassword fills the buffer with charset-only bytes" {
     const pw = randomPassword(io, &buf);
     try std.testing.expectEqual(@as(usize, 20), pw.len);
     for (pw) |c| try std.testing.expect(std.mem.indexOfScalar(u8, charset, c) != null);
+}
+
+test "every coin's macOS data dir matches what its own daemon would pick" {
+    const allocator = std.testing.allocator;
+
+    // BoxWallet passes no `-datadir`, so each coin's resolved dir must equal the
+    // daemon's own default, or the two run out of different directories. Every
+    // expectation below was read from that project's `GetDefaultDataDir()`, not
+    // inferred — the names aren't derivable from each other (`.bitcoin` → `Bitcoin`,
+    // but `.nexa` → `nexa` and `.reddcoin` → `Reddcoin`).
+    //
+    // This is the check whose absence let macOS stay broken: each coin owned its
+    // names, but nothing asserted they agreed with upstream.
+    const Bitcoin = @import("coins/bitcoin.zig").Bitcoin;
+    const Litecoin = @import("coins/litecoin.zig").Litecoin;
+    const Divi = @import("coins/divi.zig").Divi;
+    const ReddCoin = @import("coins/reddcoin.zig").ReddCoin;
+    const Nexa = @import("coins/nexa.zig").Nexa;
+    const DigiByte = @import("coins/digibyte.zig").DigiByte;
+    const Monero = @import("coins/monero.zig").Monero;
+    const Nerva = @import("coins/nerva.zig").Nerva;
+    const Salvium = @import("coins/salvium.zig").Salvium;
+    const Zano = @import("coins/zano.zig").Zano;
+
+    const Case = struct {
+        name: []const u8,
+        posix: []const u8,
+        win: []const u8,
+        mac: ?[]const u8,
+        want: []const u8,
+    };
+    const cases = [_]Case{
+        // Bitcoin-derived: macOS is `Library/Application Support/<Name>`.
+        .{ .name = "bitcoin", .posix = Bitcoin.home_dir, .win = Bitcoin.home_dir_win, .mac = Bitcoin.home_dir_mac, .want = "/h/Library/Application Support/Bitcoin" },
+        .{ .name = "litecoin", .posix = Litecoin.home_dir, .win = Litecoin.home_dir_win, .mac = Litecoin.home_dir_mac, .want = "/h/Library/Application Support/Litecoin" },
+        .{ .name = "divi", .posix = Divi.home_dir, .win = Divi.home_dir_win, .mac = Divi.home_dir_mac, .want = "/h/Library/Application Support/DIVI" },
+        .{ .name = "reddcoin", .posix = ReddCoin.home_dir, .win = ReddCoin.home_dir_win, .mac = ReddCoin.home_dir_mac, .want = "/h/Library/Application Support/Reddcoin" },
+        .{ .name = "nexa", .posix = Nexa.home_dir, .win = Nexa.home_dir_win, .mac = Nexa.home_dir_mac, .want = "/h/Library/Application Support/nexa" },
+        .{ .name = "digibyte", .posix = DigiByte.home_dir, .win = DigiByte.home_dir_win, .mac = DigiByte.home_dir_mac, .want = "/h/Library/Application Support/DigiByte" },
+        // CryptoNote family: `~/.<name>` on macOS as well as Linux, i.e. a null mac
+        // name. Read from each coin's own decl, not hardcoded here — a table that
+        // asserted `null` directly would keep passing if the coin started handing
+        // `dataDir` a Library name, which is the exact mistake this must catch.
+        // Getting these wrong relocates a live Monero/Nerva/Salvium/Zano wallet.
+        .{ .name = "monero", .posix = Monero.home_dir, .win = Monero.home_dir_win, .mac = Monero.home_dir_mac, .want = "/h/.bitmonero" },
+        .{ .name = "nerva", .posix = Nerva.home_dir, .win = Nerva.home_dir_win, .mac = Nerva.home_dir_mac, .want = "/h/.nerva" },
+        .{ .name = "salvium", .posix = Salvium.home_dir, .win = Salvium.home_dir_win, .mac = Salvium.home_dir_mac, .want = "/h/.salvium" },
+        .{ .name = "zano", .posix = Zano.home_dir, .win = Zano.home_dir_win, .mac = Zano.home_dir_mac, .want = "/h/.Zano" },
+    };
+
+    for (cases) |c| {
+        const got = try dataDirFor(allocator, "/h", .macos, c.posix, c.win, c.mac);
+        defer allocator.free(got);
+        const norm = try allocator.dupe(u8, got);
+        defer allocator.free(norm);
+        std.mem.replaceScalar(u8, norm, '\\', '/');
+        std.testing.expectEqualStrings(c.want, norm) catch |e| {
+            std.debug.print("macOS data dir mismatch for {s}\n", .{c.name});
+            return e;
+        };
+    }
 }
