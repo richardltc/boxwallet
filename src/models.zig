@@ -142,6 +142,46 @@ pub const LtcWalletInfo = struct {
     immature_balance: f64 = 0,
 };
 
+/// Raw `getblockchaininfo` result for BitcoinZ (subset). BitcoinZ is a zcashd
+/// fork (Bitcoin 0.11 lineage): it reports `verificationprogress` (from its
+/// checkpoint data) and `mediantime`, but no tip `time` — the frontend's
+/// "behind by …" estimate falls back to `mediantime`. Defaults keep parsing
+/// resilient to omitted fields.
+pub const BtczBlockchainInfo = struct {
+    chain: []const u8 = "",
+    blocks: i64 = 0,
+    headers: i64 = 0,
+    bestblockhash: []const u8 = "",
+    verificationprogress: f64 = 0,
+    /// Tip block's own timestamp (unix seconds). zcashd-era `getblockchaininfo`
+    /// doesn't report it; kept for shape-parity so a future core that adds it is
+    /// picked up. 0 if omitted.
+    time: i64 = 0,
+    /// Median timestamp (unix seconds) of the last 11 blocks — the "behind by …"
+    /// fallback (BitcoinZ's only tip timestamp). 0 if omitted.
+    mediantime: i64 = 0,
+};
+
+/// Raw `getnetworkinfo` result for BitcoinZ (subset). The live peer count and
+/// the daemon's numeric CLIENT_VERSION come from here. Defaults keep parsing
+/// resilient to omitted fields.
+pub const BtczNetworkInfo = struct {
+    version: i64 = 0,
+    connections: i64 = 0,
+};
+
+/// Raw `getwalletinfo` result for BitcoinZ (zcashd fork): same shape as Bitcoin
+/// — numeric `unlocked_until` for security (absent/0/positive; absent on the
+/// usual unencrypted wallet, since BitcoinZ ships wallet encryption disabled)
+/// plus the transparent balance triplet. Defaults keep parsing resilient to
+/// omitted fields.
+pub const BtczWalletInfo = struct {
+    unlocked_until: ?i64 = null,
+    balance: f64 = 0,
+    unconfirmed_balance: f64 = 0,
+    immature_balance: f64 = 0,
+};
+
 /// Raw `getblockchaininfo` result for Bitcoin (subset). Bitcoin Core reports
 /// `verificationprogress`, so sync is derived from it exactly as for Litecoin.
 /// Defaults keep parsing resilient to omitted fields.

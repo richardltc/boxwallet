@@ -484,6 +484,48 @@ pub fn fileExists(allocator: std.mem.Allocator, dest_root: []const u8, sub_path:
     return true;
 }
 
+/// True if the file `name` under `dir_path` hashes (SHA-256) to `expected_hex`
+/// (64 lowercase hex chars). Streamed through a fixed buffer — flat memory
+/// regardless of file size — for verifying large checksummed downloads (e.g.
+/// the Zcash proving parameters BitcoinZ needs) before they're put in place.
+/// A missing/unreadable file reads as a mismatch rather than erroring: either
+/// way the caller must not trust it.
+pub fn fileMatchesSha256(
+    allocator: std.mem.Allocator,
+    dir_path: []const u8,
+    name: []const u8,
+    expected_hex: *const [64]u8,
+) bool {
+    var threaded: std.Io.Threaded = .init(allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    var dir = std.Io.Dir.cwd().openDir(io, dir_path, .{}) catch return false;
+    defer dir.close(io);
+    var f = dir.openFile(io, name, .{}) catch return false;
+    defer f.close(io);
+
+    var rbuf: [64 * 1024]u8 = undefined;
+    var fr = f.reader(io, &rbuf);
+
+    var hasher = std.crypto.hash.sha2.Sha256.init(.{});
+    var chunk: [64 * 1024]u8 = undefined;
+    while (true) {
+        const n = fr.interface.readSliceShort(&chunk) catch return false;
+        if (n == 0) break;
+        hasher.update(chunk[0..n]);
+    }
+    const digest = hasher.finalResult();
+
+    var got_hex: [64]u8 = undefined;
+    for (digest, 0..) |b, i| {
+        const hex_chars = "0123456789abcdef";
+        got_hex[i * 2] = hex_chars[b >> 4];
+        got_hex[i * 2 + 1] = hex_chars[b & 0x0f];
+    }
+    return std.mem.eql(u8, &got_hex, expected_hex);
+}
+
 /// The version-marker filename for a coin: `.<daemon_file>.version`, kept beside
 /// the promoted binaries in the install root. Derived from the daemon file because
 /// that's already unique per coin. Caller owns the returned slice.
@@ -1093,4 +1135,26 @@ test "extractTarBz2 bunzips + untars a real .tar.bz2" {
 
     try std.testing.expect(fileExists(allocator, root ++ "/dest", "wrapper/nervad"));
     try std.testing.expect(fileExists(allocator, root ++ "/dest", "wrapper/nerva-wallet-cli"));
+}
+
+test "fileMatchesSha256 verifies a streamed digest and rejects a mismatch" {
+    const allocator = std.testing.allocator;
+    var threaded: std.Io.Threaded = .init(allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    const root = "test-sha256-verify";
+    std.Io.Dir.cwd().deleteTree(io, root) catch {};
+    defer std.Io.Dir.cwd().deleteTree(io, root) catch {};
+    var dir = try std.Io.Dir.cwd().createDirPathOpen(io, root, .{});
+    defer dir.close(io);
+    try dir.writeFile(io, .{ .sub_path = "params.bin", .data = "abc" });
+
+    // SHA-256("abc") — the classic test vector.
+    const good = "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad";
+    const bad = "0000000000000000000000000000000000000000000000000000000000000000";
+    try std.testing.expect(fileMatchesSha256(allocator, root, "params.bin", good));
+    try std.testing.expect(!fileMatchesSha256(allocator, root, "params.bin", bad));
+    // A missing file is a mismatch, never trusted.
+    try std.testing.expect(!fileMatchesSha256(allocator, root, "absent.bin", good));
 }

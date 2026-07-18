@@ -510,11 +510,16 @@ pub const Coin = struct {
             install_root: []const u8,
         ) anyerror![]const u8 = null,
         /// Download + unarchive the daemon files into `install_root`,
-        /// optionally reporting download/extract progress.
+        /// optionally reporting download/extract progress. `home_dir` is the
+        /// process home directory, for the rare coin whose install must also
+        /// place support files outside the install root (BitcoinZ downloads the
+        /// Zcash proving parameters into the shared per-platform params dir);
+        /// most coins ignore it.
         install: *const fn (
             ptr: *anyopaque,
             allocator: std.mem.Allocator,
             install_root: []const u8,
+            home_dir: []const u8,
             progress: ?install_mod.Progress,
         ) anyerror!void,
         /// Ensure the coin's config carries everything the daemon needs before
@@ -888,9 +893,10 @@ pub const Coin = struct {
         self: Coin,
         allocator: std.mem.Allocator,
         install_root: []const u8,
+        home_dir: []const u8,
         progress: ?install_mod.Progress,
     ) !void {
-        return self.vtable.install(self.ptr, allocator, install_root, progress);
+        return self.vtable.install(self.ptr, allocator, install_root, home_dir, progress);
     }
     pub fn prepareConf(
         self: Coin,
@@ -1115,6 +1121,15 @@ pub const Coin = struct {
     ) !void {
         const f = self.vtable.mining_stop orelse return error.Unsupported;
         return f(self.ptr, allocator, auth);
+    }
+
+    /// Whether this coin's wallet can be *encrypted* in-app. Distinct from
+    /// `supportsWallet`: a coin can report/manage its wallet state while its
+    /// daemon refuses `encryptwallet` outright (BitcoinZ, whose zcashd lineage
+    /// ships wallet encryption disabled) — the `w` menu then skips the Encrypt
+    /// action instead of offering one that can only fail.
+    pub fn supportsWalletEncrypt(self: Coin) bool {
+        return self.vtable.wallet_encrypt != null;
     }
 
     /// Encrypt the wallet with `passphrase`. Errors `error.Unsupported` if the
