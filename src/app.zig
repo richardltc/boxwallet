@@ -22,6 +22,7 @@ const Epic = @import("coins/epic.zig").Epic;
 const Litecoin = @import("coins/litecoin.zig").Litecoin;
 const Bitcoin = @import("coins/bitcoin.zig").Bitcoin;
 const SpiderByte = @import("coins/spiderbyte.zig").SpiderByte;
+const BitcoinZ = @import("coins/bitcoinz.zig").BitcoinZ;
 
 /// The application's display name, version, and brand colour — the one place to
 /// change how BoxWallet identifies itself in the UI. `app_color` is the brand
@@ -50,14 +51,14 @@ const balance_mask = "********";
 /// pane renders generically through the `Coin` interface, so it needs no per-coin
 /// code. A coin whose per-coin `live` constant is false stays registered here but
 /// is dropped from `entries` — hidden from the nav entirely until it's ready.
-const Entry = enum { home, nexa, divi, ergo, digibyte, zano, nerva, reddcoin, epic, salvium, litecoin, bitcoin, spiderbyte, monero };
-const coin_entries = [_]Entry{ .nexa, .divi, .ergo, .digibyte, .zano, .nerva, .reddcoin, .epic, .salvium, .litecoin, .bitcoin, .spiderbyte, .monero };
+const Entry = enum { home, nexa, divi, ergo, digibyte, zano, nerva, reddcoin, epic, salvium, litecoin, bitcoin, bitcoinz, spiderbyte, monero };
+const coin_entries = [_]Entry{ .nexa, .divi, .ergo, .digibyte, .zano, .nerva, .reddcoin, .epic, .salvium, .litecoin, .bitcoin, .bitcoinz, .spiderbyte, .monero };
 
 /// The registered coin backends as their concrete types — the source of truth for
 /// the compile-time checks below. Must list the same coins as `coin_entries` (the
 /// length assertion in the guard catches a coin added to one list but not the
 /// other).
-const coin_types = .{ Nexa, Divi, Ergo, DigiByte, Zano, Nerva, ReddCoin, Epic, Salvium, Litecoin, Bitcoin, SpiderByte, Monero };
+const coin_types = .{ Nexa, Divi, Ergo, DigiByte, Zano, Nerva, ReddCoin, Epic, Salvium, Litecoin, Bitcoin, BitcoinZ, SpiderByte, Monero };
 
 // Compile-time guard: no two coins may declare the same executable filename. Every
 // coin promotes its binaries into the one shared install root (`~/.boxwallet`) and
@@ -107,6 +108,7 @@ fn entryLabel(e: Entry) []const u8 {
         .monero => Monero.coin_name,
         .litecoin => Litecoin.coin_name,
         .bitcoin => Bitcoin.coin_name,
+        .bitcoinz => BitcoinZ.coin_name,
         .spiderbyte => SpiderByte.coin_name,
     };
 }
@@ -157,6 +159,7 @@ fn entryColor(e: Entry) zz.Color {
         .monero => zz.Color.hex(Monero.coin_color),
         .litecoin => zz.Color.hex(Litecoin.coin_color),
         .bitcoin => zz.Color.hex(Bitcoin.coin_color),
+        .bitcoinz => zz.Color.hex(BitcoinZ.coin_color),
         .spiderbyte => zz.Color.hex(SpiderByte.coin_color),
     };
 }
@@ -210,6 +213,7 @@ fn entryLive(e: Entry) bool {
         .monero => Monero.live,
         .litecoin => Litecoin.live,
         .bitcoin => Bitcoin.live,
+        .bitcoinz => BitcoinZ.live,
         .spiderbyte => SpiderByte.live,
     };
 }
@@ -879,19 +883,24 @@ fn menuChoicesFor(coin: Coin, buf: *[3]SetupChoice) usize {
 }
 
 /// Which actions the `w` menu offers for a given wallet state, written into
-/// `buf` and returned by count. Unencrypted → encrypt; locked → unlock (plus
-/// unlock-for-staking on proof-of-stake coins); unlocked → lock; unknown → none.
+/// `buf` and returned by count. Unencrypted → encrypt (only when the coin's
+/// daemon supports `encryptwallet` — BitcoinZ's zcashd lineage ships it
+/// disabled, so `supports_encrypt` keeps a can-only-fail action off the menu);
+/// locked → unlock (plus unlock-for-staking on proof-of-stake coins);
+/// unlocked → lock; unknown → none.
 /// Backup/restore (when the coin supports them) are offered only while the wallet
 /// is reachable for a key dump — unencrypted or unlocked, never locked (the
 /// daemon rejects `dumpwallet`/`importwallet` on a locked wallet). The *offline*
 /// file restore (`supports_restore_offline`) is a daemon-stopped file swap, so it
 /// needs no live/unlocked wallet and is offered in every state (including locked).
-fn walletOptions(wallet: WalletState, pos: bool, supports_backup: bool, supports_import: bool, supports_restore_offline: bool, buf: *[4]WalletAction) usize {
+fn walletOptions(wallet: WalletState, pos: bool, supports_encrypt: bool, supports_backup: bool, supports_import: bool, supports_restore_offline: bool, buf: *[4]WalletAction) usize {
     var n: usize = 0;
     switch (wallet) {
         .unencrypted => {
-            buf[n] = .encrypt;
-            n += 1;
+            if (supports_encrypt) {
+                buf[n] = .encrypt;
+                n += 1;
+            }
             if (supports_backup) {
                 buf[n] = .backup;
                 n += 1;
@@ -2144,7 +2153,7 @@ const Activity = struct {
         const a = arena.allocator();
 
         const progress: install_mod.Progress = .{ .ctx = self, .func = onProgress };
-        if (self.coin.install(a, self.install_root, progress)) {
+        if (self.coin.install(a, self.install_root, self.home_dir, progress)) {
             // Record what we just installed so update detection works even with the
             // daemon stopped. Best-effort: a marker hiccup doesn't fail an
             // otherwise-good install (detection just falls back to "recommended").
@@ -4016,6 +4025,7 @@ pub const App = struct {
     monero: Monero,
     litecoin: Litecoin,
     bitcoin: Bitcoin,
+    bitcoinz: BitcoinZ,
     spiderbyte: SpiderByte,
     selected: usize,
     /// Which tab of the selected coin's detail pane is showing. Global rather
@@ -4200,6 +4210,7 @@ pub const App = struct {
             .monero = .{},
             .litecoin = .{},
             .bitcoin = .{},
+            .bitcoinz = .{},
             .spiderbyte = .{},
             .selected = 0,
             .activities = undefined,
@@ -5626,6 +5637,7 @@ pub const App = struct {
             .monero => @constCast(&self.monero).coin(),
             .litecoin => @constCast(&self.litecoin).coin(),
             .bitcoin => @constCast(&self.bitcoin).coin(),
+            .bitcoinz => @constCast(&self.bitcoinz).coin(),
             .spiderbyte => @constCast(&self.spiderbyte).coin(),
         };
     }
@@ -7070,7 +7082,7 @@ pub const App = struct {
             return;
         }
         var opts: [4]WalletAction = undefined;
-        const n = walletOptions(act.wallet, coin.isProofOfStake(), coin.supportsWalletBackup(), coin.supportsWalletImport(), coin.supportsWalletRestoreOffline(), &opts);
+        const n = walletOptions(act.wallet, coin.isProofOfStake(), coin.supportsWalletEncrypt(), coin.supportsWalletBackup(), coin.supportsWalletImport(), coin.supportsWalletRestoreOffline(), &opts);
         if (act.wallet == .unknown or n == 0) {
             self.logf("{s}: wallet state not known yet — try again in a moment", .{coin.coinName()});
             return;
@@ -10495,7 +10507,7 @@ const BareCoin = struct {
     fn vtInstalled(_: *anyopaque, _: std.mem.Allocator, _: []const u8) bool {
         return true;
     }
-    fn vtInstall(_: *anyopaque, _: std.mem.Allocator, _: []const u8, _: ?install_mod.Progress) anyerror!void {
+    fn vtInstall(_: *anyopaque, _: std.mem.Allocator, _: []const u8, _: []const u8, _: ?install_mod.Progress) anyerror!void {
         return error.Unsupported;
     }
     fn vtPrepare(_: *anyopaque, _: std.mem.Allocator, _: std.Io, _: []const u8, _: []const u8) anyerror!void {}
@@ -12063,45 +12075,45 @@ test "wallet menu offers the actions that fit the wallet state" {
 
     // Unencrypted → only Encrypt (no backup/restore support).
     {
-        const n = walletOptions(.unencrypted, false, false, false, false, &buf);
+        const n = walletOptions(.unencrypted, false, true, false, false, false, &buf);
         try std.testing.expectEqual(@as(usize, 1), n);
         try std.testing.expectEqual(WalletAction.encrypt, buf[0]);
     }
     // Locked on a proof-of-work coin → just Unlock.
     {
-        const n = walletOptions(.locked, false, false, false, false, &buf);
+        const n = walletOptions(.locked, false, true, false, false, false, &buf);
         try std.testing.expectEqual(@as(usize, 1), n);
         try std.testing.expectEqual(WalletAction.unlock, buf[0]);
     }
     // Locked on a proof-of-stake coin → Unlock + Unlock-for-staking.
     {
-        const n = walletOptions(.locked, true, false, false, false, &buf);
+        const n = walletOptions(.locked, true, true, false, false, false, &buf);
         try std.testing.expectEqual(@as(usize, 2), n);
         try std.testing.expectEqual(WalletAction.unlock, buf[0]);
         try std.testing.expectEqual(WalletAction.stake, buf[1]);
     }
     // Unlocked (either flavour) → Lock.
     {
-        try std.testing.expectEqual(@as(usize, 1), walletOptions(.unlocked, true, false, false, false, &buf));
+        try std.testing.expectEqual(@as(usize, 1), walletOptions(.unlocked, true, true, false, false, false, &buf));
         try std.testing.expectEqual(WalletAction.lock, buf[0]);
-        try std.testing.expectEqual(@as(usize, 1), walletOptions(.unlocked_for_staking, true, false, false, false, &buf));
+        try std.testing.expectEqual(@as(usize, 1), walletOptions(.unlocked_for_staking, true, true, false, false, false, &buf));
         try std.testing.expectEqual(WalletAction.lock, buf[0]);
     }
     // Unknown → no actions (the menu won't open).
-    try std.testing.expectEqual(@as(usize, 0), walletOptions(.unknown, true, false, false, false, &buf));
+    try std.testing.expectEqual(@as(usize, 0), walletOptions(.unknown, true, true, false, false, false, &buf));
 
     // With backup/restore support: offered when unencrypted or unlocked, after
     // the primary action — but never while locked (the dump RPCs need the wallet
     // open).
     {
-        const n = walletOptions(.unencrypted, false, true, true, false, &buf);
+        const n = walletOptions(.unencrypted, false, true, true, true, false, &buf);
         try std.testing.expectEqual(@as(usize, 3), n);
         try std.testing.expectEqual(WalletAction.encrypt, buf[0]);
         try std.testing.expectEqual(WalletAction.backup, buf[1]);
         try std.testing.expectEqual(WalletAction.restore, buf[2]);
     }
     {
-        const n = walletOptions(.unlocked, false, true, true, false, &buf);
+        const n = walletOptions(.unlocked, false, true, true, true, false, &buf);
         try std.testing.expectEqual(@as(usize, 3), n);
         try std.testing.expectEqual(WalletAction.lock, buf[0]);
         try std.testing.expectEqual(WalletAction.backup, buf[1]);
@@ -12109,7 +12121,7 @@ test "wallet menu offers the actions that fit the wallet state" {
     }
     {
         // Locked → still just Unlock, even with backup/restore wired.
-        const n = walletOptions(.locked, false, true, true, false, &buf);
+        const n = walletOptions(.locked, false, true, true, true, false, &buf);
         try std.testing.expectEqual(@as(usize, 1), n);
         try std.testing.expectEqual(WalletAction.unlock, buf[0]);
     }
@@ -12119,7 +12131,7 @@ test "wallet menu offers the actions that fit the wallet state" {
     // swap that needs no open/unlocked wallet.
     {
         // Unencrypted → Encrypt + Backup + offline restore.
-        const n = walletOptions(.unencrypted, false, true, false, true, &buf);
+        const n = walletOptions(.unencrypted, false, true, true, false, true, &buf);
         try std.testing.expectEqual(@as(usize, 3), n);
         try std.testing.expectEqual(WalletAction.encrypt, buf[0]);
         try std.testing.expectEqual(WalletAction.backup, buf[1]);
@@ -12127,7 +12139,7 @@ test "wallet menu offers the actions that fit the wallet state" {
     }
     {
         // Locked PoS → Unlock + Stake + offline restore (backup omitted: locked).
-        const n = walletOptions(.locked, true, true, false, true, &buf);
+        const n = walletOptions(.locked, true, true, true, false, true, &buf);
         try std.testing.expectEqual(@as(usize, 3), n);
         try std.testing.expectEqual(WalletAction.unlock, buf[0]);
         try std.testing.expectEqual(WalletAction.stake, buf[1]);
@@ -12135,11 +12147,21 @@ test "wallet menu offers the actions that fit the wallet state" {
     }
     {
         // Unlocked → Lock + Backup + offline restore.
-        const n = walletOptions(.unlocked, false, true, false, true, &buf);
+        const n = walletOptions(.unlocked, false, true, true, false, true, &buf);
         try std.testing.expectEqual(@as(usize, 3), n);
         try std.testing.expectEqual(WalletAction.lock, buf[0]);
         try std.testing.expectEqual(WalletAction.backup, buf[1]);
         try std.testing.expectEqual(WalletAction.restore_file_offline, buf[2]);
+    }
+
+    // Encryption unsupported by the daemon (BitcoinZ shape: zcashd ships
+    // `encryptwallet` disabled) → an unencrypted wallet offers backup/restore
+    // without a can-only-fail Encrypt action.
+    {
+        const n = walletOptions(.unencrypted, false, false, true, true, false, &buf);
+        try std.testing.expectEqual(@as(usize, 2), n);
+        try std.testing.expectEqual(WalletAction.backup, buf[0]);
+        try std.testing.expectEqual(WalletAction.restore, buf[1]);
     }
 
     // Encrypt/unlock/stake need a passphrase; lock, backup, restore and the offline
@@ -12183,7 +12205,7 @@ test "the wallet modal renders its menu centered over the dashboard" {
     // open gate needs a running daemon, so set the modal up directly here.
     app.selected = std.mem.indexOfScalar(Entry, &entries, .divi).?;
     var m: Modal = .{ .coin_idx = app.selected };
-    m.option_count = walletOptions(.locked, true, false, false, false, &m.options);
+    m.option_count = walletOptions(.locked, true, true, false, false, false, &m.options);
     app.modal = m;
 
     var arena = std.heap.ArenaAllocator.init(allocator);

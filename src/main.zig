@@ -68,6 +68,7 @@ test {
     _ = @import("coins/monero.zig");
     _ = @import("coins/litecoin.zig");
     _ = @import("coins/bitcoin.zig");
+    _ = @import("coins/bitcoinz.zig");
     _ = @import("coins/spiderbyte.zig");
     _ = @import("bzip2.zig");
     _ = @import("bip39.zig");

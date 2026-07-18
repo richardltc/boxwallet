@@ -1313,6 +1313,7 @@ pub const Monero = struct {
         _: *anyopaque,
         allocator: std.mem.Allocator,
         install_root: []const u8,
+        _: []const u8,
         progress: ?install_mod.Progress,
     ) anyerror!void {
         return install(allocator, install_root, progress);
