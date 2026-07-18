@@ -237,10 +237,29 @@ pub const BitcoinZ = struct {
             .blocks = b.blocks,
             .connections = n.connections,
             .staking_active = false,
-            // Numeric CLIENT_VERSION → dotted string (2.2.0 reports 2020050 →
-            // "2.2.0.50"), owned by `allocator` so it outlives `net`'s deinit.
-            .version = try models.clientVersionString(allocator, n.version),
+            // Numeric CLIENT_VERSION → release string (see `versionFromClient`),
+            // owned by `allocator` so it outlives `net`'s deinit.
+            .version = try versionFromClient(allocator, n.version),
         };
+    }
+
+    /// Decode BitcoinZ's numeric CLIENT_VERSION into the release string it names.
+    /// zcashd forks encode *release status* in the build component (0–24 beta,
+    /// 25–49 rc, 50 = the official release), so v2.2.0's wire version 2020050
+    /// must read "2.2.0" — the generic `clientVersionString` renders "2.2.0.50",
+    /// which `differs` from the pinned "2.2.0" and permanently flags a fresh
+    /// install's daemon as "not the bundled version". Non-release builds
+    /// (build != 50) keep the four-part decode so a beta/rc *does* read as
+    /// different from the pinned release.
+    fn versionFromClient(allocator: std.mem.Allocator, v: i64) ![]u8 {
+        if (v > 0 and @mod(v, 100) == 50) {
+            return std.fmt.allocPrint(allocator, "{d}.{d}.{d}", .{
+                @divTrunc(v, 1_000_000),
+                @mod(@divTrunc(v, 10_000), 100),
+                @mod(@divTrunc(v, 100), 100),
+            });
+        }
+        return models.clientVersionString(allocator, v);
     }
 
     /// The daemon's default data directory (`~/.bitcoinz`), where `bitcoinz.conf`
@@ -984,4 +1003,25 @@ test "shredFile overwrites and removes a key dump" {
         return;
     };
     return error.TestExpectedFileGone;
+}
+
+test "versionFromClient reads a build-50 CLIENT_VERSION as the plain release" {
+    const a = std.testing.allocator;
+    // 2.2.0's wire version: build 50 == the official release → "2.2.0", which
+    // must compare equal to the pinned core_version (no mismatch warning).
+    const rel = try BitcoinZ.versionFromClient(a, 2_020_050);
+    defer a.free(rel);
+    try std.testing.expectEqualStrings("2.2.0", rel);
+    try std.testing.expectEqualStrings(BitcoinZ.core_version, rel);
+
+    // An rc build (25–49) keeps the four-part decode, so it *does* differ from
+    // the pinned release.
+    const rc = try BitcoinZ.versionFromClient(a, 2_020_025);
+    defer a.free(rc);
+    try std.testing.expectEqualStrings("2.2.0.25", rc);
+
+    // Unknown/absent version stays empty.
+    const none = try BitcoinZ.versionFromClient(a, 0);
+    defer a.free(none);
+    try std.testing.expectEqualStrings("", none);
 }
