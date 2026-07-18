@@ -356,6 +356,66 @@ pub fn setValue(
     try dir.writeFile(io, .{ .sub_path = conf_file, .data = out.written() });
 }
 
+/// Append each of `lines` (verbatim `key=value` lines) to `conf_file` under
+/// `data_dir` unless an identical (trimmed) line is already present; every
+/// existing line — comments, ordering, the user's own entries — is preserved
+/// untouched. For *repeatable* keys (`addnode=…`) that `setValue` can't
+/// express: it replaces the first `key` match, which would clobber a user's
+/// own entries, while this only ever adds. Idempotent — a rerun appends
+/// nothing. The data dir and conf are created if missing. Returns true if
+/// anything was written.
+pub fn ensureLines(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    data_dir: []const u8,
+    conf_file: []const u8,
+    lines: []const []const u8,
+) !bool {
+    var dir = try std.Io.Dir.cwd().createDirPathOpen(io, data_dir, .{});
+    defer dir.close(io);
+
+    var content: []const u8 = "";
+    var content_owned = false;
+    if (dir.openFile(io, conf_file, .{})) |file| {
+        defer file.close(io);
+        const stat = try file.stat(io);
+        const size: usize = @intCast(@min(stat.size, 64 * 1024));
+        const data = try allocator.alloc(u8, size);
+        const n = try file.readPositionalAll(io, data, 0);
+        content = data[0..n];
+        content_owned = true;
+    } else |err| switch (err) {
+        error.FileNotFound => {},
+        else => return err,
+    }
+    defer if (content_owned) allocator.free(content);
+
+    var out: std.Io.Writer.Allocating = .init(allocator);
+    defer out.deinit();
+    try out.writer.writeAll(content);
+
+    var wrote = false;
+    for (lines) |line| {
+        if (hasLine(content, line)) continue;
+        const so_far = out.written();
+        if (so_far.len > 0 and so_far[so_far.len - 1] != '\n') try out.writer.writeByte('\n');
+        try out.writer.print("{s}\n", .{line});
+        wrote = true;
+    }
+
+    if (wrote) try dir.writeFile(io, .{ .sub_path = conf_file, .data = out.written() });
+    return wrote;
+}
+
+/// True if `content` contains a line whose trimmed form equals `line`.
+fn hasLine(content: []const u8, line: []const u8) bool {
+    var it = std.mem.splitScalar(u8, content, '\n');
+    while (it.next()) |raw| {
+        if (std.mem.eql(u8, std.mem.trim(u8, raw, " \t\r"), line)) return true;
+    }
+    return false;
+}
+
 /// Copy `content` into `w`, dropping any line that *enables* `daemon` (a truthy
 /// `daemon=…`). Returns true if such a line was removed, so the caller knows to
 /// rewrite the conf. Everything else — comments, blank lines, ordering, other
@@ -827,5 +887,41 @@ test "every coin's macOS data dir matches what its own daemon would pick" {
             std.debug.print("macOS data dir mismatch for {s}\n", .{c.name});
             return e;
         };
+    }
+}
+
+test "ensureLines appends only missing lines and keeps the user's own" {
+    const allocator = std.testing.allocator;
+    var threaded: std.Io.Threaded = .init(allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    const dd = "test-conf-ensurelines";
+    std.Io.Dir.cwd().deleteTree(io, dd) catch {};
+    defer std.Io.Dir.cwd().deleteTree(io, dd) catch {};
+
+    // An adopted conf: a comment, the user's own addnode, no trailing newline.
+    {
+        var dir = try std.Io.Dir.cwd().createDirPathOpen(io, dd, .{});
+        defer dir.close(io);
+        try dir.writeFile(io, .{ .sub_path = "x.conf", .data = "# mine\naddnode=1.2.3.4:1989" });
+    }
+
+    const wanted = [_][]const u8{ "addnode=1.2.3.4:1989", "addnode=5.6.7.8:1989" };
+    try std.testing.expect(try ensureLines(allocator, io, dd, "x.conf", &wanted));
+
+    // Rerun is a no-op — nothing left to add.
+    try std.testing.expect(!try ensureLines(allocator, io, dd, "x.conf", &wanted));
+
+    // The user's line survives once, the missing one was appended, comment kept.
+    {
+        var dir = try std.Io.Dir.cwd().openDir(io, dd, .{});
+        defer dir.close(io);
+        var f = try dir.openFile(io, "x.conf", .{});
+        defer f.close(io);
+        var buf: [512]u8 = undefined;
+        const n = try f.readPositionalAll(io, &buf, 0);
+        const got = buf[0..n];
+        try std.testing.expectEqualStrings("# mine\naddnode=1.2.3.4:1989\naddnode=5.6.7.8:1989\n", got);
     }
 }

@@ -304,16 +304,37 @@ pub const BitcoinZ = struct {
     /// `dumpwallet` is allowed to write (the daemon creates it on first use).
     const export_subdir = "export";
 
+    /// Known-good peers seeded into the conf so a fresh node finds the network
+    /// quickly (BitcoinZ's seeding is thin enough that initial sync can stall
+    /// peerless without them). 1989 is the mainnet P2P port. `addnode` is purely
+    /// additive — the daemon just also tries these — and `prepareConf` appends
+    /// each line only when it isn't already present, so a user's own addnode
+    /// entries are always kept.
+    pub const seed_nodes = [_][]const u8{
+        "addnode=37.187.76.80:1989",
+        "addnode=51.222.50.26:1989",
+        "addnode=152.89.232.103:1989",
+        "addnode=146.59.69.245:1989",
+        "addnode=90.157.141.190:1989",
+        "addnode=45.32.135.197:1989",
+        "addnode=173.176.66.36:1989",
+        "addnode=57.128.236.79:1989",
+        "addnode=explorer.btcz.app:1989",
+        "addnode=explorer.btcz.rocks:1989",
+    };
+
     /// Ensure `bitcoinz.conf` carries the RPC creds (and `server=1`/`rpcport`)
     /// BoxWallet needs before the daemon reads it; existing values are kept. Also
-    /// points `exportdir` at `<datadir>/export` when the user hasn't set one:
-    /// zcashd-era `dumpwallet` writes only inside `-exportdir` and there is no
-    /// default, so without it the wallet-backup RPC can never succeed. An adopted
-    /// conf's own `exportdir` wins untouched.
+    /// appends the missing `seed_nodes` (see there), and points `exportdir` at
+    /// `<datadir>/export` when the user hasn't set one: zcashd-era `dumpwallet`
+    /// writes only inside `-exportdir` and there is no default, so without it
+    /// the wallet-backup RPC can never succeed. An adopted conf's own
+    /// `exportdir` wins untouched.
     pub fn prepareConf(allocator: std.mem.Allocator, io: std.Io, home: []const u8) !void {
         const data_dir = try dataDir(allocator, home);
         defer allocator.free(data_dir);
         _ = try conf.populate(allocator, io, data_dir, conf_file, rpc_default_username, rpc_default_port);
+        _ = try conf.ensureLines(allocator, io, data_dir, conf_file, &seed_nodes);
 
         if (try conf.readValue(allocator, io, data_dir, conf_file, "exportdir")) |existing| {
             allocator.free(existing);
@@ -1024,4 +1045,39 @@ test "versionFromClient reads a build-50 CLIENT_VERSION as the plain release" {
     const none = try BitcoinZ.versionFromClient(a, 0);
     defer a.free(none);
     try std.testing.expectEqualStrings("", none);
+}
+
+test "prepareConf seeds the addnode peers exactly once" {
+    if (builtin.os.tag == .windows) return error.SkipZigTest;
+    const allocator = std.testing.allocator;
+
+    var threaded: std.Io.Threaded = .init(allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    const home = "test-btcz-addnode-home";
+    std.Io.Dir.cwd().deleteTree(io, home) catch {};
+    defer std.Io.Dir.cwd().deleteTree(io, home) catch {};
+
+    // Two runs: the second must not duplicate any addnode line.
+    try BitcoinZ.prepareConf(allocator, io, home);
+    try BitcoinZ.prepareConf(allocator, io, home);
+
+    const data_dir = try BitcoinZ.dataDir(allocator, home);
+    defer allocator.free(data_dir);
+    var dir = try std.Io.Dir.cwd().openDir(io, data_dir, .{});
+    defer dir.close(io);
+    var f = try dir.openFile(io, BitcoinZ.conf_file, .{});
+    defer f.close(io);
+    var buf: [4096]u8 = undefined;
+    const n = try f.readPositionalAll(io, &buf, 0);
+    const got = buf[0..n];
+
+    for (BitcoinZ.seed_nodes) |line| {
+        // Present…
+        try std.testing.expect(std.mem.indexOf(u8, got, line) != null);
+        // …exactly once.
+        const first = std.mem.indexOf(u8, got, line).?;
+        try std.testing.expect(std.mem.indexOfPos(u8, got, first + line.len, line) == null);
+    }
 }
