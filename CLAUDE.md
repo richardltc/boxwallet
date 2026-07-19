@@ -228,3 +228,6 @@ ZIG_GLOBAL_CACHE_DIR=zig-pkg zig build release # cross-build all release binarie
   `Coin.ExternalWallet.restore_seed`.
 - Match the surrounding code's comment density, naming, and idioms.
 - **Don't break other coins** If you need to change code that is being used by another coin, make sure there is no possibility that the other coin functionaility will break.
+- **Never add co-authorship trailers to commits.** No `Co-Authored-By:` line, no
+  `Claude-Session:` line, no "Generated with …" footer — in commit messages or PR
+  bodies. Commit messages here are just the message, nothing appended.
