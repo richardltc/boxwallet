@@ -28,7 +28,7 @@ const BitcoinZ = @import("coins/bitcoinz.zig").BitcoinZ;
 /// change how BoxWallet identifies itself in the UI. `app_color` is the brand
 /// hex used for the "BoxWallet" wording on the Home pane.
 pub const app_name = "BoxWallet TUI";
-pub const app_version = "0.8.0";
+pub const app_version = "0.8.1";
 const app_color = "#7ca071";
 
 /// Fallback install root used only if the home-dir-based path can't be built
