@@ -143,8 +143,12 @@ pub const BitcoinZ = struct {
         return conf.dataDirFor(allocator, home, os, ".zcash-params", "ZcashParams", "ZcashParams");
     }
 
-    /// The shared Zcash params directory for the build target.
+    /// The shared Zcash params directory for the build target. An empty `home`
+    /// is rejected rather than tolerated: `path.join` would drop it and yield a
+    /// *relative* `.zcash-params`, scattering ~780 MB into whatever the process's
+    /// CWD happens to be instead of the dir every zcashd-family app shares.
     pub fn paramsDir(allocator: std.mem.Allocator, home: []const u8) ![]const u8 {
+        if (home.len == 0) return error.NoHomeDir;
         return paramsDirFor(allocator, home, builtin.os.tag);
     }
 
@@ -930,6 +934,12 @@ test "params dir resolves to the shared ZcashParams location on every platform" 
     const sep = std.fs.path.sep_str;
     const expected = "C:\\Users\\alice" ++ sep ++ "AppData" ++ sep ++ "Roaming" ++ sep ++ "ZcashParams";
     try std.testing.expectEqualStrings(expected, win);
+}
+
+test "an empty home dir is refused rather than resolving relative to the CWD" {
+    // Regression: an unset home once yielded a bare ".zcash-params", which put
+    // ~780 MB of proving params wherever the process happened to be running.
+    try std.testing.expectError(error.NoHomeDir, BitcoinZ.paramsDir(std.testing.allocator, ""));
 }
 
 test "the pinned proving parameters carry well-formed SHA-256 hex pins" {

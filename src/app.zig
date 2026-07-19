@@ -5730,6 +5730,11 @@ pub const App = struct {
         act.acked = false;
         act.coin = coin;
         act.install_root = self.install_root;
+        // The worker needs the home dir too: a coin whose install places support
+        // files outside the install root resolves them against it (BitcoinZ's
+        // shared Zcash params dir). Left unset, that path would be relative and
+        // land in the process's CWD.
+        act.home_dir = self.home_dir;
         act.spinner = makeSpinner();
         // Publish the starting phase before the worker exists so the pane shows
         // activity immediately, even before the first download byte arrives.
