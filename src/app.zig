@@ -771,10 +771,19 @@ const WalletAction = enum {
     /// Restore the wallet from a backup file (bitcoin-core `importwallet`).
     restore,
     /// Restore the wallet by swapping in a backup file with the daemon stopped
-    /// (old daemons with no `importwallet`, e.g. SpiderByte's binary wallet.dat).
+    /// (a binary wallet.dat — SpiderByte, whose daemon has no `importwallet`;
+    /// BitcoinZ, which offers it alongside the key-dump import).
     restore_file_offline,
 
     /// The menu label for the action.
+    ///
+    /// The two restores name the *file each takes*, not the mechanism, because
+    /// BitcoinZ offers both at once and "Restore from file" / "Restore from a
+    /// wallet file" were indistinguishable in that menu — picking the wrong one
+    /// is exactly the mistake that ends in an empty wallet. Every coin wiring
+    /// `restore` uses bitcoin-core `importwallet` (a `dumpwallet` *text* file),
+    /// and every coin wiring `restore_file_offline` swaps a binary `wallet.dat`,
+    /// so both labels hold for all of them.
     fn label(self: WalletAction) []const u8 {
         return switch (self) {
             .encrypt => "Encrypt wallet",
@@ -782,8 +791,8 @@ const WalletAction = enum {
             .stake => "Unlock for staking",
             .lock => "Lock wallet",
             .backup => "Back up wallet",
-            .restore => "Restore from file",
-            .restore_file_offline => "Restore from a wallet file",
+            .restore => "Restore from key dump",
+            .restore_file_offline => "Restore from wallet.dat",
         };
     }
 
@@ -8546,7 +8555,7 @@ pub const App = struct {
         if (m.stage == .setup_file) {
             var fout: std.Io.Writer.Allocating = .init(a);
             errdefer fout.deinit();
-            const heading_txt = if (m.action == .restore_file_offline) "Select your backup wallet.dat to restore" else "Select a wallet file to import";
+            const heading_txt = if (m.action == .restore_file_offline) "Select your backup wallet.dat to restore" else "Select the key-dump file to import";
             const heading = (zz.Style{}).bold(true).fg(brand).render(a, heading_txt) catch heading_txt;
             try fout.writer.print("{s}\n\n", .{heading});
             const picker = try self.file_picker.view(a);
