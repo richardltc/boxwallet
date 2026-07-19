@@ -9348,6 +9348,17 @@ pub const App = struct {
                         const cn = (zz.Style{}).bold(true).fg(zz.Color.hex(ReddCoin.coin_color_alt)).render(a, tail) catch tail;
                         try out.writer.print("{s}{s}{s}", .{ marker, redd, cn });
                         used = name.len;
+                    } else if (e == .bitcoinz and is_sel) {
+                        // BitcoinZ's two-tone wordmark when selected: "Bitcoin" in
+                        // white, "Z" in the brand gold. Unselected, it greys out
+                        // like every other coin (handled by the generic branch below).
+                        const name = BitcoinZ.coin_name;
+                        const head = name[0..BitcoinZ.wordmark_split];
+                        const tail = name[BitcoinZ.wordmark_split..];
+                        const bc = (zz.Style{}).bold(true).fg(zz.Color.hex(BitcoinZ.wordmark_head_color)).render(a, head) catch head;
+                        const z = (zz.Style{}).bold(true).fg(zz.Color.hex(BitcoinZ.coin_color)).render(a, tail) catch tail;
+                        try out.writer.print("{s}{s}{s}", .{ marker, bc, z });
+                        used = name.len;
                     } else if (e == .spiderbyte and is_sel) {
                         // SpiderByte's two-tone wordmark when selected: "Spider" in
                         // white, "Byte" in the brand colour. Unselected, it greys out
