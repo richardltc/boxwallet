@@ -459,10 +459,12 @@ pub const Monero = struct {
     };
 
     /// The two ways monerod can store the chain. Full node first, so the cursor
-    /// starts on the choice that discards nothing.
+    /// starts on the choice that discards nothing. Labels are kept short enough to
+    /// fit a menu row of the modal (the box pads but never truncates) — `app.zig`
+    /// has a test over every coin's labels that pins this.
     const prune_presets = [_]Coin.PrunePreset{
         .{ .label = "Keep the full blockchain (250+ GB)", .value = 0 },
-        .{ .label = "Prune the blockchain (~1/3 the disk, recommended)", .value = 1 },
+        .{ .label = "Prune the blockchain (~1/3 the disk)", .value = 1 },
     };
 
     /// The conf key monerod takes the choice from.

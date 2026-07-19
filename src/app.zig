@@ -12970,3 +12970,24 @@ test "reaping is a no-op for a live child and when no daemon was launched here" 
     try std.testing.expectEqual(@as(?std.posix.pid_t, pid), live.daemon_child.?.id);
     try std.testing.expect(procState(io, pid) != 'Z');
 }
+
+test "every prune menu row fits the modal box" {
+    // `modalRow` pads a short row out to `inner_w` but never truncates a long one,
+    // so a label wider than the box pushes the right-hand border out and the modal
+    // renders ragged. The menu marker ("❯ ") costs two columns on top of the label,
+    // as does the "Custom…" row's — so that's the budget every label has to fit.
+    const budget = modal_inner_w - zz.width("❯ ");
+    try std.testing.expect(zz.width("Custom…") <= budget);
+
+    inline for (.{ Bitcoin, Litecoin, Monero }) |C| {
+        for (C.pruning_caps.presets) |preset| {
+            std.testing.expect(zz.width(preset.label) <= budget) catch |err| {
+                std.debug.print(
+                    "prune label overruns the modal ({d} > {d}): \"{s}\"\n",
+                    .{ zz.width(preset.label), budget, preset.label },
+                );
+                return err;
+            };
+        }
+    }
+}
