@@ -339,6 +339,7 @@ pub const Litecoin = struct {
     // creates its own threaded IO so callers don't thread one through.
 
     pub const pruning_caps: Coin.Pruning = .{
+        .prompt = "How much disk should the blockchain use? Pruning caps it; the full chain is 150+ GB.",
         .should_offer = pruneShouldOffer,
         .apply = pruneApply,
         .current = pruneCurrent,

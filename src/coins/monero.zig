@@ -46,7 +46,7 @@ pub const Monero = struct {
     /// Donation address for BoxWallet development, in Monero's own currency.
     /// TODO(richard): replace with the real XMR tip address. Left as a marker
     /// rather than a guessed address — a wrong one would send tips into the void.
-    pub const tip_address = "TODO-XMR-TIP-ADDRESS-NOT-SET";
+    pub const tip_address = "86fcmcNhhWeCx3jf8TbC2cWDLRY2DYJr9E6Z5Zq9wyaHhEDsa4ETzQ42Bnm4Hio1HmH6bmbT4KWtZNp7vUwZn7LANdMSbfz";
     /// Monero is proof-of-work (RandomX) — no wallet staking.
     pub const proof_of_stake = false;
 
@@ -436,6 +436,109 @@ pub const Monero = struct {
         defer allocator.free(data_dir);
         if (conf.dataDirHasEntry(allocator, data_dir, conf_file)) return;
         try conf.writeConf(io, data_dir, conf_file, conf_body);
+    }
+
+    // --- pruning capability ----------------------------------------------
+    //
+    // Monero's chain is very large (hundreds of GB), so on the *first* daemon start
+    // the user is asked how to store it; the answer is written to `bitmonero.conf`
+    // as `prune-blockchain=1`/`0` and read back for the Settings tab.
+    //
+    // Unlike the bitcoin-derived coins there is no size to choose: monerod's
+    // pruning is all-or-nothing — it drops ~7/8 of the ring-signature data,
+    // leaving roughly a third of the chain — so the capability runs in `.on_off`
+    // mode with a two-row menu and no custom amount.
+
+    pub const pruning_caps: Coin.Pruning = .{
+        .mode = .on_off,
+        .presets = &prune_presets,
+        .prompt = "How should the blockchain be stored? The full chain is 250+ GB; pruning keeps about a third of it and still validates every block.",
+        .should_offer = pruneShouldOffer,
+        .apply = pruneApply,
+        .current = pruneCurrent,
+    };
+
+    /// The two ways monerod can store the chain. Full node first, so the cursor
+    /// starts on the choice that discards nothing.
+    const prune_presets = [_]Coin.PrunePreset{
+        .{ .label = "Keep the full blockchain (250+ GB)", .value = 0 },
+        .{ .label = "Prune the blockchain (~1/3 the disk, recommended)", .value = 1 },
+    };
+
+    /// The conf key monerod takes the choice from.
+    const prune_key = "prune-blockchain";
+
+    /// The directory monerod keeps its LMDB blockchain in. Its presence means a
+    /// chain already lives in the data dir — see `pruneShouldOffer`.
+    const chain_dir = "lmdb";
+
+    /// Offer the prune prompt only when the conf carries no `prune-blockchain`
+    /// setting yet — so it's asked exactly once, and a conf the user already
+    /// configured is respected — **and** only when the data dir holds no chain yet.
+    ///
+    /// That second condition is what stops BoxWallet touching someone else's node.
+    /// `~/.bitmonero` is the standard data dir on Linux *and* macOS, so it may well
+    /// belong to an existing monerod with a chain that took days to sync. A node
+    /// that was never pruned carries no `prune-blockchain` key *by definition* — you
+    /// only add one to opt in — so the conf check alone reads a full node as "never
+    /// asked" and offers to prune it. An `lmdb/` dir means someone was here first,
+    /// so the prompt is withheld and their node is left exactly as it was.
+    ///
+    /// Withholding it also matches what monerod can actually do: `--prune-blockchain`
+    /// only prunes while syncing from scratch, and pruning an existing chain is a
+    /// separate, irreversible `monero-blockchain-prune` run we never perform.
+    ///
+    /// This never suppresses the legitimate prompt: it's evaluated *before the
+    /// daemon's first start* (see `app.zig`'s start preflight), so a data dir
+    /// BoxWallet is setting up fresh has no `lmdb/` yet and is still offered.
+    fn pruneShouldOffer(allocator: std.mem.Allocator, home: []const u8) bool {
+        const cur = pruneCurrent(allocator, home) catch return false;
+        if (cur != null) return false;
+
+        const data_dir = dataDir(allocator, home) catch return false;
+        defer allocator.free(data_dir);
+        return !conf.dataDirHasEntry(allocator, data_dir, chain_dir);
+    }
+
+    /// Persist the choice to `bitmonero.conf` as `prune-blockchain=1`/`0`,
+    /// preserving every other line. The "off" answer is written out too, so the
+    /// prompt knows it was already asked.
+    ///
+    /// `prepareConf` runs first: this is the first thing to touch the conf on a
+    /// fresh install, and a bare `setValue` would create a file holding only the
+    /// prune key — which `prepareConf` would then skip as "already there", losing
+    /// the canonical body. Where a conf already exists both calls leave it alone
+    /// apart from this one key.
+    fn pruneApply(allocator: std.mem.Allocator, home: []const u8, prune_value: i64) anyerror!void {
+        var threaded: std.Io.Threaded = .init(allocator, .{});
+        defer threaded.deinit();
+        const io = threaded.io();
+
+        try prepareConf(allocator, io, home);
+
+        const data_dir = try dataDir(allocator, home);
+        defer allocator.free(data_dir);
+        try conf.setValue(allocator, io, data_dir, conf_file, prune_key, if (prune_value != 0) "1" else "0");
+    }
+
+    /// The configured prune setting (1 = pruned, 0 = full node, null = unset) for
+    /// the Settings tab. monerod's option parser takes `1`/`0` and `true`/`false`,
+    /// so both spellings are read back; anything else reads as null rather than
+    /// erroring the display.
+    fn pruneCurrent(allocator: std.mem.Allocator, home: []const u8) anyerror!?i64 {
+        var threaded: std.Io.Threaded = .init(allocator, .{});
+        defer threaded.deinit();
+        const io = threaded.io();
+
+        const data_dir = try dataDir(allocator, home);
+        defer allocator.free(data_dir);
+        const raw = (try conf.readValue(allocator, io, data_dir, conf_file, prune_key)) orelse return null;
+        defer allocator.free(raw);
+
+        const val = std.mem.trim(u8, raw, " \t\r");
+        if (std.mem.eql(u8, val, "1") or std.ascii.eqlIgnoreCase(val, "true")) return 1;
+        if (std.mem.eql(u8, val, "0") or std.ascii.eqlIgnoreCase(val, "false")) return 0;
+        return null;
     }
 
     /// Monero's daemon runs in the foreground of its own process, so it's spawned
@@ -1207,6 +1310,7 @@ pub const Monero = struct {
         .wallet_receive_address = vtWalletReceiveAddress,
         .wallet_send = vtWalletSend,
         .external_wallet = &external_wallet,
+        .pruning = &pruning_caps,
     };
 
     // The three hooks below ride the wallet process's endpoint: for an
@@ -1696,4 +1800,114 @@ test "prepareConf writes a Monero-valid conf, and never touches an existing one"
         const n = try f.readPositionalAll(io, &buf, 0);
         try std.testing.expectEqualStrings(theirs, buf[0..n]);
     }
+}
+
+test "pruning: offered when unset, then the choice is read back and not re-offered" {
+    if (builtin.os.tag == .windows) return error.SkipZigTest;
+    const allocator = std.testing.allocator;
+    var xmr: Monero = .{};
+    const c = xmr.coin();
+
+    // A throwaway HOME whose ~/.bitmonero/bitmonero.conf doesn't exist yet.
+    const home = "test-xmr-prune-home";
+    var threaded: std.Io.Threaded = .init(allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    std.Io.Dir.cwd().deleteTree(io, home) catch {};
+    defer std.Io.Dir.cwd().deleteTree(io, home) catch {};
+
+    // No conf → prompt is offered and there's no configured value.
+    try std.testing.expect(c.offersPrunePrompt(allocator, home));
+    try std.testing.expect((try c.pruningState(allocator, home)) == null);
+
+    // Pruning on: read back as 1, and the prompt is done asking.
+    try c.applyPrune(allocator, home, 1);
+    try std.testing.expectEqual(@as(?i64, 1), try c.pruningState(allocator, home));
+    try std.testing.expect(!c.offersPrunePrompt(allocator, home));
+
+    // Applying the choice must not cost us the canonical conf body — `pruneApply`
+    // runs `prepareConf` first precisely so `rpc-bind-port` is still there.
+    const data_dir = try Monero.dataDir(allocator, home);
+    defer allocator.free(data_dir);
+    {
+        const port = (try conf.readValue(allocator, io, data_dir, Monero.conf_file, "rpc-bind-port")).?;
+        defer allocator.free(port);
+        try std.testing.expectEqualStrings(Monero.rpc_default_port, port);
+    }
+
+    // "Keep the full blockchain" (0) is a real configured value, distinct from unset.
+    try c.applyPrune(allocator, home, 0);
+    try std.testing.expectEqual(@as(?i64, 0), try c.pruningState(allocator, home));
+    try std.testing.expect(!c.offersPrunePrompt(allocator, home));
+}
+
+test "pruning: monerod's true/false spelling reads back, junk reads as unset" {
+    if (builtin.os.tag == .windows) return error.SkipZigTest;
+    const allocator = std.testing.allocator;
+    var xmr: Monero = .{};
+    const c = xmr.coin();
+
+    const home = "test-xmr-prune-spelling";
+    var threaded: std.Io.Threaded = .init(allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    std.Io.Dir.cwd().deleteTree(io, home) catch {};
+    defer std.Io.Dir.cwd().deleteTree(io, home) catch {};
+
+    const data_dir = try Monero.dataDir(allocator, home);
+    defer allocator.free(data_dir);
+    var dd = try std.Io.Dir.cwd().createDirPathOpen(io, data_dir, .{});
+    defer dd.close(io);
+
+    // monerod's option parser takes both spellings, so a conf written by hand
+    // (or by another wallet) must still read as "already answered".
+    try dd.writeFile(io, .{ .sub_path = Monero.conf_file, .data = "prune-blockchain=true\n" });
+    try std.testing.expectEqual(@as(?i64, 1), try c.pruningState(allocator, home));
+    try dd.writeFile(io, .{ .sub_path = Monero.conf_file, .data = "prune-blockchain=false\n" });
+    try std.testing.expectEqual(@as(?i64, 0), try c.pruningState(allocator, home));
+
+    // An unparseable value reads as unset rather than erroring the Settings tab.
+    try dd.writeFile(io, .{ .sub_path = Monero.conf_file, .data = "prune-blockchain=maybe\n" });
+    try std.testing.expectEqual(@as(?i64, null), try c.pruningState(allocator, home));
+}
+
+test "pruning is never offered for a chain that was already here" {
+    if (builtin.os.tag == .windows) return error.SkipZigTest;
+    const allocator = std.testing.allocator;
+    var xmr: Monero = .{};
+    const c = xmr.coin();
+
+    // The scenario this guards: `~/.bitmonero` is monerod's standard data dir on
+    // Linux and macOS, so it may hold an existing node. A node that was never
+    // pruned has *no* `prune-blockchain` key — that's what unpruned means — so
+    // without the chain check it reads as "never asked" and BoxWallet offers to
+    // prune someone else's chain.
+    const home = "test-xmr-adopted-home";
+    var threaded: std.Io.Threaded = .init(allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    std.Io.Dir.cwd().deleteTree(io, home) catch {};
+    defer std.Io.Dir.cwd().deleteTree(io, home) catch {};
+
+    const data_dir = try Monero.dataDir(allocator, home);
+    defer allocator.free(data_dir);
+
+    // A data dir that looks like an existing node: an `lmdb/` chain, and a conf
+    // carrying no `prune-blockchain` key (what a full node's conf looks like).
+    {
+        var dd = try std.Io.Dir.cwd().createDirPathOpen(io, data_dir, .{});
+        defer dd.close(io);
+        try dd.writeFile(io, .{ .sub_path = Monero.conf_file, .data = "out-peers=16\n" });
+    }
+    {
+        const lmdb = try std.fs.path.join(allocator, &.{ data_dir, "lmdb" });
+        defer allocator.free(lmdb);
+        var ld = try std.Io.Dir.cwd().createDirPathOpen(io, lmdb, .{});
+        ld.close(io);
+    }
+
+    // Nothing is configured — but the prompt must still be withheld, because the
+    // chain isn't ours to prune.
+    try std.testing.expect((try c.pruningState(allocator, home)) == null);
+    try std.testing.expect(!c.offersPrunePrompt(allocator, home));
 }

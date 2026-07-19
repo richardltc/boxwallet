@@ -1337,35 +1337,40 @@ fn formatMicroUsd(buf: []u8, micro: u64) []const u8 {
     return std.fmt.bufPrint(buf, "${d}.{d:0>6}", .{ micro / 1_000_000, micro % 1_000_000 }) catch "?";
 }
 
-/// A first-start prune preset: a menu label and the target it sets, in MiB
-/// (matching the daemon's `prune=` units; 0 = full node). 1 GB is taken as
-/// 1000 MiB so the size reads back cleanly as "N GB" on the Settings tab.
-const PrunePreset = struct { label: []const u8, mib: i64 };
-const prune_presets = [_]PrunePreset{
-    .{ .label = "No pruning (full node)", .mib = 0 },
-    .{ .label = "Prune to 2 GB", .mib = 2000 },
-    .{ .label = "Prune to 5 GB", .mib = 5000 },
-    .{ .label = "Prune to 10 GB", .mib = 10000 },
-};
-
 /// The prune prompt — a small modal shown the first time a prune-capable coin's
-/// daemon starts (Litecoin), asking how much disk to cap the blockchain at. On a
-/// choice it writes `prune=<MiB>` to the coin's conf, then the daemon starts (via
+/// daemon starts (Bitcoin, Litecoin, Monero), asking how the blockchain should be
+/// stored. On a choice it writes the coin's conf, then the daemon starts (via
 /// `startAfterPrune`). Distinct from the wallet/QuickSync modals so the flows
-/// don't entangle. The menu lists `prune_presets` plus a trailing "Custom…" that
-/// advances to a GB text field (`prune_input`).
+/// don't entangle.
+///
+/// The menu is the coin's own `Coin.Pruning.presets`, since daemons don't agree on
+/// the knob: a `.size_mib` coin picks a disk cap and gets a trailing "Custom…" row
+/// that advances to a GB text field (`prune_input`); an `.on_off` coin (Monero)
+/// just picks pruned or not, and has no custom row. Both are cached at open so the
+/// key handler and the renderer agree on the row count.
 const PruneModal = struct {
     const Stage = enum { menu, custom };
-    /// Menu index of the trailing "Custom…" row (after the presets).
-    const custom_row = prune_presets.len;
 
     stage: Stage = .menu,
     /// The entry the prompt acts on, so a moved left-nav selection doesn't misfire.
     coin_idx: usize = 0,
-    /// Cursor over the menu: 0..prune_presets.len presets, then `custom_row`.
+    /// Cursor over the menu: 0..presets.len presets, then `customRow` when offered.
     sel: usize = 0,
+    /// The coin's menu rows, captured at open.
+    presets: []const Coin.PrunePreset = &.{},
+    /// Whether a trailing "Custom…" row is offered (`.size_mib` coins only).
+    allow_custom: bool = false,
     /// Set when a typed custom amount didn't parse, so the field can flag it.
     bad_input: bool = false,
+
+    /// Menu index of the trailing "Custom…" row (only meaningful when
+    /// `allow_custom`), and the last selectable row.
+    fn customRow(self: *const PruneModal) usize {
+        return self.presets.len;
+    }
+    fn lastRow(self: *const PruneModal) usize {
+        return if (self.allow_custom) self.presets.len else self.presets.len -| 1;
+    }
 };
 
 /// The update-confirm prompt — shown when the user presses `u` on a coin with an
@@ -6213,9 +6218,9 @@ pub const App = struct {
             act.daemon_thread = null;
         }
 
-        // First-start prune prompt (Litecoin): ask how much disk to cap the
-        // blockchain at before the daemon ever runs. Offered only once — once a
-        // `prune` value is in the conf, this is false. The choice writes the conf,
+        // First-start prune prompt (Bitcoin/Litecoin/Monero): ask how the chain
+        // should be stored before the daemon ever runs. Offered only once — once a
+        // prune value is in the conf, this is false. The choice writes the conf,
         // then `startAfterPrune` carries on with the rest of the preflight.
         if (coin.offersPrunePrompt(self.allocator, self.home_dir)) {
             self.openPruneModal(coin);
@@ -6636,11 +6641,17 @@ pub const App = struct {
         self.logf("{s}: {s}…", .{ coin.coinName(), if (m.starting) "starting miner" else "stopping miner" });
     }
 
-    /// Open the first-start prune prompt for `coin`. Resets the cursor to the
-    /// safest choice (full node) and clears the custom field.
+    /// Open the first-start prune prompt for `coin`, with that coin's own menu.
+    /// Resets the cursor to row 0 — by convention the choice that discards nothing
+    /// (full node) — and clears the custom field.
     fn openPruneModal(self: *App, coin: Coin) void {
-        _ = coin;
-        self.prune_modal = .{ .coin_idx = self.selected, .sel = 0 };
+        const pr = coin.pruning() orelse return;
+        self.prune_modal = .{
+            .coin_idx = self.selected,
+            .sel = 0,
+            .presets = pr.presets,
+            .allow_custom = pr.mode == .size_mib,
+        };
         self.prune_input.setValue("") catch {};
     }
 
@@ -6657,7 +6668,7 @@ pub const App = struct {
                 .up => if (m.sel > 0) {
                     m.sel -= 1;
                 },
-                .down => if (m.sel < PruneModal.custom_row) {
+                .down => if (m.sel < m.lastRow()) {
                     m.sel += 1;
                 },
                 .enter => self.choosePrune(),
@@ -6665,7 +6676,7 @@ pub const App = struct {
                     'k' => if (m.sel > 0) {
                         m.sel -= 1;
                     },
-                    'j' => if (m.sel < PruneModal.custom_row) {
+                    'j' => if (m.sel < m.lastRow()) {
                         m.sel += 1;
                     },
                     else => {},
@@ -6694,14 +6705,14 @@ pub const App = struct {
     /// the trailing "Custom…" row opens the GB entry field.
     fn choosePrune(self: *App) void {
         const m = &self.prune_modal.?;
-        if (m.sel == PruneModal.custom_row) {
+        if (m.allow_custom and m.sel == m.customRow()) {
             m.stage = .custom;
             m.bad_input = false;
             self.prune_input.setValue("") catch {};
             self.prune_input.focus();
             return;
         }
-        self.applyPruneAndStart(prune_presets[m.sel].mib);
+        self.applyPruneAndStart(m.presets[m.sel].value);
     }
 
     /// Parse the custom GB entry and apply it. A blank or unparseable value (or 0,
@@ -6720,12 +6731,12 @@ pub const App = struct {
         self.applyPruneAndStart(gb * 1000);
     }
 
-    /// Persist the chosen prune target to the coin's conf, then carry on with the
+    /// Persist the chosen prune value to the coin's conf, then carry on with the
     /// daemon start. Writing the conf is a tiny synchronous op (like the wallet
     /// flows); a failure is logged and the start proceeds (the daemon just runs
     /// unpruned, and the prompt re-offers next time). Caches the value on the
     /// Activity so the Settings tab reflects it immediately.
-    fn applyPruneAndStart(self: *App, prune_mib: i64) void {
+    fn applyPruneAndStart(self: *App, prune_value: i64) void {
         const m = &self.prune_modal.?;
         const idx = m.coin_idx;
         const coin = self.coinAt(idx) orelse {
@@ -6733,15 +6744,18 @@ pub const App = struct {
             return;
         };
         const act = &self.activities[idx];
+        const mode = if (coin.pruning()) |pr| pr.mode else .size_mib;
         self.prune_modal = null;
 
-        if (coin.applyPrune(self.allocator, self.home_dir, prune_mib)) {
-            act.prune_mib = prune_mib;
+        if (coin.applyPrune(self.allocator, self.home_dir, prune_value)) {
+            act.prune_mib = prune_value;
             act.prune_read = true;
-            if (prune_mib == 0)
+            if (prune_value == 0)
                 self.logf("{s}: pruning disabled (full node)", .{coin.coinName()})
-            else
-                self.logf("{s}: pruning to {d} MiB", .{ coin.coinName(), prune_mib });
+            else switch (mode) {
+                .size_mib => self.logf("{s}: pruning to {d} MiB", .{ coin.coinName(), prune_value }),
+                .on_off => self.logf("{s}: blockchain pruning enabled", .{coin.coinName()}),
+            }
         } else |err| {
             self.logf("{s}: couldn't write prune setting ({s}) — starting unpruned", .{ coin.coinName(), @errorName(err) });
         }
@@ -7819,7 +7833,7 @@ pub const App = struct {
 
     /// The Settings tab body: the on-disk location of the coin's managed wallet
     /// file (so the user can find/back it up) and — for prune-capable coins
-    /// (Litecoin) — the configured prune target, read-only. Coins BoxWallet manages
+    /// (Bitcoin/Litecoin/Monero) — the configured prune setting, read-only. Coins BoxWallet manages
     /// no discrete wallet file for (Ergo's node-internal wallet, Epic, Zano) show an
     /// em-dash. Monero-style coins list the `.keys` companion on its own line. All
     /// values come from the per-frame arena `a` and the cached `act` (no disk IO in
@@ -7843,9 +7857,9 @@ pub const App = struct {
         // Pruning row, only for coins with the capability (Litecoin). Read-only —
         // the value is chosen once at first start. "Pruning" is padded to the
         // wallet labels' width so the colon lines up.
-        const prune_row: []const u8 = if (coin.pruning() != null) blk: {
+        const prune_row: []const u8 = if (coin.pruning()) |pr| blk: {
             const prune_label = statusLabel(a, brand, "Pruning    ", true);
-            const prune_value = formatPruneValue(a, act.prune_mib);
+            const prune_value = formatPruneValue(a, pr.mode, act.prune_mib);
             break :blk std.fmt.allocPrint(a, "\n{s}: {s}", .{ prune_label, prune_value }) catch "";
         } else "";
         return std.fmt.allocPrint(a,
@@ -7855,16 +7869,20 @@ pub const App = struct {
         , .{ wallet_label, wallet_value, keys_row, prune_row });
     }
 
-    /// Format a cached prune target (MiB; 0 = full node, <0 = not configured yet)
-    /// for the Settings tab. Whole-GB targets read as "N GB" (matching how they're
-    /// chosen), an odd MiB value as "N MiB", and 0/unset spell out their meaning.
-    fn formatPruneValue(a: std.mem.Allocator, prune_mib: i64) []const u8 {
+    /// Format a cached prune value (0 = full node, <0 = not configured yet) for the
+    /// Settings tab, in the coin's own terms. A `.size_mib` target reads as "N GB"
+    /// when it's whole GB (matching how it was chosen) and "N MiB" otherwise; an
+    /// `.on_off` coin has no size to show, so it just says pruning is on.
+    fn formatPruneValue(a: std.mem.Allocator, mode: Coin.Pruning.Mode, prune_mib: i64) []const u8 {
         if (prune_mib < 0) return (zz.Style{}).fg(.brightBlack).render(a, "not set") catch "not set";
         if (prune_mib == 0) return (zz.Style{}).dim(true).render(a, "disabled (full node)") catch "disabled (full node)";
-        const text = if (@rem(prune_mib, 1000) == 0)
-            std.fmt.allocPrint(a, "{d} GB", .{@divTrunc(prune_mib, 1000)}) catch "?"
-        else
-            std.fmt.allocPrint(a, "{d} MiB", .{prune_mib}) catch "?";
+        const text = switch (mode) {
+            .on_off => "enabled (~1/3 the chain)",
+            .size_mib => if (@rem(prune_mib, 1000) == 0)
+                std.fmt.allocPrint(a, "{d} GB", .{@divTrunc(prune_mib, 1000)}) catch "?"
+            else
+                std.fmt.allocPrint(a, "{d} MiB", .{prune_mib}) catch "?",
+        };
         return (zz.Style{}).dim(true).render(a, text) catch text;
     }
 
@@ -8794,13 +8812,16 @@ pub const App = struct {
 
         switch (m.stage) {
             .menu => {
-                try wrapIntoRows(a, &out.writer, vbar, inner_w, "How much disk should the blockchain use? Pruning caps it; the full chain is 50+ GB.", (zz.Style{}));
+                const prompt = if (coin.pruning()) |pr| pr.prompt else "";
+                try wrapIntoRows(a, &out.writer, vbar, inner_w, prompt, (zz.Style{}));
                 try modalRow(&out.writer, vbar, inner_w, "", 0);
-                // The presets, then a trailing "Custom…" row at `custom_row`.
-                inline for (prune_presets, 0..) |preset, i| {
+                // The coin's own presets, then a trailing "Custom…" row where the
+                // coin takes a free-form size (`.size_mib`).
+                for (m.presets, 0..) |preset, i| {
                     try pruneMenuRow(a, &out.writer, vbar, inner_w, brand, preset.label, i == m.sel);
                 }
-                try pruneMenuRow(a, &out.writer, vbar, inner_w, brand, "Custom…", m.sel == PruneModal.custom_row);
+                if (m.allow_custom)
+                    try pruneMenuRow(a, &out.writer, vbar, inner_w, brand, "Custom…", m.sel == m.customRow());
             },
             .custom => {
                 const field = try self.prune_input.view(a);

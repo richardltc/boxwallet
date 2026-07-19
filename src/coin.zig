@@ -260,35 +260,66 @@ pub const Coin = struct {
         ) anyerror!void,
     };
 
-    /// An optional **block-pruning** capability — for bitcoin-derived coins whose
-    /// chain is large enough that the user is asked, the first time the daemon
-    /// starts, how much disk to cap the blockchain at (Litecoin). The choice is
-    /// persisted in the coin's conf as `prune=<MiB>` (0 = full node), so it's a
-    /// one-time prompt and is read back for the Settings tab. Coins with no such
-    /// prompt leave `pruning` null; `offersPrunePrompt`/`pruning` key off it.
-    ///
-    /// Prune target is always in **MiB**, matching the daemon's `prune=` units; the
-    /// UI converts to/from GB for display. 0 disables pruning (keep the whole
-    /// chain); a positive value is the on-disk cap (the daemon enforces a ~550 MiB
-    /// floor).
+    /// One row of the first-start prune menu: the label the user sees and the
+    /// value it applies. What the number means depends on the coin's
+    /// `Pruning.Mode` — a disk cap in MiB, or simply on (non-zero) / off (0).
+    pub const PrunePreset = struct { label: []const u8, value: i64 };
+
+    /// The stock disk-cap menu for `.size_mib` coins (bitcoin-derived). 1 GB is
+    /// taken as 1000 MiB so the choice reads back cleanly as "N GB" on the
+    /// Settings tab.
+    pub const size_prune_presets = [_]PrunePreset{
+        .{ .label = "No pruning (full node)", .value = 0 },
+        .{ .label = "Prune to 2 GB", .value = 2000 },
+        .{ .label = "Prune to 5 GB", .value = 5000 },
+        .{ .label = "Prune to 10 GB", .value = 10000 },
+    };
+
+    /// An optional **block-pruning** capability — for coins whose chain is large
+    /// enough that the user is asked, the first time the daemon starts, how the
+    /// blockchain should be stored. The choice is persisted in the coin's conf, so
+    /// it's a one-time prompt and is read back for the Settings tab. Coins with no
+    /// such prompt leave `pruning` null; `offersPrunePrompt`/`pruning` key off it.
     pub const Pruning = struct {
+        /// What the numbers in `presets`/`apply`/`current` mean, because daemons
+        /// don't agree on the shape of the knob:
+        ///
+        /// - `.size_mib` — bitcoin-derived `prune=<MiB>`: an on-disk cap in MiB
+        ///   (matching the daemon's own units; the UI converts to/from GB), 0 = keep
+        ///   the whole chain. The daemon enforces a ~550 MiB floor. A free-form
+        ///   amount makes sense here, so the menu carries a "Custom…" row.
+        /// - `.on_off` — Monero-style `prune-blockchain=1`: pruning is all-or-nothing
+        ///   (the daemon drops ~7/8 of the ring-signature data, leaving roughly a
+        ///   third of the chain) with no size to choose, so non-zero = pruned, 0 =
+        ///   full, and there is no custom amount to type.
+        pub const Mode = enum { size_mib, on_off };
+
+        /// How to read this coin's prune values, and whether a custom amount is
+        /// offered.
+        mode: Mode = .size_mib,
+        /// The menu rows, in display order. By convention the least destructive
+        /// choice (keep everything) comes first, since the cursor starts there.
+        presets: []const PrunePreset = &size_prune_presets,
+        /// The question at the top of the prompt, in the coin's own terms (chain
+        /// size, what pruning costs). One sentence — the modal wraps it.
+        prompt: []const u8,
         /// Whether to show the first-start prune prompt now: true only when the
-        /// conf carries no `prune` setting yet (a fresh install BoxWallet hasn't
+        /// conf carries no prune setting yet (a fresh install BoxWallet hasn't
         /// configured, and not a conf the user already pruned themselves). A pure
         /// disk check, so it runs before the daemon is up.
         should_offer: *const fn (
             allocator: std.mem.Allocator,
             home_dir: []const u8,
         ) bool,
-        /// Persist the chosen prune target (MiB; 0 = full node) to the conf,
+        /// Persist the chosen prune value (see `Mode`; 0 = full node) to the conf,
         /// creating the conf/dir if absent. Called once, before the daemon launches.
         apply: *const fn (
             allocator: std.mem.Allocator,
             home_dir: []const u8,
-            prune_mib: i64,
+            prune_value: i64,
         ) anyerror!void,
-        /// The configured prune target for the Settings tab: MiB, 0 (full node), or
-        /// null when the conf carries no `prune` setting. A cheap conf read.
+        /// The configured prune value for the Settings tab (see `Mode`), 0 (full
+        /// node), or null when the conf carries no prune setting. A cheap conf read.
         current: *const fn (
             allocator: std.mem.Allocator,
             home_dir: []const u8,
@@ -792,9 +823,9 @@ pub const Coin = struct {
         /// coins with no such helper. `syncAccelerator`/`offersSyncAccelerator` key
         /// off this.
         sync_accelerator: ?*const SyncAccelerator = null,
-        /// Optional: the block-pruning capability (Litecoin's first-start prune
-        /// prompt). Null for coins with no prune prompt. `pruning`/`offersPrunePrompt`
-        /// key off this.
+        /// Optional: the block-pruning capability (the first-start prune prompt —
+        /// Bitcoin, Litecoin, Monero). Null for coins with no prune prompt.
+        /// `pruning`/`offersPrunePrompt` key off this.
         pruning: ?*const Pruning = null,
         /// Optional: the stablecoin capability (DigiByte's DigiDollar). Null for
         /// coins with no chain-issued stablecoin. `stablecoin`/`supportsStablecoin`
