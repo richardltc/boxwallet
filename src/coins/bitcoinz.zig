@@ -48,7 +48,7 @@ pub const BitcoinZ = struct {
     pub const wordmark_split = "Bitcoin".len;
     /// Donation address for BoxWallet development, in BitcoinZ's own currency.
     /// TODO(richard): replace with the real BTCZ tip address.
-    pub const tip_address = "TODO-BTCZ-TIP-ADDRESS-NOT-SET";
+    pub const tip_address = "t1fJS8kqdDNo5EyRuiNV3qPCFZmy5pbrb5Q";
     /// BitcoinZ is proof-of-work (Equihash) — no wallet staking.
     pub const proof_of_stake = false;
     pub const conf_file = "bitcoinz.conf";
