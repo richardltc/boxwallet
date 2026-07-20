@@ -128,10 +128,14 @@ const home_version_text = " v" ++ app_version;
 /// aligned across every row.
 const nav_label_w = @max(12, home_brand_text.len + home_version_text.len);
 
-/// Total width of a left-nav row: the 2-cell selection marker plus the label
-/// column. Also the click target — an x below this is in the nav, at or past it
-/// is the separator or the detail pane.
-const nav_col_w = 2 + nav_label_w;
+/// Visible width of the trailing selection-marker column — the closing `❮` that
+/// brackets the current row against the leading `❯`, plus the space before it.
+const nav_trail_w = 2;
+
+/// Total width of a left-nav row: the 2-cell selection marker, the label column,
+/// and the 2-cell closing marker. Also the click target — an x below this is in
+/// the nav, at or past it is the separator or the detail pane.
+const nav_col_w = 2 + nav_label_w + nav_trail_w;
 
 /// The colour a left-nav row is drawn in: its brand colour when `selected`, else
 /// a dim grey — so only the current coin shows its colour and the selection pops
@@ -9586,6 +9590,7 @@ pub const App = struct {
                     try out.writer.print("  {s}", .{hint});
                     const used = zz.width(text);
                     if (nav_label_w > used) try out.writer.splatByteAll(' ', nav_label_w - used);
+                    try out.writer.splatByteAll(' ', nav_trail_w);
                 },
                 .entry => |ei| {
                     const e = entries[ei];
@@ -9653,6 +9658,13 @@ pub const App = struct {
                         used = text.len;
                     }
                     if (nav_label_w > used) try out.writer.splatByteAll(' ', nav_label_w - used);
+                    // Closing marker: the current row is bracketed `❯ label ❮`, so
+                    // the selection reads at both ends of the column instead of the
+                    // left edge alone. Unselected rows pad to the same width.
+                    if (is_sel) {
+                        const close = (zz.Style{}).bold(true).fg(entryColor(e)).render(a, " ❮") catch " ❮";
+                        try out.writer.print("{s}", .{close});
+                    } else try out.writer.splatByteAll(' ', nav_trail_w);
                 },
             } else {
                 try out.writer.splatByteAll(' ', col_w);
@@ -12745,6 +12757,31 @@ test "left bar paints only the selected coin in its brand colour, the rest grey"
     const screen2 = try App.renderTwoPane(a, divi_idx, &.{}, "", 0);
     try std.testing.expect(std.mem.indexOf(u8, screen2, divi_seq) != null);
     try std.testing.expect(std.mem.indexOf(u8, screen2, nexa_seq) == null);
+}
+
+test "left-nav brackets the selected row with a closing marker, keeping the separator aligned" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    // Exactly one row carries the closing `❮`, and it is the same row as the
+    // opening `❯` — the pair brackets the selection rather than floating apart.
+    const screen = try App.renderTwoPane(a, 1, &.{}, "", 0);
+    try std.testing.expectEqual(@as(usize, 1), std.mem.count(u8, screen, "❮"));
+    var it = std.mem.splitScalar(u8, screen, '\n');
+    while (it.next()) |line| {
+        if (std.mem.indexOf(u8, line, "❮") == null) continue;
+        try std.testing.expect(std.mem.indexOf(u8, line, "❯") != null);
+    }
+
+    // The trailing marker column is padded on every row, so `│` still lands on
+    // the same visible column throughout the frame.
+    var it2 = std.mem.splitScalar(u8, screen, '\n');
+    while (it2.next()) |line| {
+        if (line.len == 0) continue;
+        const sep = std.mem.indexOf(u8, line, "│") orelse continue;
+        try std.testing.expectEqual(nav_col_w + 1, zz.width(line[0..sep]));
+    }
 }
 
 test "left-nav shows an update arrow only for non-selected coins with a pending update" {
