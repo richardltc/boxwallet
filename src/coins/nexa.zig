@@ -18,6 +18,9 @@ pub const Nexa = struct {
     pub const coin_description = "Scalable proof-of-work blockchain for global payments.";
     /// Nexa brand colour (`#RRGGBB`), for tinting the coin in the frontend.
     pub const coin_color = "#FEE043";
+    /// This coin's id on the price host, for the USD quote beside its
+    /// balance (see `src/price.zig`).
+    pub const price_id = "nexa";
     /// Donation address for BoxWallet development, in Nexa's own
     /// currency.
     pub const tip_address = "nexa:nqtsq5g57va7z3jh78vk606nj90m629w9uwrrtkwnejj3lk6";
@@ -324,6 +327,7 @@ pub const Nexa = struct {
         .coin_description = vtCoinDescription,
         .coin_color = vtCoinColor,
         .tip_address = vtTipAddress,
+        .price_id = vtPriceId,
         .core_version = vtCoreVersion,
         .proof_of_stake = vtProofOfStake,
         .balance_decimals = vtBalanceDecimals,
@@ -367,6 +371,9 @@ pub const Nexa = struct {
     }
     fn vtTipAddress(_: *anyopaque) []const u8 {
         return tip_address;
+    }
+    fn vtPriceId(_: *anyopaque) []const u8 {
+        return price_id;
     }
     fn vtCoreVersion(_: *anyopaque) []const u8 {
         return core_version;

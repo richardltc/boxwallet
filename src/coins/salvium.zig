@@ -37,6 +37,9 @@ pub const Salvium = struct {
     /// Salvium brand colour (`#RRGGBB`), for tinting the coin in the frontend.
     /// The green from Salvium's official brand-assets coin icon.
     pub const coin_color = "#0AEB85";
+    /// This coin's id on the price host, for the USD quote beside its
+    /// balance (see `src/price.zig`).
+    pub const price_id = "salvium";
     /// Donation address for BoxWallet development, in Salvium's own
     /// currency.
     pub const tip_address = "SC1siDYDKePFx2yx6cLwQLKikiXfJ8nz8jPEw9Cncr5M13rRkwJojLNLwEEFD9yPyz8v9WQuuaext3Zi462efUcYfidDE1tQ6mV";
@@ -1262,6 +1265,7 @@ pub const Salvium = struct {
         .coin_description = vtCoinDescription,
         .coin_color = vtCoinColor,
         .tip_address = vtTipAddress,
+        .price_id = vtPriceId,
         .core_version = vtCoreVersion,
         .proof_of_stake = vtProofOfStake,
         .conf_file = vtConfFile,
@@ -1342,6 +1346,9 @@ pub const Salvium = struct {
     }
     fn vtTipAddress(_: *anyopaque) []const u8 {
         return tip_address;
+    }
+    fn vtPriceId(_: *anyopaque) []const u8 {
+        return price_id;
     }
     fn vtCoreVersion(_: *anyopaque) []const u8 {
         return core_version;

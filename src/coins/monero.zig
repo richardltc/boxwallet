@@ -43,6 +43,9 @@ pub const Monero = struct {
     /// Monero brand colour (`#RRGGBB`), for tinting the coin in the frontend —
     /// the orange from Monero's official brand guide.
     pub const coin_color = "#FF6600";
+    /// This coin's id on the price host, for the USD quote beside its
+    /// balance (see `src/price.zig`).
+    pub const price_id = "monero";
     /// Donation address for BoxWallet development, in Monero's own currency.
     /// TODO(richard): replace with the real XMR tip address. Left as a marker
     /// rather than a guessed address — a wrong one would send tips into the void.
@@ -1290,6 +1293,7 @@ pub const Monero = struct {
         .coin_description = vtCoinDescription,
         .coin_color = vtCoinColor,
         .tip_address = vtTipAddress,
+        .price_id = vtPriceId,
         .core_version = vtCoreVersion,
         .proof_of_stake = vtProofOfStake,
         .conf_file = vtConfFile,
@@ -1358,6 +1362,9 @@ pub const Monero = struct {
     }
     fn vtTipAddress(_: *anyopaque) []const u8 {
         return tip_address;
+    }
+    fn vtPriceId(_: *anyopaque) []const u8 {
+        return price_id;
     }
     fn vtCoreVersion(_: *anyopaque) []const u8 {
         return core_version;

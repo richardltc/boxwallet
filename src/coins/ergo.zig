@@ -37,6 +37,9 @@ pub const Ergo = struct {
     pub const coin_description = "Proof-of-work platform for secure, contract-based money.";
     /// Ergo brand colour (`#RRGGBB`), for tinting the coin in the frontend.
     pub const coin_color = "#FF5E18";
+    /// This coin's id on the price host, for the USD quote beside its
+    /// balance (see `src/price.zig`).
+    pub const price_id = "ergo";
     /// Donation address for BoxWallet development, in Ergo's own
     /// currency.
     /// TODO(richard): replace with the real ERG tip address.
@@ -1071,6 +1074,7 @@ pub const Ergo = struct {
         .coin_description = vtCoinDescription,
         .coin_color = vtCoinColor,
         .tip_address = vtTipAddress,
+        .price_id = vtPriceId,
         .core_version = vtCoreVersion,
         .proof_of_stake = vtProofOfStake,
         .has_header_presync = vtHasHeaderPresync,
@@ -1143,6 +1147,9 @@ pub const Ergo = struct {
     }
     fn vtTipAddress(_: *anyopaque) []const u8 {
         return tip_address;
+    }
+    fn vtPriceId(_: *anyopaque) []const u8 {
+        return price_id;
     }
     fn vtCoreVersion(_: *anyopaque) []const u8 {
         return core_version;

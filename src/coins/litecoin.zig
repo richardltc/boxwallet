@@ -28,6 +28,9 @@ pub const Litecoin = struct {
     pub const coin_description = "The silver to Bitcoin's gold — fast, low-fee payments.";
     /// Litecoin brand colour (`#RRGGBB`), for tinting the coin in the frontend.
     pub const coin_color = "#345D9D";
+    /// This coin's id on the price host, for the USD quote beside its
+    /// balance (see `src/price.zig`).
+    pub const price_id = "litecoin";
     /// Donation address for BoxWallet development, in Litecoin's own
     /// currency.
     pub const tip_address = "ltc1qdzccuuf2nr73rs58vtgn242sf6csw3v3azpzpq";
@@ -411,6 +414,7 @@ pub const Litecoin = struct {
         .coin_description = vtCoinDescription,
         .coin_color = vtCoinColor,
         .tip_address = vtTipAddress,
+        .price_id = vtPriceId,
         .core_version = vtCoreVersion,
         .proof_of_stake = vtProofOfStake,
         .conf_file = vtConfFile,
@@ -455,6 +459,9 @@ pub const Litecoin = struct {
     }
     fn vtTipAddress(_: *anyopaque) []const u8 {
         return tip_address;
+    }
+    fn vtPriceId(_: *anyopaque) []const u8 {
+        return price_id;
     }
     fn vtCoreVersion(_: *anyopaque) []const u8 {
         return core_version;

@@ -7,6 +7,7 @@ const memory = @import("memory.zig");
 const conf = @import("conf.zig");
 const rpc = @import("rpc.zig");
 const updater = @import("update.zig");
+const price = @import("price.zig");
 const qrcode = @import("qrcode.zig");
 const Coin = @import("coin.zig").Coin;
 const Nexa = @import("coins/nexa.zig").Nexa;
@@ -4067,6 +4068,39 @@ pub const App = struct {
     /// user's own holdings (header Total/Available, Send/Stake available, the
     /// DigiDollar balance) — not public chain stats or transaction history.
     hide_balances: bool = false,
+
+    // --- USD prices (background, app-level) --------------------------------
+    // One request covers the whole coin roster on a slow cadence — see
+    // `src/price.zig` for the cadence and the privacy rationale.
+    /// Opt-out: prices are on by default and `p` turns them off, persisted to
+    /// `boxwallet.conf` beside `hide_balances`. **Off means no request is ever
+    /// made** — not a fetch whose result is hidden — so disabling it is a real
+    /// network opt-out, which is the whole point of offering it.
+    show_prices: bool = true,
+    /// Latest quote per `entries` slot (index 0 / Home unused), parallel to
+    /// `activities`. `have` false = no price to show for that coin.
+    prices: [entries.len]price.Quote = [_]price.Quote{.{}} ** entries.len,
+    /// Wall-clock (unix seconds) of the last *successful* fetch, 0 if none yet.
+    /// Quotes older than `price.max_age_s` stop being displayed rather than
+    /// misrepresenting what a balance is worth.
+    price_fetched_at: i64 = 0,
+    /// Monotonic ns of the last fetch attempt, and how many have failed in a
+    /// row — together these drive the backoff (`price.backoffSeconds`).
+    price_last_try_ns: i64 = 0,
+    price_failures: u32 = 0,
+    /// True once the first fetch has been kicked off, so startup isn't delayed
+    /// by a network round trip (same deferral as the update check).
+    price_started: bool = false,
+    /// The in-flight fetch worker, joined when `price_done` is observed.
+    price_thread: ?std.Thread = null,
+    /// Sync edge: stored with release by the worker when the fetch finishes; the
+    /// UI loads it with acquire, then reads `price_result`/`price_ok` and joins.
+    price_done: std.atomic.Value(bool) = .init(false),
+    /// Worker output, read by the UI only after the `price_done` edge — so these
+    /// plain fields need no atomics.
+    price_result: [entries.len]price.Quote = [_]price.Quote{.{}} ** entries.len,
+    price_ok: bool = false,
+
     /// The open `w` wallet modal, or null when no modal is up. While set, the
     /// modal owns keyboard input and is composited over the dashboard.
     modal: ?Modal = null,
@@ -4282,6 +4316,7 @@ pub const App = struct {
         self.refreshSelectedInstalled();
         // Restore the persisted balance-privacy toggle (off if never set).
         self.hide_balances = self.loadHideBalances();
+        self.show_prices = self.loadShowPrices();
 
         // Take the first disk-usage sample now, synchronously, so the bar is
         // populated before the first frame is drawn rather than blank until the
@@ -4312,6 +4347,11 @@ pub const App = struct {
         if (self.update_thread) |t| {
             t.join();
             self.update_thread = null;
+        }
+        // Same for the price worker — it writes into App fields.
+        if (self.price_thread) |t| {
+            t.join();
+            self.price_thread = null;
         }
         for (&self.activities) |*act| {
             if (act.thread) |t| {
@@ -4424,6 +4464,7 @@ pub const App = struct {
                         'j' => self.move(1),
                         'l' => self.log_visible = !self.log_visible,
                         'h' => self.toggleHideBalances(),
+                        'p' => self.togglePrices(),
                         // Mouse tracking claims the terminal's own click handling,
                         // which is what normally drives select-to-copy. Toggling it
                         // off hands that back, so an address in the detail pane can
@@ -4808,6 +4849,10 @@ pub const App = struct {
             self.update_started = true;
             self.update_thread = std.Thread.spawn(.{}, runUpdateCheck, .{self}) catch null;
         }
+        // Refresh USD prices when due (one request for the whole roster on a
+        // slow cadence; a no-op while switched off).
+        self.servicePrices(t.timestamp);
+
         // Announce the download once, the moment the worker commits to it — so
         // "downloading vX" shows up front rather than only when it lands.
         if (self.update_thread != null and !self.update_dl_logged and self.update_downloading.load(.acquire)) {
@@ -5552,6 +5597,136 @@ pub const App = struct {
         const val = raw orelse return false;
         defer self.allocator.free(val);
         return std.mem.eql(u8, val, "1") or std.ascii.eqlIgnoreCase(val, "true");
+    }
+
+    /// Flip the USD-price display and persist it so it survives a restart.
+    /// Bound to `p`. Turning it off stops the background fetch entirely (no
+    /// further network requests), and drops the cached quotes so nothing stale
+    /// is left behind if it's turned back on. The write is best-effort: if the
+    /// conf can't be written the toggle still applies for this session.
+    fn togglePrices(self: *App) void {
+        self.show_prices = !self.show_prices;
+        if (!self.show_prices) {
+            for (&self.prices) |*q| q.* = .{};
+            self.price_fetched_at = 0;
+            self.price_failures = 0;
+        } else {
+            // Re-enabled: fetch on the next tick rather than waiting out the
+            // interval, so a price appears straight away.
+            self.price_last_try_ns = 0;
+        }
+        const value: []const u8 = if (self.show_prices) "1" else "0";
+        conf.setValue(self.allocator, self.io, self.install_root, settings_file, "show_prices", value) catch |err| {
+            self.logf("USD prices {s} (couldn't save setting: {s})", .{ if (self.show_prices) "on" else "off", @errorName(err) });
+            return;
+        };
+        self.logf("USD prices {s}", .{if (self.show_prices) "on" else "off"});
+    }
+
+    /// Read the persisted `show_prices` setting. **Defaults to true** — this is
+    /// an opt-*out*, so an absent or unparseable key means on.
+    fn loadShowPrices(self: *App) bool {
+        const raw = conf.readValue(self.allocator, self.io, self.install_root, settings_file, "show_prices") catch return true;
+        const v = raw orelse return true;
+        defer self.allocator.free(v);
+        const t = std.mem.trim(u8, v, " \t\r\n");
+        return !(std.mem.eql(u8, t, "0") or std.ascii.eqlIgnoreCase(t, "false"));
+    }
+
+    /// The coin ids to price, written into `ids`/`slots` (parallel), returning
+    /// the count. Only coins that declare a `price_id` are included — SpiderByte
+    /// isn't listed, so it's simply left out of the request.
+    ///
+    /// Deliberately **independent of what's installed or selected**: the roster
+    /// is fixed, so the outgoing request is byte-identical for every user and
+    /// reveals nothing about which coins they hold. Filtering to installed coins
+    /// would leak exactly that.
+    fn priceRoster(self: *const App, ids: *[entries.len][]const u8, slots: *[entries.len]usize) usize {
+        var n: usize = 0;
+        for (entries, 0..) |e, i| {
+            if (e == .home) continue;
+            const c = self.coinAt(i) orelse continue;
+            const id = c.priceId() orelse continue;
+            ids[n] = id;
+            slots[n] = i;
+            n += 1;
+        }
+        return n;
+    }
+
+    /// Price-fetch worker. Runs one request for the whole roster on a private
+    /// arena and stages the result; the UI reaps it once `price_done` is seen.
+    /// Best-effort throughout — a failure just leaves `price_ok` false and the
+    /// previous quotes standing until they age out.
+    fn runPriceFetch(self: *App) void {
+        var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+        defer arena.deinit();
+        const a = arena.allocator();
+
+        for (&self.price_result) |*q| q.* = .{};
+        self.price_ok = false;
+
+        var ids: [entries.len][]const u8 = undefined;
+        var slots: [entries.len]usize = undefined;
+        const n = self.priceRoster(&ids, &slots);
+        if (n == 0) {
+            self.price_done.store(true, .release);
+            return;
+        }
+
+        var threaded: std.Io.Threaded = .init(a, .{});
+        defer threaded.deinit();
+
+        var quotes: [entries.len]price.Quote = undefined;
+        if (price.fetch(a, threaded.io(), ids[0..n], quotes[0..n])) {
+            // Scatter back into `entries`-indexed slots for the UI.
+            for (0..n) |k| self.price_result[slots[k]] = quotes[k];
+            self.price_ok = true;
+        } else |_| {}
+
+        self.price_done.store(true, .release);
+    }
+
+    /// Kick off a price fetch when one is due (and none is in flight), then reap
+    /// a finished one. Called from `onTick`. Silent by design: prices are ambient,
+    /// so neither a fetch nor its failure writes to the action log.
+    fn servicePrices(self: *App, now_ns: i64) void {
+        // Reap first, so a completed fetch is folded in before scheduling next.
+        if (self.price_thread != null and self.price_done.load(.acquire)) {
+            self.price_thread.?.join();
+            self.price_thread = null;
+            self.price_done.store(false, .monotonic);
+            if (self.price_ok) {
+                self.prices = self.price_result;
+                self.price_fetched_at = std.Io.Timestamp.now(self.io, .real).toSeconds();
+                self.price_failures = 0;
+            } else {
+                // Saturating, so a long outage can't wrap the backoff back to
+                // a fast retry.
+                self.price_failures +|= 1;
+            }
+        }
+
+        if (!self.show_prices or self.price_thread != null) return;
+
+        const due_s = price.backoffSeconds(self.price_failures);
+        const first = !self.price_started or self.price_last_try_ns == 0;
+        if (!first and now_ns - self.price_last_try_ns < due_s * std.time.ns_per_s) return;
+
+        self.price_started = true;
+        self.price_last_try_ns = now_ns;
+        self.price_thread = std.Thread.spawn(.{}, runPriceFetch, .{self}) catch null;
+    }
+
+    /// The displayable quote for entry `idx`: null when prices are off, none has
+    /// been fetched, the coin isn't listed, or the last success is older than
+    /// `price.max_age_s` (stale prices are dropped rather than shown as live).
+    fn quoteAt(self: *const App, idx: usize) ?price.Quote {
+        if (!self.show_prices or self.price_fetched_at == 0) return null;
+        const age = std.Io.Timestamp.now(self.io, .real).toSeconds() - self.price_fetched_at;
+        if (age > price.max_age_s) return null;
+        const q = self.prices[idx];
+        return if (q.have) q else null;
     }
 
     /// Flip the balance-privacy toggle and persist it so it survives a restart.
@@ -7464,6 +7639,8 @@ pub const App = struct {
                 \\  s        start/stop selected coin's daemon
                 \\  w        wallet (encrypt / unlock / stake)
                 \\  l        toggle the log pane
+                \\  h        hide/show balance figures
+                \\  p        USD prices on/off (off = no price lookups)
                 \\  m        toggle the mouse (off = select text to copy)
                 \\  q        quit
             , .{ head, app_version, notice, coin_updates }) catch "alloc error";
@@ -7670,12 +7847,25 @@ pub const App = struct {
             break :blk std.fmt.allocPrint(a, "{s}   {s}", .{ total, avail }) catch total;
         } else "";
 
+        // USD price + 24h move, tucked in beside the balance. Absent for an
+        // unlisted coin, while prices are off, or when the last fetch is stale
+        // (see `quoteAt`) — the line simply isn't drawn, never a "$0.00".
+        const price_str: []const u8 = if (corner.len == 0)
+            ""
+        else if (self.quoteAt(self.selected)) |q|
+            priceCorner(a, q, act.balance_total, self.hide_balances)
+        else
+            "";
+
         // Sit the balance just to the right of the coin/version on the header row,
-        // with a clear gap. Just the title when the coin reports no balance.
+        // with a clear gap, and the USD figure after it. Just the title when the
+        // coin reports no balance.
         const head_line: []const u8 = if (corner.len == 0)
             head
+        else if (price_str.len == 0)
+            std.fmt.allocPrint(a, "{s}     {s}", .{ head, corner }) catch head
         else
-            std.fmt.allocPrint(a, "{s}     {s}", .{ head, corner }) catch head;
+            std.fmt.allocPrint(a, "{s}     {s}   {s}", .{ head, corner, price_str }) catch head;
 
         // Sync progress bars. Labels are padded to a common width before styling
         // (ANSI codes are zero-width) so the two bars line up. Like the status
@@ -7788,7 +7978,7 @@ pub const App = struct {
             else
                 try renderPlaceholderTab(a, self.active_tab),
             .send => if (coin.supportsSend())
-                try renderSendTab(a, coin, act, self.hide_balances)
+                try renderSendTab(a, coin, act, self.hide_balances, self.quoteAt(self.selected))
             else
                 try renderPlaceholderTab(a, self.active_tab),
             .mining => if (coin.supportsMining())
@@ -8028,11 +8218,21 @@ pub const App = struct {
     /// `renderPlaceholderTab`. The actual address/amount entry happens in
     /// `SendModal` (opened by `enter`), not here — see the Context note on
     /// why free-text entry needs a modal's exclusive keyboard ownership.
-    fn renderSendTab(a: std.mem.Allocator, coin: Coin, act: *const Activity, hide: bool) ![]const u8 {
-        const balance = if (hide)
+    fn renderSendTab(a: std.mem.Allocator, coin: Coin, act: *const Activity, hide: bool, quote: ?price.Quote) ![]const u8 {
+        const bal_str = if (hide)
             try std.fmt.allocPrint(a, "{s} {s}", .{ balance_mask, coin.coinNameAbbrev() })
         else
             formatBalance(a, act.balance_avail, coin.coinNameAbbrev(), coin.balanceDecimals());
+        // What the spendable balance is worth, so the figure you're deciding an
+        // amount against has a familiar scale. Suppressed while balances are
+        // hidden (it's derived from the balance) and when there's no live quote.
+        const balance = if (hide) bal_str else blk: {
+            const q = quote orelse break :blk bal_str;
+            var vbuf: [64]u8 = undefined;
+            const worth = price.formatValue(&vbuf, act.balance_avail, q.usd);
+            const worth_sty = (zz.Style{}).fg(.brightBlack).render(a, worth) catch worth;
+            break :blk try std.fmt.allocPrint(a, "{s}  ≈ {s}", .{ bal_str, worth_sty });
+        };
         // Coins with a stake action (Salvium) get the extra key in the hint;
         // capital S because lowercase 's' toggles the daemon.
         const hint_text = if (coin.supportsStakeAction()) "(Enter: send   S: stake)" else "(press Enter to send)";
@@ -8139,12 +8339,12 @@ pub const App = struct {
         // Oracle price (micro-USD per coin) and system-wide stats, when known.
         if (info.price_micro_usd > 0) {
             var pbuf: [32]u8 = undefined;
-            const price = formatMicroUsd(&pbuf, info.price_micro_usd);
+            const oracle_price = formatMicroUsd(&pbuf, info.price_micro_usd);
             const stale: []const u8 = if (info.price_stale)
                 (zz.Style{}).bold(true).fg(.red).render(a, "  (stale)") catch "  (stale)"
             else
                 "";
-            try out.writer.print("Oracle price: {s} / coin{s}\n", .{ price, stale });
+            try out.writer.print("Oracle price: {s} / coin{s}\n", .{ oracle_price, stale });
         } else {
             const unknown = (zz.Style{}).dim(true).render(a, "Oracle price: unknown") catch "Oracle price: unknown";
             try out.writer.print("{s}\n", .{unknown});
@@ -8412,6 +8612,47 @@ pub const App = struct {
         const num = (zz.Style{}).bold(true).fg(num_color).render(a, fig) catch "?";
         const abbr = brand_sty.render(a, abbrev) catch abbrev;
         return std.fmt.allocPrint(a, "{s} {s} {s}", .{ lbl, num, abbr }) catch lbl;
+    }
+
+    /// The USD readout beside the balance: the coin's unit price, its 24h move
+    /// (green ▲ / red ▼, unsigned percentage — the arrow carries the sign), and
+    /// what the holding is worth.
+    ///
+    /// `hide` (the balance-privacy toggle) masks **only the holding's value**,
+    /// not the unit price: the value is derived from the balance, so leaving it
+    /// visible would hand back the very figure `hide_balances` conceals (value ÷
+    /// price = balance). The unit price is public market data and stays.
+    ///
+    /// A coin the host lists without a 24h change (Nexa) simply gets no arrow —
+    /// `formatChange` returns empty and the segment is skipped.
+    fn priceCorner(a: std.mem.Allocator, q: price.Quote, amount: f64, hide: bool) []const u8 {
+        var price_buf: [64]u8 = undefined;
+        var change_buf: [32]u8 = undefined;
+        var value_buf: [64]u8 = undefined;
+
+        const unit = price.formatUsd(&price_buf, q.usd);
+        const unit_sty = (zz.Style{}).fg(.brightBlack).render(a, unit) catch unit;
+
+        const change = price.formatChange(&change_buf, q.change_24h);
+        const change_sty: []const u8 = if (change.len == 0) "" else blk: {
+            const col: zz.Color = switch (price.direction(q.change_24h)) {
+                .up => .green,
+                .down => .red,
+                .flat => .brightBlack,
+            };
+            break :blk (zz.Style{}).bold(true).fg(col).render(a, change) catch change;
+        };
+
+        // Worth of the holding — masked with the balance it's derived from.
+        const value: []const u8 = if (hide)
+            balance_mask
+        else
+            price.formatValue(&value_buf, amount, q.usd);
+        const value_sty = (zz.Style{}).bold(true).fg(.brightWhite).render(a, value) catch value;
+
+        if (change_sty.len == 0)
+            return std.fmt.allocPrint(a, "{s}  ({s})", .{ value_sty, unit_sty }) catch value_sty;
+        return std.fmt.allocPrint(a, "{s}  ({s} {s})", .{ value_sty, unit_sty, change_sty }) catch value_sty;
     }
 
     /// A bold tick (✔, green) or cross (✘, red). The heavy glyphs read bolder
@@ -12999,4 +13240,120 @@ test "every prune menu row fits the modal box" {
             };
         }
     }
+}
+
+test "price display is gated on the toggle, listing, and staleness" {
+    const allocator = std.testing.allocator;
+    var threaded: std.Io.Threaded = .init(allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    var env = std.process.Environ.Map.init(allocator);
+    defer env.deinit();
+    try env.put("HOME", "/home/tester");
+    var ctx = zz.Context.init(allocator, allocator, io, &env);
+
+    var app: App = undefined;
+    _ = app.init(&ctx);
+    defer app.deinit();
+
+    // Pick any coin slot (index 0 is Home, so 1 is a coin).
+    const idx: usize = 1;
+    app.show_prices = true;
+    app.prices[idx] = .{ .usd = 64435, .change_24h = 0.31, .have = true };
+    app.price_fetched_at = std.Io.Timestamp.now(io, .real).toSeconds();
+
+    // Fresh + listed + enabled → shown.
+    try std.testing.expect(app.quoteAt(idx) != null);
+
+    // Switched off → nothing, whatever is cached.
+    app.show_prices = false;
+    try std.testing.expect(app.quoteAt(idx) == null);
+    app.show_prices = true;
+
+    // An unlisted coin (SpiderByte's shape: no quote ever filled in) → nothing,
+    // rather than a misleading $0.00.
+    app.prices[idx] = .{};
+    try std.testing.expect(app.quoteAt(idx) == null);
+    app.prices[idx] = .{ .usd = 64435, .change_24h = 0.31, .have = true };
+    try std.testing.expect(app.quoteAt(idx) != null);
+
+    // Stale beyond the max age → dropped, so a dead feed never keeps
+    // misrepresenting what a balance is worth.
+    app.price_fetched_at = std.Io.Timestamp.now(io, .real).toSeconds() - (price.max_age_s + 1);
+    try std.testing.expect(app.quoteAt(idx) == null);
+
+    // Never fetched at all → nothing.
+    app.price_fetched_at = 0;
+    try std.testing.expect(app.quoteAt(idx) == null);
+}
+
+test "priceCorner masks the holding's value but keeps the public unit price" {
+    const allocator = std.testing.allocator;
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    const q: price.Quote = .{ .usd = 2.114e-05, .change_24h = -5.52, .have = true };
+
+    // Visible: both the worth of the holding and the unit price.
+    const shown = App.priceCorner(a, q, 1_000_000, false);
+    try std.testing.expect(std.mem.indexOf(u8, shown, "$21.14") != null);
+    try std.testing.expect(std.mem.indexOf(u8, shown, "$0.00002114") != null);
+    try std.testing.expect(std.mem.indexOf(u8, shown, "▼ 5.52%") != null);
+
+    // Hidden: the value is masked (it's derived from the balance), but the unit
+    // price — public market data — stays.
+    const hidden = App.priceCorner(a, q, 1_000_000, true);
+    try std.testing.expect(std.mem.indexOf(u8, hidden, balance_mask) != null);
+    try std.testing.expect(std.mem.indexOf(u8, hidden, "$21.14") == null);
+    try std.testing.expect(std.mem.indexOf(u8, hidden, "$0.00002114") != null);
+
+    // A coin priced without a 24h figure (Nexa) draws no arrow at all.
+    const no_change: price.Quote = .{ .usd = 0.00120172, .change_24h = null, .have = true };
+    const plain = App.priceCorner(a, no_change, 100, false);
+    try std.testing.expect(std.mem.indexOf(u8, plain, "▲") == null);
+    try std.testing.expect(std.mem.indexOf(u8, plain, "▼") == null);
+    try std.testing.expect(std.mem.indexOf(u8, plain, "$0.001202") != null);
+}
+
+test "the price roster covers every listed coin and omits unlisted ones" {
+    const allocator = std.testing.allocator;
+    var threaded: std.Io.Threaded = .init(allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    var env = std.process.Environ.Map.init(allocator);
+    defer env.deinit();
+    try env.put("HOME", "/home/tester");
+    var ctx = zz.Context.init(allocator, allocator, io, &env);
+
+    var app: App = undefined;
+    _ = app.init(&ctx);
+    defer app.deinit();
+
+    var ids: [entries.len][]const u8 = undefined;
+    var slots: [entries.len]usize = undefined;
+    const n = app.priceRoster(&ids, &slots);
+
+    // Every id is non-empty, and each maps back to the coin that declared it.
+    try std.testing.expect(n > 0);
+    for (0..n) |k| {
+        try std.testing.expect(ids[k].len > 0);
+        const c = app.coinAt(slots[k]).?;
+        try std.testing.expectEqualStrings(c.priceId().?, ids[k]);
+    }
+
+    // SpiderByte declares no price id, so it must not be in the request.
+    for (0..n) |k| {
+        try std.testing.expect(!std.mem.eql(u8, ids[k], "spiderbyte"));
+    }
+
+    // The roster is exactly the coins declaring an id — count them independently.
+    var expected: usize = 0;
+    for (entries, 0..) |e, i| {
+        if (e == .home) continue;
+        if (app.coinAt(i).?.priceId() != null) expected += 1;
+    }
+    try std.testing.expectEqual(expected, n);
 }
