@@ -9657,14 +9657,19 @@ pub const App = struct {
                         try out.writer.print("{s}{s}", .{ marker, label });
                         used = text.len;
                     }
-                    if (nav_label_w > used) try out.writer.splatByteAll(' ', nav_label_w - used);
-                    // Closing marker: the current row is bracketed `❯ label ❮`, so
-                    // the selection reads at both ends of the column instead of the
-                    // left edge alone. Unselected rows pad to the same width.
+                    // Closing marker: the current row is bracketed `❯ Bitcoin ❮`, the
+                    // `❮` one space past the end of the *label* so it mirrors the
+                    // opening arrow instead of floating at the far edge of the
+                    // column. The row is then padded out to the same total width
+                    // (label column + trailing column) so the `│` stays aligned.
                     if (is_sel) {
                         const close = (zz.Style{}).bold(true).fg(entryColor(e)).render(a, " ❮") catch " ❮";
                         try out.writer.print("{s}", .{close});
-                    } else try out.writer.splatByteAll(' ', nav_trail_w);
+                        if (nav_label_w > used) try out.writer.splatByteAll(' ', nav_label_w - used);
+                    } else {
+                        if (nav_label_w > used) try out.writer.splatByteAll(' ', nav_label_w - used);
+                        try out.writer.splatByteAll(' ', nav_trail_w);
+                    }
                 },
             } else {
                 try out.writer.splatByteAll(' ', col_w);
