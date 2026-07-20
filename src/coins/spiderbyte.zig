@@ -38,6 +38,10 @@ pub const SpiderByte = struct {
     pub const coin_description = "Lightweight, eco-friendly proof-of-stake coin.";
     /// SpiderByte brand colour (`#RRGGBB`), for tinting the coin in the frontend.
     pub const coin_color = "#f72585";
+    // No `price_id`: SpiderByte isn't listed on the price host, so the vtable
+    // hook is left null and the coin simply shows no USD price (and is left out
+    // of the price request entirely). That's a real state, not a gap to fill —
+    // don't invent an id for it. See `src/price.zig`.
     /// Donation address for BoxWallet development, in SpiderByte's own
     /// currency.
     /// TODO(richard): replace with the real SPB tip address.

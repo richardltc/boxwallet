@@ -55,6 +55,11 @@ pub const Epic = struct {
     pub const coin_description = "Private, scalable Mimblewimble cryptocurrency.";
     /// Epic brand colour (`#RRGGBB`), for tinting the coin in the frontend.
     pub const coin_color = "#deac55";
+    /// This coin's id on the price host, for the USD quote beside its
+    /// balance (see `src/price.zig`).
+    /// Note the id is `epic-cash`, not the coin name — the host's ids
+    /// don't track coin names, so this is verified data, not derived.
+    pub const price_id = "epic-cash";
     /// Donation address for BoxWallet development, in Epic's own
     /// currency.
     /// TODO(richard): replace with the real EPIC tip address.
@@ -2068,6 +2073,7 @@ pub const Epic = struct {
         .coin_description = vtCoinDescription,
         .coin_color = vtCoinColor,
         .tip_address = vtTipAddress,
+        .price_id = vtPriceId,
         .core_version = vtCoreVersion,
         .proof_of_stake = vtProofOfStake,
         .conf_file = vtConfFile,
@@ -2117,6 +2123,9 @@ pub const Epic = struct {
     }
     fn vtTipAddress(_: *anyopaque) []const u8 {
         return tip_address;
+    }
+    fn vtPriceId(_: *anyopaque) []const u8 {
+        return price_id;
     }
     fn vtCoreVersion(_: *anyopaque) []const u8 {
         return core_version;

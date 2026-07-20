@@ -41,6 +41,9 @@ pub const Zano = struct {
     pub const coin_description = "Privacy chain with confidential assets and hybrid PoW/PoS.";
     /// Zano brand colour (`#RRGGBB`), for tinting the coin in the frontend.
     pub const coin_color = "#274cff";
+    /// This coin's id on the price host, for the USD quote beside its
+    /// balance (see `src/price.zig`).
+    pub const price_id = "zano";
     /// Donation address for BoxWallet development, in Zano's own
     /// currency.
     /// TODO(richard): replace with the real ZANO tip address.
@@ -950,6 +953,7 @@ pub const Zano = struct {
         .coin_description = vtCoinDescription,
         .coin_color = vtCoinColor,
         .tip_address = vtTipAddress,
+        .price_id = vtPriceId,
         .core_version = vtCoreVersion,
         .proof_of_stake = vtProofOfStake,
         .balance_decimals = vtBalanceDecimals,
@@ -1020,6 +1024,9 @@ pub const Zano = struct {
     }
     fn vtTipAddress(_: *anyopaque) []const u8 {
         return tip_address;
+    }
+    fn vtPriceId(_: *anyopaque) []const u8 {
+        return price_id;
     }
     fn vtCoreVersion(_: *anyopaque) []const u8 {
         return core_version;

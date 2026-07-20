@@ -42,6 +42,9 @@ pub const BitcoinZ = struct {
     pub const coin_description = "Community-driven Bitcoin fork with Zcash privacy tech.";
     /// BitcoinZ brand gold (`#RRGGBB`), for tinting the coin in the frontend.
     pub const coin_color = "#F5A623";
+    /// This coin's id on the price host, for the USD quote beside its
+    /// balance (see `src/price.zig`).
+    pub const price_id = "bitcoinz";
     /// Two-tone wordmark: "Bitcoin" in white, the trailing "Z" in the brand
     /// gold — the SpiderByte colour assignment (white head, brand tail).
     pub const wordmark_head_color = "#ffffff";
@@ -697,6 +700,7 @@ pub const BitcoinZ = struct {
         .coin_color = vtCoinColor,
         .tip_address = vtTipAddress,
         .wordmark = vtWordmark,
+        .price_id = vtPriceId,
         .core_version = vtCoreVersion,
         .proof_of_stake = vtProofOfStake,
         .conf_file = vtConfFile,
@@ -754,6 +758,9 @@ pub const BitcoinZ = struct {
     /// "Bitcoin" in `wordmark_head_color` (white), "Z" in `coin_color`.
     fn vtWordmark(_: *anyopaque) Coin.Wordmark {
         return .{ .split = wordmark_split, .alt_color = coin_color, .head_color = wordmark_head_color };
+    }
+    fn vtPriceId(_: *anyopaque) []const u8 {
+        return price_id;
     }
     fn vtCoreVersion(_: *anyopaque) []const u8 {
         return core_version;

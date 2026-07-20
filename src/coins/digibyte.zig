@@ -24,6 +24,9 @@ pub const DigiByte = struct {
     pub const coin_description = "Fast, secure UTXO blockchain with five mining algorithms.";
     /// DigiByte brand colour (`#RRGGBB`), for tinting the coin in the frontend.
     pub const coin_color = "#0066CC";
+    /// This coin's id on the price host, for the USD quote beside its
+    /// balance (see `src/price.zig`).
+    pub const price_id = "digibyte";
     /// Donation address for BoxWallet development, in DigiByte's own
     /// currency.
     pub const tip_address = "dgb1qqhd2rgrt4059vzz94yaezc9m03wgqq8my9dp57";
@@ -798,6 +801,7 @@ pub const DigiByte = struct {
         .coin_description = vtCoinDescription,
         .coin_color = vtCoinColor,
         .tip_address = vtTipAddress,
+        .price_id = vtPriceId,
         .core_version = vtCoreVersion,
         .proof_of_stake = vtProofOfStake,
         .conf_file = vtConfFile,
@@ -842,6 +846,9 @@ pub const DigiByte = struct {
     }
     fn vtTipAddress(_: *anyopaque) []const u8 {
         return tip_address;
+    }
+    fn vtPriceId(_: *anyopaque) []const u8 {
+        return price_id;
     }
     fn vtCoreVersion(_: *anyopaque) []const u8 {
         return core_version;

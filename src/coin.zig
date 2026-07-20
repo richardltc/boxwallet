@@ -486,6 +486,15 @@ pub const Coin = struct {
         /// True for proof-of-stake coins (which expose a staking status); false
         /// for proof-of-work coins.
         proof_of_stake: *const fn (ptr: *anyopaque) bool,
+        /// Optional: this coin's id on the public price host, for the USD quote
+        /// shown beside its balance (see `src/price.zig`). Coin-specific data
+        /// that isn't derivable from anything else here — the ids don't track
+        /// the coin name (Epic is `epic-cash`) — so each coin declares its own.
+        ///
+        /// **Null means the coin isn't listed** (SpiderByte), which is a normal
+        /// state, not an omission: the app simply shows no price for it. A coin
+        /// left null is also never sent in the price request.
+        price_id: ?*const fn (ptr: *anyopaque) []const u8 = null,
         /// Optional: the number of decimal places this coin's balances are shown
         /// to — 8 for bitcoin-derived coins, 12 for the Monero forks (Nerva/Zano),
         /// 9 for Ergo (nanoERG), 2 for Nexa. Drives the fixed-width balance figure
@@ -865,6 +874,13 @@ pub const Coin = struct {
     pub fn isProofOfStake(self: Coin) bool {
         return self.vtable.proof_of_stake(self.ptr);
     }
+    /// This coin's id on the price host, or null when it isn't listed there (so
+    /// it shows no USD price and is left out of the request entirely).
+    pub fn priceId(self: Coin) ?[]const u8 {
+        if (self.vtable.price_id) |f| return f(self.ptr);
+        return null;
+    }
+
     /// The number of decimal places balances are displayed to (default 8). Used
     /// to render every balance figure at fixed width — including a zero, which
     /// shows as "0.<decimals zeros>" rather than a bare "0".

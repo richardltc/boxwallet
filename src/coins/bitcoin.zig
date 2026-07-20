@@ -28,6 +28,9 @@ pub const Bitcoin = struct {
     pub const coin_description = "The original cryptocurrency — digital gold.";
     /// Bitcoin brand colour (`#RRGGBB`), for tinting the coin in the frontend.
     pub const coin_color = "#F7931A";
+    /// This coin's id on the price host, for the USD quote beside its
+    /// balance (see `src/price.zig`).
+    pub const price_id = "bitcoin";
     /// Donation address for BoxWallet development, in Bitcoin's own
     /// currency.
     pub const tip_address = "bc1qrxknutr7expz277w0kvjsx2p72ga5r8wrvcqe5";
@@ -436,6 +439,7 @@ pub const Bitcoin = struct {
         .coin_description = vtCoinDescription,
         .coin_color = vtCoinColor,
         .tip_address = vtTipAddress,
+        .price_id = vtPriceId,
         .core_version = vtCoreVersion,
         .proof_of_stake = vtProofOfStake,
         .conf_file = vtConfFile,
@@ -482,6 +486,9 @@ pub const Bitcoin = struct {
     }
     fn vtTipAddress(_: *anyopaque) []const u8 {
         return tip_address;
+    }
+    fn vtPriceId(_: *anyopaque) []const u8 {
+        return price_id;
     }
     fn vtCoreVersion(_: *anyopaque) []const u8 {
         return core_version;

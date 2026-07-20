@@ -56,6 +56,7 @@ test {
     _ = @import("disk.zig");
     _ = @import("memory.zig");
     _ = @import("conf.zig");
+    _ = @import("price.zig");
     _ = @import("coins/nexa.zig");
     _ = @import("coins/divi.zig");
     _ = @import("coins/ergo.zig");
