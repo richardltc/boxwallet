@@ -850,6 +850,16 @@ const WalletSetupOp = enum {
     fn setsNewPassword(self: WalletSetupOp) bool {
         return self == .create or self == .restore_seed;
     }
+
+    /// Whether an *empty* password is a valid entry for this op. Opening or
+    /// restoring an existing wallet file must accept a blank password, because the
+    /// wallet may have been created elsewhere with no encryption — the user then
+    /// submits the empty prompt deliberately (still explicit, never silent). Ops
+    /// that *set* a new credential (`create`, `restore_seed`) keep requiring a
+    /// non-empty password so a fresh wallet is never left unprotected by accident.
+    fn allowsEmptyPassword(self: WalletSetupOp) bool {
+        return self == .open or self == .restore_file;
+    }
 };
 
 /// The choices on an external-wallet menu — the setup choices shown when no
@@ -4707,10 +4717,11 @@ pub const App = struct {
                 else => {},
             },
             // New-password ops go on to a confirm step; `open` (existing password)
-            // submits straight to the worker.
+            // submits straight to the worker. Ops that open an existing wallet also
+            // accept a blank password (an unencrypted restored/imported wallet).
             .setup_password => switch (k.key) {
                 .escape => self.closeWalletModal(),
-                .enter => if (self.pw_input.getValue().len > 0) {
+                .enter => if (self.pw_input.getValue().len > 0 or m.setup_op.allowsEmptyPassword()) {
                     if (m.setup_op.setsNewPassword()) {
                         // Stash this entry and ask for it again.
                         const pw = self.pw_input.getValue();
@@ -8888,6 +8899,14 @@ pub const App = struct {
                 const masked = try self.pw_input.view(a);
                 const text = try std.fmt.allocPrint(a, "{s}{s}", .{ prompt, masked });
                 try modalRow(&out.writer, vbar, inner_w, text, zz.width(prompt) + zz.width(masked));
+                // Opening/restoring an existing wallet accepts a blank password (the
+                // wallet may be unencrypted) — say so, since an empty submit is
+                // otherwise indistinguishable from "not entered yet".
+                if (m.setup_op.allowsEmptyPassword()) {
+                    const hint = "Leave blank if the wallet has no password.";
+                    const styled = (zz.Style{}).dim(true).render(a, hint) catch hint;
+                    try modalRow(&out.writer, vbar, inner_w, styled, zz.width(hint));
+                }
                 if (m.pw_mismatch) {
                     const warn = "Passwords didn't match — please re-enter.";
                     const styled = (zz.Style{}).fg(.red).render(a, warn) catch warn;
@@ -12669,6 +12688,15 @@ test "only password-setting ops ask for confirmation" {
     try std.testing.expect(!WalletSetupOp.restore_file.setsNewPassword());
     try std.testing.expect(!WalletSetupOp.open.setsNewPassword());
     try std.testing.expect(!WalletSetupOp.lock.setsNewPassword());
+}
+
+test "opening an existing wallet accepts a blank password; setting one does not" {
+    // A restored/imported wallet may be unencrypted, so open + restore_file take an
+    // empty password; create/restore_seed set a new credential and must not.
+    try std.testing.expect(WalletSetupOp.open.allowsEmptyPassword());
+    try std.testing.expect(WalletSetupOp.restore_file.allowsEmptyPassword());
+    try std.testing.expect(!WalletSetupOp.create.allowsEmptyPassword());
+    try std.testing.expect(!WalletSetupOp.restore_seed.allowsEmptyPassword());
 }
 
 test "the external-wallet setup menu renders its create/restore choices" {
