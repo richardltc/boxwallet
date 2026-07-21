@@ -843,8 +843,12 @@ const WalletSetupOp = enum {
     /// Whether this op *sets* a new wallet password (so the UI asks the user to
     /// confirm it). `open` checks an existing password — a typo there just fails to
     /// unlock and is retried, so no confirmation is needed; `lock` takes none.
+    /// `restore_file` also takes an *existing* password, not a new one: the imported
+    /// wallet file is already encrypted with its own password, and the coin opens the
+    /// copied file with it (a wrong one just fails to decrypt and is retried), so —
+    /// like `open` — it's a single unconfirmed prompt.
     fn setsNewPassword(self: WalletSetupOp) bool {
-        return self == .create or self == .restore_seed or self == .restore_file;
+        return self == .create or self == .restore_seed;
     }
 };
 
@@ -8852,7 +8856,7 @@ pub const App = struct {
             },
             // External-wallet password entry (masked). The prompt names the action.
             .setup_password => {
-                const prompt = if (m.setup_op == .open) "Password: " else "New password: ";
+                const prompt = if (m.setup_op == .open or m.setup_op == .restore_file) "Password: " else "New password: ";
                 const masked = try self.pw_input.view(a);
                 const text = try std.fmt.allocPrint(a, "{s}{s}", .{ prompt, masked });
                 try modalRow(&out.writer, vbar, inner_w, text, zz.width(prompt) + zz.width(masked));
@@ -12628,12 +12632,13 @@ test "seed word counter accepts any valid length and lists them in the prompt" {
 }
 
 test "only password-setting ops ask for confirmation" {
-    // Creating/restoring sets a new password (confirm it — a typo would lock the
-    // user out); opening checks an existing one (a typo just fails and is retried);
-    // lock takes no password.
+    // Creating/restoring-from-seed sets a new password (confirm it — a typo would
+    // lock the user out); opening and restoring-from-file both check an *existing*
+    // password (the imported file is already encrypted), so a typo just fails and is
+    // retried — no confirmation; lock takes no password.
     try std.testing.expect(WalletSetupOp.create.setsNewPassword());
     try std.testing.expect(WalletSetupOp.restore_seed.setsNewPassword());
-    try std.testing.expect(WalletSetupOp.restore_file.setsNewPassword());
+    try std.testing.expect(!WalletSetupOp.restore_file.setsNewPassword());
     try std.testing.expect(!WalletSetupOp.open.setsNewPassword());
     try std.testing.expect(!WalletSetupOp.lock.setsNewPassword());
 }
