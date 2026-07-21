@@ -4162,6 +4162,11 @@ pub const App = struct {
     /// File browser for the restore-from-file flow (external-wallet coins).
     /// Persistent; navigated on demand, freed in `deinit`.
     file_picker: zz.components.FilePicker,
+    /// The directory the last restore-from-file browsed to, remembered for this
+    /// session so a subsequent restore re-opens there instead of home. In-memory
+    /// only (never written to disk); empty until the first file is picked.
+    last_file_dir_buf: [1024]u8 = undefined,
+    last_file_dir_len: usize = 0,
 
     // --- in-app self-update check (background) -----------------------------
     // A one-shot worker asks GitHub for the latest release and, if it's newer,
@@ -4762,6 +4767,8 @@ pub const App = struct {
                 else => {
                     const selected = self.file_picker.handleKey(self.io, self.environ_map, k) catch false;
                     if (selected) {
+                        // Remember where they browsed so the next restore starts here.
+                        if (self.file_picker.getSelected()) |fp| self.rememberFileDir(fp);
                         const ext = if (self.coinAt(m.coin_idx)) |c| c.hasExternalWallet() else false;
                         if (ext) {
                             m.stage = .setup_password;
@@ -7265,13 +7272,34 @@ pub const App = struct {
         self.tryStop();
     }
 
-    /// Point the file picker at the user's home dir and focus it, for the
-    /// restore-from-file flow.
+    /// Point the file picker at a start directory and focus it, for the
+    /// restore-from-file flow. Re-opens the directory the last restore browsed to
+    /// (remembered in-session) if one is set and still navigable, otherwise the
+    /// user's home dir, otherwise the cwd.
     fn startFilePicker(self: *App) void {
         self.file_picker.focus();
+        if (self.last_file_dir_len > 0) {
+            if (self.file_picker.navigate(self.io, self.last_file_dir_buf[0..self.last_file_dir_len])) |_| {
+                return;
+            } else |_| {
+                // The remembered dir is gone (unmounted/deleted) — fall through to
+                // home, and drop it so we don't keep retrying a dead path.
+                self.last_file_dir_len = 0;
+            }
+        }
         self.file_picker.navigateHome(self.io, self.environ_map) catch {
             self.file_picker.navigate(self.io, ".") catch {};
         };
+    }
+
+    /// Remember the directory a picked restore file lives in, so the next
+    /// restore-from-file re-opens there. In-memory only; silently skipped if the
+    /// path has no directory component or is too long for the buffer.
+    fn rememberFileDir(self: *App, file_path: []const u8) void {
+        const dir = std.fs.path.dirname(file_path) orelse return;
+        if (dir.len == 0 or dir.len > self.last_file_dir_buf.len) return;
+        @memcpy(self.last_file_dir_buf[0..dir.len], dir);
+        self.last_file_dir_len = dir.len;
     }
 
     /// Open the `w` wallet menu for the selected coin. Gated: the coin must
