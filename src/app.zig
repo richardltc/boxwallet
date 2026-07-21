@@ -2746,40 +2746,77 @@ const Activity = struct {
         }
         self.ext_wallet_open.store(0, .monotonic);
 
+        // Capture the wallet process's stdout+stderr to a scratch file so a failed
+        // open surfaces the real reason (a wrong password, an unreadable / corrupt
+        // or version-incompatible wallet file, a missing daemon connection) instead
+        // of a bare "WalletOpenFailed". The epee family (Zano/…) prints fatal load
+        // errors to the console, not only stderr, so both streams are captured to
+        // the one file. Per-port name so two coins launching at once don't clash;
+        // unlinked once read (an anonymous inode the live process can keep writing
+        // to is harmless) — on Windows the delete fails while the process holds it
+        // open (caught), and the next launch truncates it instead.
+        const cap_name = try std.fmt.allocPrint(a, ".wallet-{s}.startup", .{port});
+        const cap_path = try std.fs.path.join(a, &.{ self.install_root, cap_name });
+        var cap_file: ?std.Io.File = std.Io.Dir.createFileAbsolute(io, cap_path, .{ .read = true }) catch null;
+        defer if (cap_file) |*f| {
+            f.close(io);
+            std.Io.Dir.deleteFileAbsolute(io, cap_path) catch {};
+        };
+        const capture: std.process.SpawnOptions.StdIo = if (cap_file) |f| .{ .file = f } else .ignore;
+
         // argv is consumed by spawn (fork/exec copies it), so the local arena can be
         // freed right after. The wallet password rides argv only — never disk.
         const argv = try argv_fn(a, self.install_root, self.home_dir, port, wallet_password);
         const child = std.process.spawn(io, .{
             .argv = argv,
             .stdin = .ignore,
-            .stdout = .ignore,
-            .stderr = .ignore,
+            .stdout = capture,
+            .stderr = capture,
             .create_no_window = @import("builtin").os.tag == .windows,
         }) catch return error.WalletServiceFailed;
         self.wallet_rpc_child = child;
 
         // Wait for the wallet RPC to bind its port (or the process to die on a bad
-        // password). Bounded so a never-answering server can't wedge the worker.
+        // password / unreadable wallet). Bounded so a never-answering server can't
+        // wedge the worker.
         const auth = self.extWalletAuth();
         var waited: u32 = 0;
         const step: u32 = 250;
         const limit: u32 = 25_000;
         while (waited < limit) : (waited += step) {
             if (rpc.daemonReachable(a, auth)) return;
-            // Fast wrong-password path: simplewallet refuses a bad password and exits
-            // before ever binding its port, so reap-on-exit lets us fail at once
-            // rather than waiting out the whole timeout. (POSIX; Windows times out.)
+            // Fast failure path: simplewallet refuses a bad password / can't read the
+            // wallet and exits before ever binding its port, so reap-on-exit lets us
+            // fail at once — with the reason it printed — rather than waiting out the
+            // whole timeout. (POSIX; Windows times out then reads the same capture.)
             if (@import("builtin").os.tag != .windows) {
                 if (self.wallet_rpc_child) |ch| if (ch.id) |pid| {
                     if (App.reapNoHang(pid)) {
                         self.wallet_rpc_child = null;
+                        if (cap_file) |*f| self.setWalletErrFromCapture(io, f);
                         return error.WalletOpenFailed;
                     }
                 };
             }
             io.sleep(.fromMilliseconds(step), .awake) catch {};
         }
+        if (cap_file) |*f| self.setWalletErrFromCapture(io, f);
         return error.WalletOpenFailed;
+    }
+
+    /// Read the wallet process's captured stdout/stderr and stash the most
+    /// error-like line in `wallet_setup_sink`, so a failed launch reports why
+    /// (surfaced by `friendlyWalletError` and the action log). Best-effort: leaves
+    /// the sink untouched on any IO hiccup or when nothing was printed, so the
+    /// caller falls back to the generic message.
+    fn setWalletErrFromCapture(self: *Activity, io: std.Io, file: *std.Io.File) void {
+        const stat = file.stat(io) catch return;
+        var buf: [8 * 1024]u8 = undefined;
+        // Bias to the tail: the fatal line lands last, just before the process exits.
+        const off = if (stat.size > buf.len) stat.size - buf.len else 0;
+        const n = file.readPositionalAll(io, &buf, off) catch return;
+        const pick = pickWalletError(buf[0..n]);
+        if (pick.len != 0) self.wallet_setup_sink.set(pick);
     }
 
     /// Whether the coin's live status is still being resolved: it's installed and
@@ -3701,6 +3738,31 @@ fn pickDebugLogError(tail: []const u8) []const u8 {
         }
     }
     return if (root_hit.len != 0) root_hit else if (generic_hit.len != 0) generic_hit else fallback;
+}
+
+/// Choose the most informative line from a wallet process's captured
+/// stdout/stderr tail. `simplewallet` (and the epee family generally) prints a
+/// clear reason on a failed open — a wrong password, an unreadable / corrupt or
+/// version-incompatible wallet file, a refused daemon connection — usually right
+/// before it exits, so the *last* error-like line wins, falling back to the last
+/// non-empty line. Leading log timestamps are stripped. Returns a slice into
+/// `tail` (empty only if `tail` has no content).
+fn pickWalletError(tail: []const u8) []const u8 {
+    const markers = [_][]const u8{
+        "error",  "invalid", "wrong",     "failed",   "exception",
+        "unable", "corrupt", "cannot",    "denied",   "not found",
+        "password",
+    };
+    var hit: []const u8 = "";
+    var fallback: []const u8 = "";
+    var it = std.mem.splitScalar(u8, tail, '\n');
+    while (it.next()) |raw| {
+        const line = stripLogTimestamp(std.mem.trim(u8, raw, " \t\r"));
+        if (line.len == 0) continue;
+        fallback = line;
+        if (matchesAny(line, &markers)) hit = line;
+    }
+    return if (hit.len != 0) hit else fallback;
 }
 
 /// Consecutive stalled polls (~2s apart) required before `applyPoll` infers
@@ -10457,6 +10519,31 @@ test "setDaemonErr keeps the first non-empty stderr line, trimmed and bounded" {
     const huge = "x" ** (long.daemon_err_buf.len + 50);
     long.setDaemonErr(huge);
     try std.testing.expectEqual(long.daemon_err_buf.len, long.daemon_err.len);
+}
+
+test "pickWalletError surfaces the wallet process's failure line" {
+    // A wrong password: the error-like line wins over routine startup chatter, with
+    // any leading epee timestamp stripped.
+    try std.testing.expectEqualStrings(
+        "Error: invalid password",
+        pickWalletError("Loading wallet...\n2026-07-21 09:10:11.512 Error: invalid password\n"),
+    );
+
+    // A corrupt / unreadable wallet file: the last error-like line is chosen even
+    // when it lands after other output.
+    try std.testing.expectEqualStrings(
+        "failed to load wallet: file I/O error",
+        pickWalletError("opening wallet\nsome note\nfailed to load wallet: file I/O error\n"),
+    );
+
+    // No obvious marker: fall back to the last non-empty line rather than nothing.
+    try std.testing.expectEqualStrings(
+        "wallet closed",
+        pickWalletError("starting\nwallet closed\n\n"),
+    );
+
+    // Empty capture yields an empty pick, so the caller keeps the generic message.
+    try std.testing.expectEqual(@as(usize, 0), pickWalletError("   \n\t\n").len);
 }
 
 test "debug.log helpers strip the timestamp and pick the root-cause line" {
