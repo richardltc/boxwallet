@@ -1615,6 +1615,20 @@ const Activity = struct {
     /// the block being synced beside the Blocks bar. 0 when the daemon reports
     /// no usable tip timestamp.
     poll_tip_time: std.atomic.Value(i64) = .init(0),
+    /// On-disk size of the coin's whole data directory (bytes), sampled by the
+    /// poll worker on a slow cadence (a bounded directory walk — see
+    /// `sampleStorage`). Drives the "Storage" line under the Blocks bar. Disk-
+    /// derived, so it's meaningful whether or not the daemon is running.
+    poll_storage_bytes: std.atomic.Value(u64) = .init(0),
+    /// Whether the size above has been measured at least once (a real data dir
+    /// was found and walked). Kept separate from `poll_storage_bytes` so a
+    /// genuine tiny size isn't indistinguishable from "not measured yet / no
+    /// data dir" — the render shows a dim "—" until this flips true.
+    poll_storage_sampled: std.atomic.Value(u8) = .init(0),
+    /// Worker-owned monotonic deadline (ns, from `std.Io.Clock.awake`) for the
+    /// next storage sample. 0 = sample on the first poll; then set 30s ahead so
+    /// the directory walk never rides the ~2s poll cadence.
+    storage_next_ns: i128 = 0,
 
     // --- wallet action worker (the `w` menu) -------------------------------
     // A short-lived worker runs one encrypt/unlock/lock RPC so the UI never
@@ -2046,6 +2060,12 @@ const Activity = struct {
     /// Tip block's own timestamp (unix seconds), or 0 when unknown. Drives the
     /// "date/time of the block being synced" hint beside the Blocks bar.
     tip_time: i64 = 0,
+    /// On-disk size of the coin's data directory (bytes), folded from
+    /// `poll_storage_bytes` on poll reap. Rendered as the "Storage" figure.
+    storage_bytes: u64 = 0,
+    /// Whether `storage_bytes` reflects a real measurement yet (folded from
+    /// `poll_storage_sampled`). False renders a dim "—" instead of a figure.
+    storage_sampled: bool = false,
     spinner: zz.Spinner = undefined,
     /// Animates the "daemon running" line while `daemon` is `.starting`.
     daemon_spinner: zz.Spinner = undefined,
@@ -3033,7 +3053,36 @@ const Activity = struct {
         // process, and outside the branch above because it must work with the
         // daemon down — that's the case the RPC stamp can't reach.
         self.stampVersionFromBinary(a);
+        // Refresh the coin's on-disk size (self-gated to a slow cadence). Runs
+        // regardless of whether the daemon answered — the chain occupies disk
+        // whether it's up or down.
+        self.sampleStorage(a);
         self.poll_done.store(true, .release);
+    }
+
+    /// Measure the coin's data-directory size into `poll_storage_bytes`, gated to
+    /// a ~30s cadence so the directory walk never rides the ~2s poll. Runs on the
+    /// poll worker thread (a metadata-only walk can be slow on a spinning disk /
+    /// SBC, so it stays off the UI thread) over the caller's poll arena. A missing
+    /// data dir or IO hiccup leaves the last figure in place — the atomics persist
+    /// across polls — so the line doesn't flicker to "—" on a transient miss.
+    fn sampleStorage(self: *Activity, a: std.mem.Allocator) void {
+        var threaded: std.Io.Threaded = .init(a, .{});
+        defer threaded.deinit();
+        const io = threaded.io();
+
+        // Monotonic clock so a wall-clock jump (NTP, manual set) can't stall or
+        // spam the sampler. `awake`'s epoch is unspecified but always positive,
+        // so the 0 sentinel reliably means "never sampled — do it now".
+        const now: i128 = std.Io.Clock.awake.now(io).toNanoseconds();
+        if (self.storage_next_ns != 0 and now < self.storage_next_ns) return;
+        self.storage_next_ns = now + 30 * std.time.ns_per_s;
+
+        const data_dir = self.coin.dataDir(a, self.home_dir) catch return;
+        if (dirSizeBytes(io, a, data_dir)) |bytes| {
+            self.poll_storage_bytes.store(bytes, .monotonic);
+            self.poll_storage_sampled.store(1, .monotonic);
+        }
     }
 
     /// One-shot: stamp a missing version marker by asking the installed binary its
@@ -3791,6 +3840,29 @@ const tx_cache_cap: usize = 20;
 /// only the tail (bounded — the log grows unboundedly), mirroring
 /// `setDaemonErrFromDaemonLog`. Best-effort: any IO hiccup, or a non-Core coin
 /// whose log lacks the line, yields null.
+/// Sum the apparent size (bytes) of every regular file under `path`, recursively
+/// — the "Size" figure a file manager's Properties dialog reports. `null` when
+/// `path` can't be opened (e.g. the data dir doesn't exist yet). Best-effort:
+/// an entry that can't be stat'd is skipped rather than aborting the walk, and
+/// the running total saturates rather than overflowing. Memory stays bounded —
+/// the walker holds only a per-depth stack of open dir handles, never a file
+/// list — so it's safe on a chain with hundreds of thousands of block files.
+fn dirSizeBytes(io: std.Io, a: std.mem.Allocator, path: []const u8) ?u64 {
+    var dir = std.Io.Dir.cwd().openDir(io, path, .{ .iterate = true }) catch return null;
+    defer dir.close(io);
+    var walker = dir.walk(a) catch return null;
+    defer walker.deinit();
+    var total: u64 = 0;
+    // Stat via the entry's own dir handle + basename (not the full path) per the
+    // stdlib note — avoids `error.NameTooLong` on deeply nested trees.
+    while (walker.next(io) catch null) |entry| {
+        if (entry.kind != .file) continue;
+        const st = entry.dir.statFile(io, entry.basename, .{}) catch continue;
+        total +|= st.size;
+    }
+    return total;
+}
+
 fn presyncPercentBp(io: std.Io, data_dir: []const u8) ?u32 {
     var dir = std.Io.Dir.cwd().openDir(io, data_dir, .{}) catch return null;
     defer dir.close(io);
@@ -5381,6 +5453,10 @@ pub const App = struct {
                 act.loading_phase = @enumFromInt(act.poll_phase.load(.monotonic));
                 act.load_stage = @enumFromInt(act.poll_load_stage.load(.monotonic));
                 act.load_pct_bp = act.poll_load_pct_bp.load(.monotonic);
+                // On-disk size is disk-derived (published whether or not the poll
+                // reached the daemon), so fold it in here too.
+                act.storage_bytes = act.poll_storage_bytes.load(.monotonic);
+                act.storage_sampled = act.poll_storage_sampled.load(.monotonic) != 0;
                 // Promote to running only when a reply proves the daemon is up and
                 // we haven't asked it to stop — see `shouldAdoptRunning` (which also
                 // runs `applyPoll` for its fold-in side effect).
@@ -8002,6 +8078,18 @@ pub const App = struct {
             break :blk std.fmt.allocPrint(a, "  {s}", .{styled}) catch "";
         } else "";
 
+        // Storage line: how much disk this coin's data directory occupies — the
+        // "Size" a file manager's Properties dialog reports. Sits directly under
+        // the Blocks bar; its label greys with the daemon like the sync bars it
+        // groups with, though the figure itself is disk-derived and shown even
+        // when the daemon is down. A dim "—" stands in until the first sample
+        // lands (or when the coin has no data dir yet, e.g. not installed).
+        const storage_label = statusLabel(a, brand, "Storage", bars_active);
+        const storage_value: []const u8 = if (act.storage_sampled)
+            formatStorageGB(a, act.storage_bytes)
+        else
+            (zz.Style{}).dim(true).render(a, "—") catch "—";
+
         // Disk-usage bar: how full the volume holding the blockchains is. Sits
         // apart from the sync bars (separated by a blank line) because it's a
         // machine-level figure, not a coin's sync state — so it stays in the
@@ -8047,6 +8135,7 @@ pub const App = struct {
                 \\
                 \\{s}  {s}
                 \\{s}  {s}{s}
+                \\{s}  {s}
                 \\
                 \\{s}  {s}
                 \\{s}  {s}
@@ -8071,6 +8160,8 @@ pub const App = struct {
                 blocks_label,
                 blocks_bar,
                 behind_text,
+                storage_label,
+                storage_value,
                 disk_label,
                 disk_bar,
                 mem_label,
@@ -10108,6 +10199,18 @@ fn formatBlockTime(a: std.mem.Allocator, unix_secs: i64) ![]const u8 {
         day_secs.getHoursIntoDay(),
         day_secs.getMinutesIntoHour(),
     });
+}
+
+/// Format a byte count as a two-decimal "X.XX GB" figure for the Storage line.
+/// Decimal GB (÷1000³, i.e. SI), so the number matches what a Linux/GNOME file
+/// manager's Properties dialog reports — GNOME (and macOS Finder) quote SI GB,
+/// which is the "same as right-click → Properties" reference the figure targets.
+/// (Windows Explorer instead quotes binary GiB but labels it "GB", so it reads
+/// ~7% smaller there — an unavoidable OS convention difference.) Best-effort
+/// string alloc; falls back to the raw text on OOM.
+fn formatStorageGB(a: std.mem.Allocator, bytes: u64) []const u8 {
+    const gb = @as(f64, @floatFromInt(bytes)) / (1000.0 * 1000.0 * 1000.0);
+    return std.fmt.allocPrint(a, "{d:.2} GB", .{gb}) catch "0.00 GB";
 }
 
 /// A capacity bar whose fill warns as it fills — for "fuller is worse" axes
@@ -12418,6 +12521,83 @@ test "coin pane renders a Memory line with the current used figure" {
 
     try std.testing.expect(std.mem.indexOf(u8, out, "Memory") != null);
     try std.testing.expect(std.mem.indexOf(u8, out, "50.00%") != null);
+}
+
+test "coin pane renders a Storage line with the coin's on-disk size" {
+    if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
+    const allocator = std.testing.allocator;
+
+    var threaded: std.Io.Threaded = .init(allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    var env = std.process.Environ.Map.init(allocator);
+    defer env.deinit();
+    try env.put("HOME", "/home/tester");
+    var ctx = zz.Context.init(allocator, allocator, io, &env);
+
+    var app: App = undefined;
+    app.hide_balances = false;
+    _ = app.init(&ctx);
+    defer app.deinit();
+
+    // A sampled size of 1.5 GB (decimal) renders the Storage label and its
+    // "1.50 GB" figure, independent of the coin's sync/daemon state.
+    app.selected = std.mem.indexOfScalar(Entry, &entries, .divi).?;
+    const act = &app.activities[app.selected];
+    act.storage_bytes = 1_500_000_000;
+    act.storage_sampled = true;
+
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+    const out = app.renderDetail(arena.allocator());
+
+    try std.testing.expect(std.mem.indexOf(u8, out, "Storage") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "1.50 GB") != null);
+}
+
+test "dirSizeBytes sums apparent file sizes recursively; null for a missing dir" {
+    const allocator = std.testing.allocator;
+
+    var threaded: std.Io.Threaded = .init(allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    const dir = "test-storage-out";
+    std.Io.Dir.cwd().deleteTree(io, dir) catch {};
+    defer std.Io.Dir.cwd().deleteTree(io, dir) catch {};
+
+    var d = try std.Io.Dir.cwd().createDirPathOpen(io, dir, .{});
+    defer d.close(io);
+    try d.writeFile(io, .{ .sub_path = "a.dat", .data = "x" ** 100 });
+    try d.writeFile(io, .{ .sub_path = "b.dat", .data = "y" ** 250 });
+    // A nested file, to prove the walk recurses into subdirectories.
+    var sub = try d.createDirPathOpen(io, "blocks", .{});
+    sub.close(io);
+    try d.writeFile(io, .{ .sub_path = "blocks/c.dat", .data = "z" ** 400 });
+
+    const total = dirSizeBytes(io, allocator, dir) orelse return error.TestUnexpectedResult;
+    try std.testing.expectEqual(@as(u64, 750), total);
+
+    // A path that doesn't resolve yields null (not a bogus 0), so the UI can
+    // show "—" rather than "0.00 GB" for a coin with no data dir yet.
+    try std.testing.expect(dirSizeBytes(io, allocator, "test-storage-out-missing") == null);
+}
+
+test "formatStorageGB renders decimal (SI) GB to two decimals" {
+    const allocator = std.testing.allocator;
+    const cases = [_]struct { bytes: u64, want: []const u8 }{
+        .{ .bytes = 0, .want = "0.00 GB" },
+        .{ .bytes = 1_000_000_000, .want = "1.00 GB" },
+        .{ .bytes = 1_500_000_000, .want = "1.50 GB" },
+        // ~12.08 GB — the SpiderByte-sized case that read ~11.25 under binary GiB.
+        .{ .bytes = 12_079_595_520, .want = "12.08 GB" },
+    };
+    for (cases) |c| {
+        const s = formatStorageGB(allocator, c.bytes);
+        defer allocator.free(s);
+        try std.testing.expectEqualStrings(c.want, s);
+    }
 }
 
 test "the Status line reflects the daemon's live activity" {
