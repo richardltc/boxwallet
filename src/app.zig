@@ -29,7 +29,7 @@ const BitcoinZ = @import("coins/bitcoinz.zig").BitcoinZ;
 /// change how BoxWallet identifies itself in the UI. `app_color` is the brand
 /// hex used for the "BoxWallet" wording on the Home pane.
 pub const app_name = "BoxWallet TUI";
-pub const app_version = "0.8.3";
+pub const app_version = "0.8.4";
 const app_color = "#7ca071";
 
 /// Fallback install root used only if the home-dir-based path can't be built
@@ -3798,8 +3798,8 @@ fn pickDebugLogError(tail: []const u8) []const u8 {
 /// `tail` (empty only if `tail` has no content).
 fn pickWalletError(tail: []const u8) []const u8 {
     const markers = [_][]const u8{
-        "error",  "invalid", "wrong",     "failed",   "exception",
-        "unable", "corrupt", "cannot",    "denied",   "not found",
+        "error",    "invalid", "wrong",  "failed", "exception",
+        "unable",   "corrupt", "cannot", "denied", "not found",
         "password",
     };
     var hit: []const u8 = "";
