@@ -39,7 +39,7 @@ pub const Nerva = struct {
     /// Donation address for BoxWallet development, in Nerva's own
     /// currency.
     /// TODO(richard): replace with the real XNV tip address.
-    pub const tip_address = "TODO-XNV-TIP-ADDRESS-NOT-SET";
+    pub const tip_address = "NV1TQhxgTQQPFKMsU7JRj3Xk7C93CYhsA46M7wGdsQiBa1VPNCKv4Wjgeez1rs9Qw4WPymdT3b6N1hgRKJ9ZmzK82Ks6gauZn";
     /// Nerva is proof-of-work (CPU-mined, Monero-derived) — no wallet staking.
     pub const proof_of_stake = false;
     pub const conf_file = "nerva.conf";
