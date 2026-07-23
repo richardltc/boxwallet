@@ -179,16 +179,20 @@ component StatusIcon inherits Rectangle {
     property <float> hp: root.t < 0.35 ? root.t / 0.35 : 1.0;
     property <length> hop: -12px * (4 * root.hp * (1.0 - root.hp));
     property <float> pulse-op: 0.4 + 0.6 * (0.5 + 0.5 * Math.sin(root.t * 360deg));
+    // Grows the icon in sync with the brightness so a pulse "breathes" outward.
+    property <float> pulse-scale: 1.0 + 0.28 * (0.5 + 0.5 * Math.sin(root.t * 360deg));
+    property <bool> pulsing: root.moving && root.motion == "pulse";
+    property <length> isize: root.pulsing ? 33px * root.pulse-scale : 33px;
     property <angle> spin: Math.mod(animation-tick() / 1ms, 900) / 900 * 360deg;
 
     Image {
         source: root.icon;
         colorize: root.active ? root.accent : root.idle;
-        width: 33px;
-        height: 33px;
+        width: root.isize;
+        height: root.isize;
         x: (parent.width - self.width) / 2;
         y: (parent.height - self.height) / 2 + ((root.moving && root.motion == "hop") ? root.hop : 0px);
-        opacity: (root.moving && root.motion == "pulse") ? root.pulse-op : 1.0;
+        opacity: root.pulsing ? root.pulse-op : 1.0;
         transform-rotation: (root.moving && root.motion == "spin") ? root.spin : 0deg;
     }
     Tooltip {
