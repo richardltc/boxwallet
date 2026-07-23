@@ -1,0 +1,845 @@
+// BoxWallet GUI — proof-of-concept window.
+//
+// Left nav (Home + every coin, alphabetical) switching the right-hand detail,
+// which itself has a tab strip (Home / Transactions / Receive / Send / Settings,
+// plus Mining / DigiDollar where the coin supports them) — mirroring the TUI.
+// Live values are `in` properties pushed from gui/main.cpp over the C ABI (bw_*
+// in include/boxwallet.h). Only the Home status tab is wired to live data so
+// far; the other tabs are UI scaffolding to explore the look and feel.
+
+import {
+    VerticalBox, HorizontalBox, GroupBox, Button, ListView, ScrollView, LineEdit, CheckBox
+} from "std-widgets.slint";
+
+// One coin in the left nav (built + sorted by C++).
+struct NavCoin {
+    name: string,
+    color: color,
+    index: int, // registry index for bw_* calls
+}
+
+// One entry in the in-app file browser's directory listing.
+struct BrowseEntry {
+    name: string,
+    is-dir: bool,
+}
+
+// One row in the left nav.
+component NavItem inherits Rectangle {
+    in property <string> label;
+    in property <brush> accent;
+    in property <bool> selected;
+    callback clicked;
+
+    height: 36px;
+    background: selected ? #2b2b2b : (ta.has-hover ? #202020 : transparent);
+
+    Rectangle {
+        x: 0;
+        width: 4px;
+        background: root.selected ? root.accent : transparent;
+    }
+    HorizontalBox {
+        alignment: start;
+        padding-left: 16px;
+        Text {
+            text: root.label;
+            vertical-alignment: center;
+            font-size: 14px;
+            font-weight: root.selected ? 700 : 400;
+            color: root.selected ? root.accent : #d0d0d0;
+        }
+    }
+    ta := TouchArea {
+        clicked => {
+            root.clicked();
+        }
+    }
+}
+
+// One tab in the detail strip: a monochrome SVG icon (tinted to the accent via
+// `colorize`) beside its label, with an accent underline when selected.
+component TabButton inherits Rectangle {
+    in property <string> label;
+    in property <image> icon;
+    in property <bool> selected;
+    in property <color> accent;
+    callback clicked;
+
+    property <color> fg: root.selected ? root.accent : (ta.has-hover ? #d0d0d0 : #9a9a9a);
+    height: 30px;
+    width: content.preferred-width;
+
+    content := HorizontalBox {
+        padding: 0;
+        padding-right: 4px;
+        spacing: 5px;
+        alignment: start;
+        Image {
+            source: root.icon;
+            colorize: root.fg;
+            width: 15px;
+            height: 15px;
+            vertical-alignment: center;
+        }
+        Text {
+            text: root.label;
+            vertical-alignment: center;
+            font-size: 14px;
+            font-weight: root.selected ? 700 : 400;
+            color: root.fg;
+        }
+    }
+    // Selected underline in the coin's accent.
+    Rectangle {
+        y: parent.height - 2px;
+        height: 2px;
+        background: root.selected ? root.accent : transparent;
+    }
+    ta := TouchArea {
+        clicked => {
+            root.clicked();
+        }
+    }
+}
+
+// A circular (donut) progress gauge: an arc filled to `frac` of a full turn in
+// the coin's brand colour over a grey track, a percentage in the middle, and a
+// caption underneath. Drawn with a conic-gradient ring + a hole punched in the
+// centre (a disc in the pane colour).
+component CircleGauge inherits VerticalBox {
+    in property <float> frac;
+    in property <brush> fill;
+    in property <string> label;
+
+    property <float> f: Math.max(0.0, Math.min(1.0, root.frac));
+    property <length> dia: 72px;
+
+    padding: 0;
+    spacing: 6px;
+    alignment: start;
+
+    Rectangle {
+        width: root.dia;
+        height: root.dia;
+        border-radius: root.dia / 2;
+        background: @conic-gradient(root.fill 0turn, root.fill root.f * 1turn, #3a3a3a root.f * 1turn, #3a3a3a 1turn);
+
+        // Centre hole → makes the ring a donut, and holds the readout.
+        Rectangle {
+            width: parent.width - 16px;
+            height: parent.height - 16px;
+            border-radius: (parent.width - 16px) / 2;
+            background: #1e1e1e;
+            Text {
+                text: Math.round(root.f * 100) + "%";
+                color: #e6e6e6;
+                font-size: 15px;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+            }
+        }
+    }
+    Text {
+        text: root.label;
+        color: #9a9a9a;
+        font-size: 13px;
+        horizontal-alignment: center;
+        width: root.dia;
+    }
+}
+
+// A status glyph in the row above the Daemon section: a monochrome SVG in the
+// coin's brand colour when `active`, greyed out otherwise, with a native hover
+// tooltip carrying `hint`. It can also carry a motion to draw attention —
+// "hop" (a little jump), "pulse" (fade in/out) or "spin" (rotate) — that runs
+// only while `moving` is true. The animated values read `animation-tick()` only
+// while moving, so an idle icon costs no repaints.
+component StatusIcon inherits Rectangle {
+    in property <image> icon;
+    in property <color> accent;
+    in property <color> idle: #555555;
+    in property <bool> active;
+    in property <string> hint;
+    in property <string> motion: "none"; // "hop" | "pulse" | "spin"
+    in property <bool> moving: false;
+
+    width: 45px;
+    height: 45px;
+
+    // Shared 0..1 ramp (2s) for hop/pulse; a faster ramp for spin.
+    property <float> t: Math.mod(animation-tick() / 1ms, 2000) / 2000;
+    property <float> hp: root.t < 0.35 ? root.t / 0.35 : 1.0;
+    property <length> hop: -12px * (4 * root.hp * (1.0 - root.hp));
+    property <float> pulse-op: 0.4 + 0.6 * (0.5 + 0.5 * Math.sin(root.t * 360deg));
+    property <angle> spin: Math.mod(animation-tick() / 1ms, 900) / 900 * 360deg;
+
+    Image {
+        source: root.icon;
+        colorize: root.active ? root.accent : root.idle;
+        width: 33px;
+        height: 33px;
+        x: (parent.width - self.width) / 2;
+        y: (parent.height - self.height) / 2 + ((root.moving && root.motion == "hop") ? root.hop : 0px);
+        opacity: (root.moving && root.motion == "pulse") ? root.pulse-op : 1.0;
+        transform-rotation: (root.moving && root.motion == "spin") ? root.spin : 0deg;
+    }
+    Tooltip {
+        text: @markdown("\{root.hint}");
+    }
+}
+
+// One "label: value" line in a detail section.
+component Field inherits HorizontalBox {
+    in property <string> label;
+    in property <string> value;
+    in property <brush> value-color: #e8e8e8;
+    Text {
+        text: root.label;
+        width: 120px;
+        color: #9a9a9a;
+        font-size: 14px;
+    }
+    Text {
+        text: root.value;
+        color: root.value-color;
+        font-size: 14px;
+    }
+}
+
+// A title wordmark with a one-shot light-sweep shine through the letters. The
+// sweep runs on first appearance (`init`) and again whenever the text changes
+// (`changed caption`) — so switching straight from one coin to another, which
+// only updates the caption of a title element that already exists, still shines.
+//
+// `animation-tick()` is read only while `sweeping`, so once the ~1.5s sweep ends
+// the title stops requesting repaints (no continuous cost when idle).
+component ShiningTitle inherits Text {
+    in property <string> caption;
+    in property <color> base: #7ca071;
+    in property <color> shine: #ffffff;
+
+    property <duration> start-tick: 0ms;
+    property <bool> sweeping: false;
+
+    function sweep() {
+        root.start-tick = animation-tick();
+        root.sweeping = true;
+    }
+    init => {
+        root.sweep();
+    }
+    changed caption => {
+        root.sweep();
+    }
+
+    // 0..1 over 1.5s while sweeping; pinned at 1 (band off-screen) when idle.
+    // Progress is measured on the frame clock (`animation-tick()`), and the sweep
+    // ends when progress itself reaches 1 — NOT on a wall-clock timer, which
+    // could fire early under frame throttling and cut the sweep off halfway.
+    // While sweeping, reading `animation-tick()` keeps frames coming, so it
+    // always runs to completion; once done it stops reading it (no idle repaints).
+    property <float> t: root.sweeping ? (animation-tick() - root.start-tick) / 1500ms : 1.0;
+    changed t => {
+        if root.sweeping && root.t >= 1.0 {
+            root.sweeping = false;
+        }
+    }
+    property <float> c: root.t * 1.6 - 0.3;
+
+    text: root.caption;
+    color: @linear-gradient(100deg,
+        root.base 0%,
+        root.base clamp(c - 0.18, 0.0, 1.0) * 100%,
+        root.shine clamp(c, 0.0, 1.0) * 100%,
+        root.base clamp(c + 0.18, 0.0, 1.0) * 100%,
+        root.base 100%);
+}
+
+// A placeholder tab body — a heading plus a note about what will live here.
+component Placeholder inherits VerticalBox {
+    in property <string> heading;
+    in property <string> note;
+    alignment: start;
+    spacing: 6px;
+    Text {
+        text: root.heading;
+        color: #d0d0d0;
+        font-size: 18px;
+        font-weight: 600;
+    }
+    Text {
+        text: root.note;
+        color: #9a9a9a;
+        font-size: 13px;
+        wrap: word-wrap;
+    }
+}
+
+export component AppWindow inherits Window {
+    title: "BoxWallet";
+    preferred-width: 700px;
+    preferred-height: 580px;
+    background: #1e1e1e;
+
+    // Navigation. -1 = Home, otherwise the selected coin's registry index.
+    in property <[NavCoin]> nav-coins;
+    property <int> selected: -1;
+    property <int> tab: 0; // 0 Home, 1 Tx, 2 Receive, 3 Send, 4 Settings, 5 Mining, 6 DigiDollar
+    callback coin-selected(int);
+
+    // Selected-coin metadata (pushed by C++ when the selection changes).
+    in property <color> coin-color: #ed295a;
+    in property <string> coin-name: "";
+    in property <string> coin-desc: "";
+    in property <bool> has-mining: false;
+    in property <bool> has-stablecoin: false;
+
+    // Live status for the selected coin's Home tab.
+    in property <bool> installed: false;
+    in property <bool> running: false;
+    in property <bool> synced: false;
+    in property <bool> staking: false;
+    // Placeholders for status glyphs whose data isn't wired yet (daemon-launch,
+    // wallet and live-mining flows); the icons render idle until these light up.
+    in property <bool> daemon-loading: false;
+    in property <bool> wallet-loaded: false;
+    in property <bool> wallet-unlocked: false;
+    in property <bool> mining: false;
+    in property <int> blocks: 0;
+    in property <int> headers: 0;
+    in property <int> peers: 0;
+    in property <string> chain: "";
+    in property <float> sync-percent: 0;
+    in property <float> headers-frac: 0;
+    in property <float> blocks-frac: 0;
+    in property <float> disk-frac: 0;
+    in property <string> error-text: "";
+
+    // In-app file browser (the Home "test" button).
+    in-out property <bool> browse-open: false;
+    in property <string> browse-path: "";
+    in property <[BrowseEntry]> browse-entries;
+    in property <string> picked-file: "";
+    callback browse-home();
+    callback browse-up();
+    callback browse-enter(int);
+
+    HorizontalBox {
+        padding: 0;
+        spacing: 0;
+
+        // ---- left nav (Home pinned, coins scroll) ----
+        Rectangle {
+            width: 160px;
+            background: #161616;
+            VerticalBox {
+                padding: 8px;
+                padding-top: 12px;
+                spacing: 2px;
+                // No `alignment: start` here: the ScrollView must stretch to fill
+                // the column (Home stays fixed-height at the top). With an
+                // alignment set, the ScrollView would collapse to its preferred
+                // height and leave the lower part of the nav empty.
+                NavItem {
+                    label: "Home";
+                    accent: #7ca071;
+                    selected: root.selected == -1;
+                    clicked => {
+                        root.selected = -1;
+                    }
+                }
+                ScrollView {
+                    vertical-stretch: 1;
+                    VerticalBox {
+                        padding: 0;
+                        spacing: 2px;
+                        alignment: start;
+                        for c in root.nav-coins: NavItem {
+                            label: c.name;
+                            accent: c.color;
+                            selected: root.selected == c.index;
+                            clicked => {
+                                root.selected = c.index;
+                                root.tab = 0;
+                                root.coin-selected(c.index);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // ---- detail ----
+        Rectangle {
+            background: #1e1e1e;
+
+            // HOME
+            if root.selected == -1: VerticalBox {
+                padding: 26px;
+                spacing: 10px;
+                alignment: start;
+                HorizontalBox {
+                    padding: 0;
+                    alignment: start;
+                    ShiningTitle {
+                        caption: "BoxWallet";
+                        base: #7ca071;
+                        font-size: 32px;
+                        font-weight: 800;
+                    }
+                }
+                Text {
+                    text: "v0.8.4";
+                    color: #808080;
+                    font-size: 14px;
+                }
+                Rectangle {
+                    height: 8px;
+                }
+                Text {
+                    text: "Multi-coin cryptocurrency wallet manager.";
+                    color: #cfcfcf;
+                    font-size: 15px;
+                }
+                Text {
+                    text: "Select a coin on the left to see its status.";
+                    color: #9a9a9a;
+                    font-size: 14px;
+                }
+                Rectangle {
+                    height: 6px;
+                }
+                HorizontalBox {
+                    padding: 0;
+                    alignment: start;
+                    Button {
+                        text: "Test: browse for a file…";
+                        clicked => {
+                            root.browse-home();
+                            root.browse-open = true;
+                        }
+                    }
+                }
+                Text {
+                    text: "Selected: " + root.picked-file;
+                    color: #7ca071;
+                    font-size: 13px;
+                    wrap: word-wrap;
+                    visible: root.picked-file != "";
+                }
+            }
+
+            // COIN DETAIL (tabbed)
+            if root.selected != -1: VerticalBox {
+                padding: 26px;
+                spacing: 14px;
+                alignment: start;
+
+                // Title + description.
+                VerticalBox {
+                    spacing: 2px;
+                    HorizontalBox {
+                        padding: 0;
+                        alignment: start;
+                        ShiningTitle {
+                            caption: root.coin-name;
+                            base: root.coin-color;
+                            font-size: 28px;
+                            font-weight: 800;
+                        }
+                    }
+                    Text {
+                        text: root.coin-desc;
+                        color: #9a9a9a;
+                        font-size: 13px;
+                    }
+                }
+
+                // Tab strip.
+                HorizontalBox {
+                    padding: 0;
+                    spacing: 18px;
+                    alignment: start;
+                    TabButton {
+                        label: "Home";
+                        icon: @image-url("icons/home.svg");
+                        accent: root.coin-color;
+                        selected: root.tab == 0;
+                        clicked => {
+                            root.tab = 0;
+                        }
+                    }
+                    TabButton {
+                        label: "Transactions";
+                        icon: @image-url("icons/transactions.svg");
+                        accent: root.coin-color;
+                        selected: root.tab == 1;
+                        clicked => {
+                            root.tab = 1;
+                        }
+                    }
+                    TabButton {
+                        label: "Receive";
+                        icon: @image-url("icons/receive.svg");
+                        accent: root.coin-color;
+                        selected: root.tab == 2;
+                        clicked => {
+                            root.tab = 2;
+                        }
+                    }
+                    TabButton {
+                        label: "Send";
+                        icon: @image-url("icons/send.svg");
+                        accent: root.coin-color;
+                        selected: root.tab == 3;
+                        clicked => {
+                            root.tab = 3;
+                        }
+                    }
+                    TabButton {
+                        label: "Settings";
+                        icon: @image-url("icons/settings.svg");
+                        accent: root.coin-color;
+                        selected: root.tab == 4;
+                        clicked => {
+                            root.tab = 4;
+                        }
+                    }
+                    if root.has-mining: TabButton {
+                        label: "Mining";
+                        icon: @image-url("icons/mining.svg");
+                        accent: root.coin-color;
+                        selected: root.tab == 5;
+                        clicked => {
+                            root.tab = 5;
+                        }
+                    }
+                    if root.has-stablecoin: TabButton {
+                        label: "DigiDollar";
+                        icon: @image-url("icons/digidollar.svg");
+                        accent: root.coin-color;
+                        selected: root.tab == 6;
+                        clicked => {
+                            root.tab = 6;
+                        }
+                    }
+                }
+                Rectangle {
+                    height: 1px;
+                    background: #333333;
+                }
+
+                // ---- tab bodies ----
+
+                // Home / status (live).
+                if root.tab == 0: VerticalBox {
+                    padding: 0;
+                    spacing: 14px;
+                    alignment: start;
+
+                    // Status glyph row.
+                    HorizontalBox {
+                        padding: 0;
+                        spacing: 6px;
+                        alignment: start;
+
+                        // Installed — hops while not installed.
+                        StatusIcon {
+                            icon: @image-url("icons/download.svg");
+                            accent: root.coin-color;
+                            active: root.installed;
+                            hint: root.installed ? "Installed" : "Not installed — click to install";
+                            motion: "hop";
+                            moving: !root.installed;
+                        }
+                        // Daemon — grey when stopped, pulses while loading, lit when running.
+                        StatusIcon {
+                            icon: @image-url("icons/smile.svg");
+                            accent: root.coin-color;
+                            active: root.running || root.daemon-loading;
+                            hint: root.daemon-loading ? "Daemon loading…" : (root.running ? "Daemon running" : "Daemon not running");
+                            motion: "pulse";
+                            moving: root.daemon-loading;
+                        }
+                        // Peers — lit when connected; hint shows the count.
+                        StatusIcon {
+                            icon: @image-url("icons/wifi.svg");
+                            accent: root.coin-color;
+                            active: root.running && root.peers > 0;
+                            hint: "Peers: " + root.peers;
+                        }
+                        // Sync — spins while syncing, static when synced.
+                        StatusIcon {
+                            icon: @image-url("icons/refresh-cw.svg");
+                            accent: root.coin-color;
+                            active: root.running;
+                            hint: root.running ? (root.synced ? "Synced" : "Syncing…") : "Not running";
+                            motion: "spin";
+                            moving: root.running && !root.synced;
+                        }
+                        // Wallet lock — open/closed padlock (placeholder until wallets are wired).
+                        StatusIcon {
+                            icon: root.wallet-unlocked ? @image-url("icons/lock-open.svg") : @image-url("icons/lock.svg");
+                            accent: root.coin-color;
+                            active: root.wallet-loaded;
+                            hint: !root.wallet-loaded ? "No wallet loaded" : (root.wallet-unlocked ? "Wallet unlocked" : "Wallet locked");
+                        }
+                        // Staking (PoS) or Mining (mining coins) — pulses while active.
+                        if !root.has-mining: StatusIcon {
+                            icon: @image-url("icons/zap.svg");
+                            accent: root.coin-color;
+                            active: root.staking;
+                            hint: root.staking ? "Staking" : "Not staking";
+                            motion: "pulse";
+                            moving: root.staking;
+                        }
+                        if root.has-mining: StatusIcon {
+                            icon: @image-url("icons/cpu.svg");
+                            accent: root.coin-color;
+                            active: root.mining;
+                            hint: root.mining ? "Mining" : "Not mining";
+                            motion: "pulse";
+                            moving: root.mining;
+                        }
+                    }
+
+                    GroupBox {
+                        title: "Sync";
+                        HorizontalBox {
+                            padding: 4px;
+                            spacing: 28px;
+                            alignment: start;
+                            CircleGauge {
+                                label: "Headers";
+                                frac: root.headers-frac;
+                                fill: root.coin-color;
+                            }
+                            CircleGauge {
+                                label: "Blocks";
+                                frac: root.blocks-frac;
+                                fill: root.coin-color;
+                            }
+                            CircleGauge {
+                                label: "Disk used";
+                                frac: root.disk-frac;
+                                fill: root.coin-color;
+                            }
+                        }
+                    }
+                    GroupBox {
+                        title: "Daemon";
+                        VerticalBox {
+                            spacing: 4px;
+                            Field {
+                                label: "Installed:";
+                                value: root.installed ? "yes" : "no";
+                            }
+                            Field {
+                                label: "Status:";
+                                value: root.running ? "running" : "not running";
+                                value-color: root.running ? #2ecc71 : #e74c3c;
+                            }
+                            Field {
+                                label: "Staking:";
+                                value: root.staking ? "active" : "inactive";
+                            }
+                            Field {
+                                label: "Peers:";
+                                value: root.peers;
+                            }
+                            Field {
+                                label: "Chain:";
+                                value: root.chain;
+                            }
+                        }
+                    }
+                    Text {
+                        text: root.error-text;
+                        color: #e74c3c;
+                        wrap: word-wrap;
+                        visible: root.error-text != "";
+                    }
+                }
+
+                // Transactions (scaffold).
+                if root.tab == 1: VerticalBox {
+                    padding: 0;
+                    spacing: 8px;
+                    alignment: start;
+                    Placeholder {
+                        heading: "Transactions";
+                        note: "Recent wallet transactions will list here, newest first.";
+                    }
+                    ListView {
+                        vertical-stretch: 1;
+                        for row in [
+                            { d: "—  no wallet loaded yet", a: "" },
+                        ]: Rectangle {
+                            height: 28px;
+                            Text {
+                                x: 0;
+                                text: row.d;
+                                color: #8a8a8a;
+                                font-size: 13px;
+                                vertical-alignment: center;
+                            }
+                        }
+                    }
+                }
+
+                // Receive (scaffold).
+                if root.tab == 2: VerticalBox {
+                    padding: 0;
+                    spacing: 12px;
+                    alignment: start;
+                    Placeholder {
+                        heading: "Receive";
+                        note: "Your deposit address and its QR code will appear here.";
+                    }
+                    Rectangle {
+                        width: 140px;
+                        height: 140px;
+                        background: #2a2a2a;
+                        border-radius: 6px;
+                        Text {
+                            text: "QR";
+                            color: #666;
+                            font-size: 20px;
+                        }
+                    }
+                    Text {
+                        text: "(address)";
+                        color: #8a8a8a;
+                        font-size: 13px;
+                    }
+                }
+
+                // Send (scaffold — real widgets, no action yet).
+                if root.tab == 3: VerticalBox {
+                    padding: 0;
+                    spacing: 10px;
+                    alignment: start;
+                    Placeholder {
+                        heading: "Send";
+                        note: "Enter a destination address and amount, then confirm.";
+                    }
+                    LineEdit {
+                        placeholder-text: "Destination address";
+                    }
+                    LineEdit {
+                        placeholder-text: "Amount";
+                    }
+                    HorizontalBox {
+                        padding: 0;
+                        alignment: start;
+                        Button {
+                            text: "Send";
+                            enabled: false;
+                        }
+                    }
+                }
+
+                // Settings (scaffold).
+                if root.tab == 4: VerticalBox {
+                    padding: 0;
+                    spacing: 10px;
+                    alignment: start;
+                    Placeholder {
+                        heading: "Settings";
+                        note: "Per-coin options (pruning, connectivity, …) will live here.";
+                    }
+                    CheckBox {
+                        text: "Start daemon on launch";
+                        checked: false;
+                    }
+                    CheckBox {
+                        text: "Prune the blockchain";
+                        checked: false;
+                    }
+                }
+
+                // Mining (only for coins that support it).
+                if root.tab == 5: Placeholder {
+                    heading: "Mining";
+                    note: "Start/stop the daemon's built-in miner and watch its hashrate.";
+                }
+
+                // DigiDollar (only for coins with a chain-native stablecoin).
+                if root.tab == 6: Placeholder {
+                    heading: "DigiDollar";
+                    note: "Mint, send and redeem the chain-native stablecoin.";
+                }
+            }
+        }
+    }
+
+    // ---- file-browser overlay (opened by the Home "test" button) ----
+    if root.browse-open: Rectangle {
+        background: #000000bb;
+        TouchArea { }
+
+        panel := Rectangle {
+            width: 82%;
+            height: 82%;
+            x: (parent.width - self.width) / 2;
+            y: (parent.height - self.height) / 2;
+            background: #202020;
+            border-radius: 10px;
+            border-width: 1px;
+            border-color: #3a3a3a;
+
+            VerticalBox {
+                padding: 14px;
+                spacing: 10px;
+
+                HorizontalBox {
+                    spacing: 8px;
+                    Text {
+                        text: root.browse-path;
+                        color: #cfcfcf;
+                        font-size: 13px;
+                        overflow: elide;
+                        vertical-alignment: center;
+                        horizontal-stretch: 1;
+                    }
+                    Button {
+                        text: "Up";
+                        clicked => {
+                            root.browse-up();
+                        }
+                    }
+                    Button {
+                        text: "Close";
+                        clicked => {
+                            root.browse-open = false;
+                        }
+                    }
+                }
+
+                ListView {
+                    for entry[idx] in root.browse-entries: Rectangle {
+                        height: 30px;
+                        background: ta.has-hover ? #2e2e2e : transparent;
+                        HorizontalBox {
+                            padding: 2px;
+                            padding-left: 8px;
+                            alignment: start;
+                            Text {
+                                text: entry.is-dir ? entry.name + "/" : entry.name;
+                                color: entry.is-dir ? #e0c56a : #cccccc;
+                                font-size: 14px;
+                                vertical-alignment: center;
+                            }
+                        }
+                        ta := TouchArea {
+                            clicked => {
+                                root.browse-enter(idx);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
