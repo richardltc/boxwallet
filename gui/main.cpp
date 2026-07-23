@@ -1,0 +1,315 @@
+// BoxWallet GUI — proof-of-concept host (Slint + the Zig core over a C ABI).
+//
+// This is the only C++ in the project: the thin glue Slint's binding requires.
+// All wallet/coin logic lives in the Zig core and is reached through bw_* (see
+// include/boxwallet.h). A background thread polls the live daemon (blocking RPC)
+// and marshals results onto the Slint event-loop thread via
+// slint::invoke_from_event_loop — the RPC calls must never run on the UI thread.
+//
+// Built by `zig build gui` (no CMake): build.zig runs slint-compiler to produce
+// app.slint.h, then compiles+links this with Zig's own clang.
+
+#include "app.slint.h" // generated from gui/app.slint by slint-compiler
+#include <slint.h>      // Slint runtime: SharedString, invoke_from_event_loop
+#include "boxwallet.h"  // the Zig core's C ABI
+
+#include <algorithm>
+#include <atomic>
+#include <chrono>
+#include <cstdio>
+#include <cstdlib>
+#include <cstring>
+#include <memory>
+#include <string>
+#include <string_view>
+#include <thread>
+#include <vector>
+
+// The selected coin's registry index, or -1 for the Home page. Shared between
+// the UI thread (nav callback) and the poller thread.
+static std::atomic<int> g_selected{-1};
+
+static const char *home_dir()
+{
+    const char *h = std::getenv("HOME");
+    return h ? h : "/";
+}
+
+// Parse a "#RRGGBB" brand-colour string into a Slint colour (falls back to grey).
+static slint::Color parse_hex_color(const char *s, size_t n)
+{
+    auto hexval = [](char c) -> int {
+        if (c >= '0' && c <= '9')
+            return c - '0';
+        if (c >= 'a' && c <= 'f')
+            return c - 'a' + 10;
+        if (c >= 'A' && c <= 'F')
+            return c - 'A' + 10;
+        return -1;
+    };
+    if (n == 7 && s[0] == '#') {
+        int r = hexval(s[1]) * 16 + hexval(s[2]);
+        int g = hexval(s[3]) * 16 + hexval(s[4]);
+        int b = hexval(s[5]) * 16 + hexval(s[6]);
+        if (r >= 0 && g >= 0 && b >= 0)
+            return slint::Color::from_rgb_uint8(
+                static_cast<uint8_t>(r), static_cast<uint8_t>(g), static_cast<uint8_t>(b));
+    }
+    return slint::Color::from_rgb_uint8(0x88, 0x88, 0x88);
+}
+
+// Sync fraction for one gauge: full when the node reports synced, otherwise the
+// share of the network tip reached (0 when the tip isn't known yet).
+static float sync_frac(int64_t part, int64_t total, bool synced)
+{
+    if (synced)
+        return 1.0f;
+    if (total <= 0)
+        return 0.0f;
+    double f = static_cast<double>(part) / static_cast<double>(total);
+    return static_cast<float>(f < 0 ? 0 : (f > 1 ? 1 : f));
+}
+
+// Push the selected coin's static metadata into the UI and clear any live status
+// left over from the previously-selected coin (the poller refills it).
+static void apply_coin_metadata(const AppWindow *ui, bw_ctx *ctx, int idx)
+{
+    char name[64];
+    size_t nn = bw_coin_name(idx, name, sizeof name);
+    ui->set_coin_name(slint::SharedString(std::string_view(name, nn)));
+
+    char desc[128];
+    size_t dn = bw_coin_description(idx, desc, sizeof desc);
+    ui->set_coin_desc(slint::SharedString(std::string_view(desc, dn)));
+
+    char color[16];
+    size_t cn = bw_coin_color(idx, color, sizeof color);
+    ui->set_coin_color(parse_hex_color(color, cn));
+
+    ui->set_has_mining(bw_coin_supports_mining(idx) != 0);
+    ui->set_has_stablecoin(bw_coin_supports_stablecoin(idx) != 0);
+    ui->set_installed(bw_is_installed(ctx, idx) != 0);
+
+    // Reset live status so the new coin doesn't briefly show the old one's.
+    ui->set_running(false);
+    ui->set_synced(false);
+    ui->set_staking(false);
+    ui->set_blocks(0);
+    ui->set_headers(0);
+    ui->set_peers(0);
+    ui->set_headers_frac(0);
+    ui->set_blocks_frac(0);
+    ui->set_disk_frac(0);
+    ui->set_sync_percent(0);
+    ui->set_chain(slint::SharedString(""));
+    ui->set_error_text(slint::SharedString(""));
+}
+
+// ---- in-app file browser state + helpers ------------------------------------
+// The browser navigates the filesystem via the core (bw_home_dir / bw_list_dir).
+// C++ owns the current path and the current entries; the Slint callbacks below
+// drive navigation. All run on the UI thread (no blocking I/O to speak of).
+static std::string g_browse_path;
+static std::vector<BrowseEntry> g_entries;
+
+static std::string path_join(const std::string &base, const std::string &name)
+{
+    if (base.empty())
+        return "/" + name;
+    return base.back() == '/' ? base + name : base + "/" + name;
+}
+
+static std::string path_parent(const std::string &p)
+{
+    std::string s = p;
+    if (s.size() > 1 && s.back() == '/')
+        s.pop_back();
+    auto pos = s.find_last_of('/');
+    if (pos == std::string::npos || pos == 0)
+        return "/";
+    return s.substr(0, pos);
+}
+
+// List g_browse_path via the core and push the result into the UI.
+static void browse_refresh(const AppWindow *ui)
+{
+    static char buf[65536];
+    size_t n = bw_list_dir(g_browse_path.c_str(), buf, sizeof buf);
+
+    g_entries.clear();
+    size_t i = 0;
+    while (i < n) {
+        char t = buf[i];              // 'd' or 'f'
+        size_t start = (i + 2 <= n) ? i + 2 : n; // skip "<t> "
+        size_t j = start;
+        while (j < n && buf[j] != '\n')
+            j++;
+        BrowseEntry e;
+        e.name = slint::SharedString(std::string_view(buf + start, j - start));
+        e.is_dir = (t == 'd');
+        g_entries.push_back(e);
+        i = j + 1;
+    }
+
+    ui->set_browse_entries(std::make_shared<slint::VectorModel<BrowseEntry>>(g_entries));
+    ui->set_browse_path(slint::SharedString(g_browse_path));
+}
+
+int main()
+{
+    // Give the window a stable Wayland app_id before it's shown. Without one,
+    // some compositors (e.g. COSMIC) can't match a taskbar left-click back to the
+    // window, so a minimized window won't restore on click (right-click → name
+    // still works). No-op off Wayland.
+    slint::set_xdg_app_id("boxwallet");
+
+    auto ui = AppWindow::create();
+
+    bw_ctx *ctx = bw_init(home_dir());
+    if (!ctx) {
+        std::fprintf(stderr, "bw_init failed\n");
+        return 1;
+    }
+
+    // Build the nav list: every registered coin, sorted alphabetically by name
+    // (Home is pinned separately in the UI). The registry index rides along so
+    // callbacks can address the coin over the C ABI.
+    std::vector<NavCoin> coins;
+    size_t count = bw_coin_count();
+    for (size_t i = 0; i < count; ++i) {
+        char nm[64];
+        size_t nn = bw_coin_name(i, nm, sizeof nm);
+        char col[16];
+        size_t cn = bw_coin_color(i, col, sizeof col);
+        NavCoin nc;
+        nc.name = slint::SharedString(std::string_view(nm, nn));
+        nc.color = parse_hex_color(col, cn);
+        nc.index = static_cast<int>(i);
+        coins.push_back(nc);
+    }
+    std::sort(coins.begin(), coins.end(), [](const NavCoin &a, const NavCoin &b) {
+        return std::string_view(a.name) < std::string_view(b.name);
+    });
+    ui->set_nav_coins(std::make_shared<slint::VectorModel<NavCoin>>(coins));
+
+    std::atomic<bool> stop{false};
+    slint::ComponentWeakHandle<AppWindow> weak(ui);
+
+    // Nav → select a coin: push its metadata and start polling it.
+    ui->on_coin_selected([weak, ctx](int idx) {
+        if (auto h = weak.lock()) {
+            g_selected.store(idx);
+            apply_coin_metadata(&**h, ctx, idx);
+        }
+    });
+
+    // File-browser callbacks. Start at HOME; navigate into folders; picking a
+    // file records its path and closes the overlay.
+    ui->on_browse_home([weak, ctx]() {
+        if (auto h = weak.lock()) {
+            char hb[4096];
+            size_t hn = bw_home_dir(ctx, hb, sizeof hb);
+            g_browse_path.assign(hb, hn);
+            browse_refresh(&**h);
+        }
+    });
+    ui->on_browse_up([weak]() {
+        if (auto h = weak.lock()) {
+            g_browse_path = path_parent(g_browse_path);
+            browse_refresh(&**h);
+        }
+    });
+    ui->on_browse_enter([weak](int idx) {
+        auto h = weak.lock();
+        if (!h || idx < 0 || static_cast<size_t>(idx) >= g_entries.size())
+            return;
+        const BrowseEntry &e = g_entries[idx];
+        std::string name(std::string_view(e.name));
+        if (e.is_dir) {
+            g_browse_path = path_join(g_browse_path, name);
+            browse_refresh(&**h);
+        } else {
+            (*h)->set_picked_file(slint::SharedString(path_join(g_browse_path, name)));
+            (*h)->set_browse_open(false);
+        }
+    });
+
+    // Poll the *selected* coin's daemon every ~2s off the UI thread. Home (-1)
+    // polls nothing.
+    std::thread poller([ctx, weak, &stop]() {
+        while (!stop.load()) {
+            int sel = g_selected.load();
+            if (sel < 0) {
+                for (int i = 0; i < 20 && !stop.load(); ++i)
+                    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+                continue;
+            }
+            size_t coin = static_cast<size_t>(sel);
+
+            BwDaemonInfo di;
+            BwBlockchainState bs;
+            std::memset(&di, 0, sizeof di);
+            std::memset(&bs, 0, sizeof bs);
+
+            int di_rc = bw_daemon_info(ctx, coin, &di);
+            int bs_rc = bw_blockchain_state(ctx, coin, &bs);
+
+            // Disk usage is a filesystem read — independent of the daemon.
+            BwDiskUsage du;
+            std::memset(&du, 0, sizeof du);
+            float disk_frac = 0.0f;
+            if (bw_disk_usage(ctx, coin, &du) == 0 && du.total_bytes > 0)
+                disk_frac = static_cast<float>(static_cast<double>(du.used_bytes) /
+                                               static_cast<double>(du.total_bytes));
+
+            std::string err;
+            if (di_rc < 0 || bs_rc < 0) {
+                char buf[256] = {0};
+                size_t m = bw_last_error(ctx, buf, sizeof buf);
+                err.assign(buf, m);
+            }
+
+            slint::invoke_from_event_loop([weak, di, bs, di_rc, bs_rc, err, sel, disk_frac]() {
+                auto h = weak.lock();
+                if (!h)
+                    return;
+                // Selection changed while we were polling → drop this stale result.
+                if (g_selected.load() != sel)
+                    return;
+                (*h)->set_disk_frac(disk_frac);
+                bool running = (di_rc == 0) && (bs_rc == 0);
+                (*h)->set_running(running);
+                if (running) {
+                    bool synced = bs.synced != 0;
+                    int64_t tip = bs.network_height > 0
+                        ? bs.network_height
+                        : (bs.headers > bs.blocks ? bs.headers : bs.blocks);
+                    (*h)->set_blocks(static_cast<int>(bs.blocks));
+                    (*h)->set_headers(static_cast<int>(bs.headers));
+                    (*h)->set_peers(static_cast<int>(di.connections));
+                    (*h)->set_staking(di.staking_active != 0);
+                    (*h)->set_synced(synced);
+                    (*h)->set_headers_frac(sync_frac(bs.headers, tip, synced));
+                    (*h)->set_blocks_frac(sync_frac(bs.blocks, tip, synced));
+                    (*h)->set_sync_percent(synced
+                            ? 100.0f
+                            : static_cast<float>(bs.verification_progress * 100.0));
+                    (*h)->set_chain(slint::SharedString(bs.chain));
+                    (*h)->set_error_text(slint::SharedString(""));
+                } else {
+                    (*h)->set_error_text(slint::SharedString(err));
+                }
+            });
+
+            for (int i = 0; i < 20 && !stop.load(); ++i)
+                std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        }
+    });
+
+    ui->run();
+
+    stop.store(true);
+    poller.join();
+    bw_deinit(ctx);
+    return 0;
+}
