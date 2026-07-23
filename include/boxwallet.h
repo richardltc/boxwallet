@@ -64,6 +64,20 @@ int     bw_coin_supports_stablecoin(size_t idx);  /* 0/1 — shows the DigiDolla
 int     bw_is_installed(bw_ctx *ctx, size_t idx);                 /* 0/1 */
 size_t  bw_data_dir(bw_ctx *ctx, size_t idx, char *buf, size_t cap);
 
+/* Daemon control + wallet lock/unlock (the action buttons). Return 0 on success,
+ * < 0 on error (then bw_last_error has the reason). They block (spawn / RPC), so
+ * call them from a worker thread. The passphrase is a secret: it's copied into a
+ * bounded buffer, used, and wiped; the caller must wipe its own copy too. */
+int     bw_start_daemon(bw_ctx *ctx, size_t idx);
+int     bw_stop_daemon(bw_ctx *ctx, size_t idx);
+int     bw_wallet_lock(bw_ctx *ctx, size_t idx);
+int     bw_wallet_unlock(bw_ctx *ctx, size_t idx, const uint8_t *passphrase, size_t len, int staking);
+
+/* Wallet lock state for the padlock glyph: 0 unknown, 1 unencrypted, 2 locked,
+ * 3 unlocked, 4 unlocked-for-staking. Returns 0 while the daemon isn't answering
+ * (so the glyph stays greyed until we actually know the status). */
+int     bw_wallet_security(bw_ctx *ctx, size_t idx);
+
 /* Bytes used / total on the filesystem holding the coin's data dir (for the
  * "disk used" gauge). Returns 0 on success, < 0 on error. */
 typedef struct {

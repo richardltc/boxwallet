@@ -15,7 +15,7 @@ import {
 struct NavCoin {
     name: string,
     color: color,
-    index: int, // registry index for bw_* calls
+    index: int, // registry index for bw_* calls (also indexes the embedded logos)
 }
 
 // One entry in the in-app file browser's directory listing.
@@ -29,6 +29,7 @@ component NavItem inherits Rectangle {
     in property <string> label;
     in property <brush> accent;
     in property <bool> selected;
+    in property <image> logo;
     callback clicked;
 
     height: 36px;
@@ -41,7 +42,15 @@ component NavItem inherits Rectangle {
     }
     HorizontalBox {
         alignment: start;
-        padding-left: 16px;
+        padding-left: 14px;
+        spacing: 8px;
+        // Logo slot (blank when the coin has no logo file) so names stay aligned.
+        Image {
+            source: root.logo;
+            width: 20px;
+            height: 20px;
+            vertical-alignment: center;
+        }
         Text {
             text: root.label;
             vertical-alignment: center;
@@ -289,15 +298,44 @@ component Placeholder inherits VerticalBox {
 
 export component AppWindow inherits Window {
     title: "BoxWallet";
+    icon: @image-url("icons/appicon.svg");
     preferred-width: 700px;
     preferred-height: 580px;
     background: #1e1e1e;
 
     // Navigation. -1 = Home, otherwise the selected coin's registry index.
     in property <[NavCoin]> nav-coins;
+    // Per-coin logos, embedded into the binary at build time and indexed by the
+    // coin's registry index (NavCoin.index) — the order MUST match the coin order
+    // in src/capi.zig's `coinByIndex`. Swap a file in gui/coin-logos/ and rebuild
+    // to change a logo.
+    property <[image]> coin-logos: [
+        @image-url("coin-logos/nexa.png"), // 0
+        @image-url("coin-logos/divi.png"), // 1
+        @image-url("coin-logos/ergo.png"), // 2
+        @image-url("coin-logos/digibyte.png"), // 3
+        @image-url("coin-logos/zano.png"), // 4
+        @image-url("coin-logos/nerva.png"), // 5
+        @image-url("coin-logos/reddcoin.png"), // 6
+        @image-url("coin-logos/epic.png"), // 7
+        @image-url("coin-logos/salvium.png"), // 8
+        @image-url("coin-logos/litecoin.png"), // 9
+        @image-url("coin-logos/bitcoin.png"), // 10
+        @image-url("coin-logos/bitcoinz.png"), // 11
+        @image-url("coin-logos/spiderbyte.png"), // 12
+        @image-url("coin-logos/monero.png"), // 13
+    ];
     property <int> selected: -1;
     property <int> tab: 0; // 0 Home, 1 Tx, 2 Receive, 3 Send, 4 Settings, 5 Mining, 6 DigiDollar
     callback coin-selected(int);
+
+    // Daemon/wallet action buttons.
+    in-out property <bool> daemon-busy: false; // a start/stop is in flight
+    property <bool> unlock-open: false;        // passphrase modal visible
+    callback start-daemon();
+    callback stop-daemon();
+    callback lock-wallet();
+    callback unlock-wallet(string); // passphrase (secret; cleared right after)
 
     // Selected-coin metadata (pushed by C++ when the selection changes).
     in property <color> coin-color: #ed295a;
@@ -311,11 +349,12 @@ export component AppWindow inherits Window {
     in property <bool> running: false;
     in property <bool> synced: false;
     in property <bool> staking: false;
-    // Placeholders for status glyphs whose data isn't wired yet (daemon-launch,
-    // wallet and live-mining flows); the icons render idle until these light up.
-    in property <bool> daemon-loading: false;
-    in property <bool> wallet-loaded: false;
-    in property <bool> wallet-unlocked: false;
+    // True from clicking Start until the daemon answers (the smiley pulses). The
+    // remaining placeholders below stay idle until their flows are wired.
+    in-out property <bool> daemon-loading: false;
+    // Wallet lock state (from bw_wallet_security): 0 unknown, 1 unencrypted,
+    // 2 locked, 3 unlocked, 4 unlocked-for-staking. 0 (unknown) greys the glyph.
+    in property <int> wallet-sec: 0;
     in property <bool> mining: false;
     in property <int> blocks: 0;
     in property <int> headers: 0;
@@ -355,6 +394,7 @@ export component AppWindow inherits Window {
                 NavItem {
                     label: "Home";
                     accent: #7ca071;
+                    logo: @image-url("icons/appicon.svg");
                     selected: root.selected == -1;
                     clicked => {
                         root.selected = -1;
@@ -369,6 +409,7 @@ export component AppWindow inherits Window {
                         for c in root.nav-coins: NavItem {
                             label: c.name;
                             accent: c.color;
+                            logo: root.coin-logos[c.index];
                             selected: root.selected == c.index;
                             clicked => {
                                 root.selected = c.index;
@@ -589,12 +630,19 @@ export component AppWindow inherits Window {
                             motion: "spin";
                             moving: root.running && !root.synced;
                         }
-                        // Wallet lock — open/closed padlock (placeholder until wallets are wired).
+                        // Wallet lock — open/closed padlock, lit once the daemon has
+                        // answered and we know the wallet's lock state.
                         StatusIcon {
-                            icon: root.wallet-unlocked ? @image-url("icons/lock-open.svg") : @image-url("icons/lock.svg");
+                            icon: (root.wallet-sec == 1 || root.wallet-sec == 3 || root.wallet-sec == 4)
+                                ? @image-url("icons/lock-open.svg")
+                                : @image-url("icons/lock.svg");
                             accent: root.coin-color;
-                            active: root.wallet-loaded;
-                            hint: !root.wallet-loaded ? "No wallet loaded" : (root.wallet-unlocked ? "Wallet unlocked" : "Wallet locked");
+                            active: root.wallet-sec != 0;
+                            hint: root.wallet-sec == 1 ? "Wallet not encrypted"
+                                : root.wallet-sec == 2 ? "Wallet locked"
+                                : root.wallet-sec == 3 ? "Wallet unlocked"
+                                : root.wallet-sec == 4 ? "Unlocked for staking"
+                                : "Wallet status unknown";
                         }
                         // Staking (PoS) or Mining (mining coins) — pulses while active.
                         if !root.has-mining: StatusIcon {
@@ -638,6 +686,45 @@ export component AppWindow inherits Window {
                             }
                         }
                     }
+                    // Action buttons. Start enables only when stopped, Stop only
+                    // when running; both lock out while an action is in flight.
+                    // The wallet button flips Lock/Unlock by the known lock state.
+                    HorizontalBox {
+                        padding: 0;
+                        spacing: 8px;
+                        alignment: start;
+                        Button {
+                            text: "Start";
+                            enabled: !root.running && !root.daemon-busy;
+                            clicked => {
+                                root.daemon-busy = true;
+                                root.daemon-loading = true; // smiley pulses until it answers
+                                root.start-daemon();
+                            }
+                        }
+                        Button {
+                            text: "Stop";
+                            enabled: root.running && !root.daemon-busy;
+                            clicked => {
+                                root.daemon-busy = true;
+                                root.stop-daemon();
+                            }
+                        }
+                        Button {
+                            text: root.wallet-sec == 2 ? "Unlock" : "Lock";
+                            // Only meaningful for an encrypted wallet (locked=2,
+                            // unlocked=3, unlocked-for-staking=4).
+                            enabled: root.wallet-sec == 2 || root.wallet-sec == 3 || root.wallet-sec == 4;
+                            clicked => {
+                                if (root.wallet-sec == 2) {
+                                    root.unlock-open = true;
+                                } else {
+                                    root.lock-wallet();
+                                }
+                            }
+                        }
+                    }
+
                     GroupBox {
                         title: "Daemon";
                         VerticalBox {
@@ -847,6 +934,67 @@ export component AppWindow inherits Window {
                             clicked => {
                                 root.browse-enter(idx);
                             }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // ---- wallet unlock passphrase modal ----
+    // The passphrase is a secret: it lives only in the field while typing and is
+    // cleared the instant it's handed to the callback (which passes it as bytes
+    // to the core, uses it, and wipes that copy).
+    if root.unlock-open: Rectangle {
+        background: #000000bb;
+        TouchArea { }
+
+        Rectangle {
+            width: 320px;
+            height: 176px;
+            x: (parent.width - self.width) / 2;
+            y: (parent.height - self.height) / 2;
+            background: #202020;
+            border-radius: 10px;
+            border-width: 1px;
+            border-color: #3a3a3a;
+
+            VerticalBox {
+                padding: 16px;
+                spacing: 12px;
+                alignment: start;
+                Text {
+                    text: "Unlock " + root.coin-name + " wallet";
+                    color: #e6e6e6;
+                    font-size: 15px;
+                    font-weight: 600;
+                }
+                pw := LineEdit {
+                    placeholder-text: "Passphrase";
+                    input-type: password;
+                    accepted => {
+                        root.unlock-wallet(self.text);
+                        self.text = "";
+                        root.unlock-open = false;
+                    }
+                }
+                HorizontalBox {
+                    padding: 0;
+                    alignment: end;
+                    spacing: 8px;
+                    Button {
+                        text: "Cancel";
+                        clicked => {
+                            pw.text = "";
+                            root.unlock-open = false;
+                        }
+                    }
+                    Button {
+                        text: "Unlock";
+                        clicked => {
+                            root.unlock-wallet(pw.text);
+                            pw.text = "";
+                            root.unlock-open = false;
                         }
                     }
                 }
