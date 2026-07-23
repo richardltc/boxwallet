@@ -67,25 +67,29 @@ component TabButton inherits Rectangle {
     callback clicked;
 
     property <color> fg: root.selected ? root.accent : (ta.has-hover ? #d0d0d0 : #9a9a9a);
-    height: 30px;
-    width: content.preferred-width;
+    height: 50px;
+    width: content.preferred-width + 12px;
 
-    content := HorizontalBox {
+    content := VerticalBox {
         padding: 0;
-        padding-right: 4px;
-        spacing: 5px;
-        alignment: start;
-        Image {
-            source: root.icon;
-            colorize: root.fg;
-            width: 15px;
-            height: 15px;
-            vertical-alignment: center;
+        spacing: 4px;
+        alignment: center;
+        // Wrap the fixed-size icon in a centering row so it sits over the middle
+        // of the (wider) label rather than left-aligned in the layout cell.
+        HorizontalBox {
+            padding: 0;
+            alignment: center;
+            Image {
+                source: root.icon;
+                colorize: root.fg;
+                width: 22px;
+                height: 22px;
+            }
         }
         Text {
             text: root.label;
-            vertical-alignment: center;
-            font-size: 14px;
+            horizontal-alignment: center;
+            font-size: 13px;
             font-weight: root.selected ? 700 : 400;
             color: root.fg;
         }
