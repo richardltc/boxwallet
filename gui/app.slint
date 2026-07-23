@@ -45,9 +45,11 @@ component NavItem inherits Rectangle {
         Text {
             text: root.label;
             vertical-alignment: center;
-            font-size: 14px;
+            // Unselected: the same muted grey as inactive tab headers, normal
+            // size. Selected: brand colour, bold, and a bit bigger so it stands out.
+            font-size: root.selected ? 16px : 14px;
             font-weight: root.selected ? 700 : 400;
-            color: root.selected ? root.accent : #d0d0d0;
+            color: root.selected ? root.accent : #9a9a9a;
         }
     }
     ta := TouchArea {
