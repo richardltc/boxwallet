@@ -3802,12 +3802,23 @@ fn pickWalletError(tail: []const u8) []const u8 {
         "unable",   "corrupt", "cannot", "denied", "not found",
         "password",
     };
+    // Help/usage text a daemon or wallet dumps on an *argument* error is not the
+    // failure reason, but reads like one. The worst offender is Zano
+    // `simplewallet`'s `--seed-doctor` option description ("…doing back up(typo,
+    // wrong words order, missing word)…"), which matches "wrong" and, printed
+    // last in the options dump, wins over the real "failed to load wallet: <why>"
+    // line above it — so a wrong password on a Zano *file* import surfaces as a
+    // bogus seed complaint. Skip such lines so the true reason wins.
+    const noise = [_][]const u8{
+        "seed-doctor", "doing back up", "wrong words order",
+    };
     var hit: []const u8 = "";
     var fallback: []const u8 = "";
     var it = std.mem.splitScalar(u8, tail, '\n');
     while (it.next()) |raw| {
         const line = stripLogTimestamp(std.mem.trim(u8, raw, " \t\r"));
         if (line.len == 0) continue;
+        if (matchesAny(line, &noise)) continue;
         fallback = line;
         if (matchesAny(line, &markers)) hit = line;
     }
@@ -10647,6 +10658,21 @@ test "pickWalletError surfaces the wallet process's failure line" {
 
     // Empty capture yields an empty pick, so the caller keeps the generic message.
     try std.testing.expectEqual(@as(usize, 0), pickWalletError("   \n\t\n").len);
+
+    // Zano simplewallet dumps its options help after the real failure on a bad
+    // open; the `--seed-doctor` description ("…doing back up(typo, wrong words
+    // order, missing word)…") matches "wrong" and lands last, but must not mask
+    // the actual "failed to load wallet" reason above it.
+    try std.testing.expectEqualStrings(
+        "failed to load wallet: invalid password",
+        pickWalletError(
+            "loading wallet\n" ++
+                "failed to load wallet: invalid password\n" ++
+                "  --seed-doctor            Experimental: if your seed is not working for recovery this is\n" ++
+                "                           likely because you've made a mistake whene you were doing back\n" ++
+                "                           up(typo, wrong words order, missing word).\n",
+        ),
+    );
 }
 
 test "debug.log helpers strip the timestamp and pick the root-cause line" {
