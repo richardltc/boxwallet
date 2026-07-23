@@ -16,6 +16,8 @@
 #include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <condition_variable>
+#include <mutex>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -28,6 +30,14 @@
 // The selected coin's registry index, or -1 for the Home page. Shared between
 // the UI thread (nav callback) and the poller thread.
 static std::atomic<int> g_selected{-1};
+
+// Lets the nav callback wake the poller the instant the selection changes,
+// instead of it waiting out its ~2s cadence — so a freshly-clicked coin shows
+// its stats right away. `g_sel_gen` bumps on every selection; the poller waits
+// until it changes (or times out) rather than sleeping blindly.
+static std::mutex g_poll_mtx;
+static std::condition_variable g_poll_cv;
+static std::atomic<uint64_t> g_sel_gen{0};
 
 static const char *home_dir()
 {
@@ -198,7 +208,12 @@ int main()
     // Nav → select a coin: push its metadata and start polling it.
     ui->on_coin_selected([weak, ctx](int idx) {
         if (auto h = weak.lock()) {
-            g_selected.store(idx);
+            {
+                std::lock_guard<std::mutex> lk(g_poll_mtx);
+                g_selected.store(idx);
+                g_sel_gen.fetch_add(1);
+            }
+            g_poll_cv.notify_one(); // poll the new coin immediately
             apply_coin_metadata(&**h, ctx, idx);
         }
     });
@@ -239,9 +254,12 @@ int main()
     std::thread poller([ctx, weak, &stop]() {
         while (!stop.load()) {
             int sel = g_selected.load();
+            uint64_t gen = g_sel_gen.load();
             if (sel < 0) {
-                for (int i = 0; i < 20 && !stop.load(); ++i)
-                    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+                std::unique_lock<std::mutex> lk(g_poll_mtx);
+                g_poll_cv.wait_for(lk, std::chrono::seconds(2), [&] {
+                    return stop.load() || g_sel_gen.load() != gen;
+                });
                 continue;
             }
             size_t coin = static_cast<size_t>(sel);
@@ -301,14 +319,19 @@ int main()
                 }
             });
 
-            for (int i = 0; i < 20 && !stop.load(); ++i)
-                std::this_thread::sleep_for(std::chrono::milliseconds(100));
+            // Wait ~2s, but wake immediately if the selection changed (or we're
+            // shutting down) so the next coin polls without the cadence delay.
+            std::unique_lock<std::mutex> lk(g_poll_mtx);
+            g_poll_cv.wait_for(lk, std::chrono::seconds(2), [&] {
+                return stop.load() || g_sel_gen.load() != gen;
+            });
         }
     });
 
     ui->run();
 
     stop.store(true);
+    g_poll_cv.notify_all(); // wake the poller out of its wait so it can exit
     poller.join();
     bw_deinit(ctx);
     return 0;
