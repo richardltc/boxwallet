@@ -50,6 +50,9 @@ const Ctx = struct {
     install_root: []const u8,
     err_buf: [256]u8 = undefined,
     err_len: usize = 0,
+    // Retained handle for a foreground/no-RPC daemon we launched, so a coin with
+    // no shutdown RPC can be killed on stop (mirrors the TUI's `daemon_child`).
+    daemon_child: ?std.process.Child = null,
 
     fn setError(self: *Ctx, msg: []const u8) void {
         const n = @min(msg.len, self.err_buf.len);
@@ -309,6 +312,233 @@ export fn bw_blockchain_state(ctx: ?*Ctx, idx: usize, out: ?*BwBlockchainState) 
         return -1;
     };
     return 0;
+}
+
+// ---- daemon control + wallet lock/unlock (the action buttons) ---------------
+//
+// These mirror the TUI's launch/stop/lock paths, driven through the same `Coin`
+// vtable (prepareConf/daemonArgv/launchMode, requestStop, walletLock/Unlock).
+// They block (spawn / RPC), so the C++ side runs them off the UI thread.
+
+fn ctxAuth(a: std.mem.Allocator, io: std.Io, coin: Coin, ctx: *Ctx) !models.CoinAuth {
+    const data_dir = try coin.dataDir(a, ctx.home_dir);
+    return conf.readAuth(a, io, data_dir, coin.confFile(), coin.rpcDefaultUsername(), coin.rpcDefaultPort());
+}
+
+/// Poll `getinfo` for a few seconds; true once the daemon answers.
+fn confirmAlive(ctx: *Ctx, coin: Coin) bool {
+    var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var threaded: std.Io.Threaded = .init(a, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    const auth = ctxAuth(a, io, coin, ctx) catch return false;
+    var i: u8 = 0;
+    while (i < 20) : (i += 1) {
+        io.sleep(.fromMilliseconds(250), .awake) catch {};
+        var probe = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+        defer probe.deinit();
+        if (coin.daemonInfo(probe.allocator(), auth)) |_| return true else |_| {}
+    }
+    return false;
+}
+
+fn startDaemon(ctx: *Ctx, idx: usize) !void {
+    var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var threaded: std.Io.Threaded = .init(a, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    const coin = coinByIndex(idx) orelse return error.NoSuchCoin;
+
+    // Conf must carry RPC creds / API key before the daemon reads it, or it's
+    // unmanageable over RPC. Idempotent; keeps existing values.
+    try coin.prepareConf(a, io, ctx.install_root, ctx.home_dir);
+    const argv = try coin.daemonArgv(a, ctx.install_root, ctx.home_dir);
+
+    // Capture the process's stderr so a failed start can report the real reason.
+    const err_name = try std.fmt.allocPrint(a, ".{s}.startup", .{coin.daemonFile()});
+    const err_path = try std.fs.path.join(a, &.{ ctx.install_root, err_name });
+    var err_file = try std.Io.Dir.createFileAbsolute(io, err_path, .{ .read = true });
+    defer {
+        err_file.close(io);
+        std.Io.Dir.deleteFileAbsolute(io, err_path) catch {};
+    }
+
+    if (coin.launchMode() == .foreground) {
+        // Foreground daemons (Ergo/Nerva/Zano/…) run in their own process; spawn
+        // detached and retain the handle for a kill-based stop.
+        const child = std.process.spawn(io, .{
+            .argv = argv,
+            .stdin = .ignore,
+            .stdout = .ignore,
+            .stderr = .{ .file = err_file },
+            .pgid = if (builtin.os.tag == .windows) null else 0,
+            .create_no_window = builtin.os.tag == .windows,
+        }) catch |err| {
+            ctx.setError(@errorName(err));
+            return err;
+        };
+        ctx.daemon_child = child;
+        // Give it a moment, then confirm it stayed up.
+        if (!confirmAlive(ctx, coin)) {
+            var buf: [8 * 1024]u8 = undefined;
+            const n = err_file.readPositionalAll(io, &buf, 0) catch 0;
+            ctx.setError(if (n > 0) buf[0..n] else "daemon exited during startup");
+            return error.DaemonStartFailed;
+        }
+        return;
+    }
+
+    // Fork path (bitcoin-derived, POSIX): append `-daemon` so the daemon forks
+    // into the background and the launcher exits; wait on the launcher.
+    const forked = try std.mem.concat(a, []const u8, &.{ argv, &.{"-daemon"} });
+    var child = try std.process.spawn(io, .{
+        .argv = forked,
+        .stdin = .ignore,
+        .stdout = .ignore,
+        .stderr = .{ .file = err_file },
+    });
+    switch (try child.wait(io)) {
+        .exited => |code| if (code == 0) {
+            // Launcher daemonized; confirm the daemon actually stuck around.
+            if (confirmAlive(ctx, coin)) return;
+            ctx.setError("daemon did not stay up (check its debug.log)");
+            return error.DaemonStartFailed;
+        },
+        else => {},
+    }
+    var buf: [8 * 1024]u8 = undefined;
+    const n = err_file.readPositionalAll(io, &buf, 0) catch 0;
+    ctx.setError(if (n > 0) buf[0..n] else "daemon launcher failed");
+    return error.DaemonStartFailed;
+}
+
+fn stopDaemon(ctx: *Ctx, idx: usize) !void {
+    var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var threaded: std.Io.Threaded = .init(a, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    const coin = coinByIndex(idx) orelse return error.NoSuchCoin;
+
+    if (coin.hasRpcStop()) {
+        const auth = try ctxAuth(a, io, coin, ctx);
+        coin.requestStop(a, auth) catch |err| {
+            ctx.setError(@errorName(err));
+            return err;
+        };
+        // Wait (bounded) for it to actually go down.
+        var i: u8 = 0;
+        while (i < 40) : (i += 1) {
+            io.sleep(.fromMilliseconds(250), .awake) catch {};
+            var probe = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+            defer probe.deinit();
+            _ = coin.daemonInfo(probe.allocator(), auth) catch break;
+        }
+    } else if (ctx.daemon_child) |*child| {
+        // No shutdown RPC (Zano): terminate the process we launched.
+        child.kill(io);
+        ctx.daemon_child = null;
+    } else {
+        return error.CannotStop;
+    }
+}
+
+export fn bw_start_daemon(ctx: ?*Ctx, idx: usize) c_int {
+    const c = ctx orelse return -1;
+    startDaemon(c, idx) catch |err| {
+        if (c.err_len == 0) c.setError(@errorName(err));
+        return -1;
+    };
+    return 0;
+}
+
+export fn bw_stop_daemon(ctx: ?*Ctx, idx: usize) c_int {
+    const c = ctx orelse return -1;
+    stopDaemon(c, idx) catch |err| {
+        if (c.err_len == 0) c.setError(@errorName(err));
+        return -1;
+    };
+    return 0;
+}
+
+fn walletAction(ctx: *Ctx, idx: usize, comptime lock: bool, pass: []const u8, staking: bool) !void {
+    var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var threaded: std.Io.Threaded = .init(a, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    const coin = coinByIndex(idx) orelse return error.NoSuchCoin;
+    const auth = try ctxAuth(a, io, coin, ctx);
+    if (lock) {
+        try coin.walletLock(a, auth);
+    } else {
+        try coin.walletUnlock(a, auth, pass, staking);
+    }
+}
+
+export fn bw_wallet_lock(ctx: ?*Ctx, idx: usize) c_int {
+    const c = ctx orelse return -1;
+    walletAction(c, idx, true, "", false) catch |err| {
+        c.setError(@errorName(err));
+        return -1;
+    };
+    return 0;
+}
+
+/// Unlock with `passphrase` (a secret). We copy it into a bounded stack buffer,
+/// use it, and wipe that copy before returning — the caller wipes its own copy.
+export fn bw_wallet_unlock(ctx: ?*Ctx, idx: usize, pass_ptr: ?[*]const u8, pass_len: usize, staking: c_int) c_int {
+    const c = ctx orelse return -1;
+    const p = pass_ptr orelse return -1;
+
+    var buf: [512]u8 = undefined;
+    const n = @min(pass_len, buf.len);
+    @memcpy(buf[0..n], p[0..n]);
+    defer @memset(buf[0..n], 0); // wipe our copy on every path
+
+    walletAction(c, idx, false, buf[0..n], staking != 0) catch |err| {
+        c.setError(@errorName(err));
+        return -1;
+    };
+    return 0;
+}
+
+// ---- wallet security (for the lock/unlock status glyph) ---------------------
+
+/// The wallet's lock state, as the ordinal of `models.WalletSecurity`:
+/// 0 unknown, 1 unencrypted, 2 locked, 3 unlocked, 4 unlocked-for-staking.
+/// Returns 0 (unknown) on any failure — e.g. the daemon isn't running yet, or
+/// the coin exposes no wallet security state — so the glyph greys out until the
+/// daemon has loaded and answered.
+fn walletSecurity(ctx: *Ctx, idx: usize) !models.WalletSecurity {
+    var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    var threaded: std.Io.Threaded = .init(a, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    const coin = coinByIndex(idx) orelse return error.NoSuchCoin;
+    const data_dir = try coin.dataDir(a, ctx.home_dir);
+    const auth = try conf.readAuth(a, io, data_dir, coin.confFile(), coin.rpcDefaultUsername(), coin.rpcDefaultPort());
+    return coin.walletSecurityState(a, auth);
+}
+
+export fn bw_wallet_security(ctx: ?*Ctx, idx: usize) c_int {
+    const c = ctx orelse return 0;
+    const sec = walletSecurity(c, idx) catch return 0;
+    return @intCast(@intFromEnum(sec));
 }
 
 // ---- disk usage (for the coin's "disk used" gauge) --------------------------

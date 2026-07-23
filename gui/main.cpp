@@ -15,8 +15,10 @@
 
 #include <algorithm>
 #include <atomic>
+#include <cctype>
 #include <chrono>
 #include <condition_variable>
+#include <cstdint>
 #include <mutex>
 #include <cstdio>
 #include <cstdlib>
@@ -110,6 +112,7 @@ static void apply_coin_metadata(const AppWindow *ui, bw_ctx *ctx, int idx)
     ui->set_headers_frac(0);
     ui->set_blocks_frac(0);
     ui->set_disk_frac(0);
+    ui->set_wallet_sec(0);
     ui->set_sync_percent(0);
     ui->set_chain(slint::SharedString(""));
     ui->set_error_text(slint::SharedString(""));
@@ -195,6 +198,7 @@ int main()
         nc.name = slint::SharedString(std::string_view(nm, nn));
         nc.color = parse_hex_color(col, cn);
         nc.index = static_cast<int>(i);
+        // Logo is embedded (see AppWindow.coin-logos), selected by nc.index.
         coins.push_back(nc);
     }
     std::sort(coins.begin(), coins.end(), [](const NavCoin &a, const NavCoin &b) {
@@ -216,6 +220,86 @@ int main()
             g_poll_cv.notify_one(); // poll the new coin immediately
             apply_coin_metadata(&**h, ctx, idx);
         }
+    });
+
+    // Wake the poller now so an action's result (running/lock state) shows fast.
+    auto wake_poll = []() {
+        {
+            std::lock_guard<std::mutex> lk(g_poll_mtx);
+            g_sel_gen.fetch_add(1);
+        }
+        g_poll_cv.notify_one();
+    };
+
+    // Report an action's outcome on the UI thread: clear the busy flag and, on
+    // failure, surface the real reason.
+    auto finish_action = [](slint::ComponentWeakHandle<AppWindow> w, bw_ctx *c, int rc) {
+        std::string err;
+        if (rc < 0) {
+            char b[256] = {0};
+            size_t n = bw_last_error(c, b, sizeof b);
+            err.assign(b, n);
+        }
+        slint::invoke_from_event_loop([w, rc, err]() {
+            if (auto h = w.lock()) {
+                (*h)->set_daemon_busy(false);
+                (*h)->set_daemon_loading(false); // start finished (running or failed)
+                if (rc < 0)
+                    (*h)->set_error_text(slint::SharedString(err));
+            }
+        });
+    };
+
+    // Start / Stop the daemon on a worker thread (they spawn / block on RPC).
+    // The coin index is captured on the UI thread so a mid-action nav switch
+    // can't retarget it. `daemon-busy` was set true by the button's click.
+    ui->on_start_daemon([weak, ctx, wake_poll, finish_action]() {
+        int coin = g_selected.load();
+        if (coin < 0)
+            return;
+        std::thread([weak, ctx, coin, wake_poll, finish_action]() {
+            int rc = bw_start_daemon(ctx, static_cast<size_t>(coin));
+            finish_action(weak, ctx, rc);
+            wake_poll();
+        }).detach();
+    });
+    ui->on_stop_daemon([weak, ctx, wake_poll, finish_action]() {
+        int coin = g_selected.load();
+        if (coin < 0)
+            return;
+        std::thread([weak, ctx, coin, wake_poll, finish_action]() {
+            int rc = bw_stop_daemon(ctx, static_cast<size_t>(coin));
+            finish_action(weak, ctx, rc);
+            wake_poll();
+        }).detach();
+    });
+    ui->on_lock_wallet([weak, ctx, wake_poll]() {
+        int coin = g_selected.load();
+        if (coin < 0)
+            return;
+        std::thread([ctx, coin, wake_poll]() {
+            bw_wallet_lock(ctx, static_cast<size_t>(coin));
+            wake_poll();
+        }).detach();
+    });
+    // Unlock: the passphrase is a secret. Copy it to a local byte buffer, hand it
+    // to the core (which copies into a bounded buffer and wipes), then wipe our
+    // copy. The Slint field is cleared by the modal the instant it's submitted.
+    ui->on_unlock_wallet([weak, ctx, wake_poll, finish_action](slint::SharedString pass) {
+        int coin = g_selected.load();
+        if (coin < 0)
+            return;
+        std::string_view sv(pass);
+        std::vector<uint8_t> secret(sv.begin(), sv.end());
+        std::thread([weak, ctx, coin, wake_poll, finish_action, secret = std::move(secret)]() mutable {
+            int rc = bw_wallet_unlock(ctx, static_cast<size_t>(coin),
+                                      secret.data(), secret.size(), 0);
+            volatile uint8_t *p = secret.data();
+            for (size_t i = 0; i < secret.size(); ++i)
+                p[i] = 0; // wipe our copy
+            finish_action(weak, ctx, rc);
+            wake_poll();
+        }).detach();
     });
 
     // File-browser callbacks. Start at HOME; navigate into folders; picking a
@@ -272,6 +356,9 @@ int main()
             int di_rc = bw_daemon_info(ctx, coin, &di);
             int bs_rc = bw_blockchain_state(ctx, coin, &bs);
 
+            // Wallet lock state — only meaningful once the daemon answers.
+            int wallet_sec = (di_rc == 0 && bs_rc == 0) ? bw_wallet_security(ctx, coin) : 0;
+
             // Disk usage is a filesystem read — independent of the daemon.
             BwDiskUsage du;
             std::memset(&du, 0, sizeof du);
@@ -287,7 +374,7 @@ int main()
                 err.assign(buf, m);
             }
 
-            slint::invoke_from_event_loop([weak, di, bs, di_rc, bs_rc, err, sel, disk_frac]() {
+            slint::invoke_from_event_loop([weak, di, bs, di_rc, bs_rc, err, sel, disk_frac, wallet_sec]() {
                 auto h = weak.lock();
                 if (!h)
                     return;
@@ -295,6 +382,7 @@ int main()
                 if (g_selected.load() != sel)
                     return;
                 (*h)->set_disk_frac(disk_frac);
+                (*h)->set_wallet_sec(wallet_sec);
                 bool running = (di_rc == 0) && (bs_rc == 0);
                 (*h)->set_running(running);
                 if (running) {
