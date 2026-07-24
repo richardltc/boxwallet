@@ -71,6 +71,21 @@ size_t  bw_data_dir(bw_ctx *ctx, size_t idx, char *buf, size_t cap);
  * bounded buffer, used, and wiped; the caller must wipe its own copy too. */
 int     bw_start_daemon(bw_ctx *ctx, size_t idx);
 int     bw_stop_daemon(bw_ctx *ctx, size_t idx);
+
+/* Download + install the coin's daemon. Returns 0 on success, < 0 on error (then
+ * bw_last_error has the reason — e.g. UnsupportedPlatform for a coin with no
+ * build for this OS/arch). Streams hundreds of MB, so it blocks for minutes:
+ * call it from a worker thread and poll bw_install_progress from the UI.
+ *
+ * bw_install_progress writes through any non-NULL out-param and returns the
+ * phase below. `total` is 0 when the server sent no content-length, so treat the
+ * fraction as unknown rather than dividing by zero. Extraction streams in a
+ * single pass with no byte total, hence a spinner rather than a bar. */
+#define BW_INSTALL_IDLE        0
+#define BW_INSTALL_DOWNLOADING 1
+#define BW_INSTALL_EXTRACTING  2
+int      bw_install(bw_ctx *ctx, size_t idx);
+uint8_t  bw_install_progress(bw_ctx *ctx, uint64_t *cur, uint64_t *total);
 int     bw_wallet_lock(bw_ctx *ctx, size_t idx);
 int     bw_wallet_unlock(bw_ctx *ctx, size_t idx, const uint8_t *passphrase, size_t len, int staking);
 

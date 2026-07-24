@@ -42,6 +42,14 @@ static std::mutex g_poll_mtx;
 static std::condition_variable g_poll_cv;
 static std::atomic<uint64_t> g_sel_gen{0};
 
+// Registry index of the coin currently installing, or -1 for none. An install
+// runs for minutes while the install-* UI properties are global (one detail
+// pane, reused by every coin), so the progress pump gates on this: it only
+// paints the bar while that same coin is on screen, and blanks it when the user
+// navigates away — otherwise a Bitcoin download would render as progress on
+// whatever coin they switched to.
+static std::atomic<int> g_installing{-1};
+
 static const char *home_dir()
 {
     const char *h = std::getenv("HOME");
@@ -131,6 +139,17 @@ static void apply_coin_metadata(const AppWindow *ui, bw_ctx *ctx, int idx)
     ui->set_has_mining(bw_coin_supports_mining(idx) != 0);
     ui->set_has_stablecoin(bw_coin_supports_stablecoin(idx) != 0);
     ui->set_installed(bw_is_installed(ctx, idx) != 0);
+
+    // Carry the install readout only if *this* coin is the one installing; any
+    // other coin starts blank rather than inheriting the last one's bar. The
+    // progress pump repaints it within a tick if we're switching back to it.
+    bool this_installing = (g_installing.load() == static_cast<int>(idx));
+    ui->set_install_busy(this_installing);
+    if (!this_installing) {
+        ui->set_install_phase(0);
+        ui->set_install_frac(0);
+        ui->set_install_bytes(slint::SharedString(""));
+    }
 
     // Reset live status so the new coin doesn't briefly show the old one's.
     ui->set_running(false);
@@ -325,6 +344,100 @@ int main()
             wake_poll();
         }).detach();
     });
+    // Install the selected coin. Two threads: one blocks in bw_install streaming
+    // the bundle to disk, the other pumps bw_install_progress into the UI ~8x a
+    // second so the bar moves smoothly. The main poller can't do this job — it's
+    // on a 2s RPC cadence, and there's no daemon to talk to yet anyway.
+    ui->on_install_coin([weak, ctx, wake_poll, begin_status]() {
+        int coin = g_selected.load();
+        if (coin < 0)
+            return;
+        // Refuse a second concurrent install: they share the one install root and
+        // the single set of progress slots in the Zig context.
+        int none = -1;
+        if (!g_installing.compare_exchange_strong(none, coin)) {
+            begin_status(weak, "Another install is already running");
+            if (auto h = weak.lock()) {
+                (*h)->set_install_busy(false);
+                (*h)->set_status_is_error(true);
+            }
+            return;
+        }
+        begin_status(weak, "Installing…");
+        std::thread([weak, ctx, coin, wake_poll]() {
+            auto done = std::make_shared<std::atomic<bool>>(false);
+            std::thread pump([weak, ctx, coin, done]() {
+                while (!done->load()) {
+                    uint64_t cur = 0, total = 0;
+                    uint8_t phase = bw_install_progress(ctx, &cur, &total);
+                    // A negative fraction means "length unknown" (the server sent no
+                    // content-length) — the bar renders that as indeterminate rather
+                    // than as a stuck 0%.
+                    float frac = total > 0
+                        ? static_cast<float>(static_cast<double>(cur) / static_cast<double>(total))
+                        : -1.0f;
+                    std::string bytes;
+                    if (total > 0)
+                        bytes = humanize_bytes(cur) + " / " + humanize_bytes(total);
+                    else if (cur > 0)
+                        bytes = humanize_bytes(cur);
+                    slint::invoke_from_event_loop([weak, coin, phase, frac, bytes]() {
+                        auto h = weak.lock();
+                        if (!h)
+                            return;
+                        // Only paint onto the coin actually installing (see g_installing).
+                        if (g_selected.load() != coin) {
+                            (*h)->set_install_busy(false);
+                            (*h)->set_install_phase(0);
+                            return;
+                        }
+                        (*h)->set_install_busy(true);
+                        (*h)->set_install_phase(static_cast<int>(phase));
+                        (*h)->set_install_frac(frac);
+                        (*h)->set_install_bytes(slint::SharedString(bytes));
+                    });
+                    std::this_thread::sleep_for(std::chrono::milliseconds(125));
+                }
+            });
+
+            int rc = bw_install(ctx, static_cast<size_t>(coin));
+            done->store(true);
+            pump.join();
+
+            bool is_err = rc < 0;
+            std::string msg = "Installed";
+            if (is_err) {
+                char b[256] = {0};
+                size_t n = bw_last_error(ctx, b, sizeof b);
+                msg.assign(b, n);
+                if (msg.empty())
+                    msg = "install failed";
+            }
+            // Re-read from disk rather than trusting rc: that's what the Start
+            // button gates on, and it's the honest answer either way.
+            bool installed = bw_is_installed(ctx, static_cast<size_t>(coin)) != 0;
+            g_installing.store(-1);
+
+            slint::invoke_from_event_loop([weak, coin, msg, is_err, installed]() {
+                auto h = weak.lock();
+                if (!h)
+                    return;
+                (*h)->set_install_busy(false);
+                (*h)->set_install_phase(0);
+                (*h)->set_install_frac(0);
+                (*h)->set_install_bytes(slint::SharedString(""));
+                // The user may have navigated elsewhere during the install — don't
+                // stamp this coin's result onto whatever they're looking at now.
+                if (g_selected.load() != coin)
+                    return;
+                (*h)->set_installed(installed);
+                (*h)->set_status_text(slint::SharedString(msg));
+                (*h)->set_status_is_error(is_err);
+            });
+            wake_poll();
+        }).detach();
+    });
+
     ui->on_lock_wallet([weak, ctx, wake_poll, finish_action, begin_status]() {
         int coin = g_selected.load();
         if (coin < 0)

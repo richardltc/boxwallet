@@ -53,6 +53,14 @@ const Ctx = struct {
     // Retained handle for a foreground/no-RPC daemon we launched, so a coin with
     // no shutdown RPC can be killed on stop (mirrors the TUI's `daemon_child`).
     daemon_child: ?std.process.Child = null,
+    // Install progress. Unlike the rest of Ctx these are genuinely cross-thread —
+    // the install worker writes them while the UI poll thread reads them every
+    // frame — so they're atomic rather than plain fields. `install_phase` holds a
+    // `bw_install_phase_*` code; the byte counters are only meaningful while it
+    // is `downloading` (see `bw_install_progress`).
+    install_phase: std.atomic.Value(u8) = .init(bw_install_phase_idle),
+    install_cur: std.atomic.Value(u64) = .init(0),
+    install_total: std.atomic.Value(u64) = .init(0),
 
     fn setError(self: *Ctx, msg: []const u8) void {
         const n = @min(msg.len, self.err_buf.len);
@@ -515,6 +523,72 @@ fn stopDaemon(ctx: *Ctx, idx: usize) !void {
     } else {
         return error.CannotStop;
     }
+}
+
+// ---- install ----------------------------------------------------------------
+
+/// Phase codes reported by `bw_install_progress`, mirroring `install.Phase` plus
+/// an idle state for "no install running". Kept in sync with `boxwallet.h`.
+pub const bw_install_phase_idle: u8 = 0;
+pub const bw_install_phase_downloading: u8 = 1;
+pub const bw_install_phase_extracting: u8 = 2;
+
+/// `install.Progress` sink: publishes the worker's byte counts into the Ctx for
+/// the UI thread to poll. Monotonic ordering is enough — these drive a progress
+/// readout, so a frame reading a slightly stale count is harmless, and nothing
+/// else is ordered against them.
+fn onInstallProgress(ctx_ptr: *anyopaque, phase: install.Phase, current: u64, total: u64) void {
+    const c: *Ctx = @ptrCast(@alignCast(ctx_ptr));
+    c.install_phase.store(switch (phase) {
+        .download => bw_install_phase_downloading,
+        .extract => bw_install_phase_extracting,
+    }, .monotonic);
+    c.install_cur.store(current, .monotonic);
+    c.install_total.store(total, .monotonic);
+}
+
+/// Download + install the coin. Blocking (streams hundreds of MB), so the C++
+/// side runs it on its own thread and polls `bw_install_progress` meanwhile.
+export fn bw_install(ctx: ?*Ctx, idx: usize) c_int {
+    const c = ctx orelse return -1;
+    const coin = coinByIndex(idx) orelse return -1;
+
+    // Publish "started" before any work, so the UI switches to the progress
+    // readout immediately rather than after the first byte lands, and clear it on
+    // every exit path (success, failure, unsupported platform) so a failed
+    // install can't strand the UI in a permanent "Downloading…".
+    c.install_phase.store(bw_install_phase_downloading, .monotonic);
+    c.install_cur.store(0, .monotonic);
+    c.install_total.store(0, .monotonic);
+    defer c.install_phase.store(bw_install_phase_idle, .monotonic);
+
+    // Private arena: the install's working set is bounded and freed as a unit,
+    // and never shares an allocator with the polling UI thread.
+    var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    const progress: install.Progress = .{ .ctx = c, .func = onInstallProgress };
+    coin.install(a, c.install_root, c.home_dir, progress) catch |err| {
+        if (c.err_len == 0) c.setError(@errorName(err));
+        return -1;
+    };
+    // Record what we just installed so update detection works with the daemon
+    // stopped. Best-effort, exactly as the TUI does it: a marker hiccup must not
+    // fail an otherwise-good install.
+    install.writeVersionMarker(a, c.install_root, coin.daemonFile(), coin.coreVersion()) catch {};
+    return 0;
+}
+
+/// Sample the running install's progress. Writes through any non-null out-param
+/// and returns the phase code (`bw_install_phase_idle` when nothing is running).
+/// `total` is 0 when the server sent no length, so the caller must treat the
+/// fraction as unknown rather than dividing by zero.
+export fn bw_install_progress(ctx: ?*Ctx, cur: ?*u64, total: ?*u64) u8 {
+    const c = ctx orelse return bw_install_phase_idle;
+    if (cur) |p| p.* = c.install_cur.load(.monotonic);
+    if (total) |p| p.* = c.install_total.load(.monotonic);
+    return c.install_phase.load(.monotonic);
 }
 
 export fn bw_start_daemon(ctx: ?*Ctx, idx: usize) c_int {
