@@ -352,6 +352,48 @@ fn confirmAlive(ctx: *Ctx, coin: Coin) bool {
     return false;
 }
 
+/// Non-blocking check of a spawned child: null while still running, else its
+/// exit term (and reaps it). POSIX (the GUI is Linux); a no-op elsewhere.
+/// Reconstruct the current process's environment as an `Environ.Map`, so a
+/// daemon we spawn inherits `$HOME`/`$PATH`/etc. `std.process.spawn` with a null
+/// `environ_map` gives the child an *empty* environment (verified: the child sees
+/// `HOME=[]` even though we have it set) — which left foreground daemons like
+/// Nerva unable to locate their `~/.<coin>` data dir, so they died during init and
+/// the GUI's Start silently failed. The TUI dodges this by passing the environ
+/// `std.process.Init` captured for it; the C++-entry GUI has no such capture, so
+/// we rebuild it from libc's `environ`.
+fn currentEnvMap(a: std.mem.Allocator) !std.process.Environ.Map {
+    var map = std.process.Environ.Map.init(a);
+    errdefer map.deinit();
+    // libc-linked only (the GUI always links libc). The Zig-entry offline-test
+    // binary doesn't link libc and never calls this — comptime-gating on
+    // `link_libc` prunes the `std.c` reference so that build stays libc-free.
+    if (builtin.os.tag != .windows and builtin.link_libc) {
+        const env = std.c.environ;
+        var count: usize = 0;
+        while (env[count] != null) : (count += 1) {}
+        const slice: []const [*:0]const u8 = @ptrCast(env[0..count]);
+        try map.putPosixBlock(.{ .slice = slice });
+    }
+    return map;
+}
+
+fn probeChild(child: *std.process.Child) ?std.process.Child.Term {
+    if (builtin.os.tag == .windows) return null;
+    const posix = std.posix;
+    const pid = child.id orelse return .{ .unknown = 0 };
+    var status: if (builtin.link_libc) c_int else u32 = undefined;
+    const rc = posix.system.wait4(pid, &status, posix.W.NOHANG, null);
+    return switch (posix.errno(rc)) {
+        .SUCCESS => if (rc == 0) null else blk: {
+            child.id = null; // reaped here; nothing left to wait/kill
+            break :blk std.Io.Threaded.statusToTerm(@bitCast(status));
+        },
+        .INTR => null,
+        else => .{ .unknown = 0 },
+    };
+}
+
 fn startDaemon(ctx: *Ctx, idx: usize) !void {
     var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
     defer arena.deinit();
@@ -367,6 +409,11 @@ fn startDaemon(ctx: *Ctx, idx: usize) !void {
     try coin.prepareConf(a, io, ctx.install_root, ctx.home_dir);
     const argv = try coin.daemonArgv(a, ctx.install_root, ctx.home_dir);
 
+    // The spawned daemon must inherit our environment (esp. `$HOME`, used to
+    // resolve `~/.<coin>`); a null environ_map would hand it an empty one.
+    var env_map = try currentEnvMap(a);
+    defer env_map.deinit();
+
     // Capture the process's stderr so a failed start can report the real reason.
     const err_name = try std.fmt.allocPrint(a, ".{s}.startup", .{coin.daemonFile()});
     const err_path = try std.fs.path.join(a, &.{ ctx.install_root, err_name });
@@ -377,27 +424,38 @@ fn startDaemon(ctx: *Ctx, idx: usize) !void {
     }
 
     if (coin.launchMode() == .foreground) {
-        // Foreground daemons (Ergo/Nerva/Zano/…) run in their own process; spawn
-        // detached and retain the handle for a kill-based stop.
-        const child = std.process.spawn(io, .{
+        // Foreground daemons (Ergo/Nerva/Salvium/Zano/…) run in their own process;
+        // spawn detached and retain the handle for a kill-based stop.
+        var child = std.process.spawn(io, .{
             .argv = argv,
             .stdin = .ignore,
             .stdout = .ignore,
             .stderr = .{ .file = err_file },
+            .environ_map = &env_map,
             .pgid = if (builtin.os.tag == .windows) null else 0,
             .create_no_window = builtin.os.tag == .windows,
         }) catch |err| {
             ctx.setError(@errorName(err));
             return err;
         };
-        ctx.daemon_child = child;
-        // Give it a moment, then confirm it stayed up.
-        if (!confirmAlive(ctx, coin)) {
-            var buf: [8 * 1024]u8 = undefined;
-            const n = err_file.readPositionalAll(io, &buf, 0) catch 0;
-            ctx.setError(if (n > 0) buf[0..n] else "daemon exited during startup");
-            return error.DaemonStartFailed;
+
+        // Watch briefly for an early death — a foreground daemon that fails init
+        // dies within a few seconds. If it survives, it has started. We do NOT
+        // require it to answer RPC here: the epee daemons (Nerva/Salvium/Zano)
+        // take a while to bring their RPC up, and demanding it (as `confirmAlive`
+        // did) wrongly reports a healthy start as a failure. The status poll flips
+        // the UI to "running" once it answers.
+        var i: u8 = 0;
+        while (i < 12) : (i += 1) {
+            io.sleep(.fromMilliseconds(250), .awake) catch {};
+            if (probeChild(&child)) |_| {
+                var buf: [8 * 1024]u8 = undefined;
+                const n = err_file.readPositionalAll(io, &buf, 0) catch 0;
+                ctx.setError(if (n > 0) buf[0..n] else "daemon exited during startup (check its log)");
+                return error.DaemonStartFailed;
+            }
         }
+        ctx.daemon_child = child;
         return;
     }
 
@@ -409,6 +467,7 @@ fn startDaemon(ctx: *Ctx, idx: usize) !void {
         .stdin = .ignore,
         .stdout = .ignore,
         .stderr = .{ .file = err_file },
+        .environ_map = &env_map,
     });
     switch (try child.wait(io)) {
         .exited => |code| if (code == 0) {
