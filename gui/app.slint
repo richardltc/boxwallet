@@ -125,6 +125,14 @@ component CircleGauge inherits VerticalBox {
     spacing: 6px;
     alignment: start;
 
+    // Caption above the ring.
+    Text {
+        text: root.label;
+        color: #9a9a9a;
+        font-size: 13px;
+        horizontal-alignment: center;
+        width: root.dia;
+    }
     Rectangle {
         width: root.dia;
         height: root.dia;
@@ -146,13 +154,6 @@ component CircleGauge inherits VerticalBox {
                 vertical-alignment: center;
             }
         }
-    }
-    Text {
-        text: root.label;
-        color: #9a9a9a;
-        font-size: 13px;
-        horizontal-alignment: center;
-        width: root.dia;
     }
 }
 
@@ -659,27 +660,24 @@ export component AppWindow inherits Window {
                     spacing: 14px;
                     alignment: start;
 
-                    GroupBox {
-                        title: "Sync";
-                        HorizontalBox {
-                            padding: 4px;
-                            spacing: 28px;
-                            alignment: start;
-                            CircleGauge {
-                                label: "Headers";
-                                frac: root.headers-frac;
-                                fill: root.coin-color;
-                            }
-                            CircleGauge {
-                                label: "Blocks";
-                                frac: root.blocks-frac;
-                                fill: root.coin-color;
-                            }
-                            CircleGauge {
-                                label: "Disk used";
-                                frac: root.disk-frac;
-                                fill: root.coin-color;
-                            }
+                    HorizontalBox {
+                        padding: 4px;
+                        spacing: 28px;
+                        alignment: start;
+                        CircleGauge {
+                            label: "Headers";
+                            frac: root.headers-frac;
+                            fill: root.coin-color;
+                        }
+                        CircleGauge {
+                            label: "Blocks";
+                            frac: root.blocks-frac;
+                            fill: root.coin-color;
+                        }
+                        CircleGauge {
+                            label: "Disk used";
+                            frac: root.disk-frac;
+                            fill: root.coin-color;
                         }
                     }
                     // Action buttons. Start enables only when stopped, Stop only
