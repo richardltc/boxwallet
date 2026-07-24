@@ -456,6 +456,17 @@ int main()
                             : static_cast<float>(bs.verification_progress * 100.0));
                     (*h)->set_chain(slint::SharedString(bs.chain));
                 } else {
+                    // Daemon down (e.g. just stopped): clear everything it drove so
+                    // the gauges unfill to 0 and the counts/peers reset, rather than
+                    // freezing at their last value.
+                    (*h)->set_blocks(0);
+                    (*h)->set_headers(0);
+                    (*h)->set_peers(0);
+                    (*h)->set_staking(false);
+                    (*h)->set_synced(false);
+                    (*h)->set_headers_frac(0);
+                    (*h)->set_blocks_frac(0);
+                    (*h)->set_sync_percent(0);
                     (*h)->set_headers_str(slint::SharedString(""));
                     (*h)->set_blocks_str(slint::SharedString(""));
                 }

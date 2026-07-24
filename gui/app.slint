@@ -121,6 +121,9 @@ component CircleGauge inherits VerticalBox {
     in property <string> full-text; // shown in place of "100%" when full (e.g. "Synced")
 
     property <float> f: Math.max(0.0, Math.min(1.0, root.frac));
+    // Smoothly sweep the ring (and count the % readout) whenever the underlying
+    // fraction jumps — e.g. a poll advancing the sync, or clearing to 0 on stop.
+    animate f { duration: 600ms; easing: ease-in-out; }
     property <length> dia: 72px;
 
     padding: 0;
@@ -202,6 +205,33 @@ component StatusIcon inherits Rectangle {
     property <bool> pulsing: root.moving && root.motion == "pulse";
     property <angle> spin: Math.mod(animation-tick() / 1ms, 900) / 900 * 360deg;
 
+    // One-shot "breath": fire a single pulse each time `pulse-on-increase` rises
+    // (e.g. the peer count ticking up). Any upward jump — 0→1 or 1→5 — is exactly
+    // one pulse; equal or falling values don't pulse. Frame-clock timed like the
+    // title shine, so it stops requesting repaints once the single breath ends.
+    in property <int> pulse-on-increase: 0;
+    property <int> poi-prev: 0;
+    property <duration> shot-start: 0ms;
+    property <bool> shot: false;
+    function kick-pulse() {
+        root.shot-start = animation-tick();
+        root.shot = true;
+    }
+    changed pulse-on-increase => {
+        if root.pulse-on-increase > root.poi-prev {
+            root.kick-pulse();
+        }
+        root.poi-prev = root.pulse-on-increase;
+    }
+    // 0..1 over 600ms while shooting; a single sine bump peaks mid-way then settles.
+    property <float> st: root.shot ? (animation-tick() - root.shot-start) / 600ms : 1.0;
+    changed st => {
+        if root.shot && root.st >= 1.0 {
+            root.shot = false;
+        }
+    }
+    property <float> shot-scale: 1.0 + 0.32 * Math.sin(Math.clamp(root.st, 0.0, 1.0) * 180deg);
+
     Image {
         source: root.icon;
         colorize: root.active ? root.accent : root.idle;
@@ -213,7 +243,7 @@ component StatusIcon inherits Rectangle {
         // Scale via a GPU transform around the icon's centre (not by resizing the
         // element), so growing the pulse doesn't pixel-snap/jitter. The same
         // centred origin makes the spin rotate in place rather than orbit.
-        transform-scale: root.pulsing ? root.pulse-scale : 1.0;
+        transform-scale: root.pulsing ? root.pulse-scale : (root.shot ? root.shot-scale : 1.0);
         transform-rotation: (root.moving && root.motion == "spin") ? root.spin : 0deg;
         transform-origin: { x: 16.5px, y: 16.5px };
     }
@@ -580,6 +610,8 @@ export component AppWindow inherits Window {
                         accent: root.coin-color;
                         active: root.running && root.peers > 0;
                         hint: "Peers: " + root.peers;
+                        // Pulse once whenever a new peer connection is picked up.
+                        pulse-on-increase: root.peers;
                     }
                     // Sync — spins while syncing, static when synced.
                     StatusIcon {
