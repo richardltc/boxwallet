@@ -359,6 +359,7 @@ export component AppWindow inherits Window {
     property <bool> unlock-open: false;        // passphrase modal visible
     callback start-daemon();
     callback stop-daemon();
+    callback install-coin();
     callback lock-wallet();
     callback unlock-wallet(string); // passphrase (secret; cleared right after)
 
@@ -371,6 +372,16 @@ export component AppWindow inherits Window {
 
     // Live status for the selected coin's Home tab.
     in property <bool> installed: false;
+    // Install progress, polled from bw_install_progress: 0 idle, 1 downloading,
+    // 2 extracting. `install-frac` is < 0 when the byte total is unknown (no
+    // content-length), which the bar renders as indeterminate rather than 0%.
+    in property <int> install-phase: 0;
+    in property <float> install-frac: 0;
+    in property <string> install-bytes: ""; // e.g. "162 MB / 260 MB"
+    // True from clicking Install until the worker reports back, so the button
+    // can't be double-fired in the window before the first progress poll lands.
+    in-out property <bool> install-busy: false;
+    property <bool> installing: root.install-busy || root.install-phase != 0;
     in property <bool> running: false;
     in property <bool> synced: false;
     in property <bool> staking: false;
@@ -586,14 +597,17 @@ export component AppWindow inherits Window {
                     spacing: 6px;
                     alignment: start;
 
-                    // Installed — hops while not installed.
+                    // Installed — hops while not installed (pointing at the Install
+                    // button), and pulses while the install itself runs.
                     StatusIcon {
                         icon: @image-url("icons/download.svg");
                         accent: root.coin-color;
-                        active: root.installed;
-                        hint: root.installed ? "Installed" : "Not installed — click to install";
-                        motion: "hop";
-                        moving: !root.installed;
+                        active: root.installed || root.installing;
+                        hint: root.installing
+                            ? (root.install-phase == 2 ? "Extracting…" : "Downloading…")
+                            : (root.installed ? "Installed" : "Not installed — use the Install button");
+                        motion: root.installing ? "pulse" : "hop";
+                        moving: !root.installed || root.installing;
                     }
                     // Daemon — grey when stopped, pulses while loading, lit when running.
                     StatusIcon {
@@ -790,16 +804,72 @@ export component AppWindow inherits Window {
                         }
                     }
 
-                    // Action buttons. Start enables only when stopped, Stop only
-                    // when running; both lock out while an action is in flight.
+                    // Install progress — shown in place of the button row while a
+                    // download/extract runs, so the rest of the app (and the coin
+                    // list) stays usable during a multi-minute install.
+                    if root.installing: VerticalBox {
+                        padding: 0;
+                        spacing: 4px;
+                        HorizontalBox {
+                            padding: 0;
+                            spacing: 8px;
+                            alignment: start;
+                            Text {
+                                text: root.install-phase == 2 ? "Extracting…" : "Downloading…";
+                                color: #c8c8c8;
+                                font-size: 13px;
+                            }
+                            Text {
+                                // Byte counts only mean anything mid-download;
+                                // extraction is a single streaming pass with no total.
+                                text: root.install-phase == 2 ? "" : root.install-bytes;
+                                color: #9a9a9a;
+                                font-size: 13px;
+                            }
+                        }
+                        // The bar itself. A known fraction fills proportionally; an
+                        // unknown one (no content-length, or extracting) fills the
+                        // track faintly so it reads as "working, length unknown".
+                        Rectangle {
+                            height: 6px;
+                            background: #2a2a2a;
+                            border-radius: 3px;
+                            Rectangle {
+                                x: 0;
+                                width: root.install-frac < 0 || root.install-phase == 2
+                                    ? parent.width
+                                    : parent.width * Math.max(0.0, Math.min(1.0, root.install-frac));
+                                height: parent.height;
+                                background: root.coin-color;
+                                opacity: root.install-frac < 0 || root.install-phase == 2 ? 0.35 : 1.0;
+                                border-radius: 3px;
+                            }
+                        }
+                    }
+
+                    // Action buttons. Install shows only until the daemon is on
+                    // disk; Start enables only when stopped, Stop only when
+                    // running; all lock out while an action is in flight.
                     // The wallet button flips Lock/Unlock by the known lock state.
-                    HorizontalBox {
+                    if !root.installing: HorizontalBox {
                         padding: 0;
                         spacing: 8px;
                         alignment: start;
+                        // Only offered while the coin isn't on disk — a reinstall or
+                        // update is a separate, confirmed flow, so this button must
+                        // never be a way to redownload over a working install.
+                        if !root.installed: Button {
+                            text: "Install";
+                            enabled: !root.install-busy;
+                            clicked => {
+                                root.install-busy = true;
+                                root.install-coin();
+                            }
+                        }
                         Button {
                             text: "Start";
-                            enabled: !root.running && !root.daemon-busy;
+                            // Nothing to start until it's installed.
+                            enabled: root.installed && !root.running && !root.daemon-busy;
                             clicked => {
                                 root.daemon-busy = true;
                                 root.daemon-loading = true; // smiley pulses until it answers
