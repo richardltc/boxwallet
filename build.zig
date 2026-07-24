@@ -69,6 +69,14 @@ fn addGuiStep(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.bui
     const gui_step = b.step("gui", "Build the optional Slint GUI (proof-of-concept)");
     gui_step.dependOn(&install_exe.step);
 
+    // `zig build gui-run`: build and launch the GUI (like `zig build run` for the
+    // TUI). The vendored-dir rpath lets it find libslint_cpp.so wherever it runs.
+    const run_cmd = b.addRunArtifact(exe);
+    run_cmd.step.dependOn(&install_exe.step);
+    if (b.args) |args| run_cmd.addArgs(args);
+    const gui_run_step = b.step("gui-run", "Build and run the Slint GUI");
+    gui_run_step.dependOn(&run_cmd.step);
+
     addGuiReleaseStep(b, target);
 }
 
