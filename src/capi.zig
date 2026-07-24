@@ -212,6 +212,13 @@ export fn bw_coin_description(idx: usize, buf: ?[*]u8, cap: usize) usize {
     return copyOut(b[0..cap], c.coinDescription());
 }
 
+/// The bundled core version this coin installs (e.g. "3.0.0.0").
+export fn bw_coin_version(idx: usize, buf: ?[*]u8, cap: usize) usize {
+    const c = coinByIndex(idx) orelse return 0;
+    const b = buf orelse return 0;
+    return copyOut(b[0..cap], c.coreVersion());
+}
+
 /// Whether this coin lights up the Mining tab (its daemon mines in-process).
 export fn bw_coin_supports_mining(idx: usize) c_int {
     const c = coinByIndex(idx) orelse return 0;

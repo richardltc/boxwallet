@@ -57,6 +57,7 @@ size_t  bw_coin_name(size_t idx, char *buf, size_t cap);
 size_t  bw_coin_abbrev(size_t idx, char *buf, size_t cap);
 size_t  bw_coin_color(size_t idx, char *buf, size_t cap); /* "#RRGGBB" */
 size_t  bw_coin_description(size_t idx, char *buf, size_t cap);
+size_t  bw_coin_version(size_t idx, char *buf, size_t cap); /* bundled core version */
 int     bw_coin_supports_mining(size_t idx);      /* 0/1 — shows the Mining tab */
 int     bw_coin_supports_stablecoin(size_t idx);  /* 0/1 — shows the DigiDollar tab */
 
