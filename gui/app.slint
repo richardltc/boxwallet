@@ -29,7 +29,6 @@ component NavItem inherits Rectangle {
     in property <string> label;
     in property <brush> accent;
     in property <bool> selected;
-    in property <image> logo;
     callback clicked;
 
     height: 36px;
@@ -42,15 +41,7 @@ component NavItem inherits Rectangle {
     }
     HorizontalBox {
         alignment: start;
-        padding-left: 14px;
-        spacing: 8px;
-        // Logo slot (blank when the coin has no logo file) so names stay aligned.
-        Image {
-            source: root.logo;
-            width: 20px;
-            height: 20px;
-            vertical-alignment: center;
-        }
+        padding-left: 16px;
         Text {
             text: root.label;
             vertical-alignment: center;
@@ -394,7 +385,6 @@ export component AppWindow inherits Window {
                 NavItem {
                     label: "Home";
                     accent: #7ca071;
-                    logo: @image-url("icons/appicon.svg");
                     selected: root.selected == -1;
                     clicked => {
                         root.selected = -1;
@@ -409,7 +399,6 @@ export component AppWindow inherits Window {
                         for c in root.nav-coins: NavItem {
                             label: c.name;
                             accent: c.color;
-                            logo: root.coin-logos[c.index];
                             selected: root.selected == c.index;
                             clicked => {
                                 root.selected = c.index;
@@ -488,23 +477,36 @@ export component AppWindow inherits Window {
                 spacing: 14px;
                 alignment: start;
 
-                // Title + description.
-                VerticalBox {
-                    spacing: 2px;
-                    HorizontalBox {
-                        padding: 0;
-                        alignment: start;
-                        ShiningTitle {
-                            caption: root.coin-name;
-                            base: root.coin-color;
-                            font-size: 28px;
-                            font-weight: 800;
-                        }
+                // Logo + title/description. The logo is the embedded per-coin
+                // image, selected by the coin's registry index (root.selected).
+                HorizontalBox {
+                    padding: 0;
+                    alignment: start;
+                    spacing: 12px;
+                    Image {
+                        source: root.coin-logos[root.selected];
+                        width: 46px;
+                        height: 46px;
+                        vertical-alignment: center;
                     }
-                    Text {
-                        text: root.coin-desc;
-                        color: #9a9a9a;
-                        font-size: 13px;
+                    VerticalBox {
+                        padding: 0;
+                        spacing: 2px;
+                        HorizontalBox {
+                            padding: 0;
+                            alignment: start;
+                            ShiningTitle {
+                                caption: root.coin-name;
+                                base: root.coin-color;
+                                font-size: 28px;
+                                font-weight: 800;
+                            }
+                        }
+                        Text {
+                            text: root.coin-desc;
+                            color: #9a9a9a;
+                            font-size: 13px;
+                        }
                     }
                 }
 
