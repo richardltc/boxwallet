@@ -126,6 +126,9 @@ component CircleGauge inherits VerticalBox {
     padding: 0;
     spacing: 6px;
     alignment: start;
+    // Wider than the ring so the longest value (e.g. "20.3 GB free") isn't
+    // clipped; the label, ring and value are all centred within this width.
+    min-width: 112px;
 
     // Caption above the ring.
     Text {
@@ -133,27 +136,31 @@ component CircleGauge inherits VerticalBox {
         color: #9a9a9a;
         font-size: 13px;
         horizontal-alignment: center;
-        width: root.dia;
     }
-    Rectangle {
-        width: root.dia;
-        height: root.dia;
-        border-radius: root.dia / 2;
-        background: @conic-gradient(root.fill 0turn, root.fill root.f * 1turn, #3a3a3a root.f * 1turn, #3a3a3a 1turn);
-
-        // Centre hole → makes the ring a donut, and holds the readout. The gap
-        // (8px vs the outer circle) sets the ring thickness — ~4px, half of before.
+    // Ring, centred within the gauge.
+    HorizontalBox {
+        padding: 0;
+        alignment: center;
         Rectangle {
-            width: parent.width - 8px;
-            height: parent.height - 8px;
-            border-radius: (parent.width - 8px) / 2;
-            background: #1e1e1e;
-            Text {
-                text: (root.f >= 0.999 && root.full-text != "") ? root.full-text : Math.round(root.f * 100) + "%";
-                color: #e6e6e6;
-                font-size: (root.f >= 0.999 && root.full-text != "") ? 13px : 15px;
-                horizontal-alignment: center;
-                vertical-alignment: center;
+            width: root.dia;
+            height: root.dia;
+            border-radius: root.dia / 2;
+            background: @conic-gradient(root.fill 0turn, root.fill root.f * 1turn, #3a3a3a root.f * 1turn, #3a3a3a 1turn);
+
+            // Centre hole → makes the ring a donut, and holds the readout. The gap
+            // (8px vs the outer circle) sets the ring thickness — ~4px.
+            Rectangle {
+                width: parent.width - 8px;
+                height: parent.height - 8px;
+                border-radius: (parent.width - 8px) / 2;
+                background: #1e1e1e;
+                Text {
+                    text: (root.f >= 0.999 && root.full-text != "") ? root.full-text : Math.round(root.f * 100) + "%";
+                    color: #e6e6e6;
+                    font-size: (root.f >= 0.999 && root.full-text != "") ? 13px : 15px;
+                    horizontal-alignment: center;
+                    vertical-alignment: center;
+                }
             }
         }
     }
@@ -164,7 +171,6 @@ component CircleGauge inherits VerticalBox {
         font-size: 12px;
         font-family: "DejaVu Sans Mono";
         horizontal-alignment: center;
-        width: root.dia;
     }
 }
 
@@ -708,7 +714,7 @@ export component AppWindow inherits Window {
 
                     HorizontalBox {
                         padding: 4px;
-                        spacing: 28px;
+                        spacing: 40px;
                         alignment: start;
                         CircleGauge {
                             label: "Headers";
