@@ -514,6 +514,80 @@ export component AppWindow inherits Window {
                     }
                 }
 
+                // Status glyph row — under the description, so it's visible on
+                // every tab (not just the Home/status tab).
+                HorizontalBox {
+                    padding: 0;
+                    spacing: 6px;
+                    alignment: start;
+
+                    // Installed — hops while not installed.
+                    StatusIcon {
+                        icon: @image-url("icons/download.svg");
+                        accent: root.coin-color;
+                        active: root.installed;
+                        hint: root.installed ? "Installed" : "Not installed — click to install";
+                        motion: "hop";
+                        moving: !root.installed;
+                    }
+                    // Daemon — grey when stopped, pulses while loading, lit when running.
+                    StatusIcon {
+                        icon: @image-url("icons/smile.svg");
+                        accent: root.coin-color;
+                        active: root.running || root.daemon-loading;
+                        hint: root.daemon-loading ? "Daemon loading…" : (root.running ? "Daemon running" : "Daemon not running");
+                        motion: "pulse";
+                        moving: root.daemon-loading;
+                    }
+                    // Peers — lit when connected; hint shows the count.
+                    StatusIcon {
+                        icon: @image-url("icons/wifi.svg");
+                        accent: root.coin-color;
+                        active: root.running && root.peers > 0;
+                        hint: "Peers: " + root.peers;
+                    }
+                    // Sync — spins while syncing, static when synced.
+                    StatusIcon {
+                        icon: @image-url("icons/refresh-cw.svg");
+                        accent: root.coin-color;
+                        active: root.running;
+                        hint: root.running ? (root.synced ? "Synced" : "Syncing…") : "Not running";
+                        motion: "spin";
+                        moving: root.running && !root.synced;
+                    }
+                    // Wallet lock — open/closed padlock, lit once the daemon has
+                    // answered and we know the wallet's lock state.
+                    StatusIcon {
+                        icon: (root.wallet-sec == 1 || root.wallet-sec == 3 || root.wallet-sec == 4)
+                            ? @image-url("icons/lock-open.svg")
+                            : @image-url("icons/lock.svg");
+                        accent: root.coin-color;
+                        active: root.wallet-sec != 0;
+                        hint: root.wallet-sec == 1 ? "Wallet not encrypted"
+                            : root.wallet-sec == 2 ? "Wallet locked"
+                            : root.wallet-sec == 3 ? "Wallet unlocked"
+                            : root.wallet-sec == 4 ? "Unlocked for staking"
+                            : "Wallet status unknown";
+                    }
+                    // Staking (PoS) or Mining (mining coins) — pulses while active.
+                    if !root.has-mining: StatusIcon {
+                        icon: @image-url("icons/zap.svg");
+                        accent: root.coin-color;
+                        active: root.staking;
+                        hint: root.staking ? "Staking" : "Not staking";
+                        motion: "pulse";
+                        moving: root.staking;
+                    }
+                    if root.has-mining: StatusIcon {
+                        icon: @image-url("icons/cpu.svg");
+                        accent: root.coin-color;
+                        active: root.mining;
+                        hint: root.mining ? "Mining" : "Not mining";
+                        motion: "pulse";
+                        moving: root.mining;
+                    }
+                }
+
                 // Tab strip.
                 HorizontalBox {
                     padding: 0;
@@ -595,79 +669,6 @@ export component AppWindow inherits Window {
                     padding: 0;
                     spacing: 14px;
                     alignment: start;
-
-                    // Status glyph row.
-                    HorizontalBox {
-                        padding: 0;
-                        spacing: 6px;
-                        alignment: start;
-
-                        // Installed — hops while not installed.
-                        StatusIcon {
-                            icon: @image-url("icons/download.svg");
-                            accent: root.coin-color;
-                            active: root.installed;
-                            hint: root.installed ? "Installed" : "Not installed — click to install";
-                            motion: "hop";
-                            moving: !root.installed;
-                        }
-                        // Daemon — grey when stopped, pulses while loading, lit when running.
-                        StatusIcon {
-                            icon: @image-url("icons/smile.svg");
-                            accent: root.coin-color;
-                            active: root.running || root.daemon-loading;
-                            hint: root.daemon-loading ? "Daemon loading…" : (root.running ? "Daemon running" : "Daemon not running");
-                            motion: "pulse";
-                            moving: root.daemon-loading;
-                        }
-                        // Peers — lit when connected; hint shows the count.
-                        StatusIcon {
-                            icon: @image-url("icons/wifi.svg");
-                            accent: root.coin-color;
-                            active: root.running && root.peers > 0;
-                            hint: "Peers: " + root.peers;
-                        }
-                        // Sync — spins while syncing, static when synced.
-                        StatusIcon {
-                            icon: @image-url("icons/refresh-cw.svg");
-                            accent: root.coin-color;
-                            active: root.running;
-                            hint: root.running ? (root.synced ? "Synced" : "Syncing…") : "Not running";
-                            motion: "spin";
-                            moving: root.running && !root.synced;
-                        }
-                        // Wallet lock — open/closed padlock, lit once the daemon has
-                        // answered and we know the wallet's lock state.
-                        StatusIcon {
-                            icon: (root.wallet-sec == 1 || root.wallet-sec == 3 || root.wallet-sec == 4)
-                                ? @image-url("icons/lock-open.svg")
-                                : @image-url("icons/lock.svg");
-                            accent: root.coin-color;
-                            active: root.wallet-sec != 0;
-                            hint: root.wallet-sec == 1 ? "Wallet not encrypted"
-                                : root.wallet-sec == 2 ? "Wallet locked"
-                                : root.wallet-sec == 3 ? "Wallet unlocked"
-                                : root.wallet-sec == 4 ? "Unlocked for staking"
-                                : "Wallet status unknown";
-                        }
-                        // Staking (PoS) or Mining (mining coins) — pulses while active.
-                        if !root.has-mining: StatusIcon {
-                            icon: @image-url("icons/zap.svg");
-                            accent: root.coin-color;
-                            active: root.staking;
-                            hint: root.staking ? "Staking" : "Not staking";
-                            motion: "pulse";
-                            moving: root.staking;
-                        }
-                        if root.has-mining: StatusIcon {
-                            icon: @image-url("icons/cpu.svg");
-                            accent: root.coin-color;
-                            active: root.mining;
-                            hint: root.mining ? "Mining" : "Not mining";
-                            motion: "pulse";
-                            moving: root.mining;
-                        }
-                    }
 
                     GroupBox {
                         title: "Sync";
