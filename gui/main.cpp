@@ -12,6 +12,7 @@
 #include "app.slint.h" // generated from gui/app.slint by slint-compiler
 #include <slint.h>      // Slint runtime: SharedString, invoke_from_event_loop
 #include "boxwallet.h"  // the Zig core's C ABI
+#include "monofont.h"   // embedded DejaVu Sans Mono (mono_font / mono_font_len)
 
 #include <algorithm>
 #include <atomic>
@@ -210,6 +211,10 @@ int main()
     slint::set_xdg_app_id("boxwallet");
 
     auto ui = AppWindow::create();
+
+    // Register the embedded monospace font so the mono gauge values render
+    // consistently with no dependency on a system font being installed.
+    ui->window().window_handle().register_font_from_data(mono_font, mono_font_len);
 
     bw_ctx *ctx = bw_init(home_dir());
     if (!ctx) {
