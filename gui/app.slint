@@ -118,6 +118,7 @@ component CircleGauge inherits VerticalBox {
     in property <brush> fill;
     in property <string> label;
     in property <string> value; // e.g. "4,136,946" or "12.3 GB free"
+    in property <string> full-text; // shown in place of "100%" when full (e.g. "Synced")
 
     property <float> f: Math.max(0.0, Math.min(1.0, root.frac));
     property <length> dia: 72px;
@@ -148,19 +149,20 @@ component CircleGauge inherits VerticalBox {
             border-radius: (parent.width - 8px) / 2;
             background: #1e1e1e;
             Text {
-                text: Math.round(root.f * 100) + "%";
+                text: (root.f >= 0.999 && root.full-text != "") ? root.full-text : Math.round(root.f * 100) + "%";
                 color: #e6e6e6;
-                font-size: 15px;
+                font-size: (root.f >= 0.999 && root.full-text != "") ? 13px : 15px;
                 horizontal-alignment: center;
                 vertical-alignment: center;
             }
         }
     }
-    // Value below the ring (count / free space).
+    // Value below the ring (count / free space), monospaced.
     Text {
         text: root.value;
         color: #c8c8c8;
         font-size: 12px;
+        font-family: "DejaVu Sans Mono";
         horizontal-alignment: center;
         width: root.dia;
     }
@@ -285,7 +287,7 @@ component Placeholder inherits VerticalBox {
 
 export component AppWindow inherits Window {
     title: "BoxWallet";
-    icon: @image-url("icons/appicon.svg");
+    icon: @image-url("coin-logos/BoxWallet.png");
     preferred-width: 700px;
     preferred-height: 580px;
     background: #1e1e1e;
@@ -421,20 +423,37 @@ export component AppWindow inherits Window {
                 padding: 26px;
                 spacing: 10px;
                 alignment: start;
+                // App logo + title/version.
                 HorizontalBox {
                     padding: 0;
+                    spacing: 12px;
                     alignment: start;
-                    ShiningTitle {
-                        caption: "BoxWallet";
-                        base: #7ca071;
-                        font-size: 32px;
-                        font-weight: 800;
+                    Image {
+                        source: @image-url("coin-logos/BoxWallet.png");
+                        image-fit: contain;
+                        width: 69px;
+                        height: 69px;
+                        vertical-alignment: center;
                     }
-                }
-                Text {
-                    text: "v0.8.4";
-                    color: #808080;
-                    font-size: 14px;
+                    VerticalBox {
+                        padding: 0;
+                        spacing: 2px;
+                        HorizontalBox {
+                            padding: 0;
+                            alignment: start;
+                            ShiningTitle {
+                                caption: "BoxWallet";
+                                base: #7ca071;
+                                font-size: 32px;
+                                font-weight: 800;
+                            }
+                        }
+                        Text {
+                            text: "v0.8.4";
+                            color: #808080;
+                            font-size: 14px;
+                        }
+                    }
                 }
                 Rectangle {
                     height: 8px;
@@ -486,6 +505,7 @@ export component AppWindow inherits Window {
                     spacing: 12px;
                     Image {
                         source: root.coin-logos[root.selected];
+                        image-fit: contain;
                         width: 69px;
                         height: 69px;
                         vertical-alignment: center;
@@ -512,7 +532,7 @@ export component AppWindow inherits Window {
                                 x: title-el.preferred-width + 8px;
                                 // Bottom-align to the title, nudged up so the
                                 // baselines (not the box bottoms) line up.
-                                y: parent.height - self.preferred-height - 7px;
+                                y: parent.height - self.preferred-height - 4px;
                             }
                         }
                         Text {
@@ -695,12 +715,14 @@ export component AppWindow inherits Window {
                             frac: root.headers-frac;
                             fill: root.coin-color;
                             value: root.headers-str;
+                            full-text: "Synced";
                         }
                         CircleGauge {
                             label: "Blocks";
                             frac: root.blocks-frac;
                             fill: root.coin-color;
                             value: root.blocks-str;
+                            full-text: "Synced";
                         }
                         CircleGauge {
                             label: "Disk used";

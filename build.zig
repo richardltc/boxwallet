@@ -128,6 +128,20 @@ fn buildGuiExe(
         }),
     });
 
+    // Embed the monospace font: convert the vendored TTF into a C header baked
+    // into the binary, so the mono gauge values need no system font at run time.
+    const bin2c = b.addExecutable(.{
+        .name = "bin2c",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tools/bin2c.zig"),
+            .target = b.graph.host,
+            .optimize = .ReleaseSafe,
+        }),
+    });
+    const gen_font = b.addRunArtifact(bin2c);
+    gen_font.addFileArg(b.path("gui/fonts/DejaVuSansMono.ttf"));
+    const font_header = gen_font.addOutputFileArg("monofont.h");
+
     // The GUI executable: pure C/C++ (main is in main.cpp), no Zig root. In Zig
     // 0.16 the C-source/include/link wiring lives on the Module.
     const exe_mod = b.createModule(.{
@@ -137,6 +151,7 @@ fn buildGuiExe(
         .strip = strip,
     });
     exe_mod.addCSourceFile(.{ .file = b.path("gui/main.cpp"), .flags = &.{"-std=c++20"} });
+    exe_mod.addIncludePath(font_header.dirname()); // generated monofont.h
     exe_mod.addIncludePath(gen_header.dirname()); // generated app.slint.h (also orders the compile after gen)
     exe_mod.addIncludePath(b.path("gui"));
     exe_mod.addIncludePath(b.path("include")); // boxwallet.h
