@@ -117,6 +117,7 @@ component CircleGauge inherits VerticalBox {
     in property <float> frac;
     in property <brush> fill;
     in property <string> label;
+    in property <string> value; // e.g. "4,136,946" or "12.3 GB free"
 
     property <float> f: Math.max(0.0, Math.min(1.0, root.frac));
     property <length> dia: 72px;
@@ -154,6 +155,14 @@ component CircleGauge inherits VerticalBox {
                 vertical-alignment: center;
             }
         }
+    }
+    // Value below the ring (count / free space).
+    Text {
+        text: root.value;
+        color: #c8c8c8;
+        font-size: 12px;
+        horizontal-alignment: center;
+        width: root.dia;
     }
 }
 
@@ -342,7 +351,12 @@ export component AppWindow inherits Window {
     in property <float> headers-frac: 0;
     in property <float> blocks-frac: 0;
     in property <float> disk-frac: 0;
-    in property <string> error-text: "";
+    in property <string> headers-str: ""; // formatted header count
+    in property <string> blocks-str: "";  // formatted block count
+    in property <string> disk-free: "";    // free space, e.g. "12.3 GB free"
+    in property <string> coin-version: ""; // bundled core version
+    in property <string> status-text: "";  // latest status line
+    in property <bool> status-is-error: false;
 
     // In-app file browser (the Home "test" button).
     in-out property <bool> browse-open: false;
@@ -479,14 +493,26 @@ export component AppWindow inherits Window {
                     VerticalBox {
                         padding: 0;
                         spacing: 2px;
-                        HorizontalBox {
-                            padding: 0;
-                            alignment: start;
-                            ShiningTitle {
+                        // Title + version, manually placed so the version's bottom
+                        // sits on the title's baseline. (A HorizontalBox centres
+                        // the two vertically, floating the small version too high.)
+                        Rectangle {
+                            height: title-el.preferred-height;
+                            title-el := ShiningTitle {
+                                x: 0;
                                 caption: root.coin-name;
                                 base: root.coin-color;
                                 font-size: 28px;
                                 font-weight: 800;
+                            }
+                            Text {
+                                text: root.coin-version;
+                                color: #808080;
+                                font-size: 13px;
+                                x: title-el.preferred-width + 8px;
+                                // Bottom-align to the title, nudged up so the
+                                // baselines (not the box bottoms) line up.
+                                y: parent.height - self.preferred-height - 7px;
                             }
                         }
                         Text {
@@ -668,18 +694,42 @@ export component AppWindow inherits Window {
                             label: "Headers";
                             frac: root.headers-frac;
                             fill: root.coin-color;
+                            value: root.headers-str;
                         }
                         CircleGauge {
                             label: "Blocks";
                             frac: root.blocks-frac;
                             fill: root.coin-color;
+                            value: root.blocks-str;
                         }
                         CircleGauge {
                             label: "Disk used";
                             frac: root.disk-frac;
                             fill: root.coin-color;
+                            value: root.disk-free;
                         }
                     }
+                    // Status line — the latest info/action message (like the TUI).
+                    HorizontalBox {
+                        padding: 0;
+                        spacing: 6px;
+                        alignment: start;
+                        Text {
+                            text: "Status:";
+                            color: #9a9a9a;
+                            font-size: 13px;
+                        }
+                        Text {
+                            // Show the latest action/info message; when there's
+                            // none, fall back to "Staking" while the wallet stakes.
+                            text: root.status-text != "" ? root.status-text : (root.staking ? "Staking" : "");
+                            color: root.status-is-error ? #e74c3c : #c8c8c8;
+                            font-size: 13px;
+                            wrap: word-wrap;
+                            horizontal-stretch: 1;
+                        }
+                    }
+
                     // Action buttons. Start enables only when stopped, Stop only
                     // when running; both lock out while an action is in flight.
                     // The wallet button flips Lock/Unlock by the known lock state.
@@ -717,13 +767,6 @@ export component AppWindow inherits Window {
                                 }
                             }
                         }
-                    }
-
-                    Text {
-                        text: root.error-text;
-                        color: #e74c3c;
-                        wrap: word-wrap;
-                        visible: root.error-text != "";
                     }
                 }
 
