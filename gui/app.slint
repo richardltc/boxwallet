@@ -204,24 +204,6 @@ component StatusIcon inherits Rectangle {
     }
 }
 
-// One "label: value" line in a detail section.
-component Field inherits HorizontalBox {
-    in property <string> label;
-    in property <string> value;
-    in property <brush> value-color: #e8e8e8;
-    Text {
-        text: root.label;
-        width: 120px;
-        color: #9a9a9a;
-        font-size: 14px;
-    }
-    Text {
-        text: root.value;
-        color: root.value-color;
-        font-size: 14px;
-    }
-}
-
 // A title wordmark with a one-shot light-sweep shine through the letters. The
 // sweep runs on first appearance (`init`) and again whenever the text changes
 // (`changed caption`) — so switching straight from one coin to another, which
@@ -588,6 +570,13 @@ export component AppWindow inherits Window {
                     }
                 }
 
+                // Branded divider — full coin colour in the centre, fading to the
+                // pane on both ends — between the status icons and the tab strip.
+                Rectangle {
+                    height: 1px;
+                    background: @linear-gradient(90deg, transparent 0%, root.coin-color 25%, transparent 100%);
+                }
+
                 // Tab strip.
                 HorizontalBox {
                     padding: 0;
@@ -732,33 +721,6 @@ export component AppWindow inherits Window {
                         }
                     }
 
-                    GroupBox {
-                        title: "Daemon";
-                        VerticalBox {
-                            spacing: 4px;
-                            Field {
-                                label: "Installed:";
-                                value: root.installed ? "yes" : "no";
-                            }
-                            Field {
-                                label: "Status:";
-                                value: root.running ? "running" : "not running";
-                                value-color: root.running ? #2ecc71 : #e74c3c;
-                            }
-                            Field {
-                                label: "Staking:";
-                                value: root.staking ? "active" : "inactive";
-                            }
-                            Field {
-                                label: "Peers:";
-                                value: root.peers;
-                            }
-                            Field {
-                                label: "Chain:";
-                                value: root.chain;
-                            }
-                        }
-                    }
                     Text {
                         text: root.error-text;
                         color: #e74c3c;
