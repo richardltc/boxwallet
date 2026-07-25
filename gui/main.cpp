@@ -116,6 +116,106 @@ static std::string humanize_bytes(uint64_t b)
     return std::string(buf);
 }
 
+// Re-read the coin's update state from disk (a tiny marker file, cheap enough for
+// the UI thread). Called on selection and after an install, so the Update button
+// appears as soon as the coin is known to be behind and clears once it isn't.
+static void refresh_update_state(const AppWindow *ui, bw_ctx *ctx, int idx)
+{
+    char ver[32];
+    size_t n = bw_installed_version(ctx, static_cast<size_t>(idx), ver, sizeof ver);
+    ui->set_installed_version(slint::SharedString(std::string_view(ver, n)));
+    ui->set_update_available(bw_update_available(ctx, static_cast<size_t>(idx)) != 0);
+}
+
+// Run bw_install on the calling thread while a second thread pumps progress into
+// the UI at ~8 fps, and return bw_install's rc. Shared by Install and Update —
+// they differ only in what happens around the install, not in how it's driven.
+static int install_with_progress(slint::ComponentWeakHandle<AppWindow> weak, bw_ctx *ctx, int coin)
+{
+    auto done = std::make_shared<std::atomic<bool>>(false);
+    std::thread pump([weak, ctx, coin, done]() {
+        while (!done->load()) {
+            uint64_t cur = 0, total = 0;
+            uint8_t phase = bw_install_progress(ctx, &cur, &total);
+            // A negative fraction means "length unknown" — the bar renders that as
+            // indeterminate rather than as a stuck 0%.
+            float frac = total > 0
+                ? static_cast<float>(static_cast<double>(cur) / static_cast<double>(total))
+                : -1.0f;
+            std::string bytes;
+            if (total > 0)
+                bytes = humanize_bytes(cur) + " / " + humanize_bytes(total);
+            else if (cur > 0)
+                bytes = humanize_bytes(cur);
+            slint::invoke_from_event_loop([weak, coin, phase, frac, bytes]() {
+                auto h = weak.lock();
+                if (!h)
+                    return;
+                // Only paint onto the coin actually installing (see g_installing).
+                if (g_selected.load() != coin) {
+                    (*h)->set_install_busy(false);
+                    (*h)->set_install_phase(0);
+                    return;
+                }
+                (*h)->set_install_busy(true);
+                (*h)->set_install_phase(static_cast<int>(phase));
+                (*h)->set_install_frac(frac);
+                (*h)->set_install_bytes(slint::SharedString(bytes));
+            });
+            std::this_thread::sleep_for(std::chrono::milliseconds(125));
+        }
+    });
+
+    int rc = bw_install(ctx, static_cast<size_t>(coin));
+    done->store(true);
+    pump.join();
+    return rc;
+}
+
+// Clear the progress readout and publish an install/update outcome, releasing the
+// g_installing claim. Re-reads installed state and update state from disk rather
+// than inferring them from rc — that's what the buttons gate on, and it's the
+// honest answer either way (it's also what makes the Update button disappear once
+// the coin is current).
+static void finish_install(slint::ComponentWeakHandle<AppWindow> weak, bw_ctx *ctx, int coin,
+                           int rc, const std::string &ok_msg, const char *fail_msg)
+{
+    bool is_err = rc < 0;
+    std::string msg = ok_msg;
+    if (is_err) {
+        char b[256] = {0};
+        size_t n = bw_last_error(ctx, b, sizeof b);
+        msg.assign(b, n);
+        if (msg.empty())
+            msg = fail_msg;
+    }
+    bool installed = bw_is_installed(ctx, static_cast<size_t>(coin)) != 0;
+    char ver[32];
+    size_t vn = bw_installed_version(ctx, static_cast<size_t>(coin), ver, sizeof ver);
+    std::string version(ver, vn);
+    bool upd = bw_update_available(ctx, static_cast<size_t>(coin)) != 0;
+    g_installing.store(-1);
+
+    slint::invoke_from_event_loop([weak, coin, msg, is_err, installed, version, upd]() {
+        auto h = weak.lock();
+        if (!h)
+            return;
+        (*h)->set_install_busy(false);
+        (*h)->set_install_phase(0);
+        (*h)->set_install_frac(0);
+        (*h)->set_install_bytes(slint::SharedString(""));
+        // The user may have navigated elsewhere during the install — don't stamp
+        // this coin's result onto whatever they're looking at now.
+        if (g_selected.load() != coin)
+            return;
+        (*h)->set_installed(installed);
+        (*h)->set_installed_version(slint::SharedString(version));
+        (*h)->set_update_available(upd);
+        (*h)->set_status_text(slint::SharedString(msg));
+        (*h)->set_status_is_error(is_err);
+    });
+}
+
 // Push the selected coin's static metadata into the UI and clear any live status
 // left over from the previously-selected coin (the poller refills it).
 static void apply_coin_metadata(const AppWindow *ui, bw_ctx *ctx, int idx)
@@ -139,6 +239,7 @@ static void apply_coin_metadata(const AppWindow *ui, bw_ctx *ctx, int idx)
     ui->set_has_mining(bw_coin_supports_mining(idx) != 0);
     ui->set_has_stablecoin(bw_coin_supports_stablecoin(idx) != 0);
     ui->set_installed(bw_is_installed(ctx, idx) != 0);
+    refresh_update_state(ui, ctx, idx);
 
     // Carry the install readout only if *this* coin is the one installing; any
     // other coin starts blank rather than inheriting the last one's bar. The
@@ -365,75 +466,102 @@ int main()
         }
         begin_status(weak, "Installing…");
         std::thread([weak, ctx, coin, wake_poll]() {
-            auto done = std::make_shared<std::atomic<bool>>(false);
-            std::thread pump([weak, ctx, coin, done]() {
-                while (!done->load()) {
-                    uint64_t cur = 0, total = 0;
-                    uint8_t phase = bw_install_progress(ctx, &cur, &total);
-                    // A negative fraction means "length unknown" (the server sent no
-                    // content-length) — the bar renders that as indeterminate rather
-                    // than as a stuck 0%.
-                    float frac = total > 0
-                        ? static_cast<float>(static_cast<double>(cur) / static_cast<double>(total))
-                        : -1.0f;
-                    std::string bytes;
-                    if (total > 0)
-                        bytes = humanize_bytes(cur) + " / " + humanize_bytes(total);
-                    else if (cur > 0)
-                        bytes = humanize_bytes(cur);
-                    slint::invoke_from_event_loop([weak, coin, phase, frac, bytes]() {
-                        auto h = weak.lock();
-                        if (!h)
-                            return;
-                        // Only paint onto the coin actually installing (see g_installing).
-                        if (g_selected.load() != coin) {
-                            (*h)->set_install_busy(false);
-                            (*h)->set_install_phase(0);
-                            return;
-                        }
-                        (*h)->set_install_busy(true);
-                        (*h)->set_install_phase(static_cast<int>(phase));
-                        (*h)->set_install_frac(frac);
-                        (*h)->set_install_bytes(slint::SharedString(bytes));
-                    });
-                    std::this_thread::sleep_for(std::chrono::milliseconds(125));
-                }
-            });
+            int rc = install_with_progress(weak, ctx, coin);
+            finish_install(weak, ctx, coin, rc, "Installed", "install failed");
+            wake_poll();
+        }).detach();
+    });
 
-            int rc = bw_install(ctx, static_cast<size_t>(coin));
-            done->store(true);
-            pump.join();
-
-            bool is_err = rc < 0;
-            std::string msg = "Installed";
-            if (is_err) {
-                char b[256] = {0};
-                size_t n = bw_last_error(ctx, b, sizeof b);
-                msg.assign(b, n);
-                if (msg.empty())
-                    msg = "install failed";
-            }
-            // Re-read from disk rather than trusting rc: that's what the Start
-            // button gates on, and it's the honest answer either way.
-            bool installed = bw_is_installed(ctx, static_cast<size_t>(coin)) != 0;
-            g_installing.store(-1);
-
-            slint::invoke_from_event_loop([weak, coin, msg, is_err, installed]() {
-                auto h = weak.lock();
-                if (!h)
-                    return;
+    // Update: same download+install, but over a working install, so the daemon has
+    // to come down first (its binary is being replaced) and go back up afterwards
+    // if it was running. Mirrors the TUI's stop → reinstall → restart sequence.
+    ui->on_update_coin([weak, ctx, wake_poll, begin_status]() {
+        int coin = g_selected.load();
+        if (coin < 0)
+            return;
+        int none = -1;
+        if (!g_installing.compare_exchange_strong(none, coin)) {
+            begin_status(weak, "Another install is already running");
+            if (auto h = weak.lock()) {
                 (*h)->set_install_busy(false);
-                (*h)->set_install_phase(0);
-                (*h)->set_install_frac(0);
-                (*h)->set_install_bytes(slint::SharedString(""));
-                // The user may have navigated elsewhere during the install — don't
-                // stamp this coin's result onto whatever they're looking at now.
-                if (g_selected.load() != coin)
-                    return;
-                (*h)->set_installed(installed);
-                (*h)->set_status_text(slint::SharedString(msg));
-                (*h)->set_status_is_error(is_err);
-            });
+                (*h)->set_status_is_error(true);
+            }
+            return;
+        }
+        // Whether to bring it back up is decided from the UI thread before any of
+        // this starts, so it reflects what the user could actually see.
+        bool was_running = false;
+        if (auto h = weak.lock())
+            was_running = (*h)->get_running();
+
+        begin_status(weak, was_running ? "Stopping daemon…" : "Updating…");
+        std::thread([weak, ctx, coin, was_running, wake_poll]() {
+            // Stop first: on Windows the running binary can't be replaced at all,
+            // and everywhere else a live daemon would keep running the old code.
+            if (was_running) {
+                if (bw_stop_daemon(ctx, static_cast<size_t>(coin)) < 0) {
+                    char b[256] = {0};
+                    size_t n = bw_last_error(ctx, b, sizeof b);
+                    std::string msg(b, n);
+                    if (msg.empty())
+                        msg = "could not stop the daemon — update aborted";
+                    g_installing.store(-1);
+                    slint::invoke_from_event_loop([weak, coin, msg]() {
+                        auto h = weak.lock();
+                        if (!h || g_selected.load() != coin)
+                            return;
+                        (*h)->set_install_busy(false);
+                        (*h)->set_status_text(slint::SharedString(msg));
+                        (*h)->set_status_is_error(true);
+                    });
+                    return; // leave the old install intact rather than half-replacing it
+                }
+            }
+
+            int rc = install_with_progress(weak, ctx, coin);
+            bool ok = rc >= 0;
+            finish_install(weak, ctx, coin, rc,
+                           ok && was_running ? "Updated — restarting daemon…" : "Updated",
+                           "update failed");
+
+            // Put it back the way we found it. A restart failure is reported but
+            // doesn't undo the update, which did succeed.
+            if (ok && was_running) {
+                // Mark the daemon busy for the restart: finish_install has already
+                // released install-busy, so without this the Start button is live
+                // and a click here would race us into a second launch.
+                slint::invoke_from_event_loop([weak, coin]() {
+                    auto h = weak.lock();
+                    if (!h || g_selected.load() != coin)
+                        return;
+                    (*h)->set_daemon_busy(true);
+                    (*h)->set_daemon_loading(true);
+                });
+                int src = bw_start_daemon(ctx, static_cast<size_t>(coin));
+                std::string msg = "Updated";
+                bool is_err = src < 0;
+                if (is_err) {
+                    char b[256] = {0};
+                    size_t n = bw_last_error(ctx, b, sizeof b);
+                    msg.assign(b, n);
+                    if (msg.empty())
+                        msg = "updated, but the daemon did not restart";
+                }
+                slint::invoke_from_event_loop([weak, coin, msg, is_err]() {
+                    auto h = weak.lock();
+                    if (!h)
+                        return;
+                    // Always release the busy flags, even if the user navigated away —
+                    // they're global to the pane, so leaving them set would freeze the
+                    // buttons on whatever coin is on screen.
+                    (*h)->set_daemon_busy(false);
+                    (*h)->set_daemon_loading(false);
+                    if (g_selected.load() != coin)
+                        return;
+                    (*h)->set_status_text(slint::SharedString(msg));
+                    (*h)->set_status_is_error(is_err);
+                });
+            }
             wake_poll();
         }).detach();
     });

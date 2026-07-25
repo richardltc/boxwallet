@@ -22,6 +22,7 @@ const coinmod = @import("coin.zig");
 const models = @import("models.zig");
 const conf = @import("conf.zig");
 const install = @import("install.zig");
+const updater = @import("update.zig");
 
 // Every coin backend, so the GUI can list them all in the nav (like the TUI).
 const nexa = @import("coins/nexa.zig");
@@ -256,6 +257,35 @@ export fn bw_is_installed(ctx: ?*Ctx, idx: usize) c_int {
     const c = ctx orelse return 0;
     const coin = coinByIndex(idx) orelse return 0;
     return if (coin.isInstalled(c.allocator, c.install_root)) 1 else 0;
+}
+
+/// Whether the bundled `core_version` is newer than what's on disk — the
+/// "update available" flag, same as the TUI's Update prompt.
+///
+/// Mirrors the TUI's `refreshUpdateState`, deliberately including its rule that an
+/// installed coin with **no** version marker reads as *up to date* rather than out
+/// of date: we don't know what version it is, and assuming it's behind would nag
+/// on every pre-marker or hand-installed binary, for every coin. The marker gets
+/// stamped the first time we install (or the TUI learns it from a running daemon),
+/// after which real updates show correctly.
+export fn bw_update_available(ctx: ?*Ctx, idx: usize) c_int {
+    const c = ctx orelse return 0;
+    const coin = coinByIndex(idx) orelse return 0;
+    if (!coin.isInstalled(c.allocator, c.install_root)) return 0;
+    const ver = install.readVersionMarker(c.allocator, c.install_root, coin.daemonFile()) orelse return 0;
+    defer c.allocator.free(ver);
+    return if (updater.isNewer(coin.coreVersion(), ver)) 1 else 0;
+}
+
+/// The installed daemon version from the on-disk marker. Returns 0 bytes when
+/// there's no marker (version unknown) — not an error.
+export fn bw_installed_version(ctx: ?*Ctx, idx: usize, buf: ?[*]u8, cap: usize) usize {
+    const c = ctx orelse return 0;
+    const b = buf orelse return 0;
+    const coin = coinByIndex(idx) orelse return 0;
+    const ver = install.readVersionMarker(c.allocator, c.install_root, coin.daemonFile()) orelse return 0;
+    defer c.allocator.free(ver);
+    return copyOut(b[0..cap], ver);
 }
 
 export fn bw_data_dir(ctx: ?*Ctx, idx: usize, buf: ?[*]u8, cap: usize) usize {
@@ -905,4 +935,47 @@ test "a foreground daemon handle is kept per coin, not in one shared slot" {
     ctx.daemon_child[0] = std.mem.zeroes(std.process.Child);
     try std.testing.expect(ctx.daemon_child[0] != null);
     for (ctx.daemon_child[1..]) |slot| try std.testing.expect(slot == null);
+}
+
+test "bw_update_available compares the marker against the pinned core version" {
+    // The GUI's Update button hangs off this, and it has to agree with the TUI:
+    // behind → 1, current → 0, and *unknown* → 0 rather than nagging.
+    const allocator = std.testing.allocator;
+    var threaded: std.Io.Threaded = .init(allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    const root = "test-capi-update-root";
+    std.Io.Dir.cwd().deleteTree(io, root) catch {};
+    defer std.Io.Dir.cwd().deleteTree(io, root) catch {};
+
+    const coin = coinByIndex(0) orelse return error.Unexpected;
+    var ctx: Ctx = .{ .allocator = allocator, .home_dir = "", .install_root = root };
+
+    // `isInstalled` keys off the daemon binary, so the coin has to look present or
+    // update detection short-circuits to "nothing installed".
+    var dir = try std.Io.Dir.cwd().createDirPathOpen(io, root, .{});
+    defer dir.close(io);
+    try dir.writeFile(io, .{ .sub_path = coin.daemonFile(), .data = "not a real binary" });
+    try std.testing.expect(coin.isInstalled(allocator, root));
+
+    // No marker: version unknown. Deliberately *not* an update — assuming a
+    // hand-installed binary is behind would nag on every such install.
+    try std.testing.expectEqual(@as(c_int, 0), bw_update_available(&ctx, 0));
+    var buf: [32]u8 = undefined;
+    try std.testing.expectEqual(@as(usize, 0), bw_installed_version(&ctx, 0, &buf, buf.len));
+
+    // Behind the pinned version → an update is available.
+    try install.writeVersionMarker(allocator, root, coin.daemonFile(), "0.0.1");
+    try std.testing.expectEqual(@as(c_int, 1), bw_update_available(&ctx, 0));
+    const n = bw_installed_version(&ctx, 0, &buf, buf.len);
+    try std.testing.expectEqualStrings("0.0.1", buf[0..n]);
+
+    // Exactly the pinned version → nothing to offer.
+    try install.writeVersionMarker(allocator, root, coin.daemonFile(), coin.coreVersion());
+    try std.testing.expectEqual(@as(c_int, 0), bw_update_available(&ctx, 0));
+
+    // Ahead of it (a hand-built newer daemon) must also not offer a "downgrade".
+    try install.writeVersionMarker(allocator, root, coin.daemonFile(), "999.0.0");
+    try std.testing.expectEqual(@as(c_int, 0), bw_update_available(&ctx, 0));
 }
