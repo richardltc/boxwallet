@@ -65,6 +65,14 @@ int     bw_coin_supports_stablecoin(size_t idx);  /* 0/1 — shows the DigiDolla
 int     bw_is_installed(bw_ctx *ctx, size_t idx);                 /* 0/1 */
 size_t  bw_data_dir(bw_ctx *ctx, size_t idx, char *buf, size_t cap);
 
+/* Update detection, matching the TUI. bw_update_available is 1 when the bundled
+ * core version is newer than the installed one. An installed coin with no version
+ * marker reads as up to date (0), not out of date — its version is unknown, and
+ * assuming it's behind would nag on every hand-installed binary.
+ * bw_installed_version writes the marker's version, or 0 bytes if unknown. */
+int     bw_update_available(bw_ctx *ctx, size_t idx);             /* 0/1 */
+size_t  bw_installed_version(bw_ctx *ctx, size_t idx, char *buf, size_t cap);
+
 /* Daemon control + wallet lock/unlock (the action buttons). Return 0 on success,
  * < 0 on error (then bw_last_error has the reason). They block (spawn / RPC), so
  * call them from a worker thread. The passphrase is a secret: it's copied into a

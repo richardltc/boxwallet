@@ -360,6 +360,7 @@ export component AppWindow inherits Window {
     callback start-daemon();
     callback stop-daemon();
     callback install-coin();
+    callback update-coin();
     callback lock-wallet();
     callback unlock-wallet(string); // passphrase (secret; cleared right after)
 
@@ -382,6 +383,12 @@ export component AppWindow inherits Window {
     // can't be double-fired in the window before the first progress poll lands.
     in-out property <bool> install-busy: false;
     property <bool> installing: root.install-busy || root.install-phase != 0;
+    // Update state, from bw_update_available / bw_installed_version. An installed
+    // coin with no version marker reports not-available and an empty version, so
+    // the GUI stays quiet rather than nagging about a version it can't read.
+    in property <bool> update-available: false;
+    in property <string> installed-version: "";
+    property <bool> update-open: false; // update confirm modal visible
     in property <bool> running: false;
     in property <bool> synced: false;
     in property <bool> staking: false;
@@ -604,8 +611,12 @@ export component AppWindow inherits Window {
                         accent: root.coin-color;
                         active: root.installed || root.installing;
                         hint: root.installing
-                            ? (root.install-phase == 2 ? "Extracting…" : "Downloading…")
-                            : (root.installed ? "Installed" : "Not installed — use the Install button");
+                            ? (root.install-phase == 2 ? "Installing…" : "Downloading…")
+                            : (root.installed
+                                ? (root.update-available
+                                    ? "Update available: " + root.installed-version + " → " + root.coin-version
+                                    : "Installed")
+                                : "Not installed — use the Install button");
                         motion: root.installing ? "pulse" : "hop";
                         moving: !root.installed || root.installing;
                     }
@@ -815,7 +826,10 @@ export component AppWindow inherits Window {
                             spacing: 8px;
                             alignment: start;
                             Text {
-                                text: root.install-phase == 2 ? "Extracting…" : "Downloading…";
+                                // "Installing" rather than "Extracting": the unpack is
+                                // an implementation detail, and what the user cares
+                                // about is that the install is still working.
+                                text: root.install-phase == 2 ? "Installing…" : "Downloading…";
                                 color: #c8c8c8;
                                 font-size: 13px;
                             }
@@ -891,6 +905,18 @@ export component AppWindow inherits Window {
                             clicked => {
                                 root.install-busy = true;
                                 root.install-coin();
+                            }
+                        }
+                        // Replaces Install once the coin is on disk but behind the
+                        // bundled core version. Confirmed rather than immediate: it
+                        // replaces a working daemon, and the new core may upgrade
+                        // chainstate/wallet formats that another app also reads.
+                        if root.installed && root.update-available: Button {
+                            text: "Update";
+                            primary: true;
+                            enabled: !root.install-busy && !root.daemon-busy;
+                            clicked => {
+                                root.update-open = true;
                             }
                         }
                         Button {
@@ -1162,6 +1188,76 @@ export component AppWindow inherits Window {
                             root.unlock-wallet(pw.text);
                             pw.text = "";
                             root.unlock-open = false;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // Update confirm. The TUI asks the same question before its stop → reinstall
+    // → restart sequence, and for the same reason: this replaces a daemon that may
+    // be running and whose data another application also uses.
+    if root.update-open: Rectangle {
+        background: #000000bb;
+        TouchArea { }
+
+        Rectangle {
+            width: 400px;
+            height: 232px;
+            x: (parent.width - self.width) / 2;
+            y: (parent.height - self.height) / 2;
+            background: #202020;
+            border-radius: 10px;
+            border-width: 1px;
+            border-color: #3a3a3a;
+
+            VerticalBox {
+                padding: 16px;
+                spacing: 10px;
+                alignment: start;
+                Text {
+                    text: "Update " + root.coin-name + "?";
+                    color: #e6e6e6;
+                    font-size: 15px;
+                    font-weight: 600;
+                }
+                Text {
+                    text: root.installed-version + "  →  " + root.coin-version;
+                    color: #c8c8c8;
+                    font-size: 14px;
+                }
+                Text {
+                    // The one risk that can't be engineered away, so it's stated
+                    // rather than hidden: a newer core can upgrade chainstate or
+                    // wallet formats, and if another app drives this same data
+                    // directory it may not be able to open it afterwards.
+                    text: "The daemon will be stopped, updated, and restarted if it "
+                        + "was running. If another application uses this coin's data "
+                        + "directory, a newer core may upgrade it so the older app can "
+                        + "no longer open it.";
+                    color: #9a9a9a;
+                    font-size: 12px;
+                    wrap: word-wrap;
+                    horizontal-stretch: 1;
+                }
+                HorizontalBox {
+                    padding: 0;
+                    alignment: end;
+                    spacing: 8px;
+                    Button {
+                        text: "Cancel";
+                        clicked => {
+                            root.update-open = false;
+                        }
+                    }
+                    Button {
+                        text: "Update";
+                        primary: true;
+                        clicked => {
+                            root.update-open = false;
+                            root.install-busy = true;
+                            root.update-coin();
                         }
                     }
                 }
