@@ -51,6 +51,25 @@ fn report(progress: ?Progress, phase: Phase, current: u64, total: u64) void {
     if (progress) |p| p.report(phase, current, total);
 }
 
+/// The seekable file an extraction pass is reading through, so it can report a
+/// real percentage rather than an open-ended byte count.
+///
+/// A tar stream never states its own size, so counting decompressed bytes gives
+/// a numerator with no denominator. The file underneath *is* measurable: how far
+/// through it we've read is monotonic and lands exactly on `total` as the pass
+/// ends, which is what a progress bar needs. For `.tar.gz` that's the compressed
+/// archive (so the fraction tracks output closely, compression being near-uniform
+/// across a tarball of binaries — a very good proxy, not literal output bytes);
+/// for `.tar.bz2` the untar reads the already-decompressed `.tar`, so there it
+/// *is* literal output progress.
+///
+/// Null for a non-seekable or in-memory source (the unit tests), which keeps the
+/// older indeterminate reporting — `total` 0, meaning "unknown" to the frontend.
+pub const ArchiveExtent = struct {
+    src: *std.Io.File.Reader,
+    total: u64,
+};
+
 /// Download `url` and extract it into `dest_root` (created if missing).
 ///
 /// `strip` leading path components are dropped — coin archives wrap their
@@ -104,9 +123,22 @@ pub fn downloadAndExtract(
     defer scratch.close(io);
     var read_buffer: [32 * 1024]u8 = undefined;
     var scratch_reader = scratch.reader(io, &read_buffer);
+    // The scratch file's size is the denominator for extraction progress: reading
+    // through it is monotonic and ends exactly at the total, so the frontend gets a
+    // real percentage instead of an open-ended count. A stat failure is not fatal —
+    // extraction just reports indeterminate, as it always used to.
+    const archive_size = scratch_reader.getSize() catch 0;
+    const extent: ?ArchiveExtent = if (archive_size > 0)
+        .{ .src = &scratch_reader, .total = archive_size }
+    else
+        null;
+
     switch (format) {
-        .tar_gz => try extractArchive(io, &scratch_reader.interface, format, dest_root, strip, progress),
+        .tar_gz => try extractArchive(io, &scratch_reader.interface, format, dest_root, strip, progress, extent),
+        // Zip seeks around its central directory, so position isn't monotonic and
+        // there's no honest percentage to report — it stays indeterminate.
         .zip => try extractZip(&scratch_reader, dest, progress),
+        // bz2 measures its own decompressed .tar instead (see extractTarBz2).
         .tar_bz2 => try extractTarBz2(allocator, io, dest, &scratch_reader, scratch_name, strip, progress),
     }
 }
@@ -148,7 +180,14 @@ fn extractTarBz2(
     defer tar_file.close(io);
     var rbuf: [64 * 1024]u8 = undefined;
     var tr = tar_file.reader(io, &rbuf);
-    try untar(io, dest, &tr.interface, strip, progress);
+    // The bunzip pass above can't report (bzip2.decompress has no progress hook),
+    // so the bar is indeterminate until here. From this point the source is the
+    // decompressed .tar of known size, so the percentage is literal output
+    // progress. A stat failure just drops back to indeterminate.
+    const tar_size = tr.getSize() catch 0;
+    const extent: ?ArchiveExtent = if (tar_size > 0) .{ .src = &tr, .total = tar_size } else null;
+    report(progress, .extract, 0, tar_size);
+    try untar(io, dest, &tr.interface, strip, progress, extent);
 }
 
 /// Why a download stopped. These names *are* the user-facing message: `app.zig`
@@ -319,6 +358,7 @@ pub fn extractArchive(
     dest_root: []const u8,
     strip: u32,
     progress: ?Progress,
+    extent: ?ArchiveExtent,
 ) !void {
     var dest = try std.Io.Dir.cwd().createDirPathOpen(io, dest_root, .{});
     defer dest.close(io);
@@ -329,10 +369,11 @@ pub fn extractArchive(
             var dz = flate.Decompress.init(archive, .gzip, &window);
 
             // Signal that extraction has begun (a frontend pegs the download bar
-            // full and starts its spinner here), then stream gunzip → tally →
-            // untar.
-            report(progress, .extract, 0, 0);
-            try untar(io, dest, &dz.reader, strip, progress);
+            // full here), then stream gunzip → tally → untar. Report the total up
+            // front where it's known, so the bar starts determinate at 0% instead
+            // of flicking through an indeterminate frame first.
+            report(progress, .extract, 0, if (extent) |e| e.total else 0);
+            try untar(io, dest, &dz.reader, strip, progress, extent);
         },
         // These streaming-from-a-Reader paths are tar.gz only. Zip can't stream
         // (its central directory sits at EOF) and bzip2 has no stdlib streaming
@@ -356,9 +397,10 @@ fn untar(
     src: *std.Io.Reader,
     strip: u32,
     progress: ?Progress,
+    extent: ?ArchiveExtent,
 ) !void {
     var tally_buffer: [64 * 1024]u8 = undefined;
-    var tally: TallyReader = .init(src, &tally_buffer, progress);
+    var tally: TallyReader = .init(src, &tally_buffer, progress, extent);
     std.tar.extract(io, dest, &tally.interface, .{
         .strip_components = strip,
         .mode_mode = .executable_bit_only,
@@ -384,13 +426,17 @@ fn untar(
 const TallyReader = struct {
     inner: *std.Io.Reader,
     progress: ?Progress,
+    /// Measurable source underneath the pipeline, when there is one; drives the
+    /// percentage instead of `count`. See `ArchiveExtent`.
+    extent: ?ArchiveExtent,
     count: u64 = 0,
     interface: std.Io.Reader,
 
-    fn init(inner: *std.Io.Reader, buffer: []u8, progress: ?Progress) TallyReader {
+    fn init(inner: *std.Io.Reader, buffer: []u8, progress: ?Progress, extent: ?ArchiveExtent) TallyReader {
         return .{
             .inner = inner,
             .progress = progress,
+            .extent = extent,
             .interface = .{
                 .vtable = &.{ .stream = stream, .discard = discard },
                 .buffer = buffer,
@@ -416,7 +462,16 @@ const TallyReader = struct {
 
     fn bump(self: *TallyReader, n: usize) void {
         self.count += n;
-        report(self.progress, .extract, self.count, 0);
+        if (self.extent) |e| {
+            // How far through the underlying file the pipeline has pulled. Clamped
+            // because a buffered reader may have read ahead past what tar has
+            // actually consumed, and a bar that reports >100% looks broken.
+            report(self.progress, .extract, @min(e.src.logicalPos(), e.total), e.total);
+        } else {
+            // No measurable source: fall back to an open-ended count (total 0),
+            // which the frontend renders as indeterminate.
+            report(self.progress, .extract, self.count, 0);
+        }
     }
 };
 
@@ -987,7 +1042,7 @@ test "extractArchive gunzips + untars a real .tar.gz with strip_components" {
     defer std.Io.Dir.cwd().deleteTree(io, dest) catch {};
 
     var in = std.Io.Reader.fixed(archive);
-    try extractArchive(io, &in, .tar_gz, dest, 1, null);
+    try extractArchive(io, &in, .tar_gz, dest, 1, null, null);
 
     try std.testing.expect(fileExists(allocator, dest, "nexad"));
     try std.testing.expect(fileExists(allocator, dest, "nexa-cli"));
@@ -1012,7 +1067,7 @@ test "extractArchive handles PAX/GNU extended headers (long paths)" {
     defer std.Io.Dir.cwd().deleteTree(io, dest) catch {};
 
     var in = std.Io.Reader.fixed(archive);
-    try extractArchive(io, &in, .tar_gz, dest, 0, null);
+    try extractArchive(io, &in, .tar_gz, dest, 0, null, null);
 
     try std.testing.expect(fileExists(allocator, dest, "pax-node/jre/bin/java"));
     try std.testing.expect(fileExists(
@@ -1052,7 +1107,7 @@ test "extractArchive reports extract progress periodically (drives the UI spinne
     const progress: Progress = .{ .ctx = &counter, .func = Counter.onProgress };
 
     var in = std.Io.Reader.fixed(archive);
-    try extractArchive(io, &in, .tar_gz, dest, 1, progress);
+    try extractArchive(io, &in, .tar_gz, dest, 1, progress, null);
 
     try std.testing.expect(counter.extract_reports >= 2);
 }
@@ -1157,4 +1212,103 @@ test "fileMatchesSha256 verifies a streamed digest and rejects a mismatch" {
     try std.testing.expect(!fileMatchesSha256(allocator, root, "params.bin", bad));
     // A missing file is a mismatch, never trusted.
     try std.testing.expect(!fileMatchesSha256(allocator, root, "absent.bin", good));
+}
+
+test "extract progress is a real percentage when the source size is known" {
+    // The determinate path: given an `ArchiveExtent`, extraction reports the
+    // position in the underlying file against its size, so a frontend can draw an
+    // actual percentage instead of a sweep. Asserts the contract the bar relies on
+    // — a fixed non-zero denominator, monotonic numerator, never over 100%, and
+    // ending exactly full.
+    const allocator = std.testing.allocator;
+
+    var threaded: std.Io.Threaded = .init(allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    const root = "test-extract-pct";
+    std.Io.Dir.cwd().deleteTree(io, root) catch {};
+    defer std.Io.Dir.cwd().deleteTree(io, root) catch {};
+    var dir = try std.Io.Dir.cwd().createDirPathOpen(io, root, .{});
+    defer dir.close(io);
+
+    // The fixture has to be on disk, not in memory: the whole point is measuring a
+    // seekable file's size and read position.
+    const archive = @embedFile("testdata/fixture.tar.gz");
+    try dir.writeFile(io, .{ .sub_path = "fixture.tar.gz", .data = archive });
+
+    var f = try dir.openFile(io, "fixture.tar.gz", .{});
+    defer f.close(io);
+    var rbuf: [4 * 1024]u8 = undefined;
+    var fr = f.reader(io, &rbuf);
+    const size = try fr.getSize();
+    try std.testing.expect(size > 0);
+
+    const Rec = struct {
+        total: u64 = 0,
+        last: u64 = 0,
+        reports: usize = 0,
+        monotonic: bool = true,
+        within_total: bool = true,
+        stable_total: bool = true,
+        fn onProgress(ctx: *anyopaque, phase: Phase, current: u64, total: u64) void {
+            if (phase != .extract) return;
+            const self: *@This() = @ptrCast(@alignCast(ctx));
+            if (self.reports > 0 and total != self.total) self.stable_total = false;
+            if (current < self.last) self.monotonic = false;
+            if (total > 0 and current > total) self.within_total = false;
+            self.total = total;
+            self.last = current;
+            self.reports += 1;
+        }
+    };
+    var rec: Rec = .{};
+    const progress: Progress = .{ .ctx = &rec, .func = Rec.onProgress };
+
+    try extractArchive(io, &fr.interface, .tar_gz, root ++ "/out", 1, progress, .{ .src = &fr, .total = size });
+
+    try std.testing.expect(rec.reports >= 2);
+    // A usable denominator, fixed for the whole pass — not the 0 ("unknown") the
+    // indeterminate path reports.
+    try std.testing.expectEqual(size, rec.total);
+    try std.testing.expect(rec.stable_total);
+    try std.testing.expect(rec.monotonic);
+    try std.testing.expect(rec.within_total);
+    // Ends exactly full, so the bar can't finish stuck at 98%.
+    try std.testing.expectEqual(size, rec.last);
+}
+
+test "extract progress stays indeterminate without an extent" {
+    // The fallback contract: no measurable source (in-memory fixture) means total
+    // is reported as 0, which the frontend reads as "unknown" and animates instead
+    // of drawing a false percentage.
+    const allocator = std.testing.allocator;
+
+    var threaded: std.Io.Threaded = .init(allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    const dest = "test-extract-indeterminate";
+    std.Io.Dir.cwd().deleteTree(io, dest) catch {};
+    defer std.Io.Dir.cwd().deleteTree(io, dest) catch {};
+
+    const Rec = struct {
+        all_zero_total: bool = true,
+        reports: usize = 0,
+        fn onProgress(ctx: *anyopaque, phase: Phase, current: u64, total: u64) void {
+            _ = current;
+            if (phase != .extract) return;
+            const self: *@This() = @ptrCast(@alignCast(ctx));
+            if (total != 0) self.all_zero_total = false;
+            self.reports += 1;
+        }
+    };
+    var rec: Rec = .{};
+    const progress: Progress = .{ .ctx = &rec, .func = Rec.onProgress };
+
+    var in = std.Io.Reader.fixed(@embedFile("testdata/fixture.tar.gz"));
+    try extractArchive(io, &in, .tar_gz, dest, 1, progress, null);
+
+    try std.testing.expect(rec.reports >= 2);
+    try std.testing.expect(rec.all_zero_total);
 }
