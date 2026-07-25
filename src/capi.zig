@@ -634,6 +634,98 @@ export fn bw_install_progress(ctx: ?*Ctx, cur: ?*u64, total: ?*u64) u8 {
     return c.install_phase.load(.monotonic);
 }
 
+// --- sync accelerator (Divi's chain snapshot, Nerva's QuickSync) -----------
+//
+// A yes/no offer made *before* the first daemon start, when the coin's chain
+// isn't there yet and it publishes something that skips most of the sync. The
+// GUI asks `bw_sync_accel_offered` before calling `bw_start_daemon`, shows the
+// name/detail/resume figures if so, and on the user's yes runs
+// `bw_sync_accel_run` and then starts the daemon as usual.
+//
+// Progress deliberately rides the *install* channel (`bw_install_progress`):
+// it reports the same download-then-extract phases, and reusing it means the
+// GUI's existing progress pump drives this with no second mechanism.
+
+/// Whether `idx` has a sync accelerator to offer right now — 1 yes, 0 no.
+/// Cheap disk checks only (no daemon, no network), so it's safe to call on the
+/// UI thread as the Start button is pressed. For a chain snapshot this is false
+/// whenever chain data already exists, which is what keeps another app's data
+/// safe.
+export fn bw_sync_accel_offered(ctx: ?*Ctx, idx: usize) c_int {
+    const c = ctx orelse return 0;
+    const coin = coinByIndex(idx) orelse return 0;
+    return if (coin.offersSyncAccelerator(c.allocator, c.install_root, c.home_dir)) 1 else 0;
+}
+
+/// The accelerator's short name ("Blockchain snapshot"), for the prompt title.
+export fn bw_sync_accel_name(idx: usize, buf: ?[*]u8, cap: usize) usize {
+    const coin = coinByIndex(idx) orelse return 0;
+    const sa = coin.syncAccelerator() orelse return 0;
+    const b = buf orelse return 0;
+    return copyOut(b[0..cap], sa.name);
+}
+
+/// The accelerator's one-line pitch (what it does, rough download size).
+export fn bw_sync_accel_detail(idx: usize, buf: ?[*]u8, cap: usize) usize {
+    const coin = coinByIndex(idx) orelse return 0;
+    const sa = coin.syncAccelerator() orelse return 0;
+    const b = buf orelse return 0;
+    return copyOut(b[0..cap], sa.prompt_detail);
+}
+
+/// Bytes of an interrupted download already on disk, so the prompt can offer to
+/// continue rather than appear to restart a multi-GB transfer. 0 when there's
+/// nothing waiting or the accelerator doesn't resume.
+export fn bw_sync_accel_resume_bytes(ctx: ?*Ctx, idx: usize) u64 {
+    const c = ctx orelse return 0;
+    const coin = coinByIndex(idx) orelse return 0;
+    return coin.syncAcceleratorPartialBytes(c.allocator, c.install_root, c.home_dir);
+}
+
+/// Fetch the accelerator and put it in place. Blocking and long — a chain
+/// snapshot is several GB and its unpack is slower still — so the C++ side runs
+/// it on its own thread and polls `bw_install_progress` meanwhile, exactly as it
+/// does for an install.
+///
+/// A failed *resumable* download deliberately leaves its partial behind: the next
+/// attempt continues from there, and `bw_sync_accel_resume_bytes` reports it.
+export fn bw_sync_accel_run(ctx: ?*Ctx, idx: usize) c_int {
+    const c = ctx orelse return -1;
+    const coin = coinByIndex(idx) orelse return -1;
+    const sa = coin.syncAccelerator() orelse return -1;
+
+    // Publish "started" before any work so the UI switches to the progress
+    // readout immediately, and clear it on every exit path so a failure can't
+    // strand the pane in a permanent "Downloading…".
+    c.install_phase.store(bw_install_phase_downloading, .monotonic);
+    c.install_cur.store(0, .monotonic);
+    c.install_total.store(0, .monotonic);
+    defer c.install_phase.store(bw_install_phase_idle, .monotonic);
+
+    // Private arena, freed as a unit — the accelerator's working set never
+    // shares an allocator with the polling UI thread.
+    var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    const progress: install.Progress = .{ .ctx = c, .func = onInstallProgress };
+    sa.download(a, c.install_root, c.home_dir, progress) catch |err| {
+        c.setError(@errorName(err));
+        return -1;
+    };
+    // A snapshot is inert until unpacked, so its failure fails the whole opt-in.
+    if (sa.apply) |apply| {
+        c.install_phase.store(bw_install_phase_extracting, .monotonic);
+        c.install_cur.store(0, .monotonic);
+        c.install_total.store(0, .monotonic);
+        apply(a, c.install_root, c.home_dir, progress) catch |err| {
+            c.setError(@errorName(err));
+            return -1;
+        };
+    }
+    return 0;
+}
+
 export fn bw_start_daemon(ctx: ?*Ctx, idx: usize) c_int {
     const c = ctx orelse return -1;
     startDaemon(c, idx) catch |err| {

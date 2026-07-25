@@ -359,6 +359,11 @@ export component AppWindow inherits Window {
     property <bool> unlock-open: false;        // passphrase modal visible
     callback start-daemon();
     callback stop-daemon();
+    // Sync accelerator (Divi's blockchain snapshot): the user's answer to the
+    // prompt raised before the first daemon start. Accept downloads + applies it
+    // and then starts; decline starts the daemon without it.
+    callback accel-accept();
+    callback accel-decline();
     callback install-coin();
     callback update-coin();
     callback lock-wallet();
@@ -389,6 +394,13 @@ export component AppWindow inherits Window {
     in property <bool> update-available: false;
     in property <string> installed-version: "";
     property <bool> update-open: false; // update confirm modal visible
+    // Sync-accelerator prompt, raised by the C++ side when the coin offers one
+    // before its first daemon start (see bw_sync_accel_offered). `accel-resume`
+    // is pre-formatted and empty when there's nothing to resume.
+    in-out property <bool> accel-open: false;
+    in property <string> accel-name: "";
+    in property <string> accel-detail: "";
+    in property <string> accel-resume: "";
     in property <bool> running: false;
     in property <bool> synced: false;
     in property <bool> staking: false;
@@ -1258,6 +1270,82 @@ export component AppWindow inherits Window {
                             root.update-open = false;
                             root.install-busy = true;
                             root.update-coin();
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // Sync-accelerator offer, raised in place of starting the daemon the first
+    // time a coin that publishes one is started on an empty chain. Declining is
+    // a normal outcome (a full P2P sync still works), so both buttons start the
+    // daemon — they differ only in whether the accelerator is fetched first.
+    if root.accel-open: Rectangle {
+        background: #000000bb;
+        TouchArea { }
+
+        Rectangle {
+            width: 400px;
+            height: root.accel-resume == "" ? 226px : 258px;
+            x: (parent.width - self.width) / 2;
+            y: (parent.height - self.height) / 2;
+            background: #202020;
+            border-radius: 10px;
+            border-width: 1px;
+            border-color: #3a3a3a;
+
+            VerticalBox {
+                padding: 16px;
+                spacing: 10px;
+                alignment: start;
+                Text {
+                    text: root.accel-name + "?";
+                    color: #e6e6e6;
+                    font-size: 15px;
+                    font-weight: 600;
+                }
+                Text {
+                    text: root.accel-detail;
+                    color: #c8c8c8;
+                    font-size: 13px;
+                    wrap: word-wrap;
+                    horizontal-stretch: 1;
+                }
+                // Only shown when an earlier attempt left bytes on disk, so
+                // "Resume" doesn't read as committing to the whole download again.
+                if root.accel-resume != "": Text {
+                    text: root.accel-resume;
+                    color: #9a9a9a;
+                    font-size: 12px;
+                    wrap: word-wrap;
+                    horizontal-stretch: 1;
+                }
+                Text {
+                    text: "Without it, " + root.coin-name + " syncs from the network as "
+                        + "usual — this only makes the first sync faster.";
+                    color: #9a9a9a;
+                    font-size: 12px;
+                    wrap: word-wrap;
+                    horizontal-stretch: 1;
+                }
+                HorizontalBox {
+                    padding: 0;
+                    alignment: end;
+                    spacing: 8px;
+                    Button {
+                        text: "Sync normally";
+                        clicked => {
+                            root.accel-open = false;
+                            root.accel-decline();
+                        }
+                    }
+                    Button {
+                        text: root.accel-resume == "" ? "Download" : "Resume";
+                        primary: true;
+                        clicked => {
+                            root.accel-open = false;
+                            root.accel-accept();
                         }
                     }
                 }
