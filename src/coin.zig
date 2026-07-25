@@ -271,11 +271,18 @@ pub const Coin = struct {
         /// asked for it — and must leave nothing half-applied. A `resumable`
         /// accelerator may deliberately keep its partial download behind for the
         /// next attempt; nothing else may.
+        ///
+        /// `cancel`, when supplied, is polled between chunks: a true answer must
+        /// stop promptly and unwind with `error.Paused`, leaving whatever is on
+        /// disk resumable. That is how both the user's Pause and a clean app
+        /// shutdown are served — a transfer this long is almost always still
+        /// running when the window closes.
         download: *const fn (
             allocator: std.mem.Allocator,
             install_root: []const u8,
             home_dir: []const u8,
             progress: ?install_mod.Progress,
+            cancel: ?install_mod.Cancel,
         ) anyerror!void,
         /// Put a downloaded snapshot in place (unpack it into the data dir), or null
         /// for an accelerator that is simply a file the daemon reads. Run after
@@ -285,6 +292,7 @@ pub const Coin = struct {
             install_root: []const u8,
             home_dir: []const u8,
             progress: ?install_mod.Progress,
+            cancel: ?install_mod.Cancel,
         ) anyerror!void = null,
         /// Bytes of an interrupted download already on disk, so the prompt can
         /// offer to *continue* rather than appear to start a multi-GB transfer

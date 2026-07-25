@@ -1079,6 +1079,10 @@ const QuickSyncModal = struct {
         confirm,
         /// The accelerator is downloading (progress read from the Activity).
         downloading,
+        /// The user paused it. What's on disk is kept, so this is a resting
+        /// state, not an error — resume it now, or start without it and pick it
+        /// up on a later run.
+        paused,
         /// The download failed; offer to start without it or cancel.
         failed,
     };
@@ -1510,6 +1514,11 @@ const Activity = struct {
     /// phases, and a bar that silently restarts at 0% reads as a bug. Values are
     /// `install_mod.Phase`; polled by the render path, hence atomic.
     qs_phase: std.atomic.Value(u8) = .init(@intFromEnum(install_mod.Phase.download)),
+    /// Pause request for the accelerator worker: set by the UI thread, polled by
+    /// the transfer between chunks. A chain snapshot runs for the better part of
+    /// an hour, so the user must be able to stop it — and the app must be able to
+    /// stop it on the way out — without losing the bytes already fetched.
+    qs_pause: std.atomic.Value(bool) = .init(false),
 
     // --- worker inputs: set by the UI before spawn, read by the worker -----
     coin: Coin = undefined,
@@ -2181,6 +2190,13 @@ const Activity = struct {
     /// byte counters plus which step they belong to — unlike `onProgress` it
     /// leaves the pane's install `phase` alone, so the coin's install state stays
     /// untouched while the prompt's own bar reads `dl_cur`/`dl_total`/`qs_phase`.
+    /// `install_mod.Cancel` sink for the accelerator worker: whether the UI has
+    /// asked the transfer to stop (Pause, or the app shutting down).
+    fn qsPauseRequested(ctx: *anyopaque) bool {
+        const self: *Activity = @ptrCast(@alignCast(ctx));
+        return self.qs_pause.load(.monotonic);
+    }
+
     fn onQuicksyncProgress(ctx: *anyopaque, phase: install_mod.Phase, current: u64, total: u64) void {
         const self: *Activity = @ptrCast(@alignCast(ctx));
         self.qs_phase.store(@intFromEnum(phase), .monotonic);
@@ -2204,8 +2220,9 @@ const Activity = struct {
             return;
         };
         const progress: install_mod.Progress = .{ .ctx = self, .func = onQuicksyncProgress };
+        const cancel: install_mod.Cancel = .{ .ctx = self, .func = qsPauseRequested };
         self.qs_phase.store(@intFromEnum(install_mod.Phase.download), .monotonic);
-        if (sa.download(a, self.install_root, self.home_dir, progress)) {
+        if (sa.download(a, self.install_root, self.home_dir, progress, cancel)) {
             // Downloaded. A snapshot still has to be put in place before the
             // daemon may start — an archive sitting in the install root does
             // nothing for the sync, so its failure fails the whole opt-in.
@@ -2213,7 +2230,7 @@ const Activity = struct {
                 self.qs_phase.store(@intFromEnum(install_mod.Phase.extract), .monotonic);
                 self.dl_cur.store(0, .monotonic);
                 self.dl_total.store(0, .monotonic);
-                if (apply(a, self.install_root, self.home_dir, progress)) {
+                if (apply(a, self.install_root, self.home_dir, progress, cancel)) {
                     self.qs_ok = true;
                 } else |err| {
                     self.qs_err = @errorName(err);
@@ -4542,6 +4559,13 @@ pub const App = struct {
     /// install workers (so they don't outlive the state they write into), then
     /// frees the model's owned allocations.
     pub fn deinit(self: *App) void {
+        // Ask any accelerator transfer to stop *before* joining anything. A chain
+        // snapshot runs for the better part of an hour, so without this, quitting
+        // mid-download would hang the exit until it finished. Pausing is exactly
+        // the right answer anyway: the partial is flushed and kept, and the next
+        // run offers to continue from there.
+        for (&self.activities) |*act| act.qs_pause.store(true, .monotonic);
+
         // Join the background update-check worker so it doesn't outlive the App
         // fields it writes into.
         if (self.update_thread) |t| {
@@ -5330,6 +5354,12 @@ pub const App = struct {
                         self.logf("{s}: {s} ready — starting daemon", .{ c.coinName(), qs_name });
                         self.beginDaemonStart(c, act);
                     }
+                } else if (std.mem.eql(u8, act.qs_err, "Paused")) {
+                    // Not a failure: the bytes are on disk and the transfer is
+                    // resumable, so the prompt rests rather than erroring.
+                    if (self.qs_modal != null and self.qs_modal.?.coin_idx == i)
+                        self.qs_modal.?.stage = .paused;
+                    if (coin_opt) |c| self.logf("{s}: {s} paused — resumes where it stopped", .{ c.coinName(), qs_name });
                 } else {
                     if (self.qs_modal != null and self.qs_modal.?.coin_idx == i)
                         self.qs_modal.?.setMsg(act.qs_err);
@@ -6709,8 +6739,20 @@ pub const App = struct {
                 .enter => if (m.sel == 0) self.startQuickSyncDownload() else self.declineQuickSync(),
                 else => {},
             },
-            // No cancelling a download in flight — let it finish (or fail) and reap.
-            .downloading => {},
+            // A resumable transfer can be paused (`p`/esc): the bytes on disk are
+            // kept and picked up later. One that can't resume has nothing to pause
+            // into, so its keys are still swallowed — stopping it would only throw
+            // the work away.
+            .downloading => switch (k.key) {
+                .escape => self.pauseQuickSync(),
+                .char => |c| if (c == 'p') self.pauseQuickSync(),
+                else => {},
+            },
+            .paused => switch (k.key) {
+                .enter => self.startQuickSyncDownload(),
+                .escape => self.declineQuickSync(),
+                else => {},
+            },
             .failed => switch (k.key) {
                 .enter => self.declineQuickSync(),
                 .escape => self.qs_modal = null,
@@ -6741,6 +6783,7 @@ pub const App = struct {
         act.dl_cur.store(0, .monotonic);
         act.dl_total.store(0, .monotonic);
         act.qs_phase.store(@intFromEnum(install_mod.Phase.download), .monotonic);
+        act.qs_pause.store(false, .monotonic);
         act.qs_ok = false;
         act.qs_err = "";
         act.qs_done.store(false, .release);
@@ -6751,6 +6794,16 @@ pub const App = struct {
             return;
         };
         self.logf("{s}: downloading {s}…", .{ coin.coinName(), m.name });
+    }
+
+    /// User paused a resumable transfer. Only raises the flag — the worker
+    /// notices between chunks and unwinds with `error.Paused`, which the reap in
+    /// `onTick` turns into the prompt's `paused` stage. Doing it this way means
+    /// the partial is always flushed and consistent before we call it stopped.
+    fn pauseQuickSync(self: *App) void {
+        const m = &self.qs_modal.?;
+        if (!m.resumable) return;
+        self.activities[m.coin_idx].qs_pause.store(true, .monotonic);
     }
 
     /// User declined QuickSync (or chose to start anyway after a failure): close the
@@ -9301,6 +9354,15 @@ pub const App = struct {
                 const dlbar = try bar(a, act.dl_cur.load(.monotonic), act.dl_total.load(.monotonic));
                 try modalRow(&out.writer, vbar, inner_w, dlbar, zz.width(dlbar));
             },
+            .paused => {
+                const lead = "Paused";
+                try modalRow(&out.writer, vbar, inner_w, lead, zz.width(lead));
+                try modalRow(&out.writer, vbar, inner_w, "", 0);
+                const dlbar = try bar(a, act.dl_cur.load(.monotonic), act.dl_total.load(.monotonic));
+                try modalRow(&out.writer, vbar, inner_w, dlbar, zz.width(dlbar));
+                try modalRow(&out.writer, vbar, inner_w, "", 0);
+                try wrapIntoRows(a, &out.writer, vbar, inner_w, "What's downloaded is kept — resuming continues from here, now or on a later run.", (zz.Style{}).dim(true));
+            },
             .failed => {
                 const plain = try std.fmt.allocPrint(a, "{s} failed:", .{m.name});
                 const lead = (zz.Style{}).fg(.red).render(a, plain) catch plain;
@@ -9312,11 +9374,10 @@ pub const App = struct {
         try modalRow(&out.writer, vbar, inner_w, "", 0);
         const hint = switch (m.stage) {
             .confirm => "enter: select   esc: cancel",
-            // There's no cancelling a transfer in flight, and a chain snapshot can
-            // run for an hour — so say what the escape hatch actually is. Quitting
-            // is safe for a resumable accelerator: the partial survives and the
-            // next start offers to continue it.
-            .downloading => if (m.resumable) "please wait…   (quitting is safe — this resumes)" else "please wait…",
+            // A chain snapshot can run for an hour, so a resumable transfer says
+            // how to stop it; one that can't resume has nothing to pause into.
+            .downloading => if (m.resumable) "p / esc: pause   (quitting is safe too — this resumes)" else "please wait…",
+            .paused => "enter: resume   esc: start without it",
             .failed => "enter: start without it   esc: cancel",
         };
         const hint_styled = (zz.Style{}).dim(true).render(a, hint) catch hint;

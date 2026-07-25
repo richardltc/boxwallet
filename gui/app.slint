@@ -364,6 +364,9 @@ export component AppWindow inherits Window {
     // and then starts; decline starts the daemon without it.
     callback accel-accept();
     callback accel-decline();
+    // Ask a running accelerator transfer to stop. What's on disk is kept, so this
+    // is a pause, not a cancel — resuming picks up from the same byte.
+    callback accel-pause();
     callback install-coin();
     callback update-coin();
     callback lock-wallet();
@@ -398,6 +401,10 @@ export component AppWindow inherits Window {
     // before its first daemon start (see bw_sync_accel_offered). `accel-resume`
     // is pre-formatted and empty when there's nothing to resume.
     in-out property <bool> accel-open: false;
+    // True while the progress bar belongs to a sync-accelerator run rather than an
+    // ordinary install — an install has nothing to pause, so the Pause button is
+    // gated on this.
+    in-out property <bool> accel-busy: false;
     in property <string> accel-name: "";
     in property <string> accel-detail: "";
     in property <string> accel-resume: "";
@@ -896,6 +903,28 @@ export component AppWindow inherits Window {
                                 background: root.coin-color;
                                 opacity: 0.8;
                                 border-radius: 3px;
+                            }
+                        }
+                        // Pause, under the bar, only for an accelerator transfer.
+                        // A multi-GB snapshot is far too long to hold someone
+                        // hostage to, and it resumes from the same byte — so
+                        // stopping costs nothing but the time already spent.
+                        if root.accel-busy: HorizontalBox {
+                            padding: 0;
+                            padding-top: 4px;
+                            spacing: 8px;
+                            alignment: start;
+                            Button {
+                                text: "Pause";
+                                clicked => {
+                                    root.accel-pause();
+                                }
+                            }
+                            Text {
+                                text: "Safe to pause or quit — this resumes where it stops.";
+                                color: #9a9a9a;
+                                font-size: 12px;
+                                vertical-alignment: center;
                             }
                         }
                     }

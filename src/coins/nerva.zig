@@ -448,6 +448,9 @@ pub const Nerva = struct {
         install_root: []const u8,
         _: []const u8,
         progress: ?install_mod.Progress,
+        // QuickSync is ~130 MB and not resumable, so there is nothing to pause
+        // into: a stop just means the next attempt starts over.
+        _: ?install_mod.Cancel,
     ) anyerror!void {
         install_mod.downloadFile(allocator, quicksync_url, install_root, quicksync_file, progress) catch |err| {
             deleteQuicksync(allocator, install_root);

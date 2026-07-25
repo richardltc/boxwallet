@@ -220,17 +220,19 @@ pub const Divi = struct {
     /// attempt rather than starting the ~4.7 GB transfer over — at this size a
     /// connection dropping at 90% would otherwise make the feature useless.
     ///
-    /// A failed transfer deliberately leaves its partial behind (that's what the
-    /// next attempt resumes from); `install_mod.downloadFileResumable` guards
-    /// against resuming into a *different* snapshot, since upstream regenerates
-    /// this file daily. Streamed to disk throughout — memory stays flat.
+    /// A stopped or failed transfer deliberately leaves its partial behind (that's
+    /// what the next attempt resumes from); `install_mod.downloadFileResumable`
+    /// guards against resuming into a *different* snapshot, since upstream
+    /// regenerates this file daily, and returns immediately when the archive is
+    /// already complete. Streamed to disk throughout — memory stays flat.
     fn snapshotDownload(
         allocator: std.mem.Allocator,
         install_root: []const u8,
         _: []const u8,
         progress: ?install_mod.Progress,
+        cancel: ?install_mod.Cancel,
     ) anyerror!void {
-        return install_mod.downloadFileResumable(allocator, snapshot_url, install_root, snapshot_file, progress);
+        return install_mod.downloadFileResumable(allocator, snapshot_url, install_root, snapshot_file, progress, cancel);
     }
 
     /// Unpack the downloaded snapshot into the data dir, then drop the archive.
@@ -240,24 +242,30 @@ pub const Divi = struct {
     /// before we write into a directory that might not be ours.
     ///
     /// A failed unpack cleans up **both** sides: the archive (so a truncated or
-    /// corrupt one isn't resumed into forever) and the half-written `blocks/` /
+    /// corrupt one isn't unpacked again forever) and the half-written `blocks/` /
     /// `chainstate/` (which would otherwise read as a chain, suppressing the
     /// prompt and handing divid a broken one). Deleting those is safe precisely
     /// because the check above proved they didn't exist before we started.
+    ///
+    /// A **pause** is not a failure and is handled differently: the half-written
+    /// directories still have to go (they're not a usable chain, and leaving them
+    /// would suppress the prompt), but the archive is kept, so resuming re-unpacks
+    /// rather than re-downloading 4.7 GB.
     fn snapshotApply(
         allocator: std.mem.Allocator,
         install_root: []const u8,
         home: []const u8,
         progress: ?install_mod.Progress,
+        cancel: ?install_mod.Cancel,
     ) anyerror!void {
         const data_dir = try dataDir(allocator, home);
         defer allocator.free(data_dir);
 
         if (chainPresent(allocator, data_dir)) return error.ChainDataAlreadyPresent;
 
-        install_mod.extractLocalTarGz(allocator, install_root, snapshot_file, data_dir, 0, progress) catch |err| {
+        install_mod.extractLocalTarGz(allocator, install_root, snapshot_file, data_dir, 0, progress, cancel) catch |err| {
             removeSnapshotDirs(allocator, data_dir);
-            install_mod.discardPartial(allocator, install_root, snapshot_file);
+            if (err != error.Paused) install_mod.discardPartial(allocator, install_root, snapshot_file);
             return err;
         };
         // Unpacked: the 4.7 GB archive has done its job and is pure dead weight.
@@ -935,7 +943,7 @@ test "applying a snapshot refuses to write over chain data that appeared meanwhi
     blocks.close(io);
     try std.testing.expectError(
         error.ChainDataAlreadyPresent,
-        Divi.snapshotApply(allocator, "test-divi-snapshot-root", home, null),
+        Divi.snapshotApply(allocator, "test-divi-snapshot-root", home, null, null),
     );
 }
 
