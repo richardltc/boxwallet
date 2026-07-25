@@ -820,28 +820,55 @@ export component AppWindow inherits Window {
                                 font-size: 13px;
                             }
                             Text {
-                                // Byte counts only mean anything mid-download;
-                                // extraction is a single streaming pass with no total.
-                                text: root.install-phase == 2 ? "" : root.install-bytes;
+                                // Downloading shows real transferred bytes. Extracting
+                                // deliberately shows only a percentage: its byte counts
+                                // are positions in the *compressed* archive, so printing
+                                // them next to "Extracting…" would read as output size
+                                // and understate what lands on disk. The percentage is
+                                // the honest part of that measure.
+                                text: root.install-phase == 2
+                                    ? (root.install-frac < 0 ? "" : "\{Math.round(root.install-frac * 100)}%")
+                                    : root.install-bytes;
                                 color: #9a9a9a;
                                 font-size: 13px;
                             }
                         }
-                        // The bar itself. A known fraction fills proportionally; an
-                        // unknown one (no content-length, or extracting) fills the
-                        // track faintly so it reads as "working, length unknown".
-                        Rectangle {
+                        // The bar. A known fraction fills proportionally — including
+                        // while extracting, which reports its position in the archive.
+                        // Where there's genuinely no fraction (a download with no
+                        // content-length, or the Windows zip path, which seeks and so
+                        // can't report a monotonic position) a segment sweeps the track
+                        // instead, so it reads as motion rather than a stalled bar.
+                        // `track` is named rather than reached through `parent`: inside a
+                        // conditional element `parent` resolves to the enclosing layout,
+                        // not to this Rectangle, so the fills must size against `track`.
+                        track := Rectangle {
+                            property <bool> indeterminate: root.install-frac < 0;
                             height: 6px;
                             background: #2a2a2a;
                             border-radius: 3px;
-                            Rectangle {
+                            clip: true; // keep the sweep inside the rounded track
+
+                            if !track.indeterminate: Rectangle {
                                 x: 0;
-                                width: root.install-frac < 0 || root.install-phase == 2
-                                    ? parent.width
-                                    : parent.width * Math.max(0.0, Math.min(1.0, root.install-frac));
-                                height: parent.height;
+                                width: track.width * Math.max(0.0, Math.min(1.0, root.install-frac));
+                                height: track.height;
                                 background: root.coin-color;
-                                opacity: root.install-frac < 0 || root.install-phase == 2 ? 0.35 : 1.0;
+                                border-radius: 3px;
+                            }
+                            // Indeterminate sweep. Frame-clock driven like the status
+                            // glyphs' motion, and kept in its own conditional element
+                            // so the per-frame repaints stop the moment the phase has
+                            // a real percentage again.
+                            if track.indeterminate: Rectangle {
+                                property <float> t: Math.mod(animation-tick() / 1ms, 1400) / 1400;
+                                width: track.width * 0.35;
+                                // Travels from fully off the left edge to fully off
+                                // the right, so the track briefly empties each cycle.
+                                x: -self.width + (track.width + self.width) * self.t;
+                                height: track.height;
+                                background: root.coin-color;
+                                opacity: 0.8;
                                 border-radius: 3px;
                             }
                         }
