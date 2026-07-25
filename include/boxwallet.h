@@ -94,6 +94,32 @@ int     bw_stop_daemon(bw_ctx *ctx, size_t idx);
 #define BW_INSTALL_EXTRACTING  2
 int      bw_install(bw_ctx *ctx, size_t idx);
 uint8_t  bw_install_progress(bw_ctx *ctx, uint64_t *cur, uint64_t *total);
+
+/* Sync accelerator: a large, opt-in download offered *before* the first daemon
+ * start that skips most of the initial chain sync — Divi's ~4.7 GB blockchain
+ * snapshot, Nerva's QuickSync hashes.
+ *
+ * Ask bw_sync_accel_offered before bw_start_daemon; if it returns 1, show the
+ * name + detail and let the user decide. On yes, run bw_sync_accel_run on a
+ * worker thread and start the daemon after it succeeds; on no, just start the
+ * daemon. bw_sync_accel_offered does cheap disk checks only, so it's safe on the
+ * UI thread — and for a chain snapshot it is false whenever chain data already
+ * exists, which is what stops a snapshot ever landing on top of another app's
+ * blockchain.
+ *
+ * bw_sync_accel_resume_bytes reports bytes of an interrupted download waiting on
+ * disk (0 when there's nothing to resume), so the prompt can say the transfer
+ * continues rather than restarts. A failed run keeps its partial for next time.
+ *
+ * bw_sync_accel_run blocks for a long time (GBs, then an unpack) and reports
+ * progress through bw_install_progress — the same phases, so the existing
+ * install progress pump drives it unchanged. Returns 0 on success, < 0 on error
+ * (then bw_last_error has the reason). */
+int      bw_sync_accel_offered(bw_ctx *ctx, size_t idx);          /* 0/1 */
+size_t   bw_sync_accel_name(size_t idx, char *buf, size_t cap);
+size_t   bw_sync_accel_detail(size_t idx, char *buf, size_t cap);
+uint64_t bw_sync_accel_resume_bytes(bw_ctx *ctx, size_t idx);
+int      bw_sync_accel_run(bw_ctx *ctx, size_t idx);
 int     bw_wallet_lock(bw_ctx *ctx, size_t idx);
 int     bw_wallet_unlock(bw_ctx *ctx, size_t idx, const uint8_t *passphrase, size_t len, int staking);
 

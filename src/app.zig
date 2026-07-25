@@ -1097,6 +1097,11 @@ const QuickSyncModal = struct {
     /// it can't change while the prompt is up — so the confirm stage can say the
     /// download continues rather than restarts.
     resume_from: u64 = 0,
+    /// Whether this accelerator survives an interrupted download at all, copied
+    /// from the coin's capability. Distinct from `resume_from`, which is only
+    /// non-zero once there *is* a partial: a first attempt is resumable but has
+    /// nothing waiting yet.
+    resumable: bool = false,
     /// Failure reason shown on the `failed` stage (fixed buffer — no allocation).
     msg_buf: [200]u8 = undefined,
     msg_len: usize = 0,
@@ -6678,6 +6683,7 @@ pub const App = struct {
             .name = sa.name,
             .detail = sa.prompt_detail,
             .resume_from = coin.syncAcceleratorPartialBytes(self.allocator, self.install_root, self.home_dir),
+            .resumable = sa.resumable,
         };
     }
 
@@ -9306,7 +9312,11 @@ pub const App = struct {
         try modalRow(&out.writer, vbar, inner_w, "", 0);
         const hint = switch (m.stage) {
             .confirm => "enter: select   esc: cancel",
-            .downloading => "please wait…",
+            // There's no cancelling a transfer in flight, and a chain snapshot can
+            // run for an hour — so say what the escape hatch actually is. Quitting
+            // is safe for a resumable accelerator: the partial survives and the
+            // next start offers to continue it.
+            .downloading => if (m.resumable) "please wait…   (quitting is safe — this resumes)" else "please wait…",
             .failed => "enter: start without it   esc: cancel",
         };
         const hint_styled = (zz.Style{}).dim(true).render(a, hint) catch hint;

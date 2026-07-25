@@ -24,6 +24,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <functional>
 #include <memory>
 #include <string>
 #include <string_view>
@@ -127,10 +128,12 @@ static void refresh_update_state(const AppWindow *ui, bw_ctx *ctx, int idx)
     ui->set_update_available(bw_update_available(ctx, static_cast<size_t>(idx)) != 0);
 }
 
-// Run bw_install on the calling thread while a second thread pumps progress into
-// the UI at ~8 fps, and return bw_install's rc. Shared by Install and Update —
-// they differ only in what happens around the install, not in how it's driven.
-static int install_with_progress(slint::ComponentWeakHandle<AppWindow> weak, bw_ctx *ctx, int coin)
+// Run `work` on the calling thread while a second thread pumps progress into the
+// UI at ~8 fps, and return `work`'s rc. Shared by Install, Update, and the sync
+// accelerator — they differ in what they do, not in how progress is driven, and
+// all three report through the same download/extract phases in the Zig context.
+static int run_with_progress(slint::ComponentWeakHandle<AppWindow> weak, bw_ctx *ctx, int coin,
+                             const std::function<int()> &work)
 {
     auto done = std::make_shared<std::atomic<bool>>(false);
     std::thread pump([weak, ctx, coin, done]() {
@@ -166,10 +169,17 @@ static int install_with_progress(slint::ComponentWeakHandle<AppWindow> weak, bw_
         }
     });
 
-    int rc = bw_install(ctx, static_cast<size_t>(coin));
+    int rc = work();
     done->store(true);
     pump.join();
     return rc;
+}
+
+// The install/update flavour: download + install the coin's daemon bundle.
+static int install_with_progress(slint::ComponentWeakHandle<AppWindow> weak, bw_ctx *ctx, int coin)
+{
+    return run_with_progress(weak, ctx, coin,
+                             [ctx, coin]() { return bw_install(ctx, static_cast<size_t>(coin)); });
 }
 
 // Clear the progress readout and publish an install/update outcome, releasing the
@@ -423,15 +433,110 @@ int main()
     // Start / Stop the daemon on a worker thread (they spawn / block on RPC).
     // The coin index is captured on the UI thread so a mid-action nav switch
     // can't retarget it. `daemon-busy` was set true by the button's click.
-    ui->on_start_daemon([weak, ctx, wake_poll, finish_action, begin_status]() {
-        int coin = g_selected.load();
-        if (coin < 0)
-            return;
+    //
+    // The launch itself, shared by the plain path and by both answers to the
+    // sync-accelerator prompt. Call it from the UI thread.
+    auto launch_daemon = [weak, ctx, wake_poll, finish_action, begin_status](int coin) {
         begin_status(weak, "Starting daemon…");
         std::thread([weak, ctx, coin, wake_poll, finish_action]() {
             int rc = bw_start_daemon(ctx, static_cast<size_t>(coin));
             finish_action(weak, ctx, rc, "Daemon running");
             wake_poll();
+        }).detach();
+    };
+
+    ui->on_start_daemon([weak, ctx, launch_daemon]() {
+        int coin = g_selected.load();
+        if (coin < 0)
+            return;
+        // Before the first start on an empty chain, some coins offer a large
+        // opt-in download that skips most of the sync (Divi's blockchain
+        // snapshot). Ask first — this is only disk checks, so it's cheap enough
+        // for the UI thread, and it answers false once any chain data exists, so
+        // a snapshot can never land on top of an existing blockchain.
+        if (bw_sync_accel_offered(ctx, static_cast<size_t>(coin)) != 0) {
+            char name[64] = {0};
+            char detail[256] = {0};
+            size_t nn = bw_sync_accel_name(static_cast<size_t>(coin), name, sizeof name);
+            size_t dn = bw_sync_accel_detail(static_cast<size_t>(coin), detail, sizeof detail);
+            uint64_t partial = bw_sync_accel_resume_bytes(ctx, static_cast<size_t>(coin));
+            std::string resume;
+            if (partial > 0)
+                resume = humanize_bytes(partial) +
+                         " already downloaded — this will continue from there.";
+            if (auto h = weak.lock()) {
+                (*h)->set_accel_name(slint::SharedString(std::string_view(name, nn)));
+                (*h)->set_accel_detail(slint::SharedString(std::string_view(detail, dn)));
+                (*h)->set_accel_resume(slint::SharedString(resume));
+                // The click set daemon-busy to latch the Start button; the prompt
+                // is now the thing in flight, so release it or the buttons stay
+                // frozen behind the dialog.
+                (*h)->set_daemon_busy(false);
+                (*h)->set_accel_open(true);
+            }
+            return;
+        }
+        launch_daemon(coin);
+    });
+
+    // Declined the accelerator: start the daemon and let it sync from the network.
+    ui->on_accel_decline([weak, launch_daemon]() {
+        int coin = g_selected.load();
+        if (coin < 0)
+            return;
+        if (auto h = weak.lock())
+            (*h)->set_daemon_busy(true);
+        launch_daemon(coin);
+    });
+
+    // Accepted: fetch and apply the accelerator (GBs, then an unpack), then start.
+    // It reports through the install progress slots, so it takes the same
+    // g_installing claim an install would — they share those slots, and the
+    // install root the download streams into.
+    ui->on_accel_accept([weak, ctx, launch_daemon, begin_status]() {
+        int coin = g_selected.load();
+        if (coin < 0)
+            return;
+        int none = -1;
+        if (!g_installing.compare_exchange_strong(none, coin)) {
+            begin_status(weak, "Another install is already running");
+            if (auto h = weak.lock())
+                (*h)->set_status_is_error(true);
+            return;
+        }
+        begin_status(weak, "Downloading…");
+        if (auto h = weak.lock())
+            (*h)->set_install_busy(true);
+        std::thread([weak, ctx, coin, launch_daemon]() {
+            int rc = run_with_progress(weak, ctx, coin, [ctx, coin]() {
+                return bw_sync_accel_run(ctx, static_cast<size_t>(coin));
+            });
+            std::string msg;
+            if (rc < 0) {
+                char b[256] = {0};
+                size_t n = bw_last_error(ctx, b, sizeof b);
+                msg.assign(b, n);
+                if (msg.empty())
+                    msg = "download failed";
+            }
+            g_installing.store(-1);
+            slint::invoke_from_event_loop([weak, coin, rc, msg, launch_daemon]() {
+                auto h = weak.lock();
+                if (!h)
+                    return;
+                (*h)->set_install_busy(false);
+                (*h)->set_install_phase(0);
+                if (rc < 0) {
+                    // A failed resumable download keeps its partial, so the next
+                    // Start offers to continue rather than begin again.
+                    (*h)->set_status_text(slint::SharedString(msg));
+                    (*h)->set_status_is_error(true);
+                    (*h)->set_daemon_busy(false);
+                    return;
+                }
+                (*h)->set_daemon_busy(true);
+                launch_daemon(coin);
+            });
         }).detach();
     });
     ui->on_stop_daemon([weak, ctx, wake_poll, finish_action, begin_status]() {
