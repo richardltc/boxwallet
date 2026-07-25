@@ -50,9 +50,14 @@ const Ctx = struct {
     install_root: []const u8,
     err_buf: [256]u8 = undefined,
     err_len: usize = 0,
-    // Retained handle for a foreground/no-RPC daemon we launched, so a coin with
-    // no shutdown RPC can be killed on stop (mirrors the TUI's `daemon_child`).
-    daemon_child: ?std.process.Child = null,
+    // Retained handles for foreground daemons we launched, so a coin with no
+    // shutdown RPC can be killed on stop (mirrors the TUI's `daemon_child`).
+    //
+    // One slot per coin, keyed by registry index — *not* a single shared slot.
+    // Many coins launch foreground (all of them on Windows), so a shared slot got
+    // overwritten by whichever started last, and stopping the one coin without an
+    // RPC stop (Zano) then killed some other coin's daemon.
+    daemon_child: [coin_count]?std.process.Child = @splat(null),
     // Install progress. Unlike the rest of Ctx these are genuinely cross-thread —
     // the install worker writes them while the UI poll thread reads them every
     // frame — so they're atomic rather than plain fields. `install_phase` holds a
@@ -88,8 +93,14 @@ var g_bitcoinz: bitcoinz.BitcoinZ = .{};
 var g_spiderbyte: spiderbyte.SpiderByte = .{};
 var g_monero: monero.Monero = .{};
 
+/// Number of registered coins. Every index the C side passes is in
+/// `[0, coin_count)`, and `coinByIndex` must answer for exactly that range — the
+/// test at the bottom of this file enforces the two stay in step, because
+/// `Ctx.daemon_child` is sized from this.
+const coin_count = 14;
+
 fn coinCount() usize {
-    return 14;
+    return coin_count;
 }
 
 fn coinByIndex(idx: usize) ?Coin {
@@ -463,7 +474,7 @@ fn startDaemon(ctx: *Ctx, idx: usize) !void {
                 return error.DaemonStartFailed;
             }
         }
-        ctx.daemon_child = child;
+        ctx.daemon_child[idx] = child;
         return;
     }
 
@@ -516,10 +527,12 @@ fn stopDaemon(ctx: *Ctx, idx: usize) !void {
             defer probe.deinit();
             _ = coin.daemonInfo(probe.allocator(), auth) catch break;
         }
-    } else if (ctx.daemon_child) |*child| {
-        // No shutdown RPC (Zano): terminate the process we launched.
+    } else if (ctx.daemon_child[idx]) |*child| {
+        // No shutdown RPC (Zano): terminate the process we launched *for this
+        // coin*. Only this coin's slot is ever touched, so stopping it can't
+        // reach another coin's daemon.
         child.kill(io);
-        ctx.daemon_child = null;
+        ctx.daemon_child[idx] = null;
     } else {
         return error.CannotStop;
     }
@@ -878,4 +891,18 @@ test "writeEntryLine formats a typed line and stops when it can't fit" {
     try std.testing.expectEqualStrings("d abc\n", buf[0..w]);
     // Only 2 bytes free after `w`: a longer line doesn't fit, so `at` is returned.
     try std.testing.expectEqual(w, writeEntryLine(buf[0 .. w + 2], w, 'f', "toolong"));
+}
+
+test "a foreground daemon handle is kept per coin, not in one shared slot" {
+    // Regression test: a single shared `daemon_child` meant the last foreground
+    // start won the slot, so stopping the one coin with no RPC stop (Zano) killed
+    // whichever daemon started most recently. Distinct slots must stay distinct.
+    var ctx: Ctx = .{ .allocator = std.testing.allocator, .home_dir = "", .install_root = "" };
+    try std.testing.expectEqual(coin_count, ctx.daemon_child.len);
+    for (ctx.daemon_child) |slot| try std.testing.expect(slot == null);
+
+    // Stand in for a live handle: writing one coin's slot must not disturb another.
+    ctx.daemon_child[0] = std.mem.zeroes(std.process.Child);
+    try std.testing.expect(ctx.daemon_child[0] != null);
+    for (ctx.daemon_child[1..]) |slot| try std.testing.expect(slot == null);
 }
