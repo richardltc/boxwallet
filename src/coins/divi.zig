@@ -171,6 +171,132 @@ pub const Divi = struct {
         try install_mod.promoteAndTidy(allocator, install_root, extracted_dir, bin_subdir, &promote_files);
     }
 
+    // --- blockchain snapshot ---------------------------------------------
+    //
+    // Divi publishes a chain snapshot rebuilt every 24 hours, which turns a
+    // multi-day initial sync into a download. The tarball holds `blocks/` and
+    // `chainstate/` at its top level — already the shape of the data dir — so it
+    // unpacks with no path stripping and no wrapper to flatten.
+
+    const snapshot_url = "https://snapshots.diviproject.org/dist/DIVI-snapshot.tar.gz";
+
+    /// The snapshot's partial download. It lives in BoxWallet's **install root**,
+    /// not the data dir: ~4.7 GB of scratch is ours to manage, and the user's data
+    /// dir must not be touched at all until the archive is complete and we're
+    /// actually unpacking it. Dot-prefixed and coin-scoped like the install
+    /// scratch, so it can't collide with another coin's.
+    pub const snapshot_file = ".boxwallet-divi-snapshot.tar.gz";
+
+    /// Directories the snapshot lays down — also the marker for "this data dir
+    /// already has a chain", and what to clean up if an unpack fails partway.
+    const snapshot_dirs = [_][]const u8{ "blocks", "chainstate" };
+
+    /// Whether to offer the snapshot before launching divid.
+    ///
+    /// **Only when the data dir carries no chain at all.** A `blocks/` or
+    /// `chainstate/` already there may well be another app's — Divi Desktop keeps
+    /// its chain in exactly this directory — and unpacking a snapshot over a live
+    /// `chainstate/` would corrupt days of someone else's sync with no way back.
+    /// It's equally the "already done" check: once divid has run for even a
+    /// moment, `blocks/` exists and the prompt never returns, so this is a
+    /// one-time offer without needing a marker of its own.
+    ///
+    /// A pure disk check, so it runs with the daemon down.
+    fn snapshotShouldOffer(allocator: std.mem.Allocator, _: []const u8, home: []const u8) bool {
+        const data_dir = dataDir(allocator, home) catch return false;
+        defer allocator.free(data_dir);
+        return !chainPresent(allocator, data_dir);
+    }
+
+    /// True if any snapshot-owned directory already exists in `data_dir`.
+    fn chainPresent(allocator: std.mem.Allocator, data_dir: []const u8) bool {
+        for (snapshot_dirs) |d| {
+            if (conf.dataDirHasEntry(allocator, data_dir, d)) return true;
+        }
+        return false;
+    }
+
+    /// Fetch the snapshot into the install root, **resuming** an interrupted
+    /// attempt rather than starting the ~4.7 GB transfer over — at this size a
+    /// connection dropping at 90% would otherwise make the feature useless.
+    ///
+    /// A failed transfer deliberately leaves its partial behind (that's what the
+    /// next attempt resumes from); `install_mod.downloadFileResumable` guards
+    /// against resuming into a *different* snapshot, since upstream regenerates
+    /// this file daily. Streamed to disk throughout — memory stays flat.
+    fn snapshotDownload(
+        allocator: std.mem.Allocator,
+        install_root: []const u8,
+        _: []const u8,
+        progress: ?install_mod.Progress,
+    ) anyerror!void {
+        return install_mod.downloadFileResumable(allocator, snapshot_url, install_root, snapshot_file, progress);
+    }
+
+    /// Unpack the downloaded snapshot into the data dir, then drop the archive.
+    ///
+    /// Re-checks for existing chain data first: `should_offer` ran before a
+    /// multi-GB download that may have taken hours, and this is the last moment
+    /// before we write into a directory that might not be ours.
+    ///
+    /// A failed unpack cleans up **both** sides: the archive (so a truncated or
+    /// corrupt one isn't resumed into forever) and the half-written `blocks/` /
+    /// `chainstate/` (which would otherwise read as a chain, suppressing the
+    /// prompt and handing divid a broken one). Deleting those is safe precisely
+    /// because the check above proved they didn't exist before we started.
+    fn snapshotApply(
+        allocator: std.mem.Allocator,
+        install_root: []const u8,
+        home: []const u8,
+        progress: ?install_mod.Progress,
+    ) anyerror!void {
+        const data_dir = try dataDir(allocator, home);
+        defer allocator.free(data_dir);
+
+        if (chainPresent(allocator, data_dir)) return error.ChainDataAlreadyPresent;
+
+        install_mod.extractLocalTarGz(allocator, install_root, snapshot_file, data_dir, 0, progress) catch |err| {
+            removeSnapshotDirs(allocator, data_dir);
+            install_mod.discardPartial(allocator, install_root, snapshot_file);
+            return err;
+        };
+        // Unpacked: the 4.7 GB archive has done its job and is pure dead weight.
+        install_mod.discardPartial(allocator, install_root, snapshot_file);
+    }
+
+    /// Remove a half-unpacked snapshot's directories. Only ever called on the
+    /// failure path above, where they are known to be ours.
+    fn removeSnapshotDirs(allocator: std.mem.Allocator, data_dir: []const u8) void {
+        var threaded: std.Io.Threaded = .init(allocator, .{});
+        defer threaded.deinit();
+        const io = threaded.io();
+
+        var dir = std.Io.Dir.cwd().openDir(io, data_dir, .{}) catch return;
+        defer dir.close(io);
+        for (snapshot_dirs) |d| dir.deleteTree(io, d) catch {};
+    }
+
+    /// Bytes of a previous, interrupted snapshot download waiting on disk — what
+    /// the prompt shows so "Yes" reads as continuing rather than starting over.
+    /// 0 when there's nothing resumable (see `install_mod.partialBytes`, which
+    /// discounts a partial whose origin sidecar is missing).
+    fn snapshotPartialBytes(allocator: std.mem.Allocator, install_root: []const u8, _: []const u8) u64 {
+        return install_mod.partialBytes(allocator, install_root, snapshot_file);
+    }
+
+    /// The sync-accelerator capability wired into the vtable: offer the snapshot
+    /// before the first daemon start on an empty data dir, download it (resumably)
+    /// on the user's yes, unpack it, then launch.
+    pub const sync_accelerator: Coin.SyncAccelerator = .{
+        .name = "Blockchain snapshot",
+        .prompt_detail = "Download ~4.7 GB of chain data to sync in minutes instead of days. Resumes if interrupted.",
+        .resumable = true,
+        .should_offer = snapshotShouldOffer,
+        .download = snapshotDownload,
+        .apply = snapshotApply,
+        .partial_bytes = snapshotPartialBytes,
+    };
+
     /// Ensure `divi.conf` carries the RPC creds (and `server=1`/`daemon=1`/
     /// `rpcport`) BoxWallet needs before the daemon reads it; existing values are
     /// kept. A standard bitcoin-derived `key=value` conf.
@@ -362,6 +488,7 @@ pub const Divi = struct {
         .wallet_unlock = vtWalletUnlock,
         .wallet_lock = vtWalletLock,
         .warmup_probe_method = vtWarmupProbeMethod,
+        .sync_accelerator = &sync_accelerator,
     };
 
     fn vtCoinName(_: *anyopaque) []const u8 {
@@ -751,4 +878,81 @@ test "maps getwalletinfo encryption_status to the wallet security state" {
     );
     defer parsed.deinit();
     try std.testing.expectEqual(models.WalletSecurity.locked, Divi.securityFromStatus(parsed.value.result.?.encryption_status));
+}
+
+test "the snapshot is offered only into a data dir with no chain in it" {
+    if (builtin.os.tag == .windows) return error.SkipZigTest;
+    const allocator = std.testing.allocator;
+
+    var threaded: std.Io.Threaded = .init(allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    const home = "test-divi-snapshot-home";
+    std.Io.Dir.cwd().deleteTree(io, home) catch {};
+    defer std.Io.Dir.cwd().deleteTree(io, home) catch {};
+
+    // A data dir that doesn't exist yet — a first-ever start. Offer it.
+    try std.testing.expect(Divi.snapshotShouldOffer(allocator, "", home));
+
+    // The dir exists but holds only a conf (BoxWallet's own `prepareConf` runs
+    // before the daemon ever does): still no chain, still offered.
+    var dd = try std.Io.Dir.cwd().createDirPathOpen(io, home ++ "/.divi", .{});
+    defer dd.close(io);
+    try dd.writeFile(io, .{ .sub_path = Divi.conf_file, .data = "server=1\n" });
+    try std.testing.expect(Divi.snapshotShouldOffer(allocator, "", home));
+
+    // Chain data is present. It may be Divi Desktop's — days of sync that
+    // unpacking a snapshot over would destroy — and it's equally what "already
+    // done" looks like. Either way: never offer, so it's never overwritten.
+    var blocks = try std.Io.Dir.cwd().createDirPathOpen(io, home ++ "/.divi/blocks", .{});
+    blocks.close(io);
+    try std.testing.expect(!Divi.snapshotShouldOffer(allocator, "", home));
+
+    // chainstate/ alone counts too — a half-present chain is still not ours.
+    std.Io.Dir.cwd().deleteTree(io, home ++ "/.divi/blocks") catch {};
+    var cs = try std.Io.Dir.cwd().createDirPathOpen(io, home ++ "/.divi/chainstate", .{});
+    cs.close(io);
+    try std.testing.expect(!Divi.snapshotShouldOffer(allocator, "", home));
+}
+
+test "applying a snapshot refuses to write over chain data that appeared meanwhile" {
+    if (builtin.os.tag == .windows) return error.SkipZigTest;
+    const allocator = std.testing.allocator;
+
+    var threaded: std.Io.Threaded = .init(allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    const home = "test-divi-snapshot-apply";
+    std.Io.Dir.cwd().deleteTree(io, home) catch {};
+    defer std.Io.Dir.cwd().deleteTree(io, home) catch {};
+
+    // The download can run for hours, so the should_offer check is stale by the
+    // time it finishes — the user may have started Divi Desktop in between. The
+    // re-check is the last guard before we write into their data dir.
+    var blocks = try std.Io.Dir.cwd().createDirPathOpen(io, home ++ "/.divi/blocks", .{});
+    blocks.close(io);
+    try std.testing.expectError(
+        error.ChainDataAlreadyPresent,
+        Divi.snapshotApply(allocator, "test-divi-snapshot-root", home, null),
+    );
+}
+
+test "the snapshot capability is wired up as a resumable, applied accelerator" {
+    var divi: Divi = .{};
+    const sa = divi.coin().syncAccelerator().?;
+
+    // Resumable — 4.7 GB is far too much to refetch after a dropped connection,
+    // and the prompt keys its "continue from here" wording off this.
+    try std.testing.expect(sa.resumable);
+    // A snapshot is inert until it's unpacked, so it must carry an apply step
+    // (unlike Nerva's quicksync file, which the daemon reads where it lands).
+    try std.testing.expect(sa.apply != null);
+    try std.testing.expect(sa.partial_bytes != null);
+
+    // The archive lands in BoxWallet's own root, never in the user's data dir.
+    try std.testing.expect(std.mem.startsWith(u8, Divi.snapshot_file, ".boxwallet-"));
+    // Upstream serves the tarball whose entries are already the data dir's shape.
+    try std.testing.expect(std.mem.endsWith(u8, Divi.snapshot_url, ".tar.gz"));
 }

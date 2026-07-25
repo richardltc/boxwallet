@@ -230,34 +230,72 @@ pub const Coin = struct {
         supports_seed_restore: bool = true,
     };
 
-    /// An optional **sync accelerator** — a large, opt-in helper file that makes a
-    /// coin's *initial* chain sync dramatically faster when present at daemon launch
-    /// (Nerva's quicksync: precomputed block hashes wired into `daemon_argv`).
-    /// Because it's a big download not everyone wants, BoxWallet offers it as a
-    /// yes/no choice when the daemon is started on a chain that isn't synced yet.
-    /// Coins with no such file leave `sync_accelerator` null.
+    /// An optional **sync accelerator** — a large, opt-in download that makes a
+    /// coin's *initial* chain sync dramatically faster, offered as a yes/no choice
+    /// when the daemon is started on a chain that isn't synced yet. Coins with no
+    /// such helper leave `sync_accelerator` null.
+    ///
+    /// Two shapes are in use, and `apply` is what tells them apart:
+    ///   - a **helper file** the daemon is pointed at — Nerva's `quicksync.raw`,
+    ///     precomputed block hashes wired into `daemon_argv`. Lands in
+    ///     `install_root`; nothing to apply afterwards.
+    ///   - a **chain snapshot** — Divi's ~4.7 GB `blocks/` + `chainstate/` tarball,
+    ///     downloaded then unpacked into the coin's *data dir*, which is why
+    ///     `home_dir` is threaded through.
     pub const SyncAccelerator = struct {
-        /// Short name for the prompt (e.g. "QuickSync").
+        /// Short name for the prompt (e.g. "QuickSync", "Blockchain snapshot").
         name: []const u8,
         /// One-line pitch shown in the prompt (what it does, rough download size).
         prompt_detail: []const u8,
+        /// Whether the download can pick up where an interrupted attempt left off.
+        /// True for the multi-GB snapshots (where restarting from zero would make
+        /// the feature unusable); false for helper files small enough to refetch.
+        /// Purely a UI hint — the coin's own `download` does the resuming.
+        resumable: bool = false,
         /// Whether to offer it right now: true only when the chain isn't already
         /// synced *and* the accelerator isn't already present/in use — so a synced
         /// node (or one mid-accelerated-sync) is never prompted. A pure disk check,
         /// so it runs before the daemon is up.
+        ///
+        /// For a snapshot this must **also** refuse when chain data is already on
+        /// disk: that data may be another app's, and unpacking a snapshot over a
+        /// live `chainstate/` would destroy it (see the data-sharing rule).
         should_offer: *const fn (
             allocator: std.mem.Allocator,
             install_root: []const u8,
             home_dir: []const u8,
         ) bool,
-        /// Download the accelerator into `install_root` (blocking, reporting
-        /// progress), called on a worker thread when the user opts in. Surfaces
-        /// failures (the user asked for it) and must not leave a partial behind.
+        /// Fetch the accelerator (blocking, reporting progress), called on a worker
+        /// thread when the user opts in. `install_root` is BoxWallet's own dir;
+        /// `home_dir` lets a coin resolve its data dir. Surfaces failures — the user
+        /// asked for it — and must leave nothing half-applied. A `resumable`
+        /// accelerator may deliberately keep its partial download behind for the
+        /// next attempt; nothing else may.
         download: *const fn (
             allocator: std.mem.Allocator,
             install_root: []const u8,
+            home_dir: []const u8,
             progress: ?install_mod.Progress,
         ) anyerror!void,
+        /// Put a downloaded snapshot in place (unpack it into the data dir), or null
+        /// for an accelerator that is simply a file the daemon reads. Run after
+        /// `download`, on the same worker, reporting `.extract` progress.
+        apply: ?*const fn (
+            allocator: std.mem.Allocator,
+            install_root: []const u8,
+            home_dir: []const u8,
+            progress: ?install_mod.Progress,
+        ) anyerror!void = null,
+        /// Bytes of an interrupted download already on disk, so the prompt can
+        /// offer to *continue* rather than appear to start a multi-GB transfer
+        /// over. Null for accelerators that don't resume; 0 when there's nothing
+        /// waiting. A cheap disk check — the frontend calls it as it opens the
+        /// prompt.
+        partial_bytes: ?*const fn (
+            allocator: std.mem.Allocator,
+            install_root: []const u8,
+            home_dir: []const u8,
+        ) u64 = null,
     };
 
     /// One row of the first-start prune menu: the label the user sees and the
@@ -1384,6 +1422,19 @@ pub const Coin = struct {
     ) bool {
         const sa = self.vtable.sync_accelerator orelse return false;
         return sa.should_offer(allocator, install_root, home_dir);
+    }
+
+    /// Bytes of an interrupted accelerator download waiting to be resumed — 0 for
+    /// a coin with no accelerator, or one that doesn't resume.
+    pub fn syncAcceleratorPartialBytes(
+        self: Coin,
+        allocator: std.mem.Allocator,
+        install_root: []const u8,
+        home_dir: []const u8,
+    ) u64 {
+        const sa = self.vtable.sync_accelerator orelse return 0;
+        const f = sa.partial_bytes orelse return 0;
+        return f(allocator, install_root, home_dir);
     }
 
     /// The block-pruning capability, or null when the coin has none. Callers use
