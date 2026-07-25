@@ -1092,6 +1092,11 @@ const QuickSyncModal = struct {
     /// Accelerator name + one-line pitch, copied from the coin's capability.
     name: []const u8 = "",
     detail: []const u8 = "",
+    /// Bytes of a resumable download already on disk from an interrupted attempt
+    /// (0 when there's nothing to resume). Sampled once when the prompt opens —
+    /// it can't change while the prompt is up — so the confirm stage can say the
+    /// download continues rather than restarts.
+    resume_from: u64 = 0,
     /// Failure reason shown on the `failed` stage (fixed buffer — no allocation).
     msg_buf: [200]u8 = undefined,
     msg_len: usize = 0,
@@ -1495,6 +1500,11 @@ const Activity = struct {
     qs_ok: bool = false,
     /// Static error name on failure (program-lifetime — `@errorName`).
     qs_err: []const u8 = "",
+    /// Which step the worker is on, so the prompt can distinguish the download
+    /// from the unpack that follows it for a chain snapshot — two very long
+    /// phases, and a bar that silently restarts at 0% reads as a bug. Values are
+    /// `install_mod.Phase`; polled by the render path, hence atomic.
+    qs_phase: std.atomic.Value(u8) = .init(@intFromEnum(install_mod.Phase.download)),
 
     // --- worker inputs: set by the UI before spawn, read by the worker -----
     coin: Coin = undefined,
@@ -2162,20 +2172,21 @@ const Activity = struct {
         }
     }
 
-    /// `install_mod.Progress` sink for the QuickSync download. Only the byte
-    /// counters move (it's a single download, no extract phase), so — unlike
-    /// `onProgress` — it leaves `phase` alone, keeping the pane's install state
-    /// untouched while the prompt's own bar reads `dl_cur`/`dl_total`.
+    /// `install_mod.Progress` sink for the sync-accelerator worker. Tracks the
+    /// byte counters plus which step they belong to — unlike `onProgress` it
+    /// leaves the pane's install `phase` alone, so the coin's install state stays
+    /// untouched while the prompt's own bar reads `dl_cur`/`dl_total`/`qs_phase`.
     fn onQuicksyncProgress(ctx: *anyopaque, phase: install_mod.Phase, current: u64, total: u64) void {
-        _ = phase;
         const self: *Activity = @ptrCast(@alignCast(ctx));
+        self.qs_phase.store(@intFromEnum(phase), .monotonic);
         self.dl_total.store(total, .monotonic);
         self.dl_cur.store(current, .monotonic);
     }
 
-    /// Sync-accelerator download worker. Fetches the coin's accelerator (Nerva's
-    /// quicksync) on a private arena, publishing the outcome via `qs_done`; the UI
-    /// reaps it and, on success, starts the daemon.
+    /// Sync-accelerator worker. Fetches the coin's accelerator on a private arena
+    /// and, where the accelerator is a chain snapshot rather than a helper file,
+    /// unpacks it into the data dir. The outcome is published via `qs_done`; the
+    /// UI reaps it and, on success, starts the daemon.
     fn runQuicksyncDownload(self: *Activity) void {
         var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
         defer arena.deinit();
@@ -2188,8 +2199,24 @@ const Activity = struct {
             return;
         };
         const progress: install_mod.Progress = .{ .ctx = self, .func = onQuicksyncProgress };
-        if (sa.download(a, self.install_root, progress)) {
-            self.qs_ok = true;
+        self.qs_phase.store(@intFromEnum(install_mod.Phase.download), .monotonic);
+        if (sa.download(a, self.install_root, self.home_dir, progress)) {
+            // Downloaded. A snapshot still has to be put in place before the
+            // daemon may start — an archive sitting in the install root does
+            // nothing for the sync, so its failure fails the whole opt-in.
+            if (sa.apply) |apply| {
+                self.qs_phase.store(@intFromEnum(install_mod.Phase.extract), .monotonic);
+                self.dl_cur.store(0, .monotonic);
+                self.dl_total.store(0, .monotonic);
+                if (apply(a, self.install_root, self.home_dir, progress)) {
+                    self.qs_ok = true;
+                } else |err| {
+                    self.qs_err = @errorName(err);
+                    self.qs_ok = false;
+                }
+            } else {
+                self.qs_ok = true;
+            }
         } else |err| {
             self.qs_err = @errorName(err);
             self.qs_ok = false;
@@ -5278,24 +5305,30 @@ pub const App = struct {
                 }
             }
 
-            // Reap a finished QuickSync (sync-accelerator) download: on success
-            // close the prompt and start the daemon (now that the helper is on
-            // disk, `daemonArgv` will pass it); on failure flip the prompt to its
-            // `failed` stage so the user can start without it or cancel.
+            // Reap a finished sync-accelerator worker: on success close the prompt
+            // and start the daemon (the helper is on disk for `daemonArgv` to
+            // pass, or the snapshot is unpacked in the data dir); on failure flip
+            // the prompt to its `failed` stage so the user can start without it or
+            // cancel. A failed *resumable* download keeps its partial, so the next
+            // start offers to continue from where it stopped.
             if (act.qs_thread != null and act.qs_done.load(.acquire)) {
                 act.qs_thread.?.join();
                 act.qs_thread = null;
                 const coin_opt = self.coinAt(i);
+                const qs_name = if (coin_opt) |c| blk: {
+                    const sa = c.syncAccelerator() orelse break :blk "Sync accelerator";
+                    break :blk sa.name;
+                } else "Sync accelerator";
                 if (act.qs_ok) {
                     self.qs_modal = null;
                     if (coin_opt) |c| {
-                        self.logf("{s}: QuickSync ready — starting daemon", .{c.coinName()});
+                        self.logf("{s}: {s} ready — starting daemon", .{ c.coinName(), qs_name });
                         self.beginDaemonStart(c, act);
                     }
                 } else {
                     if (self.qs_modal != null and self.qs_modal.?.coin_idx == i)
                         self.qs_modal.?.setMsg(act.qs_err);
-                    if (coin_opt) |c| self.logf("{s}: QuickSync download failed ({s})", .{ c.coinName(), act.qs_err });
+                    if (coin_opt) |c| self.logf("{s}: {s} failed ({s})", .{ c.coinName(), qs_name, act.qs_err });
                 }
             }
 
@@ -6644,6 +6677,7 @@ pub const App = struct {
             .sel = 0,
             .name = sa.name,
             .detail = sa.prompt_detail,
+            .resume_from = coin.syncAcceleratorPartialBytes(self.allocator, self.install_root, self.home_dir),
         };
     }
 
@@ -6695,8 +6729,12 @@ pub const App = struct {
         }
         act.coin = coin;
         act.install_root = self.install_root;
+        // A snapshot accelerator unpacks into the coin's data dir, so the worker
+        // needs the home dir to resolve it.
+        act.home_dir = self.home_dir;
         act.dl_cur.store(0, .monotonic);
         act.dl_total.store(0, .monotonic);
+        act.qs_phase.store(@intFromEnum(install_mod.Phase.download), .monotonic);
         act.qs_ok = false;
         act.qs_err = "";
         act.qs_done.store(false, .release);
@@ -9224,8 +9262,17 @@ pub const App = struct {
         switch (m.stage) {
             .confirm => {
                 try wrapIntoRows(a, &out.writer, vbar, inner_w, m.detail, (zz.Style{}));
+                // A resumable accelerator may already have bytes on disk from an
+                // interrupted attempt — say so, so "Yes" doesn't read as
+                // committing to the whole download again.
+                if (m.resume_from > 0) {
+                    const note = try std.fmt.allocPrint(a, "{d} MB already downloaded — this will continue from there.", .{m.resume_from / (1000 * 1000)});
+                    try modalRow(&out.writer, vbar, inner_w, "", 0);
+                    try wrapIntoRows(a, &out.writer, vbar, inner_w, note, (zz.Style{}).dim(true));
+                }
                 try modalRow(&out.writer, vbar, inner_w, "", 0);
-                const labels = [_][]const u8{ "Yes — use QuickSync", "No — sync normally" };
+                const yes = if (m.resume_from > 0) "Yes — resume the download" else "Yes — use it";
+                const labels = [_][]const u8{ yes, "No — sync normally" };
                 for (labels, 0..) |lbl, i| {
                     const sel = i == m.sel;
                     const plain = try std.fmt.allocPrint(a, "{s}{s}", .{ if (sel) "❯ " else "  ", lbl });
@@ -9237,14 +9284,21 @@ pub const App = struct {
                 }
             },
             .downloading => {
-                try modalRow(&out.writer, vbar, inner_w, "Downloading…", zz.width("Downloading…"));
+                // A snapshot runs two long phases back to back; naming the one in
+                // flight stops the bar looking like it restarted at zero.
+                const step = if (act.qs_phase.load(.monotonic) == @intFromEnum(install_mod.Phase.extract))
+                    "Unpacking…"
+                else
+                    "Downloading…";
+                try modalRow(&out.writer, vbar, inner_w, step, zz.width(step));
                 try modalRow(&out.writer, vbar, inner_w, "", 0);
                 const dlbar = try bar(a, act.dl_cur.load(.monotonic), act.dl_total.load(.monotonic));
                 try modalRow(&out.writer, vbar, inner_w, dlbar, zz.width(dlbar));
             },
             .failed => {
-                const lead = (zz.Style{}).fg(.red).render(a, "QuickSync download failed:") catch "QuickSync download failed:";
-                try modalRow(&out.writer, vbar, inner_w, lead, zz.width("QuickSync download failed:"));
+                const plain = try std.fmt.allocPrint(a, "{s} failed:", .{m.name});
+                const lead = (zz.Style{}).fg(.red).render(a, plain) catch plain;
+                try modalRow(&out.writer, vbar, inner_w, lead, zz.width(plain));
                 try wrapIntoRows(a, &out.writer, vbar, inner_w, m.msg_buf[0..m.msg_len], (zz.Style{}).dim(true));
             },
         }

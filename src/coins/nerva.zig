@@ -446,6 +446,7 @@ pub const Nerva = struct {
     fn quicksyncDownload(
         allocator: std.mem.Allocator,
         install_root: []const u8,
+        _: []const u8,
         progress: ?install_mod.Progress,
     ) anyerror!void {
         install_mod.downloadFile(allocator, quicksync_url, install_root, quicksync_file, progress) catch |err| {

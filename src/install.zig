@@ -215,6 +215,15 @@ pub const DownloadError = error{
     /// Any other non-200. Redirects are followed before we get here, so a 3xx
     /// landing in this bucket means the redirect chain didn't resolve.
     HttpUnexpectedStatus,
+    /// 416 — a resume asked to continue from an offset the current body doesn't
+    /// reach, so the partial isn't this body. Handled internally by
+    /// `downloadFileResumable` (drop the partial, refetch); it only escapes if
+    /// the server says it twice.
+    HttpRangeNotSatisfiable,
+    /// A `206` arrived for a body that isn't the one our partial was cut from —
+    /// the server honoured `Range` but ignored `If-Range`, which the real hosts
+    /// do. Handled internally exactly like a 416: discard and refetch whole.
+    HttpRangeStale,
     /// The transport died partway through the body (reset, timeout, DNS loss).
     /// Distinct from the status errors: the request *was* accepted.
     DownloadInterrupted,
@@ -312,6 +321,360 @@ pub fn downloadFile(
     // The tail of the body is still buffered; a full disk surfaces here rather
     // than in the loop above, so it gets the same name.
     out_writer.interface.flush() catch return error.DownloadWriteFailed;
+}
+
+// --- resumable downloads ---------------------------------------------------
+//
+// A coin bundle is tens of MB: if one dies partway, refetching it costs seconds
+// and the simple `downloadFile` above is the right shape. A *chain snapshot* is
+// several GB — Divi's is ~4.7 GB — where losing the transfer at 90% and starting
+// again is the difference between a usable feature and an unusable one. So the
+// snapshot path gets `downloadFileResumable`, which keeps its partial across
+// attempts (and across app restarts) and asks the server to continue it.
+
+/// Suffix of the sidecar that records which upstream body a partial belongs to.
+const origin_suffix = ".origin";
+
+/// Longest validator we'll keep. ETags are short; anything longer than this we
+/// simply decline to resume against, which costs a restart, never correctness.
+const max_validator_len = 128;
+
+/// Whether a resumed transfer picked up where it left off, or started over.
+const ResumeKind = enum { fresh, appended };
+
+/// Stream `url` to `<dest_dir>/<dest_name>` like `downloadFile`, but **resume an
+/// interrupted transfer** instead of refetching from byte zero.
+///
+/// The partial is left in place on failure — that's the point — so the caller
+/// decides when to discard it (`discardPartial`) and must not treat a leftover
+/// file as a finished download. On success the sidecar is removed and the file is
+/// complete.
+///
+/// **Resuming the wrong body is the hazard this guards against.** Snapshot
+/// archives are regenerated upstream on a schedule (Divi rebuilds its chain
+/// snapshot every 24h), so a `.part` from yesterday may belong to a different
+/// archive than the one the server would send today. Appending to it would splice
+/// two unrelated gzip streams into a file whose corruption only surfaces at the
+/// end of a multi-GB extract. So each partial carries a sidecar holding the
+/// response validator (`ETag`, else `Last-Modified`) it was cut from, and the
+/// resume sends `If-Range:` with it: a server that still has that exact body
+/// answers `206` and we append; anything else answers `200` with the whole body
+/// and we start over from zero. A partial with no sidecar is never resumed.
+///
+/// Memory is flat and small — the same fixed buffers as `downloadFile`, plus one
+/// bounded validator. Nothing about the file's size is held in RAM.
+pub fn downloadFileResumable(
+    allocator: std.mem.Allocator,
+    url: []const u8,
+    dest_dir: []const u8,
+    dest_name: []const u8,
+    progress: ?Progress,
+) !void {
+    var threaded: std.Io.Threaded = .init(allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    var dest = try std.Io.Dir.cwd().createDirPathOpen(io, dest_dir, .{});
+    defer dest.close(io);
+
+    var origin_buf: [std.fs.max_name_bytes]u8 = undefined;
+    const origin_name = std.fmt.bufPrint(&origin_buf, "{s}" ++ origin_suffix, .{dest_name}) catch
+        return error.DownloadWriteFailed;
+
+    // What's already on disk, and which body it came from. Both must be present
+    // for a resume to be safe; either one alone is worthless, so drop the pair.
+    var validator_buf: [max_validator_len]u8 = undefined;
+    var have: u64 = 0;
+    var validator: []const u8 = "";
+    if (readOrigin(io, dest, origin_name, &validator_buf)) |v| {
+        have = partialSize(io, dest, dest_name);
+        if (have > 0) validator = v;
+    }
+    if (validator.len == 0) {
+        have = 0;
+        dest.deleteFile(io, origin_name) catch {};
+    }
+
+
+    // Two ways a resume can turn out not to be one, both meaning "this partial
+    // isn't the body the server has": a 416 (our offset is past the end of it),
+    // and a 206 whose validator doesn't match ours (the server honoured `Range`
+    // while ignoring `If-Range` — which the real hosts do). Either way, drop the
+    // partial and fetch the whole thing. One retry only, so a server that keeps
+    // saying it fails rather than looping.
+    var attempt: u8 = 0;
+    while (true) : (attempt += 1) {
+        if (fetchRange(allocator, io, dest, url, dest_name, origin_name, have, validator, progress)) |_| {
+            return;
+        } else |err| switch (err) {
+            error.HttpRangeNotSatisfiable, error.HttpRangeStale => {
+                if (attempt > 0) return error.HttpUnexpectedStatus;
+                discardPartialIn(io, dest, dest_name, origin_name);
+                have = 0;
+                validator = "";
+            },
+            else => return err,
+        }
+    }
+}
+
+/// One download attempt. Requests `have..` when resuming, writes the body at the
+/// offset the server's answer implies, and clears the sidecar once the file is
+/// complete. Split out so `downloadFileResumable` can retry it without fighting
+/// the request's `defer`s.
+fn fetchRange(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    dest: std.Io.Dir,
+    url: []const u8,
+    dest_name: []const u8,
+    origin_name: []const u8,
+    have: u64,
+    validator: []const u8,
+    progress: ?Progress,
+) !void {
+    var client: std.http.Client = .{ .allocator = allocator, .io = io };
+    defer client.deinit();
+
+    const uri = try std.Uri.parse(url);
+
+    // `bytes=<have>-`: everything from where we stopped. Paired with `If-Range`,
+    // so the server itself decides whether continuing is valid.
+    var range_buf: [64]u8 = undefined;
+    var extra: [2]std.http.Header = undefined;
+    var extra_n: usize = 0;
+    if (have > 0) {
+        extra[0] = .{
+            .name = "range",
+            .value = std.fmt.bufPrint(&range_buf, "bytes={d}-", .{have}) catch unreachable,
+        };
+        extra[1] = .{ .name = "if-range", .value = validator };
+        extra_n = 2;
+    }
+
+    var req = try client.request(.GET, uri, .{
+        // Raw bytes, no re-encoding — a range only means anything against the
+        // identity body, and the length we need for the bar comes with it.
+        .headers = .{ .accept_encoding = .{ .override = "identity" } },
+        .extra_headers = extra[0..extra_n],
+    });
+    defer req.deinit();
+    try req.sendBodiless();
+
+    var redirect_buffer: [8 * 1024]u8 = undefined;
+    var response = try req.receiveHead(&redirect_buffer);
+
+    const kind: ResumeKind = switch (response.head.status) {
+        // The whole body — either we asked for it, or the server declined to
+        // continue ours (regenerated snapshot, no range support). Start over.
+        .ok => .fresh,
+        .partial_content => blk: {
+            // **`If-Range` is not enough.** Verified against the real hosts: both
+            // GitHub's asset CDN and the snapshot origin honour `Range` while
+            // ignoring `If-Range` outright, answering 206 for a validator that
+            // matches nothing. Taking that at face value would append today's tail
+            // onto yesterday's snapshot and produce a corrupt multi-GB archive
+            // that only fails at the end of the unpack.
+            //
+            // So the answer is checked here instead of trusted: continue only if
+            // the response's own validator is the one the partial was cut from.
+            // Anything else — a different validator, or none to compare — is
+            // treated as a different body and refetched from zero.
+            if (!validatorMatches(&response.head, validator)) return error.HttpRangeStale;
+            break :blk .appended;
+        },
+        .range_not_satisfiable => return error.HttpRangeNotSatisfiable,
+        else => return statusError(response.head.status),
+    };
+
+    // Where writing starts, and the size of the *whole* file: on a 206 the
+    // content-length covers only the remainder, so the bar's denominator has to
+    // add back what we already hold.
+    const start: u64 = switch (kind) {
+        .fresh => 0,
+        .appended => have,
+    };
+    const total: u64 = if (response.head.content_length) |len| start + len else 0;
+
+    // Record which body this partial belongs to *before* writing any of it, so a
+    // crash mid-transfer still leaves a resumable pair. A body with no validator
+    // is fine — it just can't be resumed later.
+    if (kind == .fresh) writeOrigin(io, dest, origin_name, &response.head);
+
+    // `truncate = false` keeps the bytes we're appending to; the fresh path wants
+    // the old partial gone, so it truncates.
+    var out = try dest.createFile(io, dest_name, .{ .truncate = kind == .fresh });
+    defer out.close(io);
+
+    var transfer_buffer: [32 * 1024]u8 = undefined;
+    const reader = response.reader(&transfer_buffer);
+
+    var write_buffer: [32 * 1024]u8 = undefined;
+    var out_writer = out.writer(io, &write_buffer);
+    if (start > 0) out_writer.seekTo(start) catch return error.DownloadWriteFailed;
+
+    var received: u64 = start;
+    report(progress, .download, received, total);
+    while (true) {
+        const n = reader.stream(&out_writer.interface, .limited(256 * 1024)) catch |err| switch (err) {
+            error.EndOfStream => break,
+            error.ReadFailed => return error.DownloadInterrupted,
+            error.WriteFailed => return error.DownloadWriteFailed,
+        };
+        received += n;
+        report(progress, .download, received, total);
+    }
+    out_writer.interface.flush() catch return error.DownloadWriteFailed;
+
+    // Complete: the sidecar's only job was to make the partial resumable, and
+    // there's no partial any more. Leaving it would make a finished file look
+    // like a half-finished one to the next run.
+    dest.deleteFile(io, origin_name) catch {};
+}
+
+/// Whether a `206` really is a continuation of the body `stored` came from.
+///
+/// The partial's sidecar holds whichever validator the original response carried
+/// — `ETag` for preference, `Last-Modified` otherwise — so a match on either
+/// header identifies the same body. A response carrying neither is unverifiable
+/// and reads as a mismatch: refetching costs bandwidth, appending to the wrong
+/// body costs correctness.
+fn validatorMatches(head: *const std.http.Client.Response.Head, stored: []const u8) bool {
+    if (stored.len == 0) return false;
+    var it = head.iterateHeaders();
+    while (it.next()) |h| {
+        if (std.ascii.eqlIgnoreCase(h.name, "etag") or std.ascii.eqlIgnoreCase(h.name, "last-modified")) {
+            if (std.mem.eql(u8, h.value, stored)) return true;
+        }
+    }
+    return false;
+}
+
+/// Size of an existing partial, or 0 when there isn't one.
+fn partialSize(io: std.Io, dir: std.Io.Dir, name: []const u8) u64 {
+    var f = dir.openFile(io, name, .{}) catch return 0;
+    defer f.close(io);
+    const st = f.stat(io) catch return 0;
+    return st.size;
+}
+
+/// Read the recorded validator into `buf`, or null when there's no usable
+/// sidecar. Anything unreadable, empty, or over `max_validator_len` reads as
+/// "can't resume" — which costs a re-download, never a corrupt file.
+fn readOrigin(io: std.Io, dir: std.Io.Dir, origin_name: []const u8, buf: []u8) ?[]const u8 {
+    var f = dir.openFile(io, origin_name, .{}) catch return null;
+    defer f.close(io);
+    var rbuf: [max_validator_len]u8 = undefined;
+    var fr = f.reader(io, &rbuf);
+    const n = fr.interface.readSliceShort(buf) catch return null;
+    const v = std.mem.trim(u8, buf[0..n], " \t\r\n");
+    if (v.len == 0 or v.len >= max_validator_len) return null;
+    return v;
+}
+
+/// Record the response's validator beside the partial, preferring the strong
+/// `ETag` and falling back to `Last-Modified`. Best-effort: a body that carries
+/// neither (or a sidecar we can't write) simply won't be resumable.
+fn writeOrigin(io: std.Io, dir: std.Io.Dir, origin_name: []const u8, head: *const std.http.Client.Response.Head) void {
+    var it = head.iterateHeaders();
+    var fallback: ?[]const u8 = null;
+    while (it.next()) |h| {
+        if (std.ascii.eqlIgnoreCase(h.name, "etag")) {
+            if (h.value.len > 0 and h.value.len < max_validator_len) {
+                dir.writeFile(io, .{ .sub_path = origin_name, .data = h.value }) catch {};
+                return;
+            }
+        } else if (std.ascii.eqlIgnoreCase(h.name, "last-modified")) {
+            if (h.value.len > 0 and h.value.len < max_validator_len) fallback = h.value;
+        }
+    }
+    if (fallback) |v| dir.writeFile(io, .{ .sub_path = origin_name, .data = v }) catch {};
+}
+
+/// Throw away a resumable download's partial *and* its sidecar, so the next
+/// attempt starts clean. Call this when the partial is known bad (a failed
+/// extract) or no longer wanted; a plain failed transfer should keep it.
+pub fn discardPartial(
+    allocator: std.mem.Allocator,
+    dest_dir: []const u8,
+    dest_name: []const u8,
+) void {
+    var threaded: std.Io.Threaded = .init(allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    var dir = std.Io.Dir.cwd().openDir(io, dest_dir, .{}) catch return;
+    defer dir.close(io);
+
+    var origin_buf: [std.fs.max_name_bytes]u8 = undefined;
+    const origin_name = std.fmt.bufPrint(&origin_buf, "{s}" ++ origin_suffix, .{dest_name}) catch return;
+    discardPartialIn(io, dir, dest_name, origin_name);
+}
+
+/// `discardPartial` against an already-open dir.
+fn discardPartialIn(io: std.Io, dir: std.Io.Dir, dest_name: []const u8, origin_name: []const u8) void {
+    dir.deleteFile(io, dest_name) catch {};
+    dir.deleteFile(io, origin_name) catch {};
+}
+
+/// How many bytes of a resumable download are already on disk — what a frontend
+/// shows as "resume from N" before the transfer starts. 0 when there's nothing
+/// to resume (including a partial whose sidecar is missing, which won't be
+/// resumed).
+pub fn partialBytes(
+    allocator: std.mem.Allocator,
+    dest_dir: []const u8,
+    dest_name: []const u8,
+) u64 {
+    var threaded: std.Io.Threaded = .init(allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    var dir = std.Io.Dir.cwd().openDir(io, dest_dir, .{}) catch return 0;
+    defer dir.close(io);
+
+    var origin_buf: [std.fs.max_name_bytes]u8 = undefined;
+    const origin_name = std.fmt.bufPrint(&origin_buf, "{s}" ++ origin_suffix, .{dest_name}) catch return 0;
+    var validator_buf: [max_validator_len]u8 = undefined;
+    if (readOrigin(io, dir, origin_name, &validator_buf) == null) return 0;
+    return partialSize(io, dir, dest_name);
+}
+
+/// Extract an already-downloaded `.tar.gz` at `<dir>/<name>` into `dest_root`,
+/// dropping `strip` leading path components and reporting extract progress.
+///
+/// The download half of `downloadAndExtract` fetches to a scratch file it then
+/// deletes on every path; a resumable snapshot download instead keeps its partial
+/// across attempts, so the two halves are separate calls. Same streaming
+/// pipeline, same flat memory: gunzip → untar straight to disk, nothing but the
+/// gzip window and fixed buffers resident.
+pub fn extractLocalTarGz(
+    allocator: std.mem.Allocator,
+    dir_path: []const u8,
+    name: []const u8,
+    dest_root: []const u8,
+    strip: u32,
+    progress: ?Progress,
+) !void {
+    var threaded: std.Io.Threaded = .init(allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    var dir = try std.Io.Dir.cwd().openDir(io, dir_path, .{});
+    defer dir.close(io);
+
+    var archive = try dir.openFile(io, name, .{});
+    defer archive.close(io);
+
+    var read_buffer: [32 * 1024]u8 = undefined;
+    var archive_reader = archive.reader(io, &read_buffer);
+    const archive_size = archive_reader.getSize() catch 0;
+    const extent: ?ArchiveExtent = if (archive_size > 0)
+        .{ .src = &archive_reader, .total = archive_size }
+    else
+        null;
+
+    try extractArchive(io, &archive_reader.interface, .tar_gz, dest_root, strip, progress, extent);
 }
 
 /// Extract a zip archive (read from the seekable `archive`) into the already-open
@@ -1311,4 +1674,114 @@ test "extract progress stays indeterminate without an extent" {
 
     try std.testing.expect(rec.reports >= 2);
     try std.testing.expect(rec.all_zero_total);
+}
+
+test "partialBytes only counts a partial that carries its origin sidecar" {
+    const allocator = std.testing.allocator;
+
+    var threaded: std.Io.Threaded = .init(allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    const root = "test-resume-partial";
+    std.Io.Dir.cwd().deleteTree(io, root) catch {};
+    defer std.Io.Dir.cwd().deleteTree(io, root) catch {};
+
+    var dir = try std.Io.Dir.cwd().createDirPathOpen(io, root, .{});
+    defer dir.close(io);
+
+    // Nothing on disk at all.
+    try std.testing.expectEqual(@as(u64, 0), partialBytes(allocator, root, "snap.tar.gz"));
+
+    // A partial with no sidecar can't be validated against the body the server
+    // would send now, so it isn't resumable and must read as 0 — otherwise the
+    // frontend would offer to continue a download that will actually restart.
+    try dir.writeFile(io, .{ .sub_path = "snap.tar.gz", .data = "0123456789" });
+    try std.testing.expectEqual(@as(u64, 0), partialBytes(allocator, root, "snap.tar.gz"));
+
+    // With the sidecar it's resumable, and the byte count is the partial's size.
+    try dir.writeFile(io, .{ .sub_path = "snap.tar.gz" ++ origin_suffix, .data = "\"abc123\"" });
+    try std.testing.expectEqual(@as(u64, 10), partialBytes(allocator, root, "snap.tar.gz"));
+
+    // An empty sidecar is no sidecar.
+    try dir.writeFile(io, .{ .sub_path = "snap.tar.gz" ++ origin_suffix, .data = "" });
+    try std.testing.expectEqual(@as(u64, 0), partialBytes(allocator, root, "snap.tar.gz"));
+}
+
+test "discardPartial removes both the partial and its sidecar" {
+    const allocator = std.testing.allocator;
+
+    var threaded: std.Io.Threaded = .init(allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    const root = "test-resume-discard";
+    std.Io.Dir.cwd().deleteTree(io, root) catch {};
+    defer std.Io.Dir.cwd().deleteTree(io, root) catch {};
+
+    var dir = try std.Io.Dir.cwd().createDirPathOpen(io, root, .{});
+    defer dir.close(io);
+    try dir.writeFile(io, .{ .sub_path = "snap.tar.gz", .data = "partial" });
+    try dir.writeFile(io, .{ .sub_path = "snap.tar.gz" ++ origin_suffix, .data = "\"etag\"" });
+
+    discardPartial(allocator, root, "snap.tar.gz");
+
+    // Leaving the sidecar behind would make the *next* partial resume against a
+    // validator it was never cut from.
+    try std.testing.expect(!fileExists(allocator, root, "snap.tar.gz"));
+    try std.testing.expect(!fileExists(allocator, root, "snap.tar.gz" ++ origin_suffix));
+
+    // Tolerates a clean slate (called on paths where there may be nothing).
+    discardPartial(allocator, root, "snap.tar.gz");
+}
+
+test "readOrigin rejects a validator too long to be trusted to a bounded buffer" {
+    const allocator = std.testing.allocator;
+
+    var threaded: std.Io.Threaded = .init(allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    const root = "test-resume-validator";
+    std.Io.Dir.cwd().deleteTree(io, root) catch {};
+    defer std.Io.Dir.cwd().deleteTree(io, root) catch {};
+
+    var dir = try std.Io.Dir.cwd().createDirPathOpen(io, root, .{});
+    defer dir.close(io);
+
+    // Exactly the kind of ETag a CDN sends — kept, whitespace trimmed.
+    try dir.writeFile(io, .{ .sub_path = "o", .data = "\"6a63e24d-116deb778\"\n" });
+    var buf: [max_validator_len]u8 = undefined;
+    try std.testing.expectEqualStrings("\"6a63e24d-116deb778\"", readOrigin(io, dir, "o", &buf).?);
+
+    // Overlong: declined rather than truncated, since a truncated validator would
+    // never match and could in principle match the wrong thing.
+    const long = "x" ** (max_validator_len + 10);
+    try dir.writeFile(io, .{ .sub_path = "o", .data = long });
+    try std.testing.expect(readOrigin(io, dir, "o", &buf) == null);
+}
+
+test "extractLocalTarGz unpacks an on-disk archive without consuming it" {
+    const allocator = std.testing.allocator;
+
+    var threaded: std.Io.Threaded = .init(allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    const root = "test-local-targz";
+    std.Io.Dir.cwd().deleteTree(io, root) catch {};
+    defer std.Io.Dir.cwd().deleteTree(io, root) catch {};
+
+    var dir = try std.Io.Dir.cwd().createDirPathOpen(io, root, .{});
+    defer dir.close(io);
+    try dir.writeFile(io, .{ .sub_path = "snap.tar.gz", .data = @embedFile("testdata/fixture.tar.gz") });
+
+    // strip 0 — a chain snapshot's entries are already at the layout the
+    // destination wants, with no versioned wrapper to drop.
+    try extractLocalTarGz(allocator, root, "snap.tar.gz", root ++ "/out", 0, null);
+    try std.testing.expect(fileExists(allocator, root ++ "/out", "nexa-9.9.9/nexad"));
+
+    // The archive is the caller's to keep or discard — a resumable download must
+    // be able to retry the unpack without refetching several GB.
+    try std.testing.expect(fileExists(allocator, root, "snap.tar.gz"));
 }
