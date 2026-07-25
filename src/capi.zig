@@ -68,6 +68,13 @@ const Ctx = struct {
     install_cur: std.atomic.Value(u64) = .init(0),
     install_total: std.atomic.Value(u64) = .init(0),
 
+    /// Pause request for a running sync-accelerator transfer, polled by the
+    /// transfer between chunks. Serves both the Pause button and window close —
+    /// a multi-GB snapshot is very likely still running when the app is closed,
+    /// and the caller must be able to stop it promptly without losing the bytes
+    /// already on disk.
+    accel_pause: std.atomic.Value(bool) = .init(false),
+
     fn setError(self: *Ctx, msg: []const u8) void {
         const n = @min(msg.len, self.err_buf.len);
         @memcpy(self.err_buf[0..n], msg[0..n]);
@@ -689,6 +696,9 @@ export fn bw_sync_accel_resume_bytes(ctx: ?*Ctx, idx: usize) u64 {
 ///
 /// A failed *resumable* download deliberately leaves its partial behind: the next
 /// attempt continues from there, and `bw_sync_accel_resume_bytes` reports it.
+///
+/// Returns 0 on success, `bw_sync_accel_paused` when the caller asked it to stop
+/// (not an error — what's on disk is kept and resumable), and -1 on failure.
 export fn bw_sync_accel_run(ctx: ?*Ctx, idx: usize) c_int {
     const c = ctx orelse return -1;
     const coin = coinByIndex(idx) orelse return -1;
@@ -708,8 +718,14 @@ export fn bw_sync_accel_run(ctx: ?*Ctx, idx: usize) c_int {
     defer arena.deinit();
     const a = arena.allocator();
 
+    // A fresh run clears any stale pause left by a previous one, so pressing
+    // Resume can't immediately stop again.
+    c.accel_pause.store(false, .monotonic);
+
     const progress: install.Progress = .{ .ctx = c, .func = onInstallProgress };
-    sa.download(a, c.install_root, c.home_dir, progress) catch |err| {
+    const cancel: install.Cancel = .{ .ctx = c, .func = accelPauseRequested };
+    sa.download(a, c.install_root, c.home_dir, progress, cancel) catch |err| {
+        if (err == error.Paused) return bw_sync_accel_paused;
         c.setError(@errorName(err));
         return -1;
     };
@@ -718,12 +734,34 @@ export fn bw_sync_accel_run(ctx: ?*Ctx, idx: usize) c_int {
         c.install_phase.store(bw_install_phase_extracting, .monotonic);
         c.install_cur.store(0, .monotonic);
         c.install_total.store(0, .monotonic);
-        apply(a, c.install_root, c.home_dir, progress) catch |err| {
+        apply(a, c.install_root, c.home_dir, progress, cancel) catch |err| {
+            if (err == error.Paused) return bw_sync_accel_paused;
             c.setError(@errorName(err));
             return -1;
         };
     }
     return 0;
+}
+
+/// `bw_sync_accel_run`'s "you asked me to stop" answer, distinct from both
+/// success (0) and failure (< 0).
+pub const bw_sync_accel_paused: c_int = 1;
+
+/// `install.Cancel` sink: whether the caller has asked the transfer to stop.
+fn accelPauseRequested(ctx_ptr: *anyopaque) bool {
+    const c: *Ctx = @ptrCast(@alignCast(ctx_ptr));
+    return c.accel_pause.load(.monotonic);
+}
+
+/// Ask a running accelerator transfer to stop at the next chunk boundary — the
+/// Pause button, and the first thing the caller must do when closing the app.
+///
+/// Returns immediately; the transfer unwinds on its own thread and reports
+/// `bw_sync_accel_paused`. The caller **must still wait for that thread** before
+/// `bw_deinit`, since the worker is using this context.
+export fn bw_sync_accel_pause(ctx: ?*Ctx) void {
+    const c = ctx orelse return;
+    c.accel_pause.store(true, .monotonic);
 }
 
 export fn bw_start_daemon(ctx: ?*Ctx, idx: usize) c_int {

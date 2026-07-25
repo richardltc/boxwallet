@@ -134,7 +134,7 @@ pub fn downloadAndExtract(
         null;
 
     switch (format) {
-        .tar_gz => try extractArchive(io, &scratch_reader.interface, format, dest_root, strip, progress, extent),
+        .tar_gz => try extractArchive(io, &scratch_reader.interface, format, dest_root, strip, progress, extent, null),
         // Zip seeks around its central directory, so position isn't monotonic and
         // there's no honest percentage to report — it stays indeterminate.
         .zip => try extractZip(&scratch_reader, dest, progress),
@@ -187,7 +187,7 @@ fn extractTarBz2(
     const tar_size = tr.getSize() catch 0;
     const extent: ?ArchiveExtent = if (tar_size > 0) .{ .src = &tr, .total = tar_size } else null;
     report(progress, .extract, 0, tar_size);
-    try untar(io, dest, &tr.interface, strip, progress, extent);
+    try untar(io, dest, &tr.interface, strip, progress, extent, null);
 }
 
 /// Why a download stopped. These names *are* the user-facing message: `app.zig`
@@ -332,6 +332,11 @@ pub fn downloadFile(
 // snapshot path gets `downloadFileResumable`, which keeps its partial across
 // attempts (and across app restarts) and asks the server to continue it.
 
+/// Suffix of the in-progress download. The bytes only take the caller's chosen
+/// name once they are **all** there, so "the file exists" means "complete" and
+/// nothing downstream has to ask a second question to find out.
+const part_suffix = ".part";
+
 /// Suffix of the sidecar that records which upstream body a partial belongs to.
 const origin_suffix = ".origin";
 
@@ -342,13 +347,55 @@ const max_validator_len = 128;
 /// Whether a resumed transfer picked up where it left off, or started over.
 const ResumeKind = enum { fresh, appended };
 
-/// Stream `url` to `<dest_dir>/<dest_name>` like `downloadFile`, but **resume an
-/// interrupted transfer** instead of refetching from byte zero.
+/// A cooperative stop signal for the long transfers.
 ///
-/// The partial is left in place on failure — that's the point — so the caller
-/// decides when to discard it (`discardPartial`) and must not treat a leftover
-/// file as a finished download. On success the sidecar is removed and the file is
-/// complete.
+/// A chain snapshot runs for the better part of an hour, which is long enough
+/// that the user will want to pause it — and long enough that it is almost
+/// certainly still running when they close the app. Both are the same need: stop
+/// promptly, keep what's on disk, and be resumable. `func` is polled between
+/// chunks (cheap, and never mid-write), and a true answer unwinds the transfer
+/// with `error.Paused` rather than a failure.
+pub const Cancel = struct {
+    ctx: *anyopaque,
+    func: *const fn (ctx: *anyopaque) bool,
+};
+
+/// Whether a stop has been requested (false when no signal was supplied).
+fn stopRequested(cancel: ?Cancel) bool {
+    const c = cancel orelse return false;
+    return c.func(c.ctx);
+}
+
+/// Build the `.part` / `.part.origin` names for `dest_name` in caller-owned
+/// buffers. Errors only if the name is too long to suffix, which for our
+/// dot-prefixed scratch names cannot happen.
+fn partNames(
+    dest_name: []const u8,
+    part_buf: []u8,
+    origin_buf: []u8,
+) !struct { part: []const u8, origin: []const u8 } {
+    const part = std.fmt.bufPrint(part_buf, "{s}" ++ part_suffix, .{dest_name}) catch
+        return error.DownloadWriteFailed;
+    const origin = std.fmt.bufPrint(origin_buf, "{s}" ++ origin_suffix, .{part}) catch
+        return error.DownloadWriteFailed;
+    return .{ .part = part, .origin = origin };
+}
+
+/// Stream `url` to `<dest_dir>/<dest_name>` like `downloadFile`, but **resume an
+/// interrupted transfer** instead of refetching from byte zero, and stop promptly
+/// when `cancel` says so.
+///
+/// The bytes accumulate in a sibling `<dest_name>.part` and are renamed into place
+/// only once the transfer is complete, so `dest_name` existing *is* the "already
+/// downloaded" answer. That matters because the caller has more to do afterwards
+/// (a snapshot still has to be unpacked): without the split, quitting between the
+/// download finishing and the unpack finishing would leave a full-length file with
+/// no way to tell it apart from a partial, and cost a multi-GB refetch. With it,
+/// this call returns immediately.
+///
+/// A stopped or failed transfer keeps its `.part` — that's the point — so the
+/// caller decides when to discard it (`discardPartial`). A cancelled transfer
+/// returns `error.Paused`, which is not a failure: it means "resume me later".
 ///
 /// **Resuming the wrong body is the hazard this guards against.** Snapshot
 /// archives are regenerated upstream on a schedule (Divi rebuilds its chain
@@ -357,9 +404,8 @@ const ResumeKind = enum { fresh, appended };
 /// two unrelated gzip streams into a file whose corruption only surfaces at the
 /// end of a multi-GB extract. So each partial carries a sidecar holding the
 /// response validator (`ETag`, else `Last-Modified`) it was cut from, and the
-/// resume sends `If-Range:` with it: a server that still has that exact body
-/// answers `206` and we append; anything else answers `200` with the whole body
-/// and we start over from zero. A partial with no sidecar is never resumed.
+/// resume sends `If-Range:` with it — then checks the answer rather than trusting
+/// it (see `fetchRange`). A partial with no sidecar is never resumed.
 ///
 /// Memory is flat and small — the same fixed buffers as `downloadFile`, plus one
 /// bounded validator. Nothing about the file's size is held in RAM.
@@ -369,6 +415,7 @@ pub fn downloadFileResumable(
     dest_dir: []const u8,
     dest_name: []const u8,
     progress: ?Progress,
+    cancel: ?Cancel,
 ) !void {
     var threaded: std.Io.Threaded = .init(allocator, .{});
     defer threaded.deinit();
@@ -377,24 +424,31 @@ pub fn downloadFileResumable(
     var dest = try std.Io.Dir.cwd().createDirPathOpen(io, dest_dir, .{});
     defer dest.close(io);
 
+    var part_buf: [std.fs.max_name_bytes]u8 = undefined;
     var origin_buf: [std.fs.max_name_bytes]u8 = undefined;
-    const origin_name = std.fmt.bufPrint(&origin_buf, "{s}" ++ origin_suffix, .{dest_name}) catch
-        return error.DownloadWriteFailed;
+    const names = try partNames(dest_name, &part_buf, &origin_buf);
+
+    // Must run *before* the completeness check below, or an old-layout partial
+    // would be mistaken for a finished archive and never repaired.
+    migrateLegacyPartial(io, dest, dest_name, names.part, names.origin);
+
+    // Already complete from an earlier run — nothing to fetch, and nothing to
+    // check with the server either.
+    if (dest.access(io, dest_name, .{})) |_| return else |_| {}
 
     // What's already on disk, and which body it came from. Both must be present
     // for a resume to be safe; either one alone is worthless, so drop the pair.
     var validator_buf: [max_validator_len]u8 = undefined;
     var have: u64 = 0;
     var validator: []const u8 = "";
-    if (readOrigin(io, dest, origin_name, &validator_buf)) |v| {
-        have = partialSize(io, dest, dest_name);
+    if (readOrigin(io, dest, names.origin, &validator_buf)) |v| {
+        have = partialSize(io, dest, names.part);
         if (have > 0) validator = v;
     }
     if (validator.len == 0) {
         have = 0;
-        dest.deleteFile(io, origin_name) catch {};
+        dest.deleteFile(io, names.origin) catch {};
     }
-
 
     // Two ways a resume can turn out not to be one, both meaning "this partial
     // isn't the body the server has": a 416 (our offset is past the end of it),
@@ -404,18 +458,23 @@ pub fn downloadFileResumable(
     // saying it fails rather than looping.
     var attempt: u8 = 0;
     while (true) : (attempt += 1) {
-        if (fetchRange(allocator, io, dest, url, dest_name, origin_name, have, validator, progress)) |_| {
-            return;
+        if (fetchRange(allocator, io, dest, url, names.part, names.origin, have, validator, progress, cancel)) |_| {
+            break;
         } else |err| switch (err) {
             error.HttpRangeNotSatisfiable, error.HttpRangeStale => {
                 if (attempt > 0) return error.HttpUnexpectedStatus;
-                discardPartialIn(io, dest, dest_name, origin_name);
+                discardPartialIn(io, dest, names.part, names.origin);
                 have = 0;
                 validator = "";
             },
             else => return err,
         }
     }
+
+    // Complete. Publishing the finished bytes under the caller's name is the last
+    // step, so a stop at any earlier point leaves only a `.part` to resume.
+    try dest.rename(names.part, dest, dest_name, io);
+    dest.deleteFile(io, names.origin) catch {};
 }
 
 /// One download attempt. Requests `have..` when resuming, writes the body at the
@@ -432,6 +491,7 @@ fn fetchRange(
     have: u64,
     validator: []const u8,
     progress: ?Progress,
+    cancel: ?Cancel,
 ) !void {
     var client: std.http.Client = .{ .allocator = allocator, .io = io };
     defer client.deinit();
@@ -516,6 +576,12 @@ fn fetchRange(
     var received: u64 = start;
     report(progress, .download, received, total);
     while (true) {
+        // Between chunks, never mid-write: a pause must leave the `.part` a
+        // prefix of the body, or resuming from its length would skip bytes.
+        if (stopRequested(cancel)) {
+            out_writer.interface.flush() catch return error.DownloadWriteFailed;
+            return error.Paused;
+        }
         const n = reader.stream(&out_writer.interface, .limited(256 * 1024)) catch |err| switch (err) {
             error.EndOfStream => break,
             error.ReadFailed => return error.DownloadInterrupted,
@@ -525,11 +591,43 @@ fn fetchRange(
         report(progress, .download, received, total);
     }
     out_writer.interface.flush() catch return error.DownloadWriteFailed;
+}
 
-    // Complete: the sidecar's only job was to make the partial resumable, and
-    // there's no partial any more. Leaving it would make a finished file look
-    // like a half-finished one to the next run.
-    dest.deleteFile(io, origin_name) catch {};
+/// Rescue a partial written by the first version of this code, which accumulated
+/// bytes under the *final* name with the sidecar beside it (`<name>.origin`).
+///
+/// Under the current layout the final name means "complete", so such a file would
+/// be handed straight to the unpacker and fail — throwing away several GB the user
+/// had already fetched. The old sidecar is an unambiguous marker (the new one is
+/// `<name>.part.origin`), so its presence identifies the old layout exactly:
+/// shuffle both into their current names and the transfer resumes as normal.
+///
+/// Best-effort — if the renames don't take, the worst case is the refetch this is
+/// trying to avoid, never a wrong result.
+fn migrateLegacyPartial(
+    io: std.Io,
+    dir: std.Io.Dir,
+    dest_name: []const u8,
+    part_name: []const u8,
+    origin_name: []const u8,
+) void {
+    var legacy_buf: [std.fs.max_name_bytes]u8 = undefined;
+    const legacy_origin = std.fmt.bufPrint(&legacy_buf, "{s}" ++ origin_suffix, .{dest_name}) catch return;
+    dir.access(io, legacy_origin, .{}) catch return;
+
+    dir.rename(dest_name, dir, part_name, io) catch {
+        // No partial to keep, just a stray sidecar — drop it so it can't be
+        // mistaken for one later.
+        dir.deleteFile(io, legacy_origin) catch {};
+        return;
+    };
+    dir.rename(legacy_origin, dir, origin_name, io) catch {
+        // The bytes moved but their validator didn't, so the partial can't be
+        // resumed safely. Discard it rather than risk appending to a different
+        // body — `downloadFileResumable` would refuse it anyway.
+        dir.deleteFile(io, part_name) catch {};
+        dir.deleteFile(io, legacy_origin) catch {};
+    };
 }
 
 /// Whether a `206` really is a continuation of the body `stored` came from.
@@ -606,21 +704,25 @@ pub fn discardPartial(
     var dir = std.Io.Dir.cwd().openDir(io, dest_dir, .{}) catch return;
     defer dir.close(io);
 
+    var part_buf: [std.fs.max_name_bytes]u8 = undefined;
     var origin_buf: [std.fs.max_name_bytes]u8 = undefined;
-    const origin_name = std.fmt.bufPrint(&origin_buf, "{s}" ++ origin_suffix, .{dest_name}) catch return;
-    discardPartialIn(io, dir, dest_name, origin_name);
+    const names = partNames(dest_name, &part_buf, &origin_buf) catch return;
+    // The completed file too: this is "throw the download away", and a finished
+    // archive the caller has rejected is no more wanted than a partial one.
+    dir.deleteFile(io, dest_name) catch {};
+    discardPartialIn(io, dir, names.part, names.origin);
 }
 
-/// `discardPartial` against an already-open dir.
-fn discardPartialIn(io: std.Io, dir: std.Io.Dir, dest_name: []const u8, origin_name: []const u8) void {
-    dir.deleteFile(io, dest_name) catch {};
+/// `discardPartial` against an already-open dir, for the in-progress pair only.
+fn discardPartialIn(io: std.Io, dir: std.Io.Dir, part_name: []const u8, origin_name: []const u8) void {
+    dir.deleteFile(io, part_name) catch {};
     dir.deleteFile(io, origin_name) catch {};
 }
 
-/// How many bytes of a resumable download are already on disk — what a frontend
-/// shows as "resume from N" before the transfer starts. 0 when there's nothing
-/// to resume (including a partial whose sidecar is missing, which won't be
-/// resumed).
+/// How many bytes of this download are already on disk — what a frontend shows as
+/// "resume from N" before starting. Counts a completed-but-not-yet-used file at
+/// full size, and an in-progress `.part` only when its sidecar is there to resume
+/// against. 0 when there's nothing usable.
 pub fn partialBytes(
     allocator: std.mem.Allocator,
     dest_dir: []const u8,
@@ -633,11 +735,15 @@ pub fn partialBytes(
     var dir = std.Io.Dir.cwd().openDir(io, dest_dir, .{}) catch return 0;
     defer dir.close(io);
 
+    const done = partialSize(io, dir, dest_name);
+    if (done > 0) return done;
+
+    var part_buf: [std.fs.max_name_bytes]u8 = undefined;
     var origin_buf: [std.fs.max_name_bytes]u8 = undefined;
-    const origin_name = std.fmt.bufPrint(&origin_buf, "{s}" ++ origin_suffix, .{dest_name}) catch return 0;
+    const names = partNames(dest_name, &part_buf, &origin_buf) catch return 0;
     var validator_buf: [max_validator_len]u8 = undefined;
-    if (readOrigin(io, dir, origin_name, &validator_buf) == null) return 0;
-    return partialSize(io, dir, dest_name);
+    if (readOrigin(io, dir, names.origin, &validator_buf) == null) return 0;
+    return partialSize(io, dir, names.part);
 }
 
 /// Extract an already-downloaded `.tar.gz` at `<dir>/<name>` into `dest_root`,
@@ -655,6 +761,7 @@ pub fn extractLocalTarGz(
     dest_root: []const u8,
     strip: u32,
     progress: ?Progress,
+    cancel: ?Cancel,
 ) !void {
     var threaded: std.Io.Threaded = .init(allocator, .{});
     defer threaded.deinit();
@@ -674,7 +781,7 @@ pub fn extractLocalTarGz(
     else
         null;
 
-    try extractArchive(io, &archive_reader.interface, .tar_gz, dest_root, strip, progress, extent);
+    try extractArchive(io, &archive_reader.interface, .tar_gz, dest_root, strip, progress, extent, cancel);
 }
 
 /// Extract a zip archive (read from the seekable `archive`) into the already-open
@@ -722,6 +829,7 @@ pub fn extractArchive(
     strip: u32,
     progress: ?Progress,
     extent: ?ArchiveExtent,
+    cancel: ?Cancel,
 ) !void {
     var dest = try std.Io.Dir.cwd().createDirPathOpen(io, dest_root, .{});
     defer dest.close(io);
@@ -736,7 +844,7 @@ pub fn extractArchive(
             // front where it's known, so the bar starts determinate at 0% instead
             // of flicking through an indeterminate frame first.
             report(progress, .extract, 0, if (extent) |e| e.total else 0);
-            try untar(io, dest, &dz.reader, strip, progress, extent);
+            try untar(io, dest, &dz.reader, strip, progress, extent, cancel);
         },
         // These streaming-from-a-Reader paths are tar.gz only. Zip can't stream
         // (its central directory sits at EOF) and bzip2 has no stdlib streaming
@@ -761,13 +869,20 @@ fn untar(
     strip: u32,
     progress: ?Progress,
     extent: ?ArchiveExtent,
+    cancel: ?Cancel,
 ) !void {
     var tally_buffer: [64 * 1024]u8 = undefined;
-    var tally: TallyReader = .init(src, &tally_buffer, progress, extent);
+    var tally: TallyReader = .init(src, &tally_buffer, progress, extent, cancel);
     std.tar.extract(io, dest, &tally.interface, .{
         .strip_components = strip,
         .mode_mode = .executable_bit_only,
-    }) catch return error.ExtractFailed;
+    }) catch {
+        // A stop looks like a read failure from inside tar (that's the only way
+        // out of the extractor), so the reader records which it was — otherwise a
+        // deliberate pause would be reported to the user as a corrupt archive.
+        if (tally.stopped) return error.Paused;
+        return error.ExtractFailed;
+    };
 }
 
 /// A pass-through `std.Io.Reader` that reports throughput as bytes flow through
@@ -793,13 +908,20 @@ const TallyReader = struct {
     /// percentage instead of `count`. See `ArchiveExtent`.
     extent: ?ArchiveExtent,
     count: u64 = 0,
+    /// Stop signal for the pass, polled between the chunks tar pulls.
+    cancel: ?Cancel = null,
+    /// Set when a pull was refused because a stop was asked for, so `untar` can
+    /// tell a deliberate pause from a genuinely unreadable archive — the
+    /// extractor collapses both into one opaque failure.
+    stopped: bool = false,
     interface: std.Io.Reader,
 
-    fn init(inner: *std.Io.Reader, buffer: []u8, progress: ?Progress, extent: ?ArchiveExtent) TallyReader {
+    fn init(inner: *std.Io.Reader, buffer: []u8, progress: ?Progress, extent: ?ArchiveExtent, cancel: ?Cancel) TallyReader {
         return .{
             .inner = inner,
             .progress = progress,
             .extent = extent,
+            .cancel = cancel,
             .interface = .{
                 .vtable = &.{ .stream = stream, .discard = discard },
                 .buffer = buffer,
@@ -811,6 +933,7 @@ const TallyReader = struct {
 
     fn stream(r: *std.Io.Reader, w: *std.Io.Writer, limit: std.Io.Limit) std.Io.Reader.StreamError!usize {
         const self: *TallyReader = @fieldParentPtr("interface", r);
+        if (self.stop()) return error.ReadFailed;
         const n = try self.inner.stream(w, limit);
         self.bump(n);
         return n;
@@ -818,9 +941,18 @@ const TallyReader = struct {
 
     fn discard(r: *std.Io.Reader, limit: std.Io.Limit) std.Io.Reader.Error!usize {
         const self: *TallyReader = @fieldParentPtr("interface", r);
+        if (self.stop()) return error.ReadFailed;
         const n = try self.inner.discard(limit);
         self.bump(n);
         return n;
+    }
+
+    /// Whether to refuse this pull because a stop was requested. Latches
+    /// `stopped` so the reason survives tar's error flattening.
+    fn stop(self: *TallyReader) bool {
+        if (!stopRequested(self.cancel)) return false;
+        self.stopped = true;
+        return true;
     }
 
     fn bump(self: *TallyReader, n: usize) void {
@@ -1405,7 +1537,7 @@ test "extractArchive gunzips + untars a real .tar.gz with strip_components" {
     defer std.Io.Dir.cwd().deleteTree(io, dest) catch {};
 
     var in = std.Io.Reader.fixed(archive);
-    try extractArchive(io, &in, .tar_gz, dest, 1, null, null);
+    try extractArchive(io, &in, .tar_gz, dest, 1, null, null, null);
 
     try std.testing.expect(fileExists(allocator, dest, "nexad"));
     try std.testing.expect(fileExists(allocator, dest, "nexa-cli"));
@@ -1430,7 +1562,7 @@ test "extractArchive handles PAX/GNU extended headers (long paths)" {
     defer std.Io.Dir.cwd().deleteTree(io, dest) catch {};
 
     var in = std.Io.Reader.fixed(archive);
-    try extractArchive(io, &in, .tar_gz, dest, 0, null, null);
+    try extractArchive(io, &in, .tar_gz, dest, 0, null, null, null);
 
     try std.testing.expect(fileExists(allocator, dest, "pax-node/jre/bin/java"));
     try std.testing.expect(fileExists(
@@ -1470,7 +1602,7 @@ test "extractArchive reports extract progress periodically (drives the UI spinne
     const progress: Progress = .{ .ctx = &counter, .func = Counter.onProgress };
 
     var in = std.Io.Reader.fixed(archive);
-    try extractArchive(io, &in, .tar_gz, dest, 1, progress, null);
+    try extractArchive(io, &in, .tar_gz, dest, 1, progress, null, null);
 
     try std.testing.expect(counter.extract_reports >= 2);
 }
@@ -1628,7 +1760,7 @@ test "extract progress is a real percentage when the source size is known" {
     var rec: Rec = .{};
     const progress: Progress = .{ .ctx = &rec, .func = Rec.onProgress };
 
-    try extractArchive(io, &fr.interface, .tar_gz, root ++ "/out", 1, progress, .{ .src = &fr, .total = size });
+    try extractArchive(io, &fr.interface, .tar_gz, root ++ "/out", 1, progress, .{ .src = &fr, .total = size }, null);
 
     try std.testing.expect(rec.reports >= 2);
     // A usable denominator, fixed for the whole pass — not the 0 ("unknown") the
@@ -1670,13 +1802,13 @@ test "extract progress stays indeterminate without an extent" {
     const progress: Progress = .{ .ctx = &rec, .func = Rec.onProgress };
 
     var in = std.Io.Reader.fixed(@embedFile("testdata/fixture.tar.gz"));
-    try extractArchive(io, &in, .tar_gz, dest, 1, progress, null);
+    try extractArchive(io, &in, .tar_gz, dest, 1, progress, null, null);
 
     try std.testing.expect(rec.reports >= 2);
     try std.testing.expect(rec.all_zero_total);
 }
 
-test "partialBytes only counts a partial that carries its origin sidecar" {
+test "partialBytes distinguishes a complete download from a resumable partial" {
     const allocator = std.testing.allocator;
 
     var threaded: std.Io.Threaded = .init(allocator, .{});
@@ -1693,22 +1825,57 @@ test "partialBytes only counts a partial that carries its origin sidecar" {
     // Nothing on disk at all.
     try std.testing.expectEqual(@as(u64, 0), partialBytes(allocator, root, "snap.tar.gz"));
 
-    // A partial with no sidecar can't be validated against the body the server
+    // A `.part` with no sidecar can't be validated against the body the server
     // would send now, so it isn't resumable and must read as 0 — otherwise the
     // frontend would offer to continue a download that will actually restart.
-    try dir.writeFile(io, .{ .sub_path = "snap.tar.gz", .data = "0123456789" });
+    try dir.writeFile(io, .{ .sub_path = "snap.tar.gz" ++ part_suffix, .data = "0123456789" });
     try std.testing.expectEqual(@as(u64, 0), partialBytes(allocator, root, "snap.tar.gz"));
 
     // With the sidecar it's resumable, and the byte count is the partial's size.
-    try dir.writeFile(io, .{ .sub_path = "snap.tar.gz" ++ origin_suffix, .data = "\"abc123\"" });
+    try dir.writeFile(io, .{ .sub_path = "snap.tar.gz" ++ part_suffix ++ origin_suffix, .data = "\"abc123\"" });
     try std.testing.expectEqual(@as(u64, 10), partialBytes(allocator, root, "snap.tar.gz"));
 
     // An empty sidecar is no sidecar.
-    try dir.writeFile(io, .{ .sub_path = "snap.tar.gz" ++ origin_suffix, .data = "" });
+    try dir.writeFile(io, .{ .sub_path = "snap.tar.gz" ++ part_suffix ++ origin_suffix, .data = "" });
     try std.testing.expectEqual(@as(u64, 0), partialBytes(allocator, root, "snap.tar.gz"));
+
+    // The finished file counts at full size: the bytes are all there, they just
+    // haven't been used yet (a snapshot still has to be unpacked).
+    try dir.writeFile(io, .{ .sub_path = "snap.tar.gz", .data = "0123456789abcdef" });
+    try std.testing.expectEqual(@as(u64, 16), partialBytes(allocator, root, "snap.tar.gz"));
 }
 
-test "discardPartial removes both the partial and its sidecar" {
+test "a completed download is never refetched" {
+    const allocator = std.testing.allocator;
+
+    var threaded: std.Io.Threaded = .init(allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    const root = "test-resume-complete";
+    std.Io.Dir.cwd().deleteTree(io, root) catch {};
+    defer std.Io.Dir.cwd().deleteTree(io, root) catch {};
+
+    var dir = try std.Io.Dir.cwd().createDirPathOpen(io, root, .{});
+    defer dir.close(io);
+    try dir.writeFile(io, .{ .sub_path = "snap.tar.gz", .data = "COMPLETE" });
+
+    // The URL is deliberately unroutable: reaching the network at all would be the
+    // bug. Quitting between the download finishing and the unpack finishing must
+    // not cost a multi-GB refetch, which is the whole reason the finished bytes
+    // are renamed out of `.part`.
+    try downloadFileResumable(allocator, "http://127.0.0.1:1/nope.tar.gz", root, "snap.tar.gz", null, null);
+
+    var buf: [16]u8 = undefined;
+    const f = try dir.openFile(io, "snap.tar.gz", .{});
+    defer f.close(io);
+    var rbuf: [16]u8 = undefined;
+    var fr = f.reader(io, &rbuf);
+    const n = try fr.interface.readSliceShort(&buf);
+    try std.testing.expectEqualStrings("COMPLETE", buf[0..n]);
+}
+
+test "discardPartial removes the partial, its sidecar, and any finished file" {
     const allocator = std.testing.allocator;
 
     var threaded: std.Io.Threaded = .init(allocator, .{});
@@ -1721,15 +1888,17 @@ test "discardPartial removes both the partial and its sidecar" {
 
     var dir = try std.Io.Dir.cwd().createDirPathOpen(io, root, .{});
     defer dir.close(io);
-    try dir.writeFile(io, .{ .sub_path = "snap.tar.gz", .data = "partial" });
-    try dir.writeFile(io, .{ .sub_path = "snap.tar.gz" ++ origin_suffix, .data = "\"etag\"" });
+    try dir.writeFile(io, .{ .sub_path = "snap.tar.gz", .data = "done" });
+    try dir.writeFile(io, .{ .sub_path = "snap.tar.gz" ++ part_suffix, .data = "partial" });
+    try dir.writeFile(io, .{ .sub_path = "snap.tar.gz" ++ part_suffix ++ origin_suffix, .data = "\"etag\"" });
 
     discardPartial(allocator, root, "snap.tar.gz");
 
     // Leaving the sidecar behind would make the *next* partial resume against a
     // validator it was never cut from.
     try std.testing.expect(!fileExists(allocator, root, "snap.tar.gz"));
-    try std.testing.expect(!fileExists(allocator, root, "snap.tar.gz" ++ origin_suffix));
+    try std.testing.expect(!fileExists(allocator, root, "snap.tar.gz" ++ part_suffix));
+    try std.testing.expect(!fileExists(allocator, root, "snap.tar.gz" ++ part_suffix ++ origin_suffix));
 
     // Tolerates a clean slate (called on paths where there may be nothing).
     discardPartial(allocator, root, "snap.tar.gz");
@@ -1778,10 +1947,93 @@ test "extractLocalTarGz unpacks an on-disk archive without consuming it" {
 
     // strip 0 — a chain snapshot's entries are already at the layout the
     // destination wants, with no versioned wrapper to drop.
-    try extractLocalTarGz(allocator, root, "snap.tar.gz", root ++ "/out", 0, null);
+    try extractLocalTarGz(allocator, root, "snap.tar.gz", root ++ "/out", 0, null, null);
     try std.testing.expect(fileExists(allocator, root ++ "/out", "nexa-9.9.9/nexad"));
 
     // The archive is the caller's to keep or discard — a resumable download must
     // be able to retry the unpack without refetching several GB.
     try std.testing.expect(fileExists(allocator, root, "snap.tar.gz"));
+}
+
+test "a paused download keeps a resumable partial rather than losing it" {
+    const allocator = std.testing.allocator;
+
+    var threaded: std.Io.Threaded = .init(allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    const root = "test-resume-pause";
+    std.Io.Dir.cwd().deleteTree(io, root) catch {};
+    defer std.Io.Dir.cwd().deleteTree(io, root) catch {};
+
+    // A cancel that fires immediately: the very first chunk boundary stops it.
+    const Stopper = struct {
+        fn stop(_: *anyopaque) bool {
+            return true;
+        }
+    };
+    var dummy: u8 = 0;
+    const cancel: Cancel = .{ .ctx = &dummy, .func = Stopper.stop };
+
+    // Unroutable on purpose — this asserts the *shape* of a pause, not a transfer:
+    // whatever happens, a pause must never leave the finished name in place, since
+    // that name is precisely what means "complete, don't download this again".
+    if (downloadFileResumable(allocator, "http://127.0.0.1:1/x.tar.gz", root, "snap.tar.gz", null, cancel)) |_| {
+        return error.TestExpectedStop;
+    } else |_| {}
+    try std.testing.expect(!fileExists(allocator, root, "snap.tar.gz"));
+}
+
+test "stopRequested reads the cancel hook, and is false when none is given" {
+    // No signal supplied — the ordinary install path, which never pauses.
+    try std.testing.expect(!stopRequested(null));
+
+    const Flag = struct {
+        stop: bool,
+        fn read(ctx: *anyopaque) bool {
+            const self: *@This() = @ptrCast(@alignCast(ctx));
+            return self.stop;
+        }
+    };
+    var f: Flag = .{ .stop = false };
+    const c: Cancel = .{ .ctx = &f, .func = Flag.read };
+    try std.testing.expect(!stopRequested(c));
+    f.stop = true;
+    try std.testing.expect(stopRequested(c));
+}
+
+test "a partial from the old layout is rescued rather than mistaken for a finished file" {
+    const allocator = std.testing.allocator;
+
+    var threaded: std.Io.Threaded = .init(allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    const root = "test-resume-legacy";
+    std.Io.Dir.cwd().deleteTree(io, root) catch {};
+    defer std.Io.Dir.cwd().deleteTree(io, root) catch {};
+
+    var dir = try std.Io.Dir.cwd().createDirPathOpen(io, root, .{});
+    defer dir.close(io);
+
+    // The old layout: bytes under the final name, sidecar beside it. Left behind
+    // by the first shipped version of this code.
+    try dir.writeFile(io, .{ .sub_path = "snap.tar.gz", .data = "0123456789" });
+    try dir.writeFile(io, .{ .sub_path = "snap.tar.gz" ++ origin_suffix, .data = "\"etag\"" });
+
+    var part_buf: [std.fs.max_name_bytes]u8 = undefined;
+    var origin_buf: [std.fs.max_name_bytes]u8 = undefined;
+    const names = try partNames("snap.tar.gz", &part_buf, &origin_buf);
+    migrateLegacyPartial(io, dir, "snap.tar.gz", names.part, names.origin);
+
+    // Rescued into the current layout, and still resumable — the bytes are kept.
+    try std.testing.expect(!fileExists(allocator, root, "snap.tar.gz"));
+    try std.testing.expect(fileExists(allocator, root, "snap.tar.gz" ++ part_suffix));
+    try std.testing.expectEqual(@as(u64, 10), partialBytes(allocator, root, "snap.tar.gz"));
+
+    // A genuinely finished file (no old sidecar) is left exactly as it is.
+    try dir.writeFile(io, .{ .sub_path = "done.tar.gz", .data = "COMPLETE" });
+    migrateLegacyPartial(io, dir, "done.tar.gz", "done.tar.gz.part", "done.tar.gz.part.origin");
+    try std.testing.expect(fileExists(allocator, root, "done.tar.gz"));
+    try std.testing.expect(!fileExists(allocator, root, "done.tar.gz.part"));
 }

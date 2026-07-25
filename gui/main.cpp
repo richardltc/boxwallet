@@ -51,6 +51,55 @@ static std::atomic<uint64_t> g_sel_gen{0};
 // whatever coin they switched to.
 static std::atomic<int> g_installing{-1};
 
+// Number of detached worker threads still using the bw_ctx.
+//
+// Every action here runs detached, but `ui->run()` returning goes straight on to
+// bw_deinit — so without a barrier, any worker still in flight when the window
+// closes reads a freed context. That was a reliable SEGV on quit, and a 4.7 GB
+// snapshot download makes the window it can happen in enormous. Workers bump
+// this around their whole lifetime and shutdown waits for it to drain.
+static std::atomic<int> g_workers{0};
+static std::mutex g_workers_mtx;
+static std::condition_variable g_workers_cv;
+// Set once the window has closed, so a worker finishing afterwards doesn't try
+// to touch the (now dead) event loop.
+static std::atomic<bool> g_shutting_down{false};
+
+// RAII claim on the context for the life of a detached worker.
+struct WorkerGuard {
+    WorkerGuard() { g_workers.fetch_add(1); }
+    ~WorkerGuard()
+    {
+        if (g_workers.fetch_sub(1) == 1) {
+            std::lock_guard<std::mutex> lk(g_workers_mtx);
+            g_workers_cv.notify_all();
+        }
+    }
+};
+
+// Serialises "is the event loop still there?" with the actual post. Posting into
+// a loop that has already quit is not survivable, and the check and the post have
+// to be one step or the loop can die between them — hence a mutex rather than a
+// bare flag. Shutdown declares itself under the same lock, from the window's
+// close callback, which runs while the loop is still alive: any post is then
+// either already complete or blocked and about to see the flag.
+static std::mutex g_ui_mtx;
+
+template <typename F> static void post_to_ui(F &&fn)
+{
+    std::lock_guard<std::mutex> lk(g_ui_mtx);
+    if (g_shutting_down.load())
+        return;
+    slint::invoke_from_event_loop(std::forward<F>(fn));
+}
+
+// Declare shutdown: no further posts to the event loop after this returns.
+static void begin_shutdown()
+{
+    std::lock_guard<std::mutex> lk(g_ui_mtx);
+    g_shutting_down.store(true);
+}
+
 static const char *home_dir()
 {
     const char *h = std::getenv("HOME");
@@ -150,7 +199,7 @@ static int run_with_progress(slint::ComponentWeakHandle<AppWindow> weak, bw_ctx 
                 bytes = humanize_bytes(cur) + " / " + humanize_bytes(total);
             else if (cur > 0)
                 bytes = humanize_bytes(cur);
-            slint::invoke_from_event_loop([weak, coin, phase, frac, bytes]() {
+            post_to_ui([weak, coin, phase, frac, bytes]() {
                 auto h = weak.lock();
                 if (!h)
                     return;
@@ -206,7 +255,7 @@ static void finish_install(slint::ComponentWeakHandle<AppWindow> weak, bw_ctx *c
     bool upd = bw_update_available(ctx, static_cast<size_t>(coin)) != 0;
     g_installing.store(-1);
 
-    slint::invoke_from_event_loop([weak, coin, msg, is_err, installed, version, upd]() {
+    post_to_ui([weak, coin, msg, is_err, installed, version, upd]() {
         auto h = weak.lock();
         if (!h)
             return;
@@ -412,7 +461,7 @@ int main()
             if (msg.empty())
                 msg = "action failed";
         }
-        slint::invoke_from_event_loop([w, msg, is_err]() {
+        post_to_ui([w, msg, is_err]() {
             if (auto h = w.lock()) {
                 (*h)->set_daemon_busy(false);
                 (*h)->set_daemon_loading(false); // start finished (running or failed)
@@ -439,6 +488,7 @@ int main()
     auto launch_daemon = [weak, ctx, wake_poll, finish_action, begin_status](int coin) {
         begin_status(weak, "Starting daemon…");
         std::thread([weak, ctx, coin, wake_poll, finish_action]() {
+            WorkerGuard wg; // keeps bw_ctx alive until this worker is done
             int rc = bw_start_daemon(ctx, static_cast<size_t>(coin));
             finish_action(weak, ctx, rc, "Daemon running");
             wake_poll();
@@ -505,9 +555,14 @@ int main()
             return;
         }
         begin_status(weak, "Downloading…");
-        if (auto h = weak.lock())
+        if (auto h = weak.lock()) {
             (*h)->set_install_busy(true);
+            // Tells the pane this bar belongs to the accelerator, so the Pause
+            // button appears under it (an ordinary install has nothing to pause).
+            (*h)->set_accel_busy(true);
+        }
         std::thread([weak, ctx, coin, launch_daemon]() {
+            WorkerGuard wg; // keeps bw_ctx alive until this worker is done
             int rc = run_with_progress(weak, ctx, coin, [ctx, coin]() {
                 return bw_sync_accel_run(ctx, static_cast<size_t>(coin));
             });
@@ -519,13 +574,24 @@ int main()
                 if (msg.empty())
                     msg = "download failed";
             }
+            uint64_t have = bw_sync_accel_resume_bytes(ctx, static_cast<size_t>(coin));
             g_installing.store(-1);
-            slint::invoke_from_event_loop([weak, coin, rc, msg, launch_daemon]() {
+            post_to_ui([weak, coin, rc, msg, have, launch_daemon]() {
                 auto h = weak.lock();
                 if (!h)
                     return;
                 (*h)->set_install_busy(false);
                 (*h)->set_install_phase(0);
+                (*h)->set_accel_busy(false);
+                if (rc == BW_SYNC_ACCEL_PAUSED) {
+                    // Not an error: the bytes are on disk. Offer to pick it back
+                    // up, here or on a later run.
+                    (*h)->set_status_text(slint::SharedString(
+                        "Paused — " + humanize_bytes(have) + " downloaded, resumes from here"));
+                    (*h)->set_status_is_error(false);
+                    (*h)->set_daemon_busy(false);
+                    return;
+                }
                 if (rc < 0) {
                     // A failed resumable download keeps its partial, so the next
                     // Start offers to continue rather than begin again.
@@ -539,12 +605,17 @@ int main()
             });
         }).detach();
     });
+
+    // Pause: raise the flag and return. The worker notices between chunks and
+    // unwinds on its own, which is what keeps the partial flushed and consistent.
+    ui->on_accel_pause([ctx]() { bw_sync_accel_pause(ctx); });
     ui->on_stop_daemon([weak, ctx, wake_poll, finish_action, begin_status]() {
         int coin = g_selected.load();
         if (coin < 0)
             return;
         begin_status(weak, "Stopping daemon…");
         std::thread([weak, ctx, coin, wake_poll, finish_action]() {
+            WorkerGuard wg; // keeps bw_ctx alive until this worker is done
             int rc = bw_stop_daemon(ctx, static_cast<size_t>(coin));
             finish_action(weak, ctx, rc, "Daemon stopped");
             wake_poll();
@@ -571,6 +642,7 @@ int main()
         }
         begin_status(weak, "Installing…");
         std::thread([weak, ctx, coin, wake_poll]() {
+            WorkerGuard wg; // keeps bw_ctx alive until this worker is done
             int rc = install_with_progress(weak, ctx, coin);
             finish_install(weak, ctx, coin, rc, "Installed", "install failed");
             wake_poll();
@@ -601,6 +673,7 @@ int main()
 
         begin_status(weak, was_running ? "Stopping daemon…" : "Updating…");
         std::thread([weak, ctx, coin, was_running, wake_poll]() {
+            WorkerGuard wg; // keeps bw_ctx alive until this worker is done
             // Stop first: on Windows the running binary can't be replaced at all,
             // and everywhere else a live daemon would keep running the old code.
             if (was_running) {
@@ -611,7 +684,7 @@ int main()
                     if (msg.empty())
                         msg = "could not stop the daemon — update aborted";
                     g_installing.store(-1);
-                    slint::invoke_from_event_loop([weak, coin, msg]() {
+                    post_to_ui([weak, coin, msg]() {
                         auto h = weak.lock();
                         if (!h || g_selected.load() != coin)
                             return;
@@ -635,7 +708,7 @@ int main()
                 // Mark the daemon busy for the restart: finish_install has already
                 // released install-busy, so without this the Start button is live
                 // and a click here would race us into a second launch.
-                slint::invoke_from_event_loop([weak, coin]() {
+                post_to_ui([weak, coin]() {
                     auto h = weak.lock();
                     if (!h || g_selected.load() != coin)
                         return;
@@ -652,7 +725,7 @@ int main()
                     if (msg.empty())
                         msg = "updated, but the daemon did not restart";
                 }
-                slint::invoke_from_event_loop([weak, coin, msg, is_err]() {
+                post_to_ui([weak, coin, msg, is_err]() {
                     auto h = weak.lock();
                     if (!h)
                         return;
@@ -677,6 +750,7 @@ int main()
             return;
         begin_status(weak, "Locking wallet…");
         std::thread([weak, ctx, coin, wake_poll, finish_action]() {
+            WorkerGuard wg; // keeps bw_ctx alive until this worker is done
             int rc = bw_wallet_lock(ctx, static_cast<size_t>(coin));
             finish_action(weak, ctx, rc, "Wallet locked");
             wake_poll();
@@ -693,6 +767,7 @@ int main()
         std::string_view sv(pass);
         std::vector<uint8_t> secret(sv.begin(), sv.end());
         std::thread([weak, ctx, coin, wake_poll, finish_action, secret = std::move(secret)]() mutable {
+            WorkerGuard wg; // keeps bw_ctx alive until this worker is done
             int rc = bw_wallet_unlock(ctx, static_cast<size_t>(coin),
                                       secret.data(), secret.size(), 0);
             volatile uint8_t *p = secret.data();
@@ -771,7 +846,7 @@ int main()
                 disk_free_str = humanize_bytes(du.total_bytes - du.used_bytes) + " free";
             }
 
-            slint::invoke_from_event_loop([weak, di, bs, di_rc, bs_rc, sel, disk_frac, disk_free_str, wallet_sec]() {
+            post_to_ui([weak, di, bs, di_rc, bs_rc, sel, disk_frac, disk_free_str, wallet_sec]() {
                 auto h = weak.lock();
                 if (!h)
                     return;
@@ -827,11 +902,44 @@ int main()
         }
     });
 
+    // Shut the background work down *from the close callback*, which runs while
+    // the event loop is still alive. Doing it after `run()` returns would be too
+    // late: the poller posts every ~2s, and a post landing in a loop that has
+    // already quit is not survivable.
+    ui->window().on_close_requested([&stop, ctx]() {
+        begin_shutdown();
+        // Effectively "press Pause" on the way out. A chain snapshot runs for the
+        // better part of an hour, so it is very likely still running here — and a
+        // paused transfer keeps its bytes, so the next run offers to carry on from
+        // exactly where this one stopped rather than refetching several GB.
+        bw_sync_accel_pause(ctx);
+        stop.store(true);
+        g_poll_cv.notify_all(); // wake the poller out of its wait so it can exit
+        return slint::CloseRequestResponse::HideWindow;
+    });
+
     ui->run();
 
+    // --- shutdown ---------------------------------------------------------
+    //
+    // The window is gone, but detached workers may still be mid-flight and they
+    // are all using `ctx`. Freeing it underneath them is a use-after-free — a
+    // reliable SEGV on quit before this barrier existed. So wait for every worker
+    // to let go before tearing the context down.
+    //
+    // Repeated here as well as in the close callback because `run()` can also
+    // return without a close request (quit_event_loop, or the window never having
+    // been closed by the user), and this must hold on every path.
+    begin_shutdown();
+    bw_sync_accel_pause(ctx);
     stop.store(true);
-    g_poll_cv.notify_all(); // wake the poller out of its wait so it can exit
+    g_poll_cv.notify_all();
     poller.join();
+
+    {
+        std::unique_lock<std::mutex> lk(g_workers_mtx);
+        g_workers_cv.wait(lk, [] { return g_workers.load() == 0; });
+    }
     bw_deinit(ctx);
     return 0;
 }

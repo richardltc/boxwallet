@@ -113,13 +113,23 @@ uint8_t  bw_install_progress(bw_ctx *ctx, uint64_t *cur, uint64_t *total);
  *
  * bw_sync_accel_run blocks for a long time (GBs, then an unpack) and reports
  * progress through bw_install_progress — the same phases, so the existing
- * install progress pump drives it unchanged. Returns 0 on success, < 0 on error
- * (then bw_last_error has the reason). */
+ * install progress pump drives it unchanged. Returns 0 on success,
+ * BW_SYNC_ACCEL_PAUSED if the caller asked it to stop, and < 0 on error (then
+ * bw_last_error has the reason).
+ *
+ * bw_sync_accel_pause asks a running transfer to stop at the next chunk boundary
+ * and returns immediately; what's on disk is kept and resumable. It backs both
+ * the Pause button and application shutdown — a multi-GB snapshot is very likely
+ * still running when the user closes the window, so the correct close sequence
+ * is: pause, WAIT FOR THE WORKER THREAD, then bw_deinit. Skipping the wait is a
+ * use-after-free: the worker is still using the context bw_deinit frees. */
+#define BW_SYNC_ACCEL_PAUSED 1
 int      bw_sync_accel_offered(bw_ctx *ctx, size_t idx);          /* 0/1 */
 size_t   bw_sync_accel_name(size_t idx, char *buf, size_t cap);
 size_t   bw_sync_accel_detail(size_t idx, char *buf, size_t cap);
 uint64_t bw_sync_accel_resume_bytes(bw_ctx *ctx, size_t idx);
 int      bw_sync_accel_run(bw_ctx *ctx, size_t idx);
+void     bw_sync_accel_pause(bw_ctx *ctx);
 int     bw_wallet_lock(bw_ctx *ctx, size_t idx);
 int     bw_wallet_unlock(bw_ctx *ctx, size_t idx, const uint8_t *passphrase, size_t len, int staking);
 
