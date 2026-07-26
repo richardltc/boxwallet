@@ -134,7 +134,7 @@ pub fn downloadAndExtract(
         null;
 
     switch (format) {
-        .tar_gz => try extractArchive(io, &scratch_reader.interface, format, dest_root, strip, progress, extent, null),
+        .tar_gz => try extractArchive(io, &scratch_reader.interface, format, dest_root, strip, null, progress, extent, null),
         // Zip seeks around its central directory, so position isn't monotonic and
         // there's no honest percentage to report — it stays indeterminate.
         .zip => try extractZip(&scratch_reader, dest, progress),
@@ -187,7 +187,7 @@ fn extractTarBz2(
     const tar_size = tr.getSize() catch 0;
     const extent: ?ArchiveExtent = if (tar_size > 0) .{ .src = &tr, .total = tar_size } else null;
     report(progress, .extract, 0, tar_size);
-    try untar(io, dest, &tr.interface, strip, progress, extent, null);
+    try untar(io, dest, &tr.interface, strip, null, progress, extent, null);
 }
 
 /// Why a download stopped. These names *are* the user-facing message: `app.zig`
@@ -763,6 +763,35 @@ pub fn extractLocalTarGz(
     progress: ?Progress,
     cancel: ?Cancel,
 ) !void {
+    return extractLocalTarGzAllowing(allocator, dir_path, name, dest_root, strip, null, progress, cancel);
+}
+
+/// `extractLocalTarGz`, restricted to the top-level entries in `allow_top_level`
+/// — everything else in the archive is skipped rather than written.
+///
+/// For unpacking an archive into a directory that is **not ours**: a chain
+/// snapshot lands in the coin's data dir, which is the daemon's (and possibly
+/// another app's) home. The archive decides its own paths, so without this a
+/// tampered or compromised snapshot could create any file it liked there. It
+/// can't overwrite what's already present (`.exclusive = true` on create makes
+/// extraction fail instead), but *creating* is enough on a first run: the coin's
+/// conf doesn't exist yet at snapshot time, and a bitcoin-derived conf can carry
+/// `walletnotify=<command>`, which the daemon would then execute. Naming the
+/// directories a snapshot is meant to lay down closes that off.
+///
+/// Null (via `extractLocalTarGz`) keeps the plain, unfiltered path, which is what
+/// every install uses — those archives are unpacked into BoxWallet's own install
+/// root, and their whole contents are the point.
+pub fn extractLocalTarGzAllowing(
+    allocator: std.mem.Allocator,
+    dir_path: []const u8,
+    name: []const u8,
+    dest_root: []const u8,
+    strip: u32,
+    allow_top_level: ?[]const []const u8,
+    progress: ?Progress,
+    cancel: ?Cancel,
+) !void {
     var threaded: std.Io.Threaded = .init(allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
@@ -781,7 +810,7 @@ pub fn extractLocalTarGz(
     else
         null;
 
-    try extractArchive(io, &archive_reader.interface, .tar_gz, dest_root, strip, progress, extent, cancel);
+    try extractArchive(io, &archive_reader.interface, .tar_gz, dest_root, strip, allow_top_level, progress, extent, cancel);
 }
 
 /// Extract a zip archive (read from the seekable `archive`) into the already-open
@@ -821,12 +850,17 @@ fn extractZip(
 /// decompressor and the extractor to emit `.extract` progress as bytes flow.
 /// That lets a frontend animate a spinner during the pass; the extract byte
 /// counts are indeterminate, so `total` is reported as 0.
+/// `allow_top_level`, when given, restricts what may be written to entries whose
+/// first path component (after `strip`) is on the list — see
+/// `extractLocalTarGzAllowing` for why that exists. Null extracts everything,
+/// which is what every install path does.
 pub fn extractArchive(
     io: std.Io,
     archive: *std.Io.Reader,
     format: Format,
     dest_root: []const u8,
     strip: u32,
+    allow_top_level: ?[]const []const u8,
     progress: ?Progress,
     extent: ?ArchiveExtent,
     cancel: ?Cancel,
@@ -844,7 +878,7 @@ pub fn extractArchive(
             // front where it's known, so the bar starts determinate at 0% instead
             // of flicking through an indeterminate frame first.
             report(progress, .extract, 0, if (extent) |e| e.total else 0);
-            try untar(io, dest, &dz.reader, strip, progress, extent, cancel);
+            try untar(io, dest, &dz.reader, strip, allow_top_level, progress, extent, cancel);
         },
         // These streaming-from-a-Reader paths are tar.gz only. Zip can't stream
         // (its central directory sits at EOF) and bzip2 has no stdlib streaming
@@ -867,12 +901,19 @@ fn untar(
     dest: std.Io.Dir,
     src: *std.Io.Reader,
     strip: u32,
+    allow_top_level: ?[]const []const u8,
     progress: ?Progress,
     extent: ?ArchiveExtent,
     cancel: ?Cancel,
 ) !void {
     var tally_buffer: [64 * 1024]u8 = undefined;
     var tally: TallyReader = .init(src, &tally_buffer, progress, extent, cancel);
+
+    // With an allow-list this has to walk the entries itself; without one it
+    // stays on `std.tar.extract` exactly as before, so every install path is
+    // untouched by the filtered variant existing.
+    if (allow_top_level) |allow| return untarFiltered(io, dest, &tally, strip, allow);
+
     std.tar.extract(io, dest, &tally.interface, .{
         .strip_components = strip,
         .mode_mode = .executable_bit_only,
@@ -883,6 +924,93 @@ fn untar(
         if (tally.stopped) return error.Paused;
         return error.ExtractFailed;
     };
+}
+
+/// Untar, writing only the entries whose first path component is on `allow`.
+/// Modelled on `std.tar.extract`'s own loop (which has no filter hook) over the
+/// public `std.tar.Iterator`, keeping its two safety properties: files are
+/// created **exclusively**, so nothing already on disk is ever replaced, and an
+/// entry's unread bytes are skipped by `next()`, so passing over one can't
+/// desync the stream.
+///
+/// Three things are dropped rather than written:
+///   * anything whose top-level component isn't on the list;
+///   * any path with a `..` component or an absolute root — the allow-list
+///     already stops `../x`, but not `blocks/../../x`;
+///   * **every symlink**, whatever its name. A chain snapshot has no business
+///     carrying one, and a link is the obvious way to aim a permitted name at
+///     somewhere unpermitted.
+fn untarFiltered(
+    io: std.Io,
+    dest: std.Io.Dir,
+    tally: *TallyReader,
+    strip: u32,
+    allow: []const []const u8,
+) !void {
+    var file_name_buffer: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    var link_name_buffer: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    var contents_buffer: [32 * 1024]u8 = undefined;
+
+    var it: std.tar.Iterator = .init(&tally.interface, .{
+        .file_name_buffer = &file_name_buffer,
+        .link_name_buffer = &link_name_buffer,
+    });
+
+    while (true) {
+        const entry = it.next() catch {
+            if (tally.stopped) return error.Paused;
+            return error.ExtractFailed;
+        } orelse break;
+
+        if (entry.kind == .sym_link) continue;
+        const path = permittedPath(entry.name, strip, allow) orelse continue;
+
+        switch (entry.kind) {
+            .directory => dest.createDirPath(io, path) catch return error.ExtractFailed,
+            .file => {
+                const parent = std.fs.path.dirname(path);
+                if (parent) |p| dest.createDirPath(io, p) catch return error.ExtractFailed;
+                var out = dest.createFile(io, path, .{ .exclusive = true }) catch return error.ExtractFailed;
+                defer out.close(io);
+                var writer = out.writer(io, &contents_buffer);
+                it.streamRemaining(entry, &writer.interface) catch {
+                    if (tally.stopped) return error.Paused;
+                    return error.ExtractFailed;
+                };
+                writer.interface.flush() catch return error.ExtractFailed;
+            },
+            .sym_link => unreachable, // filtered above
+        }
+    }
+}
+
+/// The path an archive entry may be written to, or null to skip it: `strip`
+/// leading components removed, rejected unless the remaining path is relative,
+/// free of `..`, and rooted at one of `allow`.
+fn permittedPath(name: []const u8, strip: u32, allow: []const []const u8) ?[]const u8 {
+    // Both separators, so a Windows-style archive path can't slip a component
+    // past the checks below on a POSIX host.
+    const seps = "/\\";
+
+    var rest = name;
+    var i: u32 = 0;
+    while (i < strip) : (i += 1) {
+        const at = std.mem.indexOfAny(u8, rest, seps) orelse return null;
+        rest = rest[at + 1 ..];
+    }
+    rest = std.mem.trimEnd(u8, rest, seps); // a directory entry's trailing "/"
+    if (rest.len == 0) return null;
+    if (std.fs.path.isAbsolute(rest) or rest[0] == '/' or rest[0] == '\\') return null;
+
+    var parts = std.mem.splitAny(u8, rest, seps);
+    const top = parts.next() orelse return null;
+    while (parts.next()) |part| {
+        if (std.mem.eql(u8, part, "..")) return null;
+    }
+    if (std.mem.eql(u8, top, "..") or std.mem.eql(u8, top, ".")) return null;
+
+    for (allow) |a| if (std.mem.eql(u8, top, a)) return rest;
+    return null;
 }
 
 /// A pass-through `std.Io.Reader` that reports throughput as bytes flow through
@@ -1537,7 +1665,7 @@ test "extractArchive gunzips + untars a real .tar.gz with strip_components" {
     defer std.Io.Dir.cwd().deleteTree(io, dest) catch {};
 
     var in = std.Io.Reader.fixed(archive);
-    try extractArchive(io, &in, .tar_gz, dest, 1, null, null, null);
+    try extractArchive(io, &in, .tar_gz, dest, 1, null, null, null, null);
 
     try std.testing.expect(fileExists(allocator, dest, "nexad"));
     try std.testing.expect(fileExists(allocator, dest, "nexa-cli"));
@@ -1562,7 +1690,7 @@ test "extractArchive handles PAX/GNU extended headers (long paths)" {
     defer std.Io.Dir.cwd().deleteTree(io, dest) catch {};
 
     var in = std.Io.Reader.fixed(archive);
-    try extractArchive(io, &in, .tar_gz, dest, 0, null, null, null);
+    try extractArchive(io, &in, .tar_gz, dest, 0, null, null, null, null);
 
     try std.testing.expect(fileExists(allocator, dest, "pax-node/jre/bin/java"));
     try std.testing.expect(fileExists(
@@ -1602,7 +1730,7 @@ test "extractArchive reports extract progress periodically (drives the UI spinne
     const progress: Progress = .{ .ctx = &counter, .func = Counter.onProgress };
 
     var in = std.Io.Reader.fixed(archive);
-    try extractArchive(io, &in, .tar_gz, dest, 1, progress, null, null);
+    try extractArchive(io, &in, .tar_gz, dest, 1, null, progress, null, null);
 
     try std.testing.expect(counter.extract_reports >= 2);
 }
@@ -1760,7 +1888,7 @@ test "extract progress is a real percentage when the source size is known" {
     var rec: Rec = .{};
     const progress: Progress = .{ .ctx = &rec, .func = Rec.onProgress };
 
-    try extractArchive(io, &fr.interface, .tar_gz, root ++ "/out", 1, progress, .{ .src = &fr, .total = size }, null);
+    try extractArchive(io, &fr.interface, .tar_gz, root ++ "/out", 1, null, progress, .{ .src = &fr, .total = size }, null);
 
     try std.testing.expect(rec.reports >= 2);
     // A usable denominator, fixed for the whole pass — not the 0 ("unknown") the
@@ -1802,7 +1930,7 @@ test "extract progress stays indeterminate without an extent" {
     const progress: Progress = .{ .ctx = &rec, .func = Rec.onProgress };
 
     var in = std.Io.Reader.fixed(@embedFile("testdata/fixture.tar.gz"));
-    try extractArchive(io, &in, .tar_gz, dest, 1, progress, null, null);
+    try extractArchive(io, &in, .tar_gz, dest, 1, null, progress, null, null);
 
     try std.testing.expect(rec.reports >= 2);
     try std.testing.expect(rec.all_zero_total);
@@ -1953,6 +2081,88 @@ test "extractLocalTarGz unpacks an on-disk archive without consuming it" {
     // The archive is the caller's to keep or discard — a resumable download must
     // be able to retry the unpack without refetching several GB.
     try std.testing.expect(fileExists(allocator, root, "snap.tar.gz"));
+}
+
+test "a snapshot writes only the directories it's allowed to" {
+    const allocator = std.testing.allocator;
+
+    var threaded: std.Io.Threaded = .init(allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    const root = "test-snapshot-allow";
+    std.Io.Dir.cwd().deleteTree(io, root) catch {};
+    defer std.Io.Dir.cwd().deleteTree(io, root) catch {};
+
+    var dir = try std.Io.Dir.cwd().createDirPathOpen(io, root, .{});
+    defer dir.close(io);
+    // A snapshot carrying what a compromised publisher would add to one: the
+    // chain dirs it's supposed to have, plus a wallet, a conf (which on a first
+    // run doesn't exist yet, and whose `walletnotify` the daemon would execute),
+    // a stray directory, and a symlink hidden inside an allowed dir.
+    try dir.writeFile(io, .{ .sub_path = "snap.tar.gz", .data = @embedFile("testdata/fixture-snapshot.tar.gz") });
+
+    const allow = [_][]const u8{ "blocks", "chainstate" };
+    try extractLocalTarGzAllowing(allocator, root, "snap.tar.gz", root ++ "/out", 0, &allow, null, null);
+
+    // The chain data lands.
+    try std.testing.expect(fileExists(allocator, root ++ "/out", "blocks/blk00000.dat"));
+    try std.testing.expect(fileExists(allocator, root ++ "/out", "chainstate/000005.ldb"));
+
+    // Nothing else does — not at the top level, and not the symlink smuggled
+    // under an allowed name.
+    try std.testing.expect(!fileExists(allocator, root ++ "/out", "wallet.dat"));
+    try std.testing.expect(!fileExists(allocator, root ++ "/out", "divi.conf"));
+    try std.testing.expect(!fileExists(allocator, root ++ "/out", "evildir/x"));
+    try std.testing.expect(!fileExists(allocator, root ++ "/out", "blocks/link.dat"));
+}
+
+test "an unfiltered extract still writes the whole archive" {
+    const allocator = std.testing.allocator;
+
+    var threaded: std.Io.Threaded = .init(allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    const root = "test-snapshot-unfiltered";
+    std.Io.Dir.cwd().deleteTree(io, root) catch {};
+    defer std.Io.Dir.cwd().deleteTree(io, root) catch {};
+
+    var dir = try std.Io.Dir.cwd().createDirPathOpen(io, root, .{});
+    defer dir.close(io);
+    try dir.writeFile(io, .{ .sub_path = "snap.tar.gz", .data = @embedFile("testdata/fixture-snapshot.tar.gz") });
+
+    // The no-allow-list path is what every coin's install uses, where the whole
+    // archive is the point — the filter existing must not have narrowed it.
+    try extractLocalTarGz(allocator, root, "snap.tar.gz", root ++ "/out", 0, null, null);
+    try std.testing.expect(fileExists(allocator, root ++ "/out", "blocks/blk00000.dat"));
+    try std.testing.expect(fileExists(allocator, root ++ "/out", "wallet.dat"));
+    try std.testing.expect(fileExists(allocator, root ++ "/out", "evildir/x"));
+}
+
+test "an allowed path can't lead outside the destination" {
+    const allow = [_][]const u8{ "blocks", "chainstate" };
+
+    // The straightforward cases.
+    try std.testing.expectEqualStrings("blocks/blk1.dat", permittedPath("blocks/blk1.dat", 0, &allow).?);
+    try std.testing.expectEqualStrings("chainstate", permittedPath("chainstate/", 0, &allow).?);
+    try std.testing.expect(permittedPath("wallet.dat", 0, &allow) == null);
+    try std.testing.expect(permittedPath("", 0, &allow) == null);
+
+    // A traversal that starts inside an allowed dir: the allow-list alone would
+    // pass this, which is why the `..` check isn't folded into it.
+    try std.testing.expect(permittedPath("blocks/../../wallet.dat", 0, &allow) == null);
+    try std.testing.expect(permittedPath("../wallet.dat", 0, &allow) == null);
+
+    // Absolute roots and backslash separators (a Windows-built archive read on a
+    // POSIX host, where `/` alone wouldn't split the components).
+    try std.testing.expect(permittedPath("/blocks/blk1.dat", 0, &allow) == null);
+    try std.testing.expect(permittedPath("blocks\\..\\..\\wallet.dat", 0, &allow) == null);
+
+    // `strip` applies before the check, so the allow-list names what the
+    // destination sees, not what the archive happens to wrap it in.
+    try std.testing.expectEqualStrings("blocks/blk1.dat", permittedPath("snapshot-2026/blocks/blk1.dat", 1, &allow).?);
+    try std.testing.expect(permittedPath("snapshot-2026/wallet.dat", 1, &allow) == null);
 }
 
 test "a paused download keeps a resumable partial rather than losing it" {

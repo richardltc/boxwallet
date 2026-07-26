@@ -521,8 +521,12 @@ int main()
         if (bw_sync_accel_offered(ctx, static_cast<size_t>(coin)) != 0) {
             char name[64] = {0};
             char detail[256] = {0};
+            char trust[256] = {0};
             size_t nn = bw_sync_accel_name(static_cast<size_t>(coin), name, sizeof name);
             size_t dn = bw_sync_accel_detail(static_cast<size_t>(coin), detail, sizeof detail);
+            // Empty for an accelerator with nothing to caution about, which is
+            // what hides the block rather than showing an empty rule.
+            size_t tn = bw_sync_accel_trust_note(static_cast<size_t>(coin), trust, sizeof trust);
             uint64_t partial = bw_sync_accel_resume_bytes(ctx, static_cast<size_t>(coin));
             std::string resume;
             if (partial > 0)
@@ -531,6 +535,7 @@ int main()
             if (auto h = weak.lock()) {
                 (*h)->set_accel_name(slint::SharedString(std::string_view(name, nn)));
                 (*h)->set_accel_detail(slint::SharedString(std::string_view(detail, dn)));
+                (*h)->set_accel_trust(slint::SharedString(std::string_view(trust, tn)));
                 (*h)->set_accel_resume(slint::SharedString(resume));
                 // The click set daemon-busy to latch the Start button; the prompt
                 // is now the thing in flight, so release it or the buttons stay

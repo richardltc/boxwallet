@@ -107,6 +107,12 @@ uint8_t  bw_install_progress(bw_ctx *ctx, uint64_t *cur, uint64_t *total);
  * exists, which is what stops a snapshot ever landing on top of another app's
  * blockchain.
  *
+ * bw_sync_accel_trust_note returns the caution to show beside the pitch: these
+ * accelerators are fast precisely because they skip verification the node would
+ * otherwise do, and neither payload is verified by BoxWallet. It returns 0 bytes
+ * for an accelerator that carries no such tradeoff, so render the block only when
+ * there is text. Show it, and prefer "sync normally" as the default answer.
+ *
  * bw_sync_accel_resume_bytes reports bytes of an interrupted download waiting on
  * disk (0 when there's nothing to resume), so the prompt can say the transfer
  * continues rather than restarts. A failed run keeps its partial for next time.
@@ -127,6 +133,7 @@ uint8_t  bw_install_progress(bw_ctx *ctx, uint64_t *cur, uint64_t *total);
 int      bw_sync_accel_offered(bw_ctx *ctx, size_t idx);          /* 0/1 */
 size_t   bw_sync_accel_name(size_t idx, char *buf, size_t cap);
 size_t   bw_sync_accel_detail(size_t idx, char *buf, size_t cap);
+size_t   bw_sync_accel_trust_note(size_t idx, char *buf, size_t cap);
 uint64_t bw_sync_accel_resume_bytes(bw_ctx *ctx, size_t idx);
 int      bw_sync_accel_run(bw_ctx *ctx, size_t idx);
 void     bw_sync_accel_pause(bw_ctx *ctx);
