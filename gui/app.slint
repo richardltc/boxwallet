@@ -414,6 +414,10 @@ export component AppWindow inherits Window {
     // True from clicking Start until the daemon answers (the smiley pulses). The
     // remaining placeholders below stay idle until their flows are wired.
     in-out property <bool> daemon-loading: false;
+    // What the daemon is doing while it's still coming up, straight from its own
+    // warm-up report (bw_daemon_stage): "Loading block index…", "Rewinding…",
+    // "Verifying…", "Loading blocks… 42.00%". Empty when it isn't warming up.
+    in-out property <string> daemon-stage: "";
     // Wallet lock state (from bw_wallet_security): 0 unknown, 1 unencrypted,
     // 2 locked, 3 unlocked, 4 unlocked-for-staking. 0 (unknown) greys the glyph.
     in property <int> wallet-sec: 0;
@@ -644,7 +648,13 @@ export component AppWindow inherits Window {
                         icon: @image-url("icons/smile.svg");
                         accent: root.coin-color;
                         active: root.running || root.daemon-loading;
-                        hint: root.daemon-loading ? "Daemon loading…" : (root.running ? "Daemon running" : "Daemon not running");
+                        // While it's coming up, name the stage it's actually at
+                        // rather than a bare "loading" — a block-index load or a
+                        // rewind can run for minutes, and the difference is the
+                        // only sign of progress there is.
+                        hint: root.daemon-loading
+                            ? (root.daemon-stage != "" ? root.daemon-stage : "Daemon loading…")
+                            : (root.running ? "Daemon running" : "Daemon not running");
                         motion: "pulse";
                         moving: root.daemon-loading;
                     }
@@ -824,10 +834,17 @@ export component AppWindow inherits Window {
                             font-size: 13px;
                         }
                         Text {
-                            // Show the latest action/info message; when there's
-                            // none, fall back to "Staking" while the wallet stakes.
-                            text: root.status-text != "" ? root.status-text : (root.staking ? "Staking" : "");
-                            color: root.status-is-error ? #e74c3c : #c8c8c8;
+                            // A daemon that's still coming up outranks the last
+                            // action message: the stage moves on its own (and can
+                            // do so for minutes), so it's the live answer to "what
+                            // is it doing?". Otherwise the latest action/info
+                            // message, falling back to "Staking" while it stakes.
+                            text: root.daemon-stage != ""
+                                ? root.daemon-stage
+                                : (root.status-text != "" ? root.status-text : (root.staking ? "Staking" : ""));
+                            // A live stage is progress, never an error — don't
+                            // inherit the red from an earlier failed action.
+                            color: root.status-is-error && root.daemon-stage == "" ? #e74c3c : #c8c8c8;
                             font-size: 13px;
                             wrap: word-wrap;
                             horizontal-stretch: 1;
@@ -962,8 +979,11 @@ export component AppWindow inherits Window {
                         }
                         Button {
                             text: "Start";
-                            // Nothing to start until it's installed.
-                            enabled: root.installed && !root.running && !root.daemon-busy;
+                            // Nothing to start until it's installed — and nothing
+                            // to start *again* while one is coming up: a daemon
+                            // loading its block index isn't answering RPC yet, and
+                            // a second start would just hit the datadir lock.
+                            enabled: root.installed && !root.running && !root.daemon-busy && !root.daemon-loading;
                             clicked => {
                                 root.daemon-busy = true;
                                 root.daemon-loading = true; // smiley pulses until it answers

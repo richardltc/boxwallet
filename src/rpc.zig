@@ -102,6 +102,50 @@ pub fn loadingPhase(
     return scanLoadingPhase(reply);
 }
 
+/// The daemon's own warm-up text from a `-28` reply — the `error.message`
+/// field, e.g. "Loading block index...", "Rewinding blocks...", "Verifying
+/// blocks...", "Loading wallet...". Copied into `out` (truncated to fit) and
+/// returned as a slice of it; empty when the body carries no message, which is
+/// the normal case for a daemon that's finished warming up.
+///
+/// A frontend showing the daemon's exact wording beats the coarse
+/// `LoadingPhase` it classifies to: the enum folds every "Loading X…" stage into
+/// one value, while the message names the stage the daemon is actually in and
+/// changes as it moves through them. Scanned rather than JSON-parsed to keep
+/// this allocation-free on the status-poll path — the field is a plain string in
+/// every daemon's error object.
+pub fn scanWarmupMessage(body: []const u8, out: []u8) []const u8 {
+    const key = "\"message\":";
+    const at = std.mem.indexOf(u8, body, key) orelse return "";
+    var i = at + key.len;
+    while (i < body.len and (body[i] == ' ' or body[i] == '\t')) i += 1;
+    if (i >= body.len or body[i] != '"') return "";
+    i += 1;
+
+    var n: usize = 0;
+    while (i < body.len and n < out.len) : (i += 1) {
+        switch (body[i]) {
+            '"' => break,
+            // Only the escapes a daemon's init message can realistically carry;
+            // anything else is passed through as written.
+            '\\' => {
+                i += 1;
+                if (i >= body.len) break;
+                out[n] = switch (body[i]) {
+                    'n', 't', 'r' => ' ',
+                    else => body[i],
+                };
+                n += 1;
+            },
+            else => {
+                out[n] = body[i];
+                n += 1;
+            },
+        }
+    }
+    return std.mem.trim(u8, out[0..n], " \t");
+}
+
 /// Classify a daemon reply body into a warm-up `LoadingPhase` by the phase string
 /// it carries, mirroring the Go installers' substring checks. The more specific
 /// phases are tested before `loading`, since a warm-up message like "Loading

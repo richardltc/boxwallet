@@ -9,6 +9,8 @@ const rpc = @import("rpc.zig");
 const updater = @import("update.zig");
 const price = @import("price.zig");
 const qrcode = @import("qrcode.zig");
+const proc_mod = @import("proc.zig");
+const warmup = @import("warmup.zig");
 const Coin = @import("coin.zig").Coin;
 const Nexa = @import("coins/nexa.zig").Nexa;
 const Divi = @import("coins/divi.zig").Divi;
@@ -552,19 +554,9 @@ const WalletState = enum {
     }
 };
 
-/// Display text for a daemon warm-up phase. `none` has no text (the daemon is
-/// either responsive or down, so the phase isn't shown).
-fn loadingPhaseText(p: models.LoadingPhase) []const u8 {
-    return switch (p) {
-        .none => "",
-        .loading => "Loading…",
-        .rescanning => "Rescanning…",
-        .rewinding => "Rewinding…",
-        .verifying => "Verifying…",
-        .calculating => "Calculating money supply…",
-        .loading_block_index => "Loading block index…",
-    };
-}
+/// Display text for a daemon warm-up phase — shared with the GUI front-end, so
+/// both name the stages identically (see `warmup.zig`).
+const loadingPhaseText = warmup.phaseText;
 
 /// Render the coin's one-line **Status** — a live readout of what the daemon is
 /// doing right now, distinct from the per-axis ticks below it. Priority, highest
@@ -2433,7 +2425,7 @@ const Activity = struct {
             if (self.daemon_child) |child| if (child.id) |pid| {
                 _ = App.reapNoHang(pid);
             };
-            if (!processAlive(io, name)) return;
+            if (!proc_mod.alive(io, name)) return;
         }
 
         // Still up after the grace window: force it, then reap our child once more.
@@ -3212,12 +3204,7 @@ const Activity = struct {
     /// the connection); coins with no bitcoin-style warm-up (`warmupProbeMethod`
     /// null) always read `none`. Runs on the caller's poll arena.
     fn probeLoadingPhase(self: *Activity, a: std.mem.Allocator) void {
-        const method = self.coin.warmupProbeMethod() orelse {
-            self.poll_phase.store(@intFromEnum(models.LoadingPhase.none), .monotonic);
-            self.clearLoadProgress();
-            return;
-        };
-        if (self.daemonState() == .stopped) {
+        if (self.coin.warmupProbeMethod() == null or self.daemonState() == .stopped) {
             self.poll_phase.store(@intFromEnum(models.LoadingPhase.none), .monotonic);
             self.clearLoadProgress();
             return;
@@ -3225,51 +3212,14 @@ const Activity = struct {
 
         var threaded: std.Io.Threaded = .init(a, .{});
         defer threaded.deinit();
-        const io = threaded.io();
 
-        const data_dir = self.coin.dataDir(a, self.home_dir) catch {
-            self.poll_phase.store(@intFromEnum(models.LoadingPhase.none), .monotonic);
-            self.clearLoadProgress();
-            return;
-        };
-
-        var phase: models.LoadingPhase = blk: {
-            const auth = conf.readAuth(
-                a,
-                io,
-                data_dir,
-                self.coin.confFile(),
-                self.coin.rpcDefaultUsername(),
-                self.coin.rpcDefaultPort(),
-            ) catch break :blk .none;
-            break :blk rpc.loadingPhase(a, auth, method) catch .none;
-        };
-
-        // Both the block-index-load window and its finer sub-stages surface only
-        // in debug.log, so read the tail once and mine both from it. A generous
-        // tail: a NovaCoin daemon (SpiderByte) has its RPC up during the load, so
-        // our own ~1/s status polls each append a "ThreadRPCServer method=getinfo"
-        // line — minutes of that spam accrues after the "Loading block index…"
-        // marker, so a small tail would lose it partway through a long load.
-        var log_buf: [64 * 1024]u8 = undefined;
-        const tail = readDebugLogTail(io, data_dir, &log_buf);
-
-        // NovaCoin-era daemons (SpiderByte) predate the `-28` RPC warm-up: their
-        // RPC is up during the block-index load but can't serve `getinfo` yet
-        // (chain/wallet state is still null), so the probe above just fails. Let
-        // the coin recognise that window from the marker it logs instead, so the
-        // UI can say "Loading block index…" rather than a misleading
-        // "Waiting for peers…".
-        if (phase == .none) phase = self.coin.warmupPhaseFromLog(tail);
-        self.poll_phase.store(@intFromEnum(phase), .monotonic);
-
-        // RPC's "-28" warm-up message only ever says the coarse "Loading block
-        // index..." for the whole loading window; some daemons (DigiByte)
-        // additionally log a finer-grained percentage in debug.log — scrape it
-        // the same way `presyncPercentBp` does for the headers presync pass.
-        const progress = parseLoadProgress(tail);
-        self.poll_load_stage.store(@intFromEnum(progress.stage), .monotonic);
-        self.poll_load_pct_bp.store(progress.pct_bp, .monotonic);
+        // The probe itself (RPC `-28` phase, refined by the sub-stage and
+        // percentage its debug.log carries) is shared with the GUI; only the
+        // publishing into these atomics is the TUI's own.
+        const status = warmup.probe(a, threaded.io(), self.coin, self.home_dir);
+        self.poll_phase.store(@intFromEnum(status.phase), .monotonic);
+        self.poll_load_stage.store(@intFromEnum(status.progress.stage), .monotonic);
+        self.poll_load_pct_bp.store(status.progress.pct_bp, .monotonic);
     }
 
     /// Resolve the coin's RPC credentials from its conf, then fetch both the
@@ -3723,17 +3673,11 @@ const Activity = struct {
     ///
     /// Liveness is by process name (like the Go `FindProcess`), so it needs no
     /// RPC and works before the daemon opens its RPC port. `/proc` on Linux,
-    /// `pgrep` elsewhere; where neither can run, `processAlive` conservatively
+    /// `pgrep` elsewhere; where neither can run, `proc_mod.alive` conservatively
     /// reports alive (we fall back to trusting the launcher's exit code, the
     /// prior behaviour).
     fn confirmAlive(self: *Activity, io: std.Io) bool {
-        const name = self.coin.daemonFile();
-        var i: u8 = 0;
-        while (i < 8) : (i += 1) {
-            io.sleep(.fromMilliseconds(250), .awake) catch {};
-            if (!processAlive(io, name)) return false;
-        }
-        return true;
+        return proc_mod.stayedAlive(io, self.coin.daemonFile());
     }
 
     /// Surface a failed start's reason from the coin's own daemon log (e.g.
@@ -3746,19 +3690,8 @@ const Activity = struct {
     fn setDaemonErrFromDaemonLog(self: *Activity, a: std.mem.Allocator, io: std.Io) void {
         const log_name = self.coin.daemonLogFile() orelse return;
         const data_dir = self.coin.dataDir(a, self.home_dir) catch return;
-        var dir = std.Io.Dir.cwd().openDir(io, data_dir, .{}) catch return;
-        defer dir.close(io);
-        var file = dir.openFile(io, log_name, .{}) catch return;
-        defer file.close(io);
-        const stat = file.stat(io) catch return;
-        // A modest tail keeps the read flat and biases toward the latest start
-        // attempt (the death burst is the last handful of lines), so an older
-        // session's errors further back don't get picked.
         var buf: [4 * 1024]u8 = undefined;
-        const off = if (stat.size > buf.len) stat.size - buf.len else 0;
-        const n = file.readPositionalAll(io, &buf, off) catch return;
-
-        const pick = pickDebugLogError(buf[0..n]);
+        const pick = proc_mod.daemonLogReason(io, data_dir, log_name, &buf);
         if (pick.len != 0) self.storeDaemonErr(pick);
     }
 
@@ -3783,60 +3716,13 @@ const Activity = struct {
     }
 };
 
-/// Strip a bitcoin-style "YYYY-MM-DD HH:MM:SS " log prefix from `line` so the
-/// surfaced reason is just the message. Fractional seconds (the epee family
-/// logs "…19:07:04.165") are consumed too, so the reason doesn't lead with an
-/// orphaned ".165". Returns `line` unchanged if the prefix isn't there.
-fn stripLogTimestamp(line: []const u8) []const u8 {
-    if (line.len > 20 and line[4] == '-' and line[7] == '-' and
-        line[10] == ' ' and line[13] == ':' and line[16] == ':')
-    {
-        var rest = line[19..];
-        if (rest.len > 0 and rest[0] == '.') {
-            var i: usize = 1;
-            while (i < rest.len and std.ascii.isDigit(rest[i])) i += 1;
-            rest = rest[i..];
-        }
-        return std.mem.trim(u8, rest, " \t");
-    }
-    return line;
-}
+/// Strip a log line's leading timestamp — shared with the GUI front-end, which
+/// surfaces the same start-failure reasons (see `proc.zig`).
+const stripLogTimestamp = proc_mod.stripLogTimestamp;
 
-/// Choose the most informative line from a debug.log tail. A daemon's failure
-/// burst mixes the root cause with benign warnings and shutdown bookkeeping, so
-/// two tiers are used: a "root cause" line (a datadir/block-index/permission
-/// problem) wins over a generic error/abort line, which in turn wins over the
-/// last non-empty line. Within a tier the *last* match wins, since the fatal
-/// line lands late, just before the shutdown. Leading log timestamps are
-/// stripped. Returns a slice into `tail` (empty only if `tail` has no content).
-fn pickDebugLogError(tail: []const u8) []const u8 {
-    // Deliberately omits bare "lock" ("block" contains it) — the datadir-lock
-    // message carries "cannot" anyway. "exception" and "failed to" carry the
-    // epee family's fatal shapes ("Exception in main!", "Failed to initialize
-    // p2p server") over its shutdown bookkeeping.
-    const root_cause = [_][]const u8{
-        "incorrect", "corrupt",   "no genesis", "wrong datadir",
-        "cannot",    "unable",    "denied",     "invalid",
-        "not found", "exception", "failed to",
-    };
-    const generic = [_][]const u8{ "error", "abort", "fail", "exiting" };
-
-    var root_hit: []const u8 = "";
-    var generic_hit: []const u8 = "";
-    var fallback: []const u8 = "";
-    var it = std.mem.splitScalar(u8, tail, '\n');
-    while (it.next()) |raw| {
-        const line = stripLogTimestamp(std.mem.trim(u8, raw, " \t\r"));
-        if (line.len == 0) continue;
-        fallback = line;
-        if (matchesAny(line, &root_cause)) {
-            root_hit = line;
-        } else if (matchesAny(line, &generic)) {
-            generic_hit = line;
-        }
-    }
-    return if (root_hit.len != 0) root_hit else if (generic_hit.len != 0) generic_hit else fallback;
-}
+/// Pick the failure reason out of a daemon-log tail — shared with the GUI
+/// front-end, which surfaces the same reasons (see `proc.zig`).
+const pickDebugLogError = proc_mod.pickLogError;
 
 /// Choose the most informative line from a wallet process's captured
 /// stdout/stderr tail. `simplewallet` (and the epee family generally) prints a
@@ -3968,59 +3854,12 @@ fn parsePresyncPercentBp(tail: []const u8) ?u32 {
 /// "Loading block index..." for this whole window; some daemons (DigiByte)
 /// additionally log a finer-grained, percentage-bearing line for two
 /// sub-stages RPC doesn't distinguish.
-const LoadStage = enum { none, loading_blocks, processing_blocks };
-
-/// A load sub-stage plus its live percentage, in basis points (1000 ==
-/// 10.00%). `.none`/0 when neither line is in the tail.
-const LoadProgress = struct {
-    stage: LoadStage = .none,
-    pct_bp: u32 = 0,
-};
-
-/// Read the tail (up to `buf.len` bytes) of the coin's `<datadir>/debug.log` into
-/// `buf`, returning the slice actually read — empty on a missing file or any IO
-/// hiccup. Bounded by design: the log grows unboundedly, so only the tail is ever
-/// read (mirrors `presyncPercentBp`/`setDaemonErrFromDaemonLog`).
-fn readDebugLogTail(io: std.Io, data_dir: []const u8, buf: []u8) []const u8 {
-    var dir = std.Io.Dir.cwd().openDir(io, data_dir, .{}) catch return &.{};
-    defer dir.close(io);
-    var file = dir.openFile(io, "debug.log", .{}) catch return &.{};
-    defer file.close(io);
-    const stat = file.stat(io) catch return &.{};
-    const off = if (stat.size > buf.len) stat.size - buf.len else 0;
-    const n = file.readPositionalAll(io, buf, off) catch return &.{};
-    return buf[0..n];
-}
-
-/// Extract the freshest block-loading sub-stage/percentage from a `debug.log`
-/// tail — e.g. `"init message: Loading blocks... 10%"` or
-/// `"LoadBlockIndex: Processing blocks... 10%"`. The *last* match of either
-/// line wins (the freshest), so a transition from one stage to the other is
-/// picked up as soon as it appears in the tail. `.{}` (`.none`/0) if neither
-/// line is present.
-fn parseLoadProgress(tail: []const u8) LoadProgress {
-    var found: LoadProgress = .{};
-    var it = std.mem.splitScalar(u8, tail, '\n');
-    while (it.next()) |raw| {
-        const line = std.mem.trim(u8, raw, " \t\r");
-        const stage: LoadStage = if (std.mem.indexOf(u8, line, "Processing blocks") != null)
-            .processing_blocks
-        else if (std.mem.indexOf(u8, line, "Loading blocks") != null)
-            .loading_blocks
-        else
-            continue;
-        // The figure is the number immediately before the trailing "%", e.g.
-        // "Loading blocks... 10%".
-        const pct_end = std.mem.lastIndexOfScalar(u8, line, '%') orelse continue;
-        var start = pct_end;
-        while (start > 0 and (std.ascii.isDigit(line[start - 1]) or line[start - 1] == '.')) start -= 1;
-        if (start == pct_end) continue;
-        const pct = std.fmt.parseFloat(f64, line[start..pct_end]) catch continue;
-        const bp = std.math.clamp(pct * 100.0, 0.0, 10000.0);
-        found = .{ .stage = stage, .pct_bp = @intFromFloat(@round(bp)) };
-    }
-    return found;
-}
+/// The daemon warm-up machinery is shared with the GUI front-end, which reports
+/// the same stages (see `warmup.zig`).
+const LoadStage = warmup.Stage;
+const LoadProgress = warmup.Progress;
+const readDebugLogTail = warmup.readDebugLogTail;
+const parseLoadProgress = warmup.parseLoadProgress;
 
 /// True if `line` contains any of `needles` (case-insensitive).
 fn matchesAny(line: []const u8, needles: []const []const u8) bool {
@@ -4034,33 +3873,6 @@ fn containsIgnoreCase(haystack: []const u8, needle: []const u8) bool {
     var i: usize = 0;
     while (i + needle.len <= haystack.len) : (i += 1) {
         if (std.ascii.eqlIgnoreCase(haystack[i .. i + needle.len], needle)) return true;
-    }
-    return false;
-}
-
-/// True if a process named `name` is currently running. Linux matches against
-/// `/proc/<pid>/comm` (which is truncated to 15 bytes); POSIX systems without
-/// `/proc` (macOS) fall back to `pgrep -x`. Returns true where no probe can run
-/// (Windows) so callers don't treat "can't check" as "dead".
-fn processAlive(io: std.Io, name: []const u8) bool {
-    if (@import("builtin").os.tag == .windows) return true;
-    var proc = std.Io.Dir.cwd().openDir(io, "/proc", .{ .iterate = true }) catch
-        return processAliveByPgrep(io, name);
-    defer proc.close(io);
-
-    // comm is truncated to TASK_COMM_LEN-1 (15) bytes.
-    const want = if (name.len > 15) name[0..15] else name;
-
-    var it = proc.iterate();
-    while (it.next(io) catch null) |entry| {
-        if (entry.kind != .directory or entry.name.len == 0 or !std.ascii.isDigit(entry.name[0])) continue;
-        var path_buf: [32]u8 = undefined;
-        const comm_path = std.fmt.bufPrint(&path_buf, "{s}/comm", .{entry.name}) catch continue;
-        var f = proc.openFile(io, comm_path, .{}) catch continue;
-        defer f.close(io);
-        var cbuf: [64]u8 = undefined;
-        const n = f.readPositionalAll(io, &cbuf, 0) catch continue;
-        if (std.mem.eql(u8, std.mem.trim(u8, cbuf[0..n], " \t\r\n"), want)) return true;
     }
     return false;
 }
@@ -4092,23 +3904,6 @@ fn signalProcessesByName(io: std.Io, name: []const u8, sig: std.posix.SIG) usize
         signaled += 1;
     }
     return signaled;
-}
-
-/// `pgrep -x` fallback for `processAlive` on POSIX systems without `/proc`
-/// (macOS): exit 0 = at least one live match, 1 = none. Anything else (pgrep
-/// missing or erroring) conservatively reads as alive, per the caller's
-/// contract.
-fn processAliveByPgrep(io: std.Io, name: []const u8) bool {
-    var child = std.process.spawn(io, .{
-        .argv = &.{ "pgrep", "-x", name },
-        .stdin = .ignore,
-        .stdout = .ignore,
-        .stderr = .ignore,
-    }) catch return true;
-    return switch (child.wait(io) catch return true) {
-        .exited => |code| code != 1,
-        else => true,
-    };
 }
 
 /// Non-blocking probe of a just-spawned child: null while it's still running,

@@ -23,6 +23,8 @@ const models = @import("models.zig");
 const conf = @import("conf.zig");
 const install = @import("install.zig");
 const updater = @import("update.zig");
+const proc = @import("proc.zig");
+const warmup = @import("warmup.zig");
 
 // Every coin backend, so the GUI can list them all in the nav (like the TUI).
 const nexa = @import("coins/nexa.zig");
@@ -377,6 +379,43 @@ export fn bw_blockchain_state(ctx: ?*Ctx, idx: usize, out: ?*BwBlockchainState) 
     return 0;
 }
 
+/// What the daemon is doing while its RPC can't answer a status call yet.
+/// Writes the stage label into `buf` — "Loading block index…", "Rewinding…",
+/// "Verifying…", "Loading blocks… 42.00%" — and returns its length. 0 means not
+/// warming up: the daemon is either answering normally or genuinely not running.
+///
+/// This is the difference between an honest status and a wrong one. A
+/// bitcoin-derived daemon opens its RPC port long before it can serve `getinfo`
+/// (it answers `-28` with its current init message meanwhile) — 37s for Divi on
+/// a loaded chain, minutes on a big one — so the reads above fail throughout a
+/// perfectly healthy start. Without this the GUI shows "not running" and
+/// re-offers Start while the daemon is coming up.
+///
+/// Cheap enough for the 2s poll: one RPC call plus a bounded log tail, on an
+/// arena freed before it returns. Only worth calling when `bw_daemon_info`
+/// failed.
+export fn bw_daemon_stage(ctx: ?*Ctx, idx: usize, buf: ?[*]u8, cap: usize) usize {
+    const c = ctx orelse return 0;
+    const b = buf orelse return 0;
+    const coin = coinByIndex(idx) orelse return 0;
+
+    var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var threaded: std.Io.Threaded = .init(a, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    // Only ever what the daemon itself reports (its `-28` message, refined by
+    // its log). Deliberately not "is the process alive?": that's also true while
+    // it shuts down and flushes, which would read as starting up.
+    const status = warmup.probe(a, io, coin, c.home_dir);
+    var label_buf: [128]u8 = undefined; // the longest message, plus its "…"
+    const text = warmup.label(status, &label_buf);
+    if (text.len == 0) return 0;
+    return copyOut(b[0..cap], text);
+}
+
 // ---- daemon control + wallet lock/unlock (the action buttons) ---------------
 //
 // These mirror the TUI's launch/stop/lock paths, driven through the same `Coin`
@@ -388,24 +427,22 @@ fn ctxAuth(a: std.mem.Allocator, io: std.Io, coin: Coin, ctx: *Ctx) !models.Coin
     return conf.readAuth(a, io, data_dir, coin.confFile(), coin.rpcDefaultUsername(), coin.rpcDefaultPort());
 }
 
-/// Poll `getinfo` for a few seconds; true once the daemon answers.
-fn confirmAlive(ctx: *Ctx, coin: Coin) bool {
+/// After the launcher daemonizes, confirm the daemon process actually stuck
+/// around rather than forking and dying — by process name, exactly as the TUI
+/// does (`proc.stayedAlive`).
+///
+/// It deliberately does **not** wait for RPC: a bitcoin-derived daemon (Divi,
+/// Bitcoin, Litecoin, …) opens its RPC port only after loading the block index
+/// and the wallet, which takes far longer than any start-time window, and until
+/// then it answers `-28` warm-up errors anyway. Demanding an RPC answer here
+/// reported a perfectly healthy start as "daemon did not stay up".
+fn confirmAlive(coin: Coin) bool {
     var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
     defer arena.deinit();
-    const a = arena.allocator();
-    var threaded: std.Io.Threaded = .init(a, .{});
+    var threaded: std.Io.Threaded = .init(arena.allocator(), .{});
     defer threaded.deinit();
-    const io = threaded.io();
 
-    const auth = ctxAuth(a, io, coin, ctx) catch return false;
-    var i: u8 = 0;
-    while (i < 20) : (i += 1) {
-        io.sleep(.fromMilliseconds(250), .awake) catch {};
-        var probe = std.heap.ArenaAllocator.init(std.heap.page_allocator);
-        defer probe.deinit();
-        if (coin.daemonInfo(probe.allocator(), auth)) |_| return true else |_| {}
-    }
-    return false;
+    return proc.stayedAlive(threaded.io(), coin.daemonFile());
 }
 
 /// Non-blocking check of a spawned child: null while still running, else its
@@ -432,6 +469,19 @@ fn currentEnvMap(a: std.mem.Allocator) !std.process.Environ.Map {
         try map.putPosixBlock(.{ .slice = slice });
     }
     return map;
+}
+
+/// Surface a failed start's reason from the coin's own daemon log — a daemonized
+/// child logs there rather than to the stderr we captured, and the epee family
+/// writes fatal init errors to its log, not stderr. Best-effort: leaves the
+/// error slot untouched for a coin that declares no log, or on any IO hiccup, so
+/// the caller falls back to its generic message.
+fn setErrorFromDaemonLog(ctx: *Ctx, a: std.mem.Allocator, io: std.Io, coin: Coin) void {
+    const log_name = coin.daemonLogFile() orelse return;
+    const data_dir = coin.dataDir(a, ctx.home_dir) catch return;
+    var buf: [4 * 1024]u8 = undefined;
+    const pick = proc.daemonLogReason(io, data_dir, log_name, &buf);
+    if (pick.len != 0) ctx.setError(pick);
 }
 
 fn probeChild(child: *std.process.Child) ?std.process.Child.Term {
@@ -528,8 +578,12 @@ fn startDaemon(ctx: *Ctx, idx: usize) !void {
     switch (try child.wait(io)) {
         .exited => |code| if (code == 0) {
             // Launcher daemonized; confirm the daemon actually stuck around.
-            if (confirmAlive(ctx, coin)) return;
-            ctx.setError("daemon did not stay up (check its debug.log)");
+            if (confirmAlive(coin)) return;
+            // Its daemonized stderr went nowhere we can read, so the reason is
+            // in the coin's own log.
+            ctx.err_len = 0;
+            setErrorFromDaemonLog(ctx, a, io, coin);
+            if (ctx.err_len == 0) ctx.setError("daemon did not stay up (check its log)");
             return error.DaemonStartFailed;
         },
         else => {},
