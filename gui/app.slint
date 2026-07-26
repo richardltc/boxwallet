@@ -422,6 +422,9 @@ export component AppWindow inherits Window {
     in property <string> accel-name: "";
     in property <string> accel-detail: "";
     in property <string> accel-resume: "";
+    // What the speed costs (bw_sync_accel_trust_note) — empty for an accelerator
+    // that carries no such tradeoff, which is what gates the caution block.
+    in property <string> accel-trust: "";
     in property <bool> running: false;
     in property <bool> synced: false;
     in property <bool> staking: false;
@@ -1370,7 +1373,10 @@ export component AppWindow inherits Window {
 
         Rectangle {
             width: 400px;
-            height: root.accel-resume == "" ? 226px : 258px;
+            // Fixed heights, since the content is fixed too: the pitch, the
+            // caution (four wrapped lines at this width), the optional resume
+            // line, and the buttons.
+            height: root.accel-resume == "" ? 300px : 332px;
             x: (parent.width - self.width) / 2;
             y: (parent.height - self.height) / 2;
             background: #202020;
@@ -1395,6 +1401,26 @@ export component AppWindow inherits Window {
                     wrap: word-wrap;
                     horizontal-stretch: 1;
                 }
+                // What the speed costs. Set apart with an amber rule rather than
+                // dropped in as another grey caption: it's the one thing here the
+                // user is meant to weigh, and grey small print is where warnings
+                // go to be skipped.
+                if root.accel-trust != "": HorizontalBox {
+                    padding: 0;
+                    spacing: 8px;
+                    Rectangle {
+                        width: 3px;
+                        background: #e0a03a;
+                        border-radius: 1.5px;
+                    }
+                    Text {
+                        text: root.accel-trust;
+                        color: #e0a03a;
+                        font-size: 12px;
+                        wrap: word-wrap;
+                        horizontal-stretch: 1;
+                    }
+                }
                 // Only shown when an earlier attempt left bytes on disk, so
                 // "Resume" doesn't read as committing to the whole download again.
                 if root.accel-resume != "": Text {
@@ -1405,30 +1431,34 @@ export component AppWindow inherits Window {
                     horizontal-stretch: 1;
                 }
                 Text {
-                    text: "Without it, " + root.coin-name + " syncs from the network as "
-                        + "usual — this only makes the first sync faster.";
+                    // The "only makes the first sync faster" tail used to live
+                    // here; the caution above now carries that point, better.
+                    text: "Without it, " + root.coin-name + " syncs from the network as usual.";
                     color: #9a9a9a;
                     font-size: 12px;
                     wrap: word-wrap;
                     horizontal-stretch: 1;
                 }
+                // Syncing normally is the highlighted, right-hand default: it's
+                // the choice that needs no trust, so it shouldn't be the one that
+                // takes more effort. The accelerator stays one click away.
                 HorizontalBox {
                     padding: 0;
                     alignment: end;
                     spacing: 8px;
                     Button {
-                        text: "Sync normally";
-                        clicked => {
-                            root.accel-open = false;
-                            root.accel-decline();
-                        }
-                    }
-                    Button {
                         text: root.accel-resume == "" ? "Download" : "Resume";
-                        primary: true;
                         clicked => {
                             root.accel-open = false;
                             root.accel-accept();
+                        }
+                    }
+                    Button {
+                        text: "Sync normally";
+                        primary: true;
+                        clicked => {
+                            root.accel-open = false;
+                            root.accel-decline();
                         }
                     }
                 }

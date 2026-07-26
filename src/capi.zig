@@ -734,6 +734,18 @@ export fn bw_sync_accel_detail(idx: usize, buf: ?[*]u8, cap: usize) usize {
     return copyOut(b[0..cap], sa.prompt_detail);
 }
 
+/// What taking the accelerator costs: the shared caution shown beside its pitch
+/// when using it means trusting the publisher for work the node would otherwise
+/// do itself. 0 bytes when it doesn't (a payload BoxWallet verifies), so the GUI
+/// shows the block only when there's something to weigh.
+export fn bw_sync_accel_trust_note(idx: usize, buf: ?[*]u8, cap: usize) usize {
+    const coin = coinByIndex(idx) orelse return 0;
+    const sa = coin.syncAccelerator() orelse return 0;
+    if (!sa.trusts_publisher) return 0;
+    const b = buf orelse return 0;
+    return copyOut(b[0..cap], coinmod.Coin.accel_trust_note);
+}
+
 /// Bytes of an interrupted download already on disk, so the prompt can offer to
 /// continue rather than appear to restart a multi-GB transfer. 0 when there's
 /// nothing waiting or the accelerator doesn't resume.
@@ -1105,6 +1117,38 @@ test "writeEntryLine formats a typed line and stops when it can't fit" {
     try std.testing.expectEqualStrings("d abc\n", buf[0..w]);
     // Only 2 bytes free after `w`: a longer line doesn't fit, so `at` is returned.
     try std.testing.expectEqual(w, writeEntryLine(buf[0 .. w + 2], w, 'f', "toolong"));
+}
+
+test "every sync accelerator on offer carries its trust caution" {
+    // The caution is what tells the user a snapshot is fast because their node
+    // isn't checking it. `trusts_publisher` defaults true precisely so a new
+    // accelerator can't quietly ship without one — this fails if someone turns it
+    // off for a payload BoxWallet still doesn't verify.
+    var found: usize = 0;
+    for (0..coin_count) |i| {
+        const coin = coinByIndex(i) orelse continue;
+        if (coin.syncAccelerator() == null) continue;
+        found += 1;
+
+        var buf: [256]u8 = undefined;
+        const n = bw_sync_accel_trust_note(i, &buf, buf.len);
+        try std.testing.expect(n > 0);
+        try std.testing.expectEqualStrings(coinmod.Coin.accel_trust_note, buf[0..n]);
+    }
+    // Divi's snapshot and Nerva's QuickSync — if this ever reads 0 the loop is
+    // asserting nothing at all.
+    try std.testing.expect(found >= 2);
+}
+
+test "a coin with no accelerator has no trust note to show" {
+    // The GUI keys the caution block off a non-empty answer, so a coin without an
+    // accelerator must return nothing rather than the shared text.
+    for (0..coin_count) |i| {
+        const coin = coinByIndex(i) orelse continue;
+        if (coin.syncAccelerator() != null) continue;
+        var buf: [256]u8 = undefined;
+        try std.testing.expectEqual(@as(usize, 0), bw_sync_accel_trust_note(i, &buf, buf.len));
+    }
 }
 
 test "a foreground daemon handle is kept per coin, not in one shared slot" {

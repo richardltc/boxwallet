@@ -1088,6 +1088,10 @@ const QuickSyncModal = struct {
     /// Accelerator name + one-line pitch, copied from the coin's capability.
     name: []const u8 = "",
     detail: []const u8 = "",
+    /// The trust caution, when this accelerator carries one (`trusts_publisher`)
+    /// — empty when it doesn't. Held as the text rather than a flag so the
+    /// wording stays in one place, shared with the GUI.
+    trust_note: []const u8 = "",
     /// Bytes of a resumable download already on disk from an interrupted attempt
     /// (0 when there's nothing to resume). Sampled once when the prompt opens —
     /// it can't change while the prompt is up — so the confirm stage can say the
@@ -6501,13 +6505,21 @@ pub const App = struct {
     /// Open the QuickSync prompt for `coin` (its sync accelerator is on offer).
     fn openQuickSyncModal(self: *App, coin: Coin) void {
         const sa = coin.syncAccelerator() orelse return;
+        const resume_from = coin.syncAcceleratorPartialBytes(self.allocator, self.install_root, self.home_dir);
         self.qs_modal = .{
             .stage = .confirm,
             .coin_idx = self.selected,
-            .sel = 0,
+            // Start on the safe answer when this means trusting someone else's
+            // chain data and nothing has been downloaded yet — the accelerator is
+            // the convenient choice, so it shouldn't also be the effortless one.
+            // Not once there's a partial: the user already weighed this, and
+            // defaulting a part-finished multi-GB resume to "No" would be
+            // obnoxious rather than careful.
+            .sel = if (sa.trusts_publisher and resume_from == 0) 1 else 0,
             .name = sa.name,
             .detail = sa.prompt_detail,
-            .resume_from = coin.syncAcceleratorPartialBytes(self.allocator, self.install_root, self.home_dir),
+            .trust_note = if (sa.trusts_publisher) Coin.accel_trust_note else "",
+            .resume_from = resume_from,
             .resumable = sa.resumable,
         };
     }
@@ -9116,6 +9128,15 @@ pub const App = struct {
         switch (m.stage) {
             .confirm => {
                 try wrapIntoRows(a, &out.writer, vbar, inner_w, m.detail, (zz.Style{}));
+                // What the speed costs, for an accelerator that hands over work
+                // the node would otherwise do itself. Amber rather than dim: it's
+                // a caution the user is meant to weigh, not fine print. (The GUI
+                // sets it apart with an accent bar; in a terminal the colour is
+                // the whole vocabulary.)
+                if (m.trust_note.len != 0) {
+                    try modalRow(&out.writer, vbar, inner_w, "", 0);
+                    try wrapIntoRows(a, &out.writer, vbar, inner_w, m.trust_note, (zz.Style{}).fg(.yellow));
+                }
                 // A resumable accelerator may already have bytes on disk from an
                 // interrupted attempt — say so, so "Yes" doesn't read as
                 // committing to the whole download again.

@@ -263,7 +263,10 @@ pub const Divi = struct {
 
         if (chainPresent(allocator, data_dir)) return error.ChainDataAlreadyPresent;
 
-        install_mod.extractLocalTarGz(allocator, install_root, snapshot_file, data_dir, 0, progress, cancel) catch |err| {
+        // Only the directories the snapshot exists to lay down. The data dir may
+        // hold a wallet and a conf that aren't ours, and the archive picks its own
+        // paths — so anything else it carries is dropped rather than written.
+        install_mod.extractLocalTarGzAllowing(allocator, install_root, snapshot_file, data_dir, 0, &snapshot_dirs, progress, cancel) catch |err| {
             removeSnapshotDirs(allocator, data_dir);
             if (err != error.Paused) install_mod.discardPartial(allocator, install_root, snapshot_file);
             return err;

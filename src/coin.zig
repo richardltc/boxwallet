@@ -252,6 +252,17 @@ pub const Coin = struct {
         /// the feature unusable); false for helper files small enough to refetch.
         /// Purely a UI hint — the coin's own `download` does the resuming.
         resumable: bool = false,
+        /// Whether taking this accelerator means trusting its publisher for work
+        /// the node would otherwise do itself. True for both shapes above: a
+        /// snapshot hands over chain data the daemon never validated, and a
+        /// block-hash file exists precisely so it can skip validating.
+        ///
+        /// **Defaults true** — an accelerator whose author hasn't thought about
+        /// this still gets the caution, rather than quietly omitting it. Set
+        /// false only where BoxWallet verifies the payload itself (a hash-pinned
+        /// file), which is the only thing that makes the trust unnecessary.
+        /// Frontends render `accel_trust_note` when it's set.
+        trusts_publisher: bool = true,
         /// Whether to offer it right now: true only when the chain isn't already
         /// synced *and* the accelerator isn't already present/in use — so a synced
         /// node (or one mid-accelerated-sync) is never prompted. A pure disk check,
@@ -305,6 +316,21 @@ pub const Coin = struct {
             home_dir: []const u8,
         ) u64 = null,
     };
+
+    /// The caution shown beside a `trusts_publisher` accelerator's pitch, in both
+    /// frontends. Held here, once: the tradeoff is a property of accelerators in
+    /// general, not of any one coin, so it isn't copy repeated in the coin files
+    /// (they declare the *fact* — `trusts_publisher` — and the frontends decide
+    /// the words).
+    ///
+    /// Deliberately states the tradeoff in both directions and claims nothing it
+    /// can't back: BoxWallet verifies neither payload (upstream rebuilds Divi's
+    /// snapshot daily and signs nothing), so "you're trusting whoever published
+    /// it" is the literal truth, and the user gets to weigh it.
+    pub const accel_trust_note =
+        "It's faster because it skips the verification your node would otherwise " ++
+        "do itself — you're trusting whoever published it. Syncing from the " ++
+        "network is slower, but your node proves every block for itself.";
 
     /// One row of the first-start prune menu: the label the user sees and the
     /// value it applies. What the number means depends on the coin's
