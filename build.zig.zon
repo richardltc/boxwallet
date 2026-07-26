@@ -8,6 +8,22 @@
             .url = "git+https://github.com/meszmate/zigzag?ref=v0.1.5#4286ed5a1f919c1ee19ef4831021a57d18322905",
             .hash = "zigzag-0.1.2-YXwYS17aEQBlpxPETTrhY5leFh7vV0DpnXJbHogs4Lsv",
         },
+        .slint_linux_x86_64 = .{
+            .url = "https://github.com/slint-ui/slint/releases/download/v1.17.1/Slint-cpp-1.17.1-Linux-x86_64.tar.gz",
+            .hash = "N-V-__8AAHkP2QLYVO5kg3eqlY0T30a_W0MQlGfSJg0-oEC8",
+        },
+        .slint_linux_aarch64 = .{
+            .url = "https://github.com/slint-ui/slint/releases/download/v1.17.1/Slint-cpp-1.17.1-Linux-arm64.tar.gz",
+            .hash = "N-V-__8AALhAAAIllS69lucVgK6IW--RlmqJEMfm7GqbaM0G",
+        },
+        .slint_compiler_linux_x86_64 = .{
+            .url = "https://github.com/slint-ui/slint/releases/download/v1.17.1/slint-compiler-Linux-x86_64.tar.gz",
+            .hash = "N-V-__8AALBIwQAoHSUWo-kT6HNM62Yn2M1nHyEO2gOy3rNY",
+        },
+        .slint_compiler_linux_aarch64 = .{
+            .url = "https://github.com/slint-ui/slint/releases/download/v1.17.1/slint-compiler-Linux-aarch64.tar.gz",
+            .hash = "N-V-__8AAIiuqgCmQ4G3F3VYl7w30H09nJ4snjpCNDccKlCt",
+        },
     },
     .paths = .{
         "build.zig",

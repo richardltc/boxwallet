@@ -6,6 +6,15 @@ BoxWallet is a multi-coin cryptocurrency wallet manager written in **Zig 0.16**,
 using [ZigZag](https://github.com/meszmate/zigzag) for its TUI — there is **no
 web frontend**.
 
+There is also an **optional desktop GUI** (Slint, Linux-only for now) over the
+same core: `gui/main.cpp` + `gui/app.slint` drive the `Coin` vtable through the
+C ABI in `src/capi.zig` (declared in `include/boxwallet.h`). It is a second
+*front-end*, never a second implementation — anything a front-end needs that
+isn't presentation belongs in a shared module both can call, not in `app.zig`
+(TUI) or `capi.zig` (GUI). `src/proc.zig` (daemon liveness by process name,
+start-failure reasons) and `src/warmup.zig` (what a daemon is doing while its
+RPC can't answer yet) exist for exactly that reason.
+
 BoxWallet is **cross-platform**: it must build and run on **Linux, Windows, and
 macOS**. Keep new code portable — no OS-specific assumptions about paths, line
 endings, binary names, or environment. Where behaviour genuinely differs per OS
@@ -150,10 +159,14 @@ generic, parameterized helper belongs in the shared module.
 From the repo root:
 
 ```sh
-ZIG_GLOBAL_CACHE_DIR=zig-pkg zig build test   # offline unit tests
+ZIG_GLOBAL_CACHE_DIR=zig-pkg zig build test    # offline unit tests
 ZIG_GLOBAL_CACHE_DIR=zig-pkg zig build         # build the binary
 ZIG_GLOBAL_CACHE_DIR=zig-pkg zig build run     # launch the TUI
 ZIG_GLOBAL_CACHE_DIR=zig-pkg zig build release # cross-build all release binaries + SHA256SUMS
+
+ZIG_GLOBAL_CACHE_DIR=zig-pkg zig build gui         # build the Slint GUI
+ZIG_GLOBAL_CACHE_DIR=zig-pkg zig build gui-run     # build + launch the GUI
+ZIG_GLOBAL_CACHE_DIR=zig-pkg zig build gui-release # Linux GUI bundles (x86_64 + aarch64)
 ```
 
 - The ZigZag dependency is vendored under `zig-pkg/`;
@@ -172,6 +185,34 @@ ZIG_GLOBAL_CACHE_DIR=zig-pkg zig build release # cross-build all release binarie
   stay in lockstep with what the updater downloads. The swap targets the real
   running executable wherever it lives — not `~/.boxwallet` (only the staging
   cache). Don't rename assets by hand or the updater can't find them.
+- **The GUI's Slint dependency is fetched, not vendored.** Slint is a Rust
+  project Zig can't build, so `build.zig.zon` declares upstream's **prebuilt**
+  packages as **lazy, hash-pinned** dependencies — one per platform, plus the
+  host `slint-compiler` (a separate, self-contained download that turns
+  `gui/app.slint` into a C++ header at build time). Lazy means a target's
+  package is fetched only when that target is actually built, so `zig build`,
+  `zig build test` and `zig build release` never touch it. Add or bump one with
+  `zig fetch --save=<name> <url>`, then set `.lazy = true` by hand.
+  `build.zig`'s `slintDepName` maps target → package and returns null where
+  upstream ships none, which is what keeps the GUI Linux-only without a separate
+  platform check. **Never commit the package into the repo** — it was vendored
+  under `third_party/` once, and 46 MB of unverifiable binary in git is what
+  this replaced.
+- **GUI bundles are glibc, not musl.** The prebuilt Slint runtime is
+  glibc-linked and needs the system graphics stack (fontconfig, freetype,
+  libxkbcommon, libinput, libgbm, libudev, libstdc++), so `gui-release` targets
+  `linux-gnu.2.35` and the bundle is exe + `libslint_cpp.so` + Slint's licences,
+  zipped. The runtime ships **unmodified** (stripping it saves 0.7 MB of a
+  13.7 MB zip, and no stripper handles both arches). The **static-musl TUI stays
+  the answer for old, low-spec, or headless machines** — don't "unify" the two
+  release paths.
+- **macOS and Windows GUIs need a native host.** Upstream publishes no Intel
+  macOS package and its Darwin build needs the Apple SDK; the Windows package is
+  an MSVC-ABI NSIS installer `zig fetch` can't even unpack. Those belong in a CI
+  matrix on native runners — don't try to cross them from Linux.
+- **The GUI can't self-update the way the TUI does.** `src/update.zig` swaps a
+  single executable; a GUI bundle is an exe plus a sidecar `.so`. Settle that
+  before publishing GUI assets, since the naming gets baked into the updater.
 
 ## Conventions
 
