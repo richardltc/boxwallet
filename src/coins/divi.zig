@@ -271,6 +271,20 @@ pub const Divi = struct {
             if (err != error.Paused) install_mod.discardPartial(allocator, install_root, snapshot_file);
             return err;
         };
+        // The allow-list above names the only directories a snapshot may write,
+        // so it is also what would silently drop *everything* if upstream ever
+        // reshaped the archive (a versioned wrapper dir, a renamed `blocks/`).
+        // Extraction would still report success, and divid would then be handed
+        // an empty data dir and start syncing from genesis — a "the snapshot did
+        // nothing" bug wearing a "the daemon won't start" costume. Say it plainly
+        // instead, and leave nothing behind: no half-dir to suppress the next
+        // prompt, no archive to unpack fruitlessly again.
+        if (!chainPresent(allocator, data_dir)) {
+            removeSnapshotDirs(allocator, data_dir);
+            install_mod.discardPartial(allocator, install_root, snapshot_file);
+            return error.SnapshotLaidDownNoChain;
+        }
+
         // Unpacked: the 4.7 GB archive has done its job and is pure dead weight.
         install_mod.discardPartial(allocator, install_root, snapshot_file);
     }
@@ -948,6 +962,56 @@ test "applying a snapshot refuses to write over chain data that appeared meanwhi
         error.ChainDataAlreadyPresent,
         Divi.snapshotApply(allocator, "test-divi-snapshot-root", home, null, null),
     );
+}
+
+test "a snapshot that lays down no chain fails instead of reporting success" {
+    if (builtin.os.tag == .windows) return error.SkipZigTest;
+    const allocator = std.testing.allocator;
+
+    var threaded: std.Io.Threaded = .init(allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    const home = "test-divi-snapshot-empty";
+    const root = "test-divi-snapshot-empty-root";
+    std.Io.Dir.cwd().deleteTree(io, home) catch {};
+    std.Io.Dir.cwd().deleteTree(io, root) catch {};
+    defer std.Io.Dir.cwd().deleteTree(io, home) catch {};
+    defer std.Io.Dir.cwd().deleteTree(io, root) catch {};
+
+    var dd = try std.Io.Dir.cwd().createDirPathOpen(io, home ++ "/.divi", .{});
+    defer dd.close(io);
+    // A wallet and a conf already in the data dir, as on any real machine.
+    try dd.writeFile(io, .{ .sub_path = "wallet.dat", .data = "mine, not the archive's" });
+
+    var rd = try std.Io.Dir.cwd().createDirPathOpen(io, root, .{});
+    defer rd.close(io);
+    // An archive shaped the way upstream's *isn't*: nothing the allow-list
+    // permits, so the extraction writes nothing at all. Standing in for upstream
+    // reshaping the snapshot (a versioned wrapper dir, a renamed blocks/) — the
+    // case where the guard would otherwise drop everything in silence.
+    try rd.writeFile(io, .{
+        .sub_path = Divi.snapshot_file,
+        .data = @embedFile("../testdata/fixture.tar.gz"),
+    });
+
+    try std.testing.expectError(
+        error.SnapshotLaidDownNoChain,
+        Divi.snapshotApply(allocator, root, home, null, null),
+    );
+
+    // Nothing usable was left behind to confuse the next run: no chain dirs to
+    // suppress the prompt, and no archive to unpack fruitlessly again.
+    try std.testing.expect(!Divi.chainPresent(allocator, home ++ "/.divi"));
+    try std.testing.expect(!install_mod.fileExists(allocator, root, Divi.snapshot_file));
+
+    // And the wallet that was already there is untouched — the allow-list's
+    // whole purpose, checked on the failure path too.
+    var wallet_buf: [64]u8 = undefined;
+    const wf = try dd.openFile(io, "wallet.dat", .{});
+    defer wf.close(io);
+    const n = try wf.readPositionalAll(io, &wallet_buf, 0);
+    try std.testing.expectEqualStrings("mine, not the archive's", wallet_buf[0..n]);
 }
 
 test "the snapshot capability is wired up as a resumable, applied accelerator" {
