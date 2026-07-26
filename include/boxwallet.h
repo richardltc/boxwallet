@@ -160,6 +160,18 @@ size_t  bw_list_dir(const char *path, char *buf, size_t cap);
 int     bw_daemon_info(bw_ctx *ctx, size_t idx, BwDaemonInfo *out);
 int     bw_blockchain_state(bw_ctx *ctx, size_t idx, BwBlockchainState *out);
 
+/* What the daemon is doing while it can't answer the reads above yet: fills buf
+ * with its start-up stage ("Loading block index…", "Rewinding…", "Verifying…",
+ * "Loading blocks… 42.00%") and returns the length. 0 means it isn't warming
+ * up — answering normally, or genuinely not running.
+ *
+ * A bitcoin-derived daemon opens its RPC port long before it can serve getinfo
+ * (it answers -28 with its current init message meanwhile — 37s for Divi on a
+ * loaded chain, minutes on a big one), so bw_daemon_info fails for all of a
+ * healthy start. Call this when it does, to tell "still loading" from "not
+ * running". Blocks on RPC + a log read: worker thread only. */
+size_t  bw_daemon_stage(bw_ctx *ctx, size_t idx, char *buf, size_t cap);
+
 /* ---- FUTURE: secrets contract (not yet implemented) -------------------------
  * Wallet ops (create/restore/unlock) will take secrets as (const uint8_t *ptr,
  * size_t len) — NEVER as a Slint property/SharedString, which would copy them

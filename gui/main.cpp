@@ -329,6 +329,10 @@ static void apply_coin_metadata(const AppWindow *ui, bw_ctx *ctx, int idx)
     ui->set_disk_free(slint::SharedString(""));
     ui->set_status_text(slint::SharedString(""));
     ui->set_status_is_error(false);
+    // Including the warm-up readout: the coin we're leaving may well still be
+    // loading, and its stage must not read as this one's.
+    ui->set_daemon_loading(false);
+    ui->set_daemon_stage(slint::SharedString(""));
 }
 
 // ---- in-app file browser state + helpers ------------------------------------
@@ -464,7 +468,11 @@ int main()
         post_to_ui([w, msg, is_err]() {
             if (auto h = w.lock()) {
                 (*h)->set_daemon_busy(false);
-                (*h)->set_daemon_loading(false); // start finished (running or failed)
+                // `daemon-loading` is not cleared here: the spawn returning is
+                // not the daemon being ready. It loads its block index and
+                // wallet for tens of seconds more, so the poll owns that flag
+                // (and the stage shown with it) until the daemon answers RPC or
+                // its process is gone.
                 (*h)->set_status_text(slint::SharedString(msg));
                 (*h)->set_status_is_error(is_err);
             }
@@ -729,11 +737,11 @@ int main()
                     auto h = weak.lock();
                     if (!h)
                         return;
-                    // Always release the busy flags, even if the user navigated away —
-                    // they're global to the pane, so leaving them set would freeze the
-                    // buttons on whatever coin is on screen.
+                    // Always release the busy flag, even if the user navigated away —
+                    // it's global to the pane, so leaving it set would freeze the
+                    // buttons on whatever coin is on screen. `daemon-loading` is
+                    // left to the poll: the restarted daemon is still coming up.
                     (*h)->set_daemon_busy(false);
-                    (*h)->set_daemon_loading(false);
                     if (g_selected.load() != coin)
                         return;
                     (*h)->set_status_text(slint::SharedString(msg));
@@ -835,6 +843,19 @@ int main()
             // Wallet lock state — only meaningful once the daemon answers.
             int wallet_sec = (di_rc == 0 && bs_rc == 0) ? bw_wallet_security(ctx, coin) : 0;
 
+            // The reads failing doesn't mean "not running": a bitcoin-derived
+            // daemon can't serve them for the whole of its start-up (block
+            // index, then wallet — tens of seconds to minutes) while it answers
+            // -28 with the stage it's at. Ask for that stage, so the UI reports
+            // "Loading block index…" / "Rewinding…" / "Verifying…" rather than
+            // claiming the daemon it just started isn't running.
+            std::string stage;
+            if (di_rc != 0 || bs_rc != 0) {
+                char sb[128] = {0};
+                size_t sn = bw_daemon_stage(ctx, coin, sb, sizeof sb);
+                stage.assign(sb, sn);
+            }
+
             // Disk usage is a filesystem read — independent of the daemon.
             BwDiskUsage du;
             std::memset(&du, 0, sizeof du);
@@ -846,7 +867,7 @@ int main()
                 disk_free_str = humanize_bytes(du.total_bytes - du.used_bytes) + " free";
             }
 
-            post_to_ui([weak, di, bs, di_rc, bs_rc, sel, disk_frac, disk_free_str, wallet_sec]() {
+            post_to_ui([weak, di, bs, di_rc, bs_rc, sel, disk_frac, disk_free_str, wallet_sec, stage]() {
                 auto h = weak.lock();
                 if (!h)
                     return;
@@ -858,6 +879,13 @@ int main()
                 (*h)->set_wallet_sec(wallet_sec);
                 bool running = (di_rc == 0) && (bs_rc == 0);
                 (*h)->set_running(running);
+                // The poll owns the loading state: it lasts until the daemon
+                // answers RPC, which is long after the Start action returns.
+                // Start stays latched for that whole window, so the daemon
+                // coming up can't be mistaken for a stopped one and started
+                // twice (the second attempt just hits the datadir lock).
+                (*h)->set_daemon_stage(slint::SharedString(stage));
+                (*h)->set_daemon_loading(!running && !stage.empty());
                 if (running) {
                     bool synced = bs.synced != 0;
                     int64_t tip = bs.network_height > 0
