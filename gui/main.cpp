@@ -411,6 +411,30 @@ int main()
         return 1;
     }
 
+    // The window the user arranged last time. Nothing stored (or nothing usable)
+    // leaves Slint's preferred size, so a first run — or a corrupt conf — still
+    // opens sensibly.
+    //
+    // Applied *after* show(), not before: the native window doesn't exist until
+    // then, and creating it sizes it from the component's preferred-width/height,
+    // discarding anything set beforehand. Measured — a size stored ahead of
+    // `run()` was silently replaced by the 700px default every launch.
+    //
+    // The size is applied even when restoring maximized, so "restore down" gives
+    // back the size they chose rather than the default. Position is applied for
+    // the platforms that honour it; on Wayland the compositor places windows and
+    // ignores it, which is why it's set-and-forget rather than checked.
+    BwWindowGeometry geom;
+    const bool have_geom = bw_window_geometry(ctx, &geom) == 1;
+    auto restore_geometry = [&ui, &geom, have_geom]() {
+        if (!have_geom)
+            return;
+        ui->window().set_size(slint::PhysicalSize({geom.width, geom.height}));
+        ui->window().set_position(slint::PhysicalPosition({geom.x, geom.y}));
+        if (geom.maximized)
+            ui->window().set_maximized(true);
+    };
+
     // Build the nav list: every registered coin, sorted alphabetically by name
     // (Home is pinned separately in the UI). The registry index rides along so
     // callbacks can address the coin over the C ABI.
@@ -978,7 +1002,18 @@ int main()
     // the event loop is still alive. Doing it after `run()` returns would be too
     // late: the poller posts every ~2s, and a post landing in a loop that has
     // already quit is not survivable.
-    ui->window().on_close_requested([&stop, ctx]() {
+    ui->window().on_close_requested([&stop, &ui, ctx]() {
+        // Remember the window as the user left it. First, while the window still
+        // exists and we're on the UI thread — every slint::Window accessor
+        // asserts that, and after this callback there's nothing left to measure.
+        const auto size = ui->window().size();
+        const auto pos = ui->window().position();
+        const BwWindowGeometry geom = {
+            size.width, size.height, pos.x, pos.y,
+            ui->window().is_maximized() ? 1 : 0,
+        };
+        bw_save_window_geometry(ctx, &geom);
+
         begin_shutdown();
         // Effectively "press Pause" on the way out. A chain snapshot runs for the
         // better part of an hour, so it is very likely still running here — and a
@@ -990,7 +1025,12 @@ int main()
         return slint::CloseRequestResponse::HideWindow;
     });
 
-    ui->run();
+    // `run()` decomposed (it is exactly show + loop + hide) so the saved geometry
+    // can be applied in between — see `restore_geometry`.
+    ui->show();
+    restore_geometry();
+    slint::run_event_loop();
+    ui->hide();
 
     // --- shutdown ---------------------------------------------------------
     //

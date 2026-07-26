@@ -2,6 +2,13 @@ const std = @import("std");
 const builtin = @import("builtin");
 const models = @import("models.zig");
 
+/// BoxWallet's own settings file (a plain `key=value` conf, read and written
+/// through `readValue`/`setValue`), kept alongside the coins under the install
+/// root. **Both frontends share this one file** — the TUI's `hide_balances`
+/// privacy toggle and the GUI's `gui_window_*` geometry live in it together —
+/// which is why writes go through `setValue`, that preserves every other line.
+pub const settings_file = "boxwallet.conf";
+
 /// True if `data_dir` already contains `entry` (a file or a subdirectory).
 ///
 /// The point of this is telling a data directory BoxWallet created from one it
