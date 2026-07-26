@@ -367,6 +367,9 @@ export component AppWindow inherits Window {
     // Ask a running accelerator transfer to stop. What's on disk is kept, so this
     // is a pause, not a cancel — resuming picks up from the same byte.
     callback accel-pause();
+    // Pick a paused transfer back up, from the same byte. The counterpart to
+    // `accel-pause`: the one button toggles between them.
+    callback accel-continue();
     callback install-coin();
     callback update-coin();
     callback lock-wallet();
@@ -405,6 +408,17 @@ export component AppWindow inherits Window {
     // ordinary install — an install has nothing to pause, so the Pause button is
     // gated on this.
     in-out property <bool> accel-busy: false;
+    // True once a transfer has been paused and not yet resumed. The progress
+    // block stays on screen in that state — frozen bar, byte count, and the
+    // Pause button flipped to Resume — so picking it back up is one click on the
+    // same button that stopped it, rather than a rediscovered flow. The ordinary
+    // action buttons stay live alongside it (see `installing`), so abandoning the
+    // transfer and just starting the daemon is still one click too.
+    in-out property <bool> accel-paused: false;
+    // True between clicking Pause and the transfer actually stopping — it unwinds
+    // at a chunk boundary, which on a slow link is a visible moment. Without this
+    // the button sits there reading "Pause" as if the click missed.
+    in-out property <bool> accel-pausing: false;
     in property <string> accel-name: "";
     in property <string> accel-detail: "";
     in property <string> accel-resume: "";
@@ -854,7 +868,7 @@ export component AppWindow inherits Window {
                     // Install progress — shown in place of the button row while a
                     // download/extract runs, so the rest of the app (and the coin
                     // list) stays usable during a multi-minute install.
-                    if root.installing: VerticalBox {
+                    if root.installing || (root.accel-paused && !root.running): VerticalBox {
                         padding: 0;
                         spacing: 4px;
                         HorizontalBox {
@@ -865,7 +879,9 @@ export component AppWindow inherits Window {
                                 // "Installing" rather than "Extracting": the unpack is
                                 // an implementation detail, and what the user cares
                                 // about is that the install is still working.
-                                text: root.install-phase == 2 ? "Installing…" : "Downloading…";
+                                text: root.accel-paused
+                                    ? "Paused"
+                                    : (root.install-phase == 2 ? "Installing…" : "Downloading…");
                                 color: #c8c8c8;
                                 font-size: 13px;
                             }
@@ -893,7 +909,10 @@ export component AppWindow inherits Window {
                         // conditional element `parent` resolves to the enclosing layout,
                         // not to this Rectangle, so the fills must size against `track`.
                         track := Rectangle {
-                            property <bool> indeterminate: root.install-frac < 0;
+                            // A paused transfer is never indeterminate: a sweeping
+                            // segment reads as work in progress, which is the one
+                            // thing it isn't. With no fraction it just sits empty.
+                            property <bool> indeterminate: root.install-frac < 0 && !root.accel-paused;
                             height: 6px;
                             background: #2a2a2a;
                             border-radius: 3px;
@@ -922,23 +941,38 @@ export component AppWindow inherits Window {
                                 border-radius: 3px;
                             }
                         }
-                        // Pause, under the bar, only for an accelerator transfer.
-                        // A multi-GB snapshot is far too long to hold someone
-                        // hostage to, and it resumes from the same byte — so
-                        // stopping costs nothing but the time already spent.
-                        if root.accel-busy: HorizontalBox {
+                        // Pause/Resume, under the bar, only for an accelerator
+                        // transfer. A multi-GB snapshot is far too long to hold
+                        // someone hostage to, and it resumes from the same byte —
+                        // so stopping costs nothing but the time already spent.
+                        // One button toggling between the two states, in place:
+                        // whatever stopped the transfer restarts it.
+                        // Withdrawn once the daemon is up: the user paused, chose
+                        // to start anyway, and the snapshot is moot — resuming
+                        // would unpack a chain over the one it's now using.
+                        if root.accel-busy || (root.accel-paused && !root.running): HorizontalBox {
                             padding: 0;
                             padding-top: 4px;
                             spacing: 8px;
                             alignment: start;
                             Button {
-                                text: "Pause";
+                                text: root.accel-paused
+                                    ? "Resume"
+                                    : (root.accel-pausing ? "Pausing…" : "Pause");
+                                primary: root.accel-paused;
+                                enabled: !root.accel-pausing;
                                 clicked => {
-                                    root.accel-pause();
+                                    if (root.accel-paused) {
+                                        root.accel-continue();
+                                    } else {
+                                        root.accel-pause();
+                                    }
                                 }
                             }
                             Text {
-                                text: "Safe to pause or quit — this resumes where it stops.";
+                                text: root.accel-paused
+                                    ? "Resumes from here — or leave it and start the daemon."
+                                    : "Safe to pause or quit — this resumes where it stops.";
                                 color: #9a9a9a;
                                 font-size: 12px;
                                 vertical-alignment: center;

@@ -310,6 +310,12 @@ static void apply_coin_metadata(const AppWindow *ui, bw_ctx *ctx, int idx)
         ui->set_install_frac(0);
         ui->set_install_bytes(slint::SharedString(""));
     }
+    // A paused transfer belongs to the coin it was started on, and the readout is
+    // global to the pane — so switching coins drops it rather than showing another
+    // coin someone else's paused bar. The partial is still on disk: that coin's
+    // Start offers to resume it, as it did before this button existed.
+    ui->set_accel_paused(false);
+    ui->set_accel_pausing(false);
 
     // Reset live status so the new coin doesn't briefly show the old one's.
     ui->set_running(false);
@@ -547,14 +553,16 @@ int main()
         launch_daemon(coin);
     });
 
-    // Accepted: fetch and apply the accelerator (GBs, then an unpack), then start.
-    // It reports through the install progress slots, so it takes the same
+    // Fetch and apply the accelerator (GBs, then an unpack), then start the
+    // daemon. It reports through the install progress slots, so it takes the same
     // g_installing claim an install would — they share those slots, and the
     // install root the download streams into.
-    ui->on_accel_accept([weak, ctx, launch_daemon, begin_status]() {
-        int coin = g_selected.load();
-        if (coin < 0)
-            return;
+    //
+    // Shared by the prompt's Accept and by Resume after a pause: resuming *is*
+    // the same transfer (`bw_sync_accel_run` continues from the bytes already on
+    // disk), so it must not be a second, subtly different path. Call from the UI
+    // thread.
+    auto run_accel = [weak, ctx, launch_daemon, begin_status](int coin) {
         int none = -1;
         if (!g_installing.compare_exchange_strong(none, coin)) {
             begin_status(weak, "Another install is already running");
@@ -565,9 +573,12 @@ int main()
         begin_status(weak, "Downloading…");
         if (auto h = weak.lock()) {
             (*h)->set_install_busy(true);
-            // Tells the pane this bar belongs to the accelerator, so the Pause
-            // button appears under it (an ordinary install has nothing to pause).
+            // Tells the pane this bar belongs to the accelerator, so the
+            // Pause/Resume button appears under it (an ordinary install has
+            // nothing to pause).
             (*h)->set_accel_busy(true);
+            (*h)->set_accel_paused(false);
+            (*h)->set_accel_pausing(false);
         }
         std::thread([weak, ctx, coin, launch_daemon]() {
             WorkerGuard wg; // keeps bw_ctx alive until this worker is done
@@ -591,9 +602,14 @@ int main()
                 (*h)->set_install_busy(false);
                 (*h)->set_install_phase(0);
                 (*h)->set_accel_busy(false);
+                (*h)->set_accel_pausing(false);
                 if (rc == BW_SYNC_ACCEL_PAUSED) {
-                    // Not an error: the bytes are on disk. Offer to pick it back
-                    // up, here or on a later run.
+                    // Not an error: the bytes are on disk. Hold the progress block
+                    // on screen with the button flipped to Resume, so picking it
+                    // back up is one click on the control that stopped it. The
+                    // frozen bar and byte count are the pump's last values, left
+                    // untouched on purpose — they're exactly where it stopped.
+                    (*h)->set_accel_paused(true);
                     (*h)->set_status_text(slint::SharedString(
                         "Paused — " + humanize_bytes(have) + " downloaded, resumes from here"));
                     (*h)->set_status_is_error(false);
@@ -612,11 +628,34 @@ int main()
                 launch_daemon(coin);
             });
         }).detach();
+    };
+
+    // Accepted at the prompt: start the transfer from nothing (or from a partial
+    // an earlier run left behind).
+    ui->on_accel_accept([run_accel]() {
+        int coin = g_selected.load();
+        if (coin < 0)
+            return;
+        run_accel(coin);
+    });
+
+    // Resume after a pause: the same transfer, continuing from the bytes on disk.
+    ui->on_accel_continue([run_accel]() {
+        int coin = g_selected.load();
+        if (coin < 0)
+            return;
+        run_accel(coin);
     });
 
     // Pause: raise the flag and return. The worker notices between chunks and
     // unwinds on its own, which is what keeps the partial flushed and consistent.
-    ui->on_accel_pause([ctx]() { bw_sync_accel_pause(ctx); });
+    // The button flips to Resume when the worker reports back, not here — until
+    // it has actually stopped, the transfer is still running.
+    ui->on_accel_pause([weak, ctx]() {
+        if (auto h = weak.lock())
+            (*h)->set_accel_pausing(true);
+        bw_sync_accel_pause(ctx);
+    });
     ui->on_stop_daemon([weak, ctx, wake_poll, finish_action, begin_status]() {
         int coin = g_selected.load();
         if (coin < 0)
