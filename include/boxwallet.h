@@ -153,6 +153,30 @@ typedef struct {
 } BwDiskUsage;
 int     bw_disk_usage(bw_ctx *ctx, size_t idx, BwDiskUsage *out);
 
+/* Window geometry, remembered across runs in BoxWallet's own settings conf (the
+ * same file the TUI keeps hide_balances in, so writes merge rather than clobber).
+ *
+ * bw_window_geometry returns 1 with *out filled, or 0 when there's nothing usable
+ * stored — then just let the window open at its default size. The size is
+ * validated in the core, so a corrupt or hand-edited conf can't produce a window
+ * too small to grab or larger than any screen. Position is optional: a conf with
+ * only a size still returns 1, with x/y 0.
+ *
+ * Save on the way out, from the UI thread (every slint::Window accessor asserts
+ * it). A maximized window's size is deliberately not stored — it reports the
+ * whole screen, which would become the restored "normal" size — so pass
+ * maximized=1 and the previous size is kept.
+ *
+ * NOTE: position is not restorable on Wayland; the compositor places windows and
+ * ignores an application asking otherwise. Size and maximized work everywhere. */
+typedef struct {
+    uint32_t width, height;
+    int32_t  x, y;
+    int      maximized;
+} BwWindowGeometry;
+int      bw_window_geometry(bw_ctx *ctx, BwWindowGeometry *out);   /* 1 = have one, 0 = none */
+void     bw_save_window_geometry(bw_ctx *ctx, const BwWindowGeometry *g);
+
 /* ---- file browsing (in-app file picker, backed by the core) -----------------
  * bw_home_dir fills a good starting directory. bw_list_dir lists a directory
  * into buf as newline-separated "<t> name" lines — t is 'd' for a directory or

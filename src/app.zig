@@ -39,10 +39,9 @@ const app_color = "#7ca071";
 /// per-platform `~/.boxwallet` dir resolved in `init`.
 const fallback_install_root = "boxwallet-coins";
 
-/// BoxWallet's own settings file (a plain `key=value` conf, read/written through
-/// `conf.readValue`/`conf.setValue`), kept alongside the coins under the install
-/// root. Currently holds just the `hide_balances` privacy toggle.
-const settings_file = "boxwallet.conf";
+/// BoxWallet's own settings file — shared with the GUI frontend, which keeps its
+/// window geometry in the same conf (see `conf.zig`).
+const settings_file = conf.settings_file;
 
 /// What a wallet balance figure is replaced with while `App.hide_balances` is on.
 const balance_mask = "********";

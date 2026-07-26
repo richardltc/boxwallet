@@ -981,6 +981,114 @@ export fn bw_disk_usage(ctx: ?*Ctx, idx: usize, out: ?*BwDiskUsage) c_int {
     return 0;
 }
 
+// ---- window geometry --------------------------------------------------------
+//
+// The window the user arranged, remembered across runs. Stored in BoxWallet's
+// own settings conf under the install root — the same file the TUI keeps
+// `hide_balances` in — through `conf.setValue`, which rewrites one key and
+// preserves every other line. Hence the `gui_` prefix on the keys: the two
+// frontends share the file.
+
+/// The saved window geometry. `x`/`y` are screen coordinates, so signed: a window
+/// on a monitor left of or above the primary one has negative ones.
+const BwWindowGeometry = extern struct {
+    width: u32,
+    height: u32,
+    x: i32,
+    y: i32,
+    maximized: c_int,
+};
+
+const geom_key_width = "gui_window_width";
+const geom_key_height = "gui_window_height";
+const geom_key_x = "gui_window_x";
+const geom_key_y = "gui_window_y";
+const geom_key_maximized = "gui_window_maximized";
+
+/// A window this small is unusable and this large is a corrupt file, not a
+/// monitor. A hand-edited or garbled conf must never produce a window the user
+/// can't see or grab — falling back to Slint's preferred size always leaves them
+/// something workable.
+const geom_min_w = 480;
+const geom_min_h = 360;
+const geom_max_dim = 10000;
+
+fn readGeomInt(comptime T: type, a: std.mem.Allocator, io: std.Io, root: []const u8, key: []const u8) ?T {
+    const found = conf.readValue(a, io, root, conf.settings_file, key) catch return null;
+    const raw = found orelse return null;
+    return std.fmt.parseInt(T, std.mem.trim(u8, raw, " \t\r"), 10) catch null;
+}
+
+/// The saved window geometry, or 0 if there isn't a usable one. Size is
+/// required and validated; **position is optional and independent**, so a conf
+/// carrying only a size still restores that size (position then reads as 0,0,
+/// which the caller applies harmlessly or the compositor ignores).
+export fn bw_window_geometry(ctx: ?*Ctx, out: ?*BwWindowGeometry) c_int {
+    const c = ctx orelse return 0;
+    const o = out orelse return 0;
+
+    var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var threaded: std.Io.Threaded = .init(a, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    const w = readGeomInt(u32, a, io, c.install_root, geom_key_width) orelse return 0;
+    const h = readGeomInt(u32, a, io, c.install_root, geom_key_height) orelse return 0;
+    if (w < geom_min_w or h < geom_min_h or w > geom_max_dim or h > geom_max_dim) return 0;
+
+    o.* = .{
+        .width = w,
+        .height = h,
+        .x = readGeomInt(i32, a, io, c.install_root, geom_key_x) orelse 0,
+        .y = readGeomInt(i32, a, io, c.install_root, geom_key_y) orelse 0,
+        .maximized = if ((readGeomInt(u8, a, io, c.install_root, geom_key_maximized) orelse 0) != 0) 1 else 0,
+    };
+    return 1;
+}
+
+/// Persist the window geometry. Best-effort by design: failing to remember a
+/// window size is not worth reporting to someone who is closing the app, and the
+/// next run just opens at the default.
+///
+/// **A maximized window's size is deliberately not saved.** It reports the whole
+/// screen, so storing it would make "restore down" produce a window the size of
+/// the display — the remembered size would be lost the first time anyone
+/// maximized. Only the flag is written; the last un-maximized size stays.
+export fn bw_save_window_geometry(ctx: ?*Ctx, g: ?*const BwWindowGeometry) void {
+    const c = ctx orelse return;
+    const geom = g orelse return;
+
+    var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var threaded: std.Io.Threaded = .init(a, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    var buf: [16]u8 = undefined;
+    const put = struct {
+        fn set(alloc: std.mem.Allocator, i: std.Io, root: []const u8, key: []const u8, b: []u8, v: i64) void {
+            const text = std.fmt.bufPrint(b, "{d}", .{v}) catch return;
+            conf.setValue(alloc, i, root, conf.settings_file, key, text) catch {};
+        }
+    }.set;
+
+    const maximized = geom.maximized != 0;
+    put(a, io, c.install_root, geom_key_maximized, &buf, if (maximized) 1 else 0);
+    if (!maximized) {
+        if (geom.width >= geom_min_w and geom.height >= geom_min_h and
+            geom.width <= geom_max_dim and geom.height <= geom_max_dim)
+        {
+            put(a, io, c.install_root, geom_key_width, &buf, geom.width);
+            put(a, io, c.install_root, geom_key_height, &buf, geom.height);
+        }
+        put(a, io, c.install_root, geom_key_x, &buf, geom.x);
+        put(a, io, c.install_root, geom_key_y, &buf, geom.y);
+    }
+}
+
 // ---- file browsing (for the GUI's file-picker, backed by the core) ----------
 //
 // A native OS file dialog isn't portable without a heavy dependency, so the GUI
@@ -1117,6 +1225,121 @@ test "writeEntryLine formats a typed line and stops when it can't fit" {
     try std.testing.expectEqualStrings("d abc\n", buf[0..w]);
     // Only 2 bytes free after `w`: a longer line doesn't fit, so `at` is returned.
     try std.testing.expectEqual(w, writeEntryLine(buf[0 .. w + 2], w, 'f', "toolong"));
+}
+
+/// A `Ctx` pointed at a scratch install root, for the geometry tests. Only the
+/// two fields those exports touch are meaningful.
+fn testCtx(root: []const u8) Ctx {
+    return .{ .allocator = std.testing.allocator, .home_dir = root, .install_root = root };
+}
+
+test "a saved window geometry survives the round trip" {
+    var threaded: std.Io.Threaded = .init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    const root = "test-window-geometry";
+    std.Io.Dir.cwd().deleteTree(io, root) catch {};
+    defer std.Io.Dir.cwd().deleteTree(io, root) catch {};
+
+    var ctx = testCtx(root);
+    var out: BwWindowGeometry = undefined;
+
+    // Nothing saved yet: the caller keeps Slint's preferred size.
+    try std.testing.expectEqual(@as(c_int, 0), bw_window_geometry(&ctx, &out));
+
+    bw_save_window_geometry(&ctx, &.{ .width = 1100, .height = 760, .x = 240, .y = -120, .maximized = 0 });
+    try std.testing.expectEqual(@as(c_int, 1), bw_window_geometry(&ctx, &out));
+    try std.testing.expectEqual(@as(u32, 1100), out.width);
+    try std.testing.expectEqual(@as(u32, 760), out.height);
+    try std.testing.expectEqual(@as(i32, 240), out.x);
+    // Negative coordinates are legitimate — a monitor left of the primary one.
+    try std.testing.expectEqual(@as(i32, -120), out.y);
+    try std.testing.expectEqual(@as(c_int, 0), out.maximized);
+}
+
+test "maximizing doesn't overwrite the remembered window size" {
+    var threaded: std.Io.Threaded = .init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    const root = "test-window-geometry-max";
+    std.Io.Dir.cwd().deleteTree(io, root) catch {};
+    defer std.Io.Dir.cwd().deleteTree(io, root) catch {};
+
+    var ctx = testCtx(root);
+    bw_save_window_geometry(&ctx, &.{ .width = 1100, .height = 760, .x = 40, .y = 50, .maximized = 0 });
+
+    // Quitting while maximized reports the screen size. Storing that would make
+    // "restore down" hand back a window the size of the display, losing the size
+    // the user actually chose — so only the flag is written.
+    bw_save_window_geometry(&ctx, &.{ .width = 3840, .height = 2160, .x = 0, .y = 0, .maximized = 1 });
+
+    var out: BwWindowGeometry = undefined;
+    try std.testing.expectEqual(@as(c_int, 1), bw_window_geometry(&ctx, &out));
+    try std.testing.expectEqual(@as(c_int, 1), out.maximized);
+    try std.testing.expectEqual(@as(u32, 1100), out.width);
+    try std.testing.expectEqual(@as(u32, 760), out.height);
+}
+
+test "an unusable stored size is ignored rather than applied" {
+    var threaded: std.Io.Threaded = .init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    const root = "test-window-geometry-junk";
+    std.Io.Dir.cwd().deleteTree(io, root) catch {};
+    defer std.Io.Dir.cwd().deleteTree(io, root) catch {};
+
+    var dir = try std.Io.Dir.cwd().createDirPathOpen(io, root, .{});
+    defer dir.close(io);
+
+    var ctx = testCtx(root);
+    var out: BwWindowGeometry = undefined;
+
+    // A hand-edited or corrupted conf must never produce a window that can't be
+    // seen or grabbed — each of these falls back to the default size.
+    const junk = [_][]const u8{
+        "gui_window_width=0\ngui_window_height=0\n",
+        "gui_window_width=12\ngui_window_height=8\n", // smaller than the minimum
+        "gui_window_width=99999\ngui_window_height=99999\n", // not a monitor
+        "gui_window_width=wide\ngui_window_height=tall\n", // not numbers
+        "gui_window_height=760\n", // width missing entirely
+    };
+    for (junk) |content| {
+        try dir.writeFile(io, .{ .sub_path = conf.settings_file, .data = content });
+        try std.testing.expectEqual(@as(c_int, 0), bw_window_geometry(&ctx, &out));
+    }
+
+    // A size with no position is still worth restoring: position is the optional
+    // half, and it's the half Wayland ignores anyway.
+    try dir.writeFile(io, .{ .sub_path = conf.settings_file, .data = "gui_window_width=900\ngui_window_height=700\n" });
+    try std.testing.expectEqual(@as(c_int, 1), bw_window_geometry(&ctx, &out));
+    try std.testing.expectEqual(@as(u32, 900), out.width);
+    try std.testing.expectEqual(@as(i32, 0), out.x);
+}
+
+test "saving geometry leaves the TUI's settings in the same file alone" {
+    var threaded: std.Io.Threaded = .init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    const root = "test-window-geometry-shared";
+    std.Io.Dir.cwd().deleteTree(io, root) catch {};
+    defer std.Io.Dir.cwd().deleteTree(io, root) catch {};
+
+    var dir = try std.Io.Dir.cwd().createDirPathOpen(io, root, .{});
+    defer dir.close(io);
+    // Both frontends keep their settings in this one conf, so a GUI write must
+    // merge — clobbering it would silently turn the TUI's privacy toggle back off.
+    try dir.writeFile(io, .{ .sub_path = conf.settings_file, .data = "hide_balances=1\n" });
+
+    var ctx = testCtx(root);
+    bw_save_window_geometry(&ctx, &.{ .width = 1024, .height = 640, .x = 0, .y = 0, .maximized = 0 });
+
+    const still = try conf.readValue(std.testing.allocator, io, root, conf.settings_file, "hide_balances");
+    defer if (still) |s| std.testing.allocator.free(s);
+    try std.testing.expectEqualStrings("1", still.?);
 }
 
 test "every sync accelerator on offer carries its trust caution" {
