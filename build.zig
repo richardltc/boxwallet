@@ -247,9 +247,14 @@ fn addGuiReleaseStep(b: *std.Build, optimize: std.builtin.OptimizeMode) void {
     const GuiTarget = struct { query: std.Target.Query, name: []const u8 };
     const gui_targets = [_]GuiTarget{
         // glibc, not musl: the Slint runtime is a glibc binary, so the exe beside
-        // it must be too. 2.35 matches the oldest glibc upstream's runtime needs.
+        // it must be too. Each glibc floor is upstream's, read off its `.so` with
+        // `readelf -V | grep GLIBC_` — Zig links against its own versioned stubs,
+        // so ours never asks for anything newer than the runtime already does.
+        // Pinning higher would exclude machines that can run the bundle fine;
+        // pinning lower would buy nothing, since the loader still has to satisfy
+        // the `.so`. Re-check both when bumping Slint.
         .{ .query = .{ .cpu_arch = .x86_64, .os_tag = .linux, .abi = .gnu, .glibc_version = .{ .major = 2, .minor = 35, .patch = 0 } }, .name = "boxwallet-gui-linux-x86_64" },
-        .{ .query = .{ .cpu_arch = .aarch64, .os_tag = .linux, .abi = .gnu, .glibc_version = .{ .major = 2, .minor = 35, .patch = 0 } }, .name = "boxwallet-gui-linux-aarch64" },
+        .{ .query = .{ .cpu_arch = .aarch64, .os_tag = .linux, .abi = .gnu, .glibc_version = .{ .major = 2, .minor = 30, .patch = 0 } }, .name = "boxwallet-gui-linux-aarch64" },
     };
 
     inline for (gui_targets) |t| {
