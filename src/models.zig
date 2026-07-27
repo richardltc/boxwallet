@@ -727,3 +727,48 @@ pub const BlockchainState = struct {
         allocator.free(self.chain);
     }
 };
+
+/// Derived sync state: caught up, and how far along.
+pub const SyncStatus = struct { synced: bool, progress: f64 };
+
+/// "Synced" and a 0..1 progress fraction from the local height against the
+/// peer-estimated network tip (`rpc.networkHeight`).
+///
+/// For daemons that can't answer the question themselves — the ones reporting no
+/// `verificationprogress`, and no header chain that runs ahead of blocks, so
+/// `blocks >= headers` is trivially true and says nothing. Divi and SpiderByte
+/// are both in that class; the height against the tip peers report is the only
+/// honest measure left.
+///
+/// **No peers means not synced, not finished.** With the tip unknown
+/// (`network_height <= 0`) this reads as 0 progress rather than 100%: a frontend
+/// claiming a chain is caught up when it has no idea is the failure worth
+/// avoiding, and a daemon with no peers genuinely isn't syncing.
+pub fn syncFromNetworkHeight(blocks: i64, network_height: i64) SyncStatus {
+    if (network_height <= 0) return .{ .synced = false, .progress = 0 };
+    const p = @as(f64, @floatFromInt(blocks)) / @as(f64, @floatFromInt(network_height));
+    return .{ .synced = blocks >= network_height, .progress = std.math.clamp(p, 0, 1) };
+}
+
+test "sync state derives from the local height against the peer tip" {
+    // Caught up.
+    const done = syncFromNetworkHeight(1_000_000, 1_000_000);
+    try std.testing.expect(done.synced);
+    try std.testing.expectApproxEqAbs(@as(f64, 1.0), done.progress, 0.0001);
+
+    // Halfway.
+    const mid = syncFromNetworkHeight(500_000, 1_000_000);
+    try std.testing.expect(!mid.synced);
+    try std.testing.expectApproxEqAbs(@as(f64, 0.5), mid.progress, 0.0001);
+
+    // Past the tip (a block arrived since the estimate) still reads as synced,
+    // and progress never exceeds 1.
+    const ahead = syncFromNetworkHeight(1_000_001, 1_000_000);
+    try std.testing.expect(ahead.synced);
+    try std.testing.expectApproxEqAbs(@as(f64, 1.0), ahead.progress, 0.0001);
+
+    // No peers → unknown, which must never render as finished.
+    const blind = syncFromNetworkHeight(500_000, 0);
+    try std.testing.expect(!blind.synced);
+    try std.testing.expectApproxEqAbs(@as(f64, 0), blind.progress, 0.0001);
+}
