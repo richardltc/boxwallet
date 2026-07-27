@@ -412,28 +412,33 @@ int main()
     }
 
     // The window the user arranged last time. Nothing stored (or nothing usable)
-    // leaves Slint's preferred size, so a first run — or a corrupt conf — still
+    // leaves the defaults in app.slint, so a first run — or a corrupt conf — still
     // opens sensibly.
     //
-    // Applied *after* show(), not before: the native window doesn't exist until
-    // then, and creating it sizes it from the component's preferred-width/height,
-    // discarding anything set beforehand. Measured — a size stored ahead of
-    // `run()` was silently replaced by the 700px default every launch.
+    // The size goes in as the component's *preferred* size (AppWindow.initial-*),
+    // not through Window::set_size, and it must be set before show(). Measured:
+    // set_size is honoured for a moment and then thrown away, because showing the
+    // window resets it to whatever the preferred size says; and after the window
+    // is up, this compositor (COSMIC/Wayland) ignores the app resizing itself
+    // altogether. The preferred size is the one route that holds, everywhere.
     //
     // The size is applied even when restoring maximized, so "restore down" gives
     // back the size they chose rather than the default. Position is applied for
     // the platforms that honour it; on Wayland the compositor places windows and
     // ignores it, which is why it's set-and-forget rather than checked.
+    //
+    // A window manager is free to cap that preferred size — COSMIC opens a new
+    // window at no more than about two thirds of the screen — so `correct_size`
+    // below asks once more, later, for anything that didn't fit.
     BwWindowGeometry geom;
     const bool have_geom = bw_window_geometry(ctx, &geom) == 1;
-    auto restore_geometry = [&ui, &geom, have_geom]() {
-        if (!have_geom)
-            return;
-        ui->window().set_size(slint::PhysicalSize({geom.width, geom.height}));
+    if (have_geom) {
+        ui->set_initial_width(static_cast<float>(geom.width));
+        ui->set_initial_height(static_cast<float>(geom.height));
         ui->window().set_position(slint::PhysicalPosition({geom.x, geom.y}));
         if (geom.maximized)
             ui->window().set_maximized(true);
-    };
+    }
 
     // Build the nav list: every registered coin, sorted alphabetically by name
     // (Home is pinned separately in the UI). The registry index rides along so
@@ -1006,10 +1011,17 @@ int main()
         // Remember the window as the user left it. First, while the window still
         // exists and we're on the UI thread — every slint::Window accessor
         // asserts that, and after this callback there's nothing left to measure.
+        //
+        // Stored in logical pixels, because that's what it is restored as (the
+        // preferred size) and the scale factor isn't known yet at that point.
         const auto size = ui->window().size();
         const auto pos = ui->window().position();
+        const float sf = ui->window().scale_factor() > 0 ? ui->window().scale_factor() : 1.0f;
         const BwWindowGeometry geom = {
-            size.width, size.height, pos.x, pos.y,
+            static_cast<uint32_t>(static_cast<float>(size.width) / sf),
+            static_cast<uint32_t>(static_cast<float>(size.height) / sf),
+            pos.x,
+            pos.y,
             ui->window().is_maximized() ? 1 : 0,
         };
         bw_save_window_geometry(ctx, &geom);
@@ -1025,12 +1037,39 @@ int main()
         return slint::CloseRequestResponse::HideWindow;
     });
 
-    // `run()` decomposed (it is exactly show + loop + hide) so the saved geometry
-    // can be applied in between — see `restore_geometry`.
-    ui->show();
-    restore_geometry();
-    slint::run_event_loop();
-    ui->hide();
+    // Second (and last) attempt at the remembered size, for a window the window
+    // manager opened smaller than asked for.
+    //
+    // The preferred size set before show() is the only sizing a Wayland compositor
+    // is obliged to honour, and it may cap it: COSMIC will not open a window taller
+    // than about two thirds of the screen, so a taller remembered window comes back
+    // short. X11, Windows and macOS all let an application resize itself once the
+    // window is up, so ask them for the rest.
+    //
+    // Delayed rather than immediate, because showing a window settles it onto its
+    // preferred size over the first few frames (~100ms here) and a resize landing
+    // before that is simply overwritten. One shot, and the result isn't checked: on
+    // a compositor that refuses application-driven resizes — COSMIC ignores them
+    // outright, having flagged the surface as tiled — this is a no-op, and there is
+    // nothing to be done about that from in here.
+    slint::Timer correct_size;
+    if (have_geom && !geom.maximized) {
+        correct_size.start(
+            slint::TimerMode::SingleShot, std::chrono::milliseconds(300), [&ui, &geom]() {
+                const float sf = ui->window().scale_factor() > 0 ? ui->window().scale_factor() : 1.0f;
+                const auto now = ui->window().size();
+                const float w = static_cast<float>(now.width) / sf;
+                const float h = static_cast<float>(now.height) / sf;
+                // Only ever grow back towards what was stored. A window the user's
+                // screen genuinely can't fit stays capped, and asking again costs
+                // one refused request.
+                if (w + 1 < static_cast<float>(geom.width) || h + 1 < static_cast<float>(geom.height))
+                    ui->window().set_size(slint::LogicalSize({static_cast<float>(geom.width),
+                                                              static_cast<float>(geom.height)}));
+            });
+    }
+
+    ui->run();
 
     // --- shutdown ---------------------------------------------------------
     //

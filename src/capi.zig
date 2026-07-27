@@ -989,8 +989,11 @@ export fn bw_disk_usage(ctx: ?*Ctx, idx: usize, out: ?*BwDiskUsage) c_int {
 // preserves every other line. Hence the `gui_` prefix on the keys: the two
 // frontends share the file.
 
-/// The saved window geometry. `x`/`y` are screen coordinates, so signed: a window
-/// on a monitor left of or above the primary one has negative ones.
+/// The saved window geometry. `width`/`height` are **logical** pixels, so the
+/// window comes back the same apparent size on a screen with a different scale
+/// factor — the frontend converts, since only it knows the scale factor. `x`/`y`
+/// are screen coordinates, so signed: a window on a monitor left of or above the
+/// primary one has negative ones.
 const BwWindowGeometry = extern struct {
     width: u32,
     height: u32,
@@ -1007,8 +1010,9 @@ const geom_key_maximized = "gui_window_maximized";
 
 /// A window this small is unusable and this large is a corrupt file, not a
 /// monitor. A hand-edited or garbled conf must never produce a window the user
-/// can't see or grab — falling back to Slint's preferred size always leaves them
-/// something workable.
+/// can't see or grab — falling back to the frontend's default size always leaves
+/// them something workable. (A size larger than the screen is not a problem to
+/// guard against here: the window manager caps it to what the display can show.)
 const geom_min_w = 480;
 const geom_min_h = 360;
 const geom_max_dim = 10000;

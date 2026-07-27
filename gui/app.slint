@@ -324,8 +324,18 @@ component Placeholder inherits VerticalBox {
 export component AppWindow inherits Window {
     title: "BoxWallet";
     icon: @image-url("coin-logos/BoxWallet.png");
-    preferred-width: 700px;
-    preferred-height: 580px;
+    // The size the window opens at. Driven from C++ (the geometry remembered in
+    // BoxWallet's conf — see bw_window_geometry), falling back to these defaults
+    // on a first run. It has to reach Slint as the *preferred* size rather than
+    // through Window::set_size: showing the window always settles it on its
+    // preferred size, so a set_size is undone moments later, and once the window
+    // is up a compositor is free to ignore an app resizing itself (COSMIC does).
+    // The preferred size is the one thing that is honoured on every platform.
+    // Logical pixels, so the window is the same apparent size on a HiDPI screen.
+    in-out property <length> initial-width: 700px;
+    in-out property <length> initial-height: 580px;
+    preferred-width: root.initial-width;
+    preferred-height: root.initial-height;
     background: #1e1e1e;
 
     // Navigation. -1 = Home, otherwise the selected coin's registry index.
