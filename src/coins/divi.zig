@@ -84,14 +84,18 @@ pub const Divi = struct {
 
     /// Live `getblockchaininfo`, normalized for a frontend.
     ///
-    /// Unlike Nexa's daemon, Divi's `getblockchaininfo` does **not** report
-    /// `verificationprogress` (the field is absent, so it parses as 0). Go's
-    /// `BlockchainIsSynced` reads the masternode `mnsync status` instead, with a
-    /// commented-out progress fallback. Rather than take that single extra-field
-    /// path, we derive "synced" from the heights the call does return: the chain
-    /// is caught up once validated `blocks` have reached the header tip
-    /// (`blocks >= headers`, with at least one header seen). The header-vs-block
-    /// counts also drive the sync progress bars.
+    /// Divi's reply is sparse — verified against a live divid, it carries only
+    /// `chain`, `blocks`, `headers`, `bestblockhash`, `difficulty` and
+    /// `chainwork`. **No `verificationprogress`, no tip timestamp, and `headers`
+    /// is merely a copy of `blocks`** (this daemon has no headers-first sync, so
+    /// there is no header chain running ahead to compare against).
+    ///
+    /// That last point is why sync state can't come from the reply: `blocks >=
+    /// headers` is trivially true, so deriving "synced" from it reported a
+    /// caught-up chain from the first poll — pegging both frontends' gauges at
+    /// 100% while the node was still hundreds of blocks behind. The honest
+    /// measure left is the local height against the tip the *peers* report, which
+    /// is what SpiderByte's daemon (same two gaps) already uses.
     pub fn blockchainState(
         allocator: std.mem.Allocator,
         auth: models.CoinAuth,
@@ -100,19 +104,47 @@ pub const Divi = struct {
         defer parsed.deinit();
 
         const r = parsed.value.result orelse return error.EmptyRpcResult;
+
+        // Network tip from peers. A getpeerinfo hiccup leaves it 0 (unknown),
+        // which `syncFromNetworkHeight` deliberately reads as "not synced" rather
+        // than risk claiming a chain is caught up when we can't tell.
+        const network = rpc.networkHeight(allocator, auth) catch 0;
+
+        // Tip timestamp for the "behind by …" wall-clock readout. This daemon's
+        // `getblockchaininfo` carries none, so it comes from the tip block itself
+        // — two extra calls, made only while actually behind.
+        const behind = !models.syncFromNetworkHeight(r.blocks, network).synced;
+        const tip_time = if (behind) rpc.tipBlockTime(allocator, auth, r.blocks) else 0;
+
+        return mapBlockchainState(allocator, r, network, tip_time);
+    }
+
+    /// The pure half of `blockchainState`: a parsed reply plus the peer-estimated
+    /// tip, mapped to the normalized model. Split out so the mapping is unit-
+    /// testable without a daemon — the RPC calls above can't be.
+    fn mapBlockchainState(
+        allocator: std.mem.Allocator,
+        r: models.DiviBlockchainInfo,
+        network: i64,
+        tip_time: i64,
+    ) !models.BlockchainState {
+        const st = models.syncFromNetworkHeight(r.blocks, network);
         return .{
             .chain = try allocator.dupe(u8, r.chain),
             .blocks = r.blocks,
-            .headers = r.headers,
-            .verification_progress = r.verificationprogress,
-            .synced = r.headers > 0 and r.blocks >= r.headers,
-            // Network tip from peers, so the frontend's Headers bar can fill
-            // toward it. A getpeerinfo hiccup just leaves it 0 (unknown).
-            .network_height = rpc.networkHeight(allocator, auth) catch 0,
-            // Tip block timestamp, so the frontend can show how far behind in
-            // wall-clock time the chain is while validating. Prefer the exact
-            // tip `time`; fall back to `mediantime` when the daemon omits it.
-            .tip_time = if (r.time > 0) r.time else r.mediantime,
+            // No header-download phase on this daemon, so there's no header
+            // progress to show: report the network tip and the Headers bar reads
+            // complete, leaving the *Blocks* bar to carry the real progress. The
+            // `max` guard keeps headers from ever falling below blocks, which
+            // would peg the Blocks bar at a false 100%.
+            .headers = @max(network, r.blocks),
+            // The daemon reports no progress figure of its own, so the height
+            // ratio stands in for it — without this the frontends' percentage
+            // reads a flat 0% for the whole sync.
+            .verification_progress = st.progress,
+            .synced = st.synced,
+            .network_height = network,
+            .tip_time = tip_time,
         };
     }
 
@@ -691,12 +723,12 @@ pub const Divi = struct {
     }
 };
 
-test "maps getblockchaininfo into BlockchainState, syncing on blocks vs headers" {
+test "sync state comes from the peer tip, not the daemon's mirrored headers" {
     const allocator = std.testing.allocator;
 
-    // Canned reply mirroring a live divid getblockchaininfo — note there is no
-    // `verificationprogress` field (Divi's daemon omits it). blocks == headers
-    // here, so the chain reads as synced.
+    // A live divid reply, verbatim in shape: no verificationprogress, no tip
+    // timestamp, and headers identical to blocks — this daemon has no
+    // headers-first sync, so the two always match whatever the network is doing.
     const raw =
         \\{"result":{"chain":"main","blocks":4071165,"headers":4071165,
         \\"bestblockhash":"322d04e1197d59ed4f47583f4accda109c4f7e32b38871c30b812d571355f171",
@@ -712,30 +744,49 @@ test "maps getblockchaininfo into BlockchainState, syncing on blocks vs headers"
         .{ .ignore_unknown_fields = true },
     );
     defer parsed.deinit();
-
     const r = parsed.value.result.?;
-    const state: models.BlockchainState = .{
-        .chain = try allocator.dupe(u8, r.chain),
-        .blocks = r.blocks,
-        .headers = r.headers,
-        .verification_progress = r.verificationprogress,
-        .synced = r.headers > 0 and r.blocks >= r.headers,
-    };
-    defer state.deinit(allocator);
 
-    try std.testing.expectEqualStrings("main", state.chain);
-    try std.testing.expectEqual(@as(i64, 4071165), state.blocks);
-    try std.testing.expectEqual(@as(i64, 4071165), state.headers);
-    // No verificationprogress in the reply → parses as 0, but synced is derived
-    // from the heights (blocks have caught up to the header tip).
-    try std.testing.expectEqual(@as(f64, 0), state.verification_progress);
-    try std.testing.expect(state.synced);
-}
+    // The reply parses as it always did: blocks == headers, no progress figure.
+    try std.testing.expectEqual(@as(i64, 4071165), r.blocks);
+    try std.testing.expectEqual(r.blocks, r.headers);
+    try std.testing.expectEqual(@as(f64, 0), r.verificationprogress);
 
-test "blocks behind the header tip read as not synced" {
-    // Mid-sync: headers race ahead of validated blocks.
-    const r: models.DiviBlockchainInfo = .{ .blocks = 2_000_000, .headers = 4_071_165 };
-    try std.testing.expect(!(r.headers > 0 and r.blocks >= r.headers));
+    // Behind the tip the peers report. The old `blocks >= headers` test called
+    // this synced — it is trivially true on every reply this daemon sends — which
+    // is exactly the bug: gauges pegged at 100% through the whole sync.
+    {
+        const state = try Divi.mapBlockchainState(allocator, r, 4_141_990, 1785101525);
+        defer state.deinit(allocator);
+        try std.testing.expect(!state.synced);
+        try std.testing.expect(state.verification_progress > 0.98 and state.verification_progress < 1.0);
+        // Headers read as the tip, so that bar shows complete (nothing to
+        // pre-download) and the Blocks bar carries the real progress.
+        try std.testing.expectEqual(@as(i64, 4_141_990), state.headers);
+        try std.testing.expectEqual(@as(i64, 4071165), state.blocks);
+        try std.testing.expectEqual(@as(i64, 4_141_990), state.network_height);
+        // A tip timestamp is carried through for the "behind by …" readout.
+        try std.testing.expectEqual(@as(i64, 1785101525), state.tip_time);
+    }
+
+    // Caught up to the tip.
+    {
+        const state = try Divi.mapBlockchainState(allocator, r, r.blocks, 0);
+        defer state.deinit(allocator);
+        try std.testing.expect(state.synced);
+        try std.testing.expectApproxEqAbs(@as(f64, 1), state.verification_progress, 0.0001);
+    }
+
+    // No peers: the tip is unknown, so it must read as syncing rather than claim
+    // a chain we can't measure is finished. Headers must not sink below blocks
+    // either — that would peg the Blocks bar at a false 100%, the very failure
+    // the old logic produced.
+    {
+        const state = try Divi.mapBlockchainState(allocator, r, 0, 0);
+        defer state.deinit(allocator);
+        try std.testing.expect(!state.synced);
+        try std.testing.expectEqual(@as(f64, 0), state.verification_progress);
+        try std.testing.expectEqual(r.blocks, state.headers);
+    }
 }
 
 test "maps getinfo into normalized DaemonInfo, decoding staking status" {

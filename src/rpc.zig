@@ -239,6 +239,62 @@ pub fn networkHeight(
     return max;
 }
 
+/// Just the field `tipBlockTime` needs out of a `getblock` reply.
+const BlockTime = struct { time: i64 = 0 };
+
+/// The timestamp (unix seconds) of the block at `height`, in two standard calls:
+/// `getblockhash <height>` → `getblock <hash>` → `time`.
+///
+/// For the bitcoin-derived daemons whose `getblockchaininfo` carries no tip
+/// timestamp of its own (Divi, and the NovaCoin-era SpiderByte) — it's what lets
+/// a frontend say *how far behind in wall-clock time* a syncing chain is, which
+/// a height alone can't convey.
+///
+/// Best-effort: any hiccup — the method missing, no such block, a transport
+/// error — returns 0, which frontends read as "unknown" and simply omit. Two
+/// extra round trips, so callers should ask only while a chain is actually
+/// behind, never once it's caught up.
+pub fn tipBlockTime(allocator: std.mem.Allocator, auth: models.CoinAuth, height: i64) i64 {
+    if (height <= 0) return 0;
+
+    const hp = std.fmt.allocPrint(allocator, "[{d}]", .{height}) catch return 0;
+    defer allocator.free(hp);
+    var hash_parsed = callParsedParams([]const u8, allocator, auth, "getblockhash", hp) catch return 0;
+    defer hash_parsed.deinit();
+    const hash = hash_parsed.value.result orelse return 0;
+
+    const hq = jsonQuote(allocator, hash) catch return 0;
+    defer allocator.free(hq);
+    const bp = std.fmt.allocPrint(allocator, "[{s}]", .{hq}) catch return 0;
+    defer allocator.free(bp);
+    var blk_parsed = callParsedParams(BlockTime, allocator, auth, "getblock", bp) catch return 0;
+    defer blk_parsed.deinit();
+    const b = blk_parsed.value.result orelse return 0;
+    return b.time;
+}
+
+test "parses the tip block's time from a getblock reply" {
+    const allocator = std.testing.allocator;
+
+    // Canned getblock reply — proves the tip-time parse (feeding the "behind by …"
+    // sync readout) without a running daemon. The many other verbose getblock
+    // fields are dropped via ignore_unknown_fields.
+    const raw =
+        \\{"result":{"hash":"00000000abc","height":1234567,"time":1893456000,
+        \\"nonce":42,"bits":"1d00ffff","difficulty":0.0008},"error":null,"id":"boxwallet"}
+    ;
+
+    var parsed = try std.json.parseFromSlice(
+        models.JsonRpcResponse(BlockTime),
+        allocator,
+        raw,
+        .{ .ignore_unknown_fields = true, .allocate = .alloc_always },
+    );
+    defer parsed.deinit();
+
+    try std.testing.expectEqual(@as(i64, 1893456000), parsed.value.result.?.time);
+}
+
 /// Ensure a wallet named `name` is loaded on a Bitcoin-Core 0.21+ daemon,
 /// creating it on first run.
 ///
