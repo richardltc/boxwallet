@@ -162,6 +162,13 @@ int     bw_disk_usage(bw_ctx *ctx, size_t idx, BwDiskUsage *out);
  * too small to grab or larger than any screen. Position is optional: a conf with
  * only a size still returns 1, with x/y 0.
  *
+ * The size is in LOGICAL pixels, so it means the same apparent size on a screen
+ * with a different scale factor. Divide by the scale factor before saving; apply
+ * it as the window's *preferred* size (not a resize) before showing the window.
+ * A toolkit settles a window on its preferred size when it maps it, and a Wayland
+ * compositor may refuse to let an app resize itself afterwards, so a resize is
+ * the one way that does not survive.
+ *
  * Save on the way out, from the UI thread (every slint::Window accessor asserts
  * it). A maximized window's size is deliberately not stored — it reports the
  * whole screen, which would become the restored "normal" size — so pass
