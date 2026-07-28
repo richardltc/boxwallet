@@ -1535,6 +1535,8 @@ export component AppWindow inherits Window {
 
         Rectangle {
             width: 400px;
+            // Hug the content: with no height a panel fills the whole overlay.
+            height: send-body.preferred-height;
             x: (parent.width - self.width) / 2;
             y: (parent.height - self.height) / 2;
             background: #202020;
@@ -1542,7 +1544,7 @@ export component AppWindow inherits Window {
             border-width: 1px;
             border-color: root.coin-color;
 
-            VerticalLayout {
+            send-body := VerticalLayout {
                 padding: 16px;
                 spacing: 10px;
                 alignment: start;
@@ -1606,6 +1608,7 @@ export component AppWindow inherits Window {
 
         Rectangle {
             width: 320px;
+            height: stop-body.preferred-height;
             x: (parent.width - self.width) / 2;
             y: (parent.height - self.height) / 2;
             background: #202020;
@@ -1613,7 +1616,7 @@ export component AppWindow inherits Window {
             border-width: 1px;
             border-color: root.coin-color;
 
-            VerticalLayout {
+            stop-body := VerticalLayout {
                 padding: 16px;
                 spacing: 12px;
                 alignment: start;
@@ -1659,6 +1662,9 @@ export component AppWindow inherits Window {
 
         Rectangle {
             width: 400px;
+            // Hug the content, so each stage is only as tall as it needs to be —
+            // the menu is three buttons, not a full-height slab.
+            height: wallet-body.preferred-height;
             x: (parent.width - self.width) / 2;
             y: (parent.height - self.height) / 2;
             background: #202020;
@@ -1666,7 +1672,7 @@ export component AppWindow inherits Window {
             border-width: 1px;
             border-color: root.coin-color;
 
-            VerticalLayout {
+            wallet-body := VerticalLayout {
                 padding: 16px;
                 spacing: 10px;
                 alignment: start;
