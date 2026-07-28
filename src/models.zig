@@ -336,7 +336,12 @@ pub const RddWalletInfo = struct {
 /// as long as the setup modal that displays it. 256 bytes comfortably holds a
 /// 25-word phrase (~200 chars).
 pub const Seed = struct {
-    buf: [256]u8 = undefined,
+    /// Capacity of the inline buffer, exposed so callers that must size their own
+    /// working copy of a seed (the C ABI's bounded, wiped staging buffer) match it
+    /// rather than guessing.
+    pub const buf_len = 256;
+
+    buf: [buf_len]u8 = undefined,
     len: usize = 0,
 
     /// Build a `Seed` from a phrase, truncating at the buffer cap (a real seed

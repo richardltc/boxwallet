@@ -25,6 +25,8 @@ const install = @import("install.zig");
 const updater = @import("update.zig");
 const proc = @import("proc.zig");
 const warmup = @import("warmup.zig");
+const mining = @import("mining.zig");
+const extwallet = @import("extwallet.zig");
 
 // Every coin backend, so the GUI can list them all in the nav (like the TUI).
 const nexa = @import("coins/nexa.zig");
@@ -77,10 +79,43 @@ const Ctx = struct {
     /// already on disk.
     accel_pause: std.atomic.Value(bool) = .init(false),
 
+    /// One wallet-rpc session per coin, keyed by registry index — same reasoning
+    /// as `daemon_child`: a shared slot would let one coin's teardown kill
+    /// another coin's wallet service.
+    wallet: [coin_count]extwallet.Session = @splat(.{}),
+    /// Whether each coin's managed wallet has been opened this session. The GUI's
+    /// counterpart to the TUI's `Activity.ext_wallet_open`; atomic because the
+    /// poll thread reads it while an action worker writes it.
+    wallet_open: [coin_count]std.atomic.Value(u8) = @splat(.init(0)),
+    /// Serialises every wallet-touching export. Mutating ops (create/restore/
+    /// open/teardown) take it **blocking**; polled reads `tryLock` and report
+    /// busy instead, so a multi-minute restore can never stall the 2s status
+    /// pump behind it.
+    wallet_mtx: std.Io.Mutex = .init,
+
+    /// A freshly created wallet's mnemonic, waiting to be taken exactly once by
+    /// `bw_ext_wallet_seed_take`. Bounded and inline (`models.Seed` is a 256-byte
+    /// buffer, never heap) so it can be wiped in place; `seed_coin` is -1 when
+    /// nothing is pending. Wiped on take, on discard, and by `bw_deinit`.
+    seed: models.Seed = .{},
+    seed_coin: isize = -1,
+
+    /// The bare `@errorName` of the last failure, alongside the friendly text in
+    /// `err_buf` — so the caller can branch on it (keep a wrong password on the
+    /// password step) without parsing a sentence.
+    err_code_buf: [64]u8 = undefined,
+    err_code_len: usize = 0,
+
     fn setError(self: *Ctx, msg: []const u8) void {
         const n = @min(msg.len, self.err_buf.len);
         @memcpy(self.err_buf[0..n], msg[0..n]);
         self.err_len = n;
+    }
+
+    fn setErrorCode(self: *Ctx, name: []const u8) void {
+        const n = @min(name.len, self.err_code_buf.len);
+        @memcpy(self.err_code_buf[0..n], name[0..n]);
+        self.err_code_len = n;
     }
 };
 
@@ -198,10 +233,28 @@ export fn bw_init(home_dir: ?[*:0]const u8) ?*Ctx {
 
 export fn bw_deinit(ctx: ?*Ctx) void {
     const c = ctx orelse return;
+    // Every wallet service we spawned dies with us. Doing this here rather than
+    // in a window-close handler means it happens on *every* exit path — without
+    // it a `nerva-wallet-rpc` outlives the closed window still holding the
+    // user's wallet files. The caller has already drained its workers, so no op
+    // is mid-flight on a session being torn down.
+    for (&c.wallet) |*sess| extwallet.kill(sess);
+    // A mnemonic the user never got round to taking must not outlive the context.
+    @memset(std.mem.asBytes(&c.seed), 0);
+    c.seed_coin = -1;
+
     const a = c.allocator;
     a.free(c.install_root);
     a.free(c.home_dir);
     a.destroy(c);
+}
+
+/// The bare error name behind the last failure (`bw_last_error` has the sentence
+/// for the user; this is for the caller to branch on).
+export fn bw_last_error_code(ctx: ?*Ctx, buf: ?[*]u8, cap: usize) usize {
+    const c = ctx orelse return 0;
+    const b = buf orelse return 0;
+    return copyOut(b[0..cap], c.err_code_buf[0..c.err_code_len]);
 }
 
 /// Length of the last error recorded on `ctx`, copied into the caller buffer.
@@ -258,6 +311,71 @@ export fn bw_coin_supports_mining(idx: usize) c_int {
 export fn bw_coin_supports_stablecoin(idx: usize) c_int {
     const c = coinByIndex(idx) orelse return 0;
     return if (c.supportsStablecoin()) 1 else 0;
+}
+
+// ---- external wallet: what this coin's wallet can do ------------------------
+
+/// Bits of `bw_coin_ext_wallet`. Kept in one bitfield rather than six calls so
+/// the C++ side reads a coin's whole wallet shape in a single hop, and so a coin
+/// added later can't be half-described.
+pub const bw_ew_has_process: c_int = 1 << 0; // spawns its own wallet-rpc process
+pub const bw_ew_seed_restore: c_int = 1 << 1; // restore from mnemonic words
+pub const bw_ew_file_restore: c_int = 1 << 2; // import an existing wallet file
+pub const bw_ew_replace: c_int = 1 << 3; // in-app "replace wallet" (destructive)
+pub const bw_ew_explicit_lock: c_int = 1 << 4; // an in-daemon wallet needing a Lock action
+pub const bw_ew_launch_with_pw: c_int = 1 << 5; // wallet process is launched per-open, with the password
+
+/// 0 for a coin with no external wallet at all; otherwise the `bw_ew_*` bits.
+export fn bw_coin_ext_wallet(idx: usize) c_int {
+    const coin = coinByIndex(idx) orelse return 0;
+    const ew = coin.externalWallet() orelse return 0;
+    var flags: c_int = 0;
+    if (coin.hasExternalWalletProcess()) flags |= bw_ew_has_process;
+    if (coin.supportsSeedRestore()) flags |= bw_ew_seed_restore;
+    if (ew.restore_file != null) flags |= bw_ew_file_restore;
+    if (coin.supportsWalletReplace()) flags |= bw_ew_replace;
+    if (ew.lock != null) flags |= bw_ew_explicit_lock;
+    if (coin.walletLaunchesWithPassword()) flags |= bw_ew_launch_with_pw;
+    return flags;
+}
+
+/// The word counts this wallet's restore seed may have, written into `out` (up
+/// to `cap`), returning how many were written. The first is the canonical one to
+/// name in the prompt.
+export fn bw_coin_seed_word_counts(idx: usize, out: ?*u32, cap: usize) usize {
+    const coin = coinByIndex(idx) orelse return 0;
+    const o = out orelse return 0;
+    const counts = coin.seedWordCounts();
+    const n = @min(counts.len, cap);
+    const dst = @as([*]u32, @ptrCast(o))[0..n];
+    for (dst, counts[0..n]) |*d, c| d.* = @intCast(c);
+    return n;
+}
+
+export fn bw_coin_supports_balance(idx: usize) c_int {
+    const c = coinByIndex(idx) orelse return 0;
+    return if (c.supportsBalance()) 1 else 0;
+}
+
+export fn bw_coin_supports_transactions(idx: usize) c_int {
+    const c = coinByIndex(idx) orelse return 0;
+    return if (c.supportsTransactions()) 1 else 0;
+}
+
+export fn bw_coin_supports_receive_address(idx: usize) c_int {
+    const c = coinByIndex(idx) orelse return 0;
+    return if (c.supportsReceiveAddress()) 1 else 0;
+}
+
+export fn bw_coin_supports_send(idx: usize) c_int {
+    const c = coinByIndex(idx) orelse return 0;
+    return if (c.supportsSend()) 1 else 0;
+}
+
+/// Decimal places this coin's amounts are shown to.
+export fn bw_coin_balance_decimals(idx: usize) u8 {
+    const c = coinByIndex(idx) orelse return 8;
+    return c.balanceDecimals();
 }
 
 // ---- installed / data dir (need ctx for install root & home) ----------------
@@ -920,6 +1038,662 @@ export fn bw_wallet_security(ctx: ?*Ctx, idx: usize) c_int {
     return @intCast(@intFromEnum(sec));
 }
 
+// ---- external wallet: service lifecycle + state -----------------------------
+
+/// `bw_ext_wallet_state` values — the whole four-way display state machine, so
+/// the C++ side never re-derives it from a handful of booleans.
+pub const bw_wallet_none: c_int = 0; // nothing on disk yet
+pub const bw_wallet_locked: c_int = 1; // exists, not opened in this session
+pub const bw_wallet_open: c_int = 2; // opened here
+pub const bw_wallet_rescan: c_int = 3; // opened, and still scanning the chain
+
+/// Whether the coin's managed wallet already exists on disk. A cheap stat, no
+/// running process needed — safe on the UI thread.
+export fn bw_ext_wallet_exists(ctx: ?*Ctx, idx: usize) c_int {
+    const c = ctx orelse return 0;
+    const coin = coinByIndex(idx) orelse return 0;
+    const ew = coin.externalWallet() orelse return 0;
+
+    var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+    defer arena.deinit();
+    return if (ew.exists(arena.allocator(), c.home_dir)) 1 else 0;
+}
+
+/// Where this coin's wallet stands right now, as a `bw_wallet_*` value. Cheap
+/// (a stat plus two atomics) — safe on the UI thread. The rescanning tier is
+/// reported by `bw_ext_wallet_rescan`, which does the RPC; this answers the
+/// three states that need no daemon.
+export fn bw_ext_wallet_state(ctx: ?*Ctx, idx: usize) c_int {
+    const c = ctx orelse return bw_wallet_none;
+    if (idx >= coin_count) return bw_wallet_none;
+    if (c.wallet_open[idx].load(.monotonic) != 0) return bw_wallet_open;
+    return if (bw_ext_wallet_exists(ctx, idx) != 0) bw_wallet_locked else bw_wallet_none;
+}
+
+/// Bring the coin's wallet service up alongside its running daemon. Mirrors the
+/// TUI's per-tick call: idempotent, and cheap once running or once an attempt
+/// has failed. Spawns a process — worker thread only.
+///
+/// Returns 1 running, 0 nothing to do (not an external-wallet coin, or one whose
+/// service is launched per-open with the password), `bw_busy` when a wallet op
+/// holds the lock, -1 failed (`bw_last_error` has why).
+///
+/// Contended is a **skip, not a wait**: this runs on the caller's status poll,
+/// and blocking here would freeze the whole pane behind a restore that can run
+/// for minutes. Skipping is safe because it's idempotent and called again every
+/// tick — and while a wallet op is in flight the service is up by definition.
+export fn bw_ext_wallet_service_ensure(ctx: ?*Ctx, idx: usize) c_int {
+    const c = ctx orelse return -1;
+    const coin = coinByIndex(idx) orelse return -1;
+    if (idx >= coin_count) return -1;
+
+    if (!c.wallet_mtx.tryLock()) return bw_busy;
+
+    var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+    defer arena.deinit();
+    var threaded: std.Io.Threaded = .init(arena.allocator(), .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    defer c.wallet_mtx.unlock(io);
+
+    // The wallet service must inherit our environment (esp. `$HOME`), exactly as
+    // the daemon spawn does; a null map would hand it an empty one.
+    var env_map = currentEnvMap(arena.allocator()) catch {
+        c.setError("couldn't read the environment");
+        return -1;
+    };
+    defer env_map.deinit();
+
+    return switch (extwallet.ensure(&c.wallet[idx], coin, c.install_root, c.home_dir, &env_map)) {
+        .not_applicable => 0,
+        .already_running, .started => 1,
+        // Already reported once this daemon run; don't re-raise it every tick.
+        .already_attempted => -1,
+        .argv_failed, .spawn_failed => |err| blk: {
+            // Most likely the wallet-rpc binary isn't on disk (an install from
+            // before it was bundled).
+            c.setError(@errorName(err));
+            c.setErrorCode(@errorName(err));
+            break :blk -1;
+        },
+    };
+}
+
+/// Tear the coin's wallet service down and mark its wallet closed — the daemon
+/// it talks to has stopped. Kills a process; worker thread only.
+///
+/// Like `_ensure` this skips rather than waits when a wallet op holds the lock,
+/// because it runs on the status poll. That doesn't risk leaking the process:
+/// the caller keeps calling this every tick while the daemon is down, and
+/// `bw_deinit` kills whatever is left regardless.
+export fn bw_ext_wallet_service_stop(ctx: ?*Ctx, idx: usize) void {
+    const c = ctx orelse return;
+    if (idx >= coin_count) return;
+
+    if (!c.wallet_mtx.tryLock()) return;
+
+    var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+    defer arena.deinit();
+    var threaded: std.Io.Threaded = .init(arena.allocator(), .{});
+    defer threaded.deinit();
+    defer c.wallet_mtx.unlock(threaded.io());
+
+    c.wallet_open[idx].store(0, .monotonic);
+    extwallet.kill(&c.wallet[idx]);
+}
+
+// ---- external wallet: the operations ----------------------------------------
+
+/// Which wallet operation `walletOp` should run. Mirrors the TUI's
+/// `WalletSetupOp` — the same five things the `w` menu offers.
+const WalletOp = enum { create, restore_seed, restore_file, open, lock };
+
+/// Upper bound on a wallet password, sizing the bounded buffer we copy the
+/// caller's secret into. Comfortably past any sane passphrase while keeping the
+/// secret in a small fixed buffer we can wipe (memory constraint). Matches the
+/// TUI's own cap.
+const wallet_pw_max = 256;
+
+/// Run one wallet operation under the wallet lock, threading the daemon's own
+/// failure message up through `detail`.
+///
+/// `password` and `seed` are the caller's secrets; they are used here and never
+/// stored. A created wallet's mnemonic is parked in `ctx.seed` for exactly one
+/// `bw_ext_wallet_seed_take`.
+fn walletOp(
+    ctx: *Ctx,
+    idx: usize,
+    op: WalletOp,
+    password: []const u8,
+    seed: []const u8,
+    src_path: []const u8,
+) !void {
+    const coin = coinByIndex(idx) orelse return error.NoSuchCoin;
+    const ew = coin.externalWallet() orelse return error.Unsupported;
+    if (coin.walletLaunchesWithPassword()) return error.Unsupported; // Zano's per-open launch isn't wired here yet
+
+    var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var threaded: std.Io.Threaded = .init(a, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    ctx.wallet_mtx.lockUncancelable(io);
+    defer ctx.wallet_mtx.unlock(io);
+
+    var detail: Coin.WalletErrSink = .{};
+    errdefer if (detail.len > 0) ctx.setError(detail.slice());
+
+    const auth = extwallet.authFor(coin, &ctx.wallet[idx]);
+    switch (op) {
+        .create => {
+            const s = try ew.create(a, auth, password, &detail);
+            // Park the mnemonic for the one take. Overwrites any earlier pending
+            // seed, which is the right outcome — that one was never displayed.
+            ctx.seed = s;
+            ctx.seed_coin = @intCast(idx);
+        },
+        .restore_seed => try ew.restore_seed(a, auth, ctx.install_root, ctx.home_dir, password, seed, &detail),
+        .restore_file => try (ew.restore_file orelse return error.Unsupported)(a, auth, ctx.home_dir, src_path, password, &detail),
+        .open => try ew.open(a, auth, password, &detail),
+        .lock => try (ew.lock orelse return error.Unsupported)(a, auth, &detail),
+    }
+    ctx.wallet_open[idx].store(if (op == .lock) 0 else 1, .monotonic);
+}
+
+/// Copy the caller's secret into a bounded buffer we can wipe, run `op`, and
+/// wipe it again on every path out. Returns 0, or -1 with `bw_last_error` set to
+/// the sentence for the user and `bw_last_error_code` to the bare error name.
+fn walletOpCall(
+    ctx: ?*Ctx,
+    idx: usize,
+    op: WalletOp,
+    pass_ptr: ?[*]const u8,
+    pass_len: usize,
+    seed_ptr: ?[*]const u8,
+    seed_len: usize,
+    src_path: ?[*:0]const u8,
+) c_int {
+    const c = ctx orelse return -1;
+    if (idx >= coin_count) return -1;
+    c.err_len = 0;
+    c.err_code_len = 0;
+
+    var pw_buf: [wallet_pw_max]u8 = undefined;
+    var pn: usize = 0;
+    if (pass_ptr) |p| {
+        pn = @min(pass_len, pw_buf.len);
+        @memcpy(pw_buf[0..pn], p[0..pn]);
+    }
+    defer @memset(pw_buf[0..pn], 0); // our copy is gone on every path
+
+    var seed_buf: [models.Seed.buf_len]u8 = undefined;
+    var sn: usize = 0;
+    if (seed_ptr) |p| {
+        sn = @min(seed_len, seed_buf.len);
+        @memcpy(seed_buf[0..sn], p[0..sn]);
+    }
+    defer @memset(seed_buf[0..sn], 0);
+
+    const path = if (src_path) |p| std.mem.span(p) else "";
+
+    walletOp(c, idx, op, pw_buf[0..pn], seed_buf[0..sn], path) catch |err| {
+        // `walletOp`'s errdefer may already have put the daemon's own message in
+        // err_buf; `friendlyWalletError` prefers it over any generic fallback.
+        const raw = c.err_buf[0..c.err_len];
+        c.setErrorCode(@errorName(err));
+        const text = extwallet.friendlyWalletError(@errorName(err), raw);
+        // `text` may alias err_buf (when it *is* the detail), so only rewrite it
+        // when it points somewhere else.
+        if (text.ptr != c.err_buf[0..].ptr) c.setError(text);
+        return -1;
+    };
+    return 0;
+}
+
+/// Create a brand-new wallet under `pw`. On success its mnemonic is pending —
+/// take it with `bw_ext_wallet_seed_take` and show it to the user to write down.
+export fn bw_ext_wallet_create(ctx: ?*Ctx, idx: usize, pw: ?[*]const u8, pw_len: usize) c_int {
+    return walletOpCall(ctx, idx, .create, pw, pw_len, null, 0, null);
+}
+
+/// Restore a wallet from mnemonic `seed` under `pw`. The words are normalized
+/// (lowercased, whitespace collapsed) by the coin before use, so a phrase pasted
+/// with stray case or spacing still restores.
+export fn bw_ext_wallet_restore_seed(
+    ctx: ?*Ctx,
+    idx: usize,
+    pw: ?[*]const u8,
+    pw_len: usize,
+    seed: ?[*]const u8,
+    seed_len: usize,
+) c_int {
+    return walletOpCall(ctx, idx, .restore_seed, pw, pw_len, seed, seed_len, null);
+}
+
+/// Import an existing wallet file at `src_path` and open it with `pw`.
+export fn bw_ext_wallet_restore_file(
+    ctx: ?*Ctx,
+    idx: usize,
+    pw: ?[*]const u8,
+    pw_len: usize,
+    src_path: ?[*:0]const u8,
+) c_int {
+    return walletOpCall(ctx, idx, .restore_file, pw, pw_len, null, 0, src_path);
+}
+
+/// Open the existing managed wallet with `pw`.
+export fn bw_ext_wallet_open(ctx: ?*Ctx, idx: usize, pw: ?[*]const u8, pw_len: usize) c_int {
+    return walletOpCall(ctx, idx, .open, pw, pw_len, null, 0, null);
+}
+
+/// Re-lock an in-daemon wallet that stays open while the daemon runs. Not
+/// offered for the process-backed wallets, which lock when their process dies.
+export fn bw_ext_wallet_lock(ctx: ?*Ctx, idx: usize) c_int {
+    return walletOpCall(ctx, idx, .lock, null, 0, null, 0, null);
+}
+
+/// Delete the managed wallet's on-disk artifacts so a different one can be
+/// created or restored in its place. **Destructive** — the caller must gate it
+/// behind an explicit confirmation.
+///
+/// The wallet service is killed first so it releases its file locks, exactly as
+/// the TUI does; the daemon is deliberately left running (bouncing it would
+/// throw away sync progress and peers). Only ever removes what BoxWallet itself
+/// manages.
+export fn bw_ext_wallet_remove(ctx: ?*Ctx, idx: usize) c_int {
+    const c = ctx orelse return -1;
+    if (idx >= coin_count) return -1;
+    const coin = coinByIndex(idx) orelse return -1;
+    const ew = coin.externalWallet() orelse return -1;
+    const removeFn = ew.remove orelse {
+        c.setError("This coin has no in-app wallet replace.");
+        return -1;
+    };
+    c.err_len = 0;
+    c.err_code_len = 0;
+
+    var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+    defer arena.deinit();
+    var threaded: std.Io.Threaded = .init(arena.allocator(), .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    c.wallet_mtx.lockUncancelable(io);
+    defer c.wallet_mtx.unlock(io);
+
+    // An in-daemon wallet (Ergo) caches its secret in the running node, so the
+    // daemon has to be down before the files go — the caller drives stop →
+    // remove → start. A process-backed wallet just needs its service gone.
+    c.wallet_open[idx].store(0, .monotonic);
+    extwallet.kill(&c.wallet[idx]);
+
+    removeFn(arena.allocator(), c.home_dir) catch |err| {
+        c.setError(@errorName(err));
+        c.setErrorCode(@errorName(err));
+        return -1;
+    };
+    return 0;
+}
+
+/// Take the pending mnemonic of a just-created wallet, **once**. Returns the
+/// byte count written and wipes the core's copy, so a second call answers 0 and
+/// the words can't be re-shown.
+///
+/// If `cap` is smaller than the phrase, this returns the required size and
+/// copies *nothing*, leaving the copy intact — truncating the user's only backup
+/// would be worse than refusing. Pass a 256-byte buffer.
+export fn bw_ext_wallet_seed_take(ctx: ?*Ctx, buf: ?[*]u8, cap: usize) usize {
+    const c = ctx orelse return 0;
+    const b = buf orelse return 0;
+    if (c.seed_coin < 0 or c.seed.len == 0) return 0;
+    if (cap < c.seed.len) return c.seed.len;
+
+    const n = c.seed.len;
+    @memcpy(b[0..n], c.seed.buf[0..n]);
+    @memset(std.mem.asBytes(&c.seed), 0);
+    c.seed_coin = -1;
+    return n;
+}
+
+/// Drop a pending mnemonic without showing it (the user cancelled, or navigated
+/// away). Idempotent.
+export fn bw_ext_wallet_seed_discard(ctx: ?*Ctx) void {
+    const c = ctx orelse return;
+    @memset(std.mem.asBytes(&c.seed), 0);
+    c.seed_coin = -1;
+}
+
+// ---- external wallet: reads -------------------------------------------------
+
+/// Mirror of `models.WalletBalance`.
+pub const BwWalletBalance = extern struct {
+    total: f64,
+    available: f64,
+};
+
+/// Mirror of `models.RescanProgress`.
+pub const BwRescanProgress = extern struct {
+    scanned: i64,
+    target: i64,
+};
+
+/// A wallet op holds the lock — the caller should keep its last value rather
+/// than stall behind a restore that may run for minutes.
+pub const bw_busy: c_int = -2;
+
+/// Balances of the open wallet. 0 with `out` filled, `bw_busy`, or -1.
+///
+/// This export owns the wallet-closed rule: `error.WalletClosed` is the **only**
+/// error that clears the open flag, so a transient RPC blip can't make the UI
+/// claim the wallet locked itself. Keeping that here rather than in C++ is what
+/// stops the two front-ends disagreeing about it.
+export fn bw_ext_wallet_balance(ctx: ?*Ctx, idx: usize, out: ?*BwWalletBalance) c_int {
+    const c = ctx orelse return -1;
+    const o = out orelse return -1;
+    if (idx >= coin_count) return -1;
+    const coin = coinByIndex(idx) orelse return -1;
+    const ew = coin.externalWallet() orelse return -1;
+    if (c.wallet_open[idx].load(.monotonic) == 0) return -1;
+
+    if (!c.wallet_mtx.tryLock()) return bw_busy;
+
+    var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+    defer arena.deinit();
+    var threaded: std.Io.Threaded = .init(arena.allocator(), .{});
+    defer threaded.deinit();
+    defer c.wallet_mtx.unlock(threaded.io());
+
+    const auth = extwallet.authFor(coin, &c.wallet[idx]);
+    const bal = ew.balance(arena.allocator(), auth) catch |err| {
+        if (err == error.WalletClosed) c.wallet_open[idx].store(0, .monotonic);
+        c.setError(@errorName(err));
+        return -1;
+    };
+    o.total = bal.total;
+    o.available = bal.available;
+    return 0;
+}
+
+/// Whether the open wallet is still scanning the chain for its history: 1 with
+/// `out` filled, 0 not scanning, `bw_busy`, or -1.
+///
+/// After a restore, a Monero-family wallet-rpc refreshes from height 0 in the
+/// background, and its balance reads 0 until it catches up — so the UI must show
+/// progress rather than a confusing empty wallet. The scanned height comes from
+/// the wallet, the target from the daemon.
+export fn bw_ext_wallet_rescan(ctx: ?*Ctx, idx: usize, out: ?*BwRescanProgress) c_int {
+    const c = ctx orelse return -1;
+    const o = out orelse return -1;
+    if (idx >= coin_count) return -1;
+    const coin = coinByIndex(idx) orelse return -1;
+    const ew = coin.externalWallet() orelse return -1;
+    const progressFn = ew.rescan_progress orelse return 0;
+    if (c.wallet_open[idx].load(.monotonic) == 0) return 0;
+
+    if (!c.wallet_mtx.tryLock()) return bw_busy;
+
+    var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var threaded: std.Io.Threaded = .init(a, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    defer c.wallet_mtx.unlock(io);
+
+    const daemon_auth = ctxAuth(a, io, coin, c) catch |err| {
+        c.setError(@errorName(err));
+        return -1;
+    };
+    const maybe = progressFn(a, extwallet.authFor(coin, &c.wallet[idx]), daemon_auth) catch |err| {
+        c.setError(@errorName(err));
+        return -1;
+    };
+    const rp = maybe orelse return 0;
+    o.scanned = rp.scanned;
+    o.target = rp.target;
+    return 1;
+}
+
+/// Mirror of `models.WalletTx`. Scalar-only: `direction` is the ordinal of
+/// `models.TxDirection` (0 received, 1 sent, 2 stake/mined) and `amount` is a
+/// positive magnitude, so a fixed-capacity array of these memcpys across with
+/// nothing owned on either side.
+pub const BwWalletTx = extern struct {
+    direction: c_int,
+    amount: f64,
+    time: i64,
+    confirmations: i64,
+};
+
+/// The open wallet's most recent transactions, newest first. Writes up to `cap`
+/// into `out` and returns how many. 0 on any failure — a transaction list that
+/// can't be read is empty, not an error worth interrupting the user for.
+export fn bw_wallet_transactions(ctx: ?*Ctx, idx: usize, out: ?*BwWalletTx, cap: usize) usize {
+    const c = ctx orelse return 0;
+    const o = out orelse return 0;
+    if (idx >= coin_count or cap == 0) return 0;
+    const coin = coinByIndex(idx) orelse return 0;
+    if (!coin.supportsTransactions()) return 0;
+    if (coin.hasExternalWallet() and c.wallet_open[idx].load(.monotonic) == 0) return 0;
+
+    if (!c.wallet_mtx.tryLock()) return 0;
+
+    var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var threaded: std.Io.Threaded = .init(a, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    defer c.wallet_mtx.unlock(io);
+
+    const auth = walletAuth(a, io, coin, c, idx) catch return 0;
+    const txs = coin.walletTransactions(a, auth, cap) catch return 0;
+    const n = @min(txs.len, cap);
+    const dst = @as([*]BwWalletTx, @ptrCast(o))[0..n];
+    for (dst, txs[0..n]) |*d, t| d.* = .{
+        .direction = @intFromEnum(t.direction),
+        .amount = t.amount,
+        .time = t.time,
+        .confirmations = t.confirmations,
+    };
+    return n;
+}
+
+/// The wallet's receive address, written into `buf`; returns its length, or 0 on
+/// failure. `force_new` mints a fresh one.
+///
+/// **Never call this on a timer.** The underlying RPC rotates the address once
+/// it has been paid, so polling it would swap the address out from under a user
+/// who is part-way through sending to it. Call it once when nothing is cached,
+/// and again only when the user explicitly asks for a new one.
+export fn bw_wallet_receive_address(ctx: ?*Ctx, idx: usize, force_new: c_int, buf: ?[*]u8, cap: usize) usize {
+    const c = ctx orelse return 0;
+    const b = buf orelse return 0;
+    if (idx >= coin_count) return 0;
+    const coin = coinByIndex(idx) orelse return 0;
+    if (!coin.supportsReceiveAddress()) return 0;
+    if (coin.hasExternalWallet() and c.wallet_open[idx].load(.monotonic) == 0) return 0;
+
+    if (!c.wallet_mtx.tryLock()) return 0;
+
+    var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var threaded: std.Io.Threaded = .init(a, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    defer c.wallet_mtx.unlock(io);
+
+    const auth = walletAuth(a, io, coin, c, idx) catch return 0;
+    const addr = coin.walletReceiveAddress(a, auth, force_new != 0) catch return 0;
+    return copyOut(b[0..cap], addr);
+}
+
+/// Send `amount` to `address`. Returns 0 on broadcast (`out` = the txid), 1 when
+/// the daemon rejected it (`out` = its own reason, verbatim), -1 on a transport
+/// failure (`bw_last_error` has why).
+///
+/// A rejection is an answer, not an error: "insufficient funds" is something the
+/// user needs to read, not a generic failure.
+export fn bw_wallet_send(ctx: ?*Ctx, idx: usize, address: ?[*:0]const u8, amount: f64, out: ?[*]u8, cap: usize) c_int {
+    const c = ctx orelse return -1;
+    const addr_z = address orelse return -1;
+    const o = out orelse return -1;
+    if (idx >= coin_count) return -1;
+    const coin = coinByIndex(idx) orelse return -1;
+    if (!coin.supportsSend()) return -1;
+
+    var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var threaded: std.Io.Threaded = .init(a, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    c.wallet_mtx.lockUncancelable(io);
+    defer c.wallet_mtx.unlock(io);
+
+    const auth = walletAuth(a, io, coin, c, idx) catch |err| {
+        c.setError(@errorName(err));
+        return -1;
+    };
+    const res = coin.walletSend(a, auth, std.mem.span(addr_z), amount) catch |err| {
+        c.setError(@errorName(err));
+        c.setErrorCode(@errorName(err));
+        return -1;
+    };
+    return switch (res) {
+        .ok => |txid| blk: {
+            _ = copyOut(o[0..cap], txid);
+            break :blk 0;
+        },
+        .failed => |reason| blk: {
+            _ = copyOut(o[0..cap], reason);
+            break :blk 1;
+        },
+    };
+}
+
+/// The auth a *wallet* read should use: the wallet process's own endpoint for a
+/// managed wallet, the daemon's for a coin whose wallet lives in its daemon.
+/// Mirrors the split the TUI's poll worker makes.
+fn walletAuth(a: std.mem.Allocator, io: std.Io, coin: Coin, ctx: *Ctx, idx: usize) !models.CoinAuth {
+    if (coin.hasExternalWallet()) return extwallet.authFor(coin, &ctx.wallet[idx]);
+    return ctxAuth(a, io, coin, ctx);
+}
+
+// ---- mining -----------------------------------------------------------------
+
+/// Mirror of `models.MiningStatus`. Scalar-only, so it crosses the boundary as a
+/// plain memcpy with nothing owned on either side.
+pub const BwMiningStatus = extern struct {
+    active: c_int,
+    threads: u32,
+    speed: u64, // hashes per second
+};
+
+/// The miner lives *inside* the daemon (Nerva's `nervad`), so this reads the
+/// **daemon's** auth — never the wallet process's. Same split the TUI makes.
+fn fetchMiningStatus(ctx: *Ctx, idx: usize, out: *BwMiningStatus) !void {
+    var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    var threaded: std.Io.Threaded = .init(a, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    const coin = coinByIndex(idx) orelse return error.NoSuchCoin;
+    const auth = try ctxAuth(a, io, coin, ctx);
+    const ms = try coin.miningStatus(a, auth);
+    out.active = if (ms.active) 1 else 0;
+    out.threads = ms.threads;
+    out.speed = ms.speed;
+}
+
+/// Whether the daemon is currently mining, with how many threads and how fast.
+/// Blocks on RPC — worker thread only. Only meaningful when
+/// `bw_coin_supports_mining` and the daemon is running.
+export fn bw_mining_status(ctx: ?*Ctx, idx: usize, out: ?*BwMiningStatus) c_int {
+    const c = ctx orelse return -1;
+    const o = out orelse return -1;
+    fetchMiningStatus(c, idx, o) catch |err| {
+        c.setError(@errorName(err));
+        return -1;
+    };
+    return 0;
+}
+
+/// Start the daemon's miner on `threads` threads, paying block rewards to
+/// `address`. Blocks on RPC — worker thread only.
+///
+/// The address is **supplied by the caller**, not looked up here: it must be the
+/// wallet's own receive address, the one the user can actually see, and the
+/// caller already has it cached. Mining to an address the user can't inspect
+/// would be worse than not mining.
+export fn bw_mining_start(ctx: ?*Ctx, idx: usize, address: ?[*:0]const u8, threads: u32) c_int {
+    const c = ctx orelse return -1;
+    const addr_z = address orelse return -1;
+    miningAction(c, idx, std.mem.span(addr_z), threads) catch |err| {
+        c.setError(@errorName(err));
+        c.setErrorCode(@errorName(err));
+        return -1;
+    };
+    return 0;
+}
+
+/// Stop the daemon's miner. Blocks on RPC — worker thread only.
+export fn bw_mining_stop(ctx: ?*Ctx, idx: usize) c_int {
+    const c = ctx orelse return -1;
+    miningAction(c, idx, "", 0) catch |err| {
+        c.setError(@errorName(err));
+        c.setErrorCode(@errorName(err));
+        return -1;
+    };
+    return 0;
+}
+
+/// Start (non-empty `address`) or stop the miner. Uses the **daemon's** auth —
+/// the miner lives inside the daemon, not the wallet process.
+fn miningAction(ctx: *Ctx, idx: usize, address: []const u8, threads: u32) !void {
+    var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var threaded: std.Io.Threaded = .init(a, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    const coin = coinByIndex(idx) orelse return error.NoSuchCoin;
+    const auth = try ctxAuth(a, io, coin, ctx);
+    if (address.len == 0) return coin.miningStop(a, auth);
+    return coin.miningStart(a, auth, address, threads);
+}
+
+/// This machine's logical CPU thread count — the upper bound on what the user
+/// may ask the miner for. Cheap; safe to call on the UI thread.
+export fn bw_cpu_threads() u32 {
+    return mining.cpuThreadCount();
+}
+
+/// Render a hashrate ("1.23 MH/s") into `buf`, returning its length. Exported
+/// rather than reimplemented C++-side so both front-ends round and label
+/// identically. Cheap; safe on the UI thread.
+export fn bw_format_hashrate(speed: u64, buf: ?[*]u8, cap: usize) usize {
+    const b = buf orelse return 0;
+    var tmp: [32]u8 = undefined;
+    return copyOut(b[0..cap], mining.formatHashrate(&tmp, speed));
+}
+
+/// Plain-language reason for a failed mining start/stop, given the bare error
+/// name from `bw_last_error`. Cheap; safe on the UI thread.
+export fn bw_mining_failure_text(err_name: ?[*:0]const u8, buf: ?[*]u8, cap: usize) usize {
+    const n = err_name orelse return 0;
+    const b = buf orelse return 0;
+    return copyOut(b[0..cap], mining.failureText(std.mem.span(n)));
+}
+
 // ---- disk usage (for the coin's "disk used" gauge) --------------------------
 
 /// Bytes used / total on the filesystem holding the coin's data dir.
@@ -1433,4 +2207,162 @@ test "bw_update_available compares the marker against the pinned core version" {
     // Ahead of it (a hand-built newer daemon) must also not offer a "downgrade".
     try install.writeVersionMarker(allocator, root, coin.daemonFile(), "999.0.0");
     try std.testing.expectEqual(@as(c_int, 0), bw_update_available(&ctx, 0));
+}
+
+test "a wallet session is kept per coin, not in one shared slot" {
+    // Same reasoning as `daemon_child`: a shared slot would let one coin's
+    // teardown kill another coin's wallet service (and wipe its credentials).
+    var ctx: Ctx = .{ .allocator = std.testing.allocator, .home_dir = "", .install_root = "" };
+    try std.testing.expectEqual(coin_count, ctx.wallet.len);
+    try std.testing.expectEqual(coin_count, ctx.wallet_open.len);
+    for (&ctx.wallet) |*sess| try std.testing.expect(!sess.isRunning());
+    for (&ctx.wallet_open) |*open| try std.testing.expectEqual(@as(u8, 0), open.load(.monotonic));
+
+    ctx.wallet_open[0].store(1, .monotonic);
+    for (ctx.wallet_open[1..]) |*open| try std.testing.expectEqual(@as(u8, 0), open.load(.monotonic));
+}
+
+test "bw_coin_ext_wallet's flags agree with the vtable for every coin" {
+    // Loops the whole registry rather than checking Nerva alone, so a coin added
+    // later can't arrive half-described (a wallet the GUI can't restore, or a
+    // Replace it wrongly offers).
+    var i: usize = 0;
+    while (i < coin_count) : (i += 1) {
+        const coin = coinByIndex(i) orelse return error.Unexpected;
+        const flags = bw_coin_ext_wallet(i);
+        if (!coin.hasExternalWallet()) {
+            try std.testing.expectEqual(@as(c_int, 0), flags);
+            continue;
+        }
+        const ew = coin.externalWallet().?;
+        try std.testing.expectEqual(coin.hasExternalWalletProcess(), flags & bw_ew_has_process != 0);
+        try std.testing.expectEqual(coin.supportsSeedRestore(), flags & bw_ew_seed_restore != 0);
+        try std.testing.expectEqual(ew.restore_file != null, flags & bw_ew_file_restore != 0);
+        try std.testing.expectEqual(coin.supportsWalletReplace(), flags & bw_ew_replace != 0);
+        try std.testing.expectEqual(ew.lock != null, flags & bw_ew_explicit_lock != 0);
+        try std.testing.expectEqual(coin.walletLaunchesWithPassword(), flags & bw_ew_launch_with_pw != 0);
+    }
+    // A coin with no external wallet at all reports a bare 0, and so does an
+    // index that isn't a coin.
+    try std.testing.expectEqual(@as(c_int, 0), bw_coin_ext_wallet(coin_count));
+}
+
+test "Nerva reports the wallet shape the GUI has to build for" {
+    const idx = nervaIndex();
+    const flags = bw_coin_ext_wallet(idx);
+    try std.testing.expect(flags & bw_ew_has_process != 0);
+    try std.testing.expect(flags & bw_ew_seed_restore != 0);
+    try std.testing.expect(flags & bw_ew_file_restore != 0);
+    try std.testing.expect(flags & bw_ew_replace != 0);
+    // Nerva's wallet-rpc is spawned once alongside the daemon and serves a whole
+    // `--wallet-dir`, so it is *not* the Zano launch-per-open shape — the GUI
+    // must not ask for a password before the service exists.
+    try std.testing.expect(flags & bw_ew_launch_with_pw == 0);
+    // Its wallet locks by killing the process, so there's no explicit Lock hook.
+    try std.testing.expect(flags & bw_ew_explicit_lock == 0);
+}
+
+test "bw_coin_seed_word_counts reports each wallet's accepted lengths" {
+    var out: [4]u32 = undefined;
+    const n = bw_coin_seed_word_counts(nervaIndex(), &out[0], out.len);
+    try std.testing.expectEqual(@as(usize, 1), n);
+    try std.testing.expectEqual(@as(u32, 25), out[0]);
+
+    // A cap smaller than the list truncates rather than overrunning.
+    var one: [1]u32 = undefined;
+    var i: usize = 0;
+    while (i < coin_count) : (i += 1) {
+        const written = bw_coin_seed_word_counts(i, &one[0], one.len);
+        try std.testing.expect(written <= 1);
+        if (written == 1) try std.testing.expect(one[0] > 0);
+    }
+}
+
+test "bw_ext_wallet_state reads open-here over exists-on-disk" {
+    var ctx: Ctx = .{ .allocator = std.testing.allocator, .home_dir = "/nonexistent/bw-test", .install_root = "" };
+    const idx = nervaIndex();
+
+    // Nothing on disk under a home that doesn't exist, and nothing opened.
+    try std.testing.expectEqual(bw_wallet_none, bw_ext_wallet_state(&ctx, idx));
+
+    // Opened this session wins outright — that's the state the user acted into.
+    ctx.wallet_open[idx].store(1, .monotonic);
+    try std.testing.expectEqual(bw_wallet_open, bw_ext_wallet_state(&ctx, idx));
+
+    ctx.wallet_open[idx].store(0, .monotonic);
+    try std.testing.expectEqual(bw_wallet_none, bw_ext_wallet_state(&ctx, idx));
+
+    // An index that isn't a coin can't claim a state.
+    try std.testing.expectEqual(bw_wallet_none, bw_ext_wallet_state(&ctx, coin_count));
+}
+
+/// Nerva's registry index, found by name so the tests don't pin the ordering.
+fn nervaIndex() usize {
+    var i: usize = 0;
+    while (i < coin_count) : (i += 1) {
+        const c = coinByIndex(i) orelse continue;
+        if (std.mem.eql(u8, c.coinName(), "Nerva")) return i;
+    }
+    unreachable;
+}
+
+test "a created wallet's seed can be taken exactly once" {
+    var ctx: Ctx = .{ .allocator = std.testing.allocator, .home_dir = "", .install_root = "" };
+    const phrase = "abandon ability able about above absent absorb abstract absurd abuse access accident";
+
+    // Nothing pending yet: a take must answer 0 rather than handing back stale bytes.
+    var buf: [models.Seed.buf_len]u8 = undefined;
+    try std.testing.expectEqual(@as(usize, 0), bw_ext_wallet_seed_take(&ctx, &buf, buf.len));
+
+    ctx.seed = models.Seed.from(phrase);
+    ctx.seed_coin = 0;
+
+    // A buffer too small must copy *nothing* and report what's needed —
+    // truncating the user's only backup would be worse than refusing.
+    var tiny: [8]u8 = undefined;
+    try std.testing.expectEqual(phrase.len, bw_ext_wallet_seed_take(&ctx, &tiny, tiny.len));
+    try std.testing.expectEqual(phrase.len, ctx.seed.len); // still pending
+
+    const n = bw_ext_wallet_seed_take(&ctx, &buf, buf.len);
+    try std.testing.expectEqualStrings(phrase, buf[0..n]);
+
+    // The core's copy is gone, and the words can't be re-shown.
+    try std.testing.expectEqual(@as(isize, -1), ctx.seed_coin);
+    for (ctx.seed.buf) |b| try std.testing.expectEqual(@as(u8, 0), b);
+    try std.testing.expectEqual(@as(usize, 0), bw_ext_wallet_seed_take(&ctx, &buf, buf.len));
+}
+
+test "discarding a pending seed wipes it" {
+    var ctx: Ctx = .{ .allocator = std.testing.allocator, .home_dir = "", .install_root = "" };
+    ctx.seed = models.Seed.from("some words the user never saw");
+    ctx.seed_coin = 3;
+
+    bw_ext_wallet_seed_discard(&ctx);
+    try std.testing.expectEqual(@as(isize, -1), ctx.seed_coin);
+    for (ctx.seed.buf) |b| try std.testing.expectEqual(@as(u8, 0), b);
+
+    bw_ext_wallet_seed_discard(&ctx); // idempotent
+    try std.testing.expectEqual(@as(isize, -1), ctx.seed_coin);
+}
+
+test "a wallet op on a coin with no external wallet is refused, not attempted" {
+    var ctx: Ctx = .{ .allocator = std.testing.allocator, .home_dir = "/nonexistent/bw-test", .install_root = "" };
+    // Bitcoin's wallet lives in its daemon, so none of these apply. Find it by
+    // name so the test doesn't pin the registry order.
+    var idx: usize = coin_count;
+    var i: usize = 0;
+    while (i < coin_count) : (i += 1) {
+        const c = coinByIndex(i) orelse continue;
+        if (!c.hasExternalWallet()) { idx = i; break; }
+    }
+    try std.testing.expect(idx < coin_count);
+
+    const pw = "hunter2";
+    try std.testing.expectEqual(@as(c_int, -1), bw_ext_wallet_open(&ctx, idx, pw.ptr, pw.len));
+    try std.testing.expectEqualStrings("Unsupported", ctx.err_code_buf[0..ctx.err_code_len]);
+    // And it must not have claimed the wallet is open.
+    try std.testing.expectEqual(@as(u8, 0), ctx.wallet_open[idx].load(.monotonic));
+
+    // An index outside the registry is rejected outright.
+    try std.testing.expectEqual(@as(c_int, -1), bw_ext_wallet_open(&ctx, coin_count, pw.ptr, pw.len));
 }

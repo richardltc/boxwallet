@@ -26,6 +26,8 @@
 #include <cstring>
 #include <functional>
 #include <memory>
+#include <ctime>
+#include <random>
 #include <string>
 #include <string_view>
 #include <thread>
@@ -91,6 +93,122 @@ template <typename F> static void post_to_ui(F &&fn)
     if (g_shutting_down.load())
         return;
     slint::invoke_from_event_loop(std::forward<F>(fn));
+}
+
+// One managed-wallet op at a time. The core serialises them anyway; this stops
+// the UI from firing a second while the first is still in flight.
+static std::atomic<bool> g_wallet_busy{false};
+
+// How many transactions the list holds. Fixed, like the TUI's cache: bounded
+// working set beats an unbounded history nobody scrolls through.
+static constexpr size_t TX_CAP = 20;
+
+// The receive address, cached per coin. This cache — not the poll timer — is
+// what decides when bw_wallet_receive_address is called, because the underlying
+// RPC rotates the address once it has been paid. `g_want_new_addr` is the user
+// explicitly asking for a fresh one.
+static std::vector<std::string> g_recv_addr;
+static std::atomic<bool> g_want_new_addr{false};
+
+// ---- secrets ----------------------------------------------------------------
+// Passwords and seeds cross the C ABI as raw bytes, never as a SharedString —
+// see the secrets contract in include/boxwallet.h. These two are the only way
+// they should be handled, so no call site can forget the wipe.
+
+static std::vector<uint8_t> to_secret_bytes(const slint::SharedString &s)
+{
+    std::string_view sv(s);
+    return std::vector<uint8_t>(sv.begin(), sv.end());
+}
+
+// Zero through a volatile pointer so the compiler can't elide the store on a
+// buffer that is about to be destroyed.
+static void wipe_secret(std::vector<uint8_t> &v)
+{
+    volatile uint8_t *p = v.data();
+    for (size_t i = 0; i < v.size(); ++i)
+        p[i] = 0;
+}
+
+// Case-insensitive compare of `answer` against the `pos`-th (1-based)
+// whitespace-separated word of `words` — the seed backup check.
+static bool nth_word_equals(const std::string &words, int pos, std::string_view answer)
+{
+    if (pos < 1)
+        return false;
+    size_t i = 0, n = words.size();
+    int seen = 0;
+    while (i < n) {
+        while (i < n && std::isspace(static_cast<unsigned char>(words[i])))
+            ++i;
+        size_t start = i;
+        while (i < n && !std::isspace(static_cast<unsigned char>(words[i])))
+            ++i;
+        if (i == start)
+            break;
+        if (++seen == pos) {
+            std::string_view w(words.data() + start, i - start);
+            std::string_view a = answer;
+            // Trim the user's answer; a trailing space shouldn't fail a correct word.
+            while (!a.empty() && std::isspace(static_cast<unsigned char>(a.front())))
+                a.remove_prefix(1);
+            while (!a.empty() && std::isspace(static_cast<unsigned char>(a.back())))
+                a.remove_suffix(1);
+            if (w.size() != a.size())
+                return false;
+            for (size_t k = 0; k < w.size(); ++k) {
+                if (std::tolower(static_cast<unsigned char>(w[k])) !=
+                    std::tolower(static_cast<unsigned char>(a[k])))
+                    return false;
+            }
+            return true;
+        }
+    }
+    return false;
+}
+
+// The message a failed call left behind, already turned into a sentence for the
+// user by the core (the daemon's own reason wherever it gave one).
+static std::string last_error_text(bw_ctx *ctx, int rc)
+{
+    if (rc >= 0)
+        return {};
+    char b[256] = {0};
+    size_t n = bw_last_error(ctx, b, sizeof b);
+    std::string msg(b, n);
+    return msg.empty() ? std::string("that didn't work") : msg;
+}
+
+// The bare error name, for branching (a wrong password shouldn't throw the user
+// out of the modal — it should put them back on the password field).
+static std::string last_error_code(bw_ctx *ctx)
+{
+    char b[64] = {0};
+    size_t n = bw_last_error_code(ctx, b, sizeof b);
+    return std::string(b, n);
+}
+
+// Settle a mining start/stop. On failure the core names the error and turns it
+// into a sentence — "the daemon is still syncing" is the one users hit most, and
+// it means wait, not that anything is broken.
+static void finish_mining(slint::ComponentWeakHandle<AppWindow> w, bw_ctx *ctx, int rc)
+{
+    std::string msg;
+    if (rc < 0) {
+        char code[64] = {0};
+        size_t cn = bw_last_error_code(ctx, code, sizeof code);
+        char text[256] = {0};
+        size_t tn = bw_mining_failure_text(std::string(code, cn).c_str(), text, sizeof text);
+        msg.assign(text, tn);
+        if (msg.empty())
+            msg = last_error_text(ctx, rc);
+    }
+    post_to_ui([w, msg]() {
+        if (auto h = w.lock()) {
+            (*h)->set_mining_busy(false);
+            (*h)->set_mining_error(slint::SharedString(msg));
+        }
+    });
 }
 
 // Declare shutdown: no further posts to the event loop after this returns.
@@ -164,6 +282,74 @@ static std::string humanize_bytes(uint64_t b)
     char buf[32];
     std::snprintf(buf, sizeof buf, u == 0 ? "%.0f %s" : "%.1f %s", v, unit[u]);
     return std::string(buf);
+}
+
+// An amount to the coin's own precision, thousands-grouped ("1,234.56789012").
+static std::string format_amount(double v, int decimals)
+{
+    char buf[64];
+    std::snprintf(buf, sizeof buf, "%.*f", decimals, v);
+    std::string s(buf);
+    size_t dot = s.find('.');
+    std::string whole = (dot == std::string::npos) ? s : s.substr(0, dot);
+    std::string frac = (dot == std::string::npos) ? "" : s.substr(dot);
+    bool neg = !whole.empty() && whole[0] == '-';
+    if (neg)
+        whole.erase(0, 1);
+    for (int i = static_cast<int>(whole.size()) - 3; i > 0; i -= 3)
+        whole.insert(static_cast<size_t>(i), ",");
+    return (neg ? "-" : "") + whole + frac;
+}
+
+// A unix timestamp as "3 hours ago". Coarse on purpose: the exact second of a
+// transaction is never what the user is asking.
+static std::string relative_time(int64_t t)
+{
+    if (t <= 0)
+        return "pending";
+    int64_t now = static_cast<int64_t>(std::time(nullptr));
+    int64_t d = now - t;
+    if (d < 0)
+        d = 0;
+    if (d < 60)
+        return "just now";
+    auto plural = [](int64_t n, const char *unit) {
+        return std::to_string(n) + " " + unit + (n == 1 ? "" : "s") + " ago";
+    };
+    if (d < 3600)
+        return plural(d / 60, "minute");
+    if (d < 86400)
+        return plural(d / 3600, "hour");
+    if (d < 2592000)
+        return plural(d / 86400, "day");
+    if (d < 31536000)
+        return plural(d / 2592000, "month");
+    return plural(d / 31536000, "year");
+}
+
+// Turn the core's scalar transactions into display rows.
+static std::shared_ptr<slint::VectorModel<WalletTxRow>>
+make_tx_rows(const std::vector<BwWalletTx> &txs, int decimals)
+{
+    std::vector<WalletTxRow> rows;
+    rows.reserve(txs.size());
+    for (const BwWalletTx &t : txs) {
+        bool incoming = (t.direction != 1); // 0 received, 2 mined
+        WalletTxRow r;
+        r.direction = slint::SharedString(t.direction == 0   ? "Received"
+                                          : t.direction == 1 ? "Sent"
+                                                             : "Mined");
+        // The core sends a positive magnitude and the direction alongside it, so
+        // the sign is applied here rather than guessed from the number.
+        r.amount = slint::SharedString((incoming ? "+" : "-") + format_amount(t.amount, decimals));
+        r.when = slint::SharedString(relative_time(t.time));
+        r.confirmations = slint::SharedString(
+            t.confirmations <= 0 ? std::string("unconfirmed")
+                                 : group_int(t.confirmations) + " conf");
+        r.incoming = incoming;
+        rows.push_back(std::move(r));
+    }
+    return std::make_shared<slint::VectorModel<WalletTxRow>>(std::move(rows));
 }
 
 // Re-read the coin's update state from disk (a tiny marker file, cheap enough for
@@ -328,6 +514,25 @@ static void apply_coin_metadata(const AppWindow *ui, bw_ctx *ctx, int idx)
     ui->set_blocks_frac(0);
     ui->set_disk_frac(0);
     ui->set_wallet_sec(0);
+    ui->set_ew_flags(bw_coin_ext_wallet(idx));
+    ui->set_wallet_state(BW_WALLET_NONE);
+    uint32_t counts[4] = {25, 0, 0, 0};
+    if (bw_coin_seed_word_counts(idx, counts, 4) > 0)
+        ui->set_seed_word_count(static_cast<int>(counts[0]));
+    // A modal left open over the coin we're leaving would ask its question about
+    // the wrong wallet; and any seed still pending was never shown.
+    ui->set_wallet_stage(0);
+    ui->set_wallet_seed_words(slint::SharedString(""));
+    bw_ext_wallet_seed_discard(ctx);
+    ui->set_balance_total(slint::SharedString("—"));
+    ui->set_balance_avail(slint::SharedString("—"));
+    ui->set_rescan_frac(0);
+    ui->set_receive_address(slint::SharedString(""));
+    ui->set_tx_rows(std::make_shared<slint::VectorModel<WalletTxRow>>(std::vector<WalletTxRow>{}));
+    ui->set_mining(false);
+    ui->set_mining_threads(0);
+    ui->set_mining_hashrate(slint::SharedString(""));
+    ui->set_cpu_threads(static_cast<int>(bw_cpu_threads()));
     ui->set_sync_percent(0);
     ui->set_chain(slint::SharedString(""));
     ui->set_headers_str(slint::SharedString(""));
@@ -445,6 +650,7 @@ int main()
     // callbacks can address the coin over the C ABI.
     std::vector<NavCoin> coins;
     size_t count = bw_coin_count();
+    g_recv_addr.assign(count, std::string()); // one address cache slot per coin
     for (size_t i = 0; i < count; ++i) {
         char nm[64];
         size_t nn = bw_coin_name(i, nm, sizeof nm);
@@ -511,6 +717,82 @@ int main()
                 (*h)->set_status_text(slint::SharedString(msg));
                 (*h)->set_status_is_error(is_err);
             }
+        });
+    };
+
+    // Settle the wallet modal after an op finishes. Success on a *create* means
+    // there's a mnemonic waiting: take it (which wipes the core's copy), pick the
+    // three positions to quiz on, and move to the write-it-down stage. Any other
+    // success just reports itself; a wrong password puts the user back on the
+    // password field rather than closing the modal out from under them.
+    auto finish_wallet_op = [](slint::ComponentWeakHandle<AppWindow> w, bw_ctx *c, int rc,
+                               int op, int coin) {
+        std::string seed;
+        int p1 = 1, p2 = 2, p3 = 3;
+        if (rc == 0 && op == 0) {
+            char sb[256] = {0};
+            size_t sn = bw_ext_wallet_seed_take(c, sb, sizeof sb);
+            if (sn > 0 && sn <= sizeof sb)
+                seed.assign(sb, sn);
+            // Quiz three distinct positions spread across the phrase, so the
+            // check can't be passed by copying only the first few words.
+            size_t words = 0;
+            for (size_t i = 0; i < seed.size();) {
+                while (i < seed.size() && std::isspace(static_cast<unsigned char>(seed[i]))) ++i;
+                if (i >= seed.size()) break;
+                ++words;
+                while (i < seed.size() && !std::isspace(static_cast<unsigned char>(seed[i]))) ++i;
+            }
+            if (words >= 3) {
+                std::mt19937 rng{std::random_device{}()};
+                std::vector<int> all(words);
+                for (size_t i = 0; i < words; ++i) all[i] = static_cast<int>(i + 1);
+                std::shuffle(all.begin(), all.end(), rng);
+                std::sort(all.begin(), all.begin() + 3);
+                p1 = all[0]; p2 = all[1]; p3 = all[2];
+            }
+        }
+        std::string err = (rc < 0) ? last_error_text(c, rc) : std::string();
+        std::string code = (rc < 0) ? last_error_code(c) : std::string();
+        bool wrong_pw = (code == "WrongPassword");
+
+        post_to_ui([w, rc, op, coin, seed, p1, p2, p3, err, wrong_pw]() {
+            auto h = w.lock();
+            if (!h)
+                return;
+            // The user navigated to another coin mid-op: don't reopen a modal
+            // over a coin this result has nothing to do with.
+            if (g_selected.load() != coin) {
+                (*h)->set_wallet_stage(0);
+                return;
+            }
+            if (rc < 0) {
+                (*h)->set_wallet_result_error(true);
+                (*h)->set_wallet_result(slint::SharedString(err));
+                // A mistyped password is a retry, not a dead end.
+                (*h)->set_wallet_stage(wrong_pw ? (op == 0 ? 3 : (op == 1 ? 4 : 2)) : 10);
+                if (wrong_pw) {
+                    (*h)->set_status_text(slint::SharedString(err));
+                    (*h)->set_status_is_error(true);
+                }
+                return;
+            }
+            if (op == 0 && !seed.empty()) {
+                (*h)->set_verify_pos_1(p1);
+                (*h)->set_verify_pos_2(p2);
+                (*h)->set_verify_pos_3(p3);
+                (*h)->set_wallet_verify_step(0);
+                (*h)->set_wallet_verify_bad(false);
+                (*h)->set_wallet_seed_words(slint::SharedString(seed));
+                (*h)->set_wallet_stage(7);
+                return;
+            }
+            (*h)->set_wallet_result_error(false);
+            (*h)->set_wallet_result(slint::SharedString(
+                op == 1 ? "Wallet restored. It will scan the chain for your funds."
+                : op == 2 ? "Wallet imported and unlocked."
+                          : "Wallet unlocked."));
+            (*h)->set_wallet_stage(10);
         });
     };
 
@@ -859,6 +1141,196 @@ int main()
         }).detach();
     });
 
+    // ---- managed wallet (external-wallet coins) ----------------------------
+    // Every op blocks (spawns a process, drives RPC, sometimes shells out to a
+    // wallet CLI), so it runs on a worker. The modal sits on its "working" stage
+    // meanwhile; the outcome lands back on the UI thread.
+    ui->on_wallet_setup([weak, ctx, wake_poll, finish_wallet_op](int op, slint::SharedString pw,
+                                               slint::SharedString seed,
+                                               slint::SharedString file) {
+        int coin = g_selected.load();
+        if (coin < 0)
+            return;
+        // One wallet op at a time — the core serialises them anyway, but this
+        // stops the UI firing a second while the first is in flight.
+        bool expected = false;
+        if (!g_wallet_busy.compare_exchange_strong(expected, true)) {
+            return;
+        }
+        std::vector<uint8_t> pw_bytes = to_secret_bytes(pw);
+        std::vector<uint8_t> seed_bytes = to_secret_bytes(seed);
+        std::string path{std::string_view(file)};
+
+        std::thread([weak, ctx, coin, op, wake_poll, finish_wallet_op,
+                     pw_bytes = std::move(pw_bytes),
+                     seed_bytes = std::move(seed_bytes), path]() mutable {
+            WorkerGuard wg; // keeps bw_ctx alive until this worker is done
+            size_t c = static_cast<size_t>(coin);
+            int rc = -1;
+            switch (op) {
+            case 0: rc = bw_ext_wallet_create(ctx, c, pw_bytes.data(), pw_bytes.size()); break;
+            case 1: rc = bw_ext_wallet_restore_seed(ctx, c, pw_bytes.data(), pw_bytes.size(),
+                                                    seed_bytes.data(), seed_bytes.size()); break;
+            case 2: rc = bw_ext_wallet_restore_file(ctx, c, pw_bytes.data(), pw_bytes.size(),
+                                                    path.c_str()); break;
+            default: rc = bw_ext_wallet_open(ctx, c, pw_bytes.data(), pw_bytes.size()); break;
+            }
+            wipe_secret(pw_bytes);
+            wipe_secret(seed_bytes);
+            finish_wallet_op(weak, ctx, rc, op, coin);
+            wake_poll();
+            g_wallet_busy.store(false);
+        }).detach();
+    });
+
+    // Replace: destructive, and already behind a typed REPLACE confirmation in
+    // the modal. Deletes the wallet's files so a different one can take its
+    // place; the daemon keeps running (its chain sync isn't the wallet's to
+    // throw away).
+    ui->on_wallet_replace([weak, ctx, wake_poll]() {
+        int coin = g_selected.load();
+        if (coin < 0)
+            return;
+        bool expected = false;
+        if (!g_wallet_busy.compare_exchange_strong(expected, true))
+            return;
+        std::thread([weak, ctx, coin, wake_poll]() {
+            WorkerGuard wg;
+            int rc = bw_ext_wallet_remove(ctx, static_cast<size_t>(coin));
+            post_to_ui([weak, rc, msg = last_error_text(ctx, rc)]() {
+                if (auto h = weak.lock()) {
+                    (*h)->set_wallet_result_error(rc < 0);
+                    (*h)->set_wallet_result(slint::SharedString(
+                        rc < 0 ? msg : "Wallet removed. Set up a new one when you're ready."));
+                    (*h)->set_wallet_stage(10);
+                }
+            });
+            wake_poll();
+            g_wallet_busy.store(false);
+        }).detach();
+    });
+
+    ui->on_wallet_lock([weak, ctx, wake_poll]() {
+        int coin = g_selected.load();
+        if (coin < 0)
+            return;
+        std::thread([weak, ctx, coin, wake_poll]() {
+            WorkerGuard wg;
+            (void)bw_ext_wallet_lock(ctx, static_cast<size_t>(coin));
+            wake_poll();
+        }).detach();
+    });
+
+    // Backup check. The seed is read back out of the one property holding it
+    // rather than kept in a second C++ copy — see the secrets contract in
+    // include/boxwallet.h.
+    ui->on_verify_word([weak](int pos, slint::SharedString answer) -> bool {
+        auto h = weak.lock();
+        if (!h)
+            return false;
+        std::string words(std::string_view((*h)->get_wallet_seed_words()));
+        return nth_word_equals(words, pos, std::string_view(answer));
+    });
+
+    ui->on_seed_discard([ctx]() { bw_ext_wallet_seed_discard(ctx); });
+
+    // A fresh receive address, only ever on an explicit ask — the poller never
+    // decides this for itself.
+    ui->on_new_address([wake_poll]() {
+        g_want_new_addr.store(true);
+        wake_poll();
+    });
+
+    // Send. The modal has already shown the user the full, untruncated address
+    // and had them confirm it — that is the one typo safety net a machine can't
+    // provide, so it is not optional.
+    ui->on_send_funds([weak, ctx, wake_poll](slint::SharedString address, slint::SharedString amount) {
+        int coin = g_selected.load();
+        if (coin < 0)
+            return;
+        std::string addr{std::string_view(address)};
+        double amt = 0;
+        try {
+            amt = std::stod(std::string(std::string_view(amount)));
+        } catch (...) {
+            if (auto h = weak.lock()) {
+                (*h)->set_send_result_error(true);
+                (*h)->set_send_result(slint::SharedString("That isn't an amount."));
+            }
+            return;
+        }
+        if (auto h = weak.lock())
+            (*h)->set_send_busy(true);
+
+        std::thread([weak, ctx, coin, addr, amt, wake_poll]() {
+            WorkerGuard wg;
+            char out[256] = {0};
+            int rc = bw_wallet_send(ctx, static_cast<size_t>(coin), addr.c_str(), amt,
+                                    out, sizeof out);
+            std::string reply(out);
+            std::string err = (rc < 0) ? last_error_text(ctx, rc) : std::string();
+            post_to_ui([weak, rc, reply, err]() {
+                if (auto h = weak.lock()) {
+                    (*h)->set_send_busy(false);
+                    (*h)->set_send_result_error(rc != 0);
+                    // A daemon rejection (rc == 1) carries its own reason
+                    // verbatim — it's an answer the user needs to read, not a
+                    // generic failure.
+                    (*h)->set_send_result(slint::SharedString(
+                        rc == 0   ? "Sent. Transaction " + reply
+                        : rc == 1 ? reply
+                                  : err));
+                }
+            });
+            wake_poll();
+        }).detach();
+    });
+
+    // ---- mining ------------------------------------------------------------
+    // Start/stop drive the *daemon's* miner. The payout address is read off the
+    // UI thread's cache before the worker starts, so the poll thread rewriting
+    // that cache can't retarget a start already in flight.
+    ui->on_mining_start([weak, ctx, wake_poll](int threads) {
+        int coin = g_selected.load();
+        if (coin < 0 || static_cast<size_t>(coin) >= g_recv_addr.size())
+            return;
+        std::string addr = g_recv_addr[coin];
+        if (addr.empty()) {
+            if (auto h = weak.lock()) {
+                (*h)->set_mining_error(slint::SharedString(
+                    "No payout address yet — unlock your wallet first."));
+            }
+            return;
+        }
+        if (auto h = weak.lock()) {
+            (*h)->set_mining_busy(true);
+            (*h)->set_mining_error(slint::SharedString(""));
+        }
+        std::thread([weak, ctx, coin, addr, threads, wake_poll]() {
+            WorkerGuard wg;
+            int rc = bw_mining_start(ctx, static_cast<size_t>(coin), addr.c_str(),
+                                     static_cast<uint32_t>(threads));
+            finish_mining(weak, ctx, rc);
+            wake_poll();
+        }).detach();
+    });
+
+    ui->on_mining_stop([weak, ctx, wake_poll]() {
+        int coin = g_selected.load();
+        if (coin < 0)
+            return;
+        if (auto h = weak.lock()) {
+            (*h)->set_mining_busy(true);
+            (*h)->set_mining_error(slint::SharedString(""));
+        }
+        std::thread([weak, ctx, coin, wake_poll]() {
+            WorkerGuard wg;
+            int rc = bw_mining_stop(ctx, static_cast<size_t>(coin));
+            finish_mining(weak, ctx, rc);
+            wake_poll();
+        }).detach();
+    });
+
     // File-browser callbacks. Start at HOME; navigate into folders; picking a
     // file records its path and closes the overlay.
     ui->on_browse_home([weak, ctx]() {
@@ -929,6 +1401,75 @@ int main()
                 stage.assign(sb, sn);
             }
 
+            // The managed wallet lives in a second process we spawn alongside the
+            // daemon and tear down with it — mirroring the TUI's per-tick block.
+            // The teardown matters as much as the start: a wallet service left
+            // running would keep holding the user's wallet files.
+            int ew_flags = bw_coin_ext_wallet(coin);
+            int wallet_state = BW_WALLET_NONE;
+            int decimals = static_cast<int>(bw_coin_balance_decimals(coin));
+            if (ew_flags != 0) {
+                bool running_now = (di_rc == 0 && bs_rc == 0);
+                if (running_now)
+                    bw_ext_wallet_service_ensure(ctx, coin);
+                else
+                    bw_ext_wallet_service_stop(ctx, coin);
+                wallet_state = bw_ext_wallet_state(ctx, coin);
+            }
+
+            // Wallet reads, only once it's actually open. BW_BUSY means a wallet
+            // op holds the lock — keep the last value rather than stalling the
+            // whole status pump behind a restore.
+            BwWalletBalance bal;
+            std::memset(&bal, 0, sizeof bal);
+            bool have_balance = false;
+            BwRescanProgress rp;
+            std::memset(&rp, 0, sizeof rp);
+            bool rescanning = false;
+            std::vector<BwWalletTx> txs;
+            std::string recv_addr;
+            if (wallet_state >= BW_WALLET_OPEN) {
+                have_balance = (bw_ext_wallet_balance(ctx, coin, &bal) == 0);
+                rescanning = (bw_ext_wallet_rescan(ctx, coin, &rp) == 1);
+                if (rescanning)
+                    wallet_state = BW_WALLET_RESCAN;
+
+                BwWalletTx tx_buf[TX_CAP];
+                size_t ntx = bw_wallet_transactions(ctx, coin, tx_buf, TX_CAP);
+                txs.assign(tx_buf, tx_buf + ntx);
+
+                // The address is fetched ONCE and then cached, never on this
+                // timer: the RPC rotates it after it's been paid, so polling
+                // would swap it out from under someone mid-send.
+                bool want_new = g_want_new_addr.exchange(false);
+                if (want_new || g_recv_addr[coin].empty()) {
+                    char ab[256] = {0};
+                    size_t an = bw_wallet_receive_address(ctx, coin, want_new ? 1 : 0, ab, sizeof ab);
+                    if (an > 0)
+                        g_recv_addr[coin].assign(ab, an);
+                }
+                recv_addr = g_recv_addr[coin];
+            } else if (ew_flags != 0) {
+                // Wallet closed: the cached address belongs to a wallet we can no
+                // longer vouch for, so drop it rather than keep showing it.
+                g_recv_addr[coin].clear();
+            }
+
+            // Mining rides the *daemon's* RPC (the miner runs inside nervad), so
+            // it's readable as soon as the daemon answers — no wallet needed.
+            BwMiningStatus ms;
+            std::memset(&ms, 0, sizeof ms);
+            std::string hashrate;
+            if (bw_coin_supports_mining(coin) && di_rc == 0 && bs_rc == 0) {
+                if (bw_mining_status(ctx, coin, &ms) == 0 && ms.active) {
+                    char hb[32] = {0};
+                    size_t hn = bw_format_hashrate(ms.speed, hb, sizeof hb);
+                    hashrate.assign(hb, hn);
+                } else {
+                    std::memset(&ms, 0, sizeof ms); // a failed read is not "mining"
+                }
+            }
+
             // Disk usage is a filesystem read — independent of the daemon.
             BwDiskUsage du;
             std::memset(&du, 0, sizeof du);
@@ -940,7 +1481,9 @@ int main()
                 disk_free_str = humanize_bytes(du.total_bytes - du.used_bytes) + " free";
             }
 
-            post_to_ui([weak, di, bs, di_rc, bs_rc, sel, disk_frac, disk_free_str, wallet_sec, stage]() {
+            post_to_ui([weak, di, bs, di_rc, bs_rc, sel, disk_frac, disk_free_str, wallet_sec, stage,
+                        ms, hashrate, ew_flags, wallet_state, bal, have_balance,
+                        rp, rescanning, txs, recv_addr, decimals]() {
                 auto h = weak.lock();
                 if (!h)
                     return;
@@ -950,6 +1493,18 @@ int main()
                 (*h)->set_disk_frac(disk_frac);
                 (*h)->set_disk_free(slint::SharedString(disk_free_str));
                 (*h)->set_wallet_sec(wallet_sec);
+                (*h)->set_ew_flags(ew_flags);
+                (*h)->set_wallet_state(wallet_state);
+                (*h)->set_balance_total(slint::SharedString(
+                    have_balance ? format_amount(bal.total, decimals) : std::string("—")));
+                (*h)->set_balance_avail(slint::SharedString(
+                    have_balance ? format_amount(bal.available, decimals) : std::string("—")));
+                (*h)->set_rescan_frac(rescanning && rp.target > 0
+                    ? static_cast<float>(static_cast<double>(rp.scanned) /
+                                         static_cast<double>(rp.target))
+                    : 0.0f);
+                (*h)->set_receive_address(slint::SharedString(recv_addr));
+                (*h)->set_tx_rows(make_tx_rows(txs, decimals));
                 bool running = (di_rc == 0) && (bs_rc == 0);
                 (*h)->set_running(running);
                 // The poll owns the loading state: it lasts until the daemon
@@ -977,6 +1532,9 @@ int main()
                             ? 100.0f
                             : static_cast<float>(bs.verification_progress * 100.0));
                     (*h)->set_chain(slint::SharedString(bs.chain));
+                    (*h)->set_mining(ms.active != 0);
+                    (*h)->set_mining_threads(static_cast<int>(ms.threads));
+                    (*h)->set_mining_hashrate(slint::SharedString(hashrate));
                 } else {
                     // Daemon down (e.g. just stopped): clear everything it drove so
                     // the gauges unfill to 0 and the counts/peers reset, rather than
@@ -991,6 +1549,11 @@ int main()
                     (*h)->set_sync_percent(0);
                     (*h)->set_headers_str(slint::SharedString(""));
                     (*h)->set_blocks_str(slint::SharedString(""));
+                    // The miner dies with the daemon, so a stale hashrate here
+                    // would be a lie, not merely out of date.
+                    (*h)->set_mining(false);
+                    (*h)->set_mining_threads(0);
+                    (*h)->set_mining_hashrate(slint::SharedString(""));
                 }
             });
 
