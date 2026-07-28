@@ -950,6 +950,11 @@ export fn bw_sync_accel_pause(ctx: ?*Ctx) void {
 
 export fn bw_start_daemon(ctx: ?*Ctx, idx: usize) c_int {
     const c = ctx orelse return -1;
+    // Let the wallet service be attempted again for this daemon run, exactly as
+    // the TUI does on start. Without it, one failed spawn (a missing binary, a
+    // port still held by a service the last run orphaned) stays failed for the
+    // rest of the session even after the cause is gone.
+    if (idx < coin_count) c.wallet[idx].attempted = false;
     startDaemon(c, idx) catch |err| {
         if (c.err_len == 0) c.setError(@errorName(err));
         return -1;
@@ -1109,6 +1114,11 @@ export fn bw_ext_wallet_service_ensure(ctx: ?*Ctx, idx: usize) c_int {
         .already_running, .started => 1,
         // Already reported once this daemon run; don't re-raise it every tick.
         .already_attempted => -1,
+        .port_busy => blk: {
+            c.setError("Another BoxWallet is already using this coin's wallet service. Close it and try again.");
+            c.setErrorCode("WalletPortBusy");
+            break :blk -1;
+        },
         .argv_failed, .spawn_failed => |err| blk: {
             // Most likely the wallet-rpc binary isn't on disk (an install from
             // before it was bundled).
