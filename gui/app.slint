@@ -677,7 +677,11 @@ export component AppWindow inherits Window {
             if root.selected != -1: VerticalBox {
                 padding: 26px;
                 spacing: 14px;
-                alignment: start;
+                // No `alignment: start` here: a tab whose body should fill the
+                // pane (Transactions' list) needs the layout to hand out the
+                // leftover height, and an alignment stops it doing that — every
+                // child collapses to its preferred size instead. The trailing
+                // spacer at the end keeps the *other* tabs packed to the top.
 
                 // Logo + title/description. The logo is the embedded per-coin
                 // image, selected by the coin's registry index (root.selected).
@@ -914,6 +918,7 @@ export component AppWindow inherits Window {
                 if root.tab == 0: VerticalBox {
                     padding: 0;
                     spacing: 14px;
+                    vertical-stretch: 0;
                     alignment: start;
 
                     HorizontalBox {
@@ -1167,8 +1172,12 @@ export component AppWindow inherits Window {
                 }
 
                 // Transactions — newest first, bounded to what the core sends.
+                // Claims the pane's leftover height (see the spacer at the end of
+                // this layout) so the list runs to the bottom of the window
+                // rather than stopping after a few rows.
                 if root.tab == 1: VerticalLayout {
                     spacing: 8px;
+                    vertical-stretch: 1;
                     Text {
                         text: "Transactions";
                         color: #e6e6e6;
@@ -1189,6 +1198,10 @@ export component AppWindow inherits Window {
                             height: 34px;
                             HorizontalLayout {
                                 spacing: 10px;
+                                // Keep the confirmations column clear of the
+                                // scrollbar, which the list overlays on its own
+                                // content once there's more than a pane-full.
+                                padding-right: 14px;
                                 Text {
                                     text: row.direction;
                                     color: row.incoming ? #7ec27e : #d59b6a;
@@ -1227,6 +1240,8 @@ export component AppWindow inherits Window {
                 // "New address" is the only thing that mints another.
                 if root.tab == 2: VerticalLayout {
                     spacing: 12px;
+                    vertical-stretch: 0;
+                    alignment: start;
                     Text {
                         text: "Receive";
                         color: #e6e6e6;
@@ -1271,6 +1286,8 @@ export component AppWindow inherits Window {
                 // address — the one typo safety net a machine can't provide.
                 if root.tab == 3: VerticalLayout {
                     spacing: 10px;
+                    vertical-stretch: 0;
+                    alignment: start;
                     Text {
                         text: "Send";
                         color: #e6e6e6;
@@ -1320,6 +1337,7 @@ export component AppWindow inherits Window {
                 if root.tab == 4: VerticalBox {
                     padding: 0;
                     spacing: 10px;
+                    vertical-stretch: 0;
                     alignment: start;
                     Placeholder {
                         heading: "Settings";
@@ -1332,6 +1350,8 @@ export component AppWindow inherits Window {
                 // daemon has to be told which address to pay.
                 if root.tab == 5: VerticalLayout {
                     spacing: 12px;
+                    vertical-stretch: 0;
+                    alignment: start;
                     Text {
                         text: "Mining";
                         color: #e6e6e6;
@@ -1424,6 +1444,14 @@ export component AppWindow inherits Window {
                 if root.tab == 6: Placeholder {
                     heading: "DigiDollar";
                     note: "Mint, send and redeem the chain-native stablecoin.";
+                }
+
+                // Soaks up the leftover height so every tab except Transactions
+                // stays top-packed, exactly as it did when the pane carried
+                // `alignment: start`. Transactions opts out, and its list grows
+                // into the space instead.
+                if root.tab != 1: Rectangle {
+                    vertical-stretch: 1;
                 }
             }
         }
