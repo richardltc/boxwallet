@@ -161,6 +161,45 @@ pub fn matchesAny(line: []const u8, needles: []const []const u8) bool {
     return false;
 }
 
+/// SIGTERM `pid`, reaping with `WNOHANG` over a `grace_ms` window so a clean
+/// shutdown returns the moment it finishes; SIGKILL + a blocking reap if it
+/// overstays. POSIX only — the caller guards Windows (whose `Child.kill` is an
+/// immediate TerminateProcess and needs none of this).
+///
+/// The grace matters because a Monero-family wallet-rpc saves the wallet on
+/// SIGTERM, which takes a moment; std's `Child.kill` would block for all of it.
+///
+/// Reaping (rather than a `kill(pid, 0)` liveness probe) is what makes the
+/// early-out actually work: a child that has exited but not yet been waited on
+/// is a zombie, and `kill(zombie, 0)` still reports it as alive — so a probe loop
+/// never sees it go and waits the whole grace every time.
+pub fn terminateAndReap(io: std.Io, pid: std.posix.pid_t, grace_ms: u32) void {
+    const posix = std.posix;
+    posix.kill(pid, posix.SIG.TERM) catch return; // already gone / not permitted
+    var waited: u32 = 0;
+    const step: u32 = 50;
+    while (waited < grace_ms) : (waited += step) {
+        if (reapNoHang(pid)) return;
+        io.sleep(.fromMilliseconds(step), .awake) catch {};
+    }
+    posix.kill(pid, posix.SIG.KILL) catch {};
+    // Blocking reap so the killed child doesn't linger as a zombie.
+    var status: if (builtin.link_libc) c_int else u32 = undefined;
+    while (posix.errno(posix.system.wait4(pid, &status, 0, null)) == .INTR) {}
+}
+
+/// Non-blocking reap: true once `pid` has terminated (and has been reaped, so it
+/// won't linger as a zombie), or if there's nothing left to wait on.
+pub fn reapNoHang(pid: std.posix.pid_t) bool {
+    const posix = std.posix;
+    var status: if (builtin.link_libc) c_int else u32 = undefined;
+    const rc = posix.system.wait4(pid, &status, posix.W.NOHANG, null);
+    return switch (posix.errno(rc)) {
+        .SUCCESS => rc != 0, // 0 = still running; nonzero (the pid) = exited & reaped
+        else => true, // ECHILD/EINVAL → nothing to wait on; treat as gone
+    };
+}
+
 test "a process that cannot exist is not reported alive" {
     if (builtin.os.tag != .linux) return error.SkipZigTest;
 
@@ -185,4 +224,11 @@ test "the running test binary is found by its own comm name" {
     var buf: [64]u8 = undefined;
     const n = try f.readPositionalAll(io, &buf, 0);
     try std.testing.expect(alive(io, std.mem.trim(u8, buf[0..n], " \t\r\n")));
+}
+
+test "reapNoHang: a pid that was never our child reads as gone" {
+    if (builtin.os.tag == .windows) return error.SkipZigTest;
+    // pid 1 is never ours, so wait4 answers ECHILD → "nothing to wait on", which
+    // must read as gone rather than stalling `terminateAndReap`'s whole grace.
+    try std.testing.expect(reapNoHang(1));
 }
