@@ -7024,6 +7024,7 @@ pub const App = struct {
         switch (extwallet.ensure(&act.wallet_rpc, coin, self.install_root, self.home_dir, self.environ_map)) {
             .not_applicable, .already_running, .already_attempted => {},
             .started => self.logf("{s}: wallet service started", .{coin.coinName()}),
+            .port_busy => self.logf("{s}: a wallet service is already using port {s} — close any other BoxWallet using this coin", .{ coin.coinName(), coin.externalWallet().?.rpc_port.?() }),
             .argv_failed => |err| self.logf("{s}: couldn't build the wallet service command ({s})", .{ coin.coinName(), @errorName(err) }),
             // Most likely the wallet-rpc binary isn't on disk (an install from
             // before it was bundled) — tell the user how to fix it, once.

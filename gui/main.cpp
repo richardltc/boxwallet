@@ -110,6 +110,10 @@ static constexpr size_t TX_CAP = 20;
 static std::vector<std::string> g_recv_addr;
 static std::atomic<bool> g_want_new_addr{false};
 
+// Last wallet-service failure shown, so a persistent one is reported once
+// rather than rewritten over the status line on every poll. UI thread only.
+static std::string g_last_wallet_svc_err;
+
 // ---- secrets ----------------------------------------------------------------
 // Passwords and seeds cross the C ABI as raw bytes, never as a SharedString —
 // see the secrets contract in include/boxwallet.h. These two are the only way
@@ -1408,12 +1412,18 @@ int main()
             int ew_flags = bw_coin_ext_wallet(coin);
             int wallet_state = BW_WALLET_NONE;
             int decimals = static_cast<int>(bw_coin_balance_decimals(coin));
+            std::string wallet_svc_err;
             if (ew_flags != 0) {
                 bool running_now = (di_rc == 0 && bs_rc == 0);
-                if (running_now)
-                    bw_ext_wallet_service_ensure(ctx, coin);
-                else
+                if (running_now) {
+                    // A failure here is why a later unlock would report the
+                    // service "still starting" — surface the real reason now
+                    // rather than letting the user meet it at the password box.
+                    if (bw_ext_wallet_service_ensure(ctx, coin) == -1)
+                        wallet_svc_err = last_error_text(ctx, -1);
+                } else {
                     bw_ext_wallet_service_stop(ctx, coin);
+                }
                 wallet_state = bw_ext_wallet_state(ctx, coin);
             }
 
@@ -1483,7 +1493,7 @@ int main()
 
             post_to_ui([weak, di, bs, di_rc, bs_rc, sel, disk_frac, disk_free_str, wallet_sec, stage,
                         ms, hashrate, ew_flags, wallet_state, bal, have_balance,
-                        rp, rescanning, txs, recv_addr, decimals]() {
+                        rp, rescanning, txs, recv_addr, decimals, wallet_svc_err]() {
                 auto h = weak.lock();
                 if (!h)
                     return;
@@ -1505,6 +1515,13 @@ int main()
                     : 0.0f);
                 (*h)->set_receive_address(slint::SharedString(recv_addr));
                 (*h)->set_tx_rows(make_tx_rows(txs, decimals));
+                // Only when it changes, so a persistent fault doesn't rewrite
+                // the status line every two seconds over whatever else is there.
+                if (!wallet_svc_err.empty() && wallet_svc_err != g_last_wallet_svc_err) {
+                    (*h)->set_status_text(slint::SharedString(wallet_svc_err));
+                    (*h)->set_status_is_error(true);
+                }
+                g_last_wallet_svc_err = wallet_svc_err;
                 bool running = (di_rc == 0) && (bs_rc == 0);
                 (*h)->set_running(running);
                 // The poll owns the loading state: it lasts until the daemon
