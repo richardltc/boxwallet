@@ -11,6 +11,8 @@ const price = @import("price.zig");
 const qrcode = @import("qrcode.zig");
 const proc_mod = @import("proc.zig");
 const warmup = @import("warmup.zig");
+const extwallet = @import("extwallet.zig");
+const mining = @import("mining.zig");
 const Coin = @import("coin.zig").Coin;
 const Nexa = @import("coins/nexa.zig").Nexa;
 const Divi = @import("coins/divi.zig").Divi;
@@ -401,27 +403,6 @@ fn cycleTab(t: DetailTab, delta: i2, has_mining: bool, has_stablecoin: bool) Det
         if (tabVisible(next, has_mining, has_stablecoin)) break;
     }
     return next;
-}
-
-/// The machine's logical CPU thread count, bounding the Mining prompt (and
-/// shown in its hint so the user knows the range). Falls back to 1 when the
-/// OS query fails — the safe lower bound.
-fn cpuThreadCount() u32 {
-    const n = std.Thread.getCpuCount() catch return 1;
-    return @intCast(std.math.clamp(n, 1, 9999));
-}
-
-/// A human-readable reason for a failed mining start/stop: the error names the
-/// user is likely to hit are mapped into plain language; anything unfamiliar
-/// passes through verbatim rather than collapsing to a generic "failed".
-fn miningFailureText(err_name: []const u8) []const u8 {
-    if (std.mem.eql(u8, err_name, "DaemonStillSyncing"))
-        return "The daemon is still syncing — mining can start once the chain is synced.";
-    if (std.mem.eql(u8, err_name, "MiningStartRejected"))
-        return "The daemon refused to start mining.";
-    if (std.mem.eql(u8, err_name, "MiningStopRejected"))
-        return "The daemon refused to stop mining.";
-    return err_name;
 }
 
 /// Chain sync progress. `syncing` shows a spinner ("Syncing"), `synced` a green
@@ -1436,11 +1417,6 @@ const UpdateModal = struct {
 /// keeping the secret in a small fixed buffer (memory constraint).
 const wallet_pw_max = 256;
 
-/// Length of each randomly generated wallet-rpc credential (`--rpc-login`). 24
-/// alphanumeric chars from the CSPRNG is ~143 bits — far beyond brute force by a
-/// local attacker, while staying a small fixed buffer.
-const wallet_rpc_cred_len = 24;
-
 /// Inner content width (columns) of the wallet modal box — the area between the
 /// `│ ` and ` │`. Sized to hold the longest menu label, the passphrase field,
 /// and the footer hints without wrapping, while fitting an 80-column terminal.
@@ -1795,22 +1771,11 @@ const Activity = struct {
     // (`nerva-wallet-rpc`) BoxWallet spawns alongside the daemon and tears down
     // with it. The setup worker (below) creates/restores/opens a wallet through
     // its RPC; balance polling reads it once open.
-    /// Handle to the spawned wallet-rpc child, so it can be killed when the daemon
-    /// stops (Monero wallet-rpc has no shutdown RPC). Null when not running. Owned
-    /// and touched only on the UI thread.
-    wallet_rpc_child: ?std.process.Child = null,
-    /// Per-session credentials the wallet-rpc is launched with (`--rpc-login`) and
-    /// that `extWalletAuth` answers its HTTP digest challenge with. Generated from
-    /// the OS CSPRNG when the process is spawned and wiped when it's killed, so the
-    /// wallet RPC (which exposes the spend key + `sweep_all`) can't be driven by
-    /// another local process. Always full-length when `wallet_rpc_creds_set`.
-    wallet_rpc_user_buf: [wallet_rpc_cred_len]u8 = undefined,
-    wallet_rpc_pass_buf: [wallet_rpc_cred_len]u8 = undefined,
-    wallet_rpc_creds_set: bool = false,
-    /// Whether we've tried to spawn the wallet-rpc this daemon run. Stops a missing
-    /// or broken binary from being retried (and re-logged) every tick; the failure
-    /// is reported once. Reset when the daemon is (re)started or the process killed.
-    wallet_rpc_attempted: bool = false,
+    /// The wallet-rpc process and the per-session credentials it's locked to —
+    /// the shared lifecycle in `extwallet.zig`, which the GUI drives too. Owned
+    /// and touched only on the UI thread, except while the setup worker holds it
+    /// during `launchWalletServer` (see the guard on the teardown call site).
+    wallet_rpc: extwallet.Session = .{},
     /// Whether the managed wallet has been opened this session (create/restore/
     /// open succeeded). Gates balance polling; read on the poll worker, written on
     /// the UI thread, so it's atomic. Reset when the wallet-rpc is killed.
@@ -2382,7 +2347,7 @@ const Activity = struct {
         if (@import("builtin").os.tag == .windows) return; // no zombies to reap
         const child = self.daemon_child orelse return;
         const pid = child.id orelse return; // already reaped
-        if (App.reapNoHang(pid)) self.daemon_child.?.id = null;
+        if (proc_mod.reapNoHang(pid)) self.daemon_child.?.id = null;
     }
 
     /// Stop a daemon that exposes no shutdown RPC (zanod) by terminating the
@@ -2426,7 +2391,7 @@ const Activity = struct {
         while (attempts < 40) : (attempts += 1) {
             io.sleep(.fromMilliseconds(250), .awake) catch {};
             if (self.daemon_child) |child| if (child.id) |pid| {
-                _ = App.reapNoHang(pid);
+                _ = proc_mod.reapNoHang(pid);
             };
             if (!proc_mod.alive(io, name)) return;
         }
@@ -2688,26 +2653,10 @@ const Activity = struct {
         }
     }
 
-    /// The wallet *process*'s own RPC endpoint (127.0.0.1 + the capability's bound
-    /// port), with the per-session `--rpc-login` credentials so the HTTP digest
-    /// handshake succeeds — distinct from the daemon's `CoinAuth`. Only valid for
-    /// `coin.hasExternalWallet()` coins, and only once the wallet-rpc has been
-    /// spawned (`wallet_rpc_creds_set`); before that the empty creds just fail.
+    /// The wallet *process*'s own RPC endpoint, distinct from the daemon's
+    /// `CoinAuth` — see `extwallet.authFor`.
     fn extWalletAuth(self: *const Activity) models.CoinAuth {
-        const ew = self.coin.externalWallet().?;
-        // In-daemon wallet (no separate process / per-session creds): point at the
-        // daemon's own RPC endpoint. A coin whose in-daemon wallet RPC needs real
-        // auth resolves it inside its hooks (Ergo uses a fixed api_key), so empty
-        // creds here are correct.
-        const port = if (ew.rpc_port) |f| f() else self.coin.rpcDefaultPort();
-        if (ew.process_argv == null or !self.wallet_rpc_creds_set)
-            return .{ .rpc_user = "", .rpc_password = "", .ip_address = "127.0.0.1", .port = port };
-        return .{
-            .rpc_user = self.wallet_rpc_user_buf[0..],
-            .rpc_password = self.wallet_rpc_pass_buf[0..],
-            .ip_address = "127.0.0.1",
-            .port = port,
-        };
+        return extwallet.authFor(self.coin, &self.wallet_rpc);
     }
 
     /// External-wallet setup worker. Runs the chosen create/restore/open RPC on a
@@ -2804,9 +2753,9 @@ const Activity = struct {
         const io = threaded.io();
 
         // Tear down any wallet process still serving a previous wallet.
-        if (self.wallet_rpc_child) |*child| {
+        if (self.wallet_rpc.child) |*child| {
             child.kill(io);
-            self.wallet_rpc_child = null;
+            self.wallet_rpc.child = null;
         }
         self.ext_wallet_open.store(0, .monotonic);
 
@@ -2838,7 +2787,7 @@ const Activity = struct {
             .stderr = capture,
             .create_no_window = @import("builtin").os.tag == .windows,
         }) catch return error.WalletServiceFailed;
-        self.wallet_rpc_child = child;
+        self.wallet_rpc.child = child;
 
         // Wait for the wallet RPC to bind its port (or the process to die on a bad
         // password / unreadable wallet). Bounded so a never-answering server can't
@@ -2854,9 +2803,9 @@ const Activity = struct {
             // fail at once — with the reason it printed — rather than waiting out the
             // whole timeout. (POSIX; Windows times out then reads the same capture.)
             if (@import("builtin").os.tag != .windows) {
-                if (self.wallet_rpc_child) |ch| if (ch.id) |pid| {
-                    if (App.reapNoHang(pid)) {
-                        self.wallet_rpc_child = null;
+                if (self.wallet_rpc.child) |ch| if (ch.id) |pid| {
+                    if (proc_mod.reapNoHang(pid)) {
+                        self.wallet_rpc.child = null;
                         if (cap_file) |*f| self.setWalletErrFromCapture(io, f);
                         return error.WalletOpenFailed;
                     }
@@ -2870,9 +2819,9 @@ const Activity = struct {
 
     /// Read the wallet process's captured stdout/stderr and stash the most
     /// error-like line in `wallet_setup_sink`, so a failed launch reports why
-    /// (surfaced by `friendlyWalletError` and the action log). Best-effort: leaves
-    /// the sink untouched on any IO hiccup or when nothing was printed, so the
-    /// caller falls back to the generic message.
+    /// (surfaced by `extwallet.friendlyWalletError` and the action log).
+    /// Best-effort: leaves the sink untouched on any IO hiccup or when nothing was
+    /// printed, so the caller falls back to the generic message.
     fn setWalletErrFromCapture(self: *Activity, io: std.Io, file: *std.Io.File) void {
         const stat = file.stat(io) catch return;
         var buf: [8 * 1024]u8 = undefined;
@@ -5203,7 +5152,7 @@ pub const App = struct {
                         // shows the live state.
                         self.mining_modal = null;
                     } else {
-                        self.mining_modal.?.setMsg(false, miningFailureText(act.mining_err));
+                        self.mining_modal.?.setMsg(false, mining.failureText(act.mining_err));
                     }
                 }
                 self.last_poll_ns = 0;
@@ -5262,7 +5211,7 @@ pub const App = struct {
                         if (act.daemonState() == .running) {
                             if (!xcoin.walletLaunchesWithPassword())
                                 self.ensureWalletRpc(act, xcoin);
-                        } else if (act.wallet_rpc_child != null and act.wallet_setup_thread == null) {
+                        } else if (act.wallet_rpc.child != null and act.wallet_setup_thread == null) {
                             self.killWalletRpc(act);
                         }
                     } else if (act.daemonState() != .running and act.ext_wallet_open.load(.monotonic) != 0) {
@@ -5452,7 +5401,7 @@ pub const App = struct {
                                 .create => unreachable,
                             });
                         } else {
-                            m.setMsg(false, friendlyWalletError(act.wallet_setup_err, detail));
+                            m.setMsg(false, extwallet.friendlyWalletError(act.wallet_setup_err, detail));
                         }
                     }
                 }
@@ -6486,7 +6435,7 @@ pub const App = struct {
         act.wallet_ensured = false;
         // Re-attempt the external wallet service for this daemon run (e.g. after a
         // reinstall added the wallet-rpc binary).
-        act.wallet_rpc_attempted = false;
+        act.wallet_rpc.attempted = false;
         // Clean slate for the block-index-load timer — discard any value left
         // dangling by a previous run that ended without a clean finish (e.g. a
         // crash mid-load), so this run times from scratch.
@@ -6848,15 +6797,10 @@ pub const App = struct {
     /// shown rather than clamped silently.
     fn tryMiningThreads(self: *App) void {
         const m = &self.mining_modal.?;
-        const text = std.mem.trim(u8, self.mining_input.getValue(), " \t");
-        const threads = std.fmt.parseInt(u32, text, 10) catch {
+        const threads = mining.parseThreads(self.mining_input.getValue()) orelse {
             m.bad_input = true;
             return;
         };
-        if (threads < 1 or threads > cpuThreadCount()) {
-            m.bad_input = true;
-            return;
-        }
         m.bad_input = false;
         self.submitMining(threads);
     }
@@ -7071,123 +7015,28 @@ pub const App = struct {
     }
 
     /// Spawn the coin's external wallet process (`nerva-wallet-rpc`) alongside its
-    /// running daemon, if it isn't up already. Detached like a foreground daemon —
-    /// it idles until a wallet is opened — and its `Child` handle is kept so it can
-    /// be killed when the daemon stops (Monero wallet-rpc has no shutdown RPC).
-    /// Best-effort; a spawn failure just leaves the wallet unavailable until retry.
+    /// running daemon, if it isn't up already, and report the outcome in the action
+    /// log. The spawn itself lives in `extwallet.ensure` (the GUI drives the same
+    /// one); this wraps it in the TUI's voice. Best-effort — a spawn failure just
+    /// leaves the wallet unavailable until the daemon is restarted.
     fn ensureWalletRpc(self: *App, act: *Activity, coin: Coin) void {
-        if (!coin.hasExternalWalletProcess() or act.wallet_rpc_child != null or act.wallet_rpc_attempted) return;
-        act.wallet_rpc_attempted = true;
-        const ew = coin.externalWallet().?;
-        // Process-backed only (guarded above), so both are present.
-        const argv_fn = ew.process_argv.?;
-        const port = ew.rpc_port.?();
-
-        var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
-        defer arena.deinit();
-        const a = arena.allocator();
-        var threaded: std.Io.Threaded = .init(a, .{});
-        defer threaded.deinit();
-        const io = threaded.io();
-
-        // Fresh per-session wallet-rpc credentials from the OS CSPRNG, so the RPC
-        // (which exposes the spend key + `sweep_all`) is locked to this BoxWallet
-        // run and not reachable by another local process. `extWalletAuth` answers
-        // the digest challenge with the same buffers.
-        _ = conf.randomPassword(io, &act.wallet_rpc_user_buf);
-        _ = conf.randomPassword(io, &act.wallet_rpc_pass_buf);
-        act.wallet_rpc_creds_set = true;
-
-        // argv is consumed by spawn (fork/exec copies it), so the local arena can
-        // be freed right after — the returned `Child` holds only the pid/handle.
-        const argv = argv_fn(a, self.install_root, self.home_dir, port, act.wallet_rpc_user_buf[0..], act.wallet_rpc_pass_buf[0..]) catch |err| {
-            self.logf("{s}: couldn't build the wallet service command ({s})", .{ coin.coinName(), @errorName(err) });
-            return;
-        };
-        const child = std.process.spawn(io, .{
-            .argv = argv,
-            .environ_map = self.environ_map,
-            .stdin = .ignore,
-            .stdout = .ignore,
-            .stderr = .ignore,
-            .create_no_window = @import("builtin").os.tag == .windows,
-        }) catch |err| {
+        // The spawn itself is shared with the GUI; only the wording is ours.
+        switch (extwallet.ensure(&act.wallet_rpc, coin, self.install_root, self.home_dir, self.environ_map)) {
+            .not_applicable, .already_running, .already_attempted => {},
+            .started => self.logf("{s}: wallet service started", .{coin.coinName()}),
+            .argv_failed => |err| self.logf("{s}: couldn't build the wallet service command ({s})", .{ coin.coinName(), @errorName(err) }),
             // Most likely the wallet-rpc binary isn't on disk (an install from
             // before it was bundled) — tell the user how to fix it, once.
-            self.logf("{s}: wallet service failed to start ({s}) — press i to reinstall and add the wallet service", .{ coin.coinName(), @errorName(err) });
-            return;
-        };
-        act.wallet_rpc_child = child;
-        self.logf("{s}: wallet service started", .{coin.coinName()});
+            .spawn_failed => |err| self.logf("{s}: wallet service failed to start ({s}) — press i to reinstall and add the wallet service", .{ coin.coinName(), @errorName(err) }),
+        }
     }
 
-    /// Kill the coin's external wallet process and mark its wallet closed. Uses a
-    /// fresh `Io` (the `Child` holds only the pid/handle, independent of the io it
-    /// was spawned under). Idempotent.
+    /// Kill the coin's external wallet process and mark its wallet closed.
+    /// Idempotent.
     fn killWalletRpc(self: *App, act: *Activity) void {
         _ = self;
         act.ext_wallet_open.store(0, .monotonic);
-        act.wallet_rpc_attempted = false;
-        // Wipe the wallet-rpc credentials — the process they unlocked is going away.
-        @memset(&act.wallet_rpc_user_buf, 0);
-        @memset(&act.wallet_rpc_pass_buf, 0);
-        act.wallet_rpc_creds_set = false;
-        if (act.wallet_rpc_child) |*child| {
-            var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
-            defer arena.deinit();
-            var threaded: std.Io.Threaded = .init(arena.allocator(), .{});
-            defer threaded.deinit();
-            const io = threaded.io();
-
-            // nerva-wallet-rpc has no shutdown RPC, so we signal it. std's
-            // `child.kill()` sends SIGTERM then *blocks* until the process exits, and
-            // a Monero wallet-rpc saves the wallet on SIGTERM, which can take a
-            // moment. So on POSIX we drive it ourselves: SIGTERM, reap over a short
-            // grace, then SIGKILL if it overstays — so a clean shutdown returns the
-            // instant it finishes and a stuck one is bounded. Windows' `child.kill`
-            // is an immediate TerminateProcess, so it keeps using that.
-            if (@import("builtin").os.tag == .windows) {
-                child.kill(io);
-            } else if (child.id) |pid| {
-                terminateAndReap(io, pid, 1500);
-            }
-            act.wallet_rpc_child = null;
-        }
-    }
-
-    /// SIGTERM `pid`, reaping with `WNOHANG` over a `grace_ms` window so a clean
-    /// shutdown returns the moment it finishes; SIGKILL + a blocking reap if it
-    /// overstays. POSIX only — the caller guards Windows.
-    ///
-    /// Reaping (rather than a `kill(pid, 0)` liveness probe) is what makes the
-    /// early-out actually work: a child that has exited but not yet been waited on
-    /// is a zombie, and `kill(zombie, 0)` still reports it as alive — so a probe loop
-    /// never sees it go and waits the whole grace every time.
-    fn terminateAndReap(io: std.Io, pid: std.posix.pid_t, grace_ms: u32) void {
-        const posix = std.posix;
-        posix.kill(pid, posix.SIG.TERM) catch return; // already gone / not permitted
-        var waited: u32 = 0;
-        const step: u32 = 50;
-        while (waited < grace_ms) : (waited += step) {
-            if (reapNoHang(pid)) return;
-            io.sleep(.fromMilliseconds(step), .awake) catch {};
-        }
-        posix.kill(pid, posix.SIG.KILL) catch {};
-        // Blocking reap so the killed child doesn't linger as a zombie.
-        var status: if (@import("builtin").link_libc) c_int else u32 = undefined;
-        while (posix.errno(posix.system.wait4(pid, &status, 0, null)) == .INTR) {}
-    }
-
-    /// Non-blocking reap: true once `pid` has terminated (and has been reaped, so it
-    /// won't linger as a zombie), or if there's nothing left to wait on.
-    fn reapNoHang(pid: std.posix.pid_t) bool {
-        const posix = std.posix;
-        var status: if (@import("builtin").link_libc) c_int else u32 = undefined;
-        const rc = posix.system.wait4(pid, &status, posix.W.NOHANG, null);
-        return switch (posix.errno(rc)) {
-            .SUCCESS => rc != 0, // 0 = still running; nonzero (the pid) = exited & reaped
-            else => true, // ECHILD/EINVAL → nothing to wait on; treat as gone
-        };
+        extwallet.kill(&act.wallet_rpc);
     }
 
     /// Refresh whether the coin's external wallet file exists on disk (drives the
@@ -7224,8 +7073,8 @@ pub const App = struct {
         // are ready as soon as the daemon is (checked above). Launch-with-password
         // coins (Zano) have no service until a wallet is opened — the setup op
         // launches it — so they're exempt from this gate.
-        if (coin.hasExternalWalletProcess() and !coin.walletLaunchesWithPassword() and act.wallet_rpc_child == null) {
-            if (act.wallet_rpc_attempted)
+        if (coin.hasExternalWalletProcess() and !coin.walletLaunchesWithPassword() and act.wallet_rpc.child == null) {
+            if (act.wallet_rpc.attempted)
                 self.logf("{s}: wallet service didn't start — press i to reinstall (adds the wallet service), then restart the daemon", .{coin.coinName()})
             else
                 self.logf("{s}: wallet service still starting — try again in a moment", .{coin.coinName()});
@@ -8371,7 +8220,7 @@ pub const App = struct {
         }
         if (act.mining_active) {
             var rate_buf: [32]u8 = undefined;
-            const rate = formatHashrate(&rate_buf, act.mining_speed);
+            const rate = mining.formatHashrate(&rate_buf, act.mining_speed);
             const status = (zz.Style{}).bold(true).fg(.green).render(a, "Mining") catch "Mining";
             const line = try std.fmt.allocPrint(a, "Status: {s} — {d} thread{s} at {s}", .{
                 status, act.mining_threads, if (act.mining_threads == 1) "" else "s", rate,
@@ -8381,7 +8230,7 @@ pub const App = struct {
             return std.fmt.allocPrint(a, "Mining\n\n{s}\n\n{s}", .{ line, hint });
         }
         const status = (zz.Style{}).dim(true).render(a, "Not mining") catch "Not mining";
-        const cpus = try std.fmt.allocPrint(a, "CPU threads available: {d}", .{cpuThreadCount()});
+        const cpus = try std.fmt.allocPrint(a, "CPU threads available: {d}", .{mining.cpuThreadCount()});
         // Starting needs the wallet's receive address (rewards have to go
         // somewhere) — until the wallet has been opened this session, say so
         // instead of offering a dead Enter.
@@ -8569,21 +8418,6 @@ pub const App = struct {
             .mint => "mint",
             .redeem => "redeem",
         };
-    }
-
-    /// Format a hashrate into `buf`: plain H/s below a kilohash, otherwise
-    /// kH/s / MH/s / GH/s to two decimals. Returns a slice into `buf` — no
-    /// allocation (callers pass a `[32]u8`).
-    fn formatHashrate(buf: []u8, speed: u64) []const u8 {
-        const f = @as(f64, @floatFromInt(speed));
-        return if (speed >= 1_000_000_000)
-            std.fmt.bufPrint(buf, "{d:.2} GH/s", .{f / 1_000_000_000}) catch "?"
-        else if (speed >= 1_000_000)
-            std.fmt.bufPrint(buf, "{d:.2} MH/s", .{f / 1_000_000}) catch "?"
-        else if (speed >= 1_000)
-            std.fmt.bufPrint(buf, "{d:.2} kH/s", .{f / 1_000}) catch "?"
-        else
-            std.fmt.bufPrint(buf, "{d} H/s", .{speed}) catch "?";
     }
 
     /// True black/white for the QR render — ZigZag's *named* `.black`/
@@ -9405,10 +9239,10 @@ pub const App = struct {
                 const text = try std.fmt.allocPrint(a, "CPU threads: {s}", .{field});
                 try modalRow(&out.writer, vbar, inner_w, text, zz.width("CPU threads: ") + zz.width(field));
                 try modalRow(&out.writer, vbar, inner_w, "", 0);
-                const cpus = try std.fmt.allocPrint(a, "This machine has {d} CPU threads. Mining uses real CPU and power; leave some threads free for other work.", .{cpuThreadCount()});
+                const cpus = try std.fmt.allocPrint(a, "This machine has {d} CPU threads. Mining uses real CPU and power; leave some threads free for other work.", .{mining.cpuThreadCount()});
                 try wrapIntoRows(a, &out.writer, vbar, inner_w, cpus, (zz.Style{}).dim(true));
                 if (m.bad_input) {
-                    const warn = try std.fmt.allocPrint(a, "Enter a number from 1 to {d}.", .{cpuThreadCount()});
+                    const warn = try std.fmt.allocPrint(a, "Enter a number from 1 to {d}.", .{mining.cpuThreadCount()});
                     const styled = (zz.Style{}).fg(.red).render(a, warn) catch warn;
                     try modalRow(&out.writer, vbar, inner_w, styled, zz.width(warn));
                 }
@@ -9956,33 +9790,6 @@ fn wrapIntoRows(a: std.mem.Allocator, w: *std.Io.Writer, vbar: []const u8, inner
         start = end;
         while (start < msg.len and msg[start] == ' ') start += 1;
     }
-}
-
-/// Turn a wallet-op error name (`@errorName`, e.g. from nerva's `walletRpcError`)
-/// into a sentence the user can act on. For errors we don't specifically map, show
-/// the daemon's own `detail` message when present (the real reason), falling back
-/// to the raw error name so nothing is silently swallowed.
-fn friendlyWalletError(name: []const u8, detail: []const u8) []const u8 {
-    const eql = std.mem.eql;
-    if (eql(u8, name, "WalletAlreadyExists"))
-        return "A wallet already exists for this coin — remove it before restoring, or open it instead.";
-    if (eql(u8, name, "SeedWordsInvalid") or eql(u8, name, "InvalidSeed"))
-        return "Those seed words weren't accepted. Check the spelling and that all 25 words are correct.";
-    if (eql(u8, name, "WrongPassword"))
-        return "That password didn't match this wallet.";
-    if (detail.len > 0) return detail;
-    // Fallbacks (only when the backend gave no specific reason) for the
-    // launch-with-password flow, where a wrong password makes the wallet service
-    // exit without a message rather than returning a daemon error.
-    if (eql(u8, name, "WalletOpenFailed"))
-        return "Couldn't open the wallet — check the password, and that the daemon is running and synced.";
-    if (eql(u8, name, "WalletServiceFailed"))
-        return "The wallet service didn't start. Press i to reinstall it, then try again.";
-    if (eql(u8, name, "WalletCreateFailed"))
-        return "Couldn't create the wallet. Check the daemon is running, then try again.";
-    if (eql(u8, name, "WalletRescanFailed"))
-        return "Wallet restored, but the rescan to find existing funds didn't start. Replace the wallet and restore again to retry.";
-    return name;
 }
 
 /// Count whitespace-separated tokens in `s` — the live word count shown under the
@@ -11617,22 +11424,6 @@ test "the Mining tab only exists for coins that mine, and walks its states" {
     }
 }
 
-test "formatHashrate scales H/s through kH/s, MH/s, and GH/s" {
-    var buf: [32]u8 = undefined;
-    try std.testing.expectEqualStrings("0 H/s", App.formatHashrate(&buf, 0));
-    try std.testing.expectEqualStrings("999 H/s", App.formatHashrate(&buf, 999));
-    try std.testing.expectEqualStrings("1.25 kH/s", App.formatHashrate(&buf, 1250));
-    try std.testing.expectEqualStrings("2.50 MH/s", App.formatHashrate(&buf, 2_500_000));
-    try std.testing.expectEqualStrings("1.00 GH/s", App.formatHashrate(&buf, 1_000_000_000));
-}
-
-test "miningFailureText maps the known reasons and passes others through" {
-    try std.testing.expect(std.mem.indexOf(u8, miningFailureText("DaemonStillSyncing"), "still syncing") != null);
-    try std.testing.expect(std.mem.indexOf(u8, miningFailureText("MiningStartRejected"), "refused to start") != null);
-    try std.testing.expect(std.mem.indexOf(u8, miningFailureText("MiningStopRejected"), "refused to stop") != null);
-    try std.testing.expectEqualStrings("SomethingNew", miningFailureText("SomethingNew"));
-}
-
 test "the Mining prompt only opens on a mining coin with a running daemon" {
     if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
     const allocator = std.testing.allocator;
@@ -11878,7 +11669,7 @@ test "renderMiningModal shows the thread prompt, stop confirm, and a failure" {
 
     // A failed start surfaces the mapped reason, not a generic "failed".
     app.mining_modal = .{ .coin_idx = mining_idx, .stage = .working };
-    app.mining_modal.?.setMsg(false, miningFailureText("DaemonStillSyncing"));
+    app.mining_modal.?.setMsg(false, mining.failureText("DaemonStillSyncing"));
     {
         const box = try app.renderMiningModal(a);
         try std.testing.expect(std.mem.indexOf(u8, box, "Couldn't start mining:") != null);
