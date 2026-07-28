@@ -48,6 +48,11 @@ void    bw_deinit(bw_ctx *ctx);
  * returns the number of bytes written. Set after any call that returned < 0. */
 size_t  bw_last_error(bw_ctx *ctx, char *buf, size_t cap);
 
+/* The bare error name behind that message (e.g. "WrongPassword"), for callers
+ * that need to branch rather than just display — a wallet setup modal keeps
+ * itself on the password step when it sees that one. */
+size_t  bw_last_error_code(bw_ctx *ctx, char *buf, size_t cap);
+
 /* ---- coin registry / metadata (no ctx needed) ------------------------------
  * Coins are addressed by a stable size_t index in [0, bw_coin_count()). The
  * metadata calls copy up to cap bytes into buf and return the length written
@@ -60,6 +65,29 @@ size_t  bw_coin_description(size_t idx, char *buf, size_t cap);
 size_t  bw_coin_version(size_t idx, char *buf, size_t cap); /* bundled core version */
 int     bw_coin_supports_mining(size_t idx);      /* 0/1 — shows the Mining tab */
 int     bw_coin_supports_stablecoin(size_t idx);  /* 0/1 — shows the DigiDollar tab */
+
+/* What this coin's managed wallet can do, as a bitfield — 0 means it has no
+ * external wallet at all. One call rather than six so a coin added later can't
+ * arrive half-described (a wallet the GUI can't restore, or a Replace it
+ * wrongly offers). */
+#define BW_EW_HAS_PROCESS    (1 << 0)  /* spawns its own wallet-rpc process */
+#define BW_EW_SEED_RESTORE   (1 << 1)  /* restore from mnemonic words */
+#define BW_EW_FILE_RESTORE   (1 << 2)  /* import an existing wallet file */
+#define BW_EW_REPLACE        (1 << 3)  /* in-app "replace wallet" (destructive) */
+#define BW_EW_EXPLICIT_LOCK  (1 << 4)  /* in-daemon wallet needing a Lock action */
+#define BW_EW_LAUNCH_WITH_PW (1 << 5)  /* wallet process is launched per-open, with the password */
+int     bw_coin_ext_wallet(size_t idx);
+
+/* Word counts this wallet's restore seed may have (25 for the CryptoNote coins,
+ * {15,12,24} for Ergo, {26,25,24} for Zano). Writes up to cap and returns how
+ * many; the first is the canonical length to name in the prompt. */
+size_t  bw_coin_seed_word_counts(size_t idx, uint32_t *out, size_t cap);
+
+int     bw_coin_supports_balance(size_t idx);
+int     bw_coin_supports_transactions(size_t idx);
+int     bw_coin_supports_receive_address(size_t idx);
+int     bw_coin_supports_send(size_t idx);
+uint8_t bw_coin_balance_decimals(size_t idx);
 
 /* ---- status ----------------------------------------------------------------- */
 int     bw_is_installed(bw_ctx *ctx, size_t idx);                 /* 0/1 */
@@ -210,14 +238,195 @@ int     bw_blockchain_state(bw_ctx *ctx, size_t idx, BwBlockchainState *out);
  * running". Blocks on RPC + a log read: worker thread only. */
 size_t  bw_daemon_stage(bw_ctx *ctx, size_t idx, char *buf, size_t cap);
 
-/* ---- FUTURE: secrets contract (not yet implemented) -------------------------
- * Wallet ops (create/restore/unlock) will take secrets as (const uint8_t *ptr,
- * size_t len) — NEVER as a Slint property/SharedString, which would copy them
- * into GUI-owned memory we cannot wipe. Zig copies the bytes into its own
- * bounded buffer immediately; the C++ caller must secure-zero its input buffer
- * right after the call returns (explicit_bzero / SecureZeroMemory). A created
- * wallet's seed is shown via a one-shot callback and must be rendered then
- * discarded, never persisted in a property. */
+/* ---- external wallet: service lifecycle + state -----------------------------
+ * For a BW_EW_HAS_PROCESS coin the wallet is a *second* process BoxWallet spawns
+ * alongside the daemon (Nerva's nerva-wallet-rpc) and tears down with it. It is
+ * bound to localhost and locked to credentials generated fresh each run, because
+ * a wallet RPC exposes the spend key.
+ *
+ * Drive it from the poller: _service_ensure whenever the daemon is running,
+ * _service_stop whenever it isn't. Both spawn or kill a process — worker thread
+ * only. _ensure returns 1 running, 0 nothing to do, BW_BUSY when a wallet op is
+ * in flight, -1 failed (bw_last_error has why; the usual cause is a wallet-rpc
+ * binary missing from an older install, so offer a reinstall). _ensure is
+ * idempotent and cheap once up, and reports a failure only once per daemon run
+ * rather than every tick. Both SKIP rather than wait when a wallet op holds the
+ * core's lock — they run on your poll, and blocking there would freeze the whole
+ * status pane behind a restore that can run for minutes. You call them again
+ * next tick, and bw_deinit kills anything still standing.
+ *
+ * Running two BoxWallets against the same coin does not work: the wallet port is
+ * fixed and the wallet dir is one directory, so the second instance's service
+ * fails to bind. Close the other window rather than trying to share.
+ *
+ * bw_ext_wallet_state is the whole display state machine, computed in the core
+ * so the GUI never re-derives it from separate booleans. It and
+ * bw_ext_wallet_exists are cheap (a stat) — safe on the UI thread. */
+#define BW_WALLET_NONE   0  /* nothing on disk yet          -> "No wallet" */
+#define BW_WALLET_LOCKED 1  /* exists, not opened here      -> "Locked" */
+#define BW_WALLET_OPEN   2  /* opened this session          -> "Unlocked" */
+#define BW_WALLET_RESCAN 3  /* opened, still scanning       -> "Rescanning… X%" */
+int     bw_ext_wallet_state(bw_ctx *ctx, size_t idx);
+int     bw_ext_wallet_exists(bw_ctx *ctx, size_t idx);
+int     bw_ext_wallet_service_ensure(bw_ctx *ctx, size_t idx);
+void    bw_ext_wallet_service_stop(bw_ctx *ctx, size_t idx);
+
+/* ---- external wallet: the operations ----------------------------------------
+ * Every one of these blocks (spawn / RPC / a wallet CLI) and takes the core's
+ * wallet lock: worker thread only, never the Slint event loop. They return 0 on
+ * success and < 0 on failure — and on failure bw_last_error carries the sentence
+ * meant for the user (the daemon's own message wherever it gave one, never
+ * collapsed to a generic "failed"), while bw_last_error_code carries the bare
+ * error name to branch on.
+ *
+ * Passwords and seeds are secrets and cross as raw bytes, never as a Slint
+ * SharedString — that would copy them into GUI-owned memory nothing can wipe.
+ * The core copies them into a bounded buffer and zeroes it on every return path;
+ * the caller must secure-zero its own buffer immediately after the call
+ * (explicit_bzero / SecureZeroMemory).
+ *
+ * A NEW password must be confirmed by the caller before it gets here: on a
+ * freshly created wallet a mistyped password means the funds are unrecoverable.
+ * bw_ext_wallet_open takes an existing password, which just fails and is retried,
+ * so it needs no confirmation. */
+int     bw_ext_wallet_create(bw_ctx *ctx, size_t idx, const uint8_t *pw, size_t pw_len);
+int     bw_ext_wallet_restore_seed(bw_ctx *ctx, size_t idx, const uint8_t *pw, size_t pw_len,
+                                   const uint8_t *seed, size_t seed_len);
+int     bw_ext_wallet_restore_file(bw_ctx *ctx, size_t idx, const uint8_t *pw, size_t pw_len,
+                                   const char *src_path);
+int     bw_ext_wallet_open(bw_ctx *ctx, size_t idx, const uint8_t *pw, size_t pw_len);
+int     bw_ext_wallet_lock(bw_ctx *ctx, size_t idx);   /* BW_EW_EXPLICIT_LOCK coins only */
+
+/* DESTRUCTIVE: deletes the managed wallet's files so a different one can take
+ * its place. Gate it behind an explicit typed confirmation. It kills the wallet
+ * service first (releasing the file locks) and leaves the daemon running — the
+ * chain sync is not the wallet's to throw away. Only ever removes what BoxWallet
+ * itself created. For an in-daemon wallet (Ergo) the node caches the secret, so
+ * the caller must stop the daemon, remove, then start it again. */
+int     bw_ext_wallet_remove(bw_ctx *ctx, size_t idx);
+
+/* A created wallet's mnemonic. Take it ONCE, render it, then let it go.
+ *
+ * Returns the byte count written and wipes the core's copy. Returns 0 when
+ * nothing is pending, so the words can never be re-shown. If cap is smaller than
+ * the phrase it returns the required size and copies NOTHING, keeping the user's
+ * only backup rather than truncating it — pass a 256-byte buffer.
+ *
+ * bw_ext_wallet_seed_discard drops a pending seed unshown (Cancel, or navigating
+ * away). Both are cheap and safe on the UI thread. */
+size_t  bw_ext_wallet_seed_take(bw_ctx *ctx, char *buf, size_t cap);
+void    bw_ext_wallet_seed_discard(bw_ctx *ctx);
+
+/* ---- wallet reads -----------------------------------------------------------
+ * All of these block on RPC — worker thread only. BW_BUSY means a wallet op
+ * holds the core's lock: keep your last value rather than stalling the status
+ * pump behind a restore that may run for minutes. */
+#define BW_BUSY (-2)
+typedef struct { double  total, available; } BwWalletBalance;
+typedef struct { int64_t scanned, target;  } BwRescanProgress;
+typedef struct {
+    int     direction;      /* 0 received, 1 sent, 2 stake/mined */
+    double  amount;         /* positive magnitude; direction carries the sign */
+    int64_t time;           /* unix seconds */
+    int64_t confirmations;
+} BwWalletTx;
+
+/* 0 with *out filled, BW_BUSY, or -1. */
+int     bw_ext_wallet_balance(bw_ctx *ctx, size_t idx, BwWalletBalance *out);
+
+/* 1 = still scanning (*out filled), 0 = not scanning, BW_BUSY, -1 = error.
+ * After a restore the wallet refreshes from height 0 in the background and its
+ * balance reads 0 until it catches up — show this progress rather than an
+ * empty wallet the user will read as lost funds. */
+int     bw_ext_wallet_rescan(bw_ctx *ctx, size_t idx, BwRescanProgress *out);
+
+/* Most recent transactions, newest first; returns how many were written. 0 on
+ * any failure — an unreadable list is empty, not worth interrupting the user. */
+size_t  bw_wallet_transactions(bw_ctx *ctx, size_t idx, BwWalletTx *out, size_t cap);
+
+/* The wallet's receive address; returns its length, 0 on failure. force_new
+ * mints a fresh one.
+ *
+ * NEVER call this on a timer. The underlying RPC rotates the address once it has
+ * been paid, so polling would swap it out from under a user part-way through
+ * sending to it. Call it once when nothing is cached, and again only when the
+ * user explicitly asks for a new one — your cache decides, not the clock. */
+size_t  bw_wallet_receive_address(bw_ctx *ctx, size_t idx, int force_new, char *buf, size_t cap);
+
+/* 0 = broadcast (out = txid), 1 = the daemon rejected it (out = its own reason,
+ * verbatim), -1 = transport failure (bw_last_error has why). A rejection is an
+ * answer, not an error: "insufficient funds" is something the user must read.
+ *
+ * Confirm the full, untruncated address with the user before calling. It is the
+ * one typo safety net a machine cannot provide. */
+int     bw_wallet_send(bw_ctx *ctx, size_t idx, const char *address, double amount,
+                       char *out, size_t cap);
+
+/* ---- mining -----------------------------------------------------------------
+ * Only meaningful for a coin where bw_coin_supports_mining is 1: its daemon
+ * mines in-process (the CryptoNote CPU coins — Nerva), so the miner is driven
+ * through the *daemon's* RPC, not the wallet's.
+ *
+ * bw_mining_status returns 0 with *out filled, or < 0 (bw_last_error has why).
+ * It blocks on RPC — worker thread only. `threads` and `speed` are zero
+ * whenever `active` is 0, so a stale figure from the last run can never read as
+ * current. */
+typedef struct {
+    int      active;
+    uint32_t threads;
+    uint64_t speed;   /* hashes per second */
+} BwMiningStatus;
+int      bw_mining_status(bw_ctx *ctx, size_t idx, BwMiningStatus *out);
+
+/* Start / stop the miner. Both block on RPC — worker thread only. 0 on success,
+ * < 0 on failure (bw_last_error_code names it; bw_mining_failure_text turns that
+ * into a sentence — "the daemon is still syncing" is the common one).
+ *
+ * `address` is supplied by YOU, not looked up here: it must be the wallet's own
+ * receive address, the one the user can actually see. `threads` must be in
+ * 1..bw_cpu_threads(). */
+int      bw_mining_start(bw_ctx *ctx, size_t idx, const char *address, uint32_t threads);
+int      bw_mining_stop(bw_ctx *ctx, size_t idx);
+
+/* Cheap helpers — no I/O, safe on the Slint event-loop thread.
+ * bw_cpu_threads is the upper bound on what the miner may be asked for.
+ * bw_format_hashrate renders a speed ("1.23 MH/s"); it is exported rather than
+ * reimplemented C++-side so both front-ends round and label identically.
+ * bw_mining_failure_text turns the bare error name from a failed start/stop
+ * into a sentence the user can act on. All three return the length written. */
+uint32_t bw_cpu_threads(void);
+size_t   bw_format_hashrate(uint64_t speed, char *buf, size_t cap);
+size_t   bw_mining_failure_text(const char *err_name, char *buf, size_t cap);
+
+/* ---- secrets contract -------------------------------------------------------
+ * PASSWORDS AND SEEDS IN. They cross as (const uint8_t *ptr, size_t len), never
+ * as a Slint property/SharedString, which would copy them into GUI-owned memory
+ * nothing can wipe. Zig copies the bytes into its own bounded buffer immediately
+ * and zeroes it on every return path; the C++ caller must secure-zero its input
+ * buffer right after the call returns (explicit_bzero / SecureZeroMemory).
+ *
+ * A CREATED WALLET'S SEED OUT. This one cannot be held to the same standard, and
+ * saying so is better than implying otherwise. Slint renders text only from a
+ * property, so the words must land in one. The contract is therefore:
+ *
+ *   The seed is taken once via bw_ext_wallet_seed_take (which wipes the core's
+ *   copy) and held in EXACTLY ONE property for EXACTLY as long as the
+ *   seed-display modal is open, then set to "". Never a second property, never
+ *   split into per-word properties, never the clipboard, never a log, never disk.
+ *
+ * What that guarantees: the core holds no copy after the take; nothing outside
+ * the modal's lifetime holds one; the modal cannot be reopened to show it again.
+ *
+ * What it does NOT guarantee: a Slint SharedString is a reference-counted heap
+ * allocation freed without zeroing, so the words may persist in the GUI process's
+ * heap until that memory is reused, and could surface in a core dump or swap.
+ * C++ cannot securely wipe it. This is the same exposure the TUI has (ZigZag
+ * renders into its own frame buffers), so it is not a GUI-specific regression —
+ * but it is a real limit, and it belongs written down rather than assumed away.
+ *
+ * What follows: keep the display window short. Walk the user straight from
+ * "write this down" to a verification step that proves they did, and clear the
+ * property on every exit path from the modal. */
 
 #ifdef __cplusplus
 }
