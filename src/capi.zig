@@ -32,6 +32,7 @@ const std = @import("std");
 const builtin = @import("builtin");
 const version = @import("version.zig");
 const registry = @import("registry.zig");
+const sigguard = @import("sigguard.zig");
 const coinmod = @import("coin.zig");
 const models = @import("models.zig");
 const conf = @import("conf.zig");
@@ -43,6 +44,57 @@ const mining = @import("mining.zig");
 const extwallet = @import("extwallet.zig");
 
 const Coin = coinmod.Coin;
+
+/// The process-wide `Io`, created once on first use and never destroyed.
+///
+/// **Never one per call.** `std.Io.Threaded.init` installs a *process-wide*
+/// SIGIO handler — it sends SIGIO to interrupt blocking syscalls when
+/// cancelling — and `deinit` restores whatever was installed before it. Two
+/// overlapping instances on different threads therefore race:
+///
+///   1. thread A `init`s, saving old = SIG_DFL and installing its handler;
+///   2. thread B `init`s, saving old = *A's handler*;
+///   3. thread A `deinit`s, restoring SIG_DFL — the process now has no handler;
+///   4. B's instance sends a SIGIO, whose default action is to **terminate**.
+///
+/// The GUI hits that window every time a click's metadata reads run on the UI
+/// thread while the poll thread is mid-sequence. It presented as the whole app
+/// vanishing with "process terminated with signal IO" on selecting a coin.
+///
+/// One instance fixes it: the handler is installed once and stays, and the
+/// worker pool is shared rather than rebuilt for every RPC. Nothing tears it
+/// down because it is meant to outlive every caller — the TUI does the same
+/// thing with the single `Io` that `std.process.Init` hands it.
+///
+/// Zig 0.16 has no `std.once`, and `std.Io.Mutex` needs an `Io` to lock (which
+/// is what we're trying to create), so the guard is a small atomic state
+/// machine. The spin can only ever wait on one `Threaded.init`.
+const shared_io = struct {
+    const uninit: u8 = 0;
+    const initializing: u8 = 1;
+    const ready: u8 = 2;
+
+    var state: std.atomic.Value(u8) = .init(uninit);
+    var instance: std.Io.Threaded = undefined;
+
+    fn get() std.Io {
+        if (state.load(.acquire) != ready) {
+            if (state.cmpxchgStrong(uninit, initializing, .acq_rel, .acquire) == null) {
+                instance = .init(std.heap.page_allocator, .{});
+                state.store(ready, .release);
+            } else {
+                while (state.load(.acquire) != ready) std.atomic.spinLoopHint();
+            }
+        }
+        return instance.io();
+    }
+};
+
+/// The shared `Io`. Safe to call from any thread, at any time. Use this instead
+/// of building a `std.Io.Threaded` — see `shared_io` for what happens otherwise.
+fn sharedIo() std.Io {
+    return shared_io.get();
+}
 
 /// The last failure on **this thread**: the sentence for the user, plus the bare
 /// `@errorName` behind it so a caller can branch (keep a wrong password on the
@@ -234,6 +286,14 @@ fn setField(field: []u8, src: []const u8) void {
 // ---- context lifecycle ------------------------------------------------------
 
 export fn bw_init(home_dir: ?[*:0]const u8) ?*Ctx {
+    // First, before the caller spawns its poll thread or any action worker: pin
+    // a handler for the signals `std.Io.Threaded` uses. The core builds a
+    // `Threaded` per call in a great many places, and once two of those overlap
+    // on different threads one instance's teardown can leave the process at
+    // SIG_DFL — after which the next cancellation SIGIO terminates us with no
+    // message at all. See `sigguard.zig`.
+    sigguard.install();
+
     const hd_z = home_dir orelse return null;
     const hd = std.mem.span(hd_z);
     const a = std.heap.page_allocator;
@@ -498,9 +558,7 @@ fn fetchDaemonInfo(ctx: *Ctx, idx: usize, out: *BwDaemonInfo) !void {
     defer arena.deinit();
     const a = arena.allocator();
 
-    var threaded: std.Io.Threaded = .init(a, .{});
-    defer threaded.deinit();
-    const io = threaded.io();
+    const io = sharedIo();
 
     const coin = coinByIndex(idx) orelse return error.NoSuchCoin;
     const data_dir = try coin.dataDir(a, ctx.home_dir);
@@ -518,9 +576,7 @@ fn fetchBlockchainState(ctx: *Ctx, idx: usize, out: *BwBlockchainState) !void {
     defer arena.deinit();
     const a = arena.allocator();
 
-    var threaded: std.Io.Threaded = .init(a, .{});
-    defer threaded.deinit();
-    const io = threaded.io();
+    const io = sharedIo();
 
     const coin = coinByIndex(idx) orelse return error.NoSuchCoin;
     const data_dir = try coin.dataDir(a, ctx.home_dir);
@@ -582,9 +638,7 @@ export fn bw_daemon_stage(ctx: ?*Ctx, idx: usize, buf: ?[*]u8, cap: usize) usize
     var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
     defer arena.deinit();
     const a = arena.allocator();
-    var threaded: std.Io.Threaded = .init(a, .{});
-    defer threaded.deinit();
-    const io = threaded.io();
+    const io = sharedIo();
 
     // Only ever what the daemon itself reports (its `-28` message, refined by
     // its log). Deliberately not "is the process alive?": that's also true while
@@ -619,10 +673,7 @@ fn ctxAuth(a: std.mem.Allocator, io: std.Io, coin: Coin, ctx: *Ctx) !models.Coin
 fn confirmAlive(coin: Coin) bool {
     var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
     defer arena.deinit();
-    var threaded: std.Io.Threaded = .init(arena.allocator(), .{});
-    defer threaded.deinit();
-
-    return proc.stayedAlive(threaded.io(), coin.daemonFile());
+    return proc.stayedAlive(sharedIo(), coin.daemonFile());
 }
 
 /// Non-blocking check of a spawned child: null while still running, else its
@@ -684,9 +735,7 @@ fn startDaemon(ctx: *Ctx, idx: usize) !void {
     var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
     defer arena.deinit();
     const a = arena.allocator();
-    var threaded: std.Io.Threaded = .init(a, .{});
-    defer threaded.deinit();
-    const io = threaded.io();
+    const io = sharedIo();
 
     const coin = coinByIndex(idx) orelse return error.NoSuchCoin;
 
@@ -778,9 +827,7 @@ fn stopDaemon(ctx: *Ctx, idx: usize) !void {
     var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
     defer arena.deinit();
     const a = arena.allocator();
-    var threaded: std.Io.Threaded = .init(a, .{});
-    defer threaded.deinit();
-    const io = threaded.io();
+    const io = sharedIo();
 
     const coin = coinByIndex(idx) orelse return error.NoSuchCoin;
 
@@ -1037,9 +1084,7 @@ fn walletAction(ctx: *Ctx, idx: usize, comptime lock: bool, pass: []const u8, st
     var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
     defer arena.deinit();
     const a = arena.allocator();
-    var threaded: std.Io.Threaded = .init(a, .{});
-    defer threaded.deinit();
-    const io = threaded.io();
+    const io = sharedIo();
 
     const coin = coinByIndex(idx) orelse return error.NoSuchCoin;
     const auth = try ctxAuth(a, io, coin, ctx);
@@ -1089,9 +1134,7 @@ fn walletSecurity(ctx: *Ctx, idx: usize) !models.WalletSecurity {
     defer arena.deinit();
     const a = arena.allocator();
 
-    var threaded: std.Io.Threaded = .init(a, .{});
-    defer threaded.deinit();
-    const io = threaded.io();
+    const io = sharedIo();
 
     const coin = coinByIndex(idx) orelse return error.NoSuchCoin;
     const data_dir = try coin.dataDir(a, ctx.home_dir);
@@ -1158,9 +1201,7 @@ export fn bw_ext_wallet_service_ensure(ctx: ?*Ctx, idx: usize) c_int {
 
     var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
     defer arena.deinit();
-    var threaded: std.Io.Threaded = .init(arena.allocator(), .{});
-    defer threaded.deinit();
-    const io = threaded.io();
+    const io = sharedIo();
     defer c.wallet_mtx.unlock(io);
 
     // The wallet service must inherit our environment (esp. `$HOME`), exactly as
@@ -1206,9 +1247,8 @@ export fn bw_ext_wallet_service_stop(ctx: ?*Ctx, idx: usize) void {
 
     var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
     defer arena.deinit();
-    var threaded: std.Io.Threaded = .init(arena.allocator(), .{});
-    defer threaded.deinit();
-    defer c.wallet_mtx.unlock(threaded.io());
+    const io = sharedIo();
+    defer c.wallet_mtx.unlock(io);
 
     c.wallet_open[idx].store(0, .monotonic);
     extwallet.kill(&c.wallet[idx]);
@@ -1247,9 +1287,7 @@ fn walletOp(
     var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
     defer arena.deinit();
     const a = arena.allocator();
-    var threaded: std.Io.Threaded = .init(a, .{});
-    defer threaded.deinit();
-    const io = threaded.io();
+    const io = sharedIo();
 
     ctx.wallet_mtx.lockUncancelable(io);
     defer ctx.wallet_mtx.unlock(io);
@@ -1386,9 +1424,7 @@ export fn bw_ext_wallet_remove(ctx: ?*Ctx, idx: usize) c_int {
 
     var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
     defer arena.deinit();
-    var threaded: std.Io.Threaded = .init(arena.allocator(), .{});
-    defer threaded.deinit();
-    const io = threaded.io();
+    const io = sharedIo();
 
     c.wallet_mtx.lockUncancelable(io);
     defer c.wallet_mtx.unlock(io);
@@ -1485,9 +1521,7 @@ export fn bw_wallet_balance(ctx: ?*Ctx, idx: usize, out: ?*BwWalletBalance) c_in
     var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
     defer arena.deinit();
     const a = arena.allocator();
-    var threaded: std.Io.Threaded = .init(a, .{});
-    defer threaded.deinit();
-    const io = threaded.io();
+    const io = sharedIo();
     defer c.wallet_mtx.unlock(io);
 
     const auth = walletAuth(a, io, coin, c, idx) catch |err| {
@@ -1534,9 +1568,7 @@ export fn bw_ext_wallet_rescan(ctx: ?*Ctx, idx: usize, out: ?*BwRescanProgress) 
     var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
     defer arena.deinit();
     const a = arena.allocator();
-    var threaded: std.Io.Threaded = .init(a, .{});
-    defer threaded.deinit();
-    const io = threaded.io();
+    const io = sharedIo();
     defer c.wallet_mtx.unlock(io);
 
     const daemon_auth = ctxAuth(a, io, coin, c) catch |err| {
@@ -1580,9 +1612,7 @@ export fn bw_wallet_transactions(ctx: ?*Ctx, idx: usize, out: ?*BwWalletTx, cap:
     var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
     defer arena.deinit();
     const a = arena.allocator();
-    var threaded: std.Io.Threaded = .init(a, .{});
-    defer threaded.deinit();
-    const io = threaded.io();
+    const io = sharedIo();
     defer c.wallet_mtx.unlock(io);
 
     const auth = walletAuth(a, io, coin, c, idx) catch return 0;
@@ -1618,9 +1648,7 @@ export fn bw_wallet_receive_address(ctx: ?*Ctx, idx: usize, force_new: c_int, bu
     var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
     defer arena.deinit();
     const a = arena.allocator();
-    var threaded: std.Io.Threaded = .init(a, .{});
-    defer threaded.deinit();
-    const io = threaded.io();
+    const io = sharedIo();
     defer c.wallet_mtx.unlock(io);
 
     const auth = walletAuth(a, io, coin, c, idx) catch return 0;
@@ -1645,9 +1673,7 @@ export fn bw_wallet_send(ctx: ?*Ctx, idx: usize, address: ?[*:0]const u8, amount
     var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
     defer arena.deinit();
     const a = arena.allocator();
-    var threaded: std.Io.Threaded = .init(a, .{});
-    defer threaded.deinit();
-    const io = threaded.io();
+    const io = sharedIo();
 
     c.wallet_mtx.lockUncancelable(io);
     defer c.wallet_mtx.unlock(io);
@@ -1698,9 +1724,7 @@ fn fetchMiningStatus(ctx: *Ctx, idx: usize, out: *BwMiningStatus) !void {
     defer arena.deinit();
     const a = arena.allocator();
 
-    var threaded: std.Io.Threaded = .init(a, .{});
-    defer threaded.deinit();
-    const io = threaded.io();
+    const io = sharedIo();
 
     const coin = coinByIndex(idx) orelse return error.NoSuchCoin;
     const auth = try ctxAuth(a, io, coin, ctx);
@@ -1758,9 +1782,7 @@ fn miningAction(ctx: *Ctx, idx: usize, address: []const u8, threads: u32) !void 
     var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
     defer arena.deinit();
     const a = arena.allocator();
-    var threaded: std.Io.Threaded = .init(a, .{});
-    defer threaded.deinit();
-    const io = threaded.io();
+    const io = sharedIo();
 
     const coin = coinByIndex(idx) orelse return error.NoSuchCoin;
     const auth = try ctxAuth(a, io, coin, ctx);
@@ -1905,9 +1927,7 @@ export fn bw_window_geometry(ctx: ?*Ctx, out: ?*BwWindowGeometry) c_int {
     var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
     defer arena.deinit();
     const a = arena.allocator();
-    var threaded: std.Io.Threaded = .init(a, .{});
-    defer threaded.deinit();
-    const io = threaded.io();
+    const io = sharedIo();
 
     const w = readGeomInt(u32, a, io, c.install_root, geom_key_width) orelse return 0;
     const h = readGeomInt(u32, a, io, c.install_root, geom_key_height) orelse return 0;
@@ -1938,9 +1958,7 @@ export fn bw_save_window_geometry(ctx: ?*Ctx, g: ?*const BwWindowGeometry) void 
     var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
     defer arena.deinit();
     const a = arena.allocator();
-    var threaded: std.Io.Threaded = .init(a, .{});
-    defer threaded.deinit();
-    const io = threaded.io();
+    const io = sharedIo();
 
     var buf: [16]u8 = undefined;
     const put = struct {
@@ -2002,9 +2020,7 @@ fn listDir(dir_path: []const u8, out: []u8) usize {
     defer arena.deinit();
     const a = arena.allocator();
 
-    var threaded: std.Io.Threaded = .init(a, .{});
-    defer threaded.deinit();
-    const io = threaded.io();
+    const io = sharedIo();
 
     var dir = std.Io.Dir.cwd().openDir(io, dir_path, .{ .iterate = true }) catch return 0;
     defer dir.close(io);
@@ -2109,9 +2125,7 @@ fn testCtx(root: []const u8) Ctx {
 }
 
 test "a saved window geometry survives the round trip" {
-    var threaded: std.Io.Threaded = .init(std.testing.allocator, .{});
-    defer threaded.deinit();
-    const io = threaded.io();
+    const io = sharedIo();
 
     const root = "test-window-geometry";
     std.Io.Dir.cwd().deleteTree(io, root) catch {};
@@ -2134,9 +2148,7 @@ test "a saved window geometry survives the round trip" {
 }
 
 test "maximizing doesn't overwrite the remembered window size" {
-    var threaded: std.Io.Threaded = .init(std.testing.allocator, .{});
-    defer threaded.deinit();
-    const io = threaded.io();
+    const io = sharedIo();
 
     const root = "test-window-geometry-max";
     std.Io.Dir.cwd().deleteTree(io, root) catch {};
@@ -2158,9 +2170,7 @@ test "maximizing doesn't overwrite the remembered window size" {
 }
 
 test "an unusable stored size is ignored rather than applied" {
-    var threaded: std.Io.Threaded = .init(std.testing.allocator, .{});
-    defer threaded.deinit();
-    const io = threaded.io();
+    const io = sharedIo();
 
     const root = "test-window-geometry-junk";
     std.Io.Dir.cwd().deleteTree(io, root) catch {};
@@ -2195,9 +2205,7 @@ test "an unusable stored size is ignored rather than applied" {
 }
 
 test "saving geometry leaves the TUI's settings in the same file alone" {
-    var threaded: std.Io.Threaded = .init(std.testing.allocator, .{});
-    defer threaded.deinit();
-    const io = threaded.io();
+    const io = sharedIo();
 
     const root = "test-window-geometry-shared";
     std.Io.Dir.cwd().deleteTree(io, root) catch {};
@@ -2267,9 +2275,7 @@ test "bw_update_available compares the marker against the pinned core version" {
     // The GUI's Update button hangs off this, and it has to agree with the TUI:
     // behind → 1, current → 0, and *unknown* → 0 rather than nagging.
     const allocator = std.testing.allocator;
-    var threaded: std.Io.Threaded = .init(allocator, .{});
-    defer threaded.deinit();
-    const io = threaded.io();
+    const io = sharedIo();
 
     const root = "test-capi-update-root";
     std.Io.Dir.cwd().deleteTree(io, root) catch {};
@@ -2462,6 +2468,38 @@ test "a wallet op on a coin with no external wallet is refused, not attempted" {
 
     // An index outside the registry is rejected outright.
     try std.testing.expectEqual(@as(c_int, -1), bw_ext_wallet_open(&ctx, coin_count, pw.ptr, pw.len));
+}
+
+test "the shared Io leaves exactly one SIGIO handler installed for the process" {
+    // `std.Io.Threaded` uses SIGIO to interrupt blocking syscalls when it
+    // cancels: `init` installs a no-op handler and `deinit` restores whatever
+    // was there before. `sigaction` is process-wide, so a Threaded per call let
+    // two overlapping instances on different threads race —
+    //
+    //   A init (saves SIG_DFL) → B init (saves A's handler) → A deinit
+    //   (restores SIG_DFL) → B sends SIGIO → default action terminates us.
+    //
+    // The GUI met that every time a click's metadata reads ran on the UI thread
+    // while the poll thread was mid-sequence: the whole app vanished with
+    // "process terminated with signal IO" on selecting a coin. One shared,
+    // never-destroyed instance is the fix, and this pins it: after using the
+    // shared `Io` the handler must still be installed, never back at SIG_DFL.
+    if (builtin.os.tag == .windows) return error.SkipZigTest;
+
+    const io = sharedIo();
+    // Do some real work through it, so the pool is genuinely up.
+    var dir = std.Io.Dir.cwd().openDir(io, ".", .{ .iterate = true }) catch return error.SkipZigTest;
+    dir.close(io);
+
+    // And again — a second acquisition must not have torn the first one down.
+    _ = sharedIo();
+
+    var current: std.posix.Sigaction = undefined;
+    std.posix.sigaction(.IO, null, &current);
+    const handler = current.handler.handler;
+    try std.testing.expect(handler != null);
+    // SIG_DFL is 0; anything else means a handler is installed.
+    try std.testing.expect(@intFromPtr(handler.?) != 0);
 }
 
 test "the app identity exports report the shared constants" {
