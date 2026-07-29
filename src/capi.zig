@@ -34,6 +34,7 @@ const version = @import("version.zig");
 const registry = @import("registry.zig");
 const sigguard = @import("sigguard.zig");
 const money = @import("money.zig");
+const seed_mod = @import("seed.zig");
 const coinmod = @import("coin.zig");
 const models = @import("models.zig");
 const conf = @import("conf.zig");
@@ -346,6 +347,56 @@ export fn bw_last_error(ctx: ?*Ctx, buf: ?[*]u8, cap: usize) usize {
     _ = ctx;
     const b = buf orelse return 0;
     return copyOut(b[0..cap], tl_err.msg_buf[0..tl_err.msg_len]);
+}
+
+// ---- mnemonic seed helpers (no ctx, no allocation) --------------------------
+//
+// The backup quiz is the last moment a mis-transcribed word can be caught;
+// after that the funds are gone with no recourse. Both front-ends must therefore
+// ask it the same way, which is why these are exported rather than written twice.
+// Neither call copies or retains the words — they read the caller's buffer in
+// place, so it can be wiped straight afterwards.
+
+/// Count the whitespace-separated words in a seed — the live counter under a
+/// seed-entry field. Cheap; safe on the UI thread.
+export fn bw_seed_word_count(words: ?[*]const u8, len: usize) usize {
+    const w = words orelse return 0;
+    return seed_mod.countWords(w[0..len]);
+}
+
+/// Whether `answer` is the word at 1-based `pos` of `words`. Ignores surrounding
+/// whitespace and case — a wordlist is lowercase but people type with a capital,
+/// and rejecting "Abandon" would fail someone who copied their seed down
+/// correctly. 1 on match, 0 otherwise. Cheap; safe on the UI thread.
+export fn bw_seed_word_matches(
+    words: ?[*]const u8,
+    words_len: usize,
+    pos: usize,
+    answer: ?[*]const u8,
+    answer_len: usize,
+) c_int {
+    const w = words orelse return 0;
+    const a = answer orelse return 0;
+    return if (seed_mod.wordMatches(w[0..words_len], pos, a[0..answer_len])) 1 else 0;
+}
+
+/// Pick up to 3 distinct 1-based positions to quiz, ascending, written into
+/// `out`; returns how many (fewer than 3 only for an unusually short seed).
+///
+/// The positions come from the OS CSPRNG. Don't substitute a userspace PRNG: a
+/// clock-seeded one makes the quiz predictable, which is precisely what it must
+/// not be.
+export fn bw_seed_verify_positions(word_count: usize, out: ?*u32, cap: usize) usize {
+    const o = out orelse return 0;
+    if (cap == 0) return 0;
+    var pos: [seed_mod.verify_positions]usize = undefined;
+    const n = @min(seed_mod.pickVerifyPositions(sharedIo(), word_count, &pos), cap);
+    // Ascending, so the quiz walks the phrase front to back rather than jumping
+    // about — the order it's written down in.
+    std.mem.sort(usize, pos[0..n], {}, std.sort.asc(usize));
+    const dst = @as([*]u32, @ptrCast(o))[0..n];
+    for (dst, pos[0..n]) |*d, p| d.* = @intCast(p);
+    return n;
 }
 
 // ---- number formatting (no ctx, no allocation) ------------------------------
@@ -2531,6 +2582,36 @@ test "the shared Io leaves exactly one SIGIO handler installed for the process" 
     try std.testing.expect(handler != null);
     // SIG_DFL is 0; anything else means a handler is installed.
     try std.testing.expect(@intFromPtr(handler.?) != 0);
+}
+
+test "the seed exports answer the backup quiz the way the shared module does" {
+    const words = "abandon ability able about above absent absorb abstract absurd abuse access accident";
+    try std.testing.expectEqual(@as(usize, 12), bw_seed_word_count(words.ptr, words.len));
+
+    // Right word, however it was typed.
+    const ok = "Ability";
+    try std.testing.expectEqual(@as(c_int, 1), bw_seed_word_matches(words.ptr, words.len, 2, ok.ptr, ok.len));
+    // Wrong word, and a prefix of the right one, must both fail — a quiz that
+    // accepts a prefix isn't checking anything.
+    const wrong = "able";
+    try std.testing.expectEqual(@as(c_int, 0), bw_seed_word_matches(words.ptr, words.len, 2, wrong.ptr, wrong.len));
+    const prefix = "abilit";
+    try std.testing.expectEqual(@as(c_int, 0), bw_seed_word_matches(words.ptr, words.len, 2, prefix.ptr, prefix.len));
+    // Position 0 and past the end are not answerable.
+    try std.testing.expectEqual(@as(c_int, 0), bw_seed_word_matches(words.ptr, words.len, 0, ok.ptr, ok.len));
+    try std.testing.expectEqual(@as(c_int, 0), bw_seed_word_matches(words.ptr, words.len, 99, ok.ptr, ok.len));
+
+    // Positions: three distinct, in range, ascending.
+    var pos: [3]u32 = undefined;
+    var round: usize = 0;
+    while (round < 100) : (round += 1) {
+        try std.testing.expectEqual(@as(usize, 3), bw_seed_verify_positions(25, &pos[0], pos.len));
+        try std.testing.expect(pos[0] < pos[1] and pos[1] < pos[2]);
+        try std.testing.expect(pos[0] >= 1 and pos[2] <= 25);
+    }
+    // A short seed yields fewer rather than looping for a third distinct one.
+    try std.testing.expectEqual(@as(usize, 2), bw_seed_verify_positions(2, &pos[0], pos.len));
+    try std.testing.expectEqual(@as(usize, 0), bw_seed_verify_positions(0, &pos[0], pos.len));
 }
 
 test "the amount exports render exactly what the shared formatter does" {

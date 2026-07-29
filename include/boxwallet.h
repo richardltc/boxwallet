@@ -75,6 +75,26 @@ size_t  bw_last_error(bw_ctx *ctx, char *buf, size_t cap);
  * itself on the password step when it sees that one. Same per-thread rule. */
 size_t  bw_last_error_code(bw_ctx *ctx, char *buf, size_t cap);
 
+/* ---- mnemonic seed helpers (no ctx needed) ----------------------------------
+ * The backup quiz is the last moment a mis-transcribed word can be caught, and
+ * after that the funds are gone with no recourse — so both front-ends ask it the
+ * same way, from here, rather than each writing their own.
+ *
+ * None of these copies or retains the words: they read your buffer in place, so
+ * you can wipe it straight afterwards.
+ *
+ * bw_seed_word_matches ignores surrounding whitespace and case, because a
+ * wordlist is lowercase but people type with a capital and rejecting "Abandon"
+ * would fail someone who copied their seed down correctly.
+ *
+ * bw_seed_verify_positions draws from the OS CSPRNG and returns ascending
+ * positions. Do NOT substitute a local PRNG — a clock-seeded generator makes the
+ * quiz predictable, which is exactly what it must not be. */
+size_t  bw_seed_word_count(const char *words, size_t len);
+int     bw_seed_word_matches(const char *words, size_t words_len, size_t pos,
+                             const char *answer, size_t answer_len);
+size_t  bw_seed_verify_positions(size_t word_count, uint32_t *out, size_t cap);
+
 /* ---- number formatting (no ctx needed) --------------------------------------
  * Exported rather than reimplemented here so both front-ends show the same
  * balance the same way. They did diverge once: the GUI carried its own snprintf

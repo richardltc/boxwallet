@@ -134,43 +134,6 @@ static void wipe_secret(std::vector<uint8_t> &v)
         p[i] = 0;
 }
 
-// Case-insensitive compare of `answer` against the `pos`-th (1-based)
-// whitespace-separated word of `words` — the seed backup check.
-static bool nth_word_equals(const std::string &words, int pos, std::string_view answer)
-{
-    if (pos < 1)
-        return false;
-    size_t i = 0, n = words.size();
-    int seen = 0;
-    while (i < n) {
-        while (i < n && std::isspace(static_cast<unsigned char>(words[i])))
-            ++i;
-        size_t start = i;
-        while (i < n && !std::isspace(static_cast<unsigned char>(words[i])))
-            ++i;
-        if (i == start)
-            break;
-        if (++seen == pos) {
-            std::string_view w(words.data() + start, i - start);
-            std::string_view a = answer;
-            // Trim the user's answer; a trailing space shouldn't fail a correct word.
-            while (!a.empty() && std::isspace(static_cast<unsigned char>(a.front())))
-                a.remove_prefix(1);
-            while (!a.empty() && std::isspace(static_cast<unsigned char>(a.back())))
-                a.remove_suffix(1);
-            if (w.size() != a.size())
-                return false;
-            for (size_t k = 0; k < w.size(); ++k) {
-                if (std::tolower(static_cast<unsigned char>(w[k])) !=
-                    std::tolower(static_cast<unsigned char>(a[k])))
-                    return false;
-            }
-            return true;
-        }
-    }
-    return false;
-}
-
 // The message a failed call left behind, already turned into a sentence for the
 // user by the core (the daemon's own reason wherever it gave one).
 static std::string last_error_text(bw_ctx *ctx, int rc)
@@ -862,21 +825,16 @@ int main()
             if (sn > 0 && sn <= sizeof sb)
                 seed.assign(sb, sn);
             // Quiz three distinct positions spread across the phrase, so the
-            // check can't be passed by copying only the first few words.
-            size_t words = 0;
-            for (size_t i = 0; i < seed.size();) {
-                while (i < seed.size() && std::isspace(static_cast<unsigned char>(seed[i]))) ++i;
-                if (i >= seed.size()) break;
-                ++words;
-                while (i < seed.size() && !std::isspace(static_cast<unsigned char>(seed[i]))) ++i;
-            }
-            if (words >= 3) {
-                std::mt19937 rng{std::random_device{}()};
-                std::vector<int> all(words);
-                for (size_t i = 0; i < words; ++i) all[i] = static_cast<int>(i + 1);
-                std::shuffle(all.begin(), all.end(), rng);
-                std::sort(all.begin(), all.begin() + 3);
-                p1 = all[0]; p2 = all[1]; p3 = all[2];
+            // check can't be passed by copying only the first few words. Both
+            // the count and the draw come from the core: the positions are
+            // drawn from the OS CSPRNG, where this used to seed a std::mt19937
+            // from the clock.
+            size_t words = bw_seed_word_count(seed.data(), seed.size());
+            uint32_t pos[3] = {1, 2, 3};
+            if (bw_seed_verify_positions(words, pos, 3) == 3) {
+                p1 = static_cast<int>(pos[0]);
+                p2 = static_cast<int>(pos[1]);
+                p3 = static_cast<int>(pos[2]);
             }
         }
         std::string err = (rc < 0) ? last_error_text(c, rc) : std::string();
@@ -1355,8 +1313,13 @@ int main()
         auto h = weak.lock();
         if (!h)
             return false;
-        std::string words(std::string_view((*h)->get_wallet_seed_words()));
-        return nth_word_equals(words, pos, std::string_view(answer));
+        // Both the words and the answer are read in place by the core; nothing
+        // is copied, so the property remains the only place the seed lives.
+        std::string_view words((*h)->get_wallet_seed_words());
+        std::string_view a(answer);
+        return bw_seed_word_matches(words.data(), words.size(),
+                                    static_cast<size_t>(pos < 1 ? 0 : pos),
+                                    a.data(), a.size()) != 0;
     });
 
     ui->on_seed_discard([ctx]() { bw_ext_wallet_seed_discard(ctx); });

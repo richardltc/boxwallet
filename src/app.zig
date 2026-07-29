@@ -3,6 +3,7 @@ const zz = @import("zigzag");
 const version_mod = @import("version.zig");
 const registry = @import("registry.zig");
 const money = @import("money.zig");
+const seed_mod = @import("seed.zig");
 const models = @import("models.zig");
 const install_mod = @import("install.zig");
 const disk = @import("disk.zig");
@@ -1393,24 +1394,10 @@ const wallet_pw_max = 256;
 /// and the footer hints without wrapping, while fitting an 80-column terminal.
 const modal_inner_w = 42;
 
-/// Whether `n` is one of the wallet's valid restore-seed word counts (drives the
-/// seed-entry counter's green "looks right" state).
-fn seedCountAccepted(counts: []const usize, n: usize) bool {
-    for (counts) |c| if (c == n) return true;
-    return false;
-}
-
-/// Render the valid seed word counts as "a, b or c" (canonical first), for the
-/// seed-entry prompt. Caller owns the returned slice.
-fn joinSeedCounts(a: std.mem.Allocator, counts: []const usize) ![]const u8 {
-    var w: std.Io.Writer.Allocating = .init(a);
-    errdefer w.deinit();
-    for (counts, 0..) |c, i| {
-        if (i != 0) try w.writer.writeAll(if (i == counts.len - 1) " or " else ", ");
-        try w.writer.print("{d}", .{c});
-    }
-    return w.toOwnedSlice();
-}
+// Seed handling — counting, indexing and the backup quiz — lives in `seed.zig`
+// so both front-ends ask the same question the same way. The GUI used to pick
+// the quiz positions from a clock-seeded `std::mt19937`.
+const seedCountAccepted = seed_mod.countAccepted;
 
 /// Per-coin install activity.
 ///
@@ -8760,7 +8747,10 @@ pub const App = struct {
                 const prompt = if (counts.len == 1)
                     try std.fmt.allocPrint(a, "Enter your {d}-word recovery seed (type or paste):", .{counts[0]})
                 else
-                    try std.fmt.allocPrint(a, "Enter your recovery seed — {s} words (type or paste):", .{try joinSeedCounts(a, counts)});
+                    blk: {
+                        var cbuf: [64]u8 = undefined;
+                        break :blk try std.fmt.allocPrint(a, "Enter your recovery seed — {s} words (type or paste):", .{seed_mod.joinCounts(&cbuf, counts)});
+                    };
                 try wrapIntoRows(a, &out.writer, vbar, inner_w, prompt, (zz.Style{}));
                 try modalRow(&out.writer, vbar, inner_w, "", 0);
 
@@ -9720,52 +9710,9 @@ fn wrapIntoRows(a: std.mem.Allocator, w: *std.Io.Writer, vbar: []const u8, inner
     }
 }
 
-/// Count whitespace-separated tokens in `s` — the live word count shown under the
-/// seed-entry field so the user can see how many of the expected words they've
-/// entered without counting by hand.
-fn countWords(s: []const u8) usize {
-    var it = std.mem.tokenizeAny(u8, s, " \t\r\n");
-    var n: usize = 0;
-    while (it.next()) |_| n += 1;
-    return n;
-}
-
-/// The `n`-th (1-based) whitespace-separated word of `s`, or "" if out of range.
-/// Used to render the numbered seed and to check the backup-verification answers.
-fn nthWord(s: []const u8, n: usize) []const u8 {
-    if (n == 0) return "";
-    var it = std.mem.tokenizeAny(u8, s, " \t\r\n");
-    var i: usize = 0;
-    while (it.next()) |word| {
-        i += 1;
-        if (i == n) return word;
-    }
-    return "";
-}
-
-/// Pick up to three distinct 1-based positions in `[1, word_count]` for the backup
-/// quiz, written into `out` and returned by count (fewer than 3 only for an
-/// unusually short seed). Bytes come from `io.random` (the OS CSPRNG, as
-/// `conf.randomPassword` uses); the choice isn't security-sensitive, but there's no
-/// reason to make it predictable.
-fn pickVerifyPositions(io: std.Io, word_count: usize, out: *[3]usize) usize {
-    const want = @min(@as(usize, 3), word_count);
-    var n: usize = 0;
-    while (n < want) {
-        var b: [1]u8 = undefined;
-        io.random(&b);
-        const pos = @as(usize, b[0] % word_count) + 1; // 1..word_count
-        var dup = false;
-        for (out[0..n]) |p| {
-            if (p == pos) dup = true;
-        }
-        if (!dup) {
-            out[n] = pos;
-            n += 1;
-        }
-    }
-    return n;
-}
+const countWords = seed_mod.countWords;
+const nthWord = seed_mod.nthWord;
+const pickVerifyPositions = seed_mod.pickVerifyPositions;
 
 /// The word the user must type to confirm the destructive "Replace wallet" action.
 const replace_confirm_word = "REPLACE";
@@ -12512,25 +12459,6 @@ test "every wallet menu choice and op has a non-empty label/verb" {
         try std.testing.expect(op.verb().len > 0);
 }
 
-test "nthWord returns the 1-based word and the backup quiz picks distinct positions" {
-    const seed = "alpha bravo charlie delta echo foxtrot";
-    try std.testing.expectEqualStrings("alpha", nthWord(seed, 1));
-    try std.testing.expectEqualStrings("charlie", nthWord(seed, 3));
-    try std.testing.expectEqualStrings("foxtrot", nthWord(seed, 6));
-    try std.testing.expectEqualStrings("", nthWord(seed, 0));
-    try std.testing.expectEqualStrings("", nthWord(seed, 7)); // out of range
-
-    var threaded: std.Io.Threaded = .init(std.testing.allocator, .{});
-    defer threaded.deinit();
-    const io = threaded.io();
-    var pos: [3]usize = .{ 0, 0, 0 };
-    const n = pickVerifyPositions(io, 15, &pos);
-    try std.testing.expectEqual(@as(usize, 3), n);
-    for (pos) |p| try std.testing.expect(p >= 1 and p <= 15);
-    // Distinct.
-    try std.testing.expect(pos[0] != pos[1] and pos[1] != pos[2] and pos[0] != pos[2]);
-}
-
 test "Ergo's wallet menu offers unlock+replace when locked and lock+replace when open" {
     if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
     const allocator = std.testing.allocator;
@@ -12580,26 +12508,6 @@ test "Ergo's wallet menu offers unlock+replace when locked and lock+replace when
         try std.testing.expectEqual(SetupChoice.replace, m.setup_options[1]);
     }
     app.closeWalletModal();
-}
-
-test "seed word counter accepts any valid length and lists them in the prompt" {
-    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena.deinit();
-    const a = arena.allocator();
-
-    // Monero coins: a single fixed length.
-    try std.testing.expect(seedCountAccepted(&.{25}, 25));
-    try std.testing.expect(!seedCountAccepted(&.{25}, 12));
-    try std.testing.expectEqualStrings("25", try joinSeedCounts(a, &.{25}));
-
-    // Ergo: 15 canonical, but 12/24 also accepted — both the 12-word import and
-    // the 15-word node phrase read as valid.
-    const ergo_counts: []const usize = &.{ 15, 12, 24 };
-    try std.testing.expect(seedCountAccepted(ergo_counts, 15));
-    try std.testing.expect(seedCountAccepted(ergo_counts, 12));
-    try std.testing.expect(seedCountAccepted(ergo_counts, 24));
-    try std.testing.expect(!seedCountAccepted(ergo_counts, 18));
-    try std.testing.expectEqualStrings("15, 12 or 24", try joinSeedCounts(a, ergo_counts));
 }
 
 test "only password-setting ops ask for confirmation" {
