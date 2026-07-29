@@ -64,6 +64,7 @@ test {
     _ = @import("money.zig");
     _ = @import("seed.zig");
     _ = @import("walletmenu.zig");
+    _ = @import("timefmt.zig");
     _ = @import("rpc.zig");
     _ = @import("install.zig");
     _ = @import("update.zig");
