@@ -141,6 +141,11 @@ modules below, and coins call into them with their own parameters:
 | `src/extwallet.zig` | The external wallet-rpc **process** lifecycle: per-coin session, credentials, `ensure`/`kill`/`authFor`, friendly error mapping. |
 | `src/version.zig` | `app_version`, brand colour, per-front-end names. **Bump the version here** — everything else reads it. |
 | `src/update.zig` | The in-app self-updater: check, verify checksum, stage, apply-on-launch. |
+| `src/money.zig` | Amounts and fiat as text: `formatAmount` (fixed decimals, grouped), `trimTrailingZeros`, `parseDollarsToCents`, `pruneValueText`. **Fiat is integer cents, never a float.** |
+| `src/seed.zig` | Mnemonic word counting/indexing and the backup quiz, incl. the CSPRNG position draw. The quiz is the last chance to catch a mis-transcribed seed — don't reimplement it. |
+| `src/walletmenu.zig` | Which wallet actions a coin offers, and in which state, for both wallet shapes. Owns the action labels — `restore` vs `restore_file_offline` take different files and BitcoinZ offers both. |
+| `src/timefmt.zig` | Durations ("2 hours and 5 minutes"), "… behind", block dates (UTC), storage GB (SI). |
+| `src/sigguard.zig` | Pins process-wide SIGIO/SIGPIPE handlers. **Load-bearing — see below.** |
 | `src/mining.zig` · `src/price.zig` · `src/qrcode.zig` · `src/disk.zig` · `src/memory.zig` · `src/bip39.zig` · `src/bzip2.zig` | Single-purpose helpers, each usable by either front-end. |
 | `src/app.zig` | The ZigZag TUI (master/detail). One of two front-ends. |
 | `src/capi.zig` | The C ABI the Slint GUI drives (`export fn bw_*`). The other front-end's entry to the same core. |
@@ -149,6 +154,25 @@ modules below, and coins call into them with their own parameters:
 If you find yourself adding coin-specific logic to a shared module, that's the
 signal to stop: the coin-specific part belongs in the coin file, and only a
 generic, parameterized helper belongs in the shared module.
+
+**A shared module with one caller hasn't shared anything.** When you lift
+something out of a front-end, wire *both* to it — exporting over the C ABI where
+the GUI needs it. The GUI had grown its own amount formatter and its own seed
+quiz (with a weaker RNG) precisely because the lifts stopped at "it compiles".
+
+## Don't remove `src/sigguard.zig`
+
+`std.Io.Threaded.init` installs a **process-wide** SIGIO/SIGPIPE handler and
+`deinit` restores whatever was there before. The core builds a `Threaded` per
+call in 150+ places (`rpc.zig`, `conf.zig`, `install.zig`, `extwallet.zig`, every
+`src/coins/*.zig`) and both front-ends drive those from several threads at once.
+Two overlapping instances means the first teardown restores `SIG_DFL`, and the
+next cancellation SIGIO **terminates the process** — no message, no core dump.
+That was the GUI dying the moment you clicked a coin.
+
+`sigguard.install()` runs first thing in `main` and in `bw_init`, pinning a
+permanent handler so no `deinit` can disarm us. It stays until the per-call
+`Threaded` pattern is gone repo-wide. Every new export inherits that pattern.
 
 ## Adding a coin
 
