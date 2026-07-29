@@ -62,6 +62,7 @@ test {
     _ = @import("registry.zig");
     _ = @import("sigguard.zig");
     _ = @import("money.zig");
+    _ = @import("seed.zig");
     _ = @import("rpc.zig");
     _ = @import("install.zig");
     _ = @import("update.zig");
