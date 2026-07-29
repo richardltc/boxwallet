@@ -33,6 +33,7 @@ const builtin = @import("builtin");
 const version = @import("version.zig");
 const registry = @import("registry.zig");
 const sigguard = @import("sigguard.zig");
+const money = @import("money.zig");
 const coinmod = @import("coin.zig");
 const models = @import("models.zig");
 const conf = @import("conf.zig");
@@ -345,6 +346,36 @@ export fn bw_last_error(ctx: ?*Ctx, buf: ?[*]u8, cap: usize) usize {
     _ = ctx;
     const b = buf orelse return 0;
     return copyOut(b[0..cap], tl_err.msg_buf[0..tl_err.msg_len]);
+}
+
+// ---- number formatting (no ctx, no allocation) ------------------------------
+
+/// Render a coin amount at `decimals` places with thousands separators
+/// ("1,234,567.50000000") into `buf`, returning its length. Cheap; safe on the
+/// UI thread.
+///
+/// Exported rather than reimplemented C++-side so both front-ends show the same
+/// balance the same way. They did diverge: the GUI carried its own `snprintf`
+/// plus manual comma insertion while the TUI used Zig's `printFloat` plus digit
+/// grouping — two implementations of one number.
+///
+/// Trailing zeros are kept, so a coin's full precision always shows and a zero
+/// balance reads as a balance rather than a bare "0". Use `bw_trim_zeros` for
+/// the places that want them gone.
+export fn bw_format_amount(value: f64, decimals: u8, buf: ?[*]u8, cap: usize) usize {
+    const b = buf orelse return 0;
+    var tmp: [64]u8 = undefined;
+    return copyOut(b[0..cap], money.formatAmount(&tmp, value, decimals));
+}
+
+/// Drop trailing zeros (and a bare decimal point) from a figure produced by
+/// `bw_format_amount`: "498.00000000" → "498", "2.50000000" → "2.5". For a
+/// transaction *list*, where a column of full-precision figures is noise.
+/// Balances should keep their full precision. Cheap; safe on the UI thread.
+export fn bw_trim_zeros(text: ?[*]const u8, len: usize, buf: ?[*]u8, cap: usize) usize {
+    const t = text orelse return 0;
+    const b = buf orelse return 0;
+    return copyOut(b[0..cap], money.trimTrailingZeros(t[0..len]));
 }
 
 // ---- application identity (no ctx, no allocation) ---------------------------
@@ -2500,6 +2531,32 @@ test "the shared Io leaves exactly one SIGIO handler installed for the process" 
     try std.testing.expect(handler != null);
     // SIG_DFL is 0; anything else means a handler is installed.
     try std.testing.expect(@intFromPtr(handler.?) != 0);
+}
+
+test "the amount exports render exactly what the shared formatter does" {
+    // The GUI carried its own C++ amount formatter until this export replaced it.
+    // If these ever drift from `money.zig`, the two front-ends are back to
+    // printing one balance two ways.
+    var buf: [96]u8 = undefined;
+    var want: [96]u8 = undefined;
+
+    var n = bw_format_amount(1234567.5, 8, &buf, buf.len);
+    try std.testing.expectEqualStrings(
+        money.formatAmount(&want, 1234567.5, 8),
+        buf[0..n],
+    );
+    // Full precision is kept, so a zero balance reads as a balance.
+    n = bw_format_amount(0.0, 8, &buf, buf.len);
+    try std.testing.expectEqualStrings("0.00000000", buf[0..n]);
+
+    // Trimming is the transaction-list spelling, and it must agree too.
+    const src = "498.00000000";
+    n = bw_trim_zeros(src.ptr, src.len, &buf, buf.len);
+    try std.testing.expectEqualStrings("498", buf[0..n]);
+
+    // A buffer too small truncates rather than overrunning.
+    var tiny: [3]u8 = undefined;
+    try std.testing.expectEqual(@as(usize, 3), bw_format_amount(1234567.5, 8, &tiny, tiny.len));
 }
 
 test "the app identity exports report the shared constants" {

@@ -2,6 +2,7 @@ const std = @import("std");
 const zz = @import("zigzag");
 const version_mod = @import("version.zig");
 const registry = @import("registry.zig");
+const money = @import("money.zig");
 const models = @import("models.zig");
 const install_mod = @import("install.zig");
 const disk = @import("disk.zig");
@@ -1299,49 +1300,30 @@ fn redeemablePositionAt(act: *const Activity, idx: usize) ?*const models.Stablec
     return null;
 }
 
-/// Parse a typed USD amount ("125", "125.5", "125.50") into integer cents,
-/// or null when it isn't a plain non-negative dollars figure (empty, a bare
-/// ".", more than 2 decimal places, stray characters, overflow). Integer
-/// arithmetic only — money never rides through a float here.
-fn parseDollarsToCents(text: []const u8) ?i64 {
-    const t = std.mem.trim(u8, text, " \t");
-    if (t.len == 0) return null;
-    var dollars: []const u8 = t;
-    var frac: []const u8 = "";
-    if (std.mem.indexOfScalar(u8, t, '.')) |dot| {
-        dollars = t[0..dot];
-        frac = t[dot + 1 ..];
-        if (frac.len > 2) return null;
-        if (dollars.len == 0 and frac.len == 0) return null;
-    }
-    var cents: i64 = 0;
-    if (dollars.len > 0) {
-        const d = std.fmt.parseInt(i64, dollars, 10) catch return null;
-        if (d < 0) return null;
-        cents = std.math.mul(i64, d, 100) catch return null;
-    }
-    if (frac.len > 0) {
-        var f = std.fmt.parseInt(i64, frac, 10) catch return null;
-        if (f < 0) return null;
-        if (frac.len == 1) f *= 10;
-        cents = std.math.add(i64, cents, f) catch return null;
-    }
-    return cents;
-}
+// Money in and out, as text, lives in `money.zig` so the GUI renders the same
+// figure the same way — it used to carry its own C++ amount formatter, which is
+// how two front-ends end up printing one balance differently.
+const parseDollarsToCents = money.parseDollarsToCents;
+const formatCents = money.formatCents;
+const formatMicroUsd = money.formatMicroUsd;
 
-/// Format integer cents as a dollars figure ("$1234.56", "-$0.05") into `buf`
-/// — no allocation (callers pass a `[32]u8`).
-fn formatCents(buf: []u8, cents: i64) []const u8 {
-    const abs: u64 = @abs(cents);
-    return std.fmt.bufPrint(buf, "{s}${d}.{d:0>2}", .{
-        if (cents < 0) "-" else "", abs / 100, abs % 100,
-    }) catch "?";
-}
-
-/// Format an oracle price in micro-USD per coin ("$0.014230") into `buf` — six
-/// decimals, since sub-cent coins are the normal case. No allocation.
-fn formatMicroUsd(buf: []u8, micro: u64) []const u8 {
-    return std.fmt.bufPrint(buf, "${d}.{d:0>6}", .{ micro / 1_000_000, micro % 1_000_000 }) catch "?";
+/// `Coin.Pruning.Mode` → `money.PruneMode`. The two enums are deliberately
+/// separate — `money.zig` stays free of the vtable so it can serve the C ABI —
+/// but that means this conversion is by ordinal, and a mode appended to one list
+/// and not the other would silently relabel someone's prune setting. The guard
+/// makes that a build failure instead.
+fn pruneMode(mode: Coin.Pruning.Mode) money.PruneMode {
+    comptime {
+        const a = @typeInfo(Coin.Pruning.Mode).@"enum".fields;
+        const b = @typeInfo(money.PruneMode).@"enum".fields;
+        if (a.len != b.len)
+            @compileError("Coin.Pruning.Mode and money.PruneMode have drifted apart");
+        for (a, b) |fa, fb| {
+            if (fa.value != fb.value or !std.mem.eql(u8, fa.name, fb.name))
+                @compileError("Coin.Pruning.Mode." ++ fa.name ++ " does not line up with money.PruneMode." ++ fb.name);
+        }
+    }
+    return @enumFromInt(@intFromEnum(mode));
 }
 
 /// The prune prompt — a small modal shown the first time a prune-capable coin's
@@ -8026,15 +8008,17 @@ pub const App = struct {
     /// when it's whole GB (matching how it was chosen) and "N MiB" otherwise; an
     /// `.on_off` coin has no size to show, so it just says pruning is on.
     fn formatPruneValue(a: std.mem.Allocator, mode: Coin.Pruning.Mode, prune_mib: i64) []const u8 {
-        if (prune_mib < 0) return (zz.Style{}).fg(.brightBlack).render(a, "not set") catch "not set";
-        if (prune_mib == 0) return (zz.Style{}).dim(true).render(a, "disabled (full node)") catch "disabled (full node)";
-        const text = switch (mode) {
-            .on_off => "enabled (~1/3 the chain)",
-            .size_mib => if (@rem(prune_mib, 1000) == 0)
-                std.fmt.allocPrint(a, "{d} GB", .{@divTrunc(prune_mib, 1000)}) catch "?"
-            else
-                std.fmt.allocPrint(a, "{d} MiB", .{prune_mib}) catch "?",
-        };
+        // The wording is `money.pruneValueText`'s so both front-ends describe a
+        // prune setting identically; only the styling is ours. "not set" is
+        // greyed rather than dimmed because it's an absence, not a value —
+        // and it is a meaningfully different thing from "disabled (full node)",
+        // which is a choice someone made.
+        var buf: [48]u8 = undefined;
+        // Copied onto the arena before styling: `pruneValueText` returns a slice
+        // into `buf` for the size cases, and the `catch text` fallbacks below
+        // would otherwise hand back a pointer into this dead stack frame.
+        const text = a.dupe(u8, money.pruneValueText(&buf, pruneMode(mode), prune_mib)) catch "?";
+        if (prune_mib < 0) return (zz.Style{}).fg(.brightBlack).render(a, text) catch text;
         return (zz.Style{}).dim(true).render(a, text) catch text;
     }
 
@@ -8476,65 +8460,19 @@ pub const App = struct {
         return (zz.Style{}).fg(c).render(a, text) catch text;
     }
 
-    /// Format a coin amount into `buf` at a *fixed* `decimals` places with thousands
-    /// separators, no abbrev (e.g. 1234567.5 at 8dp → "1,234,567.50000000", 0 at 8dp
-    /// → "0.00000000"). The figure is always shown to the coin's full precision —
-    /// trailing zeros are kept, not stripped — so a zero balance reads as a balance
-    /// rather than a bare "0". The integer part is then grouped in threes. Returns a
-    /// slice into `buf` — no allocation. `buf` is sized for any f64 in this notation
-    /// (callers pass a `[64]u8`).
-    fn formatAmount(buf: []u8, value: f64, decimals: u8) []const u8 {
-        var raw: [64]u8 = undefined;
-        var w = std.Io.Writer.fixed(&raw);
-        w.printFloat(value, .{ .mode = .decimal, .precision = decimals }) catch return "?";
-        const s = w.buffered();
-        const dot = std.mem.indexOfScalar(u8, s, '.');
-        const int_part = if (dot) |d| s[0..d] else s;
-        // printFloat pads to exactly `decimals` digits, so the fraction is taken
-        // verbatim — no trailing-zero stripping (fixed-width display).
-        const frac: []const u8 = if (dot) |d| s[d + 1 ..] else "";
+    // Amount/balance text comes from `money.zig`, so the TUI and the GUI cannot
+    // round, group or pad the same figure differently. `formatAmount` keeps a
+    // coin's full precision (trailing zeros included) so a zero balance reads as
+    // a balance; `trimTrailingZeros` is for the Transactions column, where a
+    // stack of full-width figures is noise.
+    const formatAmount = money.formatAmount;
+    const trimTrailingZeros = money.trimTrailingZeros;
 
-        // Group the integer digits in threes: a comma precedes digit `i` when the
-        // count of digits after it is a positive multiple of 3.
-        var gi: usize = 0;
-        var i: usize = 0;
-        while (i < int_part.len and gi < buf.len) : (i += 1) {
-            if (i != 0 and (int_part.len - i) % 3 == 0) {
-                buf[gi] = ',';
-                gi += 1;
-            }
-            buf[gi] = int_part[i];
-            gi += 1;
-        }
-        if (frac.len > 0 and gi + 1 + frac.len <= buf.len) {
-            buf[gi] = '.';
-            gi += 1;
-            @memcpy(buf[gi .. gi + frac.len], frac);
-            gi += frac.len;
-        }
-        return buf[0..gi];
-    }
-
-    /// Trim trailing zeros from a fixed-decimal string produced by `formatAmount`
-    /// (e.g. "498.00000000" → "498", "2.50000000" → "2.5"; "1.25000000" is
-    /// unaffected past its non-zero digits → "1.25"). Drops the decimal point too
-    /// if nothing is left after it. Strings with no '.' pass through unchanged.
-    /// Operates on the slice in place — no allocation. Used only for the
-    /// Transactions tab's amount column; balance figures elsewhere keep their
-    /// full fixed precision (see `formatAmount`'s doc comment).
-    fn trimTrailingZeros(s: []const u8) []const u8 {
-        const dot = std.mem.indexOfScalar(u8, s, '.') orelse return s;
-        var end = s.len;
-        while (end > dot + 1 and s[end - 1] == '0') : (end -= 1) {}
-        if (end == dot + 1) end -= 1; // nothing left after the dot — drop it too
-        return s[0..end];
-    }
-
-    /// Format a coin balance as `formatAmount` (at `decimals` places) followed by
-    /// the coin's abbrev (e.g. "1,234.50000000 NEXA").
+    /// `money.formatBalance` on the caller's arena, so the render paths that
+    /// splice it into a larger `allocPrint` keep working unchanged.
     fn formatBalance(a: std.mem.Allocator, value: f64, abbrev: []const u8, decimals: u8) []const u8 {
-        var buf: [64]u8 = undefined;
-        return std.fmt.allocPrint(a, "{s} {s}", .{ formatAmount(&buf, value, decimals), abbrev }) catch abbrev;
+        var buf: [96]u8 = undefined;
+        return a.dupe(u8, money.formatBalance(&buf, value, abbrev, decimals)) catch abbrev;
     }
 
     /// One styled balance figure for the header corner: `<label>: <amount> <abbrev>`
@@ -10098,34 +10036,6 @@ test "numbered tab jumps are positional over the visible strip" {
     try std.testing.expectEqual(@as(usize, 5), visibleTabCount(false, false));
     try std.testing.expectEqual(@as(usize, 6), visibleTabCount(false, true));
     try std.testing.expectEqual(@as(usize, 6), visibleTabCount(true, false));
-}
-
-test "parseDollarsToCents parses plain USD amounts and rejects everything else" {
-    // Whole dollars, one and two decimals.
-    try std.testing.expectEqual(@as(i64, 12500), parseDollarsToCents("125").?);
-    try std.testing.expectEqual(@as(i64, 12550), parseDollarsToCents("125.5").?);
-    try std.testing.expectEqual(@as(i64, 12550), parseDollarsToCents("125.50").?);
-    try std.testing.expectEqual(@as(i64, 5), parseDollarsToCents(".05").?);
-    try std.testing.expectEqual(@as(i64, 10000), parseDollarsToCents(" 100 ").?);
-    try std.testing.expectEqual(@as(i64, 0), parseDollarsToCents("0").?);
-    // Rejected: empty, bare dot, >2 decimals, stray characters, negatives.
-    try std.testing.expect(parseDollarsToCents("") == null);
-    try std.testing.expect(parseDollarsToCents(".") == null);
-    try std.testing.expect(parseDollarsToCents("1.234") == null);
-    try std.testing.expect(parseDollarsToCents("12a") == null);
-    try std.testing.expect(parseDollarsToCents("-5") == null);
-    try std.testing.expect(parseDollarsToCents("1.2.3") == null);
-}
-
-test "formatCents and formatMicroUsd render money at fixed precision" {
-    var buf: [32]u8 = undefined;
-    try std.testing.expectEqualStrings("$125.50", formatCents(&buf, 12550));
-    try std.testing.expectEqualStrings("$0.05", formatCents(&buf, 5));
-    try std.testing.expectEqualStrings("$100000.00", formatCents(&buf, 10_000_000));
-    try std.testing.expectEqualStrings("-$1.25", formatCents(&buf, -125));
-    // Oracle price: micro-USD per coin, six decimals (sub-cent coins are normal).
-    try std.testing.expectEqualStrings("$0.014230", formatMicroUsd(&buf, 14_230));
-    try std.testing.expectEqualStrings("$1.000000", formatMicroUsd(&buf, 1_000_000));
 }
 
 test "redeemablePositionAt walks only the redeemable vaults, in cache order" {
@@ -13105,41 +13015,6 @@ test "per-coin activity is independent and stays inside the right pane" {
     try std.testing.expect(std.mem.indexOf(u8, screen, Nexa.coin_name) != null);
     try std.testing.expect(std.mem.indexOf(u8, screen, Divi.coin_name) != null);
     try std.testing.expect(std.mem.indexOf(u8, screen, "│") != null);
-}
-
-test "formatBalance shows fixed decimals and appends the coin abbrev" {
-    const a = std.testing.allocator;
-    // Whole amounts are padded out to the coin's full precision (here 8dp).
-    const whole = App.formatBalance(a, 10.0, "NEXA", 8);
-    defer a.free(whole);
-    try std.testing.expectEqualStrings("10.00000000 NEXA", whole);
-    // Fractions are padded to the fixed width too — trailing zeros are kept.
-    const frac = App.formatBalance(a, 13.5, "DIVI", 8);
-    defer a.free(frac);
-    try std.testing.expectEqualStrings("13.50000000 DIVI", frac);
-    // Zero reads as a full-width zero, not a bare "0".
-    const zero = App.formatBalance(a, 0.0, "NEXA", 2);
-    defer a.free(zero);
-    try std.testing.expectEqualStrings("0.00 NEXA", zero);
-    // A 12-decimal coin (Nerva/Zano) shows all twelve places.
-    const xnv = App.formatBalance(a, 0.0, "XNV", 12);
-    defer a.free(xnv);
-    try std.testing.expectEqualStrings("0.000000000000 XNV", xnv);
-    // Large amounts get thousands separators on the integer part.
-    const big = App.formatBalance(a, 1234567.5, "XNV", 8);
-    defer a.free(big);
-    try std.testing.expectEqualStrings("1,234,567.50000000 XNV", big);
-}
-
-test "trimTrailingZeros drops trailing zeros and a bare decimal point" {
-    // All-zero fraction collapses to a bare integer.
-    try std.testing.expectEqualStrings("498", App.trimTrailingZeros("498.00000000"));
-    // Partial trim keeps the significant fractional digits.
-    try std.testing.expectEqualStrings("2.5", App.trimTrailingZeros("2.50000000"));
-    // No trailing zeros to trim — unchanged.
-    try std.testing.expectEqualStrings("1.23456789", App.trimTrailingZeros("1.23456789"));
-    // No decimal point at all (e.g. a 0-decimal coin) — passes through unchanged.
-    try std.testing.expectEqualStrings("498", App.trimTrailingZeros("498"));
 }
 
 test "the header balance shows Total always and Available only while funds settle" {
