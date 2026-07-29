@@ -130,12 +130,21 @@ modules below, and coins call into them with their own parameters:
 
 | Module | Holds |
 |---|---|
-| `src/coin.zig` | The polymorphic `Coin` vtable interface. |
-| `src/install.zig` | Generic streaming download → gunzip+untar (constant memory), `promoteAndTidy`, and `installRoot` (cross-platform `~/.boxwallet`). |
-| `src/rpc.zig` | JSON-RPC transport over `std.http.Client` (basic auth). |
-| `src/models.zig` | Shared/normalized models (`CoinAuth`, `BlockchainState`). Per-coin raw RPC structs may live here or in the coin file. |
-| `src/app.zig` | The ZigZag TUI (master/detail). The one place coins are wired into the UI. |
-| `src/main.zig` | Entry point + the offline test import block. |
+| `src/registry.zig` | The registered coins, in one list, in one order. **That order is the GUI's C ABI** — append, never insert. Also carries the duplicate-binary-name comptime guard. |
+| `src/coin.zig` | The polymorphic `Coin` vtable interface and its capability structs (`ExternalWallet`, `SyncAccelerator`, `Pruning`, `Stablecoin`). |
+| `src/models.zig` | Shared/normalized models (`CoinAuth`, `BlockchainState`, `WalletBalance`, `Seed`, …). Per-coin raw RPC structs may live here or in the coin file. |
+| `src/install.zig` | Generic streaming download → gunzip/unzip/bunzip2 + untar (constant memory), `promoteAndTidy`, `installRoot`, version markers. |
+| `src/rpc.zig` | JSON-RPC transport over `std.http.Client` (basic + digest auth), warm-up scanning, generic bitcoin-family wallet helpers. |
+| `src/conf.zig` | Coin conf read/write (`populate` merges, `writeConf` clobbers), RPC auth resolution, per-platform data dirs, BoxWallet's own `boxwallet.conf`. |
+| `src/proc.zig` | Daemon liveness by process name, start-failure reasons from a log tail, terminate+reap. |
+| `src/warmup.zig` | What a daemon is doing while its RPC can't answer yet (the `-28` probe + log tail) → phase, sub-stage, percentage, and a ready-made label. |
+| `src/extwallet.zig` | The external wallet-rpc **process** lifecycle: per-coin session, credentials, `ensure`/`kill`/`authFor`, friendly error mapping. |
+| `src/version.zig` | `app_version`, brand colour, per-front-end names. **Bump the version here** — everything else reads it. |
+| `src/update.zig` | The in-app self-updater: check, verify checksum, stage, apply-on-launch. |
+| `src/mining.zig` · `src/price.zig` · `src/qrcode.zig` · `src/disk.zig` · `src/memory.zig` · `src/bip39.zig` · `src/bzip2.zig` | Single-purpose helpers, each usable by either front-end. |
+| `src/app.zig` | The ZigZag TUI (master/detail). One of two front-ends. |
+| `src/capi.zig` | The C ABI the Slint GUI drives (`export fn bw_*`). The other front-end's entry to the same core. |
+| `src/main.zig` | TUI entry point + the offline test import block. |
 
 If you find yourself adding coin-specific logic to a shared module, that's the
 signal to stop: the coin-specific part belongs in the coin file, and only a
@@ -146,12 +155,23 @@ generic, parameterized helper belongs in the shared module.
 1. Create `src/coins/<coin>.zig` modeled on `nexa.zig`.
 2. Implement constants, download/install flow, and RPC mapping.
 3. Wire the coin's vtable.
-4. Register it in `src/app.zig`: add to the `Entry` enum, the `coin_entries`
-   list (position doesn't matter — the left bar is sorted alphabetically at
-   comptime, with Home pinned on top), the `App` struct field, and the
-   `selectedCoin` dispatch.
-5. Add it to the `test { ... }` import block in `src/main.zig`.
-6. Add **offline** unit tests (RPC parse/map; install path logic). No daemon, no
+4. **Append** it to `coin_types` in `src/registry.zig` — never insert. That list
+   is the index the GUI addresses coins by (it's the C ABI, and
+   `gui/app.slint`'s logo array is indexed by it), so inserting renumbers every
+   coin after it.
+5. Register it in `src/app.zig`: add to the `Entry` enum, the `coin_entries`
+   list, the `App` struct field, and the `coinAt`/`selectedCoin` dispatch.
+   `coin_entries` **must be in `registry.zig`'s order** — a comptime guard fails
+   the build with the offending index if it isn't. The left bar is still sorted
+   alphabetically at comptime, with Home pinned on top, so display order is
+   independent of registration order.
+6. Add its logo to **both** arrays in `gui/app.slint` — `coin-logos` and the
+   `coin-logo-names` alongside it. Slint needs `@image-url` to be a literal, so
+   the array can't be generated; `main.cpp` checks the names against the registry
+   at startup and disables all logos on a mismatch rather than showing one coin's
+   brand over another's balance.
+7. Add it to the `test { ... }` import block in `src/main.zig`.
+8. Add **offline** unit tests (RPC parse/map; install path logic). No daemon, no
    terminal, no network.
 
 ## Build, test, run
@@ -180,8 +200,11 @@ ZIG_GLOBAL_CACHE_DIR=zig-pkg zig build gui-release # Linux GUI bundles (x86_64 +
   + stripped), named `boxwallet-<os>-<arch>[.exe]` with a `SHA256SUMS`. The app
   self-updates in-app (`src/update.zig` + apply/re-exec in `main.zig` + the
   background check in `app.zig`): to cut a release, bump `app_version` in
-  `src/app.zig`, run `zig build release`, and upload all six files to the GitHub
-  release. Asset names + checksums come from one list in `build.zig`, so they
+  **`src/version.zig`**, run `zig build release`, and upload all six files to the
+  GitHub release. That constant is the single source of truth — `app.zig`
+  re-exports it for the TUI and `capi.zig` exposes it as `bw_app_version` for the
+  GUI, so **never** write the version anywhere else (it was a literal in
+  `gui/app.slint` once, which is how a UI ends up announcing a release it isn't). Asset names + checksums come from one list in `build.zig`, so they
   stay in lockstep with what the updater downloads. The swap targets the real
   running executable wherever it lives — not `~/.boxwallet` (only the staging
   cache). Don't rename assets by hand or the updater can't find them.

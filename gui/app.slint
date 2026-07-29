@@ -1,11 +1,20 @@
-// BoxWallet GUI — proof-of-concept window.
+// BoxWallet GUI — the desktop front-end's window.
 //
 // Left nav (Home + every coin, alphabetical) switching the right-hand detail,
 // which itself has a tab strip (Home / Transactions / Receive / Send / Settings,
 // plus Mining / DigiDollar where the coin supports them) — mirroring the TUI.
 // Live values are `in` properties pushed from gui/main.cpp over the C ABI (bw_*
-// in include/boxwallet.h). Only the Home status tab is wired to live data so
-// far; the other tabs are UI scaffolding to explore the look and feel.
+// in include/boxwallet.h); this file holds no logic of its own beyond layout and
+// the modal stage machines.
+//
+// Wired to live data: Home status, Transactions, Receive, Send, Mining, install
+// and update, the sync accelerators, and both wallet flows. Still scaffolding:
+// Settings and DigiDollar, which render a Placeholder.
+//
+// Anything that isn't presentation belongs in a shared Zig module both
+// front-ends call, never here — see CLAUDE.md. Formatting in particular: amounts,
+// hashrates and relative times all arrive pre-formatted, so the TUI and the GUI
+// cannot round or label the same number differently.
 
 import {
     VerticalBox, HorizontalBox, GroupBox, Button, ListView, ScrollView, LineEdit, CheckBox, SpinBox
@@ -348,12 +357,26 @@ export component AppWindow inherits Window {
     preferred-height: root.initial-height;
     background: #1e1e1e;
 
+    // Who we are, taken from the core (bw_app_name / bw_app_version /
+    // bw_brand_color) rather than written here. The version used to be a literal
+    // in this file, which is how a UI ends up announcing a release it isn't.
+    // `app-version` has no "v" — the label adds one.
+    in property <string> app-name: "BoxWallet";
+    in property <string> app-version: "";
+    in property <color> brand-color: #7ca071;
+
     // Navigation. -1 = Home, otherwise the selected coin's registry index.
     in property <[NavCoin]> nav-coins;
     // Per-coin logos, embedded into the binary at build time and indexed by the
     // coin's registry index (NavCoin.index) — the order MUST match the coin order
-    // in src/capi.zig's `coinByIndex`. Swap a file in gui/coin-logos/ and rebuild
-    // to change a logo.
+    // in src/registry.zig. Swap a file in gui/coin-logos/ and rebuild to change
+    // a logo.
+    //
+    // Slint needs `@image-url` to be a literal, so this array can't be generated
+    // from the registry. `coin-logo-names` below is the safety net: C++ checks it
+    // against bw_coin_name() at startup, so a coin inserted in the registry and
+    // appended here is caught rather than quietly putting Bitcoin's brand over
+    // Litecoin's balance. Keep the two lists in lockstep.
     property <[image]> coin-logos: [
         @image-url("coin-logos/nexa.png"), // 0
         @image-url("coin-logos/divi.png"), // 1
@@ -370,6 +393,27 @@ export component AppWindow inherits Window {
         @image-url("coin-logos/spiderbyte.png"), // 12
         @image-url("coin-logos/monero.png"), // 13
     ];
+    // The coin each `coin-logos` slot is meant for, as bw_coin_name() spells it.
+    // Verified at startup; see the note above.
+    out property <[string]> coin-logo-names: [
+        "Nexa", // 0
+        "Divi", // 1
+        "Ergo", // 2
+        "DigiByte", // 3
+        "Zano", // 4
+        "Nerva", // 5
+        "ReddCoin", // 6
+        "Epic Cash", // 7
+        "Salvium", // 8
+        "Litecoin", // 9
+        "Bitcoin", // 10
+        "BitcoinZ", // 11
+        "SpiderByte", // 12
+        "Monero", // 13
+    ];
+    // Set when that check fails: the logos are then suppressed entirely and this
+    // reads as a banner, because a wrong logo on a wallet is worse than none.
+    in property <string> logo-mismatch: "";
     property <int> selected: -1;
     property <int> tab: 0; // 0 Home, 1 Tx, 2 Receive, 3 Send, 4 Settings, 5 Mining, 6 DigiDollar
     callback coin-selected(int);
@@ -464,6 +508,26 @@ export component AppWindow inherits Window {
     // front-ends can't disagree about what "locked" means.
     in property <int> ew-flags: 0;
     in property <int> wallet-state: 0;
+    // BW_EW_LAUNCH_WITH_PW, decoded in C++ because Slint has no bitwise
+    // operators and this one gates a whole flow rather than a single button.
+    // These wallets (Zano, Epic) spawn their process per-open with the password
+    // on its command line; the core hasn't wired that lifecycle for this
+    // front-end, so every op returns Unsupported and the menu says so instead.
+    in property <bool> wallet-launch-with-pw: false;
+    // What this coin has to show at all (the bw_coin_supports_* reads) — about the
+    // *coin*, not about the wallet's current state, so they gate which tabs exist
+    // rather than what's in them. Epic answers false to receive/send: a
+    // MimbleWimble payment is an interactive slate exchange, with no address to
+    // show and nothing to fire and forget.
+    in property <bool> has-balance: false;
+    in property <bool> has-transactions: false;
+    in property <bool> has-receive: false;
+    in property <bool> has-send: false;
+    // Whether a send could actually go through *right now*. Reading a wallet and
+    // spending from one are different permissions: a bitcoin-family daemon serves
+    // balances and history on a locked wallet, but refuses to sign until it's
+    // unlocked. So the Send tab exists on `has-send` and its button lives on this.
+    in property <bool> can-send: false;
     // Canonical restore-seed length for this wallet (bw_coin_seed_word_counts'
     // first entry), for the seed-entry prompt and its live word counter.
     in property <int> seed-word-count: 25;
@@ -542,7 +606,8 @@ export component AppWindow inherits Window {
     in property <string> status-text: "";  // latest status line
     in property <bool> status-is-error: false;
 
-    // In-app file browser (the Home "test" button).
+    // In-app file browser. Opened from the wallet modal's "pick a wallet file"
+    // stage; its overlay is declared last so it paints above that dialog.
     in-out property <bool> browse-open: false;
     in property <string> browse-path: "";
     in property <[BrowseEntry]> browse-entries;
@@ -551,720 +616,1167 @@ export component AppWindow inherits Window {
     callback browse-up();
     callback browse-enter(int);
 
-    HorizontalBox {
-        padding: 0;
-        spacing: 0;
+    // ---- keyboard ----------------------------------------------------------
+    // Whether anything is covering the pane. Keys must not reach the nav or the
+    // tab strip while a modal is up: switching coins behind a password box would
+    // leave the box asking its question about a different wallet.
+    out property <bool> modal-open:
+        root.browse-open || root.send-confirm-open || root.mining-stop-open
+        || root.wallet-stage != 0 || root.unlock-open || root.update-open
+        || root.accel-open;
 
-        // ---- left nav (Home pinned, coins scroll) ----
-        Rectangle {
-            width: 160px;
-            background: #161616;
-            VerticalBox {
-                padding: 8px;
-                padding-top: 12px;
-                spacing: 2px;
-                // No `alignment: start` here: the ScrollView must stretch to fill
-                // the column (Home stays fixed-height at the top). With an
-                // alignment set, the ScrollView would collapse to its preferred
-                // height and leave the lower part of the nav empty.
-                NavItem {
-                    label: "Home";
-                    accent: #7ca071;
-                    selected: root.selected == -1;
-                    clicked => {
-                        root.selected = -1;
+    // Escape closes the topmost modal, in the same order they paint. Each arm
+    // runs that modal's own Cancel path — clearing secrets included — because a
+    // seed or password dropped by the button but not by Escape is exactly the
+    // leak the modal exists to prevent.
+    //
+    // Wallet stages 6-8 are deliberately absent: 6 is already in flight and
+    // abandoning it wouldn't stop it, and 7-8 are the user's one chance to write
+    // the seed down. Their footers offer no Cancel either, so Escape offering one
+    // would be a way out the design says shouldn't exist.
+    function dismiss-modal() -> bool {
+        if (root.browse-open) {
+            root.browse-open = false;
+            return true;
+        }
+        if (root.send-confirm-open) {
+            root.send-confirm-open = false;
+            return true;
+        }
+        if (root.mining-stop-open) {
+            root.mining-stop-open = false;
+            return true;
+        }
+        if (root.accel-open) {
+            root.accel-open = false;
+            return true;
+        }
+        if (root.update-open) {
+            root.update-open = false;
+            return true;
+        }
+        if (root.unlock-open) {
+            root.unlock-open = false;
+            return true;
+        }
+        if (root.wallet-stage != 0 && (root.wallet-stage < 6 || root.wallet-stage >= 9)) {
+            root.seed-discard();
+            root.wallet-seed-words = "";
+            root.wallet-verify-step = 0;
+            root.wallet-verify-bad = false;
+            root.wallet-replace-bad = false;
+            root.wallet-stage = 0;
+            return true;
+        }
+        return false;
+    }
+
+    // Which tab index a number key selects, or -1 where the coin doesn't have
+    // that tab. Mirrors the TUI, where 1-N index the *visible* strip.
+    pure function tab-for-key(k: string) -> int {
+        if (k == "1") { return 0; }
+        if (k == "2") { return root.has-transactions ? 1 : -1; }
+        if (k == "3") { return root.has-receive ? 2 : -1; }
+        if (k == "4") { return root.has-send ? 3 : -1; }
+        if (k == "5") { return 4; }
+        if (k == "6") { return root.has-mining ? 5 : -1; }
+        if (k == "7") { return root.has-stablecoin ? 6 : -1; }
+        return -1;
+    }
+
+    forward-focus: keys;
+
+    // Where `delta` rows from `current` lands: a registry index, -1 for Home, or
+    // `no-move` when already at an end (it clamps rather than wrapping, matching
+    // the TUI — holding a key doesn't loop you back to where you started).
+    //
+    // Resolved in C++ because `nav-coins` is alphabetical display order while
+    // `selected` is a registry index, so the current row has to be searched for,
+    // and a Slint function body has no loop. C++ built that list, so it is the
+    // side that already knows the mapping. The state stays here: C++ answers a
+    // question, it doesn't reach in and set the selection.
+    callback nav-step(/* current */ int, /* delta */ int) -> int;
+    property <int> no-move: -2;
+
+    // Select `idx` exactly as clicking its nav row would, so the poller is told
+    // either way. `no-move` means the key was a no-op.
+    function go-to(idx: int) {
+        if (idx == root.no-move) {
+            return;
+        }
+        root.selected = idx;
+        root.tab = 0;
+        root.coin-selected(idx);
+    }
+
+    // Cycle to the next/previous *visible* tab, skipping the ones this coin
+    // doesn't have, and stopping at the ends rather than wrapping. Unrolled for
+    // the same reason: no loops in a function body, and there are only ever
+    // seven tabs.
+    function step-tab(delta: int) {
+        if (root.try-tab(root.tab + delta)) { return; }
+        if (root.try-tab(root.tab + delta * 2)) { return; }
+        if (root.try-tab(root.tab + delta * 3)) { return; }
+        if (root.try-tab(root.tab + delta * 4)) { return; }
+        if (root.try-tab(root.tab + delta * 5)) { return; }
+        root.try-tab(root.tab + delta * 6);
+    }
+
+    function try-tab(t: int) -> bool {
+        if (t < 0 || t > 6 || !root.tab-visible(t)) {
+            return false;
+        }
+        root.tab = t;
+        return true;
+    }
+
+    pure function tab-visible(t: int) -> bool {
+        if (t == 1) { return root.has-transactions; }
+        if (t == 2) { return root.has-receive; }
+        if (t == 3) { return root.has-send; }
+        if (t == 5) { return root.has-mining; }
+        if (t == 6) { return root.has-stablecoin; }
+        return t == 0 || t == 4;
+    }
+
+    // Everything lives inside this FocusScope so unhandled keys bubble up to it
+    // from whatever has focus. As a *sibling* of the content it would only ever
+    // see keys while it personally held focus — which the first click on any
+    // button would take away for good.
+    keys := FocusScope {
+        width: 100%;
+        height: 100%;
+
+        key-pressed(event) => {
+            if (event.text == Key.Escape) {
+                return root.dismiss-modal() ? accept : reject;
+            }
+            // Everything below steers the pane behind the modal, so it stays out
+            // while one is up. Typing is never swallowed here either way — a
+            // LineEdit inside a modal holds focus and sees the key first.
+            if (root.modal-open) {
+                return reject;
+            }
+            if (event.text == Key.UpArrow || event.text == Key.DownArrow) {
+                root.go-to(root.nav-step(root.selected, event.text == Key.DownArrow ? 1 : -1));
+                return accept;
+            }
+            if (root.selected == -1) {
+                return reject; // Home has no tabs
+            }
+            if (event.text == Key.LeftArrow || event.text == Key.RightArrow) {
+                root.step-tab(event.text == Key.RightArrow ? 1 : -1);
+                return accept;
+            }
+            if (root.tab-for-key(event.text) >= 0) {
+                root.tab = root.tab-for-key(event.text);
+                return accept;
+            }
+            return reject;
+        }
+
+        HorizontalBox {
+            padding: 0;
+            spacing: 0;
+
+            // ---- left nav (Home pinned, coins scroll) ----
+            Rectangle {
+                width: 160px;
+                background: #161616;
+                VerticalBox {
+                    padding: 8px;
+                    padding-top: 12px;
+                    spacing: 2px;
+                    // No `alignment: start` here: the ScrollView must stretch to fill
+                    // the column (Home stays fixed-height at the top). With an
+                    // alignment set, the ScrollView would collapse to its preferred
+                    // height and leave the lower part of the nav empty.
+                    NavItem {
+                        label: "Home";
+                        accent: root.brand-color;
+                        selected: root.selected == -1;
+                        clicked => {
+                            root.selected = -1;
+                            root.tab = 0;
+                            // -1 too: the poller has to be told we left the coin, or
+                            // it keeps polling its RPC every two seconds for a pane
+                            // nobody is looking at.
+                            root.coin-selected(-1);
+                        }
                     }
-                }
-                ScrollView {
-                    vertical-stretch: 1;
-                    VerticalBox {
-                        padding: 0;
-                        spacing: 2px;
-                        alignment: start;
-                        for c in root.nav-coins: NavItem {
-                            label: c.name;
-                            accent: c.color;
-                            selected: root.selected == c.index;
-                            clicked => {
-                                root.selected = c.index;
-                                root.tab = 0;
-                                root.coin-selected(c.index);
+                    ScrollView {
+                        vertical-stretch: 1;
+                        VerticalBox {
+                            padding: 0;
+                            spacing: 2px;
+                            alignment: start;
+                            for c in root.nav-coins: NavItem {
+                                label: c.name;
+                                accent: c.color;
+                                selected: root.selected == c.index;
+                                clicked => {
+                                    root.selected = c.index;
+                                    root.tab = 0;
+                                    root.coin-selected(c.index);
+                                }
                             }
                         }
+                    }
+                }
+            }
+
+            // ---- detail ----
+            Rectangle {
+                background: #1e1e1e;
+
+                // HOME
+                if root.selected == -1: VerticalBox {
+                    padding: 26px;
+                    spacing: 10px;
+                    alignment: start;
+                    // App logo + title/version.
+                    HorizontalBox {
+                        padding: 0;
+                        spacing: 12px;
+                        alignment: start;
+                        Image {
+                            source: @image-url("coin-logos/BoxWallet.png");
+                            image-fit: contain;
+                            width: 69px;
+                            height: 69px;
+                            vertical-alignment: center;
+                        }
+                        VerticalBox {
+                            padding: 0;
+                            spacing: 2px;
+                            HorizontalBox {
+                                padding: 0;
+                                alignment: start;
+                                ShiningTitle {
+                                    caption: root.app-name;
+                                    base: root.brand-color;
+                                    font-size: 32px;
+                                    font-weight: 800;
+                                }
+                            }
+                            Text {
+                                text: "v" + root.app-version;
+                                color: #808080;
+                                font-size: 14px;
+                            }
+                        }
+                    }
+                    Rectangle {
+                        height: 8px;
+                    }
+                    Text {
+                        text: "Multi-coin cryptocurrency wallet manager.";
+                        color: #cfcfcf;
+                        font-size: 15px;
+                    }
+                    Text {
+                        text: "Select a coin on the left to see its status.";
+                        color: #9a9a9a;
+                        font-size: 14px;
+                    }
+                    // A build-time mistake, surfaced rather than swallowed: the coin
+                    // logos no longer line up with the registry, so they've all been
+                    // turned off. Only ever visible to someone running a broken build.
+                    if root.logo-mismatch != "": Rectangle {
+                        background: #3a2a1a;
+                        border-radius: 6px;
+                        border-width: 1px;
+                        border-color: #b8863b;
+                        VerticalLayout {
+                            padding: 10px;
+                            spacing: 4px;
+                            Text {
+                                text: "Coin logos disabled";
+                                color: #e8b45c;
+                                font-size: 14px;
+                                font-weight: 600;
+                            }
+                            Text {
+                                text: "gui/app.slint is out of step with src/registry.zig — "
+                                    + root.logo-mismatch + ".";
+                                color: #cfcfcf;
+                                font-size: 13px;
+                                wrap: word-wrap;
+                            }
+                        }
+                    }
+                }
+
+                // COIN DETAIL (tabbed)
+                if root.selected != -1: VerticalBox {
+                    padding: 26px;
+                    spacing: 14px;
+                    // No `alignment: start` here: a tab whose body should fill the
+                    // pane (Transactions' list) needs the layout to hand out the
+                    // leftover height, and an alignment stops it doing that — every
+                    // child collapses to its preferred size instead. The trailing
+                    // spacer at the end keeps the *other* tabs packed to the top.
+
+                    // Logo + title/description. The logo is the embedded per-coin
+                    // image, selected by the coin's registry index (root.selected).
+                    HorizontalBox {
+                        padding: 0;
+                        alignment: start;
+                        spacing: 12px;
+                        // Suppressed entirely when the startup check found the logo
+                        // array out of step with the registry: a coin wearing another
+                        // coin's brand is worse than a coin wearing none.
+                        if root.logo-mismatch == "": Image {
+                            source: root.coin-logos[root.selected];
+                            image-fit: contain;
+                            width: 69px;
+                            height: 69px;
+                            vertical-alignment: center;
+                        }
+                        VerticalBox {
+                            padding: 0;
+                            spacing: 2px;
+                            // Title + version, manually placed so the version's bottom
+                            // sits on the title's baseline. (A HorizontalBox centres
+                            // the two vertically, floating the small version too high.)
+                            Rectangle {
+                                height: title-el.preferred-height;
+                                title-el := ShiningTitle {
+                                    x: 0;
+                                    caption: root.coin-name;
+                                    base: root.coin-color;
+                                    font-size: 28px;
+                                    font-weight: 800;
+                                }
+                                Text {
+                                    text: root.coin-version;
+                                    color: #808080;
+                                    font-size: 13px;
+                                    x: title-el.preferred-width + 8px;
+                                    // Bottom-align to the title, nudged up so the
+                                    // baselines (not the box bottoms) line up.
+                                    y: parent.height - self.preferred-height - 4px;
+                                }
+                            }
+                            Text {
+                                text: root.coin-desc;
+                                color: #9a9a9a;
+                                font-size: 13px;
+                            }
+                        }
+                        // Balance corner, mirroring the TUI's. It rides the header so
+                        // it's on every tab — the one figure a wallet exists to show
+                        // shouldn't be reachable only by opening Send (which Epic
+                        // doesn't even have).
+                        if root.has-balance && root.balance-total != "—": VerticalLayout {
+                            horizontal-stretch: 1;
+                            alignment: center;
+                            spacing: 2px;
+                            Text {
+                                text: root.balance-total;
+                                color: #e6e6e6;
+                                font-family: "monospace";
+                                font-size: 20px;
+                                horizontal-alignment: right;
+                            }
+                            // Available is shown only when it differs from the total,
+                            // i.e. while something is still pending — otherwise it's
+                            // the same number twice.
+                            if root.balance-avail != root.balance-total: Text {
+                                text: root.balance-avail + " available";
+                                color: #8a8a8a;
+                                font-size: 12px;
+                                horizontal-alignment: right;
+                            }
+                        }
+                    }
+
+                    // Status glyph row — under the description, so it's visible on
+                    // every tab (not just the Home/status tab).
+                    HorizontalBox {
+                        padding: 0;
+                        spacing: 6px;
+                        alignment: start;
+
+                        // Installed — hops while not installed (pointing at the Install
+                        // button), and pulses while the install itself runs.
+                        StatusIcon {
+                            icon: @image-url("icons/download.svg");
+                            accent: root.coin-color;
+                            active: root.installed || root.installing;
+                            hint: root.installing
+                                ? (root.install-phase == 2 ? "Installing…" : "Downloading…")
+                                : (root.installed
+                                    ? (root.update-available
+                                        ? "Update available: " + root.installed-version + " → " + root.coin-version
+                                        : "Installed")
+                                    : "Not installed — use the Install button");
+                            motion: root.installing ? "pulse" : "hop";
+                            moving: !root.installed || root.installing;
+                        }
+                        // Daemon — grey when stopped, pulses while loading, lit when running.
+                        StatusIcon {
+                            icon: @image-url("icons/smile.svg");
+                            accent: root.coin-color;
+                            active: root.running || root.daemon-loading;
+                            // While it's coming up, name the stage it's actually at
+                            // rather than a bare "loading" — a block-index load or a
+                            // rewind can run for minutes, and the difference is the
+                            // only sign of progress there is.
+                            hint: root.daemon-loading
+                                ? (root.daemon-stage != "" ? root.daemon-stage : "Daemon loading…")
+                                : (root.running ? "Daemon running" : "Daemon not running");
+                            motion: "pulse";
+                            moving: root.daemon-loading;
+                        }
+                        // Peers — lit when connected; hint shows the count.
+                        StatusIcon {
+                            icon: @image-url("icons/wifi.svg");
+                            accent: root.coin-color;
+                            active: root.running && root.peers > 0;
+                            hint: "Peers: " + root.peers;
+                            // Pulse once whenever a new peer connection is picked up.
+                            pulse-on-increase: root.peers;
+                        }
+                        // Sync — spins while syncing, static when synced.
+                        StatusIcon {
+                            icon: @image-url("icons/refresh-cw.svg");
+                            accent: root.coin-color;
+                            active: root.running;
+                            hint: root.running ? (root.synced ? "Synced" : "Syncing…") : "Not running";
+                            motion: "spin";
+                            moving: root.running && !root.synced;
+                        }
+                        // Wallet lock — open/closed padlock, lit once we know the
+                        // wallet's state. A coin with a *managed* wallet (Nerva) has
+                        // no in-daemon lock state to report, so it reads `wallet-state`
+                        // instead; without this its padlock would sit permanently grey.
+                        if root.ew-flags == 0: StatusIcon {
+                            icon: (root.wallet-sec == 1 || root.wallet-sec == 3 || root.wallet-sec == 4)
+                                ? @image-url("icons/lock-open.svg")
+                                : @image-url("icons/lock.svg");
+                            accent: root.coin-color;
+                            active: root.wallet-sec != 0;
+                            hint: root.wallet-sec == 1 ? "Wallet not encrypted"
+                                : root.wallet-sec == 2 ? "Wallet locked"
+                                : root.wallet-sec == 3 ? "Wallet unlocked"
+                                : root.wallet-sec == 4 ? "Unlocked for staking"
+                                : "Wallet status unknown";
+                        }
+                        if root.ew-flags != 0: StatusIcon {
+                            icon: root.wallet-state >= 2
+                                ? @image-url("icons/lock-open.svg")
+                                : @image-url("icons/lock.svg");
+                            accent: root.coin-color;
+                            active: root.wallet-state != 0;
+                            hint: root.wallet-state == 0 ? "No wallet yet"
+                                : root.wallet-state == 1 ? "Wallet locked"
+                                : root.wallet-state == 3 ? "Wallet rescanning"
+                                : "Wallet unlocked";
+                        }
+                        // Staking (PoS) or Mining (mining coins) — pulses while active.
+                        if !root.has-mining: StatusIcon {
+                            icon: @image-url("icons/zap.svg");
+                            accent: root.coin-color;
+                            active: root.staking;
+                            hint: root.staking ? "Staking" : "Not staking";
+                            motion: "pulse";
+                            moving: root.staking;
+                        }
+                        if root.has-mining: StatusIcon {
+                            icon: @image-url("icons/cpu.svg");
+                            accent: root.coin-color;
+                            active: root.mining;
+                            hint: root.mining ? "Mining" : "Not mining";
+                            motion: "pulse";
+                            moving: root.mining;
+                        }
+                    }
+
+                    // Branded divider — full coin colour in the centre, fading to the
+                    // pane on both ends — between the status icons and the tab strip.
+                    Rectangle {
+                        height: 1px;
+                        background: @linear-gradient(90deg, transparent 0%, root.coin-color 25%, transparent 100%);
+                    }
+
+                    // Tab strip.
+                    HorizontalBox {
+                        padding: 0;
+                        spacing: 18px;
+                        alignment: start;
+                        TabButton {
+                            label: "Home";
+                            icon: @image-url("icons/home.svg");
+                            accent: root.coin-color;
+                            selected: root.tab == 0;
+                            clicked => {
+                                root.tab = 0;
+                            }
+                        }
+                        if root.has-transactions: TabButton {
+                            label: "Transactions";
+                            icon: @image-url("icons/transactions.svg");
+                            accent: root.coin-color;
+                            selected: root.tab == 1;
+                            clicked => {
+                                root.tab = 1;
+                            }
+                        }
+                        if root.has-receive: TabButton {
+                            label: "Receive";
+                            icon: @image-url("icons/receive.svg");
+                            accent: root.coin-color;
+                            selected: root.tab == 2;
+                            clicked => {
+                                root.tab = 2;
+                            }
+                        }
+                        if root.has-send: TabButton {
+                            label: "Send";
+                            icon: @image-url("icons/send.svg");
+                            accent: root.coin-color;
+                            selected: root.tab == 3;
+                            clicked => {
+                                root.tab = 3;
+                            }
+                        }
+                        TabButton {
+                            label: "Settings";
+                            icon: @image-url("icons/settings.svg");
+                            accent: root.coin-color;
+                            selected: root.tab == 4;
+                            clicked => {
+                                root.tab = 4;
+                            }
+                        }
+                        if root.has-mining: TabButton {
+                            label: "Mining";
+                            icon: @image-url("icons/mining.svg");
+                            accent: root.coin-color;
+                            selected: root.tab == 5;
+                            clicked => {
+                                root.tab = 5;
+                            }
+                        }
+                        if root.has-stablecoin: TabButton {
+                            label: "DigiDollar";
+                            icon: @image-url("icons/digidollar.svg");
+                            accent: root.coin-color;
+                            selected: root.tab == 6;
+                            clicked => {
+                                root.tab = 6;
+                            }
+                        }
+                    }
+                    Rectangle {
+                        height: 1px;
+                        background: #333333;
+                    }
+
+                    // ---- tab bodies ----
+
+                    // Home / status (live).
+                    if root.tab == 0: VerticalBox {
+                        padding: 0;
+                        spacing: 14px;
+                        vertical-stretch: 0;
+                        alignment: start;
+
+                        HorizontalBox {
+                            padding: 4px;
+                            spacing: 40px;
+                            alignment: start;
+                            CircleGauge {
+                                label: "Headers";
+                                frac: root.headers-frac;
+                                fill: root.coin-color;
+                                value: root.headers-str;
+                                full-text: "Synced";
+                            }
+                            CircleGauge {
+                                label: "Blocks";
+                                frac: root.blocks-frac;
+                                fill: root.coin-color;
+                                value: root.blocks-str;
+                                full-text: "Synced";
+                            }
+                            CircleGauge {
+                                label: "Disk used";
+                                frac: root.disk-frac;
+                                fill: root.coin-color;
+                                value: root.disk-free;
+                            }
+                        }
+                        // Status line — the latest info/action message (like the TUI).
+                        HorizontalBox {
+                            padding: 0;
+                            spacing: 6px;
+                            alignment: start;
+                            Text {
+                                text: "Status:";
+                                color: #9a9a9a;
+                                font-size: 13px;
+                            }
+                            Text {
+                                // A daemon that's still coming up outranks the last
+                                // action message: the stage moves on its own (and can
+                                // do so for minutes), so it's the live answer to "what
+                                // is it doing?". Otherwise the latest action/info
+                                // message, falling back to "Staking" while it stakes.
+                                text: root.daemon-stage != ""
+                                    ? root.daemon-stage
+                                    : (root.status-text != "" ? root.status-text : (root.staking ? "Staking" : ""));
+                                // A live stage is progress, never an error — don't
+                                // inherit the red from an earlier failed action.
+                                color: root.status-is-error && root.daemon-stage == "" ? #e74c3c : #c8c8c8;
+                                font-size: 13px;
+                                wrap: word-wrap;
+                                horizontal-stretch: 1;
+                            }
+                        }
+
+                        // Install progress — shown in place of the button row while a
+                        // download/extract runs, so the rest of the app (and the coin
+                        // list) stays usable during a multi-minute install.
+                        if root.installing || (root.accel-paused && !root.running): VerticalBox {
+                            padding: 0;
+                            spacing: 4px;
+                            HorizontalBox {
+                                padding: 0;
+                                spacing: 8px;
+                                alignment: start;
+                                Text {
+                                    // "Installing" rather than "Extracting": the unpack is
+                                    // an implementation detail, and what the user cares
+                                    // about is that the install is still working.
+                                    text: root.accel-paused
+                                        ? "Paused"
+                                        : (root.install-phase == 2 ? "Installing…" : "Downloading…");
+                                    color: #c8c8c8;
+                                    font-size: 13px;
+                                }
+                                Text {
+                                    // Downloading shows real transferred bytes. Extracting
+                                    // deliberately shows only a percentage: its byte counts
+                                    // are positions in the *compressed* archive, so printing
+                                    // them next to "Extracting…" would read as output size
+                                    // and understate what lands on disk. The percentage is
+                                    // the honest part of that measure.
+                                    text: root.install-phase == 2
+                                        ? (root.install-frac < 0 ? "" : "\{Math.round(root.install-frac * 100)}%")
+                                        : root.install-bytes;
+                                    color: #9a9a9a;
+                                    font-size: 13px;
+                                }
+                            }
+                            // The bar. A known fraction fills proportionally — including
+                            // while extracting, which reports its position in the archive.
+                            // Where there's genuinely no fraction (a download with no
+                            // content-length, or the Windows zip path, which seeks and so
+                            // can't report a monotonic position) a segment sweeps the track
+                            // instead, so it reads as motion rather than a stalled bar.
+                            // `track` is named rather than reached through `parent`: inside a
+                            // conditional element `parent` resolves to the enclosing layout,
+                            // not to this Rectangle, so the fills must size against `track`.
+                            track := Rectangle {
+                                // A paused transfer is never indeterminate: a sweeping
+                                // segment reads as work in progress, which is the one
+                                // thing it isn't. With no fraction it just sits empty.
+                                property <bool> indeterminate: root.install-frac < 0 && !root.accel-paused;
+                                height: 6px;
+                                background: #2a2a2a;
+                                border-radius: 3px;
+                                clip: true; // keep the sweep inside the rounded track
+
+                                if !track.indeterminate: Rectangle {
+                                    x: 0;
+                                    width: track.width * Math.max(0.0, Math.min(1.0, root.install-frac));
+                                    height: track.height;
+                                    background: root.coin-color;
+                                    border-radius: 3px;
+                                }
+                                // Indeterminate sweep. Frame-clock driven like the status
+                                // glyphs' motion, and kept in its own conditional element
+                                // so the per-frame repaints stop the moment the phase has
+                                // a real percentage again.
+                                if track.indeterminate: Rectangle {
+                                    property <float> t: Math.mod(animation-tick() / 1ms, 1400) / 1400;
+                                    width: track.width * 0.35;
+                                    // Travels from fully off the left edge to fully off
+                                    // the right, so the track briefly empties each cycle.
+                                    x: -self.width + (track.width + self.width) * self.t;
+                                    height: track.height;
+                                    background: root.coin-color;
+                                    opacity: 0.8;
+                                    border-radius: 3px;
+                                }
+                            }
+                            // Pause/Resume, under the bar, only for an accelerator
+                            // transfer. A multi-GB snapshot is far too long to hold
+                            // someone hostage to, and it resumes from the same byte —
+                            // so stopping costs nothing but the time already spent.
+                            // One button toggling between the two states, in place:
+                            // whatever stopped the transfer restarts it.
+                            // Withdrawn once the daemon is up: the user paused, chose
+                            // to start anyway, and the snapshot is moot — resuming
+                            // would unpack a chain over the one it's now using.
+                            if root.accel-busy || (root.accel-paused && !root.running): HorizontalBox {
+                                padding: 0;
+                                padding-top: 4px;
+                                spacing: 8px;
+                                alignment: start;
+                                Button {
+                                    text: root.accel-paused
+                                        ? "Resume"
+                                        : (root.accel-pausing ? "Pausing…" : "Pause");
+                                    primary: root.accel-paused;
+                                    enabled: !root.accel-pausing;
+                                    clicked => {
+                                        if (root.accel-paused) {
+                                            root.accel-continue();
+                                        } else {
+                                            root.accel-pause();
+                                        }
+                                    }
+                                }
+                                Text {
+                                    text: root.accel-paused
+                                        ? "Resumes from here — or leave it and start the daemon."
+                                        : "Safe to pause or quit — this resumes where it stops.";
+                                    color: #9a9a9a;
+                                    font-size: 12px;
+                                    vertical-alignment: center;
+                                }
+                            }
+                        }
+
+                        // Action buttons. Install shows only until the daemon is on
+                        // disk; Start enables only when stopped, Stop only when
+                        // running; all lock out while an action is in flight.
+                        // The wallet button flips Lock/Unlock by the known lock state.
+                        if !root.installing: HorizontalBox {
+                            padding: 0;
+                            spacing: 8px;
+                            alignment: start;
+                            // Only offered while the coin isn't on disk — a reinstall or
+                            // update is a separate, confirmed flow, so this button must
+                            // never be a way to redownload over a working install.
+                            if !root.installed: Button {
+                                text: "Install";
+                                enabled: !root.install-busy;
+                                clicked => {
+                                    root.install-busy = true;
+                                    root.install-coin();
+                                }
+                            }
+                            // Replaces Install once the coin is on disk but behind the
+                            // bundled core version. Confirmed rather than immediate: it
+                            // replaces a working daemon, and the new core may upgrade
+                            // chainstate/wallet formats that another app also reads.
+                            if root.installed && root.update-available: Button {
+                                text: "Update";
+                                primary: true;
+                                enabled: !root.install-busy && !root.daemon-busy;
+                                clicked => {
+                                    root.update-open = true;
+                                }
+                            }
+                            Button {
+                                text: "Start";
+                                // Nothing to start until it's installed — and nothing
+                                // to start *again* while one is coming up: a daemon
+                                // loading its block index isn't answering RPC yet, and
+                                // a second start would just hit the datadir lock.
+                                enabled: root.installed && !root.running && !root.daemon-busy && !root.daemon-loading;
+                                clicked => {
+                                    root.daemon-busy = true;
+                                    root.daemon-loading = true; // smiley pulses until it answers
+                                    root.start-daemon();
+                                }
+                            }
+                            Button {
+                                text: "Stop";
+                                enabled: root.running && !root.daemon-busy;
+                                clicked => {
+                                    root.daemon-busy = true;
+                                    root.stop-daemon();
+                                }
+                            }
+                            // A coin whose wallet lives in its daemon: lock/unlock it
+                            // over RPC.
+                            if root.ew-flags == 0: Button {
+                                text: root.wallet-sec == 2 ? "Unlock" : "Lock";
+                                // Only meaningful for an encrypted wallet (locked=2,
+                                // unlocked=3, unlocked-for-staking=4).
+                                enabled: root.wallet-sec == 2 || root.wallet-sec == 3 || root.wallet-sec == 4;
+                                clicked => {
+                                    if (root.wallet-sec == 2) {
+                                        root.unlock-open = true;
+                                    } else {
+                                        root.lock-wallet();
+                                    }
+                                }
+                            }
+                            // A coin with a *managed* wallet (Nerva): one button into
+                            // the setup modal, which offers create / restore / unlock
+                            // / replace depending on what's actually on disk. Needs a
+                            // running daemon — the wallet service talks to it.
+                            if root.ew-flags != 0: Button {
+                                text: root.wallet-state >= 2 ? "Wallet unlocked" : (root.wallet-state == 1 ? "Unlock wallet" : "Set up wallet");
+                                enabled: root.running && root.wallet-state < 2 && root.wallet-stage == 0;
+                                clicked => {
+                                    root.wallet-op = root.wallet-state == 0 ? 0 : 3;
+                                    root.wallet-stage = 1;
+                                }
+                            }
+                        }
+                    }
+
+                    // Transactions — newest first, bounded to what the core sends.
+                    // Claims the pane's leftover height (see the spacer at the end of
+                    // this layout) so the list runs to the bottom of the window
+                    // rather than stopping after a few rows.
+                    if root.tab == 1 && root.has-transactions: VerticalLayout {
+                        spacing: 8px;
+                        vertical-stretch: 1;
+                        Text {
+                            text: "Transactions";
+                            color: #e6e6e6;
+                            font-size: 17px;
+                            font-weight: 600;
+                        }
+                        // An empty list has three quite different causes, and saying
+                        // "No transactions yet" to someone whose daemon simply isn't
+                        // running reads as "your history is gone".
+                        if root.tx-rows.length == 0: Text {
+                            text: !root.running
+                                ? "Start the daemon to see your transactions."
+                                : (root.ew-flags != 0 && root.wallet-state < 2
+                                    ? "Unlock your wallet to see its transactions."
+                                    : "No transactions yet.");
+                            color: #8a8a8a;
+                            font-size: 13px;
+                            wrap: word-wrap;
+                        }
+                        if root.tx-rows.length > 0: ListView {
+                            vertical-stretch: 1;
+                            for row in root.tx-rows: Rectangle {
+                                height: 34px;
+                                HorizontalLayout {
+                                    spacing: 10px;
+                                    // Keep the confirmations column clear of the
+                                    // scrollbar, which the list overlays on its own
+                                    // content once there's more than a pane-full.
+                                    padding-right: 14px;
+                                    Text {
+                                        text: row.direction;
+                                        color: row.incoming ? #7ec27e : #d59b6a;
+                                        font-size: 13px;
+                                        vertical-alignment: center;
+                                        width: 80px;
+                                    }
+                                    Text {
+                                        text: row.amount;
+                                        color: #e6e6e6;
+                                        font-family: "monospace";
+                                        font-size: 13px;
+                                        vertical-alignment: center;
+                                        horizontal-stretch: 1;
+                                    }
+                                    Text {
+                                        text: row.when;
+                                        color: #8a8a8a;
+                                        font-size: 12px;
+                                        vertical-alignment: center;
+                                    }
+                                    Text {
+                                        text: row.confirmations;
+                                        color: #6a6a6a;
+                                        font-size: 12px;
+                                        vertical-alignment: center;
+                                        width: 90px;
+                                        horizontal-alignment: right;
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    // Receive — the wallet's own address. Fetched once and cached;
+                    // "New address" is the only thing that mints another.
+                    if root.tab == 2 && root.has-receive: VerticalLayout {
+                        spacing: 12px;
+                        vertical-stretch: 0;
+                        alignment: start;
+                        Text {
+                            text: "Receive";
+                            color: #e6e6e6;
+                            font-size: 17px;
+                            font-weight: 600;
+                        }
+                        if root.receive-address == "": Text {
+                            text: !root.running
+                                ? "Start the daemon to see your address."
+                                : (root.ew-flags != 0 && root.wallet-state < 2
+                                    ? "Unlock your wallet to see its address."
+                                    : "Fetching your address\u{2026}");
+                            color: #8a8a8a;
+                            font-size: 13px;
+                            wrap: word-wrap;
+                        }
+                        if root.receive-address != "": Rectangle {
+                            height: 72px;
+                            background: #181818;
+                            border-radius: 6px;
+                            VerticalLayout {
+                                padding: 10px;
+                                alignment: center;
+                                Text {
+                                    text: root.receive-address;
+                                    color: #e6e6e6;
+                                    font-family: "monospace";
+                                    font-size: 13px;
+                                    wrap: word-wrap;
+                                }
+                            }
+                        }
+                        if root.receive-address != "": HorizontalLayout {
+                            alignment: start;
+                            spacing: 8px;
+                            Button {
+                                text: "New address";
+                                clicked => { root.new-address(); }
+                            }
+                        }
+                    }
+
+                    // Send. The confirm step below shows the full, untruncated
+                    // address — the one typo safety net a machine can't provide.
+                    if root.tab == 3 && root.has-send: VerticalLayout {
+                        spacing: 10px;
+                        vertical-stretch: 0;
+                        alignment: start;
+                        Text {
+                            text: "Send";
+                            color: #e6e6e6;
+                            font-size: 17px;
+                            font-weight: 600;
+                        }
+                        // Reading a wallet and spending from one are different
+                        // permissions — an in-daemon wallet lists its history while
+                        // locked but won't sign — so this gate is `can-send`, not the
+                        // one the other tabs use.
+                        if !root.can-send: Text {
+                            text: !root.running
+                                ? "Start the daemon before sending."
+                                : "Unlock your wallet before sending.";
+                            color: #8a8a8a;
+                            font-size: 13px;
+                        }
+                        if root.can-send: VerticalLayout {
+                            spacing: 10px;
+                            Text {
+                                text: "Available: " + root.balance-avail;
+                                color: #9a9a9a;
+                                font-size: 13px;
+                            }
+                            send-addr := LineEdit { placeholder-text: "Destination address"; }
+                            send-amt := LineEdit { placeholder-text: "Amount"; }
+                            HorizontalLayout {
+                                alignment: start;
+                                spacing: 8px;
+                                Button {
+                                    text: "Review\u{2026}";
+                                    enabled: !root.send-busy;
+                                    clicked => {
+                                        if (send-addr.text != "" && send-amt.text != "") {
+                                            root.send-confirm-address = send-addr.text;
+                                            root.send-confirm-amount = send-amt.text;
+                                            root.send-result = "";
+                                            root.send-confirm-open = true;
+                                        }
+                                    }
+                                }
+                            }
+                            if root.send-result != "": Text {
+                                text: root.send-result;
+                                color: root.send-result-error ? #e05c5c : #7ec27e;
+                                font-size: 12px;
+                                wrap: word-wrap;
+                            }
+                        }
+                    }
+
+                    // Settings (scaffold).
+                    if root.tab == 4: VerticalBox {
+                        padding: 0;
+                        spacing: 10px;
+                        vertical-stretch: 0;
+                        alignment: start;
+                        Placeholder {
+                            heading: "Settings";
+                            note: "Per-coin options (pruning, connectivity, \u{2026}) will live here.";
+                        }
+                    }
+
+                    // Mining (only for coins that support it). Status comes off the
+                    // daemon's own RPC; starting needs the wallet open, because the
+                    // daemon has to be told which address to pay.
+                    if root.tab == 5: VerticalLayout {
+                        spacing: 12px;
+                        vertical-stretch: 0;
+                        alignment: start;
+                        Text {
+                            text: "Mining";
+                            color: #e6e6e6;
+                            font-size: 17px;
+                            font-weight: 600;
+                        }
+                        Text {
+                            text: root.mining
+                                ? "Mining \u{2014} " + root.mining-threads + (root.mining-threads == 1 ? " thread at " : " threads at ") + root.mining-hashrate
+                                : "Not mining";
+                            color: root.mining ? #7ec27e : #8a8a8a;
+                            font-size: 14px;
+                            font-weight: root.mining ? 600 : 400;
+                            wrap: word-wrap;
+                        }
+
+                        // Why you can't start yet, in the order the TUI checks.
+                        if !root.running: Text {
+                            text: "Mining runs inside the daemon \u{2014} start it first.";
+                            color: #8a8a8a;
+                            font-size: 13px;
+                            wrap: word-wrap;
+                        }
+                        if root.running && !root.mining && root.wallet-state < 2: Text {
+                            text: "Unlock your wallet first \u{2014} mining pays block rewards to its receive address.";
+                            color: #8a8a8a;
+                            font-size: 13px;
+                            wrap: word-wrap;
+                        }
+                        if root.running && !root.mining && root.wallet-state >= 2 && root.receive-address == "": Text {
+                            text: "Fetching your payout address\u{2026}";
+                            color: #8a8a8a;
+                            font-size: 13px;
+                        }
+
+                        if root.running && !root.mining && root.wallet-state >= 2 && root.receive-address != "": VerticalLayout {
+                            spacing: 10px;
+                            Text {
+                                text: "This machine has " + root.cpu-threads + " CPU threads. Mining uses real CPU and power; leave some free for other work.";
+                                color: #7a7a7a;
+                                font-size: 12px;
+                                wrap: word-wrap;
+                            }
+                            HorizontalLayout {
+                                alignment: start;
+                                spacing: 10px;
+                                Text {
+                                    text: "Threads";
+                                    color: #9a9a9a;
+                                    font-size: 13px;
+                                    vertical-alignment: center;
+                                }
+                                threads-box := SpinBox {
+                                    minimum: 1;
+                                    maximum: root.cpu-threads;
+                                    value: Math.max(1, Math.floor(root.cpu-threads / 2));
+                                    width: 110px;
+                                }
+                                Button {
+                                    text: "Start mining";
+                                    enabled: !root.mining-busy;
+                                    clicked => { root.mining-start(threads-box.value); }
+                                }
+                            }
+                            Text {
+                                text: "Rewards go to " + root.receive-address;
+                                color: #6a6a6a;
+                                font-size: 11px;
+                                wrap: word-wrap;
+                            }
+                        }
+
+                        if root.mining: HorizontalLayout {
+                            alignment: start;
+                            Button {
+                                text: "Stop mining";
+                                enabled: !root.mining-busy;
+                                clicked => { root.mining-stop-open = true; }
+                            }
+                        }
+                        if root.mining-error != "": Text {
+                            text: root.mining-error;
+                            color: #e05c5c;
+                            font-size: 12px;
+                            wrap: word-wrap;
+                        }
+                    }
+
+                    // DigiDollar (only for coins with a chain-native stablecoin).
+                    if root.tab == 6: Placeholder {
+                        heading: "DigiDollar";
+                        note: "Mint, send and redeem the chain-native stablecoin.";
+                    }
+
+                    // Soaks up the leftover height so every tab except Transactions
+                    // stays top-packed, exactly as it did when the pane carried
+                    // `alignment: start`. Transactions opts out, and its list grows
+                    // into the space instead.
+                    if root.tab != 1: Rectangle {
+                        vertical-stretch: 1;
                     }
                 }
             }
         }
 
-        // ---- detail ----
-        Rectangle {
-            background: #1e1e1e;
 
-            // HOME
-            if root.selected == -1: VerticalBox {
-                padding: 26px;
-                spacing: 10px;
-                alignment: start;
-                // App logo + title/version.
-                HorizontalBox {
-                    padding: 0;
-                    spacing: 12px;
-                    alignment: start;
-                    Image {
-                        source: @image-url("coin-logos/BoxWallet.png");
-                        image-fit: contain;
-                        width: 69px;
-                        height: 69px;
-                        vertical-alignment: center;
-                    }
-                    VerticalBox {
-                        padding: 0;
-                        spacing: 2px;
-                        HorizontalBox {
-                            padding: 0;
-                            alignment: start;
-                            ShiningTitle {
-                                caption: "BoxWallet";
-                                base: #7ca071;
-                                font-size: 32px;
-                                font-weight: 800;
-                            }
-                        }
-                        Text {
-                            text: "v0.8.4";
-                            color: #808080;
-                            font-size: 14px;
-                        }
-                    }
-                }
-                Rectangle {
-                    height: 8px;
-                }
-                Text {
-                    text: "Multi-coin cryptocurrency wallet manager.";
-                    color: #cfcfcf;
-                    font-size: 15px;
-                }
-                Text {
-                    text: "Select a coin on the left to see its status.";
-                    color: #9a9a9a;
-                    font-size: 14px;
-                }
-                Rectangle {
-                    height: 6px;
-                }
-                HorizontalBox {
-                    padding: 0;
-                    alignment: start;
-                    Button {
-                        text: "Test: browse for a file…";
-                        clicked => {
-                            root.browse-home();
-                            root.browse-open = true;
-                        }
-                    }
-                }
-                Text {
-                    text: "Selected: " + root.picked-file;
-                    color: #7ca071;
-                    font-size: 13px;
-                    wrap: word-wrap;
-                    visible: root.picked-file != "";
-                }
-            }
+        // ---- send confirm ----
+        // The address is shown in FULL and never truncated: a wrong address is
+        // unrecoverable, and this is the last moment anyone can catch one.
+        if root.send-confirm-open: Rectangle {
+            background: #000000bb;
+            TouchArea { }
 
-            // COIN DETAIL (tabbed)
-            if root.selected != -1: VerticalBox {
-                padding: 26px;
-                spacing: 14px;
-                // No `alignment: start` here: a tab whose body should fill the
-                // pane (Transactions' list) needs the layout to hand out the
-                // leftover height, and an alignment stops it doing that — every
-                // child collapses to its preferred size instead. The trailing
-                // spacer at the end keeps the *other* tabs packed to the top.
+            Rectangle {
+                width: 400px;
+                // Hug the content: with no height a panel fills the whole overlay.
+                height: send-body.preferred-height;
+                x: (parent.width - self.width) / 2;
+                y: (parent.height - self.height) / 2;
+                background: #202020;
+                border-radius: 10px;
+                border-width: 1px;
+                border-color: root.coin-color;
 
-                // Logo + title/description. The logo is the embedded per-coin
-                // image, selected by the coin's registry index (root.selected).
-                HorizontalBox {
-                    padding: 0;
-                    alignment: start;
-                    spacing: 12px;
-                    Image {
-                        source: root.coin-logos[root.selected];
-                        image-fit: contain;
-                        width: 69px;
-                        height: 69px;
-                        vertical-alignment: center;
-                    }
-                    VerticalBox {
-                        padding: 0;
-                        spacing: 2px;
-                        // Title + version, manually placed so the version's bottom
-                        // sits on the title's baseline. (A HorizontalBox centres
-                        // the two vertically, floating the small version too high.)
-                        Rectangle {
-                            height: title-el.preferred-height;
-                            title-el := ShiningTitle {
-                                x: 0;
-                                caption: root.coin-name;
-                                base: root.coin-color;
-                                font-size: 28px;
-                                font-weight: 800;
-                            }
-                            Text {
-                                text: root.coin-version;
-                                color: #808080;
-                                font-size: 13px;
-                                x: title-el.preferred-width + 8px;
-                                // Bottom-align to the title, nudged up so the
-                                // baselines (not the box bottoms) line up.
-                                y: parent.height - self.preferred-height - 4px;
-                            }
-                        }
-                        Text {
-                            text: root.coin-desc;
-                            color: #9a9a9a;
-                            font-size: 13px;
-                        }
-                    }
-                }
-
-                // Status glyph row — under the description, so it's visible on
-                // every tab (not just the Home/status tab).
-                HorizontalBox {
-                    padding: 0;
-                    spacing: 6px;
-                    alignment: start;
-
-                    // Installed — hops while not installed (pointing at the Install
-                    // button), and pulses while the install itself runs.
-                    StatusIcon {
-                        icon: @image-url("icons/download.svg");
-                        accent: root.coin-color;
-                        active: root.installed || root.installing;
-                        hint: root.installing
-                            ? (root.install-phase == 2 ? "Installing…" : "Downloading…")
-                            : (root.installed
-                                ? (root.update-available
-                                    ? "Update available: " + root.installed-version + " → " + root.coin-version
-                                    : "Installed")
-                                : "Not installed — use the Install button");
-                        motion: root.installing ? "pulse" : "hop";
-                        moving: !root.installed || root.installing;
-                    }
-                    // Daemon — grey when stopped, pulses while loading, lit when running.
-                    StatusIcon {
-                        icon: @image-url("icons/smile.svg");
-                        accent: root.coin-color;
-                        active: root.running || root.daemon-loading;
-                        // While it's coming up, name the stage it's actually at
-                        // rather than a bare "loading" — a block-index load or a
-                        // rewind can run for minutes, and the difference is the
-                        // only sign of progress there is.
-                        hint: root.daemon-loading
-                            ? (root.daemon-stage != "" ? root.daemon-stage : "Daemon loading…")
-                            : (root.running ? "Daemon running" : "Daemon not running");
-                        motion: "pulse";
-                        moving: root.daemon-loading;
-                    }
-                    // Peers — lit when connected; hint shows the count.
-                    StatusIcon {
-                        icon: @image-url("icons/wifi.svg");
-                        accent: root.coin-color;
-                        active: root.running && root.peers > 0;
-                        hint: "Peers: " + root.peers;
-                        // Pulse once whenever a new peer connection is picked up.
-                        pulse-on-increase: root.peers;
-                    }
-                    // Sync — spins while syncing, static when synced.
-                    StatusIcon {
-                        icon: @image-url("icons/refresh-cw.svg");
-                        accent: root.coin-color;
-                        active: root.running;
-                        hint: root.running ? (root.synced ? "Synced" : "Syncing…") : "Not running";
-                        motion: "spin";
-                        moving: root.running && !root.synced;
-                    }
-                    // Wallet lock — open/closed padlock, lit once we know the
-                    // wallet's state. A coin with a *managed* wallet (Nerva) has
-                    // no in-daemon lock state to report, so it reads `wallet-state`
-                    // instead; without this its padlock would sit permanently grey.
-                    if root.ew-flags == 0: StatusIcon {
-                        icon: (root.wallet-sec == 1 || root.wallet-sec == 3 || root.wallet-sec == 4)
-                            ? @image-url("icons/lock-open.svg")
-                            : @image-url("icons/lock.svg");
-                        accent: root.coin-color;
-                        active: root.wallet-sec != 0;
-                        hint: root.wallet-sec == 1 ? "Wallet not encrypted"
-                            : root.wallet-sec == 2 ? "Wallet locked"
-                            : root.wallet-sec == 3 ? "Wallet unlocked"
-                            : root.wallet-sec == 4 ? "Unlocked for staking"
-                            : "Wallet status unknown";
-                    }
-                    if root.ew-flags != 0: StatusIcon {
-                        icon: root.wallet-state >= 2
-                            ? @image-url("icons/lock-open.svg")
-                            : @image-url("icons/lock.svg");
-                        accent: root.coin-color;
-                        active: root.wallet-state != 0;
-                        hint: root.wallet-state == 0 ? "No wallet yet"
-                            : root.wallet-state == 1 ? "Wallet locked"
-                            : root.wallet-state == 3 ? "Wallet rescanning"
-                            : "Wallet unlocked";
-                    }
-                    // Staking (PoS) or Mining (mining coins) — pulses while active.
-                    if !root.has-mining: StatusIcon {
-                        icon: @image-url("icons/zap.svg");
-                        accent: root.coin-color;
-                        active: root.staking;
-                        hint: root.staking ? "Staking" : "Not staking";
-                        motion: "pulse";
-                        moving: root.staking;
-                    }
-                    if root.has-mining: StatusIcon {
-                        icon: @image-url("icons/cpu.svg");
-                        accent: root.coin-color;
-                        active: root.mining;
-                        hint: root.mining ? "Mining" : "Not mining";
-                        motion: "pulse";
-                        moving: root.mining;
-                    }
-                }
-
-                // Branded divider — full coin colour in the centre, fading to the
-                // pane on both ends — between the status icons and the tab strip.
-                Rectangle {
-                    height: 1px;
-                    background: @linear-gradient(90deg, transparent 0%, root.coin-color 25%, transparent 100%);
-                }
-
-                // Tab strip.
-                HorizontalBox {
-                    padding: 0;
-                    spacing: 18px;
-                    alignment: start;
-                    TabButton {
-                        label: "Home";
-                        icon: @image-url("icons/home.svg");
-                        accent: root.coin-color;
-                        selected: root.tab == 0;
-                        clicked => {
-                            root.tab = 0;
-                        }
-                    }
-                    TabButton {
-                        label: "Transactions";
-                        icon: @image-url("icons/transactions.svg");
-                        accent: root.coin-color;
-                        selected: root.tab == 1;
-                        clicked => {
-                            root.tab = 1;
-                        }
-                    }
-                    TabButton {
-                        label: "Receive";
-                        icon: @image-url("icons/receive.svg");
-                        accent: root.coin-color;
-                        selected: root.tab == 2;
-                        clicked => {
-                            root.tab = 2;
-                        }
-                    }
-                    TabButton {
-                        label: "Send";
-                        icon: @image-url("icons/send.svg");
-                        accent: root.coin-color;
-                        selected: root.tab == 3;
-                        clicked => {
-                            root.tab = 3;
-                        }
-                    }
-                    TabButton {
-                        label: "Settings";
-                        icon: @image-url("icons/settings.svg");
-                        accent: root.coin-color;
-                        selected: root.tab == 4;
-                        clicked => {
-                            root.tab = 4;
-                        }
-                    }
-                    if root.has-mining: TabButton {
-                        label: "Mining";
-                        icon: @image-url("icons/mining.svg");
-                        accent: root.coin-color;
-                        selected: root.tab == 5;
-                        clicked => {
-                            root.tab = 5;
-                        }
-                    }
-                    if root.has-stablecoin: TabButton {
-                        label: "DigiDollar";
-                        icon: @image-url("icons/digidollar.svg");
-                        accent: root.coin-color;
-                        selected: root.tab == 6;
-                        clicked => {
-                            root.tab = 6;
-                        }
-                    }
-                }
-                Rectangle {
-                    height: 1px;
-                    background: #333333;
-                }
-
-                // ---- tab bodies ----
-
-                // Home / status (live).
-                if root.tab == 0: VerticalBox {
-                    padding: 0;
-                    spacing: 14px;
-                    vertical-stretch: 0;
-                    alignment: start;
-
-                    HorizontalBox {
-                        padding: 4px;
-                        spacing: 40px;
-                        alignment: start;
-                        CircleGauge {
-                            label: "Headers";
-                            frac: root.headers-frac;
-                            fill: root.coin-color;
-                            value: root.headers-str;
-                            full-text: "Synced";
-                        }
-                        CircleGauge {
-                            label: "Blocks";
-                            frac: root.blocks-frac;
-                            fill: root.coin-color;
-                            value: root.blocks-str;
-                            full-text: "Synced";
-                        }
-                        CircleGauge {
-                            label: "Disk used";
-                            frac: root.disk-frac;
-                            fill: root.coin-color;
-                            value: root.disk-free;
-                        }
-                    }
-                    // Status line — the latest info/action message (like the TUI).
-                    HorizontalBox {
-                        padding: 0;
-                        spacing: 6px;
-                        alignment: start;
-                        Text {
-                            text: "Status:";
-                            color: #9a9a9a;
-                            font-size: 13px;
-                        }
-                        Text {
-                            // A daemon that's still coming up outranks the last
-                            // action message: the stage moves on its own (and can
-                            // do so for minutes), so it's the live answer to "what
-                            // is it doing?". Otherwise the latest action/info
-                            // message, falling back to "Staking" while it stakes.
-                            text: root.daemon-stage != ""
-                                ? root.daemon-stage
-                                : (root.status-text != "" ? root.status-text : (root.staking ? "Staking" : ""));
-                            // A live stage is progress, never an error — don't
-                            // inherit the red from an earlier failed action.
-                            color: root.status-is-error && root.daemon-stage == "" ? #e74c3c : #c8c8c8;
-                            font-size: 13px;
-                            wrap: word-wrap;
-                            horizontal-stretch: 1;
-                        }
-                    }
-
-                    // Install progress — shown in place of the button row while a
-                    // download/extract runs, so the rest of the app (and the coin
-                    // list) stays usable during a multi-minute install.
-                    if root.installing || (root.accel-paused && !root.running): VerticalBox {
-                        padding: 0;
-                        spacing: 4px;
-                        HorizontalBox {
-                            padding: 0;
-                            spacing: 8px;
-                            alignment: start;
-                            Text {
-                                // "Installing" rather than "Extracting": the unpack is
-                                // an implementation detail, and what the user cares
-                                // about is that the install is still working.
-                                text: root.accel-paused
-                                    ? "Paused"
-                                    : (root.install-phase == 2 ? "Installing…" : "Downloading…");
-                                color: #c8c8c8;
-                                font-size: 13px;
-                            }
-                            Text {
-                                // Downloading shows real transferred bytes. Extracting
-                                // deliberately shows only a percentage: its byte counts
-                                // are positions in the *compressed* archive, so printing
-                                // them next to "Extracting…" would read as output size
-                                // and understate what lands on disk. The percentage is
-                                // the honest part of that measure.
-                                text: root.install-phase == 2
-                                    ? (root.install-frac < 0 ? "" : "\{Math.round(root.install-frac * 100)}%")
-                                    : root.install-bytes;
-                                color: #9a9a9a;
-                                font-size: 13px;
-                            }
-                        }
-                        // The bar. A known fraction fills proportionally — including
-                        // while extracting, which reports its position in the archive.
-                        // Where there's genuinely no fraction (a download with no
-                        // content-length, or the Windows zip path, which seeks and so
-                        // can't report a monotonic position) a segment sweeps the track
-                        // instead, so it reads as motion rather than a stalled bar.
-                        // `track` is named rather than reached through `parent`: inside a
-                        // conditional element `parent` resolves to the enclosing layout,
-                        // not to this Rectangle, so the fills must size against `track`.
-                        track := Rectangle {
-                            // A paused transfer is never indeterminate: a sweeping
-                            // segment reads as work in progress, which is the one
-                            // thing it isn't. With no fraction it just sits empty.
-                            property <bool> indeterminate: root.install-frac < 0 && !root.accel-paused;
-                            height: 6px;
-                            background: #2a2a2a;
-                            border-radius: 3px;
-                            clip: true; // keep the sweep inside the rounded track
-
-                            if !track.indeterminate: Rectangle {
-                                x: 0;
-                                width: track.width * Math.max(0.0, Math.min(1.0, root.install-frac));
-                                height: track.height;
-                                background: root.coin-color;
-                                border-radius: 3px;
-                            }
-                            // Indeterminate sweep. Frame-clock driven like the status
-                            // glyphs' motion, and kept in its own conditional element
-                            // so the per-frame repaints stop the moment the phase has
-                            // a real percentage again.
-                            if track.indeterminate: Rectangle {
-                                property <float> t: Math.mod(animation-tick() / 1ms, 1400) / 1400;
-                                width: track.width * 0.35;
-                                // Travels from fully off the left edge to fully off
-                                // the right, so the track briefly empties each cycle.
-                                x: -self.width + (track.width + self.width) * self.t;
-                                height: track.height;
-                                background: root.coin-color;
-                                opacity: 0.8;
-                                border-radius: 3px;
-                            }
-                        }
-                        // Pause/Resume, under the bar, only for an accelerator
-                        // transfer. A multi-GB snapshot is far too long to hold
-                        // someone hostage to, and it resumes from the same byte —
-                        // so stopping costs nothing but the time already spent.
-                        // One button toggling between the two states, in place:
-                        // whatever stopped the transfer restarts it.
-                        // Withdrawn once the daemon is up: the user paused, chose
-                        // to start anyway, and the snapshot is moot — resuming
-                        // would unpack a chain over the one it's now using.
-                        if root.accel-busy || (root.accel-paused && !root.running): HorizontalBox {
-                            padding: 0;
-                            padding-top: 4px;
-                            spacing: 8px;
-                            alignment: start;
-                            Button {
-                                text: root.accel-paused
-                                    ? "Resume"
-                                    : (root.accel-pausing ? "Pausing…" : "Pause");
-                                primary: root.accel-paused;
-                                enabled: !root.accel-pausing;
-                                clicked => {
-                                    if (root.accel-paused) {
-                                        root.accel-continue();
-                                    } else {
-                                        root.accel-pause();
-                                    }
-                                }
-                            }
-                            Text {
-                                text: root.accel-paused
-                                    ? "Resumes from here — or leave it and start the daemon."
-                                    : "Safe to pause or quit — this resumes where it stops.";
-                                color: #9a9a9a;
-                                font-size: 12px;
-                                vertical-alignment: center;
-                            }
-                        }
-                    }
-
-                    // Action buttons. Install shows only until the daemon is on
-                    // disk; Start enables only when stopped, Stop only when
-                    // running; all lock out while an action is in flight.
-                    // The wallet button flips Lock/Unlock by the known lock state.
-                    if !root.installing: HorizontalBox {
-                        padding: 0;
-                        spacing: 8px;
-                        alignment: start;
-                        // Only offered while the coin isn't on disk — a reinstall or
-                        // update is a separate, confirmed flow, so this button must
-                        // never be a way to redownload over a working install.
-                        if !root.installed: Button {
-                            text: "Install";
-                            enabled: !root.install-busy;
-                            clicked => {
-                                root.install-busy = true;
-                                root.install-coin();
-                            }
-                        }
-                        // Replaces Install once the coin is on disk but behind the
-                        // bundled core version. Confirmed rather than immediate: it
-                        // replaces a working daemon, and the new core may upgrade
-                        // chainstate/wallet formats that another app also reads.
-                        if root.installed && root.update-available: Button {
-                            text: "Update";
-                            primary: true;
-                            enabled: !root.install-busy && !root.daemon-busy;
-                            clicked => {
-                                root.update-open = true;
-                            }
-                        }
-                        Button {
-                            text: "Start";
-                            // Nothing to start until it's installed — and nothing
-                            // to start *again* while one is coming up: a daemon
-                            // loading its block index isn't answering RPC yet, and
-                            // a second start would just hit the datadir lock.
-                            enabled: root.installed && !root.running && !root.daemon-busy && !root.daemon-loading;
-                            clicked => {
-                                root.daemon-busy = true;
-                                root.daemon-loading = true; // smiley pulses until it answers
-                                root.start-daemon();
-                            }
-                        }
-                        Button {
-                            text: "Stop";
-                            enabled: root.running && !root.daemon-busy;
-                            clicked => {
-                                root.daemon-busy = true;
-                                root.stop-daemon();
-                            }
-                        }
-                        // A coin whose wallet lives in its daemon: lock/unlock it
-                        // over RPC.
-                        if root.ew-flags == 0: Button {
-                            text: root.wallet-sec == 2 ? "Unlock" : "Lock";
-                            // Only meaningful for an encrypted wallet (locked=2,
-                            // unlocked=3, unlocked-for-staking=4).
-                            enabled: root.wallet-sec == 2 || root.wallet-sec == 3 || root.wallet-sec == 4;
-                            clicked => {
-                                if (root.wallet-sec == 2) {
-                                    root.unlock-open = true;
-                                } else {
-                                    root.lock-wallet();
-                                }
-                            }
-                        }
-                        // A coin with a *managed* wallet (Nerva): one button into
-                        // the setup modal, which offers create / restore / unlock
-                        // / replace depending on what's actually on disk. Needs a
-                        // running daemon — the wallet service talks to it.
-                        if root.ew-flags != 0: Button {
-                            text: root.wallet-state >= 2 ? "Wallet unlocked" : (root.wallet-state == 1 ? "Unlock wallet" : "Set up wallet");
-                            enabled: root.running && root.wallet-state < 2 && root.wallet-stage == 0;
-                            clicked => {
-                                root.wallet-op = root.wallet-state == 0 ? 0 : 3;
-                                root.wallet-stage = 1;
-                            }
-                        }
-                    }
-                }
-
-                // Transactions — newest first, bounded to what the core sends.
-                // Claims the pane's leftover height (see the spacer at the end of
-                // this layout) so the list runs to the bottom of the window
-                // rather than stopping after a few rows.
-                if root.tab == 1: VerticalLayout {
-                    spacing: 8px;
-                    vertical-stretch: 1;
-                    Text {
-                        text: "Transactions";
-                        color: #e6e6e6;
-                        font-size: 17px;
-                        font-weight: 600;
-                    }
-                    if root.tx-rows.length == 0: Text {
-                        text: root.ew-flags != 0 && root.wallet-state < 2
-                            ? "Unlock your wallet to see its transactions."
-                            : "No transactions yet.";
-                        color: #8a8a8a;
-                        font-size: 13px;
-                        wrap: word-wrap;
-                    }
-                    if root.tx-rows.length > 0: ListView {
-                        vertical-stretch: 1;
-                        for row in root.tx-rows: Rectangle {
-                            height: 34px;
-                            HorizontalLayout {
-                                spacing: 10px;
-                                // Keep the confirmations column clear of the
-                                // scrollbar, which the list overlays on its own
-                                // content once there's more than a pane-full.
-                                padding-right: 14px;
-                                Text {
-                                    text: row.direction;
-                                    color: row.incoming ? #7ec27e : #d59b6a;
-                                    font-size: 13px;
-                                    vertical-alignment: center;
-                                    width: 80px;
-                                }
-                                Text {
-                                    text: row.amount;
-                                    color: #e6e6e6;
-                                    font-family: "monospace";
-                                    font-size: 13px;
-                                    vertical-alignment: center;
-                                    horizontal-stretch: 1;
-                                }
-                                Text {
-                                    text: row.when;
-                                    color: #8a8a8a;
-                                    font-size: 12px;
-                                    vertical-alignment: center;
-                                }
-                                Text {
-                                    text: row.confirmations;
-                                    color: #6a6a6a;
-                                    font-size: 12px;
-                                    vertical-alignment: center;
-                                    width: 90px;
-                                    horizontal-alignment: right;
-                                }
-                            }
-                        }
-                    }
-                }
-
-                // Receive — the wallet's own address. Fetched once and cached;
-                // "New address" is the only thing that mints another.
-                if root.tab == 2: VerticalLayout {
-                    spacing: 12px;
-                    vertical-stretch: 0;
+                send-body := VerticalLayout {
+                    padding: 16px;
+                    spacing: 10px;
                     alignment: start;
                     Text {
-                        text: "Receive";
+                        text: "Send " + root.send-confirm-amount + " " + root.coin-name + "?";
                         color: #e6e6e6;
-                        font-size: 17px;
+                        font-size: 15px;
                         font-weight: 600;
-                    }
-                    if root.receive-address == "": Text {
-                        text: root.ew-flags != 0 && root.wallet-state < 2
-                            ? "Unlock your wallet to see its address."
-                            : "Fetching your address\u{2026}";
-                        color: #8a8a8a;
-                        font-size: 13px;
                         wrap: word-wrap;
                     }
-                    if root.receive-address != "": Rectangle {
-                        height: 72px;
+                    Text {
+                        text: "To this address — check every character:";
+                        color: #9a9a9a;
+                        font-size: 12px;
+                        wrap: word-wrap;
+                    }
+                    Rectangle {
+                        height: 64px;
                         background: #181818;
                         border-radius: 6px;
                         VerticalLayout {
                             padding: 10px;
                             alignment: center;
                             Text {
-                                text: root.receive-address;
+                                text: root.send-confirm-address;
                                 color: #e6e6e6;
                                 font-family: "monospace";
                                 font-size: 13px;
@@ -1272,983 +1784,770 @@ export component AppWindow inherits Window {
                             }
                         }
                     }
-                    if root.receive-address != "": HorizontalLayout {
-                        alignment: start;
+                    Text {
+                        text: "A sent transaction cannot be reversed.";
+                        color: #e05c5c;
+                        font-size: 11px;
+                    }
+                    HorizontalLayout {
+                        alignment: end;
                         spacing: 8px;
                         Button {
-                            text: "New address";
-                            clicked => { root.new-address(); }
+                            text: "Cancel";
+                            clicked => { root.send-confirm-open = false; }
+                        }
+                        Button {
+                            text: "Send";
+                            clicked => {
+                                root.send-confirm-open = false;
+                                root.send-funds(root.send-confirm-address, root.send-confirm-amount);
+                            }
                         }
                     }
                 }
+            }
+        }
 
-                // Send. The confirm step below shows the full, untruncated
-                // address — the one typo safety net a machine can't provide.
-                if root.tab == 3: VerticalLayout {
-                    spacing: 10px;
-                    vertical-stretch: 0;
+        // ---- stop-mining confirm ----
+        if root.mining-stop-open: Rectangle {
+            background: #000000bb;
+            TouchArea { }
+
+            Rectangle {
+                width: 320px;
+                height: stop-body.preferred-height;
+                x: (parent.width - self.width) / 2;
+                y: (parent.height - self.height) / 2;
+                background: #202020;
+                border-radius: 10px;
+                border-width: 1px;
+                border-color: root.coin-color;
+
+                stop-body := VerticalLayout {
+                    padding: 16px;
+                    spacing: 12px;
                     alignment: start;
                     Text {
-                        text: "Send";
+                        text: "Stop mining?";
                         color: #e6e6e6;
-                        font-size: 17px;
+                        font-size: 15px;
                         font-weight: 600;
                     }
-                    if root.ew-flags != 0 && root.wallet-state < 2: Text {
-                        text: "Unlock your wallet before sending.";
-                        color: #8a8a8a;
-                        font-size: 13px;
+                    HorizontalLayout {
+                        alignment: end;
+                        spacing: 8px;
+                        Button {
+                            text: "Keep mining";
+                            clicked => { root.mining-stop-open = false; }
+                        }
+                        Button {
+                            text: "Stop";
+                            clicked => {
+                                root.mining-stop-open = false;
+                                root.mining-stop();
+                            }
+                        }
                     }
-                    if root.wallet-state >= 2 || root.ew-flags == 0: VerticalLayout {
-                        spacing: 10px;
+                }
+            }
+        }
+
+        // ---- managed-wallet setup modal (external-wallet coins) ----
+        // Mirrors the TUI's wallet modal, stage for stage. The rule that is not
+        // cosmetic and must not be "simplified" away: a NEW password (create /
+        // restore-from-seed) is typed twice and must match, because a mistyped
+        // password on a fresh wallet means the funds are unrecoverable. Merely
+        // *opening* an existing wallet just fails and is retried, so it asks once.
+        //
+        // Every field holding a secret lives inside its own stage block, so leaving
+        // that stage destroys the field along with what was typed into it. Nothing
+        // carries a password or seed between stages — which is why restore-from-seed
+        // asks for the words and the password on one screen rather than two.
+        if root.wallet-stage != 0: Rectangle {
+            background: #000000bb;
+            TouchArea { }
+
+            Rectangle {
+                width: 400px;
+                // Hug the content, so each stage is only as tall as it needs to be —
+                // the menu is three buttons, not a full-height slab.
+                height: wallet-body.preferred-height;
+                x: (parent.width - self.width) / 2;
+                y: (parent.height - self.height) / 2;
+                background: #202020;
+                border-radius: 10px;
+                border-width: 1px;
+                border-color: root.coin-color;
+
+                wallet-body := VerticalLayout {
+                    padding: 16px;
+                    spacing: 10px;
+                    alignment: start;
+
+                    Text {
+                        text: root.coin-name + " wallet";
+                        color: #e6e6e6;
+                        font-size: 15px;
+                        font-weight: 600;
+                    }
+
+                    // --- 1: what would you like to do? ---
+                    // The action buttons are gated on the coin's BW_EW_* capability
+                    // bits, tested with integer maths since Slint has no bitwise
+                    // operators. `wallet-launch-with-pw` is BW_EW_LAUNCH_WITH_PW,
+                    // decoded in C++ — see below for why it hides all of them.
+                    if root.wallet-stage == 1: VerticalLayout {
+                        spacing: 8px;
                         Text {
-                            text: "Available: " + root.balance-avail;
+                            text: root.wallet-launch-with-pw
+                                ? "This coin's wallet isn't supported in the desktop app yet."
+                                : (root.wallet-state == 0
+                                    ? "There's no wallet for this coin yet."
+                                    : "This wallet is locked.");
+                            color: #9a9a9a;
+                            font-size: 13px;
+                            wrap: word-wrap;
+                        }
+                        // A wallet that is launched per-open, with the password on its
+                        // command line (Zano, Epic), needs a lifecycle the core hasn't
+                        // wired for this front-end yet — every op would return
+                        // "Unsupported". Say so, rather than offering buttons that can
+                        // only fail and leave the user wondering if they mistyped.
+                        if root.wallet-launch-with-pw: Text {
+                            text: "Use the terminal app (boxwallet-tui) for this coin's wallet for now. Everything else here — status, sync, mining — works as usual.";
+                            color: #8a8a8a;
+                            font-size: 12px;
+                            wrap: word-wrap;
+                        }
+                        if !root.wallet-launch-with-pw && root.wallet-state != 0: Button {
+                            text: "Unlock this wallet";
+                            clicked => { root.wallet-op = 3; root.wallet-stage = 2; }
+                        }
+                        if !root.wallet-launch-with-pw && root.wallet-state == 0: Button {
+                            text: "Create a new wallet";
+                            clicked => { root.wallet-op = 0; root.wallet-stage = 3; }
+                        }
+                        // BW_EW_SEED_RESTORE.
+                        if !root.wallet-launch-with-pw && root.wallet-state == 0 && Math.mod(Math.floor(root.ew-flags / 2), 2) == 1: Button {
+                            text: "Restore from seed words";
+                            clicked => { root.wallet-op = 1; root.wallet-stage = 4; }
+                        }
+                        // BW_EW_FILE_RESTORE.
+                        if !root.wallet-launch-with-pw && root.wallet-state == 0 && Math.mod(Math.floor(root.ew-flags / 4), 2) == 1: Button {
+                            text: "Restore from a wallet file";
+                            clicked => { root.wallet-op = 2; root.wallet-stage = 5; root.browse-open = true; }
+                        }
+                        // BW_EW_REPLACE — destructive, so it's behind a typed confirm.
+                        if !root.wallet-launch-with-pw && root.wallet-state != 0 && Math.mod(Math.floor(root.ew-flags / 8), 2) == 1: Button {
+                            text: "Replace this wallet\u{2026}";
+                            clicked => { root.wallet-replace-bad = false; root.wallet-stage = 9; }
+                        }
+                    }
+
+                    // --- 2: an EXISTING wallet's password (open / import) ---
+                    if root.wallet-stage == 2: VerticalLayout {
+                        spacing: 8px;
+                        Text {
+                            text: "Password for this wallet";
                             color: #9a9a9a;
                             font-size: 13px;
                         }
-                        send-addr := LineEdit { placeholder-text: "Destination address"; }
-                        send-amt := LineEdit { placeholder-text: "Amount"; }
-                        HorizontalLayout {
-                            alignment: start;
-                            spacing: 8px;
-                            Button {
-                                text: "Review\u{2026}";
-                                enabled: !root.send-busy;
-                                clicked => {
-                                    if (send-addr.text != "" && send-amt.text != "") {
-                                        root.send-confirm-address = send-addr.text;
-                                        root.send-confirm-amount = send-amt.text;
-                                        root.send-result = "";
-                                        root.send-confirm-open = true;
-                                    }
-                                }
+                        open-pw := LineEdit {
+                            placeholder-text: "Password";
+                            input-type: password;
+                            accepted => {
+                                root.wallet-setup(root.wallet-op, self.text, "", root.picked-file);
+                                self.text = "";
+                                root.wallet-stage = 6;
                             }
                         }
-                        if root.send-result != "": Text {
-                            text: root.send-result;
-                            color: root.send-result-error ? #e05c5c : #7ec27e;
-                            font-size: 12px;
-                            wrap: word-wrap;
+                        Button {
+                            text: root.wallet-op == 2 ? "Import" : "Unlock";
+                            clicked => {
+                                root.wallet-setup(root.wallet-op, open-pw.text, "", root.picked-file);
+                                open-pw.text = "";
+                                root.wallet-stage = 6;
+                            }
                         }
                     }
-                }
 
-                // Settings (scaffold).
-                if root.tab == 4: VerticalBox {
-                    padding: 0;
-                    spacing: 10px;
-                    vertical-stretch: 0;
-                    alignment: start;
-                    Placeholder {
-                        heading: "Settings";
-                        note: "Per-coin options (pruning, connectivity, \u{2026}) will live here.";
-                    }
-                }
-
-                // Mining (only for coins that support it). Status comes off the
-                // daemon's own RPC; starting needs the wallet open, because the
-                // daemon has to be told which address to pay.
-                if root.tab == 5: VerticalLayout {
-                    spacing: 12px;
-                    vertical-stretch: 0;
-                    alignment: start;
-                    Text {
-                        text: "Mining";
-                        color: #e6e6e6;
-                        font-size: 17px;
-                        font-weight: 600;
-                    }
-                    Text {
-                        text: root.mining
-                            ? "Mining \u{2014} " + root.mining-threads + (root.mining-threads == 1 ? " thread at " : " threads at ") + root.mining-hashrate
-                            : "Not mining";
-                        color: root.mining ? #7ec27e : #8a8a8a;
-                        font-size: 14px;
-                        font-weight: root.mining ? 600 : 400;
-                        wrap: word-wrap;
-                    }
-
-                    // Why you can't start yet, in the order the TUI checks.
-                    if !root.running: Text {
-                        text: "Mining runs inside the daemon \u{2014} start it first.";
-                        color: #8a8a8a;
-                        font-size: 13px;
-                        wrap: word-wrap;
-                    }
-                    if root.running && !root.mining && root.wallet-state < 2: Text {
-                        text: "Unlock your wallet first \u{2014} mining pays block rewards to its receive address.";
-                        color: #8a8a8a;
-                        font-size: 13px;
-                        wrap: word-wrap;
-                    }
-                    if root.running && !root.mining && root.wallet-state >= 2 && root.receive-address == "": Text {
-                        text: "Fetching your payout address\u{2026}";
-                        color: #8a8a8a;
-                        font-size: 13px;
-                    }
-
-                    if root.running && !root.mining && root.wallet-state >= 2 && root.receive-address != "": VerticalLayout {
-                        spacing: 10px;
+                    // --- 3: a NEW wallet's password, twice ---
+                    if root.wallet-stage == 3: create-box := VerticalLayout {
+                        spacing: 8px;
+                        property <bool> mismatch: false;
                         Text {
-                            text: "This machine has " + root.cpu-threads + " CPU threads. Mining uses real CPU and power; leave some free for other work.";
+                            text: "Choose a password for the new wallet";
+                            color: #9a9a9a;
+                            font-size: 13px;
+                        }
+                        new-pw := LineEdit {
+                            placeholder-text: "Password";
+                            input-type: password;
+                        }
+                        new-pw2 := LineEdit {
+                            placeholder-text: "Confirm password";
+                            input-type: password;
+                            accepted => { create-go.clicked(); }
+                        }
+                        if create-box.mismatch: Text {
+                            text: "Those didn't match. Type both again.";
+                            color: #e05c5c;
+                            font-size: 12px;
+                        }
+                        Text {
+                            text: "There is no way to recover this password, and no way to recover the wallet without it.";
                             color: #7a7a7a;
-                            font-size: 12px;
-                            wrap: word-wrap;
-                        }
-                        HorizontalLayout {
-                            alignment: start;
-                            spacing: 10px;
-                            Text {
-                                text: "Threads";
-                                color: #9a9a9a;
-                                font-size: 13px;
-                                vertical-alignment: center;
-                            }
-                            threads-box := SpinBox {
-                                minimum: 1;
-                                maximum: root.cpu-threads;
-                                value: Math.max(1, Math.floor(root.cpu-threads / 2));
-                                width: 110px;
-                            }
-                            Button {
-                                text: "Start mining";
-                                enabled: !root.mining-busy;
-                                clicked => { root.mining-start(threads-box.value); }
-                            }
-                        }
-                        Text {
-                            text: "Rewards go to " + root.receive-address;
-                            color: #6a6a6a;
                             font-size: 11px;
                             wrap: word-wrap;
                         }
-                    }
-
-                    if root.mining: HorizontalLayout {
-                        alignment: start;
-                        Button {
-                            text: "Stop mining";
-                            enabled: !root.mining-busy;
-                            clicked => { root.mining-stop-open = true; }
-                        }
-                    }
-                    if root.mining-error != "": Text {
-                        text: root.mining-error;
-                        color: #e05c5c;
-                        font-size: 12px;
-                        wrap: word-wrap;
-                    }
-                }
-
-                // DigiDollar (only for coins with a chain-native stablecoin).
-                if root.tab == 6: Placeholder {
-                    heading: "DigiDollar";
-                    note: "Mint, send and redeem the chain-native stablecoin.";
-                }
-
-                // Soaks up the leftover height so every tab except Transactions
-                // stays top-packed, exactly as it did when the pane carried
-                // `alignment: start`. Transactions opts out, and its list grows
-                // into the space instead.
-                if root.tab != 1: Rectangle {
-                    vertical-stretch: 1;
-                }
-            }
-        }
-    }
-
-    // ---- file-browser overlay (opened by the Home "test" button) ----
-    if root.browse-open: Rectangle {
-        background: #000000bb;
-        TouchArea { }
-
-        panel := Rectangle {
-            width: 82%;
-            height: 82%;
-            x: (parent.width - self.width) / 2;
-            y: (parent.height - self.height) / 2;
-            background: #202020;
-            border-radius: 10px;
-            border-width: 1px;
-            border-color: #3a3a3a;
-
-            VerticalBox {
-                padding: 14px;
-                spacing: 10px;
-
-                HorizontalBox {
-                    spacing: 8px;
-                    Text {
-                        text: root.browse-path;
-                        color: #cfcfcf;
-                        font-size: 13px;
-                        overflow: elide;
-                        vertical-alignment: center;
-                        horizontal-stretch: 1;
-                    }
-                    Button {
-                        text: "Up";
-                        clicked => {
-                            root.browse-up();
-                        }
-                    }
-                    Button {
-                        text: "Close";
-                        clicked => {
-                            root.browse-open = false;
-                        }
-                    }
-                }
-
-                ListView {
-                    for entry[idx] in root.browse-entries: Rectangle {
-                        height: 30px;
-                        background: ta.has-hover ? #2e2e2e : transparent;
-                        HorizontalBox {
-                            padding: 2px;
-                            padding-left: 8px;
-                            alignment: start;
-                            Text {
-                                text: entry.is-dir ? entry.name + "/" : entry.name;
-                                color: entry.is-dir ? #e0c56a : #cccccc;
-                                font-size: 14px;
-                                vertical-alignment: center;
-                            }
-                        }
-                        ta := TouchArea {
+                        create-go := Button {
+                            text: "Create wallet";
                             clicked => {
-                                root.browse-enter(idx);
+                                if (new-pw.text != "" && new-pw.text == new-pw2.text) {
+                                    create-box.mismatch = false;
+                                    root.wallet-setup(0, new-pw.text, "", "");
+                                    new-pw.text = "";
+                                    new-pw2.text = "";
+                                    root.wallet-stage = 6;
+                                } else {
+                                    // Clear both rather than let a half-remembered
+                                    // password through on a second guess.
+                                    new-pw.text = "";
+                                    new-pw2.text = "";
+                                    create-box.mismatch = true;
+                                }
                             }
                         }
                     }
-                }
-            }
-        }
-    }
 
-    // ---- send confirm ----
-    // The address is shown in FULL and never truncated: a wrong address is
-    // unrecoverable, and this is the last moment anyone can catch one.
-    if root.send-confirm-open: Rectangle {
-        background: #000000bb;
-        TouchArea { }
-
-        Rectangle {
-            width: 400px;
-            // Hug the content: with no height a panel fills the whole overlay.
-            height: send-body.preferred-height;
-            x: (parent.width - self.width) / 2;
-            y: (parent.height - self.height) / 2;
-            background: #202020;
-            border-radius: 10px;
-            border-width: 1px;
-            border-color: root.coin-color;
-
-            send-body := VerticalLayout {
-                padding: 16px;
-                spacing: 10px;
-                alignment: start;
-                Text {
-                    text: "Send " + root.send-confirm-amount + " " + root.coin-name + "?";
-                    color: #e6e6e6;
-                    font-size: 15px;
-                    font-weight: 600;
-                    wrap: word-wrap;
-                }
-                Text {
-                    text: "To this address — check every character:";
-                    color: #9a9a9a;
-                    font-size: 12px;
-                    wrap: word-wrap;
-                }
-                Rectangle {
-                    height: 64px;
-                    background: #181818;
-                    border-radius: 6px;
-                    VerticalLayout {
-                        padding: 10px;
-                        alignment: center;
+                    // --- 4: restore from seed words (words + new password together) ---
+                    if root.wallet-stage == 4: restore-box := VerticalLayout {
+                        spacing: 8px;
+                        property <bool> mismatch: false;
                         Text {
-                            text: root.send-confirm-address;
-                            color: #e6e6e6;
-                            font-family: "monospace";
+                            text: "Enter your " + root.seed-word-count + " seed words, then choose a password for the restored wallet.";
+                            color: #9a9a9a;
                             font-size: 13px;
                             wrap: word-wrap;
                         }
-                    }
-                }
-                Text {
-                    text: "A sent transaction cannot be reversed.";
-                    color: #e05c5c;
-                    font-size: 11px;
-                }
-                HorizontalLayout {
-                    alignment: end;
-                    spacing: 8px;
-                    Button {
-                        text: "Cancel";
-                        clicked => { root.send-confirm-open = false; }
-                    }
-                    Button {
-                        text: "Send";
-                        clicked => {
-                            root.send-confirm-open = false;
-                            root.send-funds(root.send-confirm-address, root.send-confirm-amount);
+                        seed-in := LineEdit {
+                            placeholder-text: "seed words, separated by spaces";
                         }
-                    }
-                }
-            }
-        }
-    }
-
-    // ---- stop-mining confirm ----
-    if root.mining-stop-open: Rectangle {
-        background: #000000bb;
-        TouchArea { }
-
-        Rectangle {
-            width: 320px;
-            height: stop-body.preferred-height;
-            x: (parent.width - self.width) / 2;
-            y: (parent.height - self.height) / 2;
-            background: #202020;
-            border-radius: 10px;
-            border-width: 1px;
-            border-color: root.coin-color;
-
-            stop-body := VerticalLayout {
-                padding: 16px;
-                spacing: 12px;
-                alignment: start;
-                Text {
-                    text: "Stop mining?";
-                    color: #e6e6e6;
-                    font-size: 15px;
-                    font-weight: 600;
-                }
-                HorizontalLayout {
-                    alignment: end;
-                    spacing: 8px;
-                    Button {
-                        text: "Keep mining";
-                        clicked => { root.mining-stop-open = false; }
-                    }
-                    Button {
-                        text: "Stop";
-                        clicked => {
-                            root.mining-stop-open = false;
-                            root.mining-stop();
+                        res-pw := LineEdit {
+                            placeholder-text: "Password";
+                            input-type: password;
                         }
-                    }
-                }
-            }
-        }
-    }
-
-    // ---- managed-wallet setup modal (external-wallet coins) ----
-    // Mirrors the TUI's wallet modal, stage for stage. The rule that is not
-    // cosmetic and must not be "simplified" away: a NEW password (create /
-    // restore-from-seed) is typed twice and must match, because a mistyped
-    // password on a fresh wallet means the funds are unrecoverable. Merely
-    // *opening* an existing wallet just fails and is retried, so it asks once.
-    //
-    // Every field holding a secret lives inside its own stage block, so leaving
-    // that stage destroys the field along with what was typed into it. Nothing
-    // carries a password or seed between stages — which is why restore-from-seed
-    // asks for the words and the password on one screen rather than two.
-    if root.wallet-stage != 0: Rectangle {
-        background: #000000bb;
-        TouchArea { }
-
-        Rectangle {
-            width: 400px;
-            // Hug the content, so each stage is only as tall as it needs to be —
-            // the menu is three buttons, not a full-height slab.
-            height: wallet-body.preferred-height;
-            x: (parent.width - self.width) / 2;
-            y: (parent.height - self.height) / 2;
-            background: #202020;
-            border-radius: 10px;
-            border-width: 1px;
-            border-color: root.coin-color;
-
-            wallet-body := VerticalLayout {
-                padding: 16px;
-                spacing: 10px;
-                alignment: start;
-
-                Text {
-                    text: root.coin-name + " wallet";
-                    color: #e6e6e6;
-                    font-size: 15px;
-                    font-weight: 600;
-                }
-
-                // --- 1: what would you like to do? ---
-                if root.wallet-stage == 1: VerticalLayout {
-                    spacing: 8px;
-                    Text {
-                        text: root.wallet-state == 0
-                            ? "There's no wallet for this coin yet."
-                            : "This wallet is locked.";
-                        color: #9a9a9a;
-                        font-size: 13px;
-                    }
-                    if root.wallet-state != 0: Button {
-                        text: "Unlock this wallet";
-                        clicked => { root.wallet-op = 3; root.wallet-stage = 2; }
-                    }
-                    if root.wallet-state == 0: Button {
-                        text: "Create a new wallet";
-                        clicked => { root.wallet-op = 0; root.wallet-stage = 3; }
-                    }
-                    // BW_EW_SEED_RESTORE / _FILE_RESTORE / _REPLACE, tested with
-                    // integer maths since Slint has no bitwise operators.
-                    if root.wallet-state == 0 && Math.mod(Math.floor(root.ew-flags / 2), 2) == 1: Button {
-                        text: "Restore from seed words";
-                        clicked => { root.wallet-op = 1; root.wallet-stage = 4; }
-                    }
-                    if root.wallet-state == 0 && Math.mod(Math.floor(root.ew-flags / 4), 2) == 1: Button {
-                        text: "Restore from a wallet file";
-                        clicked => { root.wallet-op = 2; root.wallet-stage = 5; root.browse-open = true; }
-                    }
-                    if root.wallet-state != 0 && Math.mod(Math.floor(root.ew-flags / 8), 2) == 1: Button {
-                        text: "Replace this wallet\u{2026}";
-                        clicked => { root.wallet-replace-bad = false; root.wallet-stage = 9; }
-                    }
-                }
-
-                // --- 2: an EXISTING wallet's password (open / import) ---
-                if root.wallet-stage == 2: VerticalLayout {
-                    spacing: 8px;
-                    Text {
-                        text: "Password for this wallet";
-                        color: #9a9a9a;
-                        font-size: 13px;
-                    }
-                    open-pw := LineEdit {
-                        placeholder-text: "Password";
-                        input-type: password;
-                        accepted => {
-                            root.wallet-setup(root.wallet-op, self.text, "", root.picked-file);
-                            self.text = "";
-                            root.wallet-stage = 6;
+                        res-pw2 := LineEdit {
+                            placeholder-text: "Confirm password";
+                            input-type: password;
+                            accepted => { restore-go.clicked(); }
                         }
-                    }
-                    Button {
-                        text: root.wallet-op == 2 ? "Import" : "Unlock";
-                        clicked => {
-                            root.wallet-setup(root.wallet-op, open-pw.text, "", root.picked-file);
-                            open-pw.text = "";
-                            root.wallet-stage = 6;
+                        if restore-box.mismatch: Text {
+                            text: "Those passwords didn't match. Type both again.";
+                            color: #e05c5c;
+                            font-size: 12px;
                         }
-                    }
-                }
-
-                // --- 3: a NEW wallet's password, twice ---
-                if root.wallet-stage == 3: create-box := VerticalLayout {
-                    spacing: 8px;
-                    property <bool> mismatch: false;
-                    Text {
-                        text: "Choose a password for the new wallet";
-                        color: #9a9a9a;
-                        font-size: 13px;
-                    }
-                    new-pw := LineEdit {
-                        placeholder-text: "Password";
-                        input-type: password;
-                    }
-                    new-pw2 := LineEdit {
-                        placeholder-text: "Confirm password";
-                        input-type: password;
-                        accepted => { create-go.clicked(); }
-                    }
-                    if create-box.mismatch: Text {
-                        text: "Those didn't match. Type both again.";
-                        color: #e05c5c;
-                        font-size: 12px;
-                    }
-                    Text {
-                        text: "There is no way to recover this password, and no way to recover the wallet without it.";
-                        color: #7a7a7a;
-                        font-size: 11px;
-                        wrap: word-wrap;
-                    }
-                    create-go := Button {
-                        text: "Create wallet";
-                        clicked => {
-                            if (new-pw.text != "" && new-pw.text == new-pw2.text) {
-                                create-box.mismatch = false;
-                                root.wallet-setup(0, new-pw.text, "", "");
-                                new-pw.text = "";
-                                new-pw2.text = "";
-                                root.wallet-stage = 6;
-                            } else {
-                                // Clear both rather than let a half-remembered
-                                // password through on a second guess.
-                                new-pw.text = "";
-                                new-pw2.text = "";
-                                create-box.mismatch = true;
-                            }
-                        }
-                    }
-                }
-
-                // --- 4: restore from seed words (words + new password together) ---
-                if root.wallet-stage == 4: restore-box := VerticalLayout {
-                    spacing: 8px;
-                    property <bool> mismatch: false;
-                    Text {
-                        text: "Enter your " + root.seed-word-count + " seed words, then choose a password for the restored wallet.";
-                        color: #9a9a9a;
-                        font-size: 13px;
-                        wrap: word-wrap;
-                    }
-                    seed-in := LineEdit {
-                        placeholder-text: "seed words, separated by spaces";
-                    }
-                    res-pw := LineEdit {
-                        placeholder-text: "Password";
-                        input-type: password;
-                    }
-                    res-pw2 := LineEdit {
-                        placeholder-text: "Confirm password";
-                        input-type: password;
-                        accepted => { restore-go.clicked(); }
-                    }
-                    if restore-box.mismatch: Text {
-                        text: "Those passwords didn't match. Type both again.";
-                        color: #e05c5c;
-                        font-size: 12px;
-                    }
-                    restore-go := Button {
-                        text: "Restore wallet";
-                        clicked => {
-                            if (seed-in.text != "" && res-pw.text != "" && res-pw.text == res-pw2.text) {
-                                restore-box.mismatch = false;
-                                root.wallet-setup(1, res-pw.text, seed-in.text, "");
-                                seed-in.text = "";
-                                res-pw.text = "";
-                                res-pw2.text = "";
-                                root.wallet-stage = 6;
-                            } else {
-                                res-pw.text = "";
-                                res-pw2.text = "";
-                                restore-box.mismatch = true;
-                            }
-                        }
-                    }
-                }
-
-                // --- 5: pick a wallet file (the browse overlay does the work) ---
-                if root.wallet-stage == 5: VerticalLayout {
-                    spacing: 8px;
-                    Text {
-                        text: root.picked-file == ""
-                            ? "Choose the wallet file to import."
-                            : "Selected: " + root.picked-file;
-                        color: #9a9a9a;
-                        font-size: 13px;
-                        wrap: word-wrap;
-                    }
-                    Button {
-                        text: root.picked-file == "" ? "Browse\u{2026}" : "Continue";
-                        clicked => {
-                            if (root.picked-file == "") {
-                                root.browse-open = true;
-                            } else {
-                                root.wallet-stage = 2;
-                            }
-                        }
-                    }
-                }
-
-                // --- 6: working ---
-                if root.wallet-stage == 6: Text {
-                    text: root.wallet-op == 0 ? "Creating the wallet\u{2026}"
-                        : root.wallet-op == 1 ? "Restoring from your seed words\u{2026}"
-                        : root.wallet-op == 2 ? "Importing the wallet file\u{2026}"
-                        : "Opening the wallet\u{2026}";
-                    color: #9a9a9a;
-                    font-size: 13px;
-                    wrap: word-wrap;
-                }
-
-                // --- 7: write the seed down ---
-                if root.wallet-stage == 7: VerticalLayout {
-                    spacing: 8px;
-                    Text {
-                        text: "Write these words down, in order, and keep them somewhere safe.";
-                        color: #e6e6e6;
-                        font-size: 13px;
-                        wrap: word-wrap;
-                    }
-                    Rectangle {
-                        height: 170px;
-                        background: #181818;
-                        border-radius: 6px;
-                        VerticalLayout {
-                            padding: 10px;
-                            alignment: start;
-                            Text {
-                                text: root.wallet-seed-words;
-                                color: #e6e6e6;
-                                font-family: "monospace";
-                                font-size: 13px;
-                                wrap: word-wrap;
-                            }
-                        }
-                    }
-                    Text {
-                        text: "Anyone with these words can spend your funds. They are shown once.";
-                        color: #e05c5c;
-                        font-size: 11px;
-                        wrap: word-wrap;
-                    }
-                    if root.wallet-verify-bad: Text {
-                        text: "That wasn't the right word — check your copy before trying again.";
-                        color: #e05c5c;
-                        font-size: 12px;
-                        wrap: word-wrap;
-                    }
-                    Button {
-                        text: "I've written them down";
-                        clicked => {
-                            root.wallet-verify-bad = false;
-                            root.wallet-stage = 8;
-                        }
-                    }
-                }
-
-                // --- 8: prove it ---
-                if root.wallet-stage == 8: verify-box := VerticalLayout {
-                    spacing: 8px;
-                    property <int> pos: root.wallet-verify-step == 0 ? root.verify-pos-1
-                        : root.wallet-verify-step == 1 ? root.verify-pos-2
-                        : root.verify-pos-3;
-                    Text {
-                        text: "Backup check " + (root.wallet-verify-step + 1) + " of 3 \u{2014} what is word " + verify-box.pos + "?";
-                        color: #9a9a9a;
-                        font-size: 13px;
-                        wrap: word-wrap;
-                    }
-                    verify-in := LineEdit {
-                        placeholder-text: "that word";
-                        accepted => {
-                            if (root.verify-word(verify-box.pos, self.text)) {
-                                self.text = "";
-                                if (root.wallet-verify-step == 2) {
-                                    // Verified: the words go now, not later.
-                                    root.wallet-seed-words = "";
-                                    root.wallet-verify-step = 0;
-                                    root.wallet-result = "Backup verified \u{2014} your wallet is ready.";
-                                    root.wallet-result-error = false;
-                                    root.wallet-stage = 10;
+                        restore-go := Button {
+                            text: "Restore wallet";
+                            clicked => {
+                                if (seed-in.text != "" && res-pw.text != "" && res-pw.text == res-pw2.text) {
+                                    restore-box.mismatch = false;
+                                    root.wallet-setup(1, res-pw.text, seed-in.text, "");
+                                    seed-in.text = "";
+                                    res-pw.text = "";
+                                    res-pw2.text = "";
+                                    root.wallet-stage = 6;
                                 } else {
-                                    root.wallet-verify-step += 1;
+                                    res-pw.text = "";
+                                    res-pw2.text = "";
+                                    restore-box.mismatch = true;
                                 }
-                            } else {
-                                self.text = "";
-                                root.wallet-verify-step = 0;
-                                root.wallet-verify-bad = true;
-                                root.wallet-stage = 7; // back to the words
                             }
                         }
                     }
-                }
 
-                // --- 9: replace (destructive) ---
-                if root.wallet-stage == 9: VerticalLayout {
-                    spacing: 8px;
-                    Text {
-                        text: "This deletes this wallet so a different one can take its place. Without a backup of its seed words, its funds are gone for good. Type REPLACE to confirm.";
-                        color: #e05c5c;
-                        font-size: 12px;
+                    // --- 5: pick a wallet file (the browse overlay does the work) ---
+                    if root.wallet-stage == 5: VerticalLayout {
+                        spacing: 8px;
+                        Text {
+                            text: root.picked-file == ""
+                                ? "Choose the wallet file to import."
+                                : "Selected: " + root.picked-file;
+                            color: #9a9a9a;
+                            font-size: 13px;
+                            wrap: word-wrap;
+                        }
+                        Button {
+                            text: root.picked-file == "" ? "Browse\u{2026}" : "Continue";
+                            clicked => {
+                                if (root.picked-file == "") {
+                                    root.browse-open = true;
+                                } else {
+                                    root.wallet-stage = 2;
+                                }
+                            }
+                        }
+                    }
+
+                    // --- 6: working ---
+                    if root.wallet-stage == 6: Text {
+                        text: root.wallet-op == 0 ? "Creating the wallet\u{2026}"
+                            : root.wallet-op == 1 ? "Restoring from your seed words\u{2026}"
+                            : root.wallet-op == 2 ? "Importing the wallet file\u{2026}"
+                            : "Opening the wallet\u{2026}";
+                        color: #9a9a9a;
+                        font-size: 13px;
                         wrap: word-wrap;
                     }
-                    replace-in := LineEdit {
-                        placeholder-text: "REPLACE";
-                        accepted => {
-                            if (self.text == "REPLACE") {
-                                self.text = "";
-                                root.wallet-replace-bad = false;
-                                root.wallet-replace();
-                                root.wallet-stage = 6;
-                            } else {
-                                root.wallet-replace-bad = true;
+
+                    // --- 7: write the seed down ---
+                    if root.wallet-stage == 7: VerticalLayout {
+                        spacing: 8px;
+                        Text {
+                            text: "Write these words down, in order, and keep them somewhere safe.";
+                            color: #e6e6e6;
+                            font-size: 13px;
+                            wrap: word-wrap;
+                        }
+                        Rectangle {
+                            height: 170px;
+                            background: #181818;
+                            border-radius: 6px;
+                            VerticalLayout {
+                                padding: 10px;
+                                alignment: start;
+                                Text {
+                                    text: root.wallet-seed-words;
+                                    color: #e6e6e6;
+                                    font-family: "monospace";
+                                    font-size: 13px;
+                                    wrap: word-wrap;
+                                }
+                            }
+                        }
+                        Text {
+                            text: "Anyone with these words can spend your funds. They are shown once.";
+                            color: #e05c5c;
+                            font-size: 11px;
+                            wrap: word-wrap;
+                        }
+                        if root.wallet-verify-bad: Text {
+                            text: "That wasn't the right word — check your copy before trying again.";
+                            color: #e05c5c;
+                            font-size: 12px;
+                            wrap: word-wrap;
+                        }
+                        Button {
+                            text: "I've written them down";
+                            clicked => {
+                                root.wallet-verify-bad = false;
+                                root.wallet-stage = 8;
                             }
                         }
                     }
-                    if root.wallet-replace-bad: Text {
-                        text: "Type REPLACE exactly to confirm.";
-                        color: #e05c5c;
-                        font-size: 12px;
+
+                    // --- 8: prove it ---
+                    if root.wallet-stage == 8: verify-box := VerticalLayout {
+                        spacing: 8px;
+                        property <int> pos: root.wallet-verify-step == 0 ? root.verify-pos-1
+                            : root.wallet-verify-step == 1 ? root.verify-pos-2
+                            : root.verify-pos-3;
+                        Text {
+                            text: "Backup check " + (root.wallet-verify-step + 1) + " of 3 \u{2014} what is word " + verify-box.pos + "?";
+                            color: #9a9a9a;
+                            font-size: 13px;
+                            wrap: word-wrap;
+                        }
+                        verify-in := LineEdit {
+                            placeholder-text: "that word";
+                            accepted => {
+                                if (root.verify-word(verify-box.pos, self.text)) {
+                                    self.text = "";
+                                    if (root.wallet-verify-step == 2) {
+                                        // Verified: the words go now, not later.
+                                        root.wallet-seed-words = "";
+                                        root.wallet-verify-step = 0;
+                                        root.wallet-result = "Backup verified \u{2014} your wallet is ready.";
+                                        root.wallet-result-error = false;
+                                        root.wallet-stage = 10;
+                                    } else {
+                                        root.wallet-verify-step += 1;
+                                    }
+                                } else {
+                                    self.text = "";
+                                    root.wallet-verify-step = 0;
+                                    root.wallet-verify-bad = true;
+                                    root.wallet-stage = 7; // back to the words
+                                }
+                            }
+                        }
                     }
-                }
 
-                // --- 10: outcome ---
-                if root.wallet-stage == 10: Text {
-                    text: root.wallet-result;
-                    color: root.wallet-result-error ? #e05c5c : #7ec27e;
-                    font-size: 13px;
-                    wrap: word-wrap;
-                }
+                    // --- 9: replace (destructive) ---
+                    if root.wallet-stage == 9: VerticalLayout {
+                        spacing: 8px;
+                        Text {
+                            text: "This deletes this wallet so a different one can take its place. Without a backup of its seed words, its funds are gone for good. Type REPLACE to confirm.";
+                            color: #e05c5c;
+                            font-size: 12px;
+                            wrap: word-wrap;
+                        }
+                        replace-in := LineEdit {
+                            placeholder-text: "REPLACE";
+                            accepted => {
+                                if (self.text == "REPLACE") {
+                                    self.text = "";
+                                    root.wallet-replace-bad = false;
+                                    root.wallet-replace();
+                                    root.wallet-stage = 6;
+                                } else {
+                                    root.wallet-replace-bad = true;
+                                }
+                            }
+                        }
+                        if root.wallet-replace-bad: Text {
+                            text: "Type REPLACE exactly to confirm.";
+                            color: #e05c5c;
+                            font-size: 12px;
+                        }
+                    }
 
-                // Footer. Stages 6-8 have no way out: 6 is already in flight and
-                // abandoning it wouldn't stop it, and 7-8 are the one chance to
-                // record the seed.
-                if root.wallet-stage < 6 || root.wallet-stage == 9 || root.wallet-stage == 10: HorizontalLayout {
-                    alignment: end;
-                    spacing: 8px;
-                    Button {
-                        text: root.wallet-stage == 10 ? "Close" : "Cancel";
-                        clicked => {
-                            // Any seed still pending in the core was never shown;
-                            // drop it rather than leave it parked.
-                            root.seed-discard();
-                            root.wallet-seed-words = "";
-                            root.wallet-verify-step = 0;
-                            root.wallet-verify-bad = false;
-                            root.wallet-replace-bad = false;
-                            root.wallet-stage = 0;
+                    // --- 10: outcome ---
+                    if root.wallet-stage == 10: Text {
+                        text: root.wallet-result;
+                        color: root.wallet-result-error ? #e05c5c : #7ec27e;
+                        font-size: 13px;
+                        wrap: word-wrap;
+                    }
+
+                    // Footer. Stages 6-8 have no way out: 6 is already in flight and
+                    // abandoning it wouldn't stop it, and 7-8 are the one chance to
+                    // record the seed.
+                    if root.wallet-stage < 6 || root.wallet-stage == 9 || root.wallet-stage == 10: HorizontalLayout {
+                        alignment: end;
+                        spacing: 8px;
+                        Button {
+                            text: root.wallet-stage == 10 ? "Close" : "Cancel";
+                            clicked => {
+                                // Any seed still pending in the core was never shown;
+                                // drop it rather than leave it parked.
+                                root.seed-discard();
+                                root.wallet-seed-words = "";
+                                root.wallet-verify-step = 0;
+                                root.wallet-verify-bad = false;
+                                root.wallet-replace-bad = false;
+                                root.wallet-stage = 0;
+                            }
                         }
                     }
                 }
             }
         }
-    }
 
-    // ---- wallet unlock passphrase modal ----
-    // The passphrase is a secret: it lives only in the field while typing and is
-    // cleared the instant it's handed to the callback (which passes it as bytes
-    // to the core, uses it, and wipes that copy).
-    if root.unlock-open: Rectangle {
-        background: #000000bb;
-        TouchArea { }
+        // ---- wallet unlock passphrase modal ----
+        // The passphrase is a secret: it lives only in the field while typing and is
+        // cleared the instant it's handed to the callback (which passes it as bytes
+        // to the core, uses it, and wipes that copy).
+        if root.unlock-open: Rectangle {
+            background: #000000bb;
+            TouchArea { }
 
-        Rectangle {
-            width: 320px;
-            height: 176px;
-            x: (parent.width - self.width) / 2;
-            y: (parent.height - self.height) / 2;
-            background: #202020;
-            border-radius: 10px;
-            border-width: 1px;
-            border-color: #3a3a3a;
+            Rectangle {
+                width: 320px;
+                height: 176px;
+                x: (parent.width - self.width) / 2;
+                y: (parent.height - self.height) / 2;
+                background: #202020;
+                border-radius: 10px;
+                border-width: 1px;
+                border-color: #3a3a3a;
 
-            VerticalBox {
-                padding: 16px;
-                spacing: 12px;
-                alignment: start;
-                Text {
-                    text: "Unlock " + root.coin-name + " wallet";
-                    color: #e6e6e6;
-                    font-size: 15px;
-                    font-weight: 600;
-                }
-                pw := LineEdit {
-                    placeholder-text: "Passphrase";
-                    input-type: password;
-                    accepted => {
-                        root.unlock-wallet(self.text);
-                        self.text = "";
-                        root.unlock-open = false;
+                VerticalBox {
+                    padding: 16px;
+                    spacing: 12px;
+                    alignment: start;
+                    Text {
+                        text: "Unlock " + root.coin-name + " wallet";
+                        color: #e6e6e6;
+                        font-size: 15px;
+                        font-weight: 600;
                     }
-                }
-                HorizontalBox {
-                    padding: 0;
-                    alignment: end;
-                    spacing: 8px;
-                    Button {
-                        text: "Cancel";
-                        clicked => {
-                            pw.text = "";
+                    pw := LineEdit {
+                        placeholder-text: "Passphrase";
+                        input-type: password;
+                        accepted => {
+                            root.unlock-wallet(self.text);
+                            self.text = "";
                             root.unlock-open = false;
                         }
                     }
-                    Button {
-                        text: "Unlock";
-                        clicked => {
-                            root.unlock-wallet(pw.text);
-                            pw.text = "";
-                            root.unlock-open = false;
+                    HorizontalBox {
+                        padding: 0;
+                        alignment: end;
+                        spacing: 8px;
+                        Button {
+                            text: "Cancel";
+                            clicked => {
+                                pw.text = "";
+                                root.unlock-open = false;
+                            }
+                        }
+                        Button {
+                            text: "Unlock";
+                            clicked => {
+                                root.unlock-wallet(pw.text);
+                                pw.text = "";
+                                root.unlock-open = false;
+                            }
                         }
                     }
                 }
             }
         }
-    }
 
-    // Update confirm. The TUI asks the same question before its stop → reinstall
-    // → restart sequence, and for the same reason: this replaces a daemon that may
-    // be running and whose data another application also uses.
-    if root.update-open: Rectangle {
-        background: #000000bb;
-        TouchArea { }
+        // Update confirm. The TUI asks the same question before its stop → reinstall
+        // → restart sequence, and for the same reason: this replaces a daemon that may
+        // be running and whose data another application also uses.
+        if root.update-open: Rectangle {
+            background: #000000bb;
+            TouchArea { }
 
-        Rectangle {
-            width: 400px;
-            height: 232px;
-            x: (parent.width - self.width) / 2;
-            y: (parent.height - self.height) / 2;
-            background: #202020;
-            border-radius: 10px;
-            border-width: 1px;
-            border-color: #3a3a3a;
+            Rectangle {
+                width: 400px;
+                height: 232px;
+                x: (parent.width - self.width) / 2;
+                y: (parent.height - self.height) / 2;
+                background: #202020;
+                border-radius: 10px;
+                border-width: 1px;
+                border-color: #3a3a3a;
 
-            VerticalBox {
-                padding: 16px;
-                spacing: 10px;
-                alignment: start;
-                Text {
-                    text: "Update " + root.coin-name + "?";
-                    color: #e6e6e6;
-                    font-size: 15px;
-                    font-weight: 600;
-                }
-                Text {
-                    text: root.installed-version + "  →  " + root.coin-version;
-                    color: #c8c8c8;
-                    font-size: 14px;
-                }
-                Text {
-                    // The one risk that can't be engineered away, so it's stated
-                    // rather than hidden: a newer core can upgrade chainstate or
-                    // wallet formats, and if another app drives this same data
-                    // directory it may not be able to open it afterwards.
-                    text: "The daemon will be stopped, updated, and restarted if it "
-                        + "was running. If another application uses this coin's data "
-                        + "directory, a newer core may upgrade it so the older app can "
-                        + "no longer open it.";
-                    color: #9a9a9a;
-                    font-size: 12px;
-                    wrap: word-wrap;
-                    horizontal-stretch: 1;
-                }
-                HorizontalBox {
-                    padding: 0;
-                    alignment: end;
-                    spacing: 8px;
-                    Button {
-                        text: "Cancel";
-                        clicked => {
-                            root.update-open = false;
-                        }
-                    }
-                    Button {
-                        text: "Update";
-                        primary: true;
-                        clicked => {
-                            root.update-open = false;
-                            root.install-busy = true;
-                            root.update-coin();
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    // Sync-accelerator offer, raised in place of starting the daemon the first
-    // time a coin that publishes one is started on an empty chain. Declining is
-    // a normal outcome (a full P2P sync still works), so both buttons start the
-    // daemon — they differ only in whether the accelerator is fetched first.
-    if root.accel-open: Rectangle {
-        background: #000000bb;
-        TouchArea { }
-
-        Rectangle {
-            width: 400px;
-            // Fixed heights, since the content is fixed too: the pitch, the
-            // caution (four wrapped lines at this width), the optional resume
-            // line, and the buttons.
-            height: root.accel-resume == "" ? 300px : 332px;
-            x: (parent.width - self.width) / 2;
-            y: (parent.height - self.height) / 2;
-            background: #202020;
-            border-radius: 10px;
-            border-width: 1px;
-            border-color: #3a3a3a;
-
-            VerticalBox {
-                padding: 16px;
-                spacing: 10px;
-                alignment: start;
-                Text {
-                    text: root.accel-name + "?";
-                    color: #e6e6e6;
-                    font-size: 15px;
-                    font-weight: 600;
-                }
-                Text {
-                    text: root.accel-detail;
-                    color: #c8c8c8;
-                    font-size: 13px;
-                    wrap: word-wrap;
-                    horizontal-stretch: 1;
-                }
-                // What the speed costs. Set apart with an amber rule rather than
-                // dropped in as another grey caption: it's the one thing here the
-                // user is meant to weigh, and grey small print is where warnings
-                // go to be skipped.
-                if root.accel-trust != "": HorizontalBox {
-                    padding: 0;
-                    spacing: 8px;
-                    Rectangle {
-                        width: 3px;
-                        background: #e0a03a;
-                        border-radius: 1.5px;
+                VerticalBox {
+                    padding: 16px;
+                    spacing: 10px;
+                    alignment: start;
+                    Text {
+                        text: "Update " + root.coin-name + "?";
+                        color: #e6e6e6;
+                        font-size: 15px;
+                        font-weight: 600;
                     }
                     Text {
-                        text: root.accel-trust;
-                        color: #e0a03a;
+                        text: root.installed-version + "  →  " + root.coin-version;
+                        color: #c8c8c8;
+                        font-size: 14px;
+                    }
+                    Text {
+                        // The one risk that can't be engineered away, so it's stated
+                        // rather than hidden: a newer core can upgrade chainstate or
+                        // wallet formats, and if another app drives this same data
+                        // directory it may not be able to open it afterwards.
+                        text: "The daemon will be stopped, updated, and restarted if it "
+                            + "was running. If another application uses this coin's data "
+                            + "directory, a newer core may upgrade it so the older app can "
+                            + "no longer open it.";
+                        color: #9a9a9a;
                         font-size: 12px;
                         wrap: word-wrap;
                         horizontal-stretch: 1;
                     }
-                }
-                // Only shown when an earlier attempt left bytes on disk, so
-                // "Resume" doesn't read as committing to the whole download again.
-                if root.accel-resume != "": Text {
-                    text: root.accel-resume;
-                    color: #9a9a9a;
-                    font-size: 12px;
-                    wrap: word-wrap;
-                    horizontal-stretch: 1;
-                }
-                Text {
-                    // The "only makes the first sync faster" tail used to live
-                    // here; the caution above now carries that point, better.
-                    text: "Without it, " + root.coin-name + " syncs from the network as usual.";
-                    color: #9a9a9a;
-                    font-size: 12px;
-                    wrap: word-wrap;
-                    horizontal-stretch: 1;
-                }
-                // Syncing normally is the highlighted, right-hand default: it's
-                // the choice that needs no trust, so it shouldn't be the one that
-                // takes more effort. The accelerator stays one click away.
-                HorizontalBox {
-                    padding: 0;
-                    alignment: end;
-                    spacing: 8px;
-                    Button {
-                        text: root.accel-resume == "" ? "Download" : "Resume";
-                        clicked => {
-                            root.accel-open = false;
-                            root.accel-accept();
+                    HorizontalBox {
+                        padding: 0;
+                        alignment: end;
+                        spacing: 8px;
+                        Button {
+                            text: "Cancel";
+                            clicked => {
+                                root.update-open = false;
+                            }
+                        }
+                        Button {
+                            text: "Update";
+                            primary: true;
+                            clicked => {
+                                root.update-open = false;
+                                root.install-busy = true;
+                                root.update-coin();
+                            }
                         }
                     }
-                    Button {
-                        text: "Sync normally";
-                        primary: true;
-                        clicked => {
-                            root.accel-open = false;
-                            root.accel-decline();
+                }
+            }
+        }
+
+        // Sync-accelerator offer, raised in place of starting the daemon the first
+        // time a coin that publishes one is started on an empty chain. Declining is
+        // a normal outcome (a full P2P sync still works), so both buttons start the
+        // daemon — they differ only in whether the accelerator is fetched first.
+        if root.accel-open: Rectangle {
+            background: #000000bb;
+            TouchArea { }
+
+            Rectangle {
+                width: 400px;
+                // Fixed heights, since the content is fixed too: the pitch, the
+                // caution (four wrapped lines at this width), the optional resume
+                // line, and the buttons.
+                height: root.accel-resume == "" ? 300px : 332px;
+                x: (parent.width - self.width) / 2;
+                y: (parent.height - self.height) / 2;
+                background: #202020;
+                border-radius: 10px;
+                border-width: 1px;
+                border-color: #3a3a3a;
+
+                VerticalBox {
+                    padding: 16px;
+                    spacing: 10px;
+                    alignment: start;
+                    Text {
+                        text: root.accel-name + "?";
+                        color: #e6e6e6;
+                        font-size: 15px;
+                        font-weight: 600;
+                    }
+                    Text {
+                        text: root.accel-detail;
+                        color: #c8c8c8;
+                        font-size: 13px;
+                        wrap: word-wrap;
+                        horizontal-stretch: 1;
+                    }
+                    // What the speed costs. Set apart with an amber rule rather than
+                    // dropped in as another grey caption: it's the one thing here the
+                    // user is meant to weigh, and grey small print is where warnings
+                    // go to be skipped.
+                    if root.accel-trust != "": HorizontalBox {
+                        padding: 0;
+                        spacing: 8px;
+                        Rectangle {
+                            width: 3px;
+                            background: #e0a03a;
+                            border-radius: 1.5px;
+                        }
+                        Text {
+                            text: root.accel-trust;
+                            color: #e0a03a;
+                            font-size: 12px;
+                            wrap: word-wrap;
+                            horizontal-stretch: 1;
+                        }
+                    }
+                    // Only shown when an earlier attempt left bytes on disk, so
+                    // "Resume" doesn't read as committing to the whole download again.
+                    if root.accel-resume != "": Text {
+                        text: root.accel-resume;
+                        color: #9a9a9a;
+                        font-size: 12px;
+                        wrap: word-wrap;
+                        horizontal-stretch: 1;
+                    }
+                    Text {
+                        // The "only makes the first sync faster" tail used to live
+                        // here; the caution above now carries that point, better.
+                        text: "Without it, " + root.coin-name + " syncs from the network as usual.";
+                        color: #9a9a9a;
+                        font-size: 12px;
+                        wrap: word-wrap;
+                        horizontal-stretch: 1;
+                    }
+                    // Syncing normally is the highlighted, right-hand default: it's
+                    // the choice that needs no trust, so it shouldn't be the one that
+                    // takes more effort. The accelerator stays one click away.
+                    HorizontalBox {
+                        padding: 0;
+                        alignment: end;
+                        spacing: 8px;
+                        Button {
+                            text: root.accel-resume == "" ? "Download" : "Resume";
+                            clicked => {
+                                root.accel-open = false;
+                                root.accel-accept();
+                            }
+                        }
+                        Button {
+                            text: "Sync normally";
+                            primary: true;
+                            clicked => {
+                                root.accel-open = false;
+                                root.accel-decline();
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        // ---- file-browser overlay ----
+        // Declared LAST so it paints above every other overlay: it is opened from
+        // *inside* the wallet modal (stage 5, "pick a wallet file"), and a sibling
+        // declared earlier would render underneath the dialog that opened it.
+        if root.browse-open: Rectangle {
+            background: #000000bb;
+            TouchArea { }
+
+            panel := Rectangle {
+                width: 82%;
+                height: 82%;
+                x: (parent.width - self.width) / 2;
+                y: (parent.height - self.height) / 2;
+                background: #202020;
+                border-radius: 10px;
+                border-width: 1px;
+                border-color: #3a3a3a;
+
+                VerticalBox {
+                    padding: 14px;
+                    spacing: 10px;
+
+                    HorizontalBox {
+                        spacing: 8px;
+                        Text {
+                            text: root.browse-path;
+                            color: #cfcfcf;
+                            font-size: 13px;
+                            overflow: elide;
+                            vertical-alignment: center;
+                            horizontal-stretch: 1;
+                        }
+                        Button {
+                            text: "Up";
+                            clicked => {
+                                root.browse-up();
+                            }
+                        }
+                        Button {
+                            text: "Close";
+                            clicked => {
+                                root.browse-open = false;
+                            }
+                        }
+                    }
+
+                    ListView {
+                        for entry[idx] in root.browse-entries: Rectangle {
+                            height: 30px;
+                            background: ta.has-hover ? #2e2e2e : transparent;
+                            HorizontalBox {
+                                padding: 2px;
+                                padding-left: 8px;
+                                alignment: start;
+                                Text {
+                                    text: entry.is-dir ? entry.name + "/" : entry.name;
+                                    color: entry.is-dir ? #e0c56a : #cccccc;
+                                    font-size: 14px;
+                                    vertical-alignment: center;
+                                }
+                            }
+                            ta := TouchArea {
+                                clicked => {
+                                    root.browse-enter(idx);
+                                }
+                            }
                         }
                     }
                 }
             }
         }
     }
+
 }

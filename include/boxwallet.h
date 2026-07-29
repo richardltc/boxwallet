@@ -2,8 +2,22 @@
  *
  * Implemented in src/capi.zig; linked into the GUI executable by `zig build gui`.
  * The C++ Slint glue includes this header and calls these functions to drive the
- * exact same coin logic as the TUI. Proof-of-concept surface: read-only status
- * for one coin (Divi). No secrets cross this boundary yet — see the note below.
+ * exact same coin logic as the TUI.
+ *
+ * The surface covers every registered coin: metadata, install and update, the
+ * sync accelerators, daemon start/stop and warm-up, both wallet shapes, balances,
+ * transactions, receive addresses, sending, and mining.
+ *
+ * Secrets DO cross this boundary — passwords in, one mnemonic out — under the
+ * contract at the foot of this file. Read it before calling anything that takes
+ * or returns one.
+ *
+ * Conventions throughout:
+ *   - Buffer-filling calls copy up to `cap` bytes and return the length written.
+ *     The result is NOT NUL-terminated; use the returned length.
+ *   - Nothing allocated on one side is ever freed by the other.
+ *   - Calls that block on RPC or the network are marked as worker-thread-only.
+ *     The pure metadata reads are safe on the UI thread.
  */
 #ifndef BOXWALLET_H
 #define BOXWALLET_H
@@ -44,14 +58,31 @@ typedef struct {
 bw_ctx *bw_init(const char *home_dir);
 void    bw_deinit(bw_ctx *ctx);
 
-/* Copy the last recorded error message for ctx into buf (up to cap bytes);
- * returns the number of bytes written. Set after any call that returned < 0. */
+/* The last error, copied into buf (up to cap bytes); returns the bytes written.
+ * Set after any call that returned < 0.
+ *
+ * PER-THREAD. Each thread has its own slot, so read it on the same thread that
+ * made the failing call — which is what every caller already does. It is not a
+ * mailbox: a worker cannot pick up the poller's message, and vice versa. That is
+ * the point, since a dozen detached workers run alongside a continuous poller
+ * and a shared slot would put one wallet's failure on another's dialog.
+ *
+ * The ctx argument is accepted for symmetry and may be NULL. */
 size_t  bw_last_error(bw_ctx *ctx, char *buf, size_t cap);
 
 /* The bare error name behind that message (e.g. "WrongPassword"), for callers
  * that need to branch rather than just display — a wallet setup modal keeps
- * itself on the password step when it sees that one. */
+ * itself on the password step when it sees that one. Same per-thread rule. */
 size_t  bw_last_error_code(bw_ctx *ctx, char *buf, size_t cap);
+
+/* ---- application identity (no ctx needed) -----------------------------------
+ * BoxWallet's own name, version and brand colour. The version has no "v" prefix
+ * — add your own. Take these rather than hardcoding: they come from the same
+ * constant the TUI shows and the self-updater compares against, so a copy in the
+ * UI would go stale one release later and claim a version that isn't running. */
+size_t  bw_app_version(char *buf, size_t cap);   /* e.g. "0.8.4" */
+size_t  bw_app_name(char *buf, size_t cap);      /* "BoxWallet" */
+size_t  bw_brand_color(char *buf, size_t cap);   /* "#RRGGBB" */
 
 /* ---- coin registry / metadata (no ctx needed) ------------------------------
  * Coins are addressed by a stable size_t index in [0, bw_coin_count()). The
@@ -75,7 +106,11 @@ int     bw_coin_supports_stablecoin(size_t idx);  /* 0/1 — shows the DigiDolla
 #define BW_EW_FILE_RESTORE   (1 << 2)  /* import an existing wallet file */
 #define BW_EW_REPLACE        (1 << 3)  /* in-app "replace wallet" (destructive) */
 #define BW_EW_EXPLICIT_LOCK  (1 << 4)  /* in-daemon wallet needing a Lock action */
-#define BW_EW_LAUNCH_WITH_PW (1 << 5)  /* wallet process is launched per-open, with the password */
+/* Wallet process is launched per-open with the password on its command line
+ * (Zano, Epic). NOT YET WIRED for this front-end: every bw_ext_wallet_* op on
+ * such a coin returns -1 with "Unsupported". Check this bit and tell the user
+ * plainly rather than offering actions that can only fail. */
+#define BW_EW_LAUNCH_WITH_PW (1 << 5)
 int     bw_coin_ext_wallet(size_t idx);
 
 /* Word counts this wallet's restore seed may have (25 for the CryptoNote coins,
@@ -83,6 +118,12 @@ int     bw_coin_ext_wallet(size_t idx);
  * many; the first is the canonical length to name in the prompt. */
 size_t  bw_coin_seed_word_counts(size_t idx, uint32_t *out, size_t cap);
 
+/* Which wallet tabs a coin earns — about the *coin*, not about whether its
+ * wallet happens to be open. Use these to hide a tab rather than render it
+ * empty. Note bw_coin_supports_balance is true for a managed-wallet coin too:
+ * its balance comes from the wallet-rpc rather than the daemon, but it has one.
+ * Epic answers 0 for receive/send — a MimbleWimble payment is an interactive
+ * slate exchange, with no address to show and nothing to fire and forget. */
 int     bw_coin_supports_balance(size_t idx);
 int     bw_coin_supports_transactions(size_t idx);
 int     bw_coin_supports_receive_address(size_t idx);
@@ -168,9 +209,18 @@ void     bw_sync_accel_pause(bw_ctx *ctx);
 int     bw_wallet_lock(bw_ctx *ctx, size_t idx);
 int     bw_wallet_unlock(bw_ctx *ctx, size_t idx, const uint8_t *passphrase, size_t len, int staking);
 
-/* Wallet lock state for the padlock glyph: 0 unknown, 1 unencrypted, 2 locked,
- * 3 unlocked, 4 unlocked-for-staking. Returns 0 while the daemon isn't answering
- * (so the glyph stays greyed until we actually know the status). */
+/* Wallet lock state for the padlock glyph. Returns BW_WSEC_UNKNOWN while the
+ * daemon isn't answering (so the glyph stays greyed until we actually know).
+ *
+ * This is the *encryption* state of an in-daemon wallet, not a "can I read it"
+ * flag: a bitcoin-family daemon serves getbalance / listtransactions /
+ * getnewaddress on a LOCKED wallet. Only spending needs BW_WSEC_UNLOCKED (or
+ * _STAKING, or an _UNENCRYPTED wallet that never locks). */
+#define BW_WSEC_UNKNOWN     0
+#define BW_WSEC_UNENCRYPTED 1
+#define BW_WSEC_LOCKED      2
+#define BW_WSEC_UNLOCKED    3
+#define BW_WSEC_STAKING     4
 int     bw_wallet_security(bw_ctx *ctx, size_t idx);
 
 /* Bytes used / total on the filesystem holding the coin's data dir (for the
@@ -331,7 +381,18 @@ typedef struct {
     int64_t confirmations;
 } BwWalletTx;
 
-/* 0 with *out filled, BW_BUSY, or -1. */
+/* The coin's wallet balance, whichever backing it has: 0 with *out filled,
+ * BW_BUSY, or -1. A managed wallet answers from its own wallet-rpc, an in-daemon
+ * wallet from the daemon — one question, one call.
+ *
+ * The "wallet must be open" gate applies only to a managed wallet. A
+ * bitcoin-family daemon serves getbalance on a *locked* wallet, so don't gate
+ * this on the padlock: Bitcoin, Litecoin, DigiByte, Divi, Nexa, ReddCoin,
+ * BitcoinZ and SpiderByte all report a balance the moment the daemon answers. */
+int     bw_wallet_balance(bw_ctx *ctx, size_t idx, BwWalletBalance *out);
+
+/* Managed-wallet spelling of bw_wallet_balance: -1 for a coin whose wallet lives
+ * in its daemon, otherwise identical. */
 int     bw_ext_wallet_balance(bw_ctx *ctx, size_t idx, BwWalletBalance *out);
 
 /* 1 = still scanning (*out filled), 0 = not scanning, BW_BUSY, -1 = error.
