@@ -485,6 +485,11 @@ static void apply_coin_metadata(const AppWindow *ui, bw_ctx *ctx, int idx)
     size_t vn = bw_coin_version(idx, ver, sizeof ver);
     ui->set_coin_version(slint::SharedString(std::string_view(ver, vn)));
 
+    // Ticker, for the balance label on the title line ("DIVI: 123.45").
+    char abbrev[16];
+    size_t an = bw_coin_abbrev(idx, abbrev, sizeof abbrev);
+    ui->set_coin_abbrev(slint::SharedString(std::string_view(abbrev, an)));
+
     ui->set_has_mining(bw_coin_supports_mining(idx) != 0);
     ui->set_has_stablecoin(bw_coin_supports_stablecoin(idx) != 0);
     // Which wallet tabs this coin earns. Pure metadata, so it's settled here at

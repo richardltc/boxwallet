@@ -214,7 +214,7 @@ component StatusIcon inherits Rectangle {
     width: 45px;
     height: 45px;
 
-    // Shared 0..1 ramp (2s) for hop/pulse; a faster ramp for spin.
+    // Shared 0..1 ramp (2s) for hop/pulse; spin has its own, slower one below.
     property <float> t: Math.mod(animation-tick() / 1ms, 2000) / 2000;
     property <float> hp: root.t < 0.35 ? root.t / 0.35 : 1.0;
     property <length> hop: -12px * (4 * root.hp * (1.0 - root.hp));
@@ -222,7 +222,9 @@ component StatusIcon inherits Rectangle {
     // Grows the icon in sync with the brightness so a pulse "breathes" outward.
     property <float> pulse-scale: 1.0 + 0.28 * (0.5 + 0.5 * Math.sin(root.t * 360deg));
     property <bool> pulsing: root.moving && root.motion == "pulse";
-    property <angle> spin: Math.mod(animation-tick() / 1ms, 900) / 900 * 360deg;
+    // One full turn every 3.6s — quarter speed. A sync can run for hours, so the
+    // spinner is there to say "still working", not to hurry anyone along.
+    property <angle> spin: Math.mod(animation-tick() / 1ms, 3600) / 3600 * 360deg;
 
     // One-shot "breath": fire a single pulse each time `pulse-on-increase` rises
     // (e.g. the peer count ticking up). Any upward jump — 0→1 or 1→5 — is exactly
@@ -603,6 +605,7 @@ export component AppWindow inherits Window {
     in property <string> blocks-str: "";  // formatted block count
     in property <string> disk-free: "";    // free space, e.g. "12.3 GB free"
     in property <string> coin-version: ""; // bundled core version
+    in property <string> coin-abbrev: ""; // ticker, e.g. "DIVI" — labels the balance
     in property <string> status-text: "";  // latest status line
     in property <bool> status-is-error: false;
 
@@ -921,7 +924,10 @@ export component AppWindow inherits Window {
                     // image, selected by the coin's registry index (root.selected).
                     HorizontalBox {
                         padding: 0;
-                        alignment: start;
+                        // No `alignment: start`: the text column has to be handed the
+                        // leftover width, or the balance can't sit against the right
+                        // edge. With an alignment set, children collapse to their
+                        // preferred size and `horizontal-stretch` is ignored.
                         spacing: 12px;
                         // Suppressed entirely when the startup check found the logo
                         // array out of step with the registry: a coin wearing another
@@ -936,11 +942,33 @@ export component AppWindow inherits Window {
                         VerticalBox {
                             padding: 0;
                             spacing: 2px;
-                            // Title + version, manually placed so the version's bottom
-                            // sits on the title's baseline. (A HorizontalBox centres
-                            // the two vertically, floating the small version too high.)
-                            Rectangle {
+                            horizontal-stretch: 1;
+                            // Title, version and balance on one line, manually placed
+                            // so each sits on the title's baseline. (A HorizontalBox
+                            // centres them vertically instead, floating the small text
+                            // too high.) The balance rides here rather than in its own
+                            // corner so it's on every tab — the one figure a wallet
+                            // exists to show shouldn't be reachable only by opening
+                            // Send, which Epic doesn't even have.
+                            title-row := Rectangle {
                                 height: title-el.preferred-height;
+                                // Whether there's a figure to show at all. Both halves
+                                // of the balance go empty together.
+                                property <bool> show-balance:
+                                    root.has-balance && root.balance-total != "—";
+                                // Gap between the branded ticker and the figure.
+                                property <length> bal-gap: 7px;
+                                // Left edge of the ticker + figure group, pinned so the
+                                // group ends at the right edge of the line. Clamped, so
+                                // a long balance on a narrow window clips off the right
+                                // rather than sliding back over the version —
+                                // overlapping text reads as a bug, truncated text reads
+                                // as a small window.
+                                property <length> bal-x: max(
+                                    ver-el.x + ver-el.preferred-width + 18px,
+                                    title-row.width - tick-el.preferred-width
+                                        - title-row.bal-gap - bal-el.preferred-width);
+
                                 title-el := ShiningTitle {
                                     x: 0;
                                     caption: root.coin-name;
@@ -948,7 +976,7 @@ export component AppWindow inherits Window {
                                     font-size: 28px;
                                     font-weight: 800;
                                 }
-                                Text {
+                                ver-el := Text {
                                     text: root.coin-version;
                                     color: #808080;
                                     font-size: 13px;
@@ -957,36 +985,38 @@ export component AppWindow inherits Window {
                                     // baselines (not the box bottoms) line up.
                                     y: parent.height - self.preferred-height - 4px;
                                 }
+                                // The ticker wears the coin's brand colour, like the
+                                // title does; the figure stays neutral so the number
+                                // is what your eye lands on. Two elements because a
+                                // Slint Text is one colour throughout.
+                                tick-el := Text {
+                                    text: title-row.show-balance ? root.coin-abbrev + ":" : "";
+                                    color: root.coin-color;
+                                    font-family: "DejaVu Sans Mono";
+                                    font-size: 14px;
+                                    font-weight: 700;
+                                    x: title-row.bal-x;
+                                    y: parent.height - self.preferred-height - 4px;
+                                }
+                                // Monospaced by the embedded font's real family name
+                                // rather than the "monospace" alias — the font ships in
+                                // the binary precisely so this doesn't depend on one
+                                // being installed. Mono also holds the digits in their
+                                // columns as the balance updates, instead of jittering.
+                                bal-el := Text {
+                                    text: title-row.show-balance ? root.balance-total : "";
+                                    color: #e6e6e6;
+                                    font-family: "DejaVu Sans Mono";
+                                    font-size: 14px;
+                                    x: title-row.bal-x + tick-el.preferred-width
+                                        + title-row.bal-gap;
+                                    y: parent.height - self.preferred-height - 4px;
+                                }
                             }
                             Text {
                                 text: root.coin-desc;
                                 color: #9a9a9a;
                                 font-size: 13px;
-                            }
-                        }
-                        // Balance corner, mirroring the TUI's. It rides the header so
-                        // it's on every tab — the one figure a wallet exists to show
-                        // shouldn't be reachable only by opening Send (which Epic
-                        // doesn't even have).
-                        if root.has-balance && root.balance-total != "—": VerticalLayout {
-                            horizontal-stretch: 1;
-                            alignment: center;
-                            spacing: 2px;
-                            Text {
-                                text: root.balance-total;
-                                color: #e6e6e6;
-                                font-family: "monospace";
-                                font-size: 20px;
-                                horizontal-alignment: right;
-                            }
-                            // Available is shown only when it differs from the total,
-                            // i.e. while something is still pending — otherwise it's
-                            // the same number twice.
-                            if root.balance-avail != root.balance-total: Text {
-                                text: root.balance-avail + " available";
-                                color: #8a8a8a;
-                                font-size: 12px;
-                                horizontal-alignment: right;
                             }
                         }
                     }
