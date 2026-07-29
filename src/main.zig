@@ -5,12 +5,20 @@ const app = @import("app.zig");
 const App = app.App;
 const install = @import("install.zig");
 const update = @import("update.zig");
+const sigguard = @import("sigguard.zig");
 
 /// Entry point for the BoxWallet Nexa TUI slice.
 ///
 /// 0.16 hands `main` a `std.process.Init` carrying the allocator, io, and
 /// environment — exactly what ZigZag's `Program` needs.
 pub fn main(init: std.process.Init) !void {
+    // First, before any worker thread exists: pin a handler for the signals
+    // `std.Io.Threaded` uses. The core builds a `Threaded` per call in a great
+    // many places and the poll/action workers run them concurrently, so without
+    // this one instance's teardown can leave the process at SIG_DFL and the next
+    // cancellation SIGIO kills it outright. See `sigguard.zig`.
+    sigguard.install();
+
     // Before anything draws, apply a self-update staged by a previous session
     // (downloaded + checksum-verified in the background while we last ran). The
     // running binary can't be overwritten in place, so the swap happens here, at
@@ -52,6 +60,7 @@ test {
     std.testing.refAllDecls(@This());
     _ = @import("version.zig");
     _ = @import("registry.zig");
+    _ = @import("sigguard.zig");
     _ = @import("rpc.zig");
     _ = @import("install.zig");
     _ = @import("update.zig");
