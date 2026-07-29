@@ -5,6 +5,7 @@ const registry = @import("registry.zig");
 const money = @import("money.zig");
 const seed_mod = @import("seed.zig");
 const walletmenu = @import("walletmenu.zig");
+const timefmt = @import("timefmt.zig");
 const models = @import("models.zig");
 const install_mod = @import("install.zig");
 const disk = @import("disk.zig");
@@ -9544,90 +9545,28 @@ fn bar(a: std.mem.Allocator, current: u64, total: u64) ![]const u8 {
     return coloredBar(a, current, total, zz.Color.hex(app_color));
 }
 
-/// Human approximate duration from `secs`: the most significant non-zero unit
-/// among years/months/weeks/days/hours/minutes, plus the next unit down when
-/// it's also non-zero (e.g. "2 years and 3 months", "5 days", "1 hour and 30
-/// minutes"). Returns "" under a minute or when `secs <= 0`. The day-and-up
-/// units are calendar approximations (year = 365d, month = 30d, week = 7d);
-/// hours and minutes are exact — a "roughly how long" readout, not a precise
-/// duration. Wrapped by `formatBehind` (sync lag) and used bare by the
-/// stablecoin activation countdown.
+// Duration / block-date / storage text lives in `timefmt.zig`, formatting into a
+// caller buffer rather than allocating — these run once per frame per readout,
+// and CLAUDE.md prefers a bounded buffer to an allocation on that path. The
+// wrappers keep the allocator shape the render sites already use.
 fn formatDurationApprox(a: std.mem.Allocator, secs: i64) ![]const u8 {
-    if (secs < std.time.s_per_min) return "";
-    var rem: u64 = @intCast(secs);
-
-    // Largest → smallest, each consuming its slice of the remainder.
-    const divisors = [_]u64{
-        365 * std.time.s_per_day, 30 * std.time.s_per_day, std.time.s_per_week,
-        std.time.s_per_day,       std.time.s_per_hour,     std.time.s_per_min,
-    };
-    const singular = [_][]const u8{ "year", "month", "week", "day", "hour", "minute" };
-    const plural = [_][]const u8{ "years", "months", "weeks", "days", "hours", "minutes" };
-
-    var counts: [divisors.len]u64 = undefined;
-    for (divisors, 0..) |d, idx| {
-        counts[idx] = rem / d;
-        rem %= d;
-    }
-
-    // Index of the most significant non-zero unit.
-    var i: usize = 0;
-    while (i < counts.len and counts[i] == 0) : (i += 1) {}
-    if (i == counts.len) return ""; // unreachable given the >= 1 minute guard
-
-    const primary = try std.fmt.allocPrint(a, "{d} {s}", .{
-        counts[i], if (counts[i] == 1) singular[i] else plural[i],
-    });
-    // Append the next unit down only when it's non-zero, so the readout stays
-    // contiguous ("3 months and 1 week", never "2 years and 1 day").
-    if (i + 1 < counts.len and counts[i + 1] != 0) {
-        const j = i + 1;
-        return std.fmt.allocPrint(a, "{s} and {d} {s}", .{
-            primary, counts[j], if (counts[j] == 1) singular[j] else plural[j],
-        });
-    }
-    return primary;
+    var buf: [timefmt.max_len]u8 = undefined;
+    return a.dupe(u8, timefmt.duration(&buf, secs));
 }
 
-/// Human "behind by …" text from `secs` seconds behind the chain tip — see
-/// `formatDurationApprox` for the unit rules. "" when effectively caught up.
 fn formatBehind(a: std.mem.Allocator, secs: i64) ![]const u8 {
-    const d = try formatDurationApprox(a, secs);
-    if (d.len == 0) return "";
-    return std.fmt.allocPrint(a, "{s} behind", .{d});
+    var buf: [timefmt.max_len]u8 = undefined;
+    return a.dupe(u8, timefmt.behind(&buf, secs));
 }
 
-/// Human date/time of the block at unix timestamp `unix_secs`, as
-/// "YYYY-MM-DD HH:MM". Returns "" when the timestamp is unknown
-/// (`<= 0`). The value is UTC, not local time: a block timestamp is a UTC
-/// moment and the stdlib has no timezone database, so a fixed, unambiguous
-/// zone is correct and portable across Linux/Windows/macOS.
 fn formatBlockTime(a: std.mem.Allocator, unix_secs: i64) ![]const u8 {
-    if (unix_secs <= 0) return "";
-    const epoch = std.time.epoch.EpochSeconds{ .secs = @intCast(unix_secs) };
-    const day = epoch.getEpochDay();
-    const day_secs = epoch.getDaySeconds();
-    const year_day = day.calculateYearDay();
-    const month_day = year_day.calculateMonthDay();
-    return std.fmt.allocPrint(a, "{d:0>4}-{d:0>2}-{d:0>2} {d:0>2}:{d:0>2}", .{
-        year_day.year,
-        month_day.month.numeric(),
-        @as(u32, month_day.day_index) + 1,
-        day_secs.getHoursIntoDay(),
-        day_secs.getMinutesIntoHour(),
-    });
+    var buf: [timefmt.max_len]u8 = undefined;
+    return a.dupe(u8, timefmt.blockTime(&buf, unix_secs));
 }
 
-/// Format a byte count as a two-decimal "X.XX GB" figure for the Storage line.
-/// Decimal GB (÷1000³, i.e. SI), so the number matches what a Linux/GNOME file
-/// manager's Properties dialog reports — GNOME (and macOS Finder) quote SI GB,
-/// which is the "same as right-click → Properties" reference the figure targets.
-/// (Windows Explorer instead quotes binary GiB but labels it "GB", so it reads
-/// ~7% smaller there — an unavoidable OS convention difference.) Best-effort
-/// string alloc; falls back to the raw text on OOM.
 fn formatStorageGB(a: std.mem.Allocator, bytes: u64) []const u8 {
-    const gb = @as(f64, @floatFromInt(bytes)) / (1000.0 * 1000.0 * 1000.0);
-    return std.fmt.allocPrint(a, "{d:.2} GB", .{gb}) catch "0.00 GB";
+    var buf: [timefmt.max_len]u8 = undefined;
+    return a.dupe(u8, timefmt.storageGB(&buf, bytes)) catch "0.00 GB";
 }
 
 /// A capacity bar whose fill warns as it fills — for "fuller is worse" axes
@@ -9665,60 +9604,6 @@ fn coloredBar(a: std.mem.Allocator, current: u64, total: u64, fill: zz.Color) ![
         try std.fmt.allocPrint(a, " {d:.2}%", .{pct});
     const pct_styled = try p.percent_style.render(a, pct_str);
     return std.mem.concat(a, u8, &.{ bar_str, pct_styled });
-}
-
-test "formatBehind picks the top two contiguous units, pluralizing correctly" {
-    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena.deinit();
-    const a = arena.allocator();
-
-    const minute = std.time.s_per_min;
-    const hour = std.time.s_per_hour;
-    const day = std.time.s_per_day;
-
-    // Under a minute behind reads as caught up (empty) — including non-positive.
-    try std.testing.expectEqualStrings("", try formatBehind(a, 0));
-    try std.testing.expectEqualStrings("", try formatBehind(a, -100));
-    try std.testing.expectEqualStrings("", try formatBehind(a, minute - 1));
-
-    // Minutes and hours, singular vs plural and contiguous pairs.
-    try std.testing.expectEqualStrings("1 minute behind", try formatBehind(a, minute));
-    try std.testing.expectEqualStrings("45 minutes behind", try formatBehind(a, 45 * minute));
-    try std.testing.expectEqualStrings("1 hour behind", try formatBehind(a, hour));
-    try std.testing.expectEqualStrings("1 hour and 30 minutes behind", try formatBehind(a, hour + 30 * minute));
-    try std.testing.expectEqualStrings("2 days and 3 hours behind", try formatBehind(a, 2 * day + 3 * hour));
-
-    // Single unit, singular vs plural.
-    try std.testing.expectEqualStrings("1 day behind", try formatBehind(a, day));
-    try std.testing.expectEqualStrings("5 days behind", try formatBehind(a, 5 * day));
-    try std.testing.expectEqualStrings("1 week behind", try formatBehind(a, 7 * day));
-
-    // Two contiguous units (year = 365d, month = 30d, week = 7d).
-    try std.testing.expectEqualStrings("1 week and 2 days behind", try formatBehind(a, 9 * day));
-    try std.testing.expectEqualStrings("3 months and 1 week behind", try formatBehind(a, (90 + 7) * day));
-    try std.testing.expectEqualStrings("2 years and 3 months behind", try formatBehind(a, (2 * 365 + 90) * day));
-
-    // The second unit is shown only when non-zero, never skipping a zero unit:
-    // exactly two years has no months, so it stays a single unit. Likewise a
-    // day with zero hours drops the trailing minutes rather than skipping hours.
-    try std.testing.expectEqualStrings("2 years behind", try formatBehind(a, 2 * 365 * day));
-    try std.testing.expectEqualStrings("1 day behind", try formatBehind(a, day + 5 * minute));
-}
-
-test "formatBlockTime renders the tip block timestamp as UTC date/time (no label)" {
-    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena.deinit();
-    const a = arena.allocator();
-
-    // Unknown timestamp folds out to empty.
-    try std.testing.expectEqualStrings("", try formatBlockTime(a, 0));
-    try std.testing.expectEqualStrings("", try formatBlockTime(a, -1));
-
-    // A known later instant.
-    try std.testing.expectEqualStrings("2026-06-02 14:32", try formatBlockTime(a, 1_780_410_720));
-    // Zero-padding on every field (Bitcoin's genesis block, single-digit
-    // month/day).
-    try std.testing.expectEqualStrings("2009-01-03 18:15", try formatBlockTime(a, 1_231_006_505));
 }
 
 test "cycleTab steps through the detail tabs and wraps at both ends" {
@@ -11970,22 +11855,6 @@ test "dirSizeBytes sums apparent file sizes recursively; null for a missing dir"
     // A path that doesn't resolve yields null (not a bogus 0), so the UI can
     // show "—" rather than "0.00 GB" for a coin with no data dir yet.
     try std.testing.expect(dirSizeBytes(io, allocator, "test-storage-out-missing") == null);
-}
-
-test "formatStorageGB renders decimal (SI) GB to two decimals" {
-    const allocator = std.testing.allocator;
-    const cases = [_]struct { bytes: u64, want: []const u8 }{
-        .{ .bytes = 0, .want = "0.00 GB" },
-        .{ .bytes = 1_000_000_000, .want = "1.00 GB" },
-        .{ .bytes = 1_500_000_000, .want = "1.50 GB" },
-        // ~12.08 GB — the SpiderByte-sized case that read ~11.25 under binary GiB.
-        .{ .bytes = 12_079_595_520, .want = "12.08 GB" },
-    };
-    for (cases) |c| {
-        const s = formatStorageGB(allocator, c.bytes);
-        defer allocator.free(s);
-        try std.testing.expectEqualStrings(c.want, s);
-    }
 }
 
 test "the Status line reflects the daemon's live activity" {
