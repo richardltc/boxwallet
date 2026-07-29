@@ -35,6 +35,7 @@ const registry = @import("registry.zig");
 const sigguard = @import("sigguard.zig");
 const money = @import("money.zig");
 const seed_mod = @import("seed.zig");
+const walletmenu = @import("walletmenu.zig");
 const coinmod = @import("coin.zig");
 const models = @import("models.zig");
 const conf = @import("conf.zig");
@@ -1338,9 +1339,11 @@ export fn bw_ext_wallet_service_stop(ctx: ?*Ctx, idx: usize) void {
 
 // ---- external wallet: the operations ----------------------------------------
 
-/// Which wallet operation `walletOp` should run. Mirrors the TUI's
-/// `WalletSetupOp` — the same five things the `w` menu offers.
-const WalletOp = enum { create, restore_seed, restore_file, open, lock };
+/// Which wallet operation `walletOp` should run. Taken from `walletmenu.zig`,
+/// not declared again here — this used to be a local copy under a comment
+/// reading "mirrors the TUI's", which is how the two front-ends end up offering
+/// different things.
+const WalletOp = walletmenu.SetupOp;
 
 /// Upper bound on a wallet password, sizing the bounded buffer we copy the
 /// caller's secret into. Comfortably past any sane passphrase while keeping the

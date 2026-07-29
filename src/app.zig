@@ -4,6 +4,7 @@ const version_mod = @import("version.zig");
 const registry = @import("registry.zig");
 const money = @import("money.zig");
 const seed_mod = @import("seed.zig");
+const walletmenu = @import("walletmenu.zig");
 const models = @import("models.zig");
 const install_mod = @import("install.zig");
 const disk = @import("disk.zig");
@@ -482,48 +483,30 @@ test "sync orbit frames: equal counts, every frame exactly sync_track_cells wide
     for (sync_frames_ccw) |f| try std.testing.expectEqual(@as(usize, sync_track_cells), zz.width(f));
 }
 
-/// Wallet encryption/lock status. Live wallet polling lands later — for now this
-/// defaults to `unknown`. Each state carries its own display text and colour.
-const WalletState = enum {
-    unknown,
-    unencrypted,
-    locked,
-    unlocked,
-    unlocked_for_staking,
+/// Wallet encryption/lock status as the TUI renders it. The *state* itself is
+/// `models.WalletSecurity`, straight from the coin layer — this side owns only
+/// the display text and colour. There used to be a parallel `WalletState` enum
+/// here, with a `fromSecurity` mapper and a test whose whole job was asserting
+/// the two stayed in step; the state now makes one round-trip fewer.
+fn walletText(w: models.WalletSecurity) []const u8 {
+    return switch (w) {
+        .unknown => "Unknown",
+        .unencrypted => "Unencrypted",
+        .locked => "Locked",
+        .unlocked => "Unlocked",
+        .unlocked_for_staking => "Unlocked for staking",
+    };
+}
 
-    fn text(self: WalletState) []const u8 {
-        return switch (self) {
-            .unknown => "Unknown",
-            .unencrypted => "Unencrypted",
-            .locked => "Locked",
-            .unlocked => "Unlocked",
-            .unlocked_for_staking => "Unlocked for staking",
-        };
-    }
-
-    fn color(self: WalletState) zz.Color {
-        return switch (self) {
-            .unknown => .brightBlack,
-            .unencrypted => .red,
-            .locked => .yellow,
-            .unlocked => .cyan,
-            .unlocked_for_staking => .green,
-        };
-    }
-
-    /// Map a coin's normalized `models.WalletSecurity` onto the UI's
-    /// `WalletState`. The two enums are intentionally parallel — the coin layer
-    /// owns the normalized state; this side owns its display text/colour.
-    fn fromSecurity(s: models.WalletSecurity) WalletState {
-        return switch (s) {
-            .unknown => .unknown,
-            .unencrypted => .unencrypted,
-            .locked => .locked,
-            .unlocked => .unlocked,
-            .unlocked_for_staking => .unlocked_for_staking,
-        };
-    }
-};
+fn walletColor(w: models.WalletSecurity) zz.Color {
+    return switch (w) {
+        .unknown => .brightBlack,
+        .unencrypted => .red,
+        .locked => .yellow,
+        .unlocked => .cyan,
+        .unlocked_for_staking => .green,
+    };
+}
 
 /// Display text for a daemon warm-up phase — shared with the GUI front-end, so
 /// both name the stages identically (see `warmup.zig`).
@@ -728,215 +711,16 @@ fn statusReadout(act: *const Activity) StatusReadout {
     };
 }
 
-/// A wallet operation the `w` menu can run against the daemon.
-const WalletAction = enum {
-    encrypt,
-    unlock,
-    stake,
-    lock,
-    /// Back up the wallet to a file (bitcoin-core `dumpwallet`).
-    backup,
-    /// Restore the wallet from a backup file (bitcoin-core `importwallet`).
-    restore,
-    /// Restore the wallet by swapping in a backup file with the daemon stopped
-    /// (a binary wallet.dat — SpiderByte, whose daemon has no `importwallet`;
-    /// BitcoinZ, which offers it alongside the key-dump import).
-    restore_file_offline,
+// Which wallet actions a coin offers, and in which state, is policy rather than
+// presentation — it lives in `walletmenu.zig` so the GUI can't reach a different
+// answer. The labels go with it: `restore` and `restore_file_offline` take
+// different files and BitcoinZ offers both at once, so a front-end inventing its
+// own wording is how someone picks the wrong one.
+const WalletAction = walletmenu.Action;
+const WalletSetupOp = walletmenu.SetupOp;
+const SetupChoice = walletmenu.SetupChoice;
+const menuChoicesFor = walletmenu.choicesFor;
 
-    /// The menu label for the action.
-    ///
-    /// The two restores name the *file each takes*, not the mechanism, because
-    /// BitcoinZ offers both at once and "Restore from file" / "Restore from a
-    /// wallet file" were indistinguishable in that menu — picking the wrong one
-    /// is exactly the mistake that ends in an empty wallet. Every coin wiring
-    /// `restore` uses bitcoin-core `importwallet` (a `dumpwallet` *text* file),
-    /// and every coin wiring `restore_file_offline` swaps a binary `wallet.dat`,
-    /// so both labels hold for all of them.
-    fn label(self: WalletAction) []const u8 {
-        return switch (self) {
-            .encrypt => "Encrypt wallet",
-            .unlock => "Unlock",
-            .stake => "Unlock for staking",
-            .lock => "Lock wallet",
-            .backup => "Back up wallet",
-            .restore => "Restore from key dump",
-            .restore_file_offline => "Restore from wallet.dat",
-        };
-    }
-
-    /// Whether the action needs a passphrase entered first. `lock` doesn't, and
-    /// neither do `backup`/`restore` — they run against an already-unlocked wallet
-    /// and set no new credential (so no entry and no confirmation step). The
-    /// offline file restore is a daemon-stopped file swap and takes no password.
-    fn needsPassword(self: WalletAction) bool {
-        return switch (self) {
-            .encrypt, .unlock, .stake => true,
-            .lock, .backup, .restore, .restore_file_offline => false,
-        };
-    }
-};
-
-/// A setup operation against a coin's *external* wallet process (Monero-style,
-/// e.g. Nerva) — distinct from the in-daemon `WalletAction`s above. Driven by the
-/// setup modal and run on the wallet-setup worker.
-const WalletSetupOp = enum {
-    /// Create a brand-new wallet (returns a mnemonic seed to display).
-    create,
-    /// Restore a wallet from a mnemonic seed (length per coin — see
-    /// `ExternalWallet.seed_word_counts`).
-    restore_seed,
-    /// Import an existing wallet file browsed to with the file picker.
-    restore_file,
-    /// Open the existing managed wallet (unlock it for this session).
-    open,
-    /// Re-lock an open wallet (in-daemon wallets that stay open while the daemon
-    /// runs, e.g. Ergo; the process-backed coins lock by killing their process).
-    lock,
-
-    fn verb(self: WalletSetupOp) []const u8 {
-        return switch (self) {
-            .create => "Create wallet",
-            .restore_seed => "Restore from seed",
-            .restore_file => "Restore from file",
-            .open => "Unlock wallet",
-            .lock => "Lock wallet",
-        };
-    }
-
-    /// Whether this op *sets* a new wallet password (so the UI asks the user to
-    /// confirm it). `open` checks an existing password — a typo there just fails to
-    /// unlock and is retried, so no confirmation is needed; `lock` takes none.
-    /// `restore_file` also takes an *existing* password, not a new one: the imported
-    /// wallet file is already encrypted with its own password, and the coin opens the
-    /// copied file with it (a wrong one just fails to decrypt and is retried), so —
-    /// like `open` — it's a single unconfirmed prompt.
-    fn setsNewPassword(self: WalletSetupOp) bool {
-        return self == .create or self == .restore_seed;
-    }
-
-    /// Whether an *empty* password is a valid entry for this op. Opening or
-    /// restoring an existing wallet file must accept a blank password, because the
-    /// wallet may have been created elsewhere with no encryption — the user then
-    /// submits the empty prompt deliberately (still explicit, never silent). Ops
-    /// that *set* a new credential (`create`, `restore_seed`) keep requiring a
-    /// non-empty password so a fresh wallet is never left unprotected by accident.
-    fn allowsEmptyPassword(self: WalletSetupOp) bool {
-        return self == .open or self == .restore_file;
-    }
-};
-
-/// The choices on an external-wallet menu — the setup choices shown when no
-/// wallet exists yet, plus `lock` shown when an open wallet can be re-locked.
-/// Parallel to `WalletSetupOp` but only the user-pickable subset. Which appear is
-/// coin- and state-dependent (`menuChoicesFor`), written into the modal's option
-/// buffer when the menu opens.
-const SetupChoice = enum {
-    create,
-    restore_seed,
-    restore_file,
-    unlock,
-    lock,
-    /// Destructively remove the current wallet to create/restore a different one.
-    replace,
-
-    fn label(self: SetupChoice) []const u8 {
-        return switch (self) {
-            .create => "Create a new wallet",
-            .restore_seed => "Restore from seed words",
-            .restore_file => "Restore from a wallet file",
-            .unlock => "Unlock wallet",
-            .lock => "Lock wallet",
-            .replace => "Replace wallet…",
-        };
-    }
-};
-
-/// Fill `buf` with the setup-menu choices for `coin`'s external wallet, in display
-/// order, returning the count. Create + restore-from-seed are always offered;
-/// restore-from-file only when the coin wires it (a portable wallet file — not
-/// Ergo's in-daemon wallet).
-fn menuChoicesFor(coin: Coin, buf: *[3]SetupChoice) usize {
-    const ew = coin.externalWallet() orelse return 0;
-    var n: usize = 0;
-    buf[n] = .create;
-    n += 1;
-    // Restore-from-seed only where the coin has wired it (Zano's is interactive-only
-    // upstream and deferred, so its menu skips straight to create / restore-file).
-    if (coin.supportsSeedRestore()) {
-        buf[n] = .restore_seed;
-        n += 1;
-    }
-    if (ew.restore_file != null) {
-        buf[n] = .restore_file;
-        n += 1;
-    }
-    return n;
-}
-
-/// Which actions the `w` menu offers for a given wallet state, written into
-/// `buf` and returned by count. Unencrypted → encrypt (only when the coin's
-/// daemon supports `encryptwallet` — BitcoinZ's zcashd lineage ships it
-/// disabled, so `supports_encrypt` keeps a can-only-fail action off the menu);
-/// locked → unlock (plus unlock-for-staking on proof-of-stake coins);
-/// unlocked → lock; unknown → none.
-/// Backup/restore (when the coin supports them) are offered only while the wallet
-/// is reachable for a key dump — unencrypted or unlocked, never locked (the
-/// daemon rejects `dumpwallet`/`importwallet` on a locked wallet). The *offline*
-/// file restore (`supports_restore_offline`) is a daemon-stopped file swap, so it
-/// needs no live/unlocked wallet and is offered in every state (including locked).
-fn walletOptions(wallet: WalletState, pos: bool, supports_encrypt: bool, supports_backup: bool, supports_import: bool, supports_restore_offline: bool, buf: *[4]WalletAction) usize {
-    var n: usize = 0;
-    switch (wallet) {
-        .unencrypted => {
-            if (supports_encrypt) {
-                buf[n] = .encrypt;
-                n += 1;
-            }
-            if (supports_backup) {
-                buf[n] = .backup;
-                n += 1;
-            }
-            if (supports_import) {
-                buf[n] = .restore;
-                n += 1;
-            }
-            if (supports_restore_offline) {
-                buf[n] = .restore_file_offline;
-                n += 1;
-            }
-        },
-        .locked => {
-            buf[n] = .unlock;
-            n += 1;
-            if (pos) {
-                buf[n] = .stake;
-                n += 1;
-            }
-            if (supports_restore_offline) {
-                buf[n] = .restore_file_offline;
-                n += 1;
-            }
-        },
-        .unlocked, .unlocked_for_staking => {
-            buf[n] = .lock;
-            n += 1;
-            if (supports_backup) {
-                buf[n] = .backup;
-                n += 1;
-            }
-            if (supports_import) {
-                buf[n] = .restore;
-                n += 1;
-            }
-            if (supports_restore_offline) {
-                buf[n] = .restore_file_offline;
-                n += 1;
-            }
-        },
-        .unknown => {},
-    }
-    return n;
-}
 
 /// The `w` wallet menu — a small modal drawn over the dashboard for managing the
 /// selected coin's wallet. It walks menu → passphrase entry → working → result;
@@ -980,7 +764,7 @@ const Modal = struct {
     stage: Stage = .menu,
     /// Index into `options[0..option_count]`.
     sel: usize = 0,
-    options: [4]WalletAction = undefined,
+    options: [walletmenu.max_options]WalletAction = undefined,
     option_count: usize = 0,
     /// The action chosen at the menu (valid from the password stage on).
     action: WalletAction = .unlock,
@@ -998,7 +782,7 @@ const Modal = struct {
     setup_sel: usize = 0,
     /// The menu choices for this coin/state, filled when the menu opens (the
     /// setup choices via `menuChoicesFor`, or a single `.lock` for an open wallet).
-    setup_options: [3]SetupChoice = undefined,
+    setup_options: [walletmenu.max_choices]SetupChoice = undefined,
     setup_option_count: usize = 0,
     /// The first entry of a new password, stashed while the confirm field is typed
     /// so the two can be compared. Plaintext, so it's wiped as soon as it's used or
@@ -1503,10 +1287,10 @@ const Activity = struct {
     /// Latest polled peer count / staking flag (1/0).
     poll_peers: std.atomic.Value(u32) = .init(0),
     poll_staking: std.atomic.Value(u8) = .init(0),
-    /// Latest polled wallet security state (`@intFromEnum(WalletState)`), from
+    /// Latest polled wallet security state (`@intFromEnum(models.WalletSecurity)`), from
     /// `getwalletinfo`. Only set for coins that expose a manageable wallet;
     /// otherwise stays at `unknown`. Published by the `poll_done` edge.
-    poll_wallet: std.atomic.Value(u8) = .init(@intFromEnum(WalletState.unknown)),
+    poll_wallet: std.atomic.Value(u8) = .init(@intFromEnum(models.WalletSecurity.unknown)),
     /// Latest polled wallet balances, from `getwalletinfo` — only set for coins
     /// that report a balance (`supportsBalance`). The two figures are `f64`s held
     /// as their `u64` bit patterns (atomics take integers); `poll_has_balance`
@@ -1908,7 +1692,7 @@ const Activity = struct {
     /// Chain sync state. Drives the "Syncing"/"Synced" line.
     sync: SyncState = .idle,
     /// Wallet encryption/lock status. Drives the "Wallet" line.
-    wallet: WalletState = .unknown,
+    wallet: models.WalletSecurity = .unknown,
     /// Wallet balances, folded in from the poll for coins that report them.
     /// `has_balance` gates the Total/Available lines — false until the first
     /// successful balance fetch, so they stay hidden rather than flashing 0.
@@ -3201,7 +2985,7 @@ const Activity = struct {
         // value, so a transient blip doesn't blank the line.
         if (self.coin.supportsWallet()) {
             if (self.coin.walletSecurityState(a, auth)) |sec| {
-                self.poll_wallet.store(@intFromEnum(WalletState.fromSecurity(sec)), .monotonic);
+                self.poll_wallet.store(@intFromEnum(sec), .monotonic);
             } else |_| {}
         }
 
@@ -4902,7 +4686,7 @@ pub const App = struct {
                         act.blocks_total = 0;
                         act.behind_secs = -1;
                         act.wallet = .unknown;
-                        act.poll_wallet.store(@intFromEnum(WalletState.unknown), .monotonic);
+                        act.poll_wallet.store(@intFromEnum(models.WalletSecurity.unknown), .monotonic);
                         act.has_balance = false;
                         act.poll_has_balance.store(0, .monotonic);
                         // Zero the figures so the always-on header balance reads
@@ -5275,7 +5059,7 @@ pub const App = struct {
                     if (action == .encrypt) {
                         act.daemon.store(@intFromEnum(DaemonState.stopped), .release);
                         act.wallet = .unknown;
-                        act.poll_wallet.store(@intFromEnum(WalletState.unknown), .monotonic);
+                        act.poll_wallet.store(@intFromEnum(models.WalletSecurity.unknown), .monotonic);
                     }
                     self.logf("{s}: {s} succeeded", .{ act.coin.coinName(), action.label() });
                 } else {
@@ -7191,8 +6975,8 @@ pub const App = struct {
             self.logf("{s}: start the daemon first to manage the wallet", .{coin.coinName()});
             return;
         }
-        var opts: [4]WalletAction = undefined;
-        const n = walletOptions(act.wallet, coin.isProofOfStake(), coin.supportsWalletEncrypt(), coin.supportsWalletBackup(), coin.supportsWalletImport(), coin.supportsWalletRestoreOffline(), &opts);
+        var opts: [walletmenu.max_options]WalletAction = undefined;
+        const n = walletmenu.optionsFor(act.wallet, .of(coin), &opts);
         if (act.wallet == .unknown or n == 0) {
             self.logf("{s}: wallet state not known yet — try again in a moment", .{coin.coinName()});
             return;
@@ -7711,7 +7495,7 @@ pub const App = struct {
                 break :blk (zz.Style{}).bold(true).fg(.yellow).render(a, text) catch text;
             }
             break :blk (zz.Style{}).bold(true).fg(.green).render(a, "Unlocked") catch "Unlocked";
-        } else (zz.Style{}).bold(true).fg(act.wallet.color()).render(a, act.wallet.text()) catch act.wallet.text();
+        } else (zz.Style{}).bold(true).fg(walletColor(act.wallet)).render(a, walletText(act.wallet)) catch walletText(act.wallet);
 
         // Advertise the `w` key the way the daemon button advertises `s` — but
         // only when a press would actually open the menu. Dimmed so it reads as a
@@ -12296,119 +12080,6 @@ test "the Wallet line advertises the w key once the wallet is manageable" {
     try std.testing.expect(std.mem.indexOf(u8, app.renderDetail(a), "press w") != null);
 }
 
-test "wallet menu offers the actions that fit the wallet state" {
-    var buf: [4]WalletAction = undefined;
-
-    // Unencrypted → only Encrypt (no backup/restore support).
-    {
-        const n = walletOptions(.unencrypted, false, true, false, false, false, &buf);
-        try std.testing.expectEqual(@as(usize, 1), n);
-        try std.testing.expectEqual(WalletAction.encrypt, buf[0]);
-    }
-    // Locked on a proof-of-work coin → just Unlock.
-    {
-        const n = walletOptions(.locked, false, true, false, false, false, &buf);
-        try std.testing.expectEqual(@as(usize, 1), n);
-        try std.testing.expectEqual(WalletAction.unlock, buf[0]);
-    }
-    // Locked on a proof-of-stake coin → Unlock + Unlock-for-staking.
-    {
-        const n = walletOptions(.locked, true, true, false, false, false, &buf);
-        try std.testing.expectEqual(@as(usize, 2), n);
-        try std.testing.expectEqual(WalletAction.unlock, buf[0]);
-        try std.testing.expectEqual(WalletAction.stake, buf[1]);
-    }
-    // Unlocked (either flavour) → Lock.
-    {
-        try std.testing.expectEqual(@as(usize, 1), walletOptions(.unlocked, true, true, false, false, false, &buf));
-        try std.testing.expectEqual(WalletAction.lock, buf[0]);
-        try std.testing.expectEqual(@as(usize, 1), walletOptions(.unlocked_for_staking, true, true, false, false, false, &buf));
-        try std.testing.expectEqual(WalletAction.lock, buf[0]);
-    }
-    // Unknown → no actions (the menu won't open).
-    try std.testing.expectEqual(@as(usize, 0), walletOptions(.unknown, true, true, false, false, false, &buf));
-
-    // With backup/restore support: offered when unencrypted or unlocked, after
-    // the primary action — but never while locked (the dump RPCs need the wallet
-    // open).
-    {
-        const n = walletOptions(.unencrypted, false, true, true, true, false, &buf);
-        try std.testing.expectEqual(@as(usize, 3), n);
-        try std.testing.expectEqual(WalletAction.encrypt, buf[0]);
-        try std.testing.expectEqual(WalletAction.backup, buf[1]);
-        try std.testing.expectEqual(WalletAction.restore, buf[2]);
-    }
-    {
-        const n = walletOptions(.unlocked, false, true, true, true, false, &buf);
-        try std.testing.expectEqual(@as(usize, 3), n);
-        try std.testing.expectEqual(WalletAction.lock, buf[0]);
-        try std.testing.expectEqual(WalletAction.backup, buf[1]);
-        try std.testing.expectEqual(WalletAction.restore, buf[2]);
-    }
-    {
-        // Locked → still just Unlock, even with backup/restore wired.
-        const n = walletOptions(.locked, false, true, true, true, false, &buf);
-        try std.testing.expectEqual(@as(usize, 1), n);
-        try std.testing.expectEqual(WalletAction.unlock, buf[0]);
-    }
-
-    // Offline file restore (SpiderByte shape: backup wired, import not) is offered
-    // in *every* real state — including locked — because it's a daemon-stopped file
-    // swap that needs no open/unlocked wallet.
-    {
-        // Unencrypted → Encrypt + Backup + offline restore.
-        const n = walletOptions(.unencrypted, false, true, true, false, true, &buf);
-        try std.testing.expectEqual(@as(usize, 3), n);
-        try std.testing.expectEqual(WalletAction.encrypt, buf[0]);
-        try std.testing.expectEqual(WalletAction.backup, buf[1]);
-        try std.testing.expectEqual(WalletAction.restore_file_offline, buf[2]);
-    }
-    {
-        // Locked PoS → Unlock + Stake + offline restore (backup omitted: locked).
-        const n = walletOptions(.locked, true, true, true, false, true, &buf);
-        try std.testing.expectEqual(@as(usize, 3), n);
-        try std.testing.expectEqual(WalletAction.unlock, buf[0]);
-        try std.testing.expectEqual(WalletAction.stake, buf[1]);
-        try std.testing.expectEqual(WalletAction.restore_file_offline, buf[2]);
-    }
-    {
-        // Unlocked → Lock + Backup + offline restore.
-        const n = walletOptions(.unlocked, false, true, true, false, true, &buf);
-        try std.testing.expectEqual(@as(usize, 3), n);
-        try std.testing.expectEqual(WalletAction.lock, buf[0]);
-        try std.testing.expectEqual(WalletAction.backup, buf[1]);
-        try std.testing.expectEqual(WalletAction.restore_file_offline, buf[2]);
-    }
-
-    // Encryption unsupported by the daemon (BitcoinZ shape: zcashd ships
-    // `encryptwallet` disabled) → an unencrypted wallet offers backup/restore
-    // without a can-only-fail Encrypt action.
-    {
-        const n = walletOptions(.unencrypted, false, false, true, true, false, &buf);
-        try std.testing.expectEqual(@as(usize, 2), n);
-        try std.testing.expectEqual(WalletAction.backup, buf[0]);
-        try std.testing.expectEqual(WalletAction.restore, buf[1]);
-    }
-
-    // Encrypt/unlock/stake need a passphrase; lock, backup, restore and the offline
-    // restore don't.
-    try std.testing.expect(WalletAction.encrypt.needsPassword());
-    try std.testing.expect(WalletAction.unlock.needsPassword());
-    try std.testing.expect(WalletAction.stake.needsPassword());
-    try std.testing.expect(!WalletAction.lock.needsPassword());
-    try std.testing.expect(!WalletAction.backup.needsPassword());
-    try std.testing.expect(!WalletAction.restore.needsPassword());
-    try std.testing.expect(!WalletAction.restore_file_offline.needsPassword());
-}
-
-test "WalletState mirrors the normalized WalletSecurity" {
-    try std.testing.expectEqual(WalletState.unknown, WalletState.fromSecurity(.unknown));
-    try std.testing.expectEqual(WalletState.unencrypted, WalletState.fromSecurity(.unencrypted));
-    try std.testing.expectEqual(WalletState.locked, WalletState.fromSecurity(.locked));
-    try std.testing.expectEqual(WalletState.unlocked, WalletState.fromSecurity(.unlocked));
-    try std.testing.expectEqual(WalletState.unlocked_for_staking, WalletState.fromSecurity(.unlocked_for_staking));
-}
-
 test "the wallet modal renders its menu centered over the dashboard" {
     if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
     const allocator = std.testing.allocator;
@@ -12431,7 +12102,7 @@ test "the wallet modal renders its menu centered over the dashboard" {
     // open gate needs a running daemon, so set the modal up directly here.
     app.selected = std.mem.indexOfScalar(Entry, &entries, .divi).?;
     var m: Modal = .{ .coin_idx = app.selected };
-    m.option_count = walletOptions(.locked, true, true, false, false, false, &m.options);
+    m.option_count = walletmenu.optionsFor(.locked, .{ .proof_of_stake = true, .encrypt = true }, &m.options);
     app.modal = m;
 
     var arena = std.heap.ArenaAllocator.init(allocator);
@@ -12448,15 +12119,6 @@ test "the wallet modal renders its menu centered over the dashboard" {
     try std.testing.expect(std.mem.indexOf(u8, out, "Unlock for staking") != null);
     try std.testing.expect(std.mem.indexOf(u8, out, "┌") != null);
     try std.testing.expect(std.mem.indexOf(u8, out, "┘") != null);
-}
-
-test "every wallet menu choice and op has a non-empty label/verb" {
-    // Each pickable menu choice has a label (rendered in the setup menu)…
-    for ([_]SetupChoice{ .create, .restore_seed, .restore_file, .unlock, .lock, .replace }) |c|
-        try std.testing.expect(c.label().len > 0);
-    // …and every op has a verb (used in logs and the working line).
-    for ([_]WalletSetupOp{ .create, .restore_seed, .restore_file, .open, .lock }) |op|
-        try std.testing.expect(op.verb().len > 0);
 }
 
 test "Ergo's wallet menu offers unlock+replace when locked and lock+replace when open" {
@@ -12508,27 +12170,6 @@ test "Ergo's wallet menu offers unlock+replace when locked and lock+replace when
         try std.testing.expectEqual(SetupChoice.replace, m.setup_options[1]);
     }
     app.closeWalletModal();
-}
-
-test "only password-setting ops ask for confirmation" {
-    // Creating/restoring-from-seed sets a new password (confirm it — a typo would
-    // lock the user out); opening and restoring-from-file both check an *existing*
-    // password (the imported file is already encrypted), so a typo just fails and is
-    // retried — no confirmation; lock takes no password.
-    try std.testing.expect(WalletSetupOp.create.setsNewPassword());
-    try std.testing.expect(WalletSetupOp.restore_seed.setsNewPassword());
-    try std.testing.expect(!WalletSetupOp.restore_file.setsNewPassword());
-    try std.testing.expect(!WalletSetupOp.open.setsNewPassword());
-    try std.testing.expect(!WalletSetupOp.lock.setsNewPassword());
-}
-
-test "opening an existing wallet accepts a blank password; setting one does not" {
-    // A restored/imported wallet may be unencrypted, so open + restore_file take an
-    // empty password; create/restore_seed set a new credential and must not.
-    try std.testing.expect(WalletSetupOp.open.allowsEmptyPassword());
-    try std.testing.expect(WalletSetupOp.restore_file.allowsEmptyPassword());
-    try std.testing.expect(!WalletSetupOp.create.allowsEmptyPassword());
-    try std.testing.expect(!WalletSetupOp.restore_seed.allowsEmptyPassword());
 }
 
 test "the external-wallet setup menu renders its create/restore choices" {
