@@ -1,5 +1,7 @@
 const std = @import("std");
 const zz = @import("zigzag");
+const version_mod = @import("version.zig");
+const registry = @import("registry.zig");
 const models = @import("models.zig");
 const install_mod = @import("install.zig");
 const disk = @import("disk.zig");
@@ -29,12 +31,14 @@ const Bitcoin = @import("coins/bitcoin.zig").Bitcoin;
 const SpiderByte = @import("coins/spiderbyte.zig").SpiderByte;
 const BitcoinZ = @import("coins/bitcoinz.zig").BitcoinZ;
 
-/// The application's display name, version, and brand colour — the one place to
-/// change how BoxWallet identifies itself in the UI. `app_color` is the brand
-/// hex used for the "BoxWallet" wording on the Home pane.
-pub const app_name = "BoxWallet TUI";
-pub const app_version = "0.8.4";
-const app_color = "#7ca071";
+/// The application's display name, version, and brand colour. The values live in
+/// `version.zig` so the GUI reads the same ones (it can't import this module —
+/// it would drag ZigZag into the GUI's core library); these are the TUI's names
+/// for them. `app_color` is the brand hex used for the "BoxWallet" wording on
+/// the Home pane.
+pub const app_name = version_mod.tui_name;
+pub const app_version = version_mod.app_version;
+const app_color = version_mod.brand_color;
 
 /// Fallback install root used only if the home-dir-based path can't be built
 /// (e.g. allocation failure at startup). Normally `App.install_root` is the
@@ -58,42 +62,27 @@ const balance_mask = "********";
 const Entry = enum { home, nexa, divi, ergo, digibyte, zano, nerva, reddcoin, epic, salvium, litecoin, bitcoin, bitcoinz, spiderbyte, monero };
 const coin_entries = [_]Entry{ .nexa, .divi, .ergo, .digibyte, .zano, .nerva, .reddcoin, .epic, .salvium, .litecoin, .bitcoin, .bitcoinz, .spiderbyte, .monero };
 
-/// The registered coin backends as their concrete types — the source of truth for
-/// the compile-time checks below. Must list the same coins as `coin_entries` (the
-/// length assertion in the guard catches a coin added to one list but not the
-/// other).
-const coin_types = .{ Nexa, Divi, Ergo, DigiByte, Zano, Nerva, ReddCoin, Epic, Salvium, Litecoin, Bitcoin, BitcoinZ, SpiderByte, Monero };
+/// The registered coin backends as their concrete types. Taken from
+/// `registry.zig` — the one roster both front-ends read — rather than listed
+/// again here. That module also carries the duplicate-binary-name guard, which
+/// used to live in this file but is a property of the shared install root, not
+/// of the TUI.
+const coin_types = registry.coin_types;
 
-// Compile-time guard: no two coins may declare the same executable filename. Every
-// coin promotes its binaries into the one shared install root (`~/.boxwallet`) and
-// `isInstalled` keys off the daemon filename, so a name clash would silently
-// overwrite another coin's binary on install and confuse install detection. A
-// duplicate — e.g. a future CryptoNote coin shipping a stock `simplewallet` like
-// Zano's — fails the build here rather than corrupting an install on disk. (Ergo's
-// versioned jar and the Windows subdir bundles live outside the shared root, but
-// the promoted daemon/cli/tx/wallet-rpc executables all share it, so those four
-// filename decls are what's checked.)
+// Compile-time guard: `coin_entries` must be the registry's list, in the
+// registry's order. It already is — this assertion is zero-diff today — but the
+// GUI addresses coins by that index (it's the C ABI, and `gui/app.slint`'s logo
+// array is indexed by it), so a coin inserted here and appended there would
+// point the GUI at the wrong coin with nothing to catch it. The `.home` row is
+// this file's own and sits outside the comparison.
 comptime {
-    if (coin_types.len != coin_entries.len)
-        @compileError("coin_types and coin_entries must list the same coins");
-
-    // The pairwise scan below is O(names²) in comptime branches, and `names` grows
-    // with every coin registered, so the default 1000 doesn't cover the roster.
-    @setEvalBranchQuota(20_000);
-
-    const exe_fields = .{ "daemon_file", "cli_file", "tx_file", "wallet_rpc_file" };
-    var names: []const []const u8 = &.{};
-    for (coin_types) |C| {
-        for (exe_fields) |f| {
-            if (@hasDecl(C, f)) names = names ++ &[_][]const u8{@field(C, f)};
-        }
-    }
-    for (names, 0..) |a, i| {
-        for (names[i + 1 ..]) |b| {
-            if (std.mem.eql(u8, a, b))
-                @compileError("two coins declare the same binary filename '" ++ a ++
-                    "': they would collide in the shared install root — give one a unique name");
-        }
+    if (coin_entries.len != registry.count)
+        @compileError("coin_entries must list every coin in src/registry.zig");
+    for (coin_entries, 0..) |e, i| {
+        if (!std.mem.eql(u8, entryLabel(e), registry.name(i)))
+            @compileError("coin_entries is out of step with src/registry.zig at index " ++
+                std.fmt.comptimePrint("{d}", .{i}) ++ ": expected '" ++ registry.name(i) ++
+                "', found '" ++ entryLabel(e) ++ "' — the order is the GUI's C ABI");
     }
 }
 

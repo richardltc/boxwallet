@@ -487,6 +487,16 @@ static void apply_coin_metadata(const AppWindow *ui, bw_ctx *ctx, int idx)
 
     ui->set_has_mining(bw_coin_supports_mining(idx) != 0);
     ui->set_has_stablecoin(bw_coin_supports_stablecoin(idx) != 0);
+    // Which wallet tabs this coin earns. Pure metadata, so it's settled here at
+    // selection time rather than waiting up to two seconds for the first poll —
+    // the tab strip must not flicker its way into shape.
+    ui->set_has_balance(bw_coin_supports_balance(idx) != 0);
+    ui->set_has_transactions(bw_coin_supports_transactions(idx) != 0);
+    ui->set_has_receive(bw_coin_supports_receive_address(idx) != 0);
+    ui->set_has_send(bw_coin_supports_send(idx) != 0);
+    // Whether a send can go through is live state, not metadata: it needs the
+    // wallet unlocked, which only the poll knows. Start closed.
+    ui->set_can_send(false);
     ui->set_installed(bw_is_installed(ctx, idx) != 0);
     refresh_update_state(ui, ctx, idx);
 
@@ -518,7 +528,13 @@ static void apply_coin_metadata(const AppWindow *ui, bw_ctx *ctx, int idx)
     ui->set_blocks_frac(0);
     ui->set_disk_frac(0);
     ui->set_wallet_sec(0);
-    ui->set_ew_flags(bw_coin_ext_wallet(idx));
+    const int ew_flags = bw_coin_ext_wallet(idx);
+    ui->set_ew_flags(ew_flags);
+    // Decoded here rather than in Slint (no bitwise operators there) because it
+    // gates the whole wallet menu, not one button: the core has no per-open
+    // launch-with-password lifecycle for this front-end yet, so offering the
+    // actions would only ever produce "Unsupported".
+    ui->set_wallet_launch_with_pw((ew_flags & BW_EW_LAUNCH_WITH_PW) != 0);
     ui->set_wallet_state(BW_WALLET_NONE);
     uint32_t counts[4] = {25, 0, 0, 0};
     if (bw_coin_seed_word_counts(idx, counts, 4) > 0)
@@ -554,6 +570,10 @@ static void apply_coin_metadata(const AppWindow *ui, bw_ctx *ctx, int idx)
 // The browser navigates the filesystem via the core (bw_home_dir / bw_list_dir).
 // C++ owns the current path and the current entries; the Slint callbacks below
 // drive navigation. All run on the UI thread (no blocking I/O to speak of).
+//
+// Seeded to the home dir at startup, not left empty: the wallet restore-from-file
+// flow opens the browser directly, and an empty path lists nothing — the user
+// would meet a blank pane where their wallet backup should be.
 static std::string g_browse_path;
 static std::vector<BrowseEntry> g_entries;
 
@@ -620,6 +640,63 @@ int main()
         return 1;
     }
 
+    // Who we are, from the core — never a literal in app.slint. The version and
+    // the self-updater read the same constant, so the Home page can't advertise a
+    // release the running binary isn't.
+    {
+        char b[64];
+        size_t n = bw_app_name(b, sizeof b);
+        ui->set_app_name(slint::SharedString(std::string_view(b, n)));
+        n = bw_app_version(b, sizeof b);
+        ui->set_app_version(slint::SharedString(std::string_view(b, n)));
+        n = bw_brand_color(b, sizeof b);
+        ui->set_brand_color(parse_hex_color(b, n));
+    }
+
+    // Start the file browser at the user's home dir. Whoever opens it (today the
+    // wallet restore-from-file stage) then lands somewhere useful without having
+    // to remember to reset it first.
+    {
+        char hb[512];
+        size_t hn = bw_home_dir(ctx, hb, sizeof hb);
+        if (hn > 0)
+            g_browse_path.assign(hb, hn);
+    }
+
+    // The logo array in app.slint is indexed by registry index and maintained by
+    // hand — Slint needs @image-url to be a literal, so it can't be generated.
+    // Check it against the registry before showing anything. A coin inserted in
+    // src/registry.zig and appended there would otherwise put one coin's brand
+    // over another coin's balance, which is a wallet showing you the wrong thing.
+    {
+        auto names = ui->get_coin_logo_names();
+        const size_t n_coins = bw_coin_count();
+        std::string mismatch;
+        if (names->row_count() != n_coins) {
+            mismatch = "coin-logo-names has " + std::to_string(names->row_count()) +
+                       " entries but " + std::to_string(n_coins) + " coins are registered";
+        } else {
+            for (size_t i = 0; i < n_coins && mismatch.empty(); ++i) {
+                char nb[64];
+                size_t nn = bw_coin_name(i, nb, sizeof nb);
+                std::string want(nb, nn);
+                std::string got(names->row_data(i).value_or(slint::SharedString()));
+                if (want != got)
+                    mismatch = "logo slot " + std::to_string(i) + " is labelled \"" + got +
+                               "\" but coin " + std::to_string(i) + " is \"" + want + "\"";
+            }
+        }
+        if (!mismatch.empty()) {
+            // Loud on stderr for whoever is building, and visible in the window
+            // for whoever is running it. Showing no logo is the safe failure.
+            std::fprintf(stderr,
+                         "BoxWallet: gui/app.slint's coin logos are out of step with "
+                         "src/registry.zig — %s\n",
+                         mismatch.c_str());
+            ui->set_logo_mismatch(slint::SharedString(mismatch));
+        }
+    }
+
     // The window the user arranged last time. Nothing stored (or nothing usable)
     // leaves the defaults in app.slint, so a first run — or a corrupt conf — still
     // opens sensibly.
@@ -675,7 +752,9 @@ int main()
     std::atomic<bool> stop{false};
     slint::ComponentWeakHandle<AppWindow> weak(ui);
 
-    // Nav → select a coin: push its metadata and start polling it.
+    // Nav → select a coin: push its metadata and start polling it. -1 is Home,
+    // which has nothing to poll and no metadata to apply — but still has to be
+    // reported, so the poller stops working on the coin we just left.
     ui->on_coin_selected([weak, ctx](int idx) {
         if (auto h = weak.lock()) {
             {
@@ -684,8 +763,39 @@ int main()
                 g_sel_gen.fetch_add(1);
             }
             g_poll_cv.notify_one(); // poll the new coin immediately
-            apply_coin_metadata(&**h, ctx, idx);
+            if (idx >= 0)
+                apply_coin_metadata(&**h, ctx, idx);
         }
+    });
+
+    // Keyboard nav (Up/Down), the GUI's answer to the TUI's j/k. Slint can't
+    // resolve this itself: `nav-coins` is alphabetical display order while
+    // `selected` is a registry index, so the current row has to be searched for,
+    // and a Slint function body has no loop. We only answer the question — the
+    // UI owns the selection and applies the result. Row -1 is Home, pinned above
+    // the coins; NO_MOVE means "already at that end".
+    ui->on_nav_step([weak](int current, int delta) -> int {
+        constexpr int NO_MOVE = -2; // must match AppWindow.no-move
+        auto h = weak.lock();
+        if (!h)
+            return NO_MOVE;
+        auto coins = (*h)->get_nav_coins();
+        const int n = static_cast<int>(coins->row_count());
+        if (n == 0)
+            return NO_MOVE;
+
+        int row = -1; // Home, until the current index is found among the coins
+        for (int i = 0; i < n; ++i) {
+            auto c = coins->row_data(i);
+            if (c && c->index == current) {
+                row = i;
+                break;
+            }
+        }
+        const int want = std::clamp(row + delta, -1, n - 1);
+        if (want == row)
+            return NO_MOVE;
+        return want < 0 ? -1 : coins->row_data(want)->index;
     });
 
     // Wake the poller now so an action's result (running/lock state) shows fast.
@@ -1388,9 +1498,10 @@ int main()
 
             int di_rc = bw_daemon_info(ctx, coin, &di);
             int bs_rc = bw_blockchain_state(ctx, coin, &bs);
+            const bool daemon_up = (di_rc == 0 && bs_rc == 0);
 
             // Wallet lock state — only meaningful once the daemon answers.
-            int wallet_sec = (di_rc == 0 && bs_rc == 0) ? bw_wallet_security(ctx, coin) : 0;
+            int wallet_sec = daemon_up ? bw_wallet_security(ctx, coin) : BW_WSEC_UNKNOWN;
 
             // The reads failing doesn't mean "not running": a bitcoin-derived
             // daemon can't serve them for the whole of its start-up (block
@@ -1399,7 +1510,7 @@ int main()
             // "Loading block index…" / "Rewinding…" / "Verifying…" rather than
             // claiming the daemon it just started isn't running.
             std::string stage;
-            if (di_rc != 0 || bs_rc != 0) {
+            if (!daemon_up) {
                 char sb[128] = {0};
                 size_t sn = bw_daemon_stage(ctx, coin, sb, sizeof sb);
                 stage.assign(sb, sn);
@@ -1414,8 +1525,7 @@ int main()
             int decimals = static_cast<int>(bw_coin_balance_decimals(coin));
             std::string wallet_svc_err;
             if (ew_flags != 0) {
-                bool running_now = (di_rc == 0 && bs_rc == 0);
-                if (running_now) {
+                if (daemon_up) {
                     // A failure here is why a later unlock would report the
                     // service "still starting" — surface the real reason now
                     // rather than letting the user meet it at the password box.
@@ -1427,9 +1537,35 @@ int main()
                 wallet_state = bw_ext_wallet_state(ctx, coin);
             }
 
-            // Wallet reads, only once it's actually open. BW_BUSY means a wallet
-            // op holds the lock — keep the last value rather than stalling the
-            // whole status pump behind a restore.
+            // What this coin has to show at all — about the coin, not about the
+            // wallet's current state. Drives tab visibility, so a coin without a
+            // capability shows no tab rather than an empty one.
+            const bool has_balance_cap = bw_coin_supports_balance(coin) != 0;
+            const bool has_tx_cap      = bw_coin_supports_transactions(coin) != 0;
+            const bool has_recv_cap    = bw_coin_supports_receive_address(coin) != 0;
+            const bool has_send_cap    = bw_coin_supports_send(coin) != 0;
+
+            // When the wallet reads are answerable. The two wallet shapes differ,
+            // and conflating them is what left Transactions/Receive/Send blank for
+            // every in-daemon coin: a managed wallet lives in a second process we
+            // must have opened, but an in-daemon wallet answers as soon as its
+            // daemon does — bitcoin-core serves getbalance / listtransactions /
+            // getnewaddress on a *locked* wallet.
+            const bool reads_ok = (ew_flags != 0) ? (wallet_state >= BW_WALLET_OPEN) : daemon_up;
+
+            // Spending is the exception: that one genuinely needs the wallet
+            // unlocked. Note the in-daemon test blocks on a *positive* "locked"
+            // rather than requiring a positive "unlocked" — a coin whose daemon
+            // reports no lock state at all (BW_WSEC_UNKNOWN) has no lock to open,
+            // and demanding one would park its Send tab on "unlock first"
+            // forever. If we're wrong, the daemon rejects the send and says why,
+            // which is a better answer than a permanent client-side refusal.
+            const bool can_send = has_send_cap && (ew_flags != 0
+                ? wallet_state >= BW_WALLET_OPEN
+                : (daemon_up && wallet_sec != BW_WSEC_LOCKED));
+
+            // BW_BUSY means a wallet op holds the lock — keep the last value
+            // rather than stalling the whole status pump behind a restore.
             BwWalletBalance bal;
             std::memset(&bal, 0, sizeof bal);
             bool have_balance = false;
@@ -1438,29 +1574,39 @@ int main()
             bool rescanning = false;
             std::vector<BwWalletTx> txs;
             std::string recv_addr;
-            if (wallet_state >= BW_WALLET_OPEN) {
-                have_balance = (bw_ext_wallet_balance(ctx, coin, &bal) == 0);
-                rescanning = (bw_ext_wallet_rescan(ctx, coin, &rp) == 1);
-                if (rescanning)
-                    wallet_state = BW_WALLET_RESCAN;
+            if (reads_ok) {
+                if (has_balance_cap)
+                    have_balance = (bw_wallet_balance(ctx, coin, &bal) == 0);
 
-                BwWalletTx tx_buf[TX_CAP];
-                size_t ntx = bw_wallet_transactions(ctx, coin, tx_buf, TX_CAP);
-                txs.assign(tx_buf, tx_buf + ntx);
+                // Rescan is a managed-wallet concept: it's the wallet-rpc
+                // refreshing from height 0 after a restore.
+                if (ew_flags != 0) {
+                    rescanning = (bw_ext_wallet_rescan(ctx, coin, &rp) == 1);
+                    if (rescanning)
+                        wallet_state = BW_WALLET_RESCAN;
+                }
+
+                if (has_tx_cap) {
+                    BwWalletTx tx_buf[TX_CAP];
+                    size_t ntx = bw_wallet_transactions(ctx, coin, tx_buf, TX_CAP);
+                    txs.assign(tx_buf, tx_buf + ntx);
+                }
 
                 // The address is fetched ONCE and then cached, never on this
                 // timer: the RPC rotates it after it's been paid, so polling
                 // would swap it out from under someone mid-send.
-                bool want_new = g_want_new_addr.exchange(false);
-                if (want_new || g_recv_addr[coin].empty()) {
-                    char ab[256] = {0};
-                    size_t an = bw_wallet_receive_address(ctx, coin, want_new ? 1 : 0, ab, sizeof ab);
-                    if (an > 0)
-                        g_recv_addr[coin].assign(ab, an);
+                if (has_recv_cap) {
+                    bool want_new = g_want_new_addr.exchange(false);
+                    if (want_new || g_recv_addr[coin].empty()) {
+                        char ab[256] = {0};
+                        size_t an = bw_wallet_receive_address(ctx, coin, want_new ? 1 : 0, ab, sizeof ab);
+                        if (an > 0)
+                            g_recv_addr[coin].assign(ab, an);
+                    }
+                    recv_addr = g_recv_addr[coin];
                 }
-                recv_addr = g_recv_addr[coin];
-            } else if (ew_flags != 0) {
-                // Wallet closed: the cached address belongs to a wallet we can no
+            } else {
+                // Not readable: the cached address belongs to a wallet we can no
                 // longer vouch for, so drop it rather than keep showing it.
                 g_recv_addr[coin].clear();
             }
@@ -1491,9 +1637,9 @@ int main()
                 disk_free_str = humanize_bytes(du.total_bytes - du.used_bytes) + " free";
             }
 
-            post_to_ui([weak, di, bs, di_rc, bs_rc, sel, disk_frac, disk_free_str, wallet_sec, stage,
+            post_to_ui([weak, di, bs, daemon_up, sel, disk_frac, disk_free_str, wallet_sec, stage,
                         ms, hashrate, ew_flags, wallet_state, bal, have_balance,
-                        rp, rescanning, txs, recv_addr, decimals, wallet_svc_err]() {
+                        rp, rescanning, txs, recv_addr, decimals, wallet_svc_err, can_send]() {
                 auto h = weak.lock();
                 if (!h)
                     return;
@@ -1505,6 +1651,7 @@ int main()
                 (*h)->set_wallet_sec(wallet_sec);
                 (*h)->set_ew_flags(ew_flags);
                 (*h)->set_wallet_state(wallet_state);
+                (*h)->set_can_send(can_send);
                 (*h)->set_balance_total(slint::SharedString(
                     have_balance ? format_amount(bal.total, decimals) : std::string("—")));
                 (*h)->set_balance_avail(slint::SharedString(
@@ -1522,7 +1669,7 @@ int main()
                     (*h)->set_status_is_error(true);
                 }
                 g_last_wallet_svc_err = wallet_svc_err;
-                bool running = (di_rc == 0) && (bs_rc == 0);
+                const bool running = daemon_up;
                 (*h)->set_running(running);
                 // The poll owns the loading state: it lasts until the daemon
                 // answers RPC, which is long after the Start action returns.

@@ -5,10 +5,22 @@
 //! bind Slint's C++ API from Zig (it isn't a stable C ABI), the C++ glue calls
 //! *this* module's `export fn`s over a plain C ABI (see `include/boxwallet.h`).
 //!
-//! This is the entire Zig surface the GUI needs for the proof-of-concept:
-//! **read-only status** for one coin (Divi) — daemon info + chain sync. It
-//! deliberately touches **no secrets** (no wallet/password), so the risky
-//! secret-over-FFI path is designed (in the header/comments) but not yet wired.
+//! The surface covers every registered coin: metadata, install and update, the
+//! sync accelerators, daemon start/stop and warm-up, both wallet shapes (the
+//! in-daemon bitcoin-family one and the managed wallet-rpc one), balances,
+//! transactions, receive addresses, sending, and mining.
+//!
+//! Secrets **do** cross this boundary — passwords in, one mnemonic out — under
+//! the contract documented at the foot of `include/boxwallet.h`. Every one of
+//! them arrives as `(ptr, len)`, is copied into a bounded buffer, and is wiped
+//! with `@memset` on every return path. Read that contract before adding an
+//! export that takes or returns one.
+//!
+//! Threading: the GUI runs a continuous status poller alongside up to a dozen
+//! detached action workers, so anything shared here is either atomic, behind
+//! `wallet_mtx`, or thread-local (the last-error slot). Exports that block on
+//! RPC are worker-thread-only and say so; the pure metadata reads are safe on
+//! the UI thread.
 //!
 //! Memory: the context holds only a couple of tiny long-lived strings on the
 //! page allocator; every live RPC call runs on its own `ArenaAllocator` that is
@@ -18,6 +30,8 @@
 
 const std = @import("std");
 const builtin = @import("builtin");
+const version = @import("version.zig");
+const registry = @import("registry.zig");
 const coinmod = @import("coin.zig");
 const models = @import("models.zig");
 const conf = @import("conf.zig");
@@ -28,33 +42,48 @@ const warmup = @import("warmup.zig");
 const mining = @import("mining.zig");
 const extwallet = @import("extwallet.zig");
 
-// Every coin backend, so the GUI can list them all in the nav (like the TUI).
-const nexa = @import("coins/nexa.zig");
-const divi = @import("coins/divi.zig");
-const ergo = @import("coins/ergo.zig");
-const digibyte = @import("coins/digibyte.zig");
-const zano = @import("coins/zano.zig");
-const nerva = @import("coins/nerva.zig");
-const reddcoin = @import("coins/reddcoin.zig");
-const epic = @import("coins/epic.zig");
-const salvium = @import("coins/salvium.zig");
-const litecoin = @import("coins/litecoin.zig");
-const bitcoin = @import("coins/bitcoin.zig");
-const bitcoinz = @import("coins/bitcoinz.zig");
-const spiderbyte = @import("coins/spiderbyte.zig");
-const monero = @import("coins/monero.zig");
-
 const Coin = coinmod.Coin;
 
+/// The last failure on **this thread**: the sentence for the user, plus the bare
+/// `@errorName` behind it so a caller can branch (keep a wrong password on the
+/// password step) without parsing prose.
+///
+/// Thread-local rather than a field on `Ctx`, because the GUI has no single
+/// worker: the status poller runs continuously while a dozen action workers are
+/// spawned detached alongside it, and every one of them can fail. A shared slot
+/// (even a mutexed one) means a worker can read *another* worker's message —
+/// wrong text on the wrong modal, which for a wallet is worse than no text. Every
+/// caller already reads it on the thread that made the failing call, so
+/// per-thread is exactly the semantics the API had always implied.
+const ErrSlot = struct {
+    msg_buf: [256]u8 = undefined,
+    msg_len: usize = 0,
+    code_buf: [64]u8 = undefined,
+    code_len: usize = 0,
+
+    fn setMsg(self: *ErrSlot, msg: []const u8) void {
+        const n = @min(msg.len, self.msg_buf.len);
+        @memcpy(self.msg_buf[0..n], msg[0..n]);
+        self.msg_len = n;
+    }
+
+    fn setCode(self: *ErrSlot, name: []const u8) void {
+        const n = @min(name.len, self.code_buf.len);
+        @memcpy(self.code_buf[0..n], name[0..n]);
+        self.code_len = n;
+    }
+};
+
+threadlocal var tl_err: ErrSlot = .{};
+
 /// Opaque per-process context handed back to the C++ side by `bw_init`. Owns the
-/// resolved home/install-root strings and a bounded last-error buffer. Single
-/// worker thread drives it in the POC, so the last-error slot needs no lock yet.
+/// resolved home/install-root strings, the per-coin daemon and wallet handles,
+/// and the cross-thread install/pause flags. The last-error slot deliberately
+/// lives outside it (see `ErrSlot`).
 const Ctx = struct {
     allocator: std.mem.Allocator,
     home_dir: []const u8,
     install_root: []const u8,
-    err_buf: [256]u8 = undefined,
-    err_len: usize = 0,
     // Retained handles for foreground daemons we launched, so a coin with no
     // shutdown RPC can be killed on stop (mirrors the TUI's `daemon_child`).
     //
@@ -100,72 +129,65 @@ const Ctx = struct {
     seed: models.Seed = .{},
     seed_coin: isize = -1,
 
-    /// The bare `@errorName` of the last failure, alongside the friendly text in
-    /// `err_buf` — so the caller can branch on it (keep a wrong password on the
-    /// password step) without parsing a sentence.
-    err_code_buf: [64]u8 = undefined,
-    err_code_len: usize = 0,
-
+    /// Record a failure against the calling thread. Kept as methods on `Ctx` so
+    /// the ~80 call sites read unchanged; `self` is unused because the slot is
+    /// thread-local (see `ErrSlot`).
     fn setError(self: *Ctx, msg: []const u8) void {
-        const n = @min(msg.len, self.err_buf.len);
-        @memcpy(self.err_buf[0..n], msg[0..n]);
-        self.err_len = n;
+        _ = self;
+        tl_err.setMsg(msg);
     }
 
     fn setErrorCode(self: *Ctx, name: []const u8) void {
-        const n = @min(name.len, self.err_code_buf.len);
-        @memcpy(self.err_code_buf[0..n], name[0..n]);
-        self.err_code_len = n;
+        _ = self;
+        tl_err.setCode(name);
+    }
+
+    /// Whether this thread has a failure recorded. Used where a fallback message
+    /// should only fill in for a probe that found nothing to say.
+    fn hasError(self: *Ctx) bool {
+        _ = self;
+        return tl_err.msg_len != 0;
+    }
+
+    /// Forget this thread's last failure, so a later "did anything go wrong?"
+    /// check can't read a stale one from an earlier call.
+    fn clearError(self: *Ctx) void {
+        _ = self;
+        tl_err.msg_len = 0;
+        tl_err.code_len = 0;
+    }
+
+    /// This thread's last failure text, empty if none. Borrowed from the
+    /// thread-local slot: valid until the next `setError` on this thread.
+    fn errorText(self: *Ctx) []const u8 {
+        _ = self;
+        return tl_err.msg_buf[0..tl_err.msg_len];
+    }
+
+    /// This thread's last `@errorName`, empty if none. Same lifetime rule.
+    fn errorCode(self: *Ctx) []const u8 {
+        _ = self;
+        return tl_err.code_buf[0..tl_err.code_len];
     }
 };
 
-// The registered coins, in a stable index order the C++ side addresses by
-// `size_t` (the same set/order as the TUI's `coin_entries`; the GUI sorts them
-// alphabetically for display). Static instances: each coin is a zero-field
-// struct (the TUI default-inits them the same way), and `coin()` wants a pointer.
-var g_nexa: nexa.Nexa = .{};
-var g_divi: divi.Divi = .{};
-var g_ergo: ergo.Ergo = .{};
-var g_digibyte: digibyte.DigiByte = .{};
-var g_zano: zano.Zano = .{};
-var g_nerva: nerva.Nerva = .{};
-var g_reddcoin: reddcoin.ReddCoin = .{};
-var g_epic: epic.Epic = .{};
-var g_salvium: salvium.Salvium = .{};
-var g_litecoin: litecoin.Litecoin = .{};
-var g_bitcoin: bitcoin.Bitcoin = .{};
-var g_bitcoinz: bitcoinz.BitcoinZ = .{};
-var g_spiderbyte: spiderbyte.SpiderByte = .{};
-var g_monero: monero.Monero = .{};
+// The registered coins come from `registry.zig` — the one list both front-ends
+// read, so the index the C++ side addresses a coin by can't drift from the one
+// the TUI uses. Each backend is a zero-field struct and `coin()` wants a
+// pointer, so one process-wide instance set is all that's needed.
+var g_coins: registry.Instances = registry.instances();
 
 /// Number of registered coins. Every index the C side passes is in
-/// `[0, coin_count)`, and `coinByIndex` must answer for exactly that range — the
-/// test at the bottom of this file enforces the two stay in step, because
-/// `Ctx.daemon_child` is sized from this.
-const coin_count = 14;
+/// `[0, coin_count)`, and `coinByIndex` answers for exactly that range.
+/// `Ctx.daemon_child` and friends are sized from this.
+const coin_count = registry.count;
 
 fn coinCount() usize {
     return coin_count;
 }
 
 fn coinByIndex(idx: usize) ?Coin {
-    return switch (idx) {
-        0 => g_nexa.coin(),
-        1 => g_divi.coin(),
-        2 => g_ergo.coin(),
-        3 => g_digibyte.coin(),
-        4 => g_zano.coin(),
-        5 => g_nerva.coin(),
-        6 => g_reddcoin.coin(),
-        7 => g_epic.coin(),
-        8 => g_salvium.coin(),
-        9 => g_litecoin.coin(),
-        10 => g_bitcoin.coin(),
-        11 => g_bitcoinz.coin(),
-        12 => g_spiderbyte.coin(),
-        13 => g_monero.coin(),
-        else => null,
-    };
+    return registry.coinAt(&g_coins, idx);
 }
 
 // ---- C structs (mirror `include/boxwallet.h` exactly) -----------------------
@@ -249,19 +271,42 @@ export fn bw_deinit(ctx: ?*Ctx) void {
     a.destroy(c);
 }
 
-/// The bare error name behind the last failure (`bw_last_error` has the sentence
-/// for the user; this is for the caller to branch on).
+/// The bare error name behind this thread's last failure (`bw_last_error` has the
+/// sentence for the user; this is for the caller to branch on).
 export fn bw_last_error_code(ctx: ?*Ctx, buf: ?[*]u8, cap: usize) usize {
-    const c = ctx orelse return 0;
+    _ = ctx;
     const b = buf orelse return 0;
-    return copyOut(b[0..cap], c.err_code_buf[0..c.err_code_len]);
+    return copyOut(b[0..cap], tl_err.code_buf[0..tl_err.code_len]);
 }
 
-/// Length of the last error recorded on `ctx`, copied into the caller buffer.
+/// This thread's last error message, copied into the caller buffer. Read it on
+/// the same thread that made the failing call — another thread's slot is its own.
 export fn bw_last_error(ctx: ?*Ctx, buf: ?[*]u8, cap: usize) usize {
-    const c = ctx orelse return 0;
+    _ = ctx;
     const b = buf orelse return 0;
-    return copyOut(b[0..cap], c.err_buf[0..c.err_len]);
+    return copyOut(b[0..cap], tl_err.msg_buf[0..tl_err.msg_len]);
+}
+
+// ---- application identity (no ctx, no allocation) ---------------------------
+
+/// BoxWallet's own release version, e.g. "0.8.4" — no "v" prefix; the GUI adds
+/// its own. Read from `version.zig`, the same constant the TUI shows and the
+/// self-updater compares against, so the GUI can't announce a version it isn't.
+export fn bw_app_version(buf: ?[*]u8, cap: usize) usize {
+    const b = buf orelse return 0;
+    return copyOut(b[0..cap], version.app_version);
+}
+
+/// What this front-end calls itself ("BoxWallet"), for the title and Home page.
+export fn bw_app_name(buf: ?[*]u8, cap: usize) usize {
+    const b = buf orelse return 0;
+    return copyOut(b[0..cap], version.gui_name);
+}
+
+/// The BoxWallet brand hex ("#RRGGBB") — the green both front-ends wear.
+export fn bw_brand_color(buf: ?[*]u8, cap: usize) usize {
+    const b = buf orelse return 0;
+    return copyOut(b[0..cap], version.brand_color);
 }
 
 // ---- coin registry / metadata (no ctx, no allocation) -----------------------
@@ -352,21 +397,38 @@ export fn bw_coin_seed_word_counts(idx: usize, out: ?*u32, cap: usize) usize {
     return n;
 }
 
+// ---- which wallet tabs a coin earns -----------------------------------------
+//
+// These four answer "does this coin have anything to put on that tab?", so the
+// GUI can hide a tab rather than render it empty. They are about the *coin*, not
+// about whether its wallet happens to be open right now.
+
+/// Whether this coin reports a balance. Unlike the other three this is **not**
+/// just the vtable predicate: a managed wallet's balance comes from the required
+/// `ExternalWallet.balance` hook, not from `wallet_balance`, so `supportsBalance`
+/// alone reads false for Monero/Nerva/Salvium/Zano/Epic/Ergo. `bw_wallet_balance`
+/// serves both shapes, and so must this.
 export fn bw_coin_supports_balance(idx: usize) c_int {
     const c = coinByIndex(idx) orelse return 0;
-    return if (c.supportsBalance()) 1 else 0;
+    return if (c.supportsBalance() or c.hasExternalWallet()) 1 else 0;
 }
 
+/// Whether this coin reports a transaction history (drives the Transactions tab).
 export fn bw_coin_supports_transactions(idx: usize) c_int {
     const c = coinByIndex(idx) orelse return 0;
     return if (c.supportsTransactions()) 1 else 0;
 }
 
+/// Whether this coin can hand out a receive address (drives the Receive tab).
+/// False for Epic, whose MimbleWimble wallet has no such thing.
 export fn bw_coin_supports_receive_address(idx: usize) c_int {
     const c = coinByIndex(idx) orelse return 0;
     return if (c.supportsReceiveAddress()) 1 else 0;
 }
 
+/// Whether this coin can send (drives the Send tab). False for Epic: a
+/// MimbleWimble payment is an interactive slate exchange, not a fire-and-forget
+/// broadcast.
 export fn bw_coin_supports_send(idx: usize) c_int {
     const c = coinByIndex(idx) orelse return 0;
     return if (c.supportsSend()) 1 else 0;
@@ -699,9 +761,9 @@ fn startDaemon(ctx: *Ctx, idx: usize) !void {
             if (confirmAlive(coin)) return;
             // Its daemonized stderr went nowhere we can read, so the reason is
             // in the coin's own log.
-            ctx.err_len = 0;
+            ctx.clearError();
             setErrorFromDaemonLog(ctx, a, io, coin);
-            if (ctx.err_len == 0) ctx.setError("daemon did not stay up (check its log)");
+            if (!ctx.hasError()) ctx.setError("daemon did not stay up (check its log)");
             return error.DaemonStartFailed;
         },
         else => {},
@@ -792,7 +854,7 @@ export fn bw_install(ctx: ?*Ctx, idx: usize) c_int {
 
     const progress: install.Progress = .{ .ctx = c, .func = onInstallProgress };
     coin.install(a, c.install_root, c.home_dir, progress) catch |err| {
-        if (c.err_len == 0) c.setError(@errorName(err));
+        if (!c.hasError()) c.setError(@errorName(err));
         return -1;
     };
     // Record what we just installed so update detection works with the daemon
@@ -956,7 +1018,7 @@ export fn bw_start_daemon(ctx: ?*Ctx, idx: usize) c_int {
     // rest of the session even after the cause is gone.
     if (idx < coin_count) c.wallet[idx].attempted = false;
     startDaemon(c, idx) catch |err| {
-        if (c.err_len == 0) c.setError(@errorName(err));
+        if (!c.hasError()) c.setError(@errorName(err));
         return -1;
     };
     return 0;
@@ -965,7 +1027,7 @@ export fn bw_start_daemon(ctx: ?*Ctx, idx: usize) c_int {
 export fn bw_stop_daemon(ctx: ?*Ctx, idx: usize) c_int {
     const c = ctx orelse return -1;
     stopDaemon(c, idx) catch |err| {
-        if (c.err_len == 0) c.setError(@errorName(err));
+        if (!c.hasError()) c.setError(@errorName(err));
         return -1;
     };
     return 0;
@@ -1227,8 +1289,7 @@ fn walletOpCall(
 ) c_int {
     const c = ctx orelse return -1;
     if (idx >= coin_count) return -1;
-    c.err_len = 0;
-    c.err_code_len = 0;
+    c.clearError();
 
     var pw_buf: [wallet_pw_max]u8 = undefined;
     var pn: usize = 0;
@@ -1249,14 +1310,14 @@ fn walletOpCall(
     const path = if (src_path) |p| std.mem.span(p) else "";
 
     walletOp(c, idx, op, pw_buf[0..pn], seed_buf[0..sn], path) catch |err| {
-        // `walletOp`'s errdefer may already have put the daemon's own message in
-        // err_buf; `friendlyWalletError` prefers it over any generic fallback.
-        const raw = c.err_buf[0..c.err_len];
+        // `walletOp`'s errdefer may already have recorded the daemon's own
+        // message; `friendlyWalletError` prefers it over any generic fallback.
+        const raw = c.errorText();
         c.setErrorCode(@errorName(err));
         const text = extwallet.friendlyWalletError(@errorName(err), raw);
-        // `text` may alias err_buf (when it *is* the detail), so only rewrite it
-        // when it points somewhere else.
-        if (text.ptr != c.err_buf[0..].ptr) c.setError(text);
+        // `text` may alias the error slot (when it *is* the detail), so only
+        // rewrite it when it points somewhere else.
+        if (text.ptr != raw.ptr) c.setError(text);
         return -1;
     };
     return 0;
@@ -1321,8 +1382,7 @@ export fn bw_ext_wallet_remove(ctx: ?*Ctx, idx: usize) c_int {
         c.setError("This coin has no in-app wallet replace.");
         return -1;
     };
-    c.err_len = 0;
-    c.err_code_len = 0;
+    c.clearError();
 
     var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
     defer arena.deinit();
@@ -1393,30 +1453,48 @@ pub const BwRescanProgress = extern struct {
 /// than stall behind a restore that may run for minutes.
 pub const bw_busy: c_int = -2;
 
-/// Balances of the open wallet. 0 with `out` filled, `bw_busy`, or -1.
+/// Balances of the coin's wallet, whichever shape it has: 0 with `out` filled,
+/// `bw_busy`, or -1.
+///
+/// Two backings converge here. A managed wallet answers from its own wallet-rpc
+/// (`ExternalWallet.balance`, a required hook); an in-daemon wallet answers from
+/// the daemon (`Coin.walletBalance`). The front-end asks one question — "what is
+/// this wallet worth?" — so it gets one export, and the branch lives here rather
+/// than in C++.
+///
+/// The open-wallet gate applies **only** to a managed wallet. A bitcoin-family
+/// daemon serves `getbalance` on a *locked* wallet, so gating an in-daemon coin
+/// on "unlocked" would blank the balance of every wallet the user hasn't opened
+/// this session.
 ///
 /// This export owns the wallet-closed rule: `error.WalletClosed` is the **only**
 /// error that clears the open flag, so a transient RPC blip can't make the UI
 /// claim the wallet locked itself. Keeping that here rather than in C++ is what
 /// stops the two front-ends disagreeing about it.
-export fn bw_ext_wallet_balance(ctx: ?*Ctx, idx: usize, out: ?*BwWalletBalance) c_int {
+export fn bw_wallet_balance(ctx: ?*Ctx, idx: usize, out: ?*BwWalletBalance) c_int {
     const c = ctx orelse return -1;
     const o = out orelse return -1;
     if (idx >= coin_count) return -1;
     const coin = coinByIndex(idx) orelse return -1;
-    const ew = coin.externalWallet() orelse return -1;
-    if (c.wallet_open[idx].load(.monotonic) == 0) return -1;
+    const maybe_ew = coin.externalWallet();
+    if (maybe_ew == null and !coin.supportsBalance()) return -1;
+    if (maybe_ew != null and c.wallet_open[idx].load(.monotonic) == 0) return -1;
 
     if (!c.wallet_mtx.tryLock()) return bw_busy;
 
     var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
     defer arena.deinit();
-    var threaded: std.Io.Threaded = .init(arena.allocator(), .{});
+    const a = arena.allocator();
+    var threaded: std.Io.Threaded = .init(a, .{});
     defer threaded.deinit();
-    defer c.wallet_mtx.unlock(threaded.io());
+    const io = threaded.io();
+    defer c.wallet_mtx.unlock(io);
 
-    const auth = extwallet.authFor(coin, &c.wallet[idx]);
-    const bal = ew.balance(arena.allocator(), auth) catch |err| {
+    const auth = walletAuth(a, io, coin, c, idx) catch |err| {
+        c.setError(@errorName(err));
+        return -1;
+    };
+    const bal = (if (maybe_ew) |ew| ew.balance(a, auth) else coin.walletBalance(a, auth)) catch |err| {
         if (err == error.WalletClosed) c.wallet_open[idx].store(0, .monotonic);
         c.setError(@errorName(err));
         return -1;
@@ -1424,6 +1502,15 @@ export fn bw_ext_wallet_balance(ctx: ?*Ctx, idx: usize, out: ?*BwWalletBalance) 
     o.total = bal.total;
     o.available = bal.available;
     return 0;
+}
+
+/// Managed-wallet spelling of `bw_wallet_balance`: refuses a coin whose wallet
+/// lives in its daemon, then defers, so the wallet-closed rule stays in exactly
+/// one place.
+export fn bw_ext_wallet_balance(ctx: ?*Ctx, idx: usize, out: ?*BwWalletBalance) c_int {
+    const coin = coinByIndex(idx) orelse return -1;
+    if (coin.externalWallet() == null) return -1;
+    return bw_wallet_balance(ctx, idx, out);
 }
 
 /// Whether the open wallet is still scanning the chain for its history: 1 with
@@ -2369,10 +2456,155 @@ test "a wallet op on a coin with no external wallet is refused, not attempted" {
 
     const pw = "hunter2";
     try std.testing.expectEqual(@as(c_int, -1), bw_ext_wallet_open(&ctx, idx, pw.ptr, pw.len));
-    try std.testing.expectEqualStrings("Unsupported", ctx.err_code_buf[0..ctx.err_code_len]);
+    try std.testing.expectEqualStrings("Unsupported", ctx.errorCode());
     // And it must not have claimed the wallet is open.
     try std.testing.expectEqual(@as(u8, 0), ctx.wallet_open[idx].load(.monotonic));
 
     // An index outside the registry is rejected outright.
     try std.testing.expectEqual(@as(c_int, -1), bw_ext_wallet_open(&ctx, coin_count, pw.ptr, pw.len));
+}
+
+test "the app identity exports report the shared constants" {
+    // The GUI used to carry its own copy of the version string. If this export
+    // ever drifts from `version.zig`, the Home page announces a release the
+    // running binary isn't — and the self-updater compares against the other one.
+    var buf: [64]u8 = undefined;
+    var n = bw_app_version(&buf, buf.len);
+    try std.testing.expectEqualStrings(version.app_version, buf[0..n]);
+
+    n = bw_app_name(&buf, buf.len);
+    try std.testing.expectEqualStrings(version.gui_name, buf[0..n]);
+
+    n = bw_brand_color(&buf, buf.len);
+    try std.testing.expectEqualStrings(version.brand_color, buf[0..n]);
+
+    // A buffer too small truncates rather than overrunning.
+    var tiny: [2]u8 = undefined;
+    try std.testing.expectEqual(@as(usize, 2), bw_app_version(&tiny, tiny.len));
+}
+
+test "each thread reads back its own last error, never another's" {
+    // The GUI runs a continuous status poller alongside a dozen detached action
+    // workers, all of which can fail. A shared error slot lets one worker's
+    // message surface on another's modal — wrong text on a wallet dialog, which
+    // is worse than no text. This is the guard for that.
+    var ctx: Ctx = .{ .allocator = std.testing.allocator, .home_dir = "", .install_root = "" };
+
+    const Worker = struct {
+        fn run(c: *Ctx, msg: []const u8, code: []const u8, ok: *bool) void {
+            c.setError(msg);
+            c.setErrorCode(code);
+            // Give the sibling every chance to clobber a shared slot before we
+            // read ours back.
+            std.Thread.yield() catch {};
+            ok.* = std.mem.eql(u8, c.errorText(), msg) and std.mem.eql(u8, c.errorCode(), code);
+        }
+    };
+
+    // Stake out this thread's slot first, so "the workers didn't touch it" is a
+    // claim about a value we chose rather than about whatever a previous test
+    // happened to leave behind.
+    ctx.setError("main thread");
+    ctx.setErrorCode("MainError");
+
+    var a_ok = false;
+    var b_ok = false;
+    const ta = try std.Thread.spawn(.{}, Worker.run, .{ &ctx, "alpha failed", "AlphaError", &a_ok });
+    const tb = try std.Thread.spawn(.{}, Worker.run, .{ &ctx, "bravo failed", "BravoError", &b_ok });
+    ta.join();
+    tb.join();
+    try std.testing.expect(a_ok);
+    try std.testing.expect(b_ok);
+
+    // And neither leaked onto the thread running the test.
+    try std.testing.expectEqualStrings("main thread", ctx.errorText());
+    try std.testing.expectEqualStrings("MainError", ctx.errorCode());
+    ctx.clearError();
+}
+
+test "clearing an error forgets both the message and the code" {
+    var ctx: Ctx = .{ .allocator = std.testing.allocator, .home_dir = "", .install_root = "" };
+    ctx.setError("something went wrong");
+    ctx.setErrorCode("WrongPassword");
+    try std.testing.expect(ctx.hasError());
+
+    ctx.clearError();
+    try std.testing.expect(!ctx.hasError());
+    // Both, not just the message: a stale code would keep a modal parked on the
+    // password step after an unrelated retry succeeded.
+    try std.testing.expectEqualStrings("", ctx.errorText());
+    try std.testing.expectEqualStrings("", ctx.errorCode());
+}
+
+test "an over-long error message is truncated, not overrun" {
+    var ctx: Ctx = .{ .allocator = std.testing.allocator, .home_dir = "", .install_root = "" };
+    const long = "x" ** 400;
+    ctx.setError(long);
+    try std.testing.expectEqual(@as(usize, 256), ctx.errorText().len);
+    ctx.setErrorCode(long);
+    try std.testing.expectEqual(@as(usize, 64), ctx.errorCode().len);
+    ctx.clearError();
+}
+
+test "every coin with a wallet reports a balance to show" {
+    // The regression guard for the bug that left Transactions/Receive/Send blank
+    // on all eight in-daemon coins: `Coin.supportsBalance` is false for a managed
+    // wallet (its balance comes from the required `ExternalWallet.balance` hook,
+    // not from `wallet_balance`), so a front-end gating on the bare vtable
+    // predicate silently drops half the registry. The export must answer for both
+    // shapes, and every registered coin must have one of them.
+    var i: usize = 0;
+    while (i < coin_count) : (i += 1) {
+        const coin = coinByIndex(i) orelse return error.Unexpected;
+        try std.testing.expectEqual(
+            coin.supportsBalance() or coin.hasExternalWallet(),
+            bw_coin_supports_balance(i) != 0,
+        );
+        try std.testing.expect(bw_coin_supports_balance(i) != 0);
+    }
+    try std.testing.expectEqual(@as(c_int, 0), bw_coin_supports_balance(coin_count));
+}
+
+test "the remaining tab capabilities track their vtable hooks" {
+    var i: usize = 0;
+    while (i < coin_count) : (i += 1) {
+        const coin = coinByIndex(i) orelse return error.Unexpected;
+        try std.testing.expectEqual(coin.supportsTransactions(), bw_coin_supports_transactions(i) != 0);
+        try std.testing.expectEqual(coin.supportsReceiveAddress(), bw_coin_supports_receive_address(i) != 0);
+        try std.testing.expectEqual(coin.supportsSend(), bw_coin_supports_send(i) != 0);
+    }
+    // An index that isn't a coin claims nothing.
+    try std.testing.expectEqual(@as(c_int, 0), bw_coin_supports_transactions(coin_count));
+    try std.testing.expectEqual(@as(c_int, 0), bw_coin_supports_receive_address(coin_count));
+    try std.testing.expectEqual(@as(c_int, 0), bw_coin_supports_send(coin_count));
+}
+
+test "bw_wallet_balance gates a managed wallet on open, an in-daemon one on nothing" {
+    var ctx: Ctx = .{ .allocator = std.testing.allocator, .home_dir = "/nonexistent/bw-test", .install_root = "" };
+    var out: BwWalletBalance = undefined;
+
+    // An index outside the registry is refused before anything is touched.
+    try std.testing.expectEqual(@as(c_int, -1), bw_wallet_balance(&ctx, coin_count, &out));
+
+    var external: usize = coin_count;
+    var in_daemon: usize = coin_count;
+    var i: usize = 0;
+    while (i < coin_count) : (i += 1) {
+        const c = coinByIndex(i) orelse continue;
+        if (c.hasExternalWallet()) {
+            if (external == coin_count) external = i;
+        } else if (in_daemon == coin_count) in_daemon = i;
+    }
+    try std.testing.expect(external < coin_count);
+    try std.testing.expect(in_daemon < coin_count);
+
+    // A managed wallet nobody has opened is refused without an RPC attempt — the
+    // wallet-rpc isn't even running, so asking would only produce a confusing
+    // transport error.
+    try std.testing.expectEqual(@as(u8, 0), ctx.wallet_open[external].load(.monotonic));
+    try std.testing.expectEqual(@as(c_int, -1), bw_wallet_balance(&ctx, external, &out));
+
+    // And the managed-wallet spelling refuses an in-daemon coin outright, so the
+    // two can't be confused for one another.
+    try std.testing.expectEqual(@as(c_int, -1), bw_ext_wallet_balance(&ctx, in_daemon, &out));
 }

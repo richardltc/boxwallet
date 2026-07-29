@@ -50,6 +50,8 @@ fn applyStagedUpdate(init: std.process.Init) void {
 // Offline unit tests live in the backend modules (no daemon, no TUI needed).
 test {
     std.testing.refAllDecls(@This());
+    _ = @import("version.zig");
+    _ = @import("registry.zig");
     _ = @import("rpc.zig");
     _ = @import("install.zig");
     _ = @import("update.zig");
