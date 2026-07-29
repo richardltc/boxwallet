@@ -289,20 +289,28 @@ static std::string humanize_bytes(uint64_t b)
 }
 
 // An amount to the coin's own precision, thousands-grouped ("1,234.56789012").
+// Amount text comes from the core, not from a local implementation. It used to
+// be a C++ snprintf plus manual comma insertion, against the TUI's printFloat
+// plus digit grouping — two implementations of one number, free to disagree on
+// rounding and on where the commas land. Now there is one.
 static std::string format_amount(double v, int decimals)
 {
-    char buf[64];
-    std::snprintf(buf, sizeof buf, "%.*f", decimals, v);
-    std::string s(buf);
-    size_t dot = s.find('.');
-    std::string whole = (dot == std::string::npos) ? s : s.substr(0, dot);
-    std::string frac = (dot == std::string::npos) ? "" : s.substr(dot);
-    bool neg = !whole.empty() && whole[0] == '-';
-    if (neg)
-        whole.erase(0, 1);
-    for (int i = static_cast<int>(whole.size()) - 3; i > 0; i -= 3)
-        whole.insert(static_cast<size_t>(i), ",");
-    return (neg ? "-" : "") + whole + frac;
+    char buf[96];
+    size_t n = bw_format_amount(v, static_cast<uint8_t>(decimals), buf, sizeof buf);
+    return std::string(buf, n);
+}
+
+// As format_amount, with trailing zeros dropped — for the Transactions column,
+// where a stack of full-precision figures is noise. This is what the TUI shows
+// there. Balances keep their full precision, so a zero one still reads as a
+// balance rather than a bare "0".
+static std::string format_amount_trimmed(double v, int decimals)
+{
+    char raw[96];
+    size_t rn = bw_format_amount(v, static_cast<uint8_t>(decimals), raw, sizeof raw);
+    char out[96];
+    size_t n = bw_trim_zeros(raw, rn, out, sizeof out);
+    return std::string(out, n);
 }
 
 // A unix timestamp as "3 hours ago". Coarse on purpose: the exact second of a
@@ -345,7 +353,7 @@ make_tx_rows(const std::vector<BwWalletTx> &txs, int decimals)
                                                              : "Mined");
         // The core sends a positive magnitude and the direction alongside it, so
         // the sign is applied here rather than guessed from the number.
-        r.amount = slint::SharedString((incoming ? "+" : "-") + format_amount(t.amount, decimals));
+        r.amount = slint::SharedString((incoming ? "+" : "-") + format_amount_trimmed(t.amount, decimals));
         r.when = slint::SharedString(relative_time(t.time));
         r.confirmations = slint::SharedString(
             t.confirmations <= 0 ? std::string("unconfirmed")

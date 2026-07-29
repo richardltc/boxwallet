@@ -75,6 +75,18 @@ size_t  bw_last_error(bw_ctx *ctx, char *buf, size_t cap);
  * itself on the password step when it sees that one. Same per-thread rule. */
 size_t  bw_last_error_code(bw_ctx *ctx, char *buf, size_t cap);
 
+/* ---- number formatting (no ctx needed) --------------------------------------
+ * Exported rather than reimplemented here so both front-ends show the same
+ * balance the same way. They did diverge once: the GUI carried its own snprintf
+ * + manual comma insertion against the TUI's printFloat + digit grouping.
+ *
+ * bw_format_amount keeps trailing zeros, so a coin's full precision always shows
+ * and a zero balance reads as a balance rather than a bare "0". bw_trim_zeros
+ * strips them for transaction lists, where a column of full-width figures is
+ * noise — don't use it on a balance. Both are cheap and safe on the UI thread. */
+size_t  bw_format_amount(double value, uint8_t decimals, char *buf, size_t cap);
+size_t  bw_trim_zeros(const char *text, size_t len, char *buf, size_t cap);
+
 /* ---- application identity (no ctx needed) -----------------------------------
  * BoxWallet's own name, version and brand colour. The version has no "v" prefix
  * — add your own. Take these rather than hardcoding: they come from the same
