@@ -6,6 +6,7 @@ const money = @import("money.zig");
 const seed_mod = @import("seed.zig");
 const walletmenu = @import("walletmenu.zig");
 const timefmt = @import("timefmt.zig");
+const status_mod = @import("status.zig");
 const models = @import("models.zig");
 const install_mod = @import("install.zig");
 const disk = @import("disk.zig");
@@ -401,7 +402,9 @@ fn cycleTab(t: DetailTab, delta: i2, has_mining: bool, has_stablecoin: bool) Det
 /// Chain sync progress. `syncing` shows a spinner ("Syncing"), `synced` a green
 /// tick ("Synced"), `idle` a red cross. Live sync polling lands later — for now
 /// this defaults to `idle`.
-const SyncState = enum { idle, syncing, synced };
+/// Chain sync state — `status.zig`'s, so the readout and the TUI can't
+/// disagree about what "syncing" means.
+const SyncState = status_mod.Sync;
 
 /// The sync spinner is a two-dot braille "puck" that circulates a rectangular
 /// track `sync_track_cells` cells wide and one cell tall: along the top edge,
@@ -521,196 +524,77 @@ const loadingPhaseText = warmup.phaseText;
 /// off. The wording alone carries the state — no spinner icon — and refreshes
 /// each poll/tick.
 fn renderStatus(a: std.mem.Allocator, act: *const Activity, brand: zz.Color) []const u8 {
-    const r = statusReadout(act);
+    const in = act.statusInput();
+    const r = status_mod.readout(in);
     const label = App.statusLabel(a, brand, "Status", r.active);
-    // On the presync/block-loading lines, append the live percentage scraped
-    // from debug.log (the only place either surfaces). Done here, not in
-    // `r.text`, so the logged-on-change status stays a static string rather
-    // than churning every poll.
-    const bp: ?u32 = if (r.presync_pct and act.presync_bp > 0)
-        act.presync_bp
-    else if (r.load_progress and act.load_pct_bp > 0)
-        act.load_pct_bp
+
+    // The appended figure — a presync/block-loading percentage, or the tilde'd
+    // block-index estimate. `status.zig` decides which (if any) this line takes,
+    // so the GUI appends the same one at the same precision; it stays out of
+    // `r.text` because the log records that verbatim on change and a live
+    // percentage would churn it every poll.
+    var sbuf: [32]u8 = undefined;
+    const suffix = status_mod.suffix(&sbuf, in, r);
+    const text = if (suffix.len == 0)
+        r.text
     else
-        null;
-    const text = if (bp) |v|
-        std.fmt.allocPrint(a, "{s} {d:.2}%", .{ r.text, @as(f64, @floatFromInt(v)) / 100.0 }) catch r.text
-    else if (r.block_index_load and act.load_eta_pct > 0)
-        // A rough, time-based estimate (elapsed vs the last load's duration), not
-        // real progress — the tilde flags it as approximate, and it holds at 99%
-        // rather than claiming done if this load overruns. Absent on the first-ever
-        // load (no prior duration → `load_eta_pct` 0), where it's just the label.
-        std.fmt.allocPrint(a, "{s} ~{d}%", .{ r.text, act.load_eta_pct }) catch r.text
-    else
-        r.text;
-    // Append the live chain height to the sync status so every coin shows how far
-    // it has reached. Skipped until a height is known (0), which also keeps it off
-    // the header-download phase where no block has been validated yet. While
-    // syncing it reads as progress toward the tip ("Syncing blocks… 123,456 of
-    // 850,000"); once synced it's the bare tip ("Synced at 850,123"). The tip is
-    // the larger of the block/header denominators (block-validation catch-up for
-    // BTC-style chains, network tip for single-height chains); if none exceeds the
-    // current height yet, it falls back to "at N" rather than a bogus "N of N".
-    // The live status text ("Syncing blocks… 123,456 of 850,000", "Waiting for
-    // peers…", "Synced at 850,123") reads in BoxWallet green — one consistent
-    // brand colour for the status update itself, rather than a per-state cyan/
-    // yellow/green. Inactive states (Not installed / Idle) keep their grey.
-    const text_col: zz.Color = if (r.active) zz.Color.hex(app_color) else r.col;
+        std.fmt.allocPrint(a, "{s}{s}", .{ r.text, suffix }) catch r.text;
+
+    // The live status text reads in BoxWallet green — one consistent brand
+    // colour for the update itself, rather than a per-state cyan/yellow/green.
+    // Inactive states (Not installed / Idle) keep their own tone's grey.
+    const text_col: zz.Color = if (r.active) zz.Color.hex(app_color) else toneColor(r.tone);
     const base = (zz.Style{}).bold(true).fg(text_col);
-    const value = if (r.show_blocks and act.blocks_cur > 0) blk: {
-        var cur_buf: [64]u8 = undefined;
-        const cur = App.formatAmount(&cur_buf, @floatFromInt(act.blocks_cur), 0);
-        const total = @max(act.blocks_total, act.headers_total);
-        if (r.sync_progress and total > act.blocks_cur) {
+
+    // The chain height, so every coin shows how far it has reached. Which form
+    // — progress toward a tip, or a bare figure — is `status.zig`'s decision;
+    // rendering it in three styled segments is ours, because nesting styles
+    // would reset the trailing figure's colour after the brand-coloured "of".
+    const value = switch (status_mod.height(in, r)) {
+        .none => base.render(a, text) catch text,
+        .at => |cur| blk: {
+            var cur_buf: [64]u8 = undefined;
+            const c = App.formatAmount(&cur_buf, @floatFromInt(cur), 0);
+            break :blk base.render(a, std.fmt.allocPrint(a, "{s} at {s}", .{ text, c }) catch text) catch text;
+        },
+        .progress => |p| blk: {
+            var cur_buf: [64]u8 = undefined;
             var tot_buf: [64]u8 = undefined;
-            const tot = App.formatAmount(&tot_buf, @floatFromInt(total), 0);
-            // "of" is tinted in the coin's brand colour, the figures either side
-            // in BoxWallet green. The segments are rendered separately because
-            // nesting styles would reset the trailing figure back to the default
-            // colour rather than green after the brand-coloured "of".
-            const lead = base.render(a, std.fmt.allocPrint(a, "{s} {s} ", .{ text, cur }) catch text) catch text;
+            const c = App.formatAmount(&cur_buf, @floatFromInt(p.cur), 0);
+            const t = App.formatAmount(&tot_buf, @floatFromInt(p.total), 0);
+            const lead = base.render(a, std.fmt.allocPrint(a, "{s} {s} ", .{ text, c }) catch text) catch text;
             const of = (zz.Style{}).bold(true).fg(brand).render(a, "of") catch "of";
-            const trail = base.render(a, std.fmt.allocPrint(a, " {s}", .{tot}) catch tot) catch tot;
+            const trail = base.render(a, std.fmt.allocPrint(a, " {s}", .{t}) catch t) catch t;
             break :blk std.fmt.allocPrint(a, "{s}{s}{s}", .{ lead, of, trail }) catch text;
-        }
-        break :blk base.render(a, std.fmt.allocPrint(a, "{s} at {s}", .{ text, cur }) catch text) catch text;
-    } else base.render(a, text) catch text;
+        },
+    };
     return std.fmt.allocPrint(a, "{s}: {s}", .{ label, value }) catch value;
 }
 
-/// A rough, time-based progress estimate for a block-index load: elapsed (`now_ns`
-/// − `start_ns`, monotonic) as a percentage of `last_ms` (the previous load's
-/// duration). 0 when either input is unknown (no estimate yet) or the clock reads
-/// backwards. Otherwise clamped to 1..99 — never 0 once underway, and never 100
-/// (only the daemon actually answering proves it's done), so an overrunning load
-/// just holds at 99%.
-fn loadEtaPercent(start_ns: i64, now_ns: i64, last_ms: u32) u8 {
-    if (start_ns == 0 or last_ms == 0) return 0;
-    const elapsed_ms = @divTrunc(now_ns - start_ns, std.time.ns_per_ms);
-    if (elapsed_ms < 0) return 0;
-    const pct = @divTrunc(elapsed_ms * 100, @as(i64, last_ms));
-    return @intCast(std.math.clamp(pct, 1, 99));
+const loadEtaPercent = status_mod.loadEtaPercent;
+const StatusReadout = status_mod.Readout;
+
+/// The status readout for this activity. A thin shim over `status_mod.readout`:
+/// `Activity.statusInput` is then the one place a field can be mis-mapped, and
+/// the snapshot also makes the readout self-consistent — this used to call
+/// `daemonState()` and then `awaitingStatus()` called it *again*, two atomic
+/// loads that could disagree inside one frame.
+fn statusReadout(act: *const Activity) StatusReadout {
+    return status_mod.readout(act.statusInput());
 }
 
-/// A coin's live status as plain data: the word(s) shown on the Status line, the
-/// colour they're painted, and whether the state counts as "active" (so the
-/// label brightens). `text` is a static, program-lifetime string — `renderStatus`
-/// styles it and the live log records it verbatim on change, so the two can't
-/// drift apart.
-const StatusReadout = struct {
-    text: []const u8,
-    col: zz.Color,
-    active: bool,
-    /// True only on the "Pre-synching headers…" line, signalling `renderStatus` to
-    /// append the live presync percentage (`Activity.presync_bp`). Kept off `text`
-    /// so the logged-on-change status stays a static string.
-    presync_pct: bool = false,
-    /// True only on the "Loading blocks…"/"Processing blocks…" lines, signalling
-    /// `renderStatus` to append the live block-loading percentage
-    /// (`Activity.load_pct_bp`). Kept off `text` for the same reason as
-    /// `presync_pct`.
-    load_progress: bool = false,
-    /// True only on the "Loading block index…" line (NovaCoin-era daemons),
-    /// signalling `renderStatus` to append a rough, time-based `~NN%` estimate
-    /// from `load_timer_start_ms`/`last_load_ms` when a prior load duration is
-    /// known. Kept off `text` for the same reason as `presync_pct`.
-    block_index_load: bool = false,
-    /// True on the syncing/synced lines, signalling `renderStatus` to append the
-    /// current chain height ("Synced at 850,123" / "Syncing blocks… 123,456 of …").
-    /// Kept off `text` (which is logged verbatim on change) for the same reason as
-    /// `presync_pct` — the height moves every poll, so baking it in would churn the
-    /// log. Suppressed by `renderStatus` until a height is known (`blocks_cur > 0`),
-    /// which also keeps it off the header-download phase where no block is validated.
-    show_blocks: bool = false,
-    /// Set with `show_blocks` on the *syncing* lines only, so `renderStatus` renders
-    /// the height as progress toward the tip ("123,456 of 850,000") rather than the
-    /// bare "at N" it uses when synced. Falls back to "at N" if no larger total is
-    /// known yet (so it never reads a nonsensical "N of N").
-    sync_progress: bool = false,
-};
-
-/// Resolve a coin's current status. Priority, highest first: installing
-/// (downloading/extracting) → not installed → starting/stopping → checking
-/// (first poll pending) → warm-up phase (Loading/Verifying/…) → waiting for peers
-/// → syncing → synced; "Idle" when the daemon is installed but off.
-fn statusReadout(act: *const Activity) StatusReadout {
-    // An install/update in flight outranks everything: it runs before the daemon
-    // exists (and before `installed` flips), so check it first.
-    switch (act.phaseOf()) {
-        .downloading => return .{ .text = "Downloading…", .col = .cyan, .active = true },
-        .extracting => return .{ .text = "Extracting…", .col = .cyan, .active = true },
-        else => {},
-    }
-
-    if (!act.installed) return .{ .text = "Not installed", .col = .brightBlack, .active = false };
-
-    return switch (act.daemonState()) {
-        .starting => .{ .text = "Starting…", .col = .cyan, .active = true },
-        .stopping => .{ .text = "Stopping…", .col = .cyan, .active = true },
-        .stopped => if (act.awaitingStatus())
-            .{ .text = "Checking…", .col = .cyan, .active = true }
-        else
-            .{ .text = "Idle", .col = .brightBlack, .active = false },
-        .running => if (act.loading_phase != .none) blk: {
-            // RPC's "-28" warm-up message only ever says the coarse "Loading
-            // block index..." for the whole block-loading window; some daemons
-            // (DigiByte) additionally log a finer-grained percentage for two
-            // sub-stages debug.log distinguishes but RPC doesn't — say so, and
-            // let `renderStatus` append the live percentage, same as presync.
-            if (act.loading_phase == .loading and act.load_stage != .none) {
-                break :blk .{
-                    .text = switch (act.load_stage) {
-                        .loading_blocks => "Loading blocks…",
-                        .processing_blocks => "Processing blocks…",
-                        .none => unreachable,
-                    },
-                    .col = .yellow,
-                    .active = true,
-                    .load_progress = true,
-                };
-            }
-            // A NovaCoin-era block-index load has no in-daemon percentage; let
-            // `renderStatus` append a rough time-based `~NN%` when a prior load
-            // duration is known.
-            if (act.loading_phase == .loading_block_index) {
-                break :blk .{
-                    .text = loadingPhaseText(act.loading_phase),
-                    .col = .yellow,
-                    .active = true,
-                    .block_index_load = true,
-                };
-            }
-            break :blk .{ .text = loadingPhaseText(act.loading_phase), .col = .yellow, .active = true };
-        } else if (act.peers == 0)
-            .{ .text = "Waiting for peers…", .col = .yellow, .active = true }
-        else if (act.sync == .syncing) blk: {
-            // Headers stream in first, then blocks validate against them. While
-            // the Headers bar is still filling we're downloading headers;
-            // otherwise we're catching the blocks up (see `inHeadersPhase`).
-            // Within the headers phase, a stalled committed-header height means
-            // the node is in Core 24+'s throwaway presync pass — say so, and let
-            // `renderStatus` append the live percentage, since the bar can't move.
-            const in_headers = act.inHeadersPhase();
-            const is_presync = in_headers and act.presync;
-            break :blk .{
-                .text = if (!in_headers)
-                    "Syncing blocks…"
-                else if (is_presync)
-                    "Pre-synching headers…"
-                else
-                    "Syncing headers…",
-                .col = .cyan,
-                .active = true,
-                .presync_pct = is_presync,
-                .show_blocks = true,
-                .sync_progress = true,
-            };
-        } else if (act.sync == .synced)
-            .{ .text = "Synced", .col = .green, .active = true, .show_blocks = true }
-        else
-            .{ .text = "Running", .col = .green, .active = true },
+/// `status_mod.Tone` → the TUI's palette. Only ever consulted for an *inactive*
+/// status: an active one reads in the brand colour regardless (see
+/// `renderStatus`), which is why the working/warning tones look unused here.
+fn toneColor(t: status_mod.Tone) zz.Color {
+    return switch (t) {
+        .idle => .brightBlack,
+        .working => .cyan,
+        .warning => .yellow,
+        .ok => .green,
     };
 }
+
 
 // Which wallet actions a coin offers, and in which state, is policy rather than
 // presentation — it lives in `walletmenu.zig` so the GUI can't reach a different
@@ -1752,13 +1636,11 @@ const Activity = struct {
     /// build an `Activity` without a coin). False pins `presync` off for coins
     /// with no such pass; true (the default) keeps Core's behaviour.
     has_header_presync: bool = true,
-    /// Previous poll's `headers_cur`, kept to tell a stalled (presync) committed-
-    /// header height from one actively climbing.
-    prev_headers_cur: u64 = 0,
-    /// Count of consecutive polls where the committed header height failed to
-    /// advance while in the headers phase. Resets to 0 the instant the height
-    /// advances; feeds the debounced (log-unconfirmed) side of `presync`.
-    presync_stall_polls: u32 = 0,
+    /// Cross-poll state for the presync inference (previous header height and the
+    /// consecutive-stall count). Lives in `status.zig` because deciding whether a
+    /// node is in Core's presync pass is inference over several polls, not
+    /// something either front-end should re-derive.
+    presync_tracker: status_mod.PresyncTracker = .{},
     /// Headers pre-sync progress in basis points (744 == 7.44%), scraped from
     /// `debug.log` (the only place the presync pass exposes it). Appended to the
     /// "Pre-synching headers…" status line at render time; 0 when unknown.
@@ -2689,14 +2571,11 @@ const Activity = struct {
         // non-Core lineage (Ergo) every header is committed as it arrives, so a
         // header height that only creeps forward is just a node sitting at the
         // tip with blocks still to fetch — not a presync freeze.
-        const in_headers_phase = self.inHeadersPhase();
-        const stalled = self.has_header_presync and self.peers > 0 and
-            in_headers_phase and self.headers_cur <= self.prev_headers_cur;
-        self.presync_stall_polls = if (stalled) self.presync_stall_polls + 1 else 0;
-        const log_confirmed = self.has_header_presync and in_headers_phase and
-            self.poll_presync_found.load(.monotonic) != 0;
-        self.presync = log_confirmed or self.presync_stall_polls >= presync_stall_threshold;
-        self.prev_headers_cur = self.headers_cur;
+        self.presync = self.presync_tracker.update(
+            self.statusInput(),
+            self.has_header_presync,
+            self.poll_presync_found.load(.monotonic) != 0,
+        );
         self.presync_bp = self.poll_presync_bp.load(.monotonic);
 
         self.behind_secs = self.poll_behind.load(.monotonic);
@@ -2720,8 +2599,41 @@ const Activity = struct {
     /// only ever reclassifies the tail of the headers phase, where blocks are the
     /// long pole anyway.
     fn inHeadersPhase(self: *const Activity) bool {
-        if (self.headers_total == 0) return false;
-        return self.headers_cur + header_tip_slack < self.headers_total;
+        return status_mod.inHeadersPhase(self.statusInput());
+    }
+
+    /// Snapshot the fields the status readout reads. The single point where an
+    /// `Activity` field could be mapped to the wrong `status_mod.Input` one — which
+    /// is why the integration test that renders a full pane is the regression
+    /// net for this function, not the pure tests in `status.zig`.
+    fn statusInput(self: *const Activity) status_mod.Input {
+        return .{
+            .installing = switch (self.phaseOf()) {
+                .downloading => .downloading,
+                .extracting => .extracting,
+                else => .idle,
+            },
+            .installed = self.installed,
+            .daemon = switch (self.daemonState()) {
+                .stopped => .stopped,
+                .starting => .starting,
+                .running => .running,
+                .stopping => .stopping,
+            },
+            .awaiting_status = self.awaitingStatus(),
+            .loading_phase = self.loading_phase,
+            .load_stage = self.load_stage,
+            .load_pct_bp = self.load_pct_bp,
+            .load_eta_pct = self.load_eta_pct,
+            .peers = self.peers,
+            .sync = self.sync,
+            .presync = self.presync,
+            .presync_bp = self.presync_bp,
+            .headers_cur = self.headers_cur,
+            .headers_total = self.headers_total,
+            .blocks_cur = self.blocks_cur,
+            .blocks_total = self.blocks_total,
+        };
     }
 
     /// Whether a just-reaped poll should promote the daemon to `.running`. A reply —
@@ -3441,14 +3353,14 @@ fn pickWalletError(tail: []const u8) []const u8 {
 /// presync from a non-advancing header height, when `debug.log` doesn't
 /// confirm it directly. One stalled poll is noise (peer latency); this many in
 /// a row is a real freeze.
-const presync_stall_threshold: u32 = 2;
+const presync_stall_threshold = status_mod.presync_stall_threshold;
 
 /// How far short of the network tip the local header height may sit while still
 /// counting as "headers done" (see `Activity.inHeadersPhase`). Sized to absorb
 /// the routine lag between a peer announcing a block and us committing its
 /// header — tens of blocks on a fast chain — without swallowing a real header
 /// download, which is orders of magnitude further behind.
-const header_tip_slack: u64 = 100;
+const header_tip_slack = status_mod.header_tip_slack;
 
 /// How many of a coin's most recent transactions the Transactions tab caches
 /// and fetches per poll. Bounds both the RPC page size and the fixed-capacity
@@ -10051,37 +9963,6 @@ test "renderStatus appends the presync percentage only on the presync line" {
     const no_pct = renderStatus(a, &act, brand);
     try std.testing.expect(std.mem.indexOf(u8, no_pct, "Pre-synching headers…") != null);
     try std.testing.expect(std.mem.indexOf(u8, no_pct, "%") == null);
-}
-
-test "parseLoadProgress extracts the freshest block-loading stage/percentage" {
-    // The two exact lines observed in a DigiByte debug.log.
-    const loading = parseLoadProgress("init message: Loading blocks... 10%\n");
-    try std.testing.expectEqual(LoadStage.loading_blocks, loading.stage);
-    try std.testing.expectEqual(@as(u32, 1000), loading.pct_bp);
-
-    const processing = parseLoadProgress("2026-07-01T14:04:26Z LoadBlockIndex: Processing blocks... 10%\n");
-    try std.testing.expectEqual(LoadStage.processing_blocks, processing.stage);
-    try std.testing.expectEqual(@as(u32, 1000), processing.pct_bp);
-
-    // The freshest line wins when both stages appear in the tail (a real
-    // transition from loading to processing).
-    const tail =
-        \\init message: Loading blocks... 40%
-        \\2026-07-01T14:04:20Z LoadBlockIndex: Processing blocks... 5%
-        \\2026-07-01T14:04:26Z LoadBlockIndex: Processing blocks... 12%
-    ;
-    const latest = parseLoadProgress(tail);
-    try std.testing.expectEqual(LoadStage.processing_blocks, latest.stage);
-    try std.testing.expectEqual(@as(u32, 1200), latest.pct_bp);
-
-    // No matching line at all → `.none`/0.
-    const none = parseLoadProgress("2026-07-01T14:04:26Z UpdateTip: new best=deadbeef height=28817\n");
-    try std.testing.expectEqual(LoadStage.none, none.stage);
-    try std.testing.expectEqual(@as(u32, 0), none.pct_bp);
-
-    // A trailing "%" with no digits before it isn't a false match.
-    const malformed = parseLoadProgress("init message: Loading blocks... %\n");
-    try std.testing.expectEqual(LoadStage.none, malformed.stage);
 }
 
 test "renderStatus shows the block-loading sub-stage and percentage during .loading" {
