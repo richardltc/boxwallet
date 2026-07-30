@@ -536,6 +536,13 @@ static void apply_coin_metadata(const AppWindow *ui, bw_ctx *ctx, int idx)
     ui->set_wallet_stage(0);
     ui->set_wallet_seed_words(slint::SharedString(""));
     bw_ext_wallet_seed_discard(ctx);
+    // Settings are per-coin and static; a worker fills them in just after this
+    // (see on_coin_selected). Cleared here so the tab never shows the coin we
+    // just left — a wallet path is exactly the sort of thing someone copies.
+    ui->set_wallet_file_path(slint::SharedString(""));
+    ui->set_wallet_keys_path(slint::SharedString(""));
+    ui->set_prune_mode(bw_prune_mode(idx));
+    ui->set_prune_text(slint::SharedString(""));
     ui->set_balance_total(slint::SharedString("—"));
     ui->set_balance_avail(slint::SharedString("—"));
     ui->set_rescan_frac(0);
@@ -769,6 +776,47 @@ int main()
             if (idx >= 0)
                 apply_coin_metadata(&**h, ctx, idx);
         }
+        if (idx < 0)
+            return;
+        // The Settings readouts touch the disk (a path resolve and a conf
+        // parse), so they go on a worker rather than the click handler. They're
+        // static per coin, which is why this fires on selection instead of
+        // riding the 2s poll and re-parsing a conf that hasn't changed.
+        std::thread([weak, ctx, idx]() {
+            WorkerGuard wg;
+            char wf[512];
+            size_t wn = bw_wallet_file_path(ctx, static_cast<size_t>(idx), wf, sizeof wf);
+            char wk[512];
+            size_t kn = bw_wallet_keys_path(ctx, static_cast<size_t>(idx), wk, sizeof wk);
+
+            std::string prune;
+            if (bw_prune_mode(static_cast<size_t>(idx)) >= 0) {
+                // -1 is "no key in the conf" — never configured, which reads
+                // differently from a deliberate full node and is what
+                // bw_prune_value_text spells out.
+                int64_t v = -1;
+                (void)bw_prune_current(ctx, static_cast<size_t>(idx), &v);
+                char pb[64];
+                size_t pn = bw_prune_value_text(static_cast<size_t>(idx), v, pb, sizeof pb);
+                prune.assign(pb, pn);
+            }
+
+            post_to_ui([weak, idx,
+                        file = std::string(wf, wn),
+                        keys = std::string(wk, kn),
+                        prune]() {
+                auto h = weak.lock();
+                if (!h)
+                    return;
+                // Selection moved on while we read — these belong to a coin the
+                // user is no longer looking at.
+                if (g_selected.load() != idx)
+                    return;
+                (*h)->set_wallet_file_path(slint::SharedString(file));
+                (*h)->set_wallet_keys_path(slint::SharedString(keys));
+                (*h)->set_prune_text(slint::SharedString(prune));
+            });
+        }).detach();
     });
 
     // Keyboard nav (Up/Down), the GUI's answer to the TUI's j/k. Slint can't

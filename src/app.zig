@@ -1093,24 +1093,6 @@ const parseDollarsToCents = money.parseDollarsToCents;
 const formatCents = money.formatCents;
 const formatMicroUsd = money.formatMicroUsd;
 
-/// `Coin.Pruning.Mode` → `money.PruneMode`. The two enums are deliberately
-/// separate — `money.zig` stays free of the vtable so it can serve the C ABI —
-/// but that means this conversion is by ordinal, and a mode appended to one list
-/// and not the other would silently relabel someone's prune setting. The guard
-/// makes that a build failure instead.
-fn pruneMode(mode: Coin.Pruning.Mode) money.PruneMode {
-    comptime {
-        const a = @typeInfo(Coin.Pruning.Mode).@"enum".fields;
-        const b = @typeInfo(money.PruneMode).@"enum".fields;
-        if (a.len != b.len)
-            @compileError("Coin.Pruning.Mode and money.PruneMode have drifted apart");
-        for (a, b) |fa, fb| {
-            if (fa.value != fb.value or !std.mem.eql(u8, fa.name, fb.name))
-                @compileError("Coin.Pruning.Mode." ++ fa.name ++ " does not line up with money.PruneMode." ++ fb.name);
-        }
-    }
-    return @enumFromInt(@intFromEnum(mode));
-}
 
 /// The prune prompt — a small modal shown the first time a prune-capable coin's
 /// daemon starts (Bitcoin, Litecoin, Monero), asking how the blockchain should be
@@ -7789,7 +7771,7 @@ pub const App = struct {
         // Copied onto the arena before styling: `pruneValueText` returns a slice
         // into `buf` for the size cases, and the `catch text` fallbacks below
         // would otherwise hand back a pointer into this dead stack frame.
-        const text = a.dupe(u8, money.pruneValueText(&buf, pruneMode(mode), prune_mib)) catch "?";
+        const text = a.dupe(u8, money.pruneValueText(&buf, mode, prune_mib)) catch "?";
         if (prune_mib < 0) return (zz.Style{}).fg(.brightBlack).render(a, text) catch text;
         return (zz.Style{}).dim(true).render(a, text) catch text;
     }
