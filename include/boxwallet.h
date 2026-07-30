@@ -275,6 +275,72 @@ typedef struct {
 } BwDiskUsage;
 int     bw_disk_usage(bw_ctx *ctx, size_t idx, BwDiskUsage *out);
 
+/* ---- the in-daemon wallet menu -----------------------------------------------
+ * Which actions a wallet state permits is decided in the core, by the same
+ * module the TUI asks — so DON'T enumerate actions here. Call bw_wallet_menu and
+ * render what comes back.
+ *
+ * Pass the BW_WSEC_* value you already have rather than making the core re-read
+ * it: your padlock is drawn from that same value, and a menu describing a
+ * different state than the glyph beside it is worse than a stale one. An
+ * BW_WSEC_UNKNOWN state returns 0 actions — a menu built before the daemon has
+ * said what it holds is a menu that can destroy a wallet.
+ *
+ * Every action takes a passphrase OR a path, never both; ask
+ * bw_wallet_action_needs_password / _needs_path to decide which prompt to raise.
+ * bw_wallet_action_sets_new_password marks the one that SETS a credential
+ * (encrypt) — confirm it twice and refuse on mismatch, because there is no
+ * recovering a wallet encrypted with a password nobody knows.
+ *
+ * Labels come from bw_wallet_action_label, never from here: "Restore from key
+ * dump" and "Restore from wallet.dat" name the FILE each takes, BitcoinZ offers
+ * both at once, and picking the wrong one is what ends in an empty wallet. */
+#define BW_WCAP_ENCRYPT         (1 << 0)
+#define BW_WCAP_BACKUP          (1 << 1)
+#define BW_WCAP_IMPORT          (1 << 2)
+#define BW_WCAP_RESTORE_OFFLINE (1 << 3)
+#define BW_WCAP_PROOF_OF_STAKE  (1 << 4)  /* offers unlock-for-staking */
+#define BW_WCAP_STAKE_ACTION    (1 << 5)  /* explicit stake (Salvium) */
+int     bw_coin_wallet_caps(size_t idx);
+
+#define BW_WA_ENCRYPT              0
+#define BW_WA_UNLOCK               1
+#define BW_WA_STAKE                2  /* unlock FOR staking */
+#define BW_WA_LOCK                 3
+#define BW_WA_BACKUP               4
+#define BW_WA_RESTORE              5  /* key dump, daemon running */
+#define BW_WA_RESTORE_FILE_OFFLINE 6  /* wallet.dat swap, daemon STOPPED */
+size_t  bw_wallet_menu(size_t idx, int wallet_sec, uint8_t *out, size_t cap);
+size_t  bw_wallet_action_label(uint8_t action, char *buf, size_t cap);
+int     bw_wallet_action_needs_password(uint8_t action);
+int     bw_wallet_action_needs_path(uint8_t action);
+int     bw_wallet_action_sets_new_password(uint8_t action);
+
+/* All of these block on RPC or the disk — worker thread.
+ *
+ * bw_wallet_encrypt: 0 ok, -1. Most daemons shut down after encrypting, which is
+ * normal and not a failure.
+ *
+ * bw_wallet_backup generates a timestamped destination under the install root
+ * (no save dialog; the timestamp dodges the daemon's refusal to overwrite) and
+ * writes that path into buf, returning its length or 0 on failure. THE FILE
+ * CONTAINS PRIVATE KEYS — say so, and say where it went.
+ *
+ * bw_wallet_restore_file_offline REFUSES while the daemon is alive, because a
+ * daemon holds its wallet open and would overwrite the file on shutdown. Stop it
+ * first: unlike the TUI, this does not stop and restart for you. */
+int     bw_wallet_encrypt(bw_ctx *ctx, size_t idx, const uint8_t *passphrase, size_t len);
+size_t  bw_wallet_backup(bw_ctx *ctx, size_t idx, char *buf, size_t cap);
+int     bw_wallet_import_file(bw_ctx *ctx, size_t idx, const char *src_path);
+int     bw_wallet_restore_file_offline(bw_ctx *ctx, size_t idx, const char *src_path);
+
+/* Salvium's explicit stake. Same tri-state as bw_wallet_send: 0 broadcast (out =
+ * txid), 1 rejected (out = the daemon's own reason), -1 transport failure.
+ * bw_stake_hint is the coin's description of what staking commits to — show it
+ * at the confirm step. */
+int     bw_wallet_stake(bw_ctx *ctx, size_t idx, double amount, char *out, size_t cap);
+size_t  bw_stake_hint(size_t idx, char *buf, size_t cap);
+
 /* ---- settings: wallet file and pruning ---------------------------------------
  * bw_wallet_file_path returns 0 when the node manages the wallet itself and
  * there is no single file to name (Ergo, Epic). bw_wallet_keys_path returns the

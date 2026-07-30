@@ -1927,6 +1927,296 @@ export fn bw_mining_failure_text(err_name: ?[*:0]const u8, buf: ?[*]u8, cap: usi
 
 // ---- disk usage (for the coin's "disk used" gauge) --------------------------
 
+// ---- the in-daemon wallet menu ----------------------------------------------
+//
+// Which actions a wallet state permits is decided by `walletmenu.zig`, the same
+// module the TUI asks, so the two front-ends cannot offer different things. The
+// GUI never enumerates actions itself: it calls `bw_wallet_menu` and renders
+// what comes back.
+
+/// What this coin's daemon can do with its wallet, as `BW_WCAP_*` bits. 0 for a
+/// coin with no in-daemon wallet at all. Cheap; UI-thread safe.
+pub const bw_wcap_encrypt: c_int = 1 << 0;
+pub const bw_wcap_backup: c_int = 1 << 1;
+pub const bw_wcap_import: c_int = 1 << 2;
+pub const bw_wcap_restore_offline: c_int = 1 << 3;
+pub const bw_wcap_proof_of_stake: c_int = 1 << 4;
+pub const bw_wcap_stake_action: c_int = 1 << 5;
+
+export fn bw_coin_wallet_caps(idx: usize) c_int {
+    const coin = coinByIndex(idx) orelse return 0;
+    if (!coin.supportsWallet()) return 0;
+    var flags: c_int = 0;
+    if (coin.supportsWalletEncrypt()) flags |= bw_wcap_encrypt;
+    if (coin.supportsWalletBackup()) flags |= bw_wcap_backup;
+    if (coin.supportsWalletImport()) flags |= bw_wcap_import;
+    if (coin.supportsWalletRestoreOffline()) flags |= bw_wcap_restore_offline;
+    if (coin.isProofOfStake()) flags |= bw_wcap_proof_of_stake;
+    if (coin.supportsStakeAction()) flags |= bw_wcap_stake_action;
+    return flags;
+}
+
+/// The actions permitted for `wallet_sec` (a `BW_WSEC_*` value), written into
+/// `out` in display order; returns how many. 0 means no menu — which is the
+/// answer for `BW_WSEC_UNKNOWN`, because a menu built before the daemon has said
+/// what it holds is a menu that can destroy a wallet.
+///
+/// Pass the security value you already have rather than having this re-read it:
+/// the caller's padlock is drawn from that same value, and a menu describing a
+/// different state than the glyph beside it would be worse than a stale one.
+/// Cheap and pure; UI-thread safe.
+export fn bw_wallet_menu(idx: usize, wallet_sec: c_int, out: ?*u8, cap: usize) usize {
+    const coin = coinByIndex(idx) orelse return 0;
+    const o = out orelse return 0;
+    if (!coin.supportsWallet()) return 0;
+    if (wallet_sec < 0 or wallet_sec > @intFromEnum(models.WalletSecurity.unlocked_for_staking)) return 0;
+    const state: models.WalletSecurity = @enumFromInt(wallet_sec);
+
+    var buf: [walletmenu.max_options]walletmenu.Action = undefined;
+    const n = @min(walletmenu.optionsFor(state, .of(coin), &buf), cap);
+    const dst = @as([*]u8, @ptrCast(o))[0..n];
+    for (dst, buf[0..n]) |*d, act| d.* = @intFromEnum(act);
+    return n;
+}
+
+/// The menu label for an action ordinal. 0 for an unknown one.
+///
+/// Taken from here, never written in the UI: "Restore from key dump" and
+/// "Restore from wallet.dat" name the *file each takes*, and BitcoinZ offers
+/// both at once — picking the wrong one is what ends in an empty wallet.
+export fn bw_wallet_action_label(action: u8, buf: ?[*]u8, cap: usize) usize {
+    const b = buf orelse return 0;
+    if (action > @intFromEnum(walletmenu.Action.restore_file_offline)) return 0;
+    const act: walletmenu.Action = @enumFromInt(action);
+    return copyOut(b[0..cap], act.label());
+}
+
+/// Whether the action needs a passphrase (1) or a filesystem path (1) — ask both
+/// to decide which prompt to raise. Every action takes one or the other, never
+/// both. `bw_wallet_action_sets_new_password` marks the one that *sets* a
+/// credential, which the caller must confirm twice: a typo when encrypting a
+/// wallet for the first time makes the funds unrecoverable, where a typo when
+/// merely unlocking just fails and is retried.
+export fn bw_wallet_action_needs_password(action: u8) c_int {
+    if (action > @intFromEnum(walletmenu.Action.restore_file_offline)) return 0;
+    const act: walletmenu.Action = @enumFromInt(action);
+    return if (act.needsPassword()) 1 else 0;
+}
+
+export fn bw_wallet_action_needs_path(action: u8) c_int {
+    if (action > @intFromEnum(walletmenu.Action.restore_file_offline)) return 0;
+    const act: walletmenu.Action = @enumFromInt(action);
+    return if (act.needsPath()) 1 else 0;
+}
+
+export fn bw_wallet_action_sets_new_password(action: u8) c_int {
+    if (action > @intFromEnum(walletmenu.Action.restore_file_offline)) return 0;
+    const act: walletmenu.Action = @enumFromInt(action);
+    return if (act.setsNewPassword()) 1 else 0;
+}
+
+/// Encrypt the wallet with `passphrase`: 0 ok, -1 (`bw_last_error` has why).
+///
+/// This **sets** a new credential, so the caller must have asked for it twice
+/// and refused on mismatch before getting here — there is no recovering a wallet
+/// encrypted with a password nobody knows. The passphrase is copied into a
+/// bounded buffer and wiped on every return path; it is never stored.
+///
+/// Most daemons shut down after encrypting, which is normal and not a failure.
+export fn bw_wallet_encrypt(ctx: ?*Ctx, idx: usize, passphrase: ?[*]const u8, len: usize) c_int {
+    const c = ctx orelse return -1;
+    const coin = coinByIndex(idx) orelse return -1;
+    if (!coin.supportsWalletEncrypt()) {
+        c.setError("This coin's daemon can't encrypt its wallet.");
+        c.setErrorCode("Unsupported");
+        return -1;
+    }
+    const p = passphrase orelse return -1;
+
+    var pw_buf: [wallet_pw_max]u8 = undefined;
+    const n = @min(len, pw_buf.len);
+    @memcpy(pw_buf[0..n], p[0..n]);
+    defer @memset(pw_buf[0..n], 0); // our copy is gone on every path
+
+    var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const io = sharedIo();
+
+    const auth = ctxAuth(a, io, coin, c) catch |err| {
+        c.setError(@errorName(err));
+        return -1;
+    };
+    coin.walletEncrypt(a, auth, pw_buf[0..n]) catch |err| {
+        c.setError(@errorName(err));
+        c.setErrorCode(@errorName(err));
+        return -1;
+    };
+    return 0;
+}
+
+/// Back the wallet up to a fresh timestamped key dump under the install root,
+/// writing the path into `buf`; returns its length, or 0 on failure.
+///
+/// The destination is generated rather than asked for, matching the TUI: the
+/// timestamp sidesteps the daemon's refusal to overwrite an existing file, and
+/// it means no save dialog. **The file contains private keys** — tell the user
+/// where it went and what it is.
+export fn bw_wallet_backup(ctx: ?*Ctx, idx: usize, buf: ?[*]u8, cap: usize) usize {
+    const c = ctx orelse return 0;
+    const b = buf orelse return 0;
+    const coin = coinByIndex(idx) orelse return 0;
+    if (!coin.supportsWalletBackup()) {
+        c.setError("This coin's daemon can't export a key dump.");
+        return 0;
+    }
+
+    var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const io = sharedIo();
+
+    var path_buf: [512]u8 = undefined;
+    const path = std.fmt.bufPrint(&path_buf, "{s}{c}{s}-wallet-backup-{d}.txt", .{
+        c.install_root,
+        std.fs.path.sep,
+        coin.coinNameAbbrev(),
+        std.Io.Timestamp.now(io, .real).toSeconds(),
+    }) catch {
+        c.setError("couldn't build a backup path");
+        return 0;
+    };
+
+    const auth = ctxAuth(a, io, coin, c) catch |err| {
+        c.setError(@errorName(err));
+        return 0;
+    };
+    coin.walletBackup(a, auth, path) catch |err| {
+        c.setError(@errorName(err));
+        c.setErrorCode(@errorName(err));
+        return 0;
+    };
+    return copyOut(b[0..cap], path);
+}
+
+/// Restore from a bitcoin-core key dump, with the daemon running: 0 ok, -1.
+/// Takes the *text* file `bw_wallet_backup` produces — not a binary wallet.dat.
+export fn bw_wallet_import_file(ctx: ?*Ctx, idx: usize, src_path: ?[*:0]const u8) c_int {
+    const c = ctx orelse return -1;
+    const coin = coinByIndex(idx) orelse return -1;
+    const src = src_path orelse return -1;
+    if (!coin.supportsWalletImport()) {
+        c.setError("This coin's daemon can't import a key dump.");
+        c.setErrorCode("Unsupported");
+        return -1;
+    }
+
+    var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const io = sharedIo();
+
+    const auth = ctxAuth(a, io, coin, c) catch |err| {
+        c.setError(@errorName(err));
+        return -1;
+    };
+    coin.walletImportFile(a, auth, std.mem.span(src)) catch |err| {
+        c.setError(@errorName(err));
+        c.setErrorCode(@errorName(err));
+        return -1;
+    };
+    return 0;
+}
+
+/// Restore by swapping in a binary wallet file **with the daemon stopped**:
+/// 0 ok, -1 (`bw_last_error` has why).
+///
+/// Refuses while the daemon is alive rather than doing it anyway. A daemon holds
+/// its wallet open and would overwrite the file we just put there on shutdown,
+/// so the swap has to happen while nothing owns it — and the honest failure is
+/// far better than a restore that silently doesn't take.
+///
+/// Unlike the TUI, this does not stop and restart the daemon for you; stop it
+/// first. That orchestration is a separate piece of work.
+export fn bw_wallet_restore_file_offline(ctx: ?*Ctx, idx: usize, src_path: ?[*:0]const u8) c_int {
+    const c = ctx orelse return -1;
+    const coin = coinByIndex(idx) orelse return -1;
+    const src = src_path orelse return -1;
+    if (!coin.supportsWalletRestoreOffline()) {
+        c.setError("This coin has no offline wallet-file restore.");
+        c.setErrorCode("Unsupported");
+        return -1;
+    }
+
+    var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const io = sharedIo();
+
+    if (proc.alive(io, coin.daemonFile())) {
+        c.setError("Stop the daemon before restoring a wallet file — it holds the wallet open.");
+        c.setErrorCode("DaemonRunning");
+        return -1;
+    }
+
+    coin.walletRestoreFileOffline(a, c.home_dir, std.mem.span(src)) catch |err| {
+        c.setError(@errorName(err));
+        c.setErrorCode(@errorName(err));
+        return -1;
+    };
+    return 0;
+}
+
+/// Stake `amount` (Salvium's explicit stake action). Same tri-state as
+/// `bw_wallet_send`: 0 broadcast (`out` = txid), 1 the daemon rejected it
+/// (`out` = its own reason), -1 transport failure.
+export fn bw_wallet_stake(ctx: ?*Ctx, idx: usize, amount: f64, out: ?[*]u8, cap: usize) c_int {
+    const c = ctx orelse return -1;
+    const o = out orelse return -1;
+    const coin = coinByIndex(idx) orelse return -1;
+    if (!coin.supportsStakeAction()) {
+        c.setError("This coin has no stake action.");
+        c.setErrorCode("Unsupported");
+        return -1;
+    }
+
+    var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const io = sharedIo();
+
+    c.wallet_mtx.lockUncancelable(io);
+    defer c.wallet_mtx.unlock(io);
+
+    const auth = walletAuth(a, io, coin, c, idx) catch |err| {
+        c.setError(@errorName(err));
+        return -1;
+    };
+    const res = coin.walletStake(a, auth, amount) catch |err| {
+        c.setError(@errorName(err));
+        c.setErrorCode(@errorName(err));
+        return -1;
+    };
+    return switch (res) {
+        .ok => |txid| blk: {
+            _ = copyOut(o[0..cap], txid);
+            break :blk 0;
+        },
+        .failed => |reason| blk: {
+            _ = copyOut(o[0..cap], reason);
+            break :blk 1;
+        },
+    };
+}
+
+/// The coin's own description of what staking commits to (lock term, etc.), for
+/// the confirm step. 0 when it has nothing to add. Cheap; UI-thread safe.
+export fn bw_stake_hint(idx: usize, buf: ?[*]u8, cap: usize) usize {
+    const b = buf orelse return 0;
+    const coin = coinByIndex(idx) orelse return 0;
+    return copyOut(b[0..cap], coin.stakeHint());
+}
+
 // ---- settings: wallet file and pruning --------------------------------------
 
 /// Where this coin's wallet file lives, written into `buf`; returns its length,
@@ -2823,6 +3113,108 @@ test "the shared Io leaves exactly one SIGIO handler installed for the process" 
     try std.testing.expect(handler != null);
     // SIG_DFL is 0; anything else means a handler is installed.
     try std.testing.expect(@intFromPtr(handler.?) != 0);
+}
+
+test "bw_wallet_menu returns exactly what the shared policy decides" {
+    // The whole point of the export is that the GUI can't reach a different
+    // answer from the TUI, so this compares it against the module both call
+    // rather than against a hand-written expectation.
+    var out: [walletmenu.max_options]u8 = undefined;
+    var want: [walletmenu.max_options]walletmenu.Action = undefined;
+
+    var i: usize = 0;
+    while (i < coin_count) : (i += 1) {
+        const coin = coinByIndex(i) orelse return error.Unexpected;
+        for ([_]models.WalletSecurity{
+            .unknown, .unencrypted, .locked, .unlocked, .unlocked_for_staking,
+        }) |state| {
+            const sec: c_int = @intFromEnum(state);
+            const n = bw_wallet_menu(i, sec, &out[0], out.len);
+            if (!coin.supportsWallet()) {
+                try std.testing.expectEqual(@as(usize, 0), n);
+                continue;
+            }
+            const wn = walletmenu.optionsFor(state, .of(coin), &want);
+            try std.testing.expectEqual(wn, n);
+            for (out[0..n], want[0..wn]) |got, exp| {
+                try std.testing.expectEqual(@intFromEnum(exp), got);
+            }
+        }
+        // An unknown state offers nothing, for every coin — a menu built before
+        // the daemon has said what it holds can destroy a wallet.
+        try std.testing.expectEqual(
+            @as(usize, 0),
+            bw_wallet_menu(i, @intFromEnum(models.WalletSecurity.unknown), &out[0], out.len),
+        );
+    }
+
+    // Out-of-range states are refused rather than folded onto a real one.
+    try std.testing.expectEqual(@as(usize, 0), bw_wallet_menu(0, -1, &out[0], out.len));
+    try std.testing.expectEqual(@as(usize, 0), bw_wallet_menu(0, 99, &out[0], out.len));
+    try std.testing.expectEqual(@as(usize, 0), bw_wallet_menu(coin_count, 2, &out[0], out.len));
+}
+
+test "every action a menu can return is labelled and answerable" {
+    // A row the caller can't label or route is a row it can't render.
+    var buf: [64]u8 = undefined;
+    var out: [walletmenu.max_options]u8 = undefined;
+    var seen = [_]bool{false} ** 7;
+
+    var i: usize = 0;
+    while (i < coin_count) : (i += 1) {
+        for ([_]models.WalletSecurity{ .unencrypted, .locked, .unlocked, .unlocked_for_staking }) |state| {
+            const n = bw_wallet_menu(i, @intFromEnum(state), &out[0], out.len);
+            for (out[0..n]) |a| {
+                try std.testing.expect(a < seen.len);
+                seen[a] = true;
+                try std.testing.expect(bw_wallet_action_label(a, &buf, buf.len) > 0);
+                // Exactly one of the two prompts, never both and never neither.
+                const pw = bw_wallet_action_needs_password(a) != 0;
+                const path = bw_wallet_action_needs_path(a) != 0;
+                try std.testing.expect(!(pw and path));
+                // Only a credential-setting action asks for confirmation.
+                if (bw_wallet_action_sets_new_password(a) != 0) try std.testing.expect(pw);
+            }
+        }
+    }
+    // Encrypt is the only action that sets a password, and it must be reachable
+    // — if the registry stopped surfacing it, wallets could never be encrypted.
+    try std.testing.expect(seen[@intFromEnum(walletmenu.Action.encrypt)]);
+    try std.testing.expectEqual(@as(c_int, 1), bw_wallet_action_sets_new_password(@intFromEnum(walletmenu.Action.encrypt)));
+    try std.testing.expectEqual(@as(c_int, 0), bw_wallet_action_sets_new_password(@intFromEnum(walletmenu.Action.unlock)));
+    // An ordinal past the end is refused rather than aliasing onto a real one.
+    try std.testing.expectEqual(@as(usize, 0), bw_wallet_action_label(99, &buf, buf.len));
+}
+
+test "wallet caps track the vtable, and unsupported actions are refused" {
+    var ctx: Ctx = .{ .allocator = std.testing.allocator, .home_dir = "/nonexistent/bw-test", .install_root = "" };
+    var i: usize = 0;
+    while (i < coin_count) : (i += 1) {
+        const coin = coinByIndex(i) orelse return error.Unexpected;
+        const caps = bw_coin_wallet_caps(i);
+        if (!coin.supportsWallet()) {
+            try std.testing.expectEqual(@as(c_int, 0), caps);
+            continue;
+        }
+        try std.testing.expectEqual(coin.supportsWalletEncrypt(), caps & bw_wcap_encrypt != 0);
+        try std.testing.expectEqual(coin.supportsWalletBackup(), caps & bw_wcap_backup != 0);
+        try std.testing.expectEqual(coin.supportsWalletImport(), caps & bw_wcap_import != 0);
+        try std.testing.expectEqual(coin.supportsWalletRestoreOffline(), caps & bw_wcap_restore_offline != 0);
+
+        // A coin whose daemon can't do a thing must refuse it rather than
+        // attempting an RPC that can only fail — BitcoinZ ships encryptwallet
+        // disabled, and offering it would be offering a guaranteed failure.
+        if (!coin.supportsWalletEncrypt()) {
+            const pw = "hunter2";
+            try std.testing.expectEqual(@as(c_int, -1), bw_wallet_encrypt(&ctx, i, pw.ptr, pw.len));
+            try std.testing.expectEqualStrings("Unsupported", ctx.errorCode());
+        }
+        if (!coin.supportsStakeAction()) {
+            var o: [64]u8 = undefined;
+            try std.testing.expectEqual(@as(c_int, -1), bw_wallet_stake(&ctx, i, 1.0, &o, o.len));
+        }
+    }
+    ctx.clearError();
 }
 
 test "the prune exports agree with the vtable about which coins prune" {

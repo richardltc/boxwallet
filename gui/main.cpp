@@ -489,6 +489,7 @@ static void apply_coin_metadata(const AppWindow *ui, bw_ctx *ctx, int idx)
     // Whether a send can go through is live state, not metadata: it needs the
     // wallet unlocked, which only the poll knows. Start closed.
     ui->set_can_send(false);
+    ui->set_wallet_menu_count(0);
     ui->set_installed(bw_is_installed(ctx, idx) != 0);
     refresh_update_state(ui, ctx, idx);
 
@@ -577,6 +578,13 @@ static void apply_coin_metadata(const AppWindow *ui, bw_ctx *ctx, int idx)
 // g_selected: the user can move the nav while a modal is up, and applying a
 // prune choice to the wrong coin would rewrite the wrong conf.
 static int g_prune_coin = -1;
+
+// The in-daemon wallet action in flight: which coin, which action ordinal, and
+// the menu we last showed. Like the prune dialog, the action targets the coin it
+// was opened FOR — the nav stays live behind a modal.
+static int g_wa_coin = -1;
+static uint8_t g_wa_action = 0;
+static std::vector<uint8_t> g_wa_menu;
 
 static std::string g_browse_path;
 static std::vector<BrowseEntry> g_entries;
@@ -1068,6 +1076,188 @@ int main()
             return;
         }
         offer_accel_or_launch(coin);
+    });
+
+    // ---- in-daemon wallet menu ----
+    // The rows come from bw_wallet_menu; this side renders them and routes the
+    // pick. It never decides what a wallet state permits.
+    ui->on_wallet_menu_open([weak, ctx]() {
+        auto h = weak.lock();
+        if (!h)
+            return;
+        int coin = g_selected.load();
+        if (coin < 0)
+            return;
+        uint8_t acts[8];
+        size_t n = bw_wallet_menu(static_cast<size_t>(coin), (*h)->get_wallet_sec(),
+                                  acts, sizeof acts);
+        if (n == 0)
+            return; // nothing this state permits — don't open an empty dialog
+        g_wa_coin = coin;
+        g_wa_menu.assign(acts, acts + n);
+
+        std::vector<slint::SharedString> rows;
+        for (size_t i = 0; i < n; ++i) {
+            char lb[64] = {0};
+            size_t ln = bw_wallet_action_label(acts[i], lb, sizeof lb);
+            rows.push_back(slint::SharedString(std::string_view(lb, ln)));
+        }
+        (*h)->set_wa_rows(std::make_shared<slint::VectorModel<slint::SharedString>>(rows));
+        (*h)->set_wa_pw_mismatch(false);
+        (*h)->set_wa_result(slint::SharedString(""));
+        (*h)->set_picked_file(slint::SharedString(""));
+        (*h)->set_wa_stage(1);
+    });
+
+    // A row was picked: ask the core what it needs and raise that prompt.
+    ui->on_wallet_menu_pick([weak, ctx, wake_poll](int row) {
+        auto h = weak.lock();
+        if (!h)
+            return;
+        if (row < 0 || static_cast<size_t>(row) >= g_wa_menu.size())
+            return;
+        const uint8_t action = g_wa_menu[static_cast<size_t>(row)];
+        g_wa_action = action;
+
+        char lb[64] = {0};
+        size_t ln = bw_wallet_action_label(action, lb, sizeof lb);
+        (*h)->set_wa_title(slint::SharedString(std::string_view(lb, ln)));
+        (*h)->set_wa_confirm_pw(bw_wallet_action_sets_new_password(action) != 0);
+        (*h)->set_wa_pw_mismatch(false);
+
+        if (bw_wallet_action_needs_password(action)) {
+            (*h)->set_wa_stage(2);
+            return;
+        }
+        if (bw_wallet_action_needs_path(action)) {
+            // The offline restore swaps the wallet file itself, so it is the one
+            // that can lose funds outright if the wrong file is chosen.
+            (*h)->set_wa_caution(
+                action == BW_WA_RESTORE_FILE_OFFLINE
+                    ? slint::SharedString("This replaces the current wallet file. Stop the daemon first, and be sure this is the wallet you want.")
+                    : slint::SharedString(""));
+            (*h)->set_wa_stage(3);
+            return;
+        }
+        // Neither: Lock and Backup run straight away.
+        (*h)->set_wa_stage(4);
+        int coin = g_wa_coin;
+        std::thread([weak, ctx, coin, action, wake_poll]() {
+            WorkerGuard wg;
+            std::string msg;
+            bool err = false;
+            if (action == BW_WA_LOCK) {
+                err = bw_wallet_lock(ctx, static_cast<size_t>(coin)) < 0;
+                msg = err ? last_error_text(ctx, -1) : "Wallet locked.";
+            } else if (action == BW_WA_BACKUP) {
+                char path[512] = {0};
+                size_t pn = bw_wallet_backup(ctx, static_cast<size_t>(coin), path, sizeof path);
+                err = (pn == 0);
+                // Say where it went AND what it is: a key dump is the wallet.
+                msg = err ? last_error_text(ctx, -1)
+                          : "Backed up to " + std::string(path, pn) +
+                                "\n\nThis file contains your private keys. Anyone with it can spend your coins.";
+            } else {
+                err = true;
+                msg = "That action isn't wired up.";
+            }
+            post_to_ui([weak, msg, err]() {
+                if (auto hh = weak.lock()) {
+                    (*hh)->set_wa_result(slint::SharedString(msg));
+                    (*hh)->set_wa_result_error(err);
+                    (*hh)->set_wa_stage(5);
+                }
+            });
+            wake_poll();
+        }).detach();
+    });
+
+    // A passphrase was entered for the chosen action.
+    ui->on_wallet_action_password([weak, ctx, wake_poll](slint::SharedString pass) {
+        auto h = weak.lock();
+        if (!h)
+            return;
+        int coin = g_wa_coin;
+        const uint8_t action = g_wa_action;
+        if (coin < 0)
+            return;
+        auto secret = to_secret_bytes(pass);
+        (*h)->set_wa_stage(4);
+        std::thread([weak, ctx, coin, action, wake_poll, secret = std::move(secret)]() mutable {
+            WorkerGuard wg;
+            int rc = 0;
+            std::string ok_msg;
+            switch (action) {
+            case BW_WA_ENCRYPT:
+                rc = bw_wallet_encrypt(ctx, static_cast<size_t>(coin), secret.data(), secret.size());
+                // Most daemons stop after encrypting — normal, not a failure,
+                // and the user needs to know why their node just went away.
+                ok_msg = "Wallet encrypted. The daemon usually stops afterwards — start it again when you're ready.";
+                break;
+            case BW_WA_UNLOCK:
+                rc = bw_wallet_unlock(ctx, static_cast<size_t>(coin), secret.data(), secret.size(), 0);
+                ok_msg = "Wallet unlocked.";
+                break;
+            case BW_WA_STAKE:
+                rc = bw_wallet_unlock(ctx, static_cast<size_t>(coin), secret.data(), secret.size(), 1);
+                ok_msg = "Wallet unlocked for staking.";
+                break;
+            default:
+                rc = -1;
+                break;
+            }
+            wipe_secret(secret);
+            std::string msg = (rc < 0) ? last_error_text(ctx, rc) : ok_msg;
+            bool err = rc < 0;
+            post_to_ui([weak, msg, err]() {
+                if (auto hh = weak.lock()) {
+                    (*hh)->set_wa_result(slint::SharedString(msg));
+                    (*hh)->set_wa_result_error(err);
+                    (*hh)->set_wa_stage(5);
+                }
+            });
+            wake_poll();
+        }).detach();
+    });
+
+    // A file was chosen for one of the two restores.
+    ui->on_wallet_action_path([weak, ctx, wake_poll](slint::SharedString path) {
+        auto h = weak.lock();
+        if (!h)
+            return;
+        int coin = g_wa_coin;
+        const uint8_t action = g_wa_action;
+        if (coin < 0)
+            return;
+        std::string src(path);
+        (*h)->set_wa_stage(4);
+        std::thread([weak, ctx, coin, action, src, wake_poll]() {
+            WorkerGuard wg;
+            int rc;
+            if (action == BW_WA_RESTORE_FILE_OFFLINE)
+                rc = bw_wallet_restore_file_offline(ctx, static_cast<size_t>(coin), src.c_str());
+            else
+                rc = bw_wallet_import_file(ctx, static_cast<size_t>(coin), src.c_str());
+            std::string msg = (rc < 0)
+                ? last_error_text(ctx, rc)
+                : std::string("Wallet restored. Rescanning may take a while before "
+                              "the balance is right.");
+            post_to_ui([weak, msg, rc]() {
+                if (auto hh = weak.lock()) {
+                    (*hh)->set_wa_result(slint::SharedString(msg));
+                    (*hh)->set_wa_result_error(rc < 0);
+                    (*hh)->set_wa_stage(5);
+                }
+            });
+            wake_poll();
+        }).detach();
+    });
+
+    ui->on_wallet_action_cancel([weak]() {
+        g_wa_coin = -1;
+        g_wa_menu.clear();
+        if (auto h = weak.lock())
+            (*h)->set_picked_file(slint::SharedString(""));
     });
 
     // The prune choice was made: write it, then carry on with the start.
@@ -1795,7 +1985,7 @@ int main()
             post_to_ui([weak, di, bs, daemon_up, sel, disk_frac, disk_free_str, wallet_sec, stage,
                         ms, hashrate, ew_flags, wallet_state, bal, have_balance,
                         rp, rescanning, txs, recv_addr, decimals, wallet_svc_err, can_send,
-                        rpc_ok, busy]() {
+                        rpc_ok, busy, coin]() {
                 auto h = weak.lock();
                 if (!h)
                     return;
@@ -1807,8 +1997,15 @@ int main()
                 // Skipped while busy: wallet_sec is BW_WSEC_UNKNOWN there and
                 // publishing it would grey the padlock every time the node
                 // stalls, which is the flicker this whole branch exists to stop.
-                if (!busy)
+                if (!busy) {
                     (*h)->set_wallet_sec(wallet_sec);
+                    // How many actions this state permits, so the Wallet button
+                    // greys out rather than opening an empty dialog. The core
+                    // decides; this only counts.
+                    uint8_t acts[8];
+                    (*h)->set_wallet_menu_count(static_cast<int>(
+                        bw_wallet_menu(coin, wallet_sec, acts, sizeof acts)));
+                }
                 (*h)->set_ew_flags(ew_flags);
                 (*h)->set_wallet_state(wallet_state);
                 // Everything below came from a wallet read, so on a busy tick

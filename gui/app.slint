@@ -602,6 +602,29 @@ export component AppWindow inherits Window {
     // Sync-accelerator prompt, raised by the C++ side when the coin offers one
     // before its first daemon start (see bw_sync_accel_offered). `accel-resume`
     // is pre-formatted and empty when there's nothing to resume.
+    // ---- in-daemon wallet menu ----
+    // The rows come from bw_wallet_menu, which is the same policy the TUI asks —
+    // this file never decides which actions a wallet state permits. `wa-stage`:
+    //   0 closed   1 menu   2 password   3 pick a file   4 working   5 result
+    in property <int> wallet-menu-count: 0;
+    in-out property <int> wa-stage: 0;
+    in property <[string]> wa-rows;
+    in-out property <int> wa-sel: 0;
+    // The chosen action's ordinal and what it needs, resolved by the core.
+    in-out property <string> wa-title: "";
+    in-out property <bool> wa-confirm-pw: false;
+    in-out property <bool> wa-pw-mismatch: false;
+    in-out property <string> wa-result: "";
+    in-out property <bool> wa-result-error: false;
+    // Asked before an action that can't be undone cheaply.
+    in-out property <string> wa-caution: "";
+    callback wallet-menu-open();
+    callback wallet-menu-pick(int);
+    // The password is a secret: cleared by the caller the instant this fires.
+    callback wallet-action-password(string);
+    callback wallet-action-path(string);
+    callback wallet-action-cancel();
+
     // ---- first-start prune prompt ----
     // Asked once, before a prune-capable daemon (Bitcoin, Litecoin, Monero) ever
     // runs. `prune-rows` comes from the coin itself — never hard-coded here,
@@ -790,7 +813,7 @@ export component AppWindow inherits Window {
     out property <bool> modal-open:
         root.browse-open || root.send-confirm-open || root.mining-stop-open
         || root.wallet-stage != 0 || root.unlock-open || root.update-open
-        || root.accel-open || root.prune-open;
+        || root.accel-open || root.prune-open || root.wa-stage != 0;
 
     // Escape closes the topmost modal, in the same order they paint. Each arm
     // runs that modal's own Cancel path — clearing secrets included — because a
@@ -824,6 +847,14 @@ export component AppWindow inherits Window {
         if (root.prune-open) {
             root.prune-open = false;
             root.prune-cancel();
+            return true;
+        }
+        // Stage 4 is deliberately absent: the action is already in flight and
+        // closing the dialog wouldn't stop it. Every other stage clears the
+        // pending action so the next open starts clean.
+        if (root.wa-stage != 0 && root.wa-stage != 4) {
+            root.wa-stage = 0;
+            root.wallet-action-cancel();
             return true;
         }
         if (root.update-open) {
@@ -1627,19 +1658,18 @@ export component AppWindow inherits Window {
                                     root.stop-daemon();
                                 }
                             }
-                            // A coin whose wallet lives in its daemon: lock/unlock it
-                            // over RPC.
+                            // A coin whose wallet lives in its daemon. One button
+                            // into a menu, because the actions available depend on
+                            // the wallet's state and the daemon's capabilities —
+                            // and the core decides which, not this file.
                             if root.ew-flags == 0: Button {
-                                text: root.wallet-sec == 2 ? "Unlock" : "Lock";
-                                // Only meaningful for an encrypted wallet (locked=2,
-                                // unlocked=3, unlocked-for-staking=4).
-                                enabled: root.wallet-sec == 2 || root.wallet-sec == 3 || root.wallet-sec == 4;
+                                text: "Wallet\u{2026}";
+                                // Nothing to offer until the daemon has said what
+                                // it holds (BW_WSEC_UNKNOWN), and the core returns
+                                // an empty menu for that state anyway.
+                                enabled: root.running && root.wallet-sec != 0 && root.wallet-menu-count > 0;
                                 clicked => {
-                                    if (root.wallet-sec == 2) {
-                                        root.unlock-open = true;
-                                    } else {
-                                        root.lock-wallet();
-                                    }
+                                    root.wallet-menu-open();
                                 }
                             }
                             // A coin with a *managed* wallet (Nerva): one button into
@@ -2636,6 +2666,211 @@ export component AppWindow inherits Window {
         // time a coin that publishes one is started on an empty chain. Declining is
         // a normal outcome (a full P2P sync still works), so both buttons start the
         // daemon — they differ only in whether the accelerator is fetched first.
+        // In-daemon wallet actions. The menu rows are the core's, so this is
+        // presentation only — it never decides what a wallet state permits.
+        if root.wa-stage != 0: Rectangle {
+            background: #000000bb;
+            TouchArea { }
+
+            Rectangle {
+                width: 420px;
+                height: wa-body.preferred-height;
+                x: (parent.width - self.width) / 2;
+                y: (parent.height - self.height) / 2;
+                background: #202020;
+                border-radius: 10px;
+                border-width: 1px;
+                border-color: root.coin-color;
+
+                wa-body := VerticalLayout {
+                    padding: 16px;
+                    spacing: 10px;
+                    alignment: start;
+
+                    Text {
+                        text: root.wa-stage == 1
+                            ? root.coin-name + " wallet"
+                            : root.wa-title;
+                        color: #e6e6e6;
+                        font-size: 15px;
+                        font-weight: 600;
+                        wrap: word-wrap;
+                    }
+
+                    // --- 1: what would you like to do? ---
+                    if root.wa-stage == 1: VerticalLayout {
+                        spacing: 6px;
+                        for row[i] in root.wa-rows: Rectangle {
+                            height: 32px;
+                            border-radius: 5px;
+                            background: wta.has-hover ? #2b2b2b : #262626;
+                            HorizontalLayout {
+                                padding-left: 10px;
+                                Text {
+                                    text: row;
+                                    color: #e6e6e6;
+                                    font-size: 13px;
+                                    vertical-alignment: center;
+                                }
+                            }
+                            wta := TouchArea {
+                                clicked => {
+                                    root.wa-sel = i;
+                                    root.wallet-menu-pick(i);
+                                }
+                            }
+                        }
+                    }
+
+                    // --- 2: passphrase ---
+                    if root.wa-stage == 2: VerticalLayout {
+                        spacing: 8px;
+                        // Only for an action that SETS a credential. A typo when
+                        // encrypting a wallet for the first time makes the funds
+                        // unrecoverable; a typo when unlocking just fails and is
+                        // retried, so that one isn't confirmed.
+                        if root.wa-confirm-pw: Text {
+                            text: "Choose a password for this wallet. There is no way to recover it — if you lose it, the coins are gone.";
+                            color: #e0a03a;
+                            font-size: 12px;
+                            wrap: word-wrap;
+                        }
+                        wa-pw := LineEdit {
+                            placeholder-text: root.wa-confirm-pw ? "New password" : "Password";
+                            input-type: password;
+                        }
+                        // Always present, collapsed when not needed: the
+                        // Continue handler compares against it, and Slint can't
+                        // reference an element that lives inside an `if`.
+                        wa-pw2 := LineEdit {
+                            placeholder-text: "Confirm password";
+                            input-type: password;
+                            visible: root.wa-confirm-pw;
+                            height: root.wa-confirm-pw ? self.preferred-height : 0px;
+                        }
+                        if root.wa-pw-mismatch: Text {
+                            text: "Those don't match — try again.";
+                            color: #e05c5c;
+                            font-size: 12px;
+                        }
+                        HorizontalLayout {
+                            alignment: end;
+                            spacing: 8px;
+                            Button {
+                                text: "Cancel";
+                                clicked => {
+                                    wa-pw.text = "";
+                                    root.wa-stage = 0;
+                                    root.wallet-action-cancel();
+                                }
+                            }
+                            Button {
+                                text: "Continue";
+                                primary: true;
+                                clicked => {
+                                    if (root.wa-confirm-pw && wa-pw.text != wa-pw2.text) {
+                                        // Both cleared, not just the second: a
+                                        // half-kept password invites confirming a
+                                        // typo on the next attempt.
+                                        wa-pw.text = "";
+                                        wa-pw2.text = "";
+                                        root.wa-pw-mismatch = true;
+                                    } else if (wa-pw.text != "") {
+                                        root.wa-pw-mismatch = false;
+                                        root.wallet-action-password(wa-pw.text);
+                                        wa-pw.text = "";
+                                        wa-pw2.text = "";
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    // --- 3: pick a file ---
+                    if root.wa-stage == 3: VerticalLayout {
+                        spacing: 8px;
+                        if root.wa-caution != "": Text {
+                            text: root.wa-caution;
+                            color: #e0a03a;
+                            font-size: 12px;
+                            wrap: word-wrap;
+                        }
+                        Text {
+                            text: root.picked-file == ""
+                                ? "Choose the file to restore from."
+                                : "Selected: " + root.picked-file;
+                            color: #9a9a9a;
+                            font-size: 13px;
+                            wrap: word-wrap;
+                        }
+                        HorizontalLayout {
+                            alignment: end;
+                            spacing: 8px;
+                            Button {
+                                text: "Cancel";
+                                clicked => {
+                                    root.wa-stage = 0;
+                                    root.wallet-action-cancel();
+                                }
+                            }
+                            Button {
+                                text: root.picked-file == "" ? "Browse\u{2026}" : "Restore";
+                                primary: root.picked-file != "";
+                                clicked => {
+                                    if (root.picked-file == "") {
+                                        root.browse-open = true;
+                                    } else {
+                                        root.wallet-action-path(root.picked-file);
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    // --- 4: in flight ---
+                    if root.wa-stage == 4: Text {
+                        text: "Working\u{2026}";
+                        color: #9a9a9a;
+                        font-size: 13px;
+                    }
+
+                    // --- 5: outcome ---
+                    if root.wa-stage == 5: VerticalLayout {
+                        spacing: 10px;
+                        Text {
+                            text: root.wa-result;
+                            color: root.wa-result-error ? #e05c5c : #7ec27e;
+                            font-size: 13px;
+                            wrap: word-wrap;
+                        }
+                        HorizontalLayout {
+                            alignment: end;
+                            Button {
+                                text: "Close";
+                                clicked => {
+                                    root.wa-stage = 0;
+                                }
+                            }
+                        }
+                    }
+
+                    // The menu itself gets a way out; stage 4 deliberately
+                    // doesn't, since the action is already in flight and
+                    // abandoning the dialog wouldn't stop it.
+                    if root.wa-stage == 1: HorizontalLayout {
+                        alignment: end;
+                        Button {
+                            text: "Cancel";
+                            clicked => {
+                                root.wa-stage = 0;
+                                root.wallet-action-cancel();
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
         // How should this chain be stored? Asked once, before a prune-capable
         // daemon first runs, because the answer can't be changed afterwards
         // without a full re-sync.
