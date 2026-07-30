@@ -1927,6 +1927,85 @@ export fn bw_mining_failure_text(err_name: ?[*:0]const u8, buf: ?[*]u8, cap: usi
 
 // ---- disk usage (for the coin's "disk used" gauge) --------------------------
 
+// ---- settings: wallet file and pruning --------------------------------------
+
+/// Where this coin's wallet file lives, written into `buf`; returns its length,
+/// or 0 when the node manages the wallet itself and there is no single file to
+/// name (Ergo, Epic). A disk-free path computation, but it reads the coin's data
+/// dir — worker thread.
+export fn bw_wallet_file_path(ctx: ?*Ctx, idx: usize, buf: ?[*]u8, cap: usize) usize {
+    const c = ctx orelse return 0;
+    const b = buf orelse return 0;
+    const coin = coinByIndex(idx) orelse return 0;
+
+    var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+    defer arena.deinit();
+    const wf = (coin.walletPath(arena.allocator(), c.home_dir) catch return 0) orelse return 0;
+    return copyOut(b[0..cap], wf.path);
+}
+
+/// The `.keys` companion beside the wallet file, for the coins whose wallet is a
+/// *pair* (the Monero family). Returns 0 for a single-file coin.
+///
+/// Worth surfacing: someone backing up only the wallet file and not its keys has
+/// backed up nothing they can restore from.
+export fn bw_wallet_keys_path(ctx: ?*Ctx, idx: usize, buf: ?[*]u8, cap: usize) usize {
+    const c = ctx orelse return 0;
+    const b = buf orelse return 0;
+    const coin = coinByIndex(idx) orelse return 0;
+
+    var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+    defer arena.deinit();
+    const wf = (coin.walletPath(arena.allocator(), c.home_dir) catch return 0) orelse return 0;
+    const keys = wf.keys orelse return 0;
+    return copyOut(b[0..cap], keys);
+}
+
+/// How this coin expresses pruning: 0 = a size cap in MiB, 1 = just on/off,
+/// -1 = the coin has no pruning at all (most of them). Cheap; UI-thread safe.
+export fn bw_prune_mode(idx: usize) c_int {
+    const coin = coinByIndex(idx) orelse return -1;
+    const pr = coin.pruning() orelse return -1;
+    return @intFromEnum(pr.mode);
+}
+
+/// The prune setting currently in the coin's conf, via `out`: >= 0 is the value
+/// (0 meaning a deliberate full node), and the call returns 1. Returns 0 when
+/// the key isn't there at all — **never configured**, which is a different thing
+/// from a deliberate 0 — or -1 if the coin doesn't prune / the conf is
+/// unreadable. Reads the conf; worker thread.
+///
+/// Not interchangeable with `bw_prune_should_offer`. An adopted full node
+/// answers 0 here (no key) *and* refuses the prompt (its chain is already on
+/// disk); showing a value is safe, offering to change it is not.
+export fn bw_prune_current(ctx: ?*Ctx, idx: usize, out: ?*i64) c_int {
+    const c = ctx orelse return -1;
+    const o = out orelse return -1;
+    const coin = coinByIndex(idx) orelse return -1;
+
+    var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+    defer arena.deinit();
+    const state = coin.pruningState(arena.allocator(), c.home_dir) catch return -1;
+    const v = state orelse return 0;
+    o.* = v;
+    return 1;
+}
+
+/// Describe a prune setting in the coin's own units ("2 GB", "1500 MiB",
+/// "disabled (full node)", "not set") into `buf`. Pass -1 for "not configured".
+/// Cheap; UI-thread safe.
+///
+/// Exported rather than formatted in the UI so both front-ends say the same
+/// thing — "not set" and "disabled (full node)" look similar and mean very
+/// different things.
+export fn bw_prune_value_text(idx: usize, prune_mib: i64, buf: ?[*]u8, cap: usize) usize {
+    const b = buf orelse return 0;
+    const coin = coinByIndex(idx) orelse return 0;
+    const pr = coin.pruning() orelse return 0;
+    var tmp: [48]u8 = undefined;
+    return copyOut(b[0..cap], money.pruneValueText(&tmp, pr.mode, prune_mib));
+}
+
 /// Whether the coin's RPC port accepts a connection right now: 1 reachable,
 /// 0 not. A cheap TCP connect and close — no request, no auth.
 ///
@@ -2645,6 +2724,59 @@ test "the shared Io leaves exactly one SIGIO handler installed for the process" 
     try std.testing.expect(handler != null);
     // SIG_DFL is 0; anything else means a handler is installed.
     try std.testing.expect(@intFromPtr(handler.?) != 0);
+}
+
+test "the prune exports agree with the vtable about which coins prune" {
+    // Exactly the coins wiring Coin.Pruning may answer. If this ever reports a
+    // mode for a coin that has none, the Settings tab grows a pruning row for a
+    // daemon that can't prune — and, worse, the prompt in the next stage would
+    // offer to act on it.
+    var buf: [64]u8 = undefined;
+    var pruners: usize = 0;
+    var i: usize = 0;
+    while (i < coin_count) : (i += 1) {
+        const coin = coinByIndex(i) orelse return error.Unexpected;
+        const mode = bw_prune_mode(i);
+        if (coin.pruning()) |pr| {
+            pruners += 1;
+            try std.testing.expectEqual(@as(c_int, @intFromEnum(pr.mode)), mode);
+            // The text has to describe every value a conf can hold, including
+            // the two absences that look alike and aren't.
+            try std.testing.expect(bw_prune_value_text(i, -1, &buf, buf.len) > 0);
+            try std.testing.expect(bw_prune_value_text(i, 0, &buf, buf.len) > 0);
+            try std.testing.expect(bw_prune_value_text(i, 2000, &buf, buf.len) > 0);
+        } else {
+            try std.testing.expectEqual(@as(c_int, -1), mode);
+            // A non-pruning coin describes nothing, so the row stays hidden.
+            try std.testing.expectEqual(@as(usize, 0), bw_prune_value_text(i, 0, &buf, buf.len));
+        }
+    }
+    // Bitcoin, Litecoin and Monero.
+    try std.testing.expectEqual(@as(usize, 3), pruners);
+    try std.testing.expectEqual(@as(c_int, -1), bw_prune_mode(coin_count));
+}
+
+test "never-configured and deliberate-full-node read differently" {
+    // "not set" and "disabled (full node)" are one character apart in intent and
+    // miles apart in meaning: the first says nobody has chosen, the second says
+    // someone chose to keep everything. Conflating them is how a full node gets
+    // offered pruning it must never be offered.
+    var idx: usize = coin_count;
+    var i: usize = 0;
+    while (i < coin_count) : (i += 1) {
+        const coin = coinByIndex(i) orelse continue;
+        if (coin.pruning() != null) {
+            idx = i;
+            break;
+        }
+    }
+    try std.testing.expect(idx < coin_count);
+
+    var a: [64]u8 = undefined;
+    var b: [64]u8 = undefined;
+    const unset = a[0..bw_prune_value_text(idx, -1, &a, a.len)];
+    const full = b[0..bw_prune_value_text(idx, 0, &b, b.len)];
+    try std.testing.expect(!std.mem.eql(u8, unset, full));
 }
 
 test "the wordmark export splits each coin's name where the vtable says" {

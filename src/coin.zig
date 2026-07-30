@@ -1,6 +1,7 @@
 const std = @import("std");
 const models = @import("models.zig");
 const install_mod = @import("install.zig");
+const money = @import("money.zig");
 
 /// Runtime-polymorphic handle to a coin backend — the Zig equivalent of the
 /// Go `Coin` interface in `coins.go`. A frontend (the ZigZag TUI) holds a
@@ -364,7 +365,12 @@ pub const Coin = struct {
         ///   (the daemon drops ~7/8 of the ring-signature data, leaving roughly a
         ///   third of the chain) with no size to choose, so non-zero = pruned, 0 =
         ///   full, and there is no custom amount to type.
-        pub const Mode = enum { size_mib, on_off };
+        /// How a coin expresses its prune knob. This IS `money.PruneMode` rather
+        /// than a parallel enum: both front-ends hand the mode to
+        /// `money.pruneValueText` to describe a setting, and two enums converted
+        /// by ordinal would let a third mode added to one silently relabel
+        /// someone's prune setting. One type, nothing to keep in step.
+        pub const Mode = money.PruneMode;
 
         /// How to read this coin's prune values, and whether a custom amount is
         /// offered.

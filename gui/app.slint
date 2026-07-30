@@ -428,6 +428,34 @@ component ShiningTitle inherits Text {
 }
 
 // A placeholder tab body — a heading plus a note about what will live here.
+// One "Label: value" line on the Settings tab. The label column is a fixed width
+// so the values line up down the pane, the way the TUI's padded labels do.
+component SettingsRow inherits HorizontalLayout {
+    in property <string> label;
+    in property <string> value;
+    // Greys the value for an absence ("—  (managed by the node)") rather than a
+    // real setting, so the two don't read alike.
+    in property <bool> muted: false;
+
+    spacing: 10px;
+    alignment: start;
+
+    Text {
+        text: root.label + ":";
+        color: #9a9a9a;
+        font-size: 13px;
+        width: 88px;
+    }
+    Text {
+        text: root.value;
+        color: root.muted ? #6b6b6b : #cfcfcf;
+        font-family: "DejaVu Sans Mono";
+        font-size: 13px;
+        wrap: word-wrap;
+        horizontal-stretch: 1;
+    }
+}
+
 component Placeholder inherits VerticalBox {
     in property <string> heading;
     in property <string> note;
@@ -715,6 +743,13 @@ export component AppWindow inherits Window {
     // ReddCoin, SpiderByte, BitcoinZ. `coin-name` is pre-split by the host into
     // the two halves. False for every other coin, which draws its whole name in
     // `coin-color`.
+    // Settings tab. Paths are empty when the coin has none to show;
+    // `prune-mode` is -1 for a coin that doesn't prune, which hides that row.
+    in property <string> wallet-file-path: "";
+    in property <string> wallet-keys-path: "";
+    in property <int> prune-mode: -1;
+    in property <string> prune-text: "";
+
     in property <bool> has-wordmark: false;
     in property <string> wordmark-head: "";
     in property <string> wordmark-tail: "";
@@ -1774,15 +1809,48 @@ export component AppWindow inherits Window {
                         }
                     }
 
-                    // Settings (scaffold).
-                    if root.tab == 4: VerticalBox {
-                        padding: 0;
-                        spacing: 10px;
+                    // Settings — read-only for now, mirroring the TUI's tab: where
+                    // this coin's wallet lives on disk, and how its chain is
+                    // stored. Both are things you need when backing up or
+                    // troubleshooting and shouldn't have to go digging for.
+                    if root.tab == 4: VerticalLayout {
+                        spacing: 14px;
                         vertical-stretch: 0;
                         alignment: start;
-                        Placeholder {
-                            heading: "Settings";
-                            note: "Per-coin options (pruning, connectivity, \u{2026}) will live here.";
+                        Text {
+                            text: "Settings";
+                            color: #e6e6e6;
+                            font-size: 17px;
+                            font-weight: 600;
+                        }
+
+                        SettingsRow {
+                            label: "Wallet file";
+                            value: root.wallet-file-path != ""
+                                ? root.wallet-file-path
+                                : "—  (managed by the node)";
+                            muted: root.wallet-file-path == "";
+                        }
+                        // A Monero-family wallet is a file *pair*. Showing only
+                        // the first would invite backing up half of it, which
+                        // restores nothing.
+                        if root.wallet-keys-path != "": SettingsRow {
+                            label: "Wallet keys";
+                            value: root.wallet-keys-path;
+                        }
+                        if root.wallet-keys-path != "": Text {
+                            text: "Back up both files — one without the other can't be restored.";
+                            color: #8a8a8a;
+                            font-size: 12px;
+                            wrap: word-wrap;
+                        }
+
+                        // Only for the coins that prune at all (Bitcoin, Litecoin,
+                        // Monero). Read-only: the value is chosen once, when the
+                        // daemon first starts.
+                        if root.prune-mode >= 0: SettingsRow {
+                            label: "Pruning";
+                            value: root.prune-text;
                         }
                     }
 

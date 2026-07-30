@@ -275,6 +275,34 @@ typedef struct {
 } BwDiskUsage;
 int     bw_disk_usage(bw_ctx *ctx, size_t idx, BwDiskUsage *out);
 
+/* ---- settings: wallet file and pruning ---------------------------------------
+ * bw_wallet_file_path returns 0 when the node manages the wallet itself and
+ * there is no single file to name (Ergo, Epic). bw_wallet_keys_path returns the
+ * `.keys` companion for coins whose wallet is a PAIR (the Monero family) and 0
+ * for everyone else — worth showing, because someone who backs up the wallet
+ * file and not its keys has backed up nothing they can restore from.
+ *
+ * bw_prune_mode: 0 = size cap in MiB, 1 = on/off, -1 = this coin doesn't prune.
+ *
+ * bw_prune_current writes the value from the conf and returns 1; returns 0 when
+ * the key isn't there at all (NEVER CONFIGURED, which is not the same as a
+ * deliberate 0 meaning full node), or -1 on error. It is NOT interchangeable
+ * with bw_prune_should_offer: an adopted full node answers 0 here and still must
+ * not be offered pruning, because its chain is already on disk.
+ *
+ * bw_prune_value_text describes a value in the coin's own units ("2 GB",
+ * "disabled (full node)", "not set"). Pass -1 for "not configured". Use it
+ * rather than formatting locally — "not set" and "disabled" look alike and mean
+ * very different things.
+ *
+ * The two path calls and bw_prune_current read the disk: worker thread. The
+ * other two are cheap and UI-thread safe. */
+size_t  bw_wallet_file_path(bw_ctx *ctx, size_t idx, char *buf, size_t cap);
+size_t  bw_wallet_keys_path(bw_ctx *ctx, size_t idx, char *buf, size_t cap);
+int     bw_prune_mode(size_t idx);
+int     bw_prune_current(bw_ctx *ctx, size_t idx, int64_t *out);
+size_t  bw_prune_value_text(size_t idx, int64_t prune_mib, char *buf, size_t cap);
+
 /* Whether the coin's RPC port accepts a connection right now: 1 reachable, 0 not.
  * A cheap TCP connect and close — no request, no auth. Worker thread only.
  *
