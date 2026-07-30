@@ -280,6 +280,86 @@ component StatusIcon inherits Rectangle {
 //
 // `animation-tick()` is read only while `sweeping`, so once the ~1.5s sweep ends
 // the title stops requesting repaints (no continuous cost when idle).
+// A two-tone coin wordmark — "Redd" + "Coin", "Spider" + "Byte", "Bitcoin" + "Z"
+// — each half in its own colour, matching what the TUI draws.
+//
+// Two Text elements rather than one, because a Slint Text is a single colour
+// throughout and the split is a hard boundary. They share one sweep clock, and
+// each half maps the band's position across the *whole* wordmark into its own
+// local 0..1, so the light travels continuously over the pair instead of running
+// twice side by side.
+component TwoToneTitle inherits HorizontalLayout {
+    in property <string> head;
+    in property <string> tail;
+    in property <color> head-color;
+    in property <color> tail-color;
+    in property <color> shine: #ffffff;
+    in property <length> font-size;
+    in property <int> font-weight;
+
+    spacing: 0;
+    alignment: start;
+
+    property <duration> start-tick: 0ms;
+    property <bool> sweeping: false;
+    function sweep() {
+        root.start-tick = animation-tick();
+        root.sweeping = true;
+    }
+    init => {
+        root.sweep();
+    }
+    changed head => {
+        root.sweep();
+    }
+    changed tail => {
+        root.sweep();
+    }
+    // Same 1.5s frame-clock sweep as ShiningTitle, and stopped the same way — on
+    // progress reaching 1, not on a wall timer that could cut it off early.
+    property <float> t: root.sweeping ? (animation-tick() - root.start-tick) / 1500ms : 1.0;
+    changed t => {
+        if root.sweeping && root.t >= 1.0 {
+            root.sweeping = false;
+        }
+    }
+    property <float> c: root.t * 1.6 - 0.3;
+
+    // What fraction of the wordmark the head occupies, so each half can shift
+    // the band into its own coordinates. Guarded against a zero width on the
+    // first layout pass, which would divide by nothing.
+    property <length> total: head-el.preferred-width + tail-el.preferred-width;
+    property <float> head-frac: root.total > 0phx ? head-el.preferred-width / root.total : 0.5;
+
+    head-el := Text {
+        text: root.head;
+        font-size: root.font-size;
+        font-weight: root.font-weight;
+        property <float> lc: root.head-frac > 0 ? root.c / root.head-frac : root.c;
+        color: @linear-gradient(100deg,
+            root.head-color 0%,
+            root.head-color clamp(lc - 0.18, 0.0, 1.0) * 100%,
+            root.shine clamp(lc, 0.0, 1.0) * 100%,
+            root.head-color clamp(lc + 0.18, 0.0, 1.0) * 100%,
+            root.head-color 100%);
+    }
+
+    tail-el := Text {
+        text: root.tail;
+        font-size: root.font-size;
+        font-weight: root.font-weight;
+        property <float> lc: root.head-frac < 1
+            ? (root.c - root.head-frac) / (1.0 - root.head-frac)
+            : root.c;
+        color: @linear-gradient(100deg,
+            root.tail-color 0%,
+            root.tail-color clamp(lc - 0.18, 0.0, 1.0) * 100%,
+            root.shine clamp(lc, 0.0, 1.0) * 100%,
+            root.tail-color clamp(lc + 0.18, 0.0, 1.0) * 100%,
+            root.tail-color 100%);
+    }
+}
+
 component ShiningTitle inherits Text {
     in property <string> caption;
     in property <color> base: #7ca071;
@@ -606,6 +686,15 @@ export component AppWindow inherits Window {
     in property <string> disk-free: "";    // free space, e.g. "12.3 GB free"
     in property <string> coin-version: ""; // bundled core version
     in property <string> coin-abbrev: ""; // ticker, e.g. "DIVI" — labels the balance
+    // Two-tone wordmark (bw_coin_wordmark), for the three coins that have one:
+    // ReddCoin, SpiderByte, BitcoinZ. `coin-name` is pre-split by the host into
+    // the two halves. False for every other coin, which draws its whole name in
+    // `coin-color`.
+    in property <bool> has-wordmark: false;
+    in property <string> wordmark-head: "";
+    in property <string> wordmark-tail: "";
+    in property <color> wordmark-head-color: #ffffff;
+    in property <color> wordmark-tail-color: #ffffff;
     in property <string> status-text: "";  // latest status line
     in property <bool> status-is-error: false;
 
@@ -969,10 +1058,19 @@ export component AppWindow inherits Window {
                                     title-row.width - tick-el.preferred-width
                                         - title-row.bal-gap - bal-el.preferred-width);
 
-                                title-el := ShiningTitle {
+                                // One element for both cases: a coin without a
+                                // wordmark passes an empty tail, which collapses
+                                // to a plain one-colour title. Keeping it a
+                                // single named element is what lets the version
+                                // and balance below position against it.
+                                title-el := TwoToneTitle {
                                     x: 0;
-                                    caption: root.coin-name;
-                                    base: root.coin-color;
+                                    width: self.preferred-width;
+                                    height: self.preferred-height;
+                                    head: root.has-wordmark ? root.wordmark-head : root.coin-name;
+                                    tail: root.has-wordmark ? root.wordmark-tail : "";
+                                    head-color: root.has-wordmark ? root.wordmark-head-color : root.coin-color;
+                                    tail-color: root.wordmark-tail-color;
                                     font-size: 28px;
                                     font-weight: 800;
                                 }

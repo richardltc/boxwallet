@@ -489,6 +489,32 @@ export fn bw_coin_version(idx: usize, buf: ?[*]u8, cap: usize) usize {
     return copyOut(b[0..cap], c.coreVersion());
 }
 
+/// A coin's two-tone wordmark, flattened for C. `split` is a **byte index into
+/// the coin name** where the tail half begins.
+pub const BwWordmark = extern struct {
+    split: usize,
+    head_color: [8]u8, // "#RRGGBB", NUL-terminated
+    tail_color: [8]u8,
+};
+
+/// The coin's two-tone wordmark: 1 with `out` filled, 0 if it has none (most
+/// coins — draw the name in `bw_coin_color` and stop).
+///
+/// ReddCoin is "Redd" in its brand red then "Coin" in near-white; SpiderByte and
+/// BitcoinZ are a white head with a brand-coloured tail. Exported so the GUI
+/// wears the same branding as the TUI instead of flattening these to one colour.
+/// The vtable's head colour is optional and defaults to the coin's own, so this
+/// resolves it and hands out two concrete hexes. Cheap; safe on the UI thread.
+export fn bw_coin_wordmark(idx: usize, out: ?*BwWordmark) c_int {
+    const coin = coinByIndex(idx) orelse return 0;
+    const o = out orelse return 0;
+    const wm = coin.wordmark() orelse return 0;
+    o.split = wm.split;
+    setField(&o.head_color, wm.head_color orelse coin.coinColor());
+    setField(&o.tail_color, wm.alt_color);
+    return 1;
+}
+
 /// Whether this coin lights up the Mining tab (its daemon mines in-process).
 export fn bw_coin_supports_mining(idx: usize) c_int {
     const c = coinByIndex(idx) orelse return 0;
@@ -2585,6 +2611,44 @@ test "the shared Io leaves exactly one SIGIO handler installed for the process" 
     try std.testing.expect(handler != null);
     // SIG_DFL is 0; anything else means a handler is installed.
     try std.testing.expect(@intFromPtr(handler.?) != 0);
+}
+
+test "the wordmark export splits each coin's name where the vtable says" {
+    var wm: BwWordmark = undefined;
+    var found: usize = 0;
+    var i: usize = 0;
+    while (i < coin_count) : (i += 1) {
+        const coin = coinByIndex(i) orelse return error.Unexpected;
+        const rc = bw_coin_wordmark(i, &wm);
+        const want = coin.wordmark();
+        if (want == null) {
+            try std.testing.expectEqual(@as(c_int, 0), rc);
+            continue;
+        }
+        found += 1;
+        try std.testing.expectEqual(@as(c_int, 1), rc);
+        try std.testing.expectEqual(want.?.split, wm.split);
+
+        // The split has to land strictly inside the name, or the GUI slices an
+        // empty half and the wordmark silently loses a colour.
+        const name = coin.coinName();
+        try std.testing.expect(wm.split > 0 and wm.split < name.len);
+
+        // The head colour is optional on the vtable and falls back to the coin's
+        // own brand colour — resolving that here is the whole point of the
+        // export, so a front-end never has to know about the fallback.
+        const head = std.mem.sliceTo(&wm.head_color, 0);
+        const tail = std.mem.sliceTo(&wm.tail_color, 0);
+        try std.testing.expectEqualStrings(want.?.head_color orelse coin.coinColor(), head);
+        try std.testing.expectEqualStrings(want.?.alt_color, tail);
+        try std.testing.expectEqual(@as(usize, 7), head.len);
+        try std.testing.expectEqual(@as(usize, 7), tail.len);
+    }
+    // ReddCoin, SpiderByte and BitcoinZ. If this drops to zero the export has
+    // been disconnected and every coin would quietly render single-tone.
+    try std.testing.expectEqual(@as(usize, 3), found);
+
+    try std.testing.expectEqual(@as(c_int, 0), bw_coin_wordmark(coin_count, &wm));
 }
 
 test "the seed exports answer the backup quiz the way the shared module does" {

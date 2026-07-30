@@ -126,6 +126,18 @@ size_t  bw_coin_abbrev(size_t idx, char *buf, size_t cap);
 size_t  bw_coin_color(size_t idx, char *buf, size_t cap); /* "#RRGGBB" */
 size_t  bw_coin_description(size_t idx, char *buf, size_t cap);
 size_t  bw_coin_version(size_t idx, char *buf, size_t cap); /* bundled core version */
+/* A coin's two-tone wordmark: 1 with *out filled, 0 if it has none (most coins —
+ * draw the whole name in bw_coin_color and stop). `split` is a BYTE INDEX into
+ * the coin name where the tail half begins, so "ReddCoin" splits at 4 into
+ * "Redd" + "Coin". The head colour is resolved for you: coins that don't name
+ * one use their own brand colour. Cheap; safe on the UI thread. */
+typedef struct {
+    size_t split;
+    char   head_color[8]; /* "#RRGGBB", NUL-terminated */
+    char   tail_color[8];
+} BwWordmark;
+int     bw_coin_wordmark(size_t idx, BwWordmark *out);
+
 int     bw_coin_supports_mining(size_t idx);      /* 0/1 — shows the Mining tab */
 int     bw_coin_supports_stablecoin(size_t idx);  /* 0/1 — shows the DigiDollar tab */
 

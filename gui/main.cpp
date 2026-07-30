@@ -461,6 +461,22 @@ static void apply_coin_metadata(const AppWindow *ui, bw_ctx *ctx, int idx)
     size_t an = bw_coin_abbrev(idx, abbrev, sizeof abbrev);
     ui->set_coin_abbrev(slint::SharedString(std::string_view(abbrev, an)));
 
+    // Two-tone wordmark, for the three coins that have one — ReddCoin's "Redd" +
+    // "Coin", SpiderByte's white "Spider" + brand "Byte", BitcoinZ's "Bitcoin" +
+    // "Z". The core owns the split and both colours so the GUI wears exactly the
+    // branding the TUI does; everything else draws its whole name in coin-color.
+    BwWordmark wm;
+    const bool has_wordmark =
+        bw_coin_wordmark(idx, &wm) == 1 && wm.split > 0 && wm.split < nn;
+    ui->set_has_wordmark(has_wordmark);
+    if (has_wordmark) {
+        std::string_view full(name, nn);
+        ui->set_wordmark_head(slint::SharedString(full.substr(0, wm.split)));
+        ui->set_wordmark_tail(slint::SharedString(full.substr(wm.split)));
+        ui->set_wordmark_head_color(parse_hex_color(wm.head_color, std::strlen(wm.head_color)));
+        ui->set_wordmark_tail_color(parse_hex_color(wm.tail_color, std::strlen(wm.tail_color)));
+    }
+
     ui->set_has_mining(bw_coin_supports_mining(idx) != 0);
     ui->set_has_stablecoin(bw_coin_supports_stablecoin(idx) != 0);
     // Which wallet tabs this coin earns. Pure metadata, so it's settled here at
