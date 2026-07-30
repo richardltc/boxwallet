@@ -1501,10 +1501,24 @@ int main()
 
             int di_rc = bw_daemon_info(ctx, coin, &di);
             int bs_rc = bw_blockchain_state(ctx, coin, &bs);
-            const bool daemon_up = (di_rc == 0 && bs_rc == 0);
+            // Whether we got fresh figures this tick.
+            const bool rpc_ok = (di_rc == 0 && bs_rc == 0);
 
-            // Wallet lock state — only meaningful once the daemon answers.
-            int wallet_sec = daemon_up ? bw_wallet_security(ctx, coin) : BW_WSEC_UNKNOWN;
+            // A failed read is NOT the same as a stopped daemon. One under load
+            // accepts the connection instantly while stalling its RPC reply for
+            // seconds — Nerva does this behind its blockchain lock — so binding
+            // "running" straight to the read made the whole UI flip to stopped
+            // and back every time the node got busy. A cheap connect probe tells
+            // busy apart from down, which is the rule the TUI already follows.
+            //
+            // Only probed when the read failed, so a healthy tick costs nothing.
+            const bool busy = !rpc_ok && bw_daemon_reachable(ctx, coin) == 1;
+            const bool daemon_up = rpc_ok || busy;
+
+            // Wallet lock state — only meaningful once the daemon actually
+            // answers. While busy it would fail too, so keep the last one rather
+            // than reporting "unknown" and greying the padlock mid-sync.
+            int wallet_sec = rpc_ok ? bw_wallet_security(ctx, coin) : BW_WSEC_UNKNOWN;
 
             // The reads failing doesn't mean "not running": a bitcoin-derived
             // daemon can't serve them for the whole of its start-up (block
@@ -1554,7 +1568,11 @@ int main()
             // must have opened, but an in-daemon wallet answers as soon as its
             // daemon does — bitcoin-core serves getbalance / listtransactions /
             // getnewaddress on a *locked* wallet.
-            const bool reads_ok = (ew_flags != 0) ? (wallet_state >= BW_WALLET_OPEN) : daemon_up;
+            // `rpc_ok`, not `daemon_up`: a busy daemon can't serve these either,
+            // and a failed read here would blank the balance to "—" and empty the
+            // transaction list for that tick — the same flicker, one layer down.
+            const bool reads_ok = !busy &&
+                ((ew_flags != 0) ? (wallet_state >= BW_WALLET_OPEN) : rpc_ok);
 
             // Spending is the exception: that one genuinely needs the wallet
             // unlocked. Note the in-daemon test blocks on a *positive* "locked"
@@ -1565,7 +1583,7 @@ int main()
             // which is a better answer than a permanent client-side refusal.
             const bool can_send = has_send_cap && (ew_flags != 0
                 ? wallet_state >= BW_WALLET_OPEN
-                : (daemon_up && wallet_sec != BW_WSEC_LOCKED));
+                : (rpc_ok && wallet_sec != BW_WSEC_LOCKED));
 
             // BW_BUSY means a wallet op holds the lock — keep the last value
             // rather than stalling the whole status pump behind a restore.
@@ -1608,10 +1626,14 @@ int main()
                     }
                     recv_addr = g_recv_addr[coin];
                 }
-            } else {
+            } else if (!busy) {
                 // Not readable: the cached address belongs to a wallet we can no
-                // longer vouch for, so drop it rather than keep showing it.
+                // longer vouch for, so drop it rather than keep showing it. Not
+                // while merely busy, though — the wallet hasn't gone anywhere and
+                // dropping it would clear the Receive tab mid-sync.
                 g_recv_addr[coin].clear();
+            } else {
+                recv_addr = g_recv_addr[coin];
             }
 
             // Mining rides the *daemon's* RPC (the miner runs inside nervad), so
@@ -1642,7 +1664,8 @@ int main()
 
             post_to_ui([weak, di, bs, daemon_up, sel, disk_frac, disk_free_str, wallet_sec, stage,
                         ms, hashrate, ew_flags, wallet_state, bal, have_balance,
-                        rp, rescanning, txs, recv_addr, decimals, wallet_svc_err, can_send]() {
+                        rp, rescanning, txs, recv_addr, decimals, wallet_svc_err, can_send,
+                        rpc_ok, busy]() {
                 auto h = weak.lock();
                 if (!h)
                     return;
@@ -1651,20 +1674,30 @@ int main()
                     return;
                 (*h)->set_disk_frac(disk_frac);
                 (*h)->set_disk_free(slint::SharedString(disk_free_str));
-                (*h)->set_wallet_sec(wallet_sec);
+                // Skipped while busy: wallet_sec is BW_WSEC_UNKNOWN there and
+                // publishing it would grey the padlock every time the node
+                // stalls, which is the flicker this whole branch exists to stop.
+                if (!busy)
+                    (*h)->set_wallet_sec(wallet_sec);
                 (*h)->set_ew_flags(ew_flags);
                 (*h)->set_wallet_state(wallet_state);
-                (*h)->set_can_send(can_send);
-                (*h)->set_balance_total(slint::SharedString(
-                    have_balance ? format_amount(bal.total, decimals) : std::string("—")));
-                (*h)->set_balance_avail(slint::SharedString(
-                    have_balance ? format_amount(bal.available, decimals) : std::string("—")));
-                (*h)->set_rescan_frac(rescanning && rp.target > 0
-                    ? static_cast<float>(static_cast<double>(rp.scanned) /
-                                         static_cast<double>(rp.target))
-                    : 0.0f);
-                (*h)->set_receive_address(slint::SharedString(recv_addr));
-                (*h)->set_tx_rows(make_tx_rows(txs, decimals));
+                // Everything below came from a wallet read, so on a busy tick
+                // there is nothing new to say and the last values stand. Writing
+                // them anyway would blank the balance to "—" and empty the
+                // transaction list every time the node stalled.
+                if (!busy) {
+                    (*h)->set_can_send(can_send);
+                    (*h)->set_balance_total(slint::SharedString(
+                        have_balance ? format_amount(bal.total, decimals) : std::string("—")));
+                    (*h)->set_balance_avail(slint::SharedString(
+                        have_balance ? format_amount(bal.available, decimals) : std::string("—")));
+                    (*h)->set_rescan_frac(rescanning && rp.target > 0
+                        ? static_cast<float>(static_cast<double>(rp.scanned) /
+                                             static_cast<double>(rp.target))
+                        : 0.0f);
+                    (*h)->set_receive_address(slint::SharedString(recv_addr));
+                    (*h)->set_tx_rows(make_tx_rows(txs, decimals));
+                }
                 // Only when it changes, so a persistent fault doesn't rewrite
                 // the status line every two seconds over whatever else is there.
                 if (!wallet_svc_err.empty() && wallet_svc_err != g_last_wallet_svc_err) {
@@ -1681,7 +1714,11 @@ int main()
                 // twice (the second attempt just hits the datadir lock).
                 (*h)->set_daemon_stage(slint::SharedString(stage));
                 (*h)->set_daemon_loading(!running && !stage.empty());
-                if (running) {
+                // Three states, not two. `rpc_ok` publishes fresh figures;
+                // `busy` holds the last ones (the daemon is up, we just couldn't
+                // read it this tick, and zeroing would make the gauges stutter);
+                // down clears everything.
+                if (rpc_ok) {
                     bool synced = bs.synced != 0;
                     int64_t tip = bs.network_height > 0
                         ? bs.network_height
@@ -1702,10 +1739,11 @@ int main()
                     (*h)->set_mining(ms.active != 0);
                     (*h)->set_mining_threads(static_cast<int>(ms.threads));
                     (*h)->set_mining_hashrate(slint::SharedString(hashrate));
-                } else {
+                } else if (!busy) {
                     // Daemon down (e.g. just stopped): clear everything it drove so
                     // the gauges unfill to 0 and the counts/peers reset, rather than
-                    // freezing at their last value.
+                    // freezing at their last value. Deliberately NOT done while
+                    // busy — there the last figures are the truest thing we have.
                     (*h)->set_blocks(0);
                     (*h)->set_headers(0);
                     (*h)->set_peers(0);
