@@ -733,6 +733,17 @@ int main()
         nc.name = slint::SharedString(std::string_view(nm, nn));
         nc.color = parse_hex_color(col, cn);
         nc.index = static_cast<int>(i);
+        // Two-tone wordmark, pre-split here so the row can draw it directly.
+        // Left empty for the coins that don't have one, which is how NavItem
+        // knows to fall back to a single-colour label.
+        BwWordmark wm;
+        if (bw_coin_wordmark(i, &wm) == 1 && wm.split > 0 && wm.split < nn) {
+            std::string_view full(nm, nn);
+            nc.head = slint::SharedString(full.substr(0, wm.split));
+            nc.tail = slint::SharedString(full.substr(wm.split));
+            nc.head_color = parse_hex_color(wm.head_color, std::strlen(wm.head_color));
+            nc.tail_color = parse_hex_color(wm.tail_color, std::strlen(wm.tail_color));
+        }
         // Logo is embedded (see AppWindow.coin-logos), selected by nc.index.
         coins.push_back(nc);
     }
