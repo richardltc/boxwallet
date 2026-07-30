@@ -573,6 +573,11 @@ static void apply_coin_metadata(const AppWindow *ui, bw_ctx *ctx, int idx)
 // Seeded to the home dir at startup, not left empty: the wallet restore-from-file
 // flow opens the browser directly, and an empty path lists nothing — the user
 // would meet a blank pane where their wallet backup should be.
+// Which coin the prune prompt was opened for. The dialog acts on THIS, not on
+// g_selected: the user can move the nav while a modal is up, and applying a
+// prune choice to the wrong coin would rewrite the wrong conf.
+static int g_prune_coin = -1;
+
 static std::string g_browse_path;
 static std::vector<BrowseEntry> g_entries;
 
@@ -980,10 +985,11 @@ int main()
         }).detach();
     };
 
-    ui->on_start_daemon([weak, ctx, launch_daemon]() {
-        int coin = g_selected.load();
-        if (coin < 0)
-            return;
+    // The sync-accelerator offer, then the start. Shared by the plain Start path
+    // and by the prune prompt's continuation, so the two can't drift on ordering:
+    // the prune choice is written BEFORE this, because both touch the data dir
+    // and that is the order the TUI uses.
+    auto offer_accel_or_launch = [weak, ctx, launch_daemon](int coin) {
         // Before the first start on an empty chain, some coins offer a large
         // opt-in download that skips most of the sync (Divi's blockchain
         // snapshot). Ask first — this is only disk checks, so it's cheap enough
@@ -1017,6 +1023,82 @@ int main()
             return;
         }
         launch_daemon(coin);
+    };
+
+    ui->on_start_daemon([weak, ctx, offer_accel_or_launch]() {
+        int coin = g_selected.load();
+        if (coin < 0)
+            return;
+        // How should this chain be stored? Asked once, before a prune-capable
+        // daemon ever runs, because the answer can't be changed afterwards
+        // without downloading the chain again.
+        //
+        // Asked HERE, fresh, and acted on immediately — the answer is never
+        // stored. It is an instant-in-time predicate: an unpruned node has no
+        // prune key by definition, so the coins pair "no key" with "no chain data
+        // yet", and the honest answer flips to false the moment a daemon starts
+        // writing blocks. A cached true would offer to discard them.
+        if (bw_prune_should_offer(ctx, static_cast<size_t>(coin)) != 0) {
+            char prompt[512] = {0};
+            size_t pn = bw_prune_prompt(static_cast<size_t>(coin), prompt, sizeof prompt);
+            // The rows are the coin's own — Monero's are on/off rather than
+            // sizes, so a hard-coded GB list would offer it a value it can't
+            // honour.
+            std::vector<slint::SharedString> rows;
+            size_t nrows = bw_prune_preset_count(static_cast<size_t>(coin));
+            for (size_t r = 0; r < nrows; ++r) {
+                char lb[64] = {0};
+                size_t ln = bw_prune_preset_label(static_cast<size_t>(coin), r, lb, sizeof lb);
+                rows.push_back(slint::SharedString(std::string_view(lb, ln)));
+            }
+            if (rows.empty()) { // no menu to show — don't block the start on it
+                offer_accel_or_launch(coin);
+                return;
+            }
+            g_prune_coin = coin;
+            if (auto h = weak.lock()) {
+                (*h)->set_prune_prompt(slint::SharedString(std::string_view(prompt, pn)));
+                (*h)->set_prune_rows(std::make_shared<slint::VectorModel<slint::SharedString>>(rows));
+                // Row 0 is the coin's least destructive choice, so the default
+                // selection can't discard a chain on a stray Enter.
+                (*h)->set_prune_sel(0);
+                (*h)->set_daemon_busy(false);
+                (*h)->set_prune_open(true);
+            }
+            return;
+        }
+        offer_accel_or_launch(coin);
+    });
+
+    // The prune choice was made: write it, then carry on with the start.
+    ui->on_prune_choose([weak, ctx, offer_accel_or_launch](int row) {
+        // The coin the dialog was opened FOR, not whatever is selected now — the
+        // user can move the selection while a modal is up.
+        int coin = g_prune_coin;
+        if (coin < 0)
+            return;
+        g_prune_coin = -1;
+        int64_t value = bw_prune_preset_value(static_cast<size_t>(coin), static_cast<size_t>(row));
+        if (value >= 0 && bw_prune_apply(ctx, static_cast<size_t>(coin), value) < 0) {
+            // Not a reason to abort: they asked for a daemon, and an unwritten
+            // preference is the smaller problem. Say so and start unpruned —
+            // same call the TUI makes.
+            std::string why = last_error_text(ctx, -1);
+            if (auto h = weak.lock()) {
+                (*h)->set_status_text(slint::SharedString(
+                    "Couldn't save the pruning choice (" + why + ") — starting unpruned."));
+                (*h)->set_status_is_error(true);
+            }
+        }
+        offer_accel_or_launch(coin);
+    });
+
+    // Declined. The question was asked *before* starting, so declining it
+    // declines the start — this must not fall through to launch.
+    ui->on_prune_cancel([weak]() {
+        g_prune_coin = -1;
+        if (auto h = weak.lock())
+            (*h)->set_daemon_busy(false);
     });
 
     // Declined the accelerator: start the daemon and let it sync from the network.

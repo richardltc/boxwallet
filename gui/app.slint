@@ -602,6 +602,21 @@ export component AppWindow inherits Window {
     // Sync-accelerator prompt, raised by the C++ side when the coin offers one
     // before its first daemon start (see bw_sync_accel_offered). `accel-resume`
     // is pre-formatted and empty when there's nothing to resume.
+    // ---- first-start prune prompt ----
+    // Asked once, before a prune-capable daemon (Bitcoin, Litecoin, Monero) ever
+    // runs. `prune-rows` comes from the coin itself — never hard-coded here,
+    // since Monero's are on/off rather than sizes. Row 0 is by convention the
+    // least destructive choice, which is why the selection starts there: a stray
+    // Enter must not be able to discard a chain.
+    in-out property <bool> prune-open: false;
+    in property <string> prune-prompt: "";
+    in property <[string]> prune-rows;
+    in-out property <int> prune-sel: 0;
+    // Chosen row, or cancel. Cancel does NOT start the daemon — the question was
+    // asked before starting, so declining it declines the start.
+    callback prune-choose(int);
+    callback prune-cancel();
+
     in-out property <bool> accel-open: false;
     // True while the progress bar belongs to a sync-accelerator run rather than an
     // ordinary install — an install has nothing to pause, so the Pause button is
@@ -775,7 +790,7 @@ export component AppWindow inherits Window {
     out property <bool> modal-open:
         root.browse-open || root.send-confirm-open || root.mining-stop-open
         || root.wallet-stage != 0 || root.unlock-open || root.update-open
-        || root.accel-open;
+        || root.accel-open || root.prune-open;
 
     // Escape closes the topmost modal, in the same order they paint. Each arm
     // runs that modal's own Cancel path — clearing secrets included — because a
@@ -801,6 +816,14 @@ export component AppWindow inherits Window {
         }
         if (root.accel-open) {
             root.accel-open = false;
+            return true;
+        }
+        // Escape declines, which declines the start — same as Cancel. It must go
+        // through the callback so the pending coin is cleared and the Start
+        // button unlatches; silently hiding the dialog would strand both.
+        if (root.prune-open) {
+            root.prune-open = false;
+            root.prune-cancel();
             return true;
         }
         if (root.update-open) {
@@ -2613,6 +2636,103 @@ export component AppWindow inherits Window {
         // time a coin that publishes one is started on an empty chain. Declining is
         // a normal outcome (a full P2P sync still works), so both buttons start the
         // daemon — they differ only in whether the accelerator is fetched first.
+        // How should this chain be stored? Asked once, before a prune-capable
+        // daemon first runs, because the answer can't be changed afterwards
+        // without a full re-sync.
+        if root.prune-open: Rectangle {
+            background: #000000bb;
+            TouchArea { }
+
+            Rectangle {
+                width: 420px;
+                height: 190px + (root.prune-rows.length * 36px);
+                x: (parent.width - self.width) / 2;
+                y: (parent.height - self.height) / 2;
+                background: #202020;
+                border-radius: 10px;
+                border-width: 1px;
+                border-color: #3a3a3a;
+
+                VerticalBox {
+                    padding: 16px;
+                    spacing: 10px;
+                    alignment: start;
+                    Text {
+                        text: "How should " + root.coin-name + " store the blockchain?";
+                        color: #e6e6e6;
+                        font-size: 15px;
+                        font-weight: 600;
+                        wrap: word-wrap;
+                    }
+                    Text {
+                        text: root.prune-prompt;
+                        color: #c8c8c8;
+                        font-size: 13px;
+                        wrap: word-wrap;
+                        horizontal-stretch: 1;
+                    }
+                    // Rows come from the coin, in its order. Row 0 is the least
+                    // destructive one and starts selected.
+                    for row[i] in root.prune-rows: Rectangle {
+                        height: 30px;
+                        border-radius: 5px;
+                        background: root.prune-sel == i
+                            ? #2f3a2f
+                            : (rta.has-hover ? #262626 : transparent);
+                        HorizontalLayout {
+                            padding-left: 10px;
+                            spacing: 8px;
+                            Text {
+                                text: root.prune-sel == i ? "●" : "○";
+                                color: root.prune-sel == i ? #7ca071 : #6b6b6b;
+                                font-size: 13px;
+                                vertical-alignment: center;
+                            }
+                            Text {
+                                text: row;
+                                color: root.prune-sel == i ? #e6e6e6 : #c8c8c8;
+                                font-size: 13px;
+                                vertical-alignment: center;
+                                horizontal-stretch: 1;
+                            }
+                        }
+                        rta := TouchArea {
+                            clicked => {
+                                root.prune-sel = i;
+                            }
+                        }
+                    }
+                    // Said plainly, because it is the part that can't be undone.
+                    Text {
+                        text: "Pruning can't be reversed without downloading the chain again.";
+                        color: #9a9a9a;
+                        font-size: 12px;
+                        wrap: word-wrap;
+                    }
+                    HorizontalBox {
+                        padding: 0;
+                        alignment: end;
+                        spacing: 8px;
+                        Button {
+                            text: "Cancel";
+                            clicked => {
+                                root.prune-open = false;
+                                root.prune-cancel();
+                            }
+                        }
+                        Button {
+                            text: "Start " + root.coin-name;
+                            primary: true;
+                            clicked => {
+                                root.prune-open = false;
+                                root.prune-choose(root.prune-sel);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
         if root.accel-open: Rectangle {
             background: #000000bb;
             TouchArea { }

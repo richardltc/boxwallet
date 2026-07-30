@@ -2006,6 +2006,105 @@ export fn bw_prune_value_text(idx: usize, prune_mib: i64, buf: ?[*]u8, cap: usiz
     return copyOut(b[0..cap], money.pruneValueText(&tmp, pr.mode, prune_mib));
 }
 
+/// Whether to show the first-start prune prompt for this coin **right now**:
+/// 1 offer, 0 don't (which also covers every coin that has no pruning).
+/// Cheap disk checks only — no daemon needed — so it is fine straight from a
+/// click handler, and calling it there is exactly what keeps it uncacheable.
+/// Same shape as `bw_sync_accel_offered`.
+///
+/// **Call this inside the Start handler and act on the answer immediately. Never
+/// cache it, and never store it in a UI property.** It is an instant-in-time
+/// predicate over two things that both change underneath you: whether the conf
+/// carries a prune key, and whether any chain data exists yet.
+///
+/// The second half is what makes a stale answer dangerous. An unpruned node has
+/// no `prune` key *by definition*, so "has the user chosen?" alone reads
+/// somebody's fully-synced full node as "never asked" and offers to throw their
+/// blocks away — with no un-prune short of a complete re-sync. The coins pair
+/// that check with "and no `blocks/` present", so the honest answer flips to 0
+/// the moment a daemon starts writing a chain. A `true` cached from before that
+/// point would offer to discard it.
+export fn bw_prune_should_offer(ctx: ?*Ctx, idx: usize) c_int {
+    const c = ctx orelse return 0;
+    const coin = coinByIndex(idx) orelse return 0;
+
+    var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+    defer arena.deinit();
+    return if (coin.offersPrunePrompt(arena.allocator(), c.home_dir)) 1 else 0;
+}
+
+/// The prompt text for this coin's prune question, in its own terms (chain size,
+/// what pruning costs). One sentence; the caller wraps it. 0 for a coin that
+/// doesn't prune. Cheap; UI-thread safe.
+export fn bw_prune_prompt(idx: usize, buf: ?[*]u8, cap: usize) usize {
+    const b = buf orelse return 0;
+    const coin = coinByIndex(idx) orelse return 0;
+    const pr = coin.pruning() orelse return 0;
+    return copyOut(b[0..cap], pr.prompt);
+}
+
+/// How many preset rows this coin's prune menu has. Cheap; UI-thread safe.
+///
+/// Take the menu from here rather than hard-coding sizes: Monero is an `on_off`
+/// coin with its own two rows and no custom amount, so a hard-coded GB list
+/// would offer it a value it cannot honour.
+export fn bw_prune_preset_count(idx: usize) usize {
+    const coin = coinByIndex(idx) orelse return 0;
+    const pr = coin.pruning() orelse return 0;
+    return pr.presets.len;
+}
+
+/// The label of preset `row`, written into `buf`; returns its length, 0 if the
+/// row is out of range. Cheap; UI-thread safe.
+export fn bw_prune_preset_label(idx: usize, row: usize, buf: ?[*]u8, cap: usize) usize {
+    const b = buf orelse return 0;
+    const coin = coinByIndex(idx) orelse return 0;
+    const pr = coin.pruning() orelse return 0;
+    if (row >= pr.presets.len) return 0;
+    return copyOut(b[0..cap], pr.presets[row].label);
+}
+
+/// The value behind preset `row` — what to pass to `bw_prune_apply`. Returns -1
+/// for an out-of-range row, which `bw_prune_apply` refuses.
+///
+/// Row 0 is by convention the least destructive choice ("No pruning (full
+/// node)"), so a menu whose default lands on row 0 cannot discard a chain by
+/// someone pressing Enter.
+export fn bw_prune_preset_value(idx: usize, row: usize) i64 {
+    const coin = coinByIndex(idx) orelse return -1;
+    const pr = coin.pruning() orelse return -1;
+    if (row >= pr.presets.len) return -1;
+    return pr.presets[row].value;
+}
+
+/// Write the chosen prune value to the coin's conf: 0 on success, -1 on failure
+/// (`bw_last_error` has why). Reads and rewrites a file — worker thread, though
+/// it's small enough to run inline in a click handler as the TUI does.
+///
+/// Refuses a negative value outright: -1 is this ABI's "not configured"/"bad
+/// row" sentinel, and writing it as a setting would be meaningless.
+///
+/// A failure here is **not** a reason to abort the start. The TUI logs it and
+/// starts the daemon unpruned, because the user asked for a daemon and an
+/// unwritten preference is a smaller problem than not getting one.
+export fn bw_prune_apply(ctx: ?*Ctx, idx: usize, prune_value: i64) c_int {
+    const c = ctx orelse return -1;
+    const coin = coinByIndex(idx) orelse return -1;
+    if (prune_value < 0) {
+        c.setError("invalid prune value");
+        return -1;
+    }
+
+    var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+    defer arena.deinit();
+    coin.applyPrune(arena.allocator(), c.home_dir, prune_value) catch |err| {
+        c.setError(@errorName(err));
+        c.setErrorCode(@errorName(err));
+        return -1;
+    };
+    return 0;
+}
+
 /// Whether the coin's RPC port accepts a connection right now: 1 reachable,
 /// 0 not. A cheap TCP connect and close — no request, no auth.
 ///
@@ -2754,6 +2853,86 @@ test "the prune exports agree with the vtable about which coins prune" {
     // Bitcoin, Litecoin and Monero.
     try std.testing.expectEqual(@as(usize, 3), pruners);
     try std.testing.expectEqual(@as(c_int, -1), bw_prune_mode(coin_count));
+}
+
+test "the prune menu comes from the coin, with the safe choice first" {
+    var buf: [64]u8 = undefined;
+    var i: usize = 0;
+    while (i < coin_count) : (i += 1) {
+        const coin = coinByIndex(i) orelse return error.Unexpected;
+        const n = bw_prune_preset_count(i);
+        const pr = coin.pruning() orelse {
+            // A coin that doesn't prune offers no menu and no prompt, so nothing
+            // can open a dialog for it.
+            try std.testing.expectEqual(@as(usize, 0), n);
+            try std.testing.expectEqual(@as(usize, 0), bw_prune_prompt(i, &buf, buf.len));
+            continue;
+        };
+        try std.testing.expectEqual(pr.presets.len, n);
+        try std.testing.expect(n > 0);
+        try std.testing.expect(bw_prune_prompt(i, &buf, buf.len) > 0);
+
+        // Row 0 must be the least destructive choice — the dialog starts there,
+        // so anything else would let a stray Enter discard a chain.
+        try std.testing.expectEqual(@as(i64, 0), bw_prune_preset_value(i, 0));
+
+        for (pr.presets, 0..) |p, r| {
+            try std.testing.expectEqual(p.value, bw_prune_preset_value(i, r));
+            const ln = bw_prune_preset_label(i, r, &buf, buf.len);
+            try std.testing.expectEqualStrings(p.label, buf[0..ln]);
+            // Every row must be pickable and describable.
+            try std.testing.expect(ln > 0);
+            try std.testing.expect(p.value >= 0);
+        }
+        // Out of range is refused rather than wrapping onto a real row.
+        try std.testing.expectEqual(@as(i64, -1), bw_prune_preset_value(i, n));
+        try std.testing.expectEqual(@as(usize, 0), bw_prune_preset_label(i, n, &buf, buf.len));
+    }
+}
+
+test "bw_prune_apply refuses the sentinel rather than writing it" {
+    // -1 is this ABI's "not configured" / "bad row" value. If an out-of-range
+    // row's -1 were written through as a setting, a mis-indexed menu would
+    // silently corrupt the conf instead of failing loudly.
+    var ctx: Ctx = .{ .allocator = std.testing.allocator, .home_dir = "/nonexistent/bw-test", .install_root = "" };
+    var idx: usize = coin_count;
+    var i: usize = 0;
+    while (i < coin_count) : (i += 1) {
+        const c = coinByIndex(i) orelse continue;
+        if (c.pruning() != null) {
+            idx = i;
+            break;
+        }
+    }
+    try std.testing.expect(idx < coin_count);
+
+    try std.testing.expectEqual(@as(c_int, -1), bw_prune_apply(&ctx, idx, -1));
+    try std.testing.expectEqual(@as(c_int, -1), bw_prune_apply(&ctx, idx, bw_prune_preset_value(idx, 99)));
+    // And a coin that can't prune is refused outright.
+    var non: usize = coin_count;
+    i = 0;
+    while (i < coin_count) : (i += 1) {
+        const c = coinByIndex(i) orelse continue;
+        if (c.pruning() == null) {
+            non = i;
+            break;
+        }
+    }
+    try std.testing.expect(non < coin_count);
+    try std.testing.expectEqual(@as(c_int, -1), bw_prune_apply(&ctx, non, 2000));
+    ctx.clearError();
+}
+
+test "a coin that doesn't prune is never offered the prompt" {
+    var ctx: Ctx = .{ .allocator = std.testing.allocator, .home_dir = "/nonexistent/bw-test", .install_root = "" };
+    var i: usize = 0;
+    while (i < coin_count) : (i += 1) {
+        const coin = coinByIndex(i) orelse continue;
+        if (coin.pruning() != null) continue;
+        try std.testing.expectEqual(@as(c_int, 0), bw_prune_should_offer(&ctx, i));
+    }
+    // Nor is a non-coin.
+    try std.testing.expectEqual(@as(c_int, 0), bw_prune_should_offer(&ctx, coin_count));
 }
 
 test "never-configured and deliberate-full-node read differently" {
