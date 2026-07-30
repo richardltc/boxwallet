@@ -303,6 +303,44 @@ int     bw_prune_mode(size_t idx);
 int     bw_prune_current(bw_ctx *ctx, size_t idx, int64_t *out);
 size_t  bw_prune_value_text(size_t idx, int64_t prune_mib, char *buf, size_t cap);
 
+/* ---- the first-start prune prompt --------------------------------------------
+ * bw_prune_should_offer: 1 = ask the user how to store the chain before starting
+ * this daemon for the first time, 0 = don't (also 0 for coins that never prune).
+ *
+ * Cheap disk checks only, so it is fine straight from a click handler — and
+ * calling it there is what keeps it uncacheable.
+ *
+ * CALL IT INSIDE THE START HANDLER AND ACT ON THE ANSWER IMMEDIATELY. Never
+ * cache it; never put it in a UI property. It is an instant-in-time predicate
+ * over two things that both move underneath you — whether the conf has a prune
+ * key, and whether any chain data exists yet.
+ *
+ * The second half is why a stale answer is dangerous. An unpruned node has no
+ * prune key BY DEFINITION, so "has the user chosen?" alone reads somebody's
+ * fully-synced full node as "never asked" and offers to throw their blocks away,
+ * with no un-prune short of a complete re-sync. The coins pair that check with
+ * "and no blocks/ present", so the honest answer flips to 0 the moment a daemon
+ * starts writing a chain — and a `true` cached from before then would offer to
+ * discard it.
+ *
+ * Take the menu from bw_prune_preset_* rather than hard-coding one: Monero is an
+ * on/off coin with its own rows and no custom amount, so a hard-coded GB list
+ * would offer it a value it cannot honour. Row 0 is by convention the least
+ * destructive choice, so a dialog defaulting to row 0 cannot discard a chain on
+ * a stray Enter.
+ *
+ * bw_prune_apply writes the conf: 0 ok, -1 see bw_last_error. A failure is NOT a
+ * reason to abort the start — log it and start unpruned, which is what the TUI
+ * does. The user asked for a daemon; an unwritten preference is the smaller
+ * problem. Apply the prune BEFORE the sync-accelerator prompt: both write into
+ * the data dir, and that is the order the TUI uses. */
+int     bw_prune_should_offer(bw_ctx *ctx, size_t idx);
+size_t  bw_prune_prompt(size_t idx, char *buf, size_t cap);
+size_t  bw_prune_preset_count(size_t idx);
+size_t  bw_prune_preset_label(size_t idx, size_t row, char *buf, size_t cap);
+int64_t bw_prune_preset_value(size_t idx, size_t row);
+int     bw_prune_apply(bw_ctx *ctx, size_t idx, int64_t prune_value);
+
 /* Whether the coin's RPC port accepts a connection right now: 1 reachable, 0 not.
  * A cheap TCP connect and close — no request, no auth. Worker thread only.
  *
