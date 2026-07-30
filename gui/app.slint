@@ -1094,12 +1094,21 @@ export component AppWindow inherits Window {
                                 : "Wallet status unknown";
                         }
                         if root.ew-flags != 0: StatusIcon {
-                            icon: root.wallet-state >= 2
+                            icon: root.running && root.wallet-state >= 2
                                 ? @image-url("icons/lock-open.svg")
                                 : @image-url("icons/lock.svg");
                             accent: root.coin-color;
-                            active: root.wallet-state != 0;
-                            hint: root.wallet-state == 0 ? "No wallet yet"
+                            // Gated on `running`, like every other glyph in this
+                            // row. bw_ext_wallet_state answers from *disk* — a
+                            // wallet file that exists but isn't open reads as
+                            // "locked" whether or not the daemon is up — so
+                            // without this the padlock stayed lit on a stopped
+                            // coin, reporting a live state nothing was serving.
+                            // The TUI says a plain dim "Unknown" here; this is
+                            // the same answer.
+                            active: root.running && root.wallet-state != 0;
+                            hint: !root.running ? "Wallet status unknown — the daemon isn't running"
+                                : root.wallet-state == 0 ? "No wallet yet"
                                 : root.wallet-state == 1 ? "Wallet locked"
                                 : root.wallet-state == 3 ? "Wallet rescanning"
                                 : "Wallet unlocked";
