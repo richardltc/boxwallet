@@ -25,6 +25,12 @@ struct NavCoin {
     name: string,
     color: color,
     index: int, // registry index for bw_* calls (also indexes the embedded logos)
+    // Two-tone wordmark, pre-split by the host (bw_coin_wordmark). Empty `tail`
+    // means this coin has no wordmark and its name is drawn in one colour.
+    head: string,
+    tail: string,
+    head-color: color,
+    tail-color: color,
 }
 
 // One entry in the in-app file browser's directory listing.
@@ -48,6 +54,14 @@ component NavItem inherits Rectangle {
     in property <string> label;
     in property <brush> accent;
     in property <bool> selected;
+    // Two-tone wordmark halves, drawn only while this row is selected. Unselected
+    // rows grey out like every other coin, so the brand colours mark the current
+    // one — same rule the TUI's nav follows.
+    in property <string> head: "";
+    in property <string> tail: "";
+    in property <color> head-color: #ffffff;
+    in property <color> tail-color: #ffffff;
+    property <bool> two-tone: root.selected && root.tail != "";
     callback clicked;
 
     height: 36px;
@@ -61,14 +75,25 @@ component NavItem inherits Rectangle {
     HorizontalBox {
         alignment: start;
         padding-left: 16px;
+        // No gap: the two halves are one word ("Redd" + "Coin"), not two.
+        spacing: 0;
         Text {
-            text: root.label;
+            text: root.two-tone ? root.head : root.label;
             vertical-alignment: center;
             // Unselected: the same muted grey as inactive tab headers, normal
             // size. Selected: brand colour, bold, and a bit bigger so it stands out.
             font-size: root.selected ? 16px : 14px;
             font-weight: root.selected ? 700 : 400;
-            color: root.selected ? root.accent : #9a9a9a;
+            color: root.two-tone ? root.head-color : (root.selected ? root.accent : #9a9a9a);
+        }
+        // The tail half, present only for a selected wordmark coin; empty text
+        // takes no width, so every other row lays out exactly as before.
+        Text {
+            text: root.two-tone ? root.tail : "";
+            vertical-alignment: center;
+            font-size: root.selected ? 16px : 14px;
+            font-weight: root.selected ? 700 : 400;
+            color: root.tail-color;
         }
     }
     ta := TouchArea {
@@ -905,6 +930,10 @@ export component AppWindow inherits Window {
                             for c in root.nav-coins: NavItem {
                                 label: c.name;
                                 accent: c.color;
+                                head: c.head;
+                                tail: c.tail;
+                                head-color: c.head-color;
+                                tail-color: c.tail-color;
                                 selected: root.selected == c.index;
                                 clicked => {
                                     root.selected = c.index;
