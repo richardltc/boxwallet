@@ -559,6 +559,7 @@ static void apply_coin_metadata(const AppWindow *ui, bw_ctx *ctx, int idx)
     ui->set_blocks_str(slint::SharedString(""));
     ui->set_disk_free(slint::SharedString(""));
     ui->set_status_text(slint::SharedString(""));
+    ui->set_live_status(slint::SharedString(""));
     ui->set_status_is_error(false);
     // Including the warm-up readout: the coin we're leaving may well still be
     // loading, and its stage must not read as this one's.
@@ -1982,7 +1983,31 @@ int main()
                 disk_free_str = humanize_bytes(du.total_bytes - du.used_bytes) + " free";
             }
 
-            post_to_ui([weak, di, bs, daemon_up, sel, disk_frac, disk_free_str, wallet_sec, stage,
+            // The status line, from the core — same wording and priority order
+            // the TUI uses, rather than a sentence assembled here. We can't fill
+            // every field (no presync detection or load sub-stage on this side
+            // yet), and we don't have to: each unknown is 0, and the readout
+            // degrades to a coarser but still correct label.
+            BwStatusInput si;
+            std::memset(&si, 0, sizeof si);
+            si.installed = 1; // the Start button is unreachable otherwise
+            si.daemon = daemon_up ? 2 : 0;
+            si.peers = static_cast<uint32_t>(di.connections < 0 ? 0 : di.connections);
+            si.sync = daemon_up ? (bs.synced ? 2 : 1) : 0;
+            si.headers_cur = static_cast<uint64_t>(bs.headers < 0 ? 0 : bs.headers);
+            si.blocks_cur = static_cast<uint64_t>(bs.blocks < 0 ? 0 : bs.blocks);
+            {
+                int64_t tip = bs.network_height > 0
+                    ? bs.network_height
+                    : (bs.headers > bs.blocks ? bs.headers : bs.blocks);
+                si.headers_total = static_cast<uint64_t>(tip < 0 ? 0 : tip);
+                si.blocks_total = si.headers_total;
+            }
+            char sl[192] = {0};
+            size_t sll = rpc_ok ? bw_status_line(&si, sl, sizeof sl) : 0;
+            std::string live_status(sl, sll);
+
+            post_to_ui([weak, di, bs, daemon_up, sel, disk_frac, disk_free_str, wallet_sec, stage, live_status,
                         ms, hashrate, ew_flags, wallet_state, bal, have_balance,
                         rp, rescanning, txs, recv_addr, decimals, wallet_svc_err, can_send,
                         rpc_ok, busy, coin]() {
@@ -2039,6 +2064,7 @@ int main()
                 // Start stays latched for that whole window, so the daemon
                 // coming up can't be mistaken for a stopped one and started
                 // twice (the second attempt just hits the datadir lock).
+                (*h)->set_live_status(slint::SharedString(live_status));
                 (*h)->set_daemon_stage(slint::SharedString(stage));
                 (*h)->set_daemon_loading(!running && !stage.empty());
                 // Three states, not two. `rpc_ok` publishes fresh figures;

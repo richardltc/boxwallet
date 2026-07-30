@@ -36,6 +36,7 @@ const sigguard = @import("sigguard.zig");
 const money = @import("money.zig");
 const seed_mod = @import("seed.zig");
 const walletmenu = @import("walletmenu.zig");
+const status_mod = @import("status.zig");
 const coinmod = @import("coin.zig");
 const models = @import("models.zig");
 const conf = @import("conf.zig");
@@ -1927,6 +1928,119 @@ export fn bw_mining_failure_text(err_name: ?[*:0]const u8, buf: ?[*]u8, cap: usi
 
 // ---- disk usage (for the coin's "disk used" gauge) --------------------------
 
+// ---- the status line --------------------------------------------------------
+
+/// Everything the status readout reads, flattened for C. Zero it, fill in what
+/// you know, and leave the rest — every field has a sensible "unknown" at 0, and
+/// the readout degrades to a coarser but still correct label rather than lying.
+pub const BwStatusInput = extern struct {
+    /// 0 idle, 1 downloading, 2 extracting.
+    installing: c_int,
+    installed: c_int,
+    /// 0 stopped, 1 starting, 2 running, 3 stopping.
+    daemon: c_int,
+    /// A start was asked for but no poll has come back — "Checking…", which is
+    /// not the same as stopped.
+    awaiting_status: c_int,
+    /// `models.LoadingPhase` ordinal; 0 = not warming up.
+    loading_phase: c_int,
+    /// `warmup.Stage` ordinal; 0 = no finer sub-stage than the phase.
+    load_stage: c_int,
+    load_pct_bp: u32,
+    load_eta_pct: u8,
+    peers: u32,
+    /// 0 idle, 1 syncing, 2 synced.
+    sync: c_int,
+    presync: c_int,
+    presync_bp: u32,
+    headers_cur: u64,
+    headers_total: u64,
+    blocks_cur: u64,
+    blocks_total: u64,
+};
+
+fn statusInputFrom(in: *const BwStatusInput) status_mod.Input {
+    const clamp = struct {
+        fn e(comptime T: type, v: c_int) T {
+            const max = @typeInfo(T).@"enum".fields.len - 1;
+            if (v < 0 or v > max) return @enumFromInt(0);
+            return @enumFromInt(@as(u8, @intCast(v)));
+        }
+    };
+    return .{
+        .installing = clamp.e(status_mod.Phase, in.installing),
+        .installed = in.installed != 0,
+        .daemon = clamp.e(status_mod.Daemon, in.daemon),
+        .awaiting_status = in.awaiting_status != 0,
+        .loading_phase = clamp.e(models.LoadingPhase, in.loading_phase),
+        .load_stage = clamp.e(warmup.Stage, in.load_stage),
+        .load_pct_bp = in.load_pct_bp,
+        .load_eta_pct = in.load_eta_pct,
+        .peers = in.peers,
+        .sync = clamp.e(status_mod.Sync, in.sync),
+        .presync = in.presync != 0,
+        .presync_bp = in.presync_bp,
+        .headers_cur = in.headers_cur,
+        .headers_total = in.headers_total,
+        .blocks_cur = in.blocks_cur,
+        .blocks_total = in.blocks_total,
+    };
+}
+
+/// The whole status line — text, any appended percentage, and the chain height —
+/// written into `buf`; returns its length.
+///
+/// This is the TUI's exact wording and priority order, from the same module, so
+/// the two front-ends can't describe one daemon differently. Pure and cheap;
+/// safe on the UI thread.
+///
+/// The height is rendered plainly here ("Syncing blocks… 123,456 of 850,000").
+/// A caller that wants to colour the parts separately, as the TUI does, should
+/// use `bw_status_height` instead and assemble them.
+export fn bw_status_line(in: ?*const BwStatusInput, buf: ?[*]u8, cap: usize) usize {
+    const i = in orelse return 0;
+    const b = buf orelse return 0;
+    const snap = statusInputFrom(i);
+    const r = status_mod.readout(snap);
+
+    var sbuf: [32]u8 = undefined;
+    const suffix = status_mod.suffix(&sbuf, snap, r);
+
+    var out: [160]u8 = undefined;
+    var w = std.Io.Writer.fixed(&out);
+    w.writeAll(r.text) catch return copyOut(b[0..cap], r.text);
+    w.writeAll(suffix) catch {};
+    switch (status_mod.height(snap, r)) {
+        .none => {},
+        .at => |cur| {
+            var cb: [64]u8 = undefined;
+            w.print(" at {s}", .{money.formatAmount(&cb, @floatFromInt(cur), 0)}) catch {};
+        },
+        .progress => |p| {
+            var cb: [64]u8 = undefined;
+            var tb: [64]u8 = undefined;
+            w.print(" {s} of {s}", .{
+                money.formatAmount(&cb, @floatFromInt(p.cur), 0),
+                money.formatAmount(&tb, @floatFromInt(p.total), 0),
+            }) catch {};
+        },
+    }
+    return copyOut(b[0..cap], w.buffered());
+}
+
+/// The status's tone: 0 idle, 1 working, 2 warning, 3 ok. Pure; UI-thread safe.
+export fn bw_status_tone(in: ?*const BwStatusInput) c_int {
+    const i = in orelse return 0;
+    return @intFromEnum(status_mod.readout(statusInputFrom(i)).tone);
+}
+
+/// Whether the status counts as "active" — something is happening, so the label
+/// should brighten. Pure; UI-thread safe.
+export fn bw_status_active(in: ?*const BwStatusInput) c_int {
+    const i = in orelse return 0;
+    return if (status_mod.readout(statusInputFrom(i)).active) 1 else 0;
+}
+
 // ---- the in-daemon wallet menu ----------------------------------------------
 //
 // Which actions a wallet state permits is decided by `walletmenu.zig`, the same
@@ -3113,6 +3227,51 @@ test "the shared Io leaves exactly one SIGIO handler installed for the process" 
     try std.testing.expect(handler != null);
     // SIG_DFL is 0; anything else means a handler is installed.
     try std.testing.expect(@intFromPtr(handler.?) != 0);
+}
+
+test "the status export says exactly what the shared readout says" {
+    var buf: [160]u8 = undefined;
+
+    // A zeroed input is "not installed" — the honest answer for a caller that
+    // knows nothing, and the reason every field's 0 has to mean "unknown".
+    var in: BwStatusInput = std.mem.zeroes(BwStatusInput);
+    var n = bw_status_line(&in, &buf, buf.len);
+    try std.testing.expectEqualStrings("Not installed", buf[0..n]);
+    try std.testing.expectEqual(@as(c_int, 0), bw_status_active(&in));
+
+    // Running, no peers yet.
+    in.installed = 1;
+    in.daemon = 2;
+    n = bw_status_line(&in, &buf, buf.len);
+    try std.testing.expectEqualStrings("Waiting for peers…", buf[0..n]);
+    try std.testing.expectEqual(@as(c_int, 1), bw_status_active(&in));
+
+    // Syncing blocks, with the height appended and grouped the way the TUI
+    // groups it.
+    in.peers = 8;
+    in.sync = 1;
+    in.blocks_cur = 123456;
+    in.blocks_total = 850000;
+    in.headers_cur = 850000;
+    in.headers_total = 850000;
+    n = bw_status_line(&in, &buf, buf.len);
+    try std.testing.expectEqualStrings("Syncing blocks… 123,456 of 850,000", buf[0..n]);
+
+    // Synced reads as a bare height, not "N of N".
+    in.sync = 2;
+    n = bw_status_line(&in, &buf, buf.len);
+    try std.testing.expectEqualStrings("Synced at 123,456", buf[0..n]);
+    try std.testing.expectEqual(@as(c_int, @intFromEnum(status_mod.Tone.ok)), bw_status_tone(&in));
+
+    // Out-of-range enum values fall back to 0 rather than reinterpreting memory.
+    in.daemon = 99;
+    in.sync = -5;
+    n = bw_status_line(&in, &buf, buf.len);
+    try std.testing.expectEqualStrings("Idle", buf[0..n]);
+
+    // A null input is answered, not dereferenced.
+    try std.testing.expectEqual(@as(usize, 0), bw_status_line(null, &buf, buf.len));
+    try std.testing.expectEqual(@as(c_int, 0), bw_status_tone(null));
 }
 
 test "bw_wallet_menu returns exactly what the shared policy decides" {

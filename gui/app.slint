@@ -794,6 +794,10 @@ export component AppWindow inherits Window {
     in property <color> wordmark-head-color: #ffffff;
     in property <color> wordmark-tail-color: #ffffff;
     in property <string> status-text: "";  // latest status line
+    // The live status from the core (bw_status_line): the same wording and
+    // priority order the TUI shows. Outranks both the warm-up stage and the last
+    // action message whenever the poll has produced one.
+    in property <string> live-status: "";
     in property <bool> status-is-error: false;
 
     // In-app file browser. Opened from the wallet modal's "pick a wallet file"
@@ -1479,12 +1483,21 @@ export component AppWindow inherits Window {
                                 // do so for minutes), so it's the live answer to "what
                                 // is it doing?". Otherwise the latest action/info
                                 // message, falling back to "Staking" while it stakes.
-                                text: root.daemon-stage != ""
-                                    ? root.daemon-stage
-                                    : (root.status-text != "" ? root.status-text : (root.staking ? "Staking" : ""));
-                                // A live stage is progress, never an error — don't
-                                // inherit the red from an earlier failed action.
-                                color: root.status-is-error && root.daemon-stage == "" ? #e74c3c : #c8c8c8;
+                                // The core's live readout first: it's the same
+                                // sentence the TUI shows, and it already folds in
+                                // the warm-up phase. Then the daemon's own stage
+                                // (which covers the window before the first poll
+                                // lands), then the last action message, then
+                                // "Staking".
+                                text: root.live-status != ""
+                                    ? root.live-status
+                                    : (root.daemon-stage != ""
+                                        ? root.daemon-stage
+                                        : (root.status-text != "" ? root.status-text : (root.staking ? "Staking" : "")));
+                                // Live progress is never an error — don't inherit
+                                // the red from an earlier failed action.
+                                color: root.status-is-error && root.live-status == "" && root.daemon-stage == ""
+                                    ? #e74c3c : #c8c8c8;
                                 font-size: 13px;
                                 wrap: word-wrap;
                                 horizontal-stretch: 1;

@@ -275,6 +275,39 @@ typedef struct {
 } BwDiskUsage;
 int     bw_disk_usage(bw_ctx *ctx, size_t idx, BwDiskUsage *out);
 
+/* ---- the status line ---------------------------------------------------------
+ * The TUI's exact wording and priority order, from the same module, so the two
+ * front-ends can't describe one daemon differently: installing -> not installed
+ * -> starting/stopping -> checking -> warming up -> waiting for peers -> syncing
+ * -> synced -> idle.
+ *
+ * Zero the struct, fill in what you know, leave the rest. Every field's 0 is a
+ * sensible "unknown", and the readout degrades to a coarser but still correct
+ * label rather than inventing one — a caller with no presync or warm-up detail
+ * simply gets "Syncing headers…" instead of "Pre-synching headers… 7.44%".
+ *
+ * All three are pure and cheap: UI-thread safe. */
+typedef struct {
+    int      installing;      /* 0 idle, 1 downloading, 2 extracting */
+    int      installed;
+    int      daemon;          /* 0 stopped, 1 starting, 2 running, 3 stopping */
+    int      awaiting_status; /* asked to start, no poll back yet -> "Checking…" */
+    int      loading_phase;   /* 0 = not warming up */
+    int      load_stage;      /* 0 = no sub-stage finer than the phase */
+    uint32_t load_pct_bp;
+    uint8_t  load_eta_pct;
+    uint32_t peers;
+    int      sync;            /* 0 idle, 1 syncing, 2 synced */
+    int      presync;
+    uint32_t presync_bp;
+    uint64_t headers_cur, headers_total;
+    uint64_t blocks_cur, blocks_total;
+} BwStatusInput;
+
+size_t  bw_status_line(const BwStatusInput *in, char *buf, size_t cap);
+int     bw_status_tone(const BwStatusInput *in);   /* 0 idle, 1 working, 2 warning, 3 ok */
+int     bw_status_active(const BwStatusInput *in); /* something is happening */
+
 /* ---- the in-daemon wallet menu -----------------------------------------------
  * Which actions a wallet state permits is decided in the core, by the same
  * module the TUI asks — so DON'T enumerate actions here. Call bw_wallet_menu and
