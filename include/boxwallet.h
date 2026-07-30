@@ -275,6 +275,17 @@ typedef struct {
 } BwDiskUsage;
 int     bw_disk_usage(bw_ctx *ctx, size_t idx, BwDiskUsage *out);
 
+/* Whether the coin's RPC port accepts a connection right now: 1 reachable, 0 not.
+ * A cheap TCP connect and close — no request, no auth. Worker thread only.
+ *
+ * Use it to tell UP-BUT-BUSY apart from DOWN. A daemon under load accepts the
+ * connection instantly while stalling its RPC reply for seconds (Nerva does this
+ * behind its blockchain lock), so treating a failed bw_daemon_info as "not
+ * running" makes the whole UI flip to stopped and back every time the node is
+ * busy. When the status reads fail, ask this: reachable means keep showing it as
+ * running, and keep the last figures rather than zeroing them. */
+int     bw_daemon_reachable(bw_ctx *ctx, size_t idx);
+
 /* Window geometry, remembered across runs in BoxWallet's own settings conf (the
  * same file the TUI keeps hide_balances in, so writes merge rather than clobber).
  *

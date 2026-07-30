@@ -39,6 +39,7 @@ const walletmenu = @import("walletmenu.zig");
 const coinmod = @import("coin.zig");
 const models = @import("models.zig");
 const conf = @import("conf.zig");
+const rpc = @import("rpc.zig");
 const install = @import("install.zig");
 const updater = @import("update.zig");
 const proc = @import("proc.zig");
@@ -1925,6 +1926,39 @@ export fn bw_mining_failure_text(err_name: ?[*:0]const u8, buf: ?[*]u8, cap: usi
 }
 
 // ---- disk usage (for the coin's "disk used" gauge) --------------------------
+
+/// Whether the coin's RPC port accepts a connection right now: 1 reachable,
+/// 0 not. A cheap TCP connect and close — no request, no auth.
+///
+/// This exists to tell **up-but-busy** apart from **down**. A daemon under load
+/// accepts the connection instantly while stalling its RPC reply for seconds —
+/// Nerva does exactly this behind its blockchain lock — so treating a failed
+/// `bw_daemon_info` as "not running" makes the whole UI flip to stopped and back
+/// every time the node is busy. Call this when the status reads fail: reachable
+/// means keep showing it as running.
+///
+/// Blocks on a connect, so worker thread only. It's a loopback connect, which
+/// either completes or refuses immediately.
+export fn bw_daemon_reachable(ctx: ?*Ctx, idx: usize) c_int {
+    const c = ctx orelse return 0;
+    const coin = coinByIndex(idx) orelse return 0;
+
+    var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const io = sharedIo();
+
+    const data_dir = coin.dataDir(a, c.home_dir) catch return 0;
+    const auth = conf.readAuth(
+        a,
+        io,
+        data_dir,
+        coin.confFile(),
+        coin.rpcDefaultUsername(),
+        coin.rpcDefaultPort(),
+    ) catch return 0;
+    return if (rpc.daemonReachable(a, auth)) 1 else 0;
+}
 
 /// Bytes used / total on the filesystem holding the coin's data dir.
 pub const BwDiskUsage = extern struct {
