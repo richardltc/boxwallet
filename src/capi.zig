@@ -41,6 +41,7 @@ const qrcode = @import("qrcode.zig");
 const disk = @import("disk.zig");
 const memory = @import("memory.zig");
 const price = @import("price.zig");
+const timefmt = @import("timefmt.zig");
 const coinmod = @import("coin.zig");
 const models = @import("models.zig");
 const conf = @import("conf.zig");
@@ -434,6 +435,42 @@ export fn bw_format_amount(value: f64, decimals: u8, buf: ?[*]u8, cap: usize) us
     const b = buf orelse return 0;
     var tmp: [64]u8 = undefined;
     return copyOut(b[0..cap], money.formatAmount(&tmp, value, decimals));
+}
+
+/// Parse a typed USD amount ("125", "125.5", "125.50") into integer cents, or
+/// -1 when it isn't a plain non-negative dollars figure.
+///
+/// Exported so a typed amount becomes the *same* number in both front-ends.
+/// Money never rides through a float here: the figure a mint settles against is
+/// the one this parsed. Cheap; UI-thread safe.
+export fn bw_parse_dollars_to_cents(text: ?[*:0]const u8) i64 {
+    const t = text orelse return -1;
+    return money.parseDollarsToCents(std.mem.span(t)) orelse -1;
+}
+
+/// Format integer cents as dollars ("$1,234.56"). The stablecoin figures are all
+/// cents, and this is the one place they become text — so both front-ends round
+/// and punctuate them identically. Cheap; UI-thread safe.
+export fn bw_format_cents(cents: i64, buf: ?[*]u8, cap: usize) usize {
+    const b = buf orelse return 0;
+    var tmp: [48]u8 = undefined;
+    return copyOut(b[0..cap], money.formatCents(&tmp, cents));
+}
+
+/// Format an oracle price in micro-USD per coin ("$0.014230") — six decimals,
+/// since sub-cent coins are the normal case. Cheap; UI-thread safe.
+export fn bw_format_micro_usd(micro: u64, buf: ?[*]u8, cap: usize) usize {
+    const b = buf orelse return 0;
+    var tmp: [48]u8 = undefined;
+    return copyOut(b[0..cap], money.formatMicroUsd(&tmp, micro));
+}
+
+/// Format a rough duration ("2 hours and 5 minutes"), for a countdown. Empty
+/// under a minute. Cheap; UI-thread safe.
+export fn bw_format_duration(secs: i64, buf: ?[*]u8, cap: usize) usize {
+    const b = buf orelse return 0;
+    var tmp: [timefmt.max_len]u8 = undefined;
+    return copyOut(b[0..cap], timefmt.duration(&tmp, secs));
 }
 
 /// Drop trailing zeros (and a bare decimal point) from a figure produced by
@@ -1941,6 +1978,365 @@ export fn bw_mining_failure_text(err_name: ?[*:0]const u8, buf: ?[*]u8, cap: usi
 }
 
 // ---- disk usage (for the coin's "disk used" gauge) --------------------------
+
+// ---- the chain-native stablecoin (DigiByte's DigiDollar) --------------------
+//
+// Money here is integer **cents** throughout, never a float — these figures are
+// what a mint and a redeem are settled against, and a rounding artifact in a
+// float would be a rounding artifact in someone's money.
+//
+// Note DigiByte's wallet lives in its daemon, and the stablecoin hooks take the
+// *daemon's* auth — so these use `ctxAuth`, not `walletAuth`, and there is no
+// wallet-open gate. That is the same trap that left the ordinary wallet tabs
+// blank for every in-daemon coin.
+
+/// Upper bound on a coin's lock-tier menu, so callers can size an array once.
+/// DigiByte ships ten; the headroom is for a coin that adds more without every
+/// caller silently dropping the extras.
+pub const bw_sc_max_tiers: usize = 16;
+
+/// One lock tier a mint can choose: how long the collateral is committed, and
+/// how much collateral the position needs as a percentage.
+pub const BwScTier = extern struct {
+    tier: u8,
+    ratio_pct: u32,
+    duration: [24]u8, // NUL-terminated
+};
+
+/// Live system state. Everything past `active` is best-effort: a daemon
+/// mid-warmup or an oracle hiccup leaves the affected figure at 0 rather than
+/// failing the whole snapshot.
+pub const BwScInfo = extern struct {
+    active: c_int,
+    /// The raw BIP9 deployment status, for the pre-activation readout.
+    status: [24]u8, // NUL-terminated
+    activation_height: i64,
+    price_micro_usd: u64,
+    price_stale: c_int,
+    total_supply_cents: i64,
+    total_collateral: f64,
+    health_ratio: f64,
+    minting_blocked: c_int,
+};
+
+pub const BwScBalance = extern struct {
+    confirmed_cents: i64,
+    pending_cents: i64,
+};
+
+/// Mirror of `models.StablecoinTx`. `kind` is the ordinal: 0 mint, 1 sent,
+/// 2 received, 3 redeem. `amount_cents` is a positive magnitude — `kind` carries
+/// the sign.
+pub const BwScTx = extern struct {
+    kind: c_int,
+    amount_cents: i64,
+    time: i64,
+    confirmations: i64,
+};
+
+/// One minted vault. `id` is the mint transaction hash — the handle a redeem is
+/// keyed on — carried with an explicit length rather than NUL-terminated,
+/// because a bitcoin-family txid is exactly 64 hex characters and terminating it
+/// would silently truncate the last one.
+pub const BwScPosition = extern struct {
+    id: [64]u8,
+    id_len: usize,
+    amount_cents: i64,
+    tier: u8,
+    unlock_height: i64,
+    /// The daemon's own verdict — timelock expired, confirmed, unspent. Filter
+    /// the redeem picker on this rather than comparing heights yourself.
+    can_redeem: c_int,
+};
+
+/// The stablecoin's display name ("DigiDollar") and ticker ("DGD"). 0 for a coin
+/// that has none. Cheap; UI-thread safe.
+export fn bw_sc_name(idx: usize, buf: ?[*]u8, cap: usize) usize {
+    const b = buf orelse return 0;
+    const coin = coinByIndex(idx) orelse return 0;
+    const sc = coin.stablecoin() orelse return 0;
+    return copyOut(b[0..cap], sc.name);
+}
+
+export fn bw_sc_symbol(idx: usize, buf: ?[*]u8, cap: usize) usize {
+    const b = buf orelse return 0;
+    const coin = coinByIndex(idx) orelse return 0;
+    const sc = coin.stablecoin() orelse return 0;
+    return copyOut(b[0..cap], sc.symbol);
+}
+
+/// Mint bounds in cents, and how long a block takes (for the activation
+/// countdown). 0 when the coin has no stablecoin. Cheap; UI-thread safe.
+export fn bw_sc_min_mint_cents(idx: usize) i64 {
+    const coin = coinByIndex(idx) orelse return 0;
+    const sc = coin.stablecoin() orelse return 0;
+    return sc.min_mint_cents;
+}
+
+export fn bw_sc_max_mint_cents(idx: usize) i64 {
+    const coin = coinByIndex(idx) orelse return 0;
+    const sc = coin.stablecoin() orelse return 0;
+    return sc.max_mint_cents;
+}
+
+export fn bw_sc_block_seconds(idx: usize) u32 {
+    const coin = coinByIndex(idx) orelse return 0;
+    const sc = coin.stablecoin() orelse return 0;
+    return sc.block_seconds;
+}
+
+/// The lock tiers a mint can choose, in display order. Writes up to `cap` and
+/// returns how many. Cheap; UI-thread safe.
+export fn bw_sc_tiers(idx: usize, out: ?*BwScTier, cap: usize) usize {
+    const o = out orelse return 0;
+    const coin = coinByIndex(idx) orelse return 0;
+    const sc = coin.stablecoin() orelse return 0;
+    const n = @min(sc.tiers.len, cap);
+    const dst = @as([*]BwScTier, @ptrCast(o))[0..n];
+    for (dst, sc.tiers[0..n]) |*d, t| {
+        d.tier = t.tier;
+        d.ratio_pct = t.ratio_pct;
+        setField(&d.duration, t.duration);
+    }
+    return n;
+}
+
+/// Live system state: 0 with `out` filled, -1 on failure. Blocks on RPC.
+export fn bw_sc_info(ctx: ?*Ctx, idx: usize, out: ?*BwScInfo) c_int {
+    const c = ctx orelse return -1;
+    const o = out orelse return -1;
+    const coin = coinByIndex(idx) orelse return -1;
+    const sc = coin.stablecoin() orelse return -1;
+
+    var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const io = sharedIo();
+
+    const auth = ctxAuth(a, io, coin, c) catch |err| {
+        c.setError(@errorName(err));
+        return -1;
+    };
+    const info = sc.info(a, auth) catch |err| {
+        c.setError(@errorName(err));
+        return -1;
+    };
+    o.active = if (info.active) 1 else 0;
+    setField(&o.status, info.status());
+    o.activation_height = info.activation_height;
+    o.price_micro_usd = info.price_micro_usd;
+    o.price_stale = if (info.price_stale) 1 else 0;
+    o.total_supply_cents = info.total_supply_cents;
+    o.total_collateral = info.total_collateral;
+    o.health_ratio = info.health_ratio;
+    o.minting_blocked = if (info.minting_blocked) 1 else 0;
+    return 0;
+}
+
+/// The wallet's stablecoin balance: 0 with `out` filled, -1 on failure.
+/// Blocks on RPC.
+export fn bw_sc_balance(ctx: ?*Ctx, idx: usize, out: ?*BwScBalance) c_int {
+    const c = ctx orelse return -1;
+    const o = out orelse return -1;
+    const coin = coinByIndex(idx) orelse return -1;
+    const sc = coin.stablecoin() orelse return -1;
+
+    var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const io = sharedIo();
+
+    const auth = ctxAuth(a, io, coin, c) catch |err| {
+        c.setError(@errorName(err));
+        return -1;
+    };
+    const bal = sc.balance(a, auth) catch |err| {
+        c.setError(@errorName(err));
+        return -1;
+    };
+    o.confirmed_cents = bal.confirmed_cents;
+    o.pending_cents = bal.pending_cents;
+    return 0;
+}
+
+/// A deposit address for the stablecoin, written into `buf`; returns its length
+/// or 0. `force_new` mints a fresh one.
+///
+/// Same rule as `bw_wallet_receive_address`: **never call this on a timer.**
+export fn bw_sc_receive_address(ctx: ?*Ctx, idx: usize, force_new: c_int, buf: ?[*]u8, cap: usize) usize {
+    const c = ctx orelse return 0;
+    const b = buf orelse return 0;
+    const coin = coinByIndex(idx) orelse return 0;
+    const sc = coin.stablecoin() orelse return 0;
+
+    var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const io = sharedIo();
+
+    const auth = ctxAuth(a, io, coin, c) catch return 0;
+    const addr = sc.receive_address(a, auth, force_new != 0) catch return 0;
+    return copyOut(b[0..cap], addr);
+}
+
+/// Recent stablecoin transactions, newest first; returns how many were written.
+/// 0 on any failure — an unreadable list is empty, not worth interrupting for.
+export fn bw_sc_transactions(ctx: ?*Ctx, idx: usize, out: ?*BwScTx, cap: usize) usize {
+    const c = ctx orelse return 0;
+    const o = out orelse return 0;
+    if (cap == 0) return 0;
+    const coin = coinByIndex(idx) orelse return 0;
+    const sc = coin.stablecoin() orelse return 0;
+
+    var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const io = sharedIo();
+
+    const auth = ctxAuth(a, io, coin, c) catch return 0;
+    const txs = sc.transactions(a, auth, cap) catch return 0;
+    const n = @min(txs.len, cap);
+    const dst = @as([*]BwScTx, @ptrCast(o))[0..n];
+    for (dst, txs[0..n]) |*d, t| d.* = .{
+        .kind = @intFromEnum(t.kind),
+        .amount_cents = t.amount_cents,
+        .time = t.time,
+        .confirmations = t.confirmations,
+    };
+    return n;
+}
+
+/// The wallet's minted vaults; returns how many were written. 0 on failure.
+export fn bw_sc_positions(ctx: ?*Ctx, idx: usize, out: ?*BwScPosition, cap: usize) usize {
+    const c = ctx orelse return 0;
+    const o = out orelse return 0;
+    if (cap == 0) return 0;
+    const coin = coinByIndex(idx) orelse return 0;
+    const sc = coin.stablecoin() orelse return 0;
+
+    var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const io = sharedIo();
+
+    const auth = ctxAuth(a, io, coin, c) catch return 0;
+    const list = sc.positions(a, auth, cap) catch return 0;
+    const n = @min(list.len, cap);
+    const dst = @as([*]BwScPosition, @ptrCast(o))[0..n];
+    for (dst, list[0..n]) |*d, p| {
+        const id = p.id();
+        const idn = @min(id.len, d.id.len);
+        @memcpy(d.id[0..idn], id[0..idn]);
+        d.id_len = idn;
+        d.amount_cents = p.amount_cents;
+        d.tier = p.tier;
+        d.unlock_height = p.unlock_height;
+        d.can_redeem = if (p.can_redeem) 1 else 0;
+    }
+    return n;
+}
+
+/// How much collateral minting `cents` at `tier` would lock, via `out`: 0 on
+/// success, -1 on failure. Blocks on RPC.
+///
+/// Show this **before** the confirm step. Minting commits collateral for the
+/// tier's whole term, and the amount isn't obvious from the figure being minted.
+export fn bw_sc_estimate_collateral(ctx: ?*Ctx, idx: usize, cents: i64, tier: u8, out: ?*f64) c_int {
+    const c = ctx orelse return -1;
+    const o = out orelse return -1;
+    const coin = coinByIndex(idx) orelse return -1;
+    const sc = coin.stablecoin() orelse return -1;
+
+    var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const io = sharedIo();
+
+    const auth = ctxAuth(a, io, coin, c) catch |err| {
+        c.setError(@errorName(err));
+        return -1;
+    };
+    o.* = sc.estimate_collateral(a, auth, cents, tier) catch |err| {
+        c.setError(@errorName(err));
+        return -1;
+    };
+    return 0;
+}
+
+/// Which stablecoin operation to run.
+const ScOp = enum(u8) { mint = 0, send = 1, redeem = 2 };
+
+/// Run a stablecoin operation. Same tri-state as `bw_wallet_send`: 0 broadcast
+/// (`out` = txid), 1 the daemon rejected it (`out` = its own reason, verbatim),
+/// -1 transport failure (`bw_last_error` has why).
+///
+/// A rejection is an answer, not an error. "Timelock not expired" and "oracle
+/// price stale" are things the user has to read, not generic failures.
+///
+/// `mint` uses `cents` + `tier`; `send` uses `cents` + `address`; `redeem` uses
+/// `position_id` + `cents` (the daemon requires the whole vault, so pass the
+/// position's own amount).
+export fn bw_sc_run(
+    ctx: ?*Ctx,
+    idx: usize,
+    op: u8,
+    cents: i64,
+    tier: u8,
+    address: ?[*:0]const u8,
+    position_id: ?[*]const u8,
+    position_id_len: usize,
+    out: ?[*]u8,
+    cap: usize,
+) c_int {
+    const c = ctx orelse return -1;
+    const o = out orelse return -1;
+    const coin = coinByIndex(idx) orelse return -1;
+    const sc = coin.stablecoin() orelse return -1;
+    if (op > @intFromEnum(ScOp.redeem)) return -1;
+    const which: ScOp = @enumFromInt(op);
+
+    var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const io = sharedIo();
+
+    // These spend. Serialise them with every other wallet-touching call, so a
+    // mint can't overlap a send.
+    c.wallet_mtx.lockUncancelable(io);
+    defer c.wallet_mtx.unlock(io);
+
+    const auth = ctxAuth(a, io, coin, c) catch |err| {
+        c.setError(@errorName(err));
+        return -1;
+    };
+
+    const res = switch (which) {
+        .mint => sc.mint(a, auth, cents, tier),
+        .send => blk: {
+            const addr = address orelse return -1;
+            break :blk sc.send(a, auth, std.mem.span(addr), cents);
+        },
+        .redeem => blk: {
+            const pid = position_id orelse return -1;
+            break :blk sc.redeem(a, auth, pid[0..position_id_len], cents);
+        },
+    } catch |err| {
+        c.setError(@errorName(err));
+        c.setErrorCode(@errorName(err));
+        return -1;
+    };
+
+    return switch (res) {
+        .ok => |txid| blk: {
+            _ = copyOut(o[0..cap], txid);
+            break :blk 0;
+        },
+        .failed => |reason| blk: {
+            _ = copyOut(o[0..cap], reason);
+            break :blk 1;
+        },
+    };
+}
 
 // ---- USD prices -------------------------------------------------------------
 
@@ -3578,6 +3974,97 @@ test "the shared Io leaves exactly one SIGIO handler installed for the process" 
     try std.testing.expect(handler != null);
     // SIG_DFL is 0; anything else means a handler is installed.
     try std.testing.expect(@intFromPtr(handler.?) != 0);
+}
+
+test "a typed amount becomes the same cents the shared parser produces" {
+    // The figure a mint settles against is the one this parsed, so it has to
+    // agree with money.zig exactly — and reject anything it can't read rather
+    // than guessing a number.
+    try std.testing.expectEqual(@as(i64, 12550), bw_parse_dollars_to_cents("125.50"));
+    try std.testing.expectEqual(@as(i64, 12500), bw_parse_dollars_to_cents("125"));
+    try std.testing.expectEqual(@as(i64, 5), bw_parse_dollars_to_cents(".05"));
+    try std.testing.expectEqual(@as(i64, 0), bw_parse_dollars_to_cents("0"));
+    // -1 is "not a figure", distinct from a real 0.
+    try std.testing.expectEqual(@as(i64, -1), bw_parse_dollars_to_cents(""));
+    try std.testing.expectEqual(@as(i64, -1), bw_parse_dollars_to_cents("1.234"));
+    try std.testing.expectEqual(@as(i64, -1), bw_parse_dollars_to_cents("-5"));
+    try std.testing.expectEqual(@as(i64, -1), bw_parse_dollars_to_cents("12a"));
+    try std.testing.expectEqual(@as(i64, -1), bw_parse_dollars_to_cents(null));
+
+    // And the round trip holds, so what the user typed is what they're shown at
+    // the confirm step.
+    var buf: [48]u8 = undefined;
+    const n = bw_format_cents(bw_parse_dollars_to_cents("1234.56"), &buf, buf.len);
+    try std.testing.expectEqualStrings("$1234.56", buf[0..n]);
+}
+
+test "the stablecoin surface answers only for the coin that has one" {
+    var ctx: Ctx = .{ .allocator = std.testing.allocator, .home_dir = "/nonexistent/bw-test", .install_root = "" };
+    var buf: [64]u8 = undefined;
+    var tiers: [bw_sc_max_tiers]BwScTier = undefined;
+    var info: BwScInfo = undefined;
+    var bal: BwScBalance = undefined;
+    var est: f64 = 0;
+
+    var found: usize = 0;
+    var i: usize = 0;
+    while (i < coin_count) : (i += 1) {
+        const coin = coinByIndex(i) orelse return error.Unexpected;
+        if (coin.stablecoin() == null) {
+            // Every call refuses without attempting RPC — a stablecoin tab must
+            // not appear for a coin that has none.
+            try std.testing.expectEqual(@as(usize, 0), bw_sc_name(i, &buf, buf.len));
+            try std.testing.expectEqual(@as(usize, 0), bw_sc_tiers(i, &tiers[0], tiers.len));
+            try std.testing.expectEqual(@as(i64, 0), bw_sc_min_mint_cents(i));
+            try std.testing.expectEqual(@as(c_int, -1), bw_sc_info(&ctx, i, &info));
+            try std.testing.expectEqual(@as(c_int, -1), bw_sc_balance(&ctx, i, &bal));
+            try std.testing.expectEqual(@as(c_int, -1), bw_sc_estimate_collateral(&ctx, i, 100, 0, &est));
+            try std.testing.expectEqual(@as(c_int, -1), bw_sc_run(&ctx, i, 0, 100, 0, null, null, 0, &buf, buf.len));
+            continue;
+        }
+        found += 1;
+        const sc = coin.stablecoin().?;
+
+        try std.testing.expect(bw_sc_name(i, &buf, buf.len) > 0);
+        try std.testing.expect(bw_sc_symbol(i, &buf, buf.len) > 0);
+        // Bounds have to be a usable range, or the amount field can never be
+        // satisfied.
+        try std.testing.expect(bw_sc_min_mint_cents(i) > 0);
+        try std.testing.expect(bw_sc_max_mint_cents(i) > bw_sc_min_mint_cents(i));
+        try std.testing.expect(bw_sc_block_seconds(i) > 0);
+
+        const n = bw_sc_tiers(i, &tiers[0], tiers.len);
+        try std.testing.expectEqual(sc.tiers.len, n);
+        try std.testing.expect(n > 0);
+        for (tiers[0..n], sc.tiers[0..n]) |got, want| {
+            try std.testing.expectEqual(want.tier, got.tier);
+            try std.testing.expectEqual(want.ratio_pct, got.ratio_pct);
+            try std.testing.expectEqualStrings(want.duration, std.mem.sliceTo(&got.duration, 0));
+            // A tier with no term or no ratio can't be presented or costed.
+            try std.testing.expect(want.duration.len > 0);
+            try std.testing.expect(want.ratio_pct > 0);
+        }
+        // A cap below the tier count truncates rather than overrunning.
+        try std.testing.expectEqual(@as(usize, 1), bw_sc_tiers(i, &tiers[0], 1));
+
+        // An unknown op is refused rather than falling through to one of the
+        // three that spend.
+        try std.testing.expectEqual(@as(c_int, -1), bw_sc_run(&ctx, i, 99, 100, 0, null, null, 0, &buf, buf.len));
+    }
+    // DigiByte, and only DigiByte.
+    try std.testing.expectEqual(@as(usize, 1), found);
+    ctx.clearError();
+}
+
+test "a position id survives a full 64-character txid" {
+    // The id is the handle a redeem is keyed on. NUL-terminating it would drop
+    // the last character of a bitcoin-family txid and the redeem would miss.
+    var p: BwScPosition = undefined;
+    const txid = "f" ** 64;
+    @memcpy(p.id[0..64], txid);
+    p.id_len = 64;
+    try std.testing.expectEqual(@as(usize, 64), p.id_len);
+    try std.testing.expectEqualStrings(txid, p.id[0..p.id_len]);
 }
 
 test "the price roster covers every coin, never just the installed ones" {

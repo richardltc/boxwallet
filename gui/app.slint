@@ -466,25 +466,6 @@ component SettingsRow inherits HorizontalLayout {
     }
 }
 
-component Placeholder inherits VerticalBox {
-    in property <string> heading;
-    in property <string> note;
-    alignment: start;
-    spacing: 6px;
-    Text {
-        text: root.heading;
-        color: #d0d0d0;
-        font-size: 18px;
-        font-weight: 600;
-    }
-    Text {
-        text: root.note;
-        color: #9a9a9a;
-        font-size: 13px;
-        wrap: word-wrap;
-    }
-}
-
 export component AppWindow inherits Window {
     title: "BoxWallet";
     icon: @image-url("coin-logos/BoxWallet.png");
@@ -804,6 +785,44 @@ export component AppWindow inherits Window {
     // boxwallet.conf, so the preference follows you between the two.
     // USD price for this coin, pre-formatted by the core. Empty when prices are
     // off, the host doesn't list the coin, or the cache has gone stale.
+    // ---- DigiDollar (the chain-native stablecoin) ----
+    // Everything here is pre-formatted by the host: cents never reach this file
+    // as a number, so it can't round them differently from the core.
+    in property <string> sc-name: "DigiDollar";
+    in property <string> sc-symbol: "";
+    in property <bool> sc-active: false;
+    in property <string> sc-status: "";       // pre-activation readout
+    in property <string> sc-countdown: "";    // "about 3 weeks" until activation
+    in property <string> sc-balance: "";
+    in property <string> sc-pending: "";
+    in property <string> sc-price: "";
+    in property <bool> sc-price-stale: false;
+    in property <string> sc-supply: "";
+    in property <string> sc-health: "";
+    in property <bool> sc-minting-blocked: false;
+    in property <string> sc-address: "";
+    in property <[string]> sc-vaults;         // one line per minted vault
+    in property <[string]> sc-txs;
+    // Mint/send/redeem modal. Stage: 0 closed, 1 menu, 2 amount, 3 tier,
+    // 4 address, 5 pick a vault, 6 confirm, 7 working, 8 result.
+    in-out property <int> sc-stage: 0;
+    in-out property <int> sc-op: 0;           // 0 mint, 1 send, 2 redeem
+    in-out property <string> sc-amount: "";
+    in-out property <string> sc-dest: "";
+    in-out property <int> sc-tier: 0;
+    in property <[string]> sc-tier-rows;
+    in-out property <int> sc-vault-sel: 0;
+    in property <[string]> sc-redeemable;     // only the vaults that can redeem
+    in property <string> sc-estimate: "";     // collateral this mint would lock
+    in-out property <string> sc-result: "";
+    in-out property <bool> sc-result-error: false;
+    in-out property <string> sc-error: "";
+    callback sc-open(int);                    // op
+    callback sc-estimate-request(string, int);
+    callback sc-submit();
+    callback sc-cancel();
+    callback sc-new-address();
+
     in property <string> price-usd: "";
     in property <string> price-change: "";
     in property <int> price-dir: 0;   // 1 up, -1 down, 0 flat/unknown
@@ -855,7 +874,8 @@ export component AppWindow inherits Window {
     out property <bool> modal-open:
         root.browse-open || root.send-confirm-open || root.mining-stop-open
         || root.wallet-stage != 0 || root.unlock-open || root.update-open
-        || root.accel-open || root.prune-open || root.wa-stage != 0;
+        || root.accel-open || root.prune-open || root.wa-stage != 0
+        || root.sc-stage != 0;
 
     // Escape closes the topmost modal, in the same order they paint. Each arm
     // runs that modal's own Cancel path — clearing secrets included — because a
@@ -894,6 +914,12 @@ export component AppWindow inherits Window {
         // Stage 4 is deliberately absent: the action is already in flight and
         // closing the dialog wouldn't stop it. Every other stage clears the
         // pending action so the next open starts clean.
+        // Stage 7 is in flight; closing wouldn't stop it.
+        if (root.sc-stage != 0 && root.sc-stage != 7) {
+            root.sc-stage = 0;
+            root.sc-cancel();
+            return true;
+        }
         if (root.wa-stage != 0 && root.wa-stage != 4) {
             root.wa-stage = 0;
             root.wallet-action-cancel();
@@ -2182,9 +2208,171 @@ export component AppWindow inherits Window {
                     }
 
                     // DigiDollar (only for coins with a chain-native stablecoin).
-                    if root.tab == 6: Placeholder {
-                        heading: "DigiDollar";
-                        note: "Mint, send and redeem the chain-native stablecoin.";
+                    if root.tab == 6: VerticalLayout {
+                        spacing: 12px;
+                        vertical-stretch: 0;
+                        alignment: start;
+                        Text {
+                            text: root.sc-name;
+                            color: #e6e6e6;
+                            font-size: 17px;
+                            font-weight: 600;
+                        }
+
+                        // Before activation the whole tab is read-only. The
+                        // consensus feature isn't live, and the daemon would
+                        // refuse every action — so say when, not "try anyway".
+                        if !root.sc-active: VerticalLayout {
+                            spacing: 6px;
+                            Text {
+                                text: "Not active on this chain yet"
+                                    + (root.sc-status != "" ? "  (" + root.sc-status + ")" : "");
+                                color: #e0a03a;
+                                font-size: 13px;
+                                wrap: word-wrap;
+                            }
+                            if root.sc-countdown != "": Text {
+                                text: "Roughly " + root.sc-countdown + " to go.";
+                                color: #9a9a9a;
+                                font-size: 12px;
+                            }
+                        }
+
+                        if root.sc-active: VerticalLayout {
+                            spacing: 10px;
+
+                            HorizontalLayout {
+                                spacing: 24px;
+                                alignment: start;
+                                VerticalLayout {
+                                    spacing: 2px;
+                                    Text {
+                                        text: "Balance";
+                                        color: #9a9a9a;
+                                        font-size: 12px;
+                                    }
+                                    Text {
+                                        text: root.hide-balances ? root.balance-mask : root.sc-balance;
+                                        color: #e6e6e6;
+                                        font-family: "DejaVu Sans Mono";
+                                        font-size: 18px;
+                                    }
+                                    // Only while something is still settling —
+                                    // otherwise it's the same figure twice.
+                                    if root.sc-pending != "" && !root.hide-balances: Text {
+                                        text: root.sc-pending + " pending";
+                                        color: #8a8a8a;
+                                        font-size: 12px;
+                                    }
+                                }
+                                VerticalLayout {
+                                    spacing: 2px;
+                                    Text {
+                                        text: "Oracle price";
+                                        color: #9a9a9a;
+                                        font-size: 12px;
+                                    }
+                                    Text {
+                                        // A stale oracle is worth flagging: mints
+                                        // are priced off it, and the daemon may
+                                        // refuse while it's out of date.
+                                        text: root.sc-price + (root.sc-price-stale ? "  (stale)" : "");
+                                        color: root.sc-price-stale ? #e0a03a : #cfcfcf;
+                                        font-family: "DejaVu Sans Mono";
+                                        font-size: 14px;
+                                    }
+                                }
+                            }
+
+                            if root.sc-supply != "": Text {
+                                text: root.sc-supply;
+                                color: #9a9a9a;
+                                font-size: 12px;
+                                wrap: word-wrap;
+                            }
+                            if root.sc-health != "": Text {
+                                text: root.sc-health;
+                                color: #9a9a9a;
+                                font-size: 12px;
+                            }
+                            if root.sc-minting-blocked: Text {
+                                text: "Minting is temporarily blocked by the network.";
+                                color: #e0a03a;
+                                font-size: 12px;
+                                wrap: word-wrap;
+                            }
+
+                            HorizontalLayout {
+                                spacing: 8px;
+                                alignment: start;
+                                Button {
+                                    text: "Mint\u{2026}";
+                                    enabled: !root.sc-minting-blocked;
+                                    clicked => { root.sc-open(0); }
+                                }
+                                Button {
+                                    text: "Send\u{2026}";
+                                    clicked => { root.sc-open(1); }
+                                }
+                                Button {
+                                    text: "Redeem\u{2026}";
+                                    enabled: root.sc-redeemable.length > 0;
+                                    clicked => { root.sc-open(2); }
+                                }
+                            }
+
+                            if root.sc-address != "": VerticalLayout {
+                                spacing: 4px;
+                                Text {
+                                    text: "Deposit address";
+                                    color: #9a9a9a;
+                                    font-size: 12px;
+                                }
+                                Text {
+                                    text: root.sc-address;
+                                    color: #cfcfcf;
+                                    font-family: "DejaVu Sans Mono";
+                                    font-size: 12px;
+                                    wrap: word-wrap;
+                                }
+                                HorizontalLayout {
+                                    alignment: start;
+                                    Button {
+                                        text: "New address";
+                                        clicked => { root.sc-new-address(); }
+                                    }
+                                }
+                            }
+
+                            if root.sc-vaults.length > 0: VerticalLayout {
+                                spacing: 4px;
+                                Text {
+                                    text: "Vaults";
+                                    color: #9a9a9a;
+                                    font-size: 12px;
+                                }
+                                for v in root.sc-vaults: Text {
+                                    text: v;
+                                    color: #cfcfcf;
+                                    font-size: 12px;
+                                    wrap: word-wrap;
+                                }
+                            }
+
+                            if root.sc-txs.length > 0: VerticalLayout {
+                                spacing: 4px;
+                                Text {
+                                    text: "Recent";
+                                    color: #9a9a9a;
+                                    font-size: 12px;
+                                }
+                                for t in root.sc-txs: Text {
+                                    text: t;
+                                    color: #cfcfcf;
+                                    font-size: 12px;
+                                }
+                            }
+                        }
                     }
 
                     // Soaks up the leftover height so every tab except Transactions
@@ -2845,6 +3033,265 @@ export component AppWindow inherits Window {
         // time a coin that publishes one is started on an empty chain. Declining is
         // a normal outcome (a full P2P sync still works), so both buttons start the
         // daemon — they differ only in whether the accelerator is fetched first.
+        // Mint / send / redeem. Every figure shown here is pre-formatted by the
+        // core from integer cents — this file never does money arithmetic.
+        if root.sc-stage != 0: Rectangle {
+            background: #000000bb;
+            TouchArea { }
+
+            Rectangle {
+                width: 430px;
+                height: sc-body.preferred-height;
+                x: (parent.width - self.width) / 2;
+                y: (parent.height - self.height) / 2;
+                background: #202020;
+                border-radius: 10px;
+                border-width: 1px;
+                border-color: root.coin-color;
+
+                sc-body := VerticalLayout {
+                    padding: 16px;
+                    spacing: 10px;
+                    alignment: start;
+
+                    Text {
+                        text: (root.sc-op == 0 ? "Mint " : (root.sc-op == 1 ? "Send " : "Redeem ")) + root.sc-name;
+                        color: #e6e6e6;
+                        font-size: 15px;
+                        font-weight: 600;
+                    }
+
+                    // --- 2: how much? ---
+                    if root.sc-stage == 2: VerticalLayout {
+                        spacing: 8px;
+                        sc-amt := LineEdit {
+                            placeholder-text: "Amount in USD, e.g. 125.00";
+                            text: root.sc-amount;
+                            edited => { root.sc-amount = self.text; }
+                        }
+                        if root.sc-error != "": Text {
+                            text: root.sc-error;
+                            color: #e05c5c;
+                            font-size: 12px;
+                            wrap: word-wrap;
+                        }
+                        HorizontalLayout {
+                            alignment: end;
+                            spacing: 8px;
+                            Button {
+                                text: "Cancel";
+                                clicked => { root.sc-stage = 0; root.sc-cancel(); }
+                            }
+                            Button {
+                                text: "Next";
+                                primary: true;
+                                clicked => {
+                                    root.sc-amount = sc-amt.text;
+                                    // Mint picks a lock tier next; send needs a
+                                    // destination; redeem already has its vault.
+                                    root.sc-stage = root.sc-op == 0 ? 3 : (root.sc-op == 1 ? 4 : 6);
+                                    if (root.sc-op == 0) {
+                                        root.sc-estimate-request(root.sc-amount, root.sc-tier);
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    // --- 3: which lock tier? ---
+                    if root.sc-stage == 3: VerticalLayout {
+                        spacing: 8px;
+                        Text {
+                            text: "Minting locks collateral for the term you choose. It can't be redeemed before then.";
+                            color: #e0a03a;
+                            font-size: 12px;
+                            wrap: word-wrap;
+                        }
+                        for row[i] in root.sc-tier-rows: Rectangle {
+                            height: 30px;
+                            border-radius: 5px;
+                            background: root.sc-tier == i ? #2f3a2f : (tta.has-hover ? #262626 : transparent);
+                            HorizontalLayout {
+                                padding-left: 10px;
+                                Text {
+                                    text: row;
+                                    color: #e6e6e6;
+                                    font-size: 13px;
+                                    vertical-alignment: center;
+                                }
+                            }
+                            tta := TouchArea {
+                                clicked => {
+                                    root.sc-tier = i;
+                                    root.sc-estimate-request(root.sc-amount, i);
+                                }
+                            }
+                        }
+                        if root.sc-estimate != "": Text {
+                            text: root.sc-estimate;
+                            color: #cfcfcf;
+                            font-size: 12px;
+                            wrap: word-wrap;
+                        }
+                        HorizontalLayout {
+                            alignment: end;
+                            spacing: 8px;
+                            Button {
+                                text: "Cancel";
+                                clicked => { root.sc-stage = 0; root.sc-cancel(); }
+                            }
+                            Button {
+                                text: "Review\u{2026}";
+                                primary: true;
+                                clicked => { root.sc-stage = 6; }
+                            }
+                        }
+                    }
+
+                    // --- 4: where to? ---
+                    if root.sc-stage == 4: VerticalLayout {
+                        spacing: 8px;
+                        sc-dst := LineEdit {
+                            placeholder-text: "Destination address";
+                            text: root.sc-dest;
+                            edited => { root.sc-dest = self.text; }
+                        }
+                        HorizontalLayout {
+                            alignment: end;
+                            spacing: 8px;
+                            Button {
+                                text: "Cancel";
+                                clicked => { root.sc-stage = 0; root.sc-cancel(); }
+                            }
+                            Button {
+                                text: "Review\u{2026}";
+                                primary: true;
+                                clicked => {
+                                    root.sc-dest = sc-dst.text;
+                                    if (root.sc-dest != "") { root.sc-stage = 6; }
+                                }
+                            }
+                        }
+                    }
+
+                    // --- 5: which vault? ---
+                    // Only the redeemable ones. The daemon requires the whole
+                    // vault, so there is no amount to choose here.
+                    if root.sc-stage == 5: VerticalLayout {
+                        spacing: 8px;
+                        for row[i] in root.sc-redeemable: Rectangle {
+                            height: 30px;
+                            border-radius: 5px;
+                            background: root.sc-vault-sel == i ? #2f3a2f : (vta.has-hover ? #262626 : transparent);
+                            HorizontalLayout {
+                                padding-left: 10px;
+                                Text {
+                                    text: row;
+                                    color: #e6e6e6;
+                                    font-size: 13px;
+                                    vertical-alignment: center;
+                                }
+                            }
+                            vta := TouchArea {
+                                clicked => { root.sc-vault-sel = i; }
+                            }
+                        }
+                        HorizontalLayout {
+                            alignment: end;
+                            spacing: 8px;
+                            Button {
+                                text: "Cancel";
+                                clicked => { root.sc-stage = 0; root.sc-cancel(); }
+                            }
+                            Button {
+                                text: "Review\u{2026}";
+                                primary: true;
+                                clicked => { root.sc-stage = 6; }
+                            }
+                        }
+                    }
+
+                    // --- 6: confirm ---
+                    if root.sc-stage == 6: VerticalLayout {
+                        spacing: 8px;
+                        Text {
+                            text: root.sc-op == 2
+                                ? "Redeem this vault in full?"
+                                : (root.sc-op == 0 ? "Mint " : "Send ") + root.sc-amount;
+                            color: #e6e6e6;
+                            font-size: 14px;
+                            wrap: word-wrap;
+                        }
+                        // The full destination, never truncated — the last moment
+                        // a wrong address can be caught.
+                        if root.sc-op == 1: Rectangle {
+                            background: #181818;
+                            border-radius: 6px;
+                            height: 54px;
+                            VerticalLayout {
+                                padding: 8px;
+                                alignment: center;
+                                Text {
+                                    text: root.sc-dest;
+                                    color: #e6e6e6;
+                                    font-family: "DejaVu Sans Mono";
+                                    font-size: 12px;
+                                    wrap: word-wrap;
+                                }
+                            }
+                        }
+                        if root.sc-op == 0 && root.sc-estimate != "": Text {
+                            text: root.sc-estimate;
+                            color: #e0a03a;
+                            font-size: 12px;
+                            wrap: word-wrap;
+                        }
+                        Text {
+                            text: "This can't be undone.";
+                            color: #9a9a9a;
+                            font-size: 12px;
+                        }
+                        HorizontalLayout {
+                            alignment: end;
+                            spacing: 8px;
+                            Button {
+                                text: "Cancel";
+                                clicked => { root.sc-stage = 0; root.sc-cancel(); }
+                            }
+                            Button {
+                                text: root.sc-op == 0 ? "Mint" : (root.sc-op == 1 ? "Send" : "Redeem");
+                                primary: true;
+                                clicked => { root.sc-submit(); }
+                            }
+                        }
+                    }
+
+                    if root.sc-stage == 7: Text {
+                        text: "Working\u{2026}";
+                        color: #9a9a9a;
+                        font-size: 13px;
+                    }
+
+                    if root.sc-stage == 8: VerticalLayout {
+                        spacing: 10px;
+                        Text {
+                            text: root.sc-result;
+                            color: root.sc-result-error ? #e05c5c : #7ec27e;
+                            font-size: 13px;
+                            wrap: word-wrap;
+                        }
+                        HorizontalLayout {
+                            alignment: end;
+                            Button {
+                                text: "Close";
+                                clicked => { root.sc-stage = 0; }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
         // In-daemon wallet actions. The menu rows are the core's, so this is
         // presentation only — it never decides what a wallet state permits.
         if root.wa-stage != 0: Rectangle {
