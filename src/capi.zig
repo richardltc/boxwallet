@@ -38,6 +38,8 @@ const seed_mod = @import("seed.zig");
 const walletmenu = @import("walletmenu.zig");
 const status_mod = @import("status.zig");
 const qrcode = @import("qrcode.zig");
+const disk = @import("disk.zig");
+const memory = @import("memory.zig");
 const coinmod = @import("coin.zig");
 const models = @import("models.zig");
 const conf = @import("conf.zig");
@@ -1929,6 +1931,50 @@ export fn bw_mining_failure_text(err_name: ?[*:0]const u8, buf: ?[*]u8, cap: usi
 
 // ---- disk usage (for the coin's "disk used" gauge) --------------------------
 
+// ---- system + storage readouts ----------------------------------------------
+
+/// The coin's donation address, written into `buf`; returns its length, or 0 if
+/// it has none. Cheap; UI-thread safe.
+export fn bw_tip_address(idx: usize, buf: ?[*]u8, cap: usize) usize {
+    const b = buf orelse return 0;
+    const coin = coinByIndex(idx) orelse return 0;
+    return copyOut(b[0..cap], coin.tipAddress());
+}
+
+/// System RAM used/total, mirroring `BwDiskUsage`. 0 with `out` filled, -1 if
+/// the platform won't say. A cheap read of the OS's own figures.
+export fn bw_memory_usage(out: ?*BwDiskUsage) c_int {
+    const o = out orelse return -1;
+    const u = memory.usage() orelse return -1;
+    o.used_bytes = u.used;
+    o.total_bytes = u.total;
+    return 0;
+}
+
+/// How much disk this coin's data dir actually occupies, via `out`. 0 on
+/// success, -1 if the dir isn't there or can't be walked.
+///
+/// This **walks the whole tree**, which on a synced chain is hundreds of
+/// thousands of files. Worker thread, and not every tick — the TUI samples it
+/// about every 30 seconds and that is the right order of magnitude.
+///
+/// Distinct from `bw_disk_usage`, which is the *filesystem's* used/total: this
+/// answers "what is this coin costing me", that one answers "am I running out".
+export fn bw_data_dir_size(ctx: ?*Ctx, idx: usize, out: ?*u64) c_int {
+    const c = ctx orelse return -1;
+    const o = out orelse return -1;
+    const coin = coinByIndex(idx) orelse return -1;
+
+    var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const io = sharedIo();
+
+    const data_dir = coin.dataDir(a, c.home_dir) catch return -1;
+    o.* = disk.dirSizeBytes(io, a, data_dir) orelse return -1;
+    return 0;
+}
+
 // ---- QR --------------------------------------------------------------------
 
 /// Widest QR a version-40 symbol can be, so callers can size a buffer from it:
@@ -3280,6 +3326,40 @@ test "the shared Io leaves exactly one SIGIO handler installed for the process" 
     try std.testing.expect(handler != null);
     // SIG_DFL is 0; anything else means a handler is installed.
     try std.testing.expect(@intFromPtr(handler.?) != 0);
+}
+
+test "every coin has a tip address, and it isn't the user's" {
+    // A blank one would render an empty Settings row; worse, a *wrong* one would
+    // send a donation into the void. Cheap to assert, so assert it.
+    var buf: [128]u8 = undefined;
+    var i: usize = 0;
+    while (i < coin_count) : (i += 1) {
+        const n = bw_tip_address(i, &buf, buf.len);
+        try std.testing.expect(n > 0);
+        // Addresses are base58/bech32-ish: no whitespace, nothing that would
+        // suggest a truncated or placeholder value.
+        for (buf[0..n]) |ch| try std.testing.expect(ch > ' ' and ch < 127);
+    }
+    try std.testing.expectEqual(@as(usize, 0), bw_tip_address(coin_count, &buf, buf.len));
+}
+
+test "memory usage reports a plausible pair" {
+    var u: BwDiskUsage = undefined;
+    if (bw_memory_usage(&u) != 0) return error.SkipZigTest; // platform won't say
+    try std.testing.expect(u.total_bytes > 0);
+    // Used can't exceed total, or the gauge would overfill.
+    try std.testing.expect(u.used_bytes <= u.total_bytes);
+    try std.testing.expectEqual(@as(c_int, -1), bw_memory_usage(null));
+}
+
+test "the data-dir size refuses a dir that isn't there" {
+    // A coin that has never been installed has no data dir, and the caller must
+    // get -1 rather than a confident 0 — 0 would render as a real "0 B chain".
+    var ctx: Ctx = .{ .allocator = std.testing.allocator, .home_dir = "/nonexistent/bw-test", .install_root = "" };
+    var size: u64 = 12345;
+    try std.testing.expectEqual(@as(c_int, -1), bw_data_dir_size(&ctx, 0, &size));
+    try std.testing.expectEqual(@as(c_int, -1), bw_data_dir_size(&ctx, coin_count, &size));
+    try std.testing.expectEqual(@as(c_int, -1), bw_data_dir_size(&ctx, 0, null));
 }
 
 test "the QR export reproduces the encoder's own bitmap" {

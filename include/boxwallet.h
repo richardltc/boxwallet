@@ -275,6 +275,22 @@ typedef struct {
 } BwDiskUsage;
 int     bw_disk_usage(bw_ctx *ctx, size_t idx, BwDiskUsage *out);
 
+/* ---- system + storage readouts ----------------------------------------------
+ * bw_tip_address is the coin's donation address (0 if it has none) — cheap,
+ * UI-thread safe.
+ *
+ * bw_memory_usage fills a BwDiskUsage with system RAM used/total: 0 ok, -1 if
+ * the platform won't say. Cheap.
+ *
+ * bw_data_dir_size is how much this coin's data dir actually occupies. It WALKS
+ * THE WHOLE TREE — hundreds of thousands of files on a synced chain — so it is
+ * worker-thread only and should be sampled every few tens of seconds, not every
+ * tick. Distinct from bw_disk_usage: this answers "what is this coin costing
+ * me", that one answers "am I running out of room". */
+size_t  bw_tip_address(size_t idx, char *buf, size_t cap);
+int     bw_memory_usage(BwDiskUsage *out);
+int     bw_data_dir_size(bw_ctx *ctx, size_t idx, uint64_t *out);
+
 /* ---- QR ----------------------------------------------------------------------
  * Encodes text as a QR symbol at ECC medium: side*side bytes, row-major, one per
  * module (0 light, 1 dark), with the module count per side in *out_side. Returns

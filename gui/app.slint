@@ -779,6 +779,14 @@ export component AppWindow inherits Window {
     in property <string> headers-str: ""; // formatted header count
     in property <string> blocks-str: "";  // formatted block count
     in property <string> disk-free: "";    // free space, e.g. "12.3 GB free"
+    // System RAM, and what this coin's data dir occupies on disk. The two answer
+    // different questions from `disk-frac`, which is the volume's fill level.
+    in property <float> mem-frac: 0;
+    in property <string> mem-used: "";
+    in property <float> storage-frac: 0;
+    in property <string> storage-size: "";
+    // The coin's donation address, for the Settings tab.
+    in property <string> tip-address: "";
     in property <string> coin-version: ""; // bundled core version
     in property <string> coin-abbrev: ""; // ticker, e.g. "DIVI" — labels the balance
     // Two-tone wordmark (bw_coin_wordmark), for the three coins that have one:
@@ -1470,6 +1478,21 @@ export component AppWindow inherits Window {
                                 fill: root.coin-color;
                                 value: root.disk-free;
                             }
+                            // What this coin costs on disk, as a share of the
+                            // volume — distinct from "Disk used", which is the
+                            // whole filesystem including everything else.
+                            if root.storage-size != "": CircleGauge {
+                                label: "Chain size";
+                                frac: root.storage-frac;
+                                fill: root.coin-color;
+                                value: root.storage-size;
+                            }
+                            CircleGauge {
+                                label: "Memory";
+                                frac: root.mem-frac;
+                                fill: root.coin-color;
+                                value: root.mem-used;
+                            }
                         }
                         // Status line — the latest info/action message (like the TUI).
                         HorizontalBox {
@@ -1940,6 +1963,16 @@ export component AppWindow inherits Window {
                         if root.prune-mode >= 0: SettingsRow {
                             label: "Pruning";
                             value: root.prune-text;
+                        }
+
+                        // The project's donation address for this coin. Kept here
+                        // rather than anywhere it could be mistaken for the user's
+                        // own receive address — that confusion would send someone's
+                        // coins to the wrong place.
+                        if root.tip-address != "": Rectangle { height: 6px; }
+                        if root.tip-address != "": SettingsRow {
+                            label: "Tip the dev";
+                            value: root.tip-address;
                         }
                     }
 
