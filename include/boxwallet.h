@@ -275,6 +275,16 @@ typedef struct {
 } BwDiskUsage;
 int     bw_disk_usage(bw_ctx *ctx, size_t idx, BwDiskUsage *out);
 
+/* ---- pending coin updates ----------------------------------------------------
+ * Which coins have a newer bundled core than the installed version, as registry
+ * indices; returns how many.
+ *
+ * One small disk read per coin, so worker thread — and not on the 2s poll: the
+ * answer only changes when BoxWallet itself updates or a coin is installed. A
+ * coin with no version marker reads as up to date, not out of date; assuming
+ * otherwise would nag on every hand-installed binary. */
+size_t  bw_updates_pending(bw_ctx *ctx, uint8_t *out, size_t cap);
+
 /* ---- the balance-privacy toggle ----------------------------------------------
  * Reads and writes the same `hide_balances` key in boxwallet.conf the TUI uses,
  * so the preference follows the user between the two front-ends. The setter
