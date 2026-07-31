@@ -622,6 +622,9 @@ static void apply_coin_metadata(const AppWindow *ui, bw_ctx *ctx, int idx)
     ui->set_disk_free(slint::SharedString(""));
     ui->set_storage_frac(0);
     ui->set_storage_size(slint::SharedString(""));
+    ui->set_price_usd(slint::SharedString(""));
+    ui->set_price_change(slint::SharedString(""));
+    ui->set_holding_value(slint::SharedString(""));
     ui->set_status_text(slint::SharedString(""));
     ui->set_live_status(slint::SharedString(""));
     ui->set_status_is_error(false);
@@ -737,6 +740,10 @@ int main()
         ui->set_balance_mask(slint::SharedString(std::string_view(mask, mn)));
         ui->set_hide_balances(bw_hide_balances(ctx) != 0);
     }
+    ui->set_prices_enabled(bw_prices_enabled(ctx) != 0);
+    ui->on_set_prices_enabled([ctx](bool on) {
+        (void)bw_set_prices_enabled(ctx, on ? 1 : 0);
+    });
     ui->on_set_hide_balances([ctx](bool hide) {
         // Small conf merge; the TUI does the same inline.
         (void)bw_set_hide_balances(ctx, hide ? 1 : 0);
@@ -2079,6 +2086,28 @@ int main()
                 }
             }
 
+            // Prices. The core owns the cadence, the backoff and — importantly —
+            // the roster: every registered coin, never narrowed to what's
+            // installed, so the request says nothing about what this user holds.
+            (void)bw_prices_service(ctx);
+            BwQuote q;
+            std::memset(&q, 0, sizeof q);
+            const bool have_price = bw_price_quote(ctx, coin, &q) == 1;
+            std::string price_usd, price_change, holding_value;
+            int price_dir = 0;
+            if (have_price) {
+                char b[64];
+                size_t n = bw_format_usd(q.usd, b, sizeof b);
+                price_usd.assign(b, n);
+                n = bw_format_change(q.change_24h, q.have_change, b, sizeof b);
+                price_change.assign(b, n);
+                price_dir = bw_price_direction(q.change_24h, q.have_change);
+                if (have_balance) {
+                    n = bw_format_value(bal.total, q.usd, b, sizeof b);
+                    holding_value.assign(b, n);
+                }
+            }
+
             // System RAM: a cheap read of the OS's own figures, so every tick.
             BwDiskUsage mu;
             std::memset(&mu, 0, sizeof mu);
@@ -2146,6 +2175,7 @@ int main()
 
             post_to_ui([weak, di, bs, daemon_up, sel, disk_frac, disk_free_str, wallet_sec, stage, live_status,
                         mem_frac, mem_used_str, storage_now, du,
+                        price_usd, price_change, price_dir, holding_value,
                         ms, hashrate, ew_flags, wallet_state, bal, have_balance,
                         rp, rescanning, txs, recv_addr, decimals, wallet_svc_err, can_send,
                         rpc_ok, busy, coin]() {
@@ -2157,6 +2187,10 @@ int main()
                     return;
                 (*h)->set_disk_frac(disk_frac);
                 (*h)->set_disk_free(slint::SharedString(disk_free_str));
+                (*h)->set_price_usd(slint::SharedString(price_usd));
+                (*h)->set_price_change(slint::SharedString(price_change));
+                (*h)->set_price_dir(price_dir);
+                (*h)->set_holding_value(slint::SharedString(holding_value));
                 (*h)->set_mem_frac(mem_frac);
                 (*h)->set_mem_used(slint::SharedString(mem_used_str));
                 // Shown as a share of the volume, so it reads against the disk

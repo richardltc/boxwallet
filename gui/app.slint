@@ -802,6 +802,14 @@ export component AppWindow inherits Window {
     // Balance privacy. The figures are still polled while hidden — the mask is
     // applied at render time, so unhiding is instant. Shared with the TUI through
     // boxwallet.conf, so the preference follows you between the two.
+    // USD price for this coin, pre-formatted by the core. Empty when prices are
+    // off, the host doesn't list the coin, or the cache has gone stale.
+    in property <string> price-usd: "";
+    in property <string> price-change: "";
+    in property <int> price-dir: 0;   // 1 up, -1 down, 0 flat/unknown
+    in property <string> holding-value: "";
+    in-out property <bool> prices-enabled: true;
+    callback set-prices-enabled(bool);
     in-out property <bool> hide-balances: false;
     in property <string> balance-mask: "********";
     callback set-hide-balances(bool);
@@ -1284,6 +1292,33 @@ export component AppWindow inherits Window {
                                 text: root.coin-desc;
                                 color: #9a9a9a;
                                 font-size: 13px;
+                            }
+                            // Unit price, 24h move, and what the holding is worth
+                            // — under the description so it reads as context for
+                            // the balance above rather than competing with it.
+                            if root.price-usd != "": HorizontalLayout {
+                                spacing: 8px;
+                                alignment: start;
+                                Text {
+                                    text: root.price-usd;
+                                    color: #9a9a9a;
+                                    font-size: 12px;
+                                }
+                                if root.price-change != "": Text {
+                                    // The arrow carries the sign, so the figure is
+                                    // unsigned — green up, red down.
+                                    text: (root.price-dir > 0 ? "\u{25b2} " : (root.price-dir < 0 ? "\u{25bc} " : "")) + root.price-change;
+                                    color: root.price-dir > 0 ? #7ec27e : (root.price-dir < 0 ? #e05c5c : #8a8a8a);
+                                    font-size: 12px;
+                                }
+                                // Suppressed while balances are hidden: it is
+                                // derived from the balance, so showing it would
+                                // leak what the mask is there to cover.
+                                if root.holding-value != "" && !root.hide-balances: Text {
+                                    text: "\u{2248} " + root.holding-value;
+                                    color: #9a9a9a;
+                                    font-size: 12px;
+                                }
                             }
                         }
                     }
@@ -2027,6 +2062,25 @@ export component AppWindow inherits Window {
                                 toggled => {
                                     root.hide-balances = self.checked;
                                     root.set-hide-balances(self.checked);
+                                }
+                            }
+                        }
+                        HorizontalLayout {
+                            spacing: 10px;
+                            alignment: start;
+                            Text {
+                                text: "";
+                                width: 88px;
+                            }
+                            CheckBox {
+                                // Off means no request is made at all, not a
+                                // hidden figure — say so, since that's the
+                                // reason someone would turn it off.
+                                text: "Look up USD prices (off = no network requests)";
+                                checked: root.prices-enabled;
+                                toggled => {
+                                    root.prices-enabled = self.checked;
+                                    root.set-prices-enabled(self.checked);
                                 }
                             }
                         }

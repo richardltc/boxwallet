@@ -275,6 +275,43 @@ typedef struct {
 } BwDiskUsage;
 int     bw_disk_usage(bw_ctx *ctx, size_t idx, BwDiskUsage *out);
 
+/* ---- USD prices --------------------------------------------------------------
+ * bw_prices_service: call once per poll tick and let it decide. It owns the
+ * cadence, the backoff after failures, and the privacy rule below. Returns 1 if
+ * the cache changed. Blocks on the network when it fetches — WORKER THREAD.
+ *
+ * THE ROSTER IS EVERY REGISTERED COIN, ALWAYS — regardless of what is installed
+ * or selected. That is the privacy property: the outbound request is identical
+ * for every BoxWallet user, so it says nothing about which coins this one holds.
+ * Never narrow it to the installed set; that turns a price lookup into a
+ * disclosure of someone's portfolio.
+ *
+ * bw_price_quote returns 0 once the cache is over an hour old even though the
+ * figures are still in memory. A price left on screen while every refresh fails
+ * misrepresents what a balance is worth, which is worse than showing nothing.
+ *
+ * bw_set_prices_enabled(0) means NO REQUEST IS MADE AT ALL, not a hidden figure.
+ * Someone who doesn't want BoxWallet talking to a price host gets exactly that.
+ * Shares the TUI's `show_prices` key, so the choice follows the user. */
+typedef struct {
+    double usd;
+    double change_24h;
+    int    have_change; /* the host can give a price with no 24h figure */
+    int    have;
+} BwQuote;
+
+int     bw_prices_service(bw_ctx *ctx);
+int     bw_price_quote(bw_ctx *ctx, size_t idx, BwQuote *out);
+int     bw_prices_enabled(bw_ctx *ctx);
+int     bw_set_prices_enabled(bw_ctx *ctx, int on);
+
+/* Formatting — the arrow carries the sign, so the percentage is unsigned.
+ * bw_price_direction: 1 up, -1 down, 0 flat or unknown. All cheap. */
+size_t  bw_format_usd(double usd, char *buf, size_t cap);
+size_t  bw_format_value(double amount, double usd, char *buf, size_t cap);
+size_t  bw_format_change(double change_24h, int have_change, char *buf, size_t cap);
+int     bw_price_direction(double change_24h, int have_change);
+
 /* ---- pending coin updates ----------------------------------------------------
  * Which coins have a newer bundled core than the installed version, as registry
  * indices; returns how many.
