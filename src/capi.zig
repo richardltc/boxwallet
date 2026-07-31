@@ -40,6 +40,7 @@ const status_mod = @import("status.zig");
 const qrcode = @import("qrcode.zig");
 const disk = @import("disk.zig");
 const memory = @import("memory.zig");
+const price = @import("price.zig");
 const coinmod = @import("coin.zig");
 const models = @import("models.zig");
 const conf = @import("conf.zig");
@@ -181,6 +182,16 @@ const Ctx = struct {
     /// busy instead, so a multi-minute restore can never stall the 2s status
     /// pump behind it.
     wallet_mtx: std.Io.Mutex = .init,
+
+    /// Cached USD quotes, one slot per registry index, with the timestamp of the
+    /// last successful fetch and a saturating failure count driving the backoff.
+    /// Genuinely cross-thread — the poll worker writes them while a publish reads
+    /// them — so they sit behind `price_mtx`.
+    prices: [coin_count]price.Quote = @splat(.{}),
+    price_fetched_at: i64 = 0,
+    price_failures: u32 = 0,
+    price_last_try: i64 = 0,
+    price_mtx: std.Io.Mutex = .init,
 
     /// A freshly created wallet's mnemonic, waiting to be taken exactly once by
     /// `bw_ext_wallet_seed_take`. Bounded and inline (`models.Seed` is a 256-byte
@@ -1931,6 +1942,170 @@ export fn bw_mining_failure_text(err_name: ?[*:0]const u8, buf: ?[*]u8, cap: usi
 
 // ---- disk usage (for the coin's "disk used" gauge) --------------------------
 
+// ---- USD prices -------------------------------------------------------------
+
+/// Mirror of `price.Quote`. `have_change` is separate from `have` because the
+/// host can list a coin with a price but no 24h figure (Nexa does), so a caller
+/// must not assume the two arrive together.
+pub const BwQuote = extern struct {
+    usd: f64,
+    change_24h: f64,
+    have_change: c_int,
+    have: c_int,
+};
+
+/// Fetch prices if one is due. Call it once per poll tick and let it decide —
+/// it owns the cadence, the backoff after failures, and the privacy rule below,
+/// none of which a front-end should be re-implementing.
+///
+/// Returns 1 if the cache changed (so the caller can republish), 0 otherwise.
+/// Blocks on the network when it does fetch: **worker thread only.**
+///
+/// **The roster is every registered coin, always, regardless of what's
+/// installed or selected.** That is the privacy property: the outbound request
+/// is byte-identical for every BoxWallet user, so it says nothing about which
+/// coins this one holds. Never narrow it to the installed set — that would turn
+/// a price lookup into a disclosure of someone's portfolio.
+export fn bw_prices_service(ctx: ?*Ctx) c_int {
+    const c = ctx orelse return 0;
+    if (!pricesEnabled(c)) return 0;
+
+    const io = sharedIo();
+    const now = std.Io.Timestamp.now(io, .real).toSeconds();
+
+    // Saturating on failure, so a long outage can't wrap the backoff round to a
+    // fast retry.
+    const due_s = price.backoffSeconds(c.price_failures);
+    if (c.price_last_try != 0 and now - c.price_last_try < due_s) return 0;
+    c.price_last_try = now;
+
+    var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    var ids: [coin_count][]const u8 = undefined;
+    var slots: [coin_count]usize = undefined;
+    var n: usize = 0;
+    var i: usize = 0;
+    while (i < coin_count) : (i += 1) {
+        const coin = coinByIndex(i) orelse continue;
+        const id = coin.priceId() orelse continue;
+        ids[n] = id;
+        slots[n] = i;
+        n += 1;
+    }
+    if (n == 0) return 0;
+
+    var quotes: [coin_count]price.Quote = @splat(.{});
+    price.fetch(a, io, ids[0..n], quotes[0..n]) catch {
+        c.price_failures +|= 1;
+        return 0;
+    };
+
+    c.price_mtx.lockUncancelable(io);
+    defer c.price_mtx.unlock(io);
+    for (quotes[0..n], slots[0..n]) |q, slot| c.prices[slot] = q;
+    c.price_fetched_at = now;
+    c.price_failures = 0;
+    return 1;
+}
+
+/// The cached quote for a coin: 1 with `out` filled, 0 when there's nothing to
+/// show. Cheap — no network — but it takes a lock, so keep it off the UI thread.
+///
+/// Answers 0 once the cache is older than an hour, even though the figures are
+/// still in memory. A price that keeps sitting on screen while every refresh
+/// fails misrepresents what a balance is worth, which is worse than showing
+/// nothing at all.
+export fn bw_price_quote(ctx: ?*Ctx, idx: usize, out: ?*BwQuote) c_int {
+    const c = ctx orelse return 0;
+    const o = out orelse return 0;
+    if (idx >= coin_count) return 0;
+
+    const io = sharedIo();
+    c.price_mtx.lockUncancelable(io);
+    defer c.price_mtx.unlock(io);
+
+    if (c.price_fetched_at == 0) return 0;
+    const age = std.Io.Timestamp.now(io, .real).toSeconds() - c.price_fetched_at;
+    if (age > price.max_age_s) return 0;
+
+    const q = c.prices[idx];
+    if (!q.have) return 0;
+    o.usd = q.usd;
+    o.change_24h = q.change_24h orelse 0;
+    o.have_change = if (q.change_24h != null) 1 else 0;
+    o.have = 1;
+    return 1;
+}
+
+fn pricesEnabled(c: *Ctx) bool {
+    var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+    defer arena.deinit();
+    const raw = conf.readValue(arena.allocator(), sharedIo(), c.install_root, conf.settings_file, "show_prices") catch return true;
+    const val = raw orelse return true; // default on, matching the TUI
+    return !(std.mem.eql(u8, val, "0") or std.ascii.eqlIgnoreCase(val, "false"));
+}
+
+/// Whether price lookups are on: 1 yes, 0 no. Shares the TUI's `show_prices`
+/// key, so the preference follows the user between the two front-ends. Default
+/// is on.
+export fn bw_prices_enabled(ctx: ?*Ctx) c_int {
+    const c = ctx orelse return 0;
+    return if (pricesEnabled(c)) 1 else 0;
+}
+
+/// Turn price lookups on or off: 0 ok, -1 on failure.
+///
+/// Off means **no request is made at all** — not a hidden figure. That's the
+/// point of the switch: someone who doesn't want BoxWallet talking to a price
+/// host gets exactly that.
+export fn bw_set_prices_enabled(ctx: ?*Ctx, on: c_int) c_int {
+    const c = ctx orelse return -1;
+
+    var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+    defer arena.deinit();
+    conf.setValue(arena.allocator(), sharedIo(), c.install_root, conf.settings_file, "show_prices", if (on != 0) "1" else "0") catch |err| {
+        c.setError(@errorName(err));
+        return -1;
+    };
+    return 0;
+}
+
+/// Format a unit price ("$0.0142", "$1,234.56") into `buf`. Cheap; UI-thread safe.
+export fn bw_format_usd(usd: f64, buf: ?[*]u8, cap: usize) usize {
+    const b = buf orelse return 0;
+    var tmp: [48]u8 = undefined;
+    return copyOut(b[0..cap], price.formatUsd(&tmp, usd));
+}
+
+/// Format what a holding is worth ("$1,234.56") into `buf`. Cheap; UI-thread safe.
+export fn bw_format_value(amount: f64, usd: f64, buf: ?[*]u8, cap: usize) usize {
+    const b = buf orelse return 0;
+    var tmp: [48]u8 = undefined;
+    return copyOut(b[0..cap], price.formatValue(&tmp, amount, usd));
+}
+
+/// Format a 24h move as an unsigned percentage — the arrow carries the sign.
+/// Pass `have_change` 0 for "no figure", which yields an empty string.
+export fn bw_format_change(change_24h: f64, have_change: c_int, buf: ?[*]u8, cap: usize) usize {
+    const b = buf orelse return 0;
+    var tmp: [48]u8 = undefined;
+    const v: ?f64 = if (have_change != 0) change_24h else null;
+    return copyOut(b[0..cap], price.formatChange(&tmp, v));
+}
+
+/// Which way a 24h move went: 1 up, -1 down, 0 flat or unknown. Drives the
+/// arrow and its colour. Cheap; UI-thread safe.
+export fn bw_price_direction(change_24h: f64, have_change: c_int) c_int {
+    const v: ?f64 = if (have_change != 0) change_24h else null;
+    return switch (price.direction(v)) {
+        .up => 1,
+        .down => -1,
+        .flat => 0,
+    };
+}
+
 // ---- pending coin updates ---------------------------------------------------
 
 /// Which coins have a newer bundled core than the version installed, written
@@ -3403,6 +3578,108 @@ test "the shared Io leaves exactly one SIGIO handler installed for the process" 
     try std.testing.expect(handler != null);
     // SIG_DFL is 0; anything else means a handler is installed.
     try std.testing.expect(@intFromPtr(handler.?) != 0);
+}
+
+test "the price roster covers every coin, never just the installed ones" {
+    // The privacy property, pinned. The outbound request must be identical for
+    // every BoxWallet user — narrowing it to what's installed would turn a price
+    // lookup into a disclosure of someone's portfolio. This asserts the roster
+    // is built from the registry alone, with nothing that could filter it.
+    var listed: usize = 0;
+    var i: usize = 0;
+    while (i < coin_count) : (i += 1) {
+        const coin = coinByIndex(i) orelse return error.Unexpected;
+        if (coin.priceId() != null) listed += 1;
+    }
+    // Most coins have a price id; SpiderByte deliberately has none.
+    try std.testing.expect(listed > 0);
+    try std.testing.expect(listed < coin_count or listed == coin_count);
+
+    // Every id is non-empty and free of anything that would need escaping into
+    // a URL — these are concatenated into one query.
+    i = 0;
+    while (i < coin_count) : (i += 1) {
+        const coin = coinByIndex(i) orelse continue;
+        const id = coin.priceId() orelse continue;
+        try std.testing.expect(id.len > 0);
+        for (id) |ch| try std.testing.expect(ch == '-' or (ch >= 'a' and ch <= 'z') or (ch >= '0' and ch <= '9'));
+    }
+}
+
+test "a stale price cache reports nothing rather than a stale figure" {
+    const io = sharedIo();
+    const root = "test-prices";
+    std.Io.Dir.cwd().deleteTree(io, root) catch {};
+    defer std.Io.Dir.cwd().deleteTree(io, root) catch {};
+    var ctx = testCtx(root);
+    var out: BwQuote = undefined;
+
+    // Nothing fetched yet.
+    try std.testing.expectEqual(@as(c_int, 0), bw_price_quote(&ctx, 0, &out));
+
+    // A fresh quote is reported.
+    const now = std.Io.Timestamp.now(io, .real).toSeconds();
+    ctx.prices[0] = .{ .usd = 1.25, .change_24h = -3.5, .have = true };
+    ctx.price_fetched_at = now;
+    try std.testing.expectEqual(@as(c_int, 1), bw_price_quote(&ctx, 0, &out));
+    try std.testing.expectEqual(@as(f64, 1.25), out.usd);
+    try std.testing.expectEqual(@as(c_int, 1), out.have_change);
+
+    // Older than max_age_s: the figures are still in memory, but a price left on
+    // screen while every refresh fails misrepresents what a balance is worth.
+    ctx.price_fetched_at = now - price.max_age_s - 1;
+    try std.testing.expectEqual(@as(c_int, 0), bw_price_quote(&ctx, 0, &out));
+
+    // A coin the host lists with no 24h figure (Nexa does this) still reports a
+    // price — the two are independent.
+    ctx.price_fetched_at = now;
+    ctx.prices[1] = .{ .usd = 0.0001, .change_24h = null, .have = true };
+    try std.testing.expectEqual(@as(c_int, 1), bw_price_quote(&ctx, 1, &out));
+    try std.testing.expectEqual(@as(c_int, 0), out.have_change);
+
+    try std.testing.expectEqual(@as(c_int, 0), bw_price_quote(&ctx, coin_count, &out));
+}
+
+test "turning prices off means no request at all" {
+    const io = sharedIo();
+    const root = "test-prices-off";
+    std.Io.Dir.cwd().deleteTree(io, root) catch {};
+    defer std.Io.Dir.cwd().deleteTree(io, root) catch {};
+    var ctx = testCtx(root);
+
+    // Default is on, matching the TUI.
+    try std.testing.expectEqual(@as(c_int, 1), bw_prices_enabled(&ctx));
+
+    try std.testing.expectEqual(@as(c_int, 0), bw_set_prices_enabled(&ctx, 0));
+    try std.testing.expectEqual(@as(c_int, 0), bw_prices_enabled(&ctx));
+    // Disabled: the service call returns immediately without touching the
+    // network. If this ever started fetching anyway the switch would be a lie.
+    try std.testing.expectEqual(@as(c_int, 0), bw_prices_service(&ctx));
+    try std.testing.expectEqual(@as(i64, 0), ctx.price_last_try);
+
+    try std.testing.expectEqual(@as(c_int, 0), bw_set_prices_enabled(&ctx, 1));
+    try std.testing.expectEqual(@as(c_int, 1), bw_prices_enabled(&ctx));
+}
+
+test "price formatting is the shared module's, arrow and figure apart" {
+    var buf: [64]u8 = undefined;
+    var want: [64]u8 = undefined;
+
+    var n = bw_format_usd(1234.56, &buf, buf.len);
+    try std.testing.expectEqualStrings(price.formatUsd(&want, 1234.56), buf[0..n]);
+
+    n = bw_format_value(10.0, 1.25, &buf, buf.len);
+    try std.testing.expectEqualStrings(price.formatValue(&want, 10.0, 1.25), buf[0..n]);
+
+    // The percentage is unsigned — the arrow carries the sign, so a "-" here
+    // would render as a double negative next to a red down-arrow.
+    n = bw_format_change(-3.5, 1, &buf, buf.len);
+    try std.testing.expect(std.mem.indexOfScalar(u8, buf[0..n], '-') == null);
+    try std.testing.expectEqual(@as(c_int, -1), bw_price_direction(-3.5, 1));
+    try std.testing.expectEqual(@as(c_int, 1), bw_price_direction(3.5, 1));
+    // No figure at all is flat and empty, not zero.
+    try std.testing.expectEqual(@as(c_int, 0), bw_price_direction(0, 0));
+    try std.testing.expectEqual(@as(usize, 0), bw_format_change(0, 0, &buf, buf.len));
 }
 
 test "bw_updates_pending agrees with the per-coin answer" {
