@@ -721,6 +721,18 @@ int main()
         ui->set_brand_color(parse_hex_color(b, n));
     }
 
+    // The balance-privacy preference, from the conf the TUI shares.
+    {
+        char mask[32];
+        size_t mn = bw_balance_mask(mask, sizeof mask);
+        ui->set_balance_mask(slint::SharedString(std::string_view(mask, mn)));
+        ui->set_hide_balances(bw_hide_balances(ctx) != 0);
+    }
+    ui->on_set_hide_balances([ctx](bool hide) {
+        // Small conf merge; the TUI does the same inline.
+        (void)bw_set_hide_balances(ctx, hide ? 1 : 0);
+    });
+
     // Start the file browser at the user's home dir. Whoever opens it (today the
     // wallet restore-from-file stage) then lands somewhere useful without having
     // to remember to reset it first.

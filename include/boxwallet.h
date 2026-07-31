@@ -275,6 +275,19 @@ typedef struct {
 } BwDiskUsage;
 int     bw_disk_usage(bw_ctx *ctx, size_t idx, BwDiskUsage *out);
 
+/* ---- the balance-privacy toggle ----------------------------------------------
+ * Reads and writes the same `hide_balances` key in boxwallet.conf the TUI uses,
+ * so the preference follows the user between the two front-ends. The setter
+ * merges, leaving every other setting alone.
+ *
+ * MASK AT FORMAT TIME, NEVER BY SKIPPING THE FETCH. Keep polling the balance
+ * while it's hidden: unhiding is then instant instead of waiting for the next
+ * tick, and a front-end that stopped fetching would flash a stale figure the
+ * moment it unhid. */
+int     bw_hide_balances(bw_ctx *ctx);
+int     bw_set_hide_balances(bw_ctx *ctx, int hide);
+size_t  bw_balance_mask(char *buf, size_t cap);
+
 /* ---- system + storage readouts ----------------------------------------------
  * bw_tip_address is the coin's donation address (0 if it has none) — cheap,
  * UI-thread safe.

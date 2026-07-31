@@ -787,6 +787,12 @@ export component AppWindow inherits Window {
     in property <string> storage-size: "";
     // The coin's donation address, for the Settings tab.
     in property <string> tip-address: "";
+    // Balance privacy. The figures are still polled while hidden — the mask is
+    // applied at render time, so unhiding is instant. Shared with the TUI through
+    // boxwallet.conf, so the preference follows you between the two.
+    in-out property <bool> hide-balances: false;
+    in property <string> balance-mask: "********";
+    callback set-hide-balances(bool);
     in property <string> coin-version: ""; // bundled core version
     in property <string> coin-abbrev: ""; // ticker, e.g. "DIVI" — labels the balance
     // Two-tone wordmark (bw_coin_wordmark), for the three coins that have one:
@@ -1236,7 +1242,9 @@ export component AppWindow inherits Window {
                                 // being installed. Mono also holds the digits in their
                                 // columns as the balance updates, instead of jittering.
                                 bal-el := Text {
-                                    text: title-row.show-balance ? root.balance-total : "";
+                                    text: !title-row.show-balance
+                                        ? ""
+                                        : (root.hide-balances ? root.balance-mask : root.balance-total);
                                     color: #e6e6e6;
                                     font-family: "DejaVu Sans Mono";
                                     font-size: 14px;
@@ -1890,7 +1898,7 @@ export component AppWindow inherits Window {
                         if root.can-send: VerticalLayout {
                             spacing: 10px;
                             Text {
-                                text: "Available: " + root.balance-avail;
+                                text: "Available: " + (root.hide-balances ? root.balance-mask : root.balance-avail);
                                 color: #9a9a9a;
                                 font-size: 13px;
                             }
@@ -1973,6 +1981,27 @@ export component AppWindow inherits Window {
                         if root.tip-address != "": SettingsRow {
                             label: "Tip the dev";
                             value: root.tip-address;
+                        }
+
+                        Rectangle { height: 6px; }
+                        HorizontalLayout {
+                            spacing: 10px;
+                            alignment: start;
+                            Text {
+                                text: "Privacy:";
+                                color: #9a9a9a;
+                                font-size: 13px;
+                                width: 88px;
+                                vertical-alignment: center;
+                            }
+                            CheckBox {
+                                text: "Hide balance figures";
+                                checked: root.hide-balances;
+                                toggled => {
+                                    root.hide-balances = self.checked;
+                                    root.set-hide-balances(self.checked);
+                                }
+                            }
                         }
                     }
 

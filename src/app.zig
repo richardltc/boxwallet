@@ -55,7 +55,9 @@ const fallback_install_root = "boxwallet-coins";
 const settings_file = conf.settings_file;
 
 /// What a wallet balance figure is replaced with while `App.hide_balances` is on.
-const balance_mask = "********";
+/// What a balance figure is replaced with while `App.hide_balances` is on.
+/// Shared with the GUI (`bw_balance_mask`) so both mask with the same thing.
+const balance_mask = money.balance_mask;
 
 /// Every coin registered in the left bar. Order here is irrelevant — `entries`
 /// sorts them alphabetically below — so a newly ported coin can be added in any
