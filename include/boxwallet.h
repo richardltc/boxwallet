@@ -107,6 +107,18 @@ size_t  bw_seed_verify_positions(size_t word_count, uint32_t *out, size_t cap);
 size_t  bw_format_amount(double value, uint8_t decimals, char *buf, size_t cap);
 size_t  bw_trim_zeros(const char *text, size_t len, char *buf, size_t cap);
 
+/* Integer cents to dollars ("$1,234.56"); an oracle price in micro-USD per coin
+ * to six decimals; and a rough duration ("2 hours and 5 minutes", empty under a
+ * minute) for a countdown. The stablecoin figures are all cents, and these are
+ * the one place they become text. Cheap, UI-thread safe. */
+/* Parses a typed USD amount to integer cents, or -1 if it isn't one. Use it
+ * rather than parsing locally: the figure a mint settles against must be the
+ * one the core parsed, and money never rides through a float. */
+int64_t bw_parse_dollars_to_cents(const char *text);
+size_t  bw_format_cents(int64_t cents, char *buf, size_t cap);
+size_t  bw_format_micro_usd(uint64_t micro, char *buf, size_t cap);
+size_t  bw_format_duration(int64_t secs, char *buf, size_t cap);
+
 /* ---- application identity (no ctx needed) -----------------------------------
  * BoxWallet's own name, version and brand colour. The version has no "v" prefix
  * — add your own. Take these rather than hardcoding: they come from the same
@@ -274,6 +286,80 @@ typedef struct {
     uint64_t total_bytes;
 } BwDiskUsage;
 int     bw_disk_usage(bw_ctx *ctx, size_t idx, BwDiskUsage *out);
+
+/* ---- the chain-native stablecoin (DigiByte's DigiDollar) ---------------------
+ * Only meaningful where bw_coin_supports_stablecoin is 1. Every other coin's
+ * calls here return 0/-1 without touching the network.
+ *
+ * MONEY IS INTEGER CENTS THROUGHOUT, never a float — these are the figures a
+ * mint and a redeem settle against.
+ *
+ * The metadata calls are cheap and UI-thread safe; everything taking a ctx
+ * blocks on RPC and is worker-thread only.
+ *
+ * Gate every action on info.active. Before activation the tab is a read-only
+ * countdown: the consensus feature isn't live, and the daemon will refuse. */
+#define BW_SC_MAX_TIERS 16  /* DigiByte ships 10; headroom for more */
+typedef struct { uint8_t tier; uint32_t ratio_pct; char duration[24]; } BwScTier;
+typedef struct {
+    int      active;
+    char     status[24];   /* raw BIP9 status, for the pre-activation readout */
+    int64_t  activation_height;
+    uint64_t price_micro_usd;
+    int      price_stale;
+    int64_t  total_supply_cents;
+    double   total_collateral;
+    double   health_ratio;
+    int      minting_blocked;
+} BwScInfo;
+typedef struct { int64_t confirmed_cents, pending_cents; } BwScBalance;
+typedef struct {
+    int     kind;          /* 0 mint, 1 sent, 2 received, 3 redeem */
+    int64_t amount_cents;  /* positive magnitude; kind carries the sign */
+    int64_t time, confirmations;
+} BwScTx;
+/* `id` is the mint txid — the handle a redeem is keyed on — carried with an
+ * explicit length rather than NUL-terminated, because a bitcoin-family txid is
+ * exactly 64 hex characters and terminating it would truncate the last one. */
+typedef struct {
+    char    id[64];
+    size_t  id_len;
+    int64_t amount_cents;
+    uint8_t tier;
+    int64_t unlock_height;
+    int     can_redeem;    /* the daemon's own verdict — filter on this */
+} BwScPosition;
+
+size_t  bw_sc_name(size_t idx, char *buf, size_t cap);
+size_t  bw_sc_symbol(size_t idx, char *buf, size_t cap);
+int64_t bw_sc_min_mint_cents(size_t idx);
+int64_t bw_sc_max_mint_cents(size_t idx);
+uint32_t bw_sc_block_seconds(size_t idx);
+size_t  bw_sc_tiers(size_t idx, BwScTier *out, size_t cap);
+
+int     bw_sc_info(bw_ctx *ctx, size_t idx, BwScInfo *out);
+int     bw_sc_balance(bw_ctx *ctx, size_t idx, BwScBalance *out);
+/* NEVER call this on a timer — same rotation rule as the wallet address. */
+size_t  bw_sc_receive_address(bw_ctx *ctx, size_t idx, int force_new, char *buf, size_t cap);
+size_t  bw_sc_transactions(bw_ctx *ctx, size_t idx, BwScTx *out, size_t cap);
+size_t  bw_sc_positions(bw_ctx *ctx, size_t idx, BwScPosition *out, size_t cap);
+/* Show the collateral estimate BEFORE the confirm step: minting commits it for
+ * the tier's whole term, and the amount isn't obvious from the figure minted. */
+int     bw_sc_estimate_collateral(bw_ctx *ctx, size_t idx, int64_t cents, uint8_t tier, double *out);
+
+/* Same tri-state as bw_wallet_send: 0 broadcast (out = txid), 1 the daemon
+ * rejected it (out = its own reason, verbatim), -1 transport failure. A
+ * rejection is an ANSWER — "timelock not expired", "oracle price stale" — and
+ * the user has to read it.
+ *
+ * mint uses cents + tier; send uses cents + address; redeem uses position_id +
+ * cents (the daemon requires the whole vault, so pass the position's amount). */
+#define BW_SC_MINT   0
+#define BW_SC_SEND   1
+#define BW_SC_REDEEM 2
+int     bw_sc_run(bw_ctx *ctx, size_t idx, uint8_t op, int64_t cents, uint8_t tier,
+                  const char *address, const char *position_id, size_t position_id_len,
+                  char *out, size_t cap);
 
 /* ---- USD prices --------------------------------------------------------------
  * bw_prices_service: call once per poll tick and let it decide. It owns the

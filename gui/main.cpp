@@ -125,6 +125,14 @@ static std::string g_qr_addr;
 // marker on the coin you just updated actually goes away.
 static std::function<void()> g_scan_updates;
 
+// DigiDollar. The redeemable vault ids are kept alongside the display rows the
+// picker shows, so a redeem is keyed on the id the user actually chose.
+static std::vector<std::string> g_sc_vault_ids;
+// …and their amounts. The daemon redeems a whole vault, so the amount passed
+// must be the vault's own — not zero, and not whatever is in the amount field.
+static std::vector<int64_t> g_sc_vault_cents;
+static std::string g_sc_addr;
+
 // ---- secrets ----------------------------------------------------------------
 // Passwords and seeds cross the C ABI as raw bytes, never as a SharedString —
 // see the secrets contract in include/boxwallet.h. These two are the only way
@@ -623,6 +631,35 @@ static void apply_coin_metadata(const AppWindow *ui, bw_ctx *ctx, int idx)
     ui->set_storage_frac(0);
     ui->set_storage_size(slint::SharedString(""));
     ui->set_price_usd(slint::SharedString(""));
+    // DigiDollar metadata + a clean slate; the tab only appears for a coin that
+    // has one, and stale figures from another coin must never show under it.
+    {
+        char nb[48];
+        size_t nn2 = bw_sc_name(idx, nb, sizeof nb);
+        if (nn2 > 0)
+            ui->set_sc_name(slint::SharedString(std::string_view(nb, nn2)));
+        char sb2[16];
+        size_t sn3 = bw_sc_symbol(idx, sb2, sizeof sb2);
+        ui->set_sc_symbol(slint::SharedString(std::string_view(sb2, sn3)));
+
+        BwScTier tiers[BW_SC_MAX_TIERS];
+        size_t tn2 = bw_sc_tiers(idx, tiers, BW_SC_MAX_TIERS);
+        std::vector<slint::SharedString> rows;
+        for (size_t k = 0; k < tn2; ++k) {
+            char pb[64];
+            std::snprintf(pb, sizeof pb, "%s  —  %u%% collateral",
+                          tiers[k].duration, tiers[k].ratio_pct);
+            rows.push_back(slint::SharedString(pb));
+        }
+        ui->set_sc_tier_rows(std::make_shared<slint::VectorModel<slint::SharedString>>(rows));
+    }
+    ui->set_sc_active(false);
+    ui->set_sc_address(slint::SharedString(""));
+    ui->set_sc_balance(slint::SharedString(""));
+    ui->set_sc_stage(0);
+    g_sc_addr.clear();
+    g_sc_vault_ids.clear();
+    g_sc_vault_cents.clear();
     ui->set_price_change(slint::SharedString(""));
     ui->set_holding_value(slint::SharedString(""));
     ui->set_status_text(slint::SharedString(""));
@@ -1191,6 +1228,147 @@ int main()
             return;
         }
         offer_accel_or_launch(coin);
+    });
+
+    // ---- DigiDollar: mint / send / redeem ----
+    // Amounts are typed as dollars and parsed to integer cents by the core, so
+    // the figure the daemon settles against is the one the core parsed — this
+    // side never does money arithmetic.
+    ui->on_sc_open([weak](int op) {
+        auto h = weak.lock();
+        if (!h)
+            return;
+        (*h)->set_sc_op(op);
+        (*h)->set_sc_amount(slint::SharedString(""));
+        (*h)->set_sc_dest(slint::SharedString(""));
+        (*h)->set_sc_estimate(slint::SharedString(""));
+        (*h)->set_sc_error(slint::SharedString(""));
+        (*h)->set_sc_tier(0);
+        (*h)->set_sc_vault_sel(0);
+        // Redeem takes a whole vault, so there is no amount to ask for.
+        (*h)->set_sc_stage(op == 2 ? 5 : 2);
+    });
+
+    // Live collateral estimate as the amount or tier changes. Debounced only by
+    // the user's typing — it's one RPC and the answer is what makes a mint's
+    // real cost visible before committing.
+    ui->on_sc_estimate_request([weak, ctx](slint::SharedString amount, int tier) {
+        int coin = g_selected.load();
+        if (coin < 0)
+            return;
+        std::string amt(amount);
+        std::thread([weak, ctx, coin, amt, tier]() {
+            WorkerGuard wg;
+            int64_t cents = bw_parse_dollars_to_cents(amt.c_str());
+            std::string text;
+            if (cents >= 0) {
+                double collateral = 0;
+                if (bw_sc_estimate_collateral(ctx, static_cast<size_t>(coin), cents,
+                                              static_cast<uint8_t>(tier), &collateral) == 0) {
+                    char ab[64];
+                    size_t an = bw_format_amount(collateral, bw_coin_balance_decimals(coin), ab, sizeof ab);
+                    char sym[16];
+                    size_t sn = bw_coin_abbrev(coin, sym, sizeof sym);
+                    text = "Locks about " + std::string(ab, an) + " " + std::string(sym, sn) +
+                           " as collateral for the term.";
+                }
+            }
+            post_to_ui([weak, text]() {
+                if (auto h = weak.lock())
+                    (*h)->set_sc_estimate(slint::SharedString(text));
+            });
+        }).detach();
+    });
+
+    ui->on_sc_submit([weak, ctx, wake_poll]() {
+        auto h = weak.lock();
+        if (!h)
+            return;
+        int coin = g_selected.load();
+        if (coin < 0)
+            return;
+        const int op = (*h)->get_sc_op();
+        const std::string amt((*h)->get_sc_amount());
+        const std::string dest((*h)->get_sc_dest());
+        const int tier = (*h)->get_sc_tier();
+        const int vault = (*h)->get_sc_vault_sel();
+
+        // Redeem is keyed on the id behind the row the user picked, not on its
+        // position in a list that the poll could have reordered underneath.
+        std::string vault_id;
+        int64_t redeem_cents = 0;
+        (void)redeem_cents;
+        if (op == 2) {
+            if (vault < 0 || static_cast<size_t>(vault) >= g_sc_vault_ids.size())
+                return;
+            vault_id = g_sc_vault_ids[static_cast<size_t>(vault)];
+            // The vault's own amount — a redeem burns the whole position.
+            redeem_cents = g_sc_vault_cents[static_cast<size_t>(vault)];
+        }
+
+        (*h)->set_sc_stage(7);
+        std::thread([weak, ctx, coin, op, amt, dest, tier, vault_id, redeem_cents, wake_poll]() {
+            WorkerGuard wg;
+            int64_t cents = (op == 2) ? redeem_cents : bw_parse_dollars_to_cents(amt.c_str());
+            char out[512] = {0};
+            int rc;
+            if (op != 2 && cents < 0) {
+                rc = -1;
+                std::snprintf(out, sizeof out, "That isn't an amount I can read.");
+            } else {
+                rc = bw_sc_run(ctx, static_cast<size_t>(coin), static_cast<uint8_t>(op),
+                               cents, static_cast<uint8_t>(tier),
+                               op == 1 ? dest.c_str() : nullptr,
+                               vault_id.empty() ? nullptr : vault_id.data(), vault_id.size(),
+                               out, sizeof out);
+            }
+            std::string msg;
+            if (rc == 0) {
+                static const char *done[] = {"Minted", "Sent", "Redeemed"};
+                msg = std::string(done[op < 3 ? op : 0]) + ". Transaction " + std::string(out);
+            } else if (rc == 1) {
+                // The daemon's own words — "timelock not expired", "oracle price
+                // stale". An answer, not a failure to paper over.
+                msg = std::string(out);
+            } else {
+                msg = out[0] ? std::string(out) : last_error_text(ctx, rc);
+            }
+            post_to_ui([weak, msg, rc]() {
+                if (auto h2 = weak.lock()) {
+                    (*h2)->set_sc_result(slint::SharedString(msg));
+                    (*h2)->set_sc_result_error(rc != 0);
+                    (*h2)->set_sc_stage(8);
+                }
+            });
+            wake_poll();
+        }).detach();
+    });
+
+    ui->on_sc_cancel([weak]() {
+        if (auto h = weak.lock()) {
+            (*h)->set_sc_amount(slint::SharedString(""));
+            (*h)->set_sc_dest(slint::SharedString(""));
+            (*h)->set_sc_estimate(slint::SharedString(""));
+            (*h)->set_sc_error(slint::SharedString(""));
+        }
+    });
+
+    ui->on_sc_new_address([weak, ctx, wake_poll]() {
+        int coin = g_selected.load();
+        if (coin < 0)
+            return;
+        std::thread([weak, ctx, coin, wake_poll]() {
+            WorkerGuard wg;
+            char ab[256] = {0};
+            size_t an = bw_sc_receive_address(ctx, static_cast<size_t>(coin), 1, ab, sizeof ab);
+            std::string addr(ab, an);
+            post_to_ui([weak, addr]() {
+                g_sc_addr = addr;
+                if (auto h = weak.lock())
+                    (*h)->set_sc_address(slint::SharedString(addr));
+            });
+            wake_poll();
+        }).detach();
     });
 
     // ---- in-daemon wallet menu ----
@@ -2086,6 +2264,101 @@ int main()
                 }
             }
 
+            // DigiDollar, for the one coin that has it. Read only while the
+            // daemon is answering — every call here is RPC.
+            bool sc_active = false;
+            std::string sc_status, sc_balance, sc_pending, sc_price, sc_supply,
+                        sc_health, sc_countdown, sc_addr;
+            bool sc_price_stale = false, sc_minting_blocked = false;
+            std::vector<slint::SharedString> sc_vaults, sc_txs, sc_redeemable;
+            std::vector<std::string> sc_vault_ids;
+            std::vector<int64_t> sc_vault_cents;
+            if (rpc_ok && bw_coin_supports_stablecoin(coin)) {
+                BwScInfo si2;
+                std::memset(&si2, 0, sizeof si2);
+                if (bw_sc_info(ctx, coin, &si2) == 0) {
+                    sc_active = si2.active != 0;
+                    sc_status.assign(si2.status);
+                    sc_price_stale = si2.price_stale != 0;
+                    sc_minting_blocked = si2.minting_blocked != 0;
+
+                    if (!sc_active && si2.activation_height > bs.blocks) {
+                        // How long the wait is, in the coin's own block time —
+                        // a height alone means nothing to most people.
+                        const uint32_t bsec = bw_sc_block_seconds(coin);
+                        char cb[64];
+                        size_t cn = bw_format_duration(
+                            (si2.activation_height - bs.blocks) * static_cast<int64_t>(bsec),
+                            cb, sizeof cb);
+                        sc_countdown.assign(cb, cn);
+                    }
+                    if (sc_active) {
+                        char b[64];
+                        size_t n = bw_format_micro_usd(si2.price_micro_usd, b, sizeof b);
+                        sc_price.assign(b, n);
+                        n = bw_format_cents(si2.total_supply_cents, b, sizeof b);
+                        sc_supply = "Supply " + std::string(b, n);
+                        if (si2.health_ratio > 0) {
+                            char hb[32];
+                            std::snprintf(hb, sizeof hb, "System health %.0f%%", si2.health_ratio * 100.0);
+                            sc_health.assign(hb);
+                        }
+
+                        BwScBalance sb;
+                        std::memset(&sb, 0, sizeof sb);
+                        if (bw_sc_balance(ctx, coin, &sb) == 0) {
+                            char cb[48];
+                            size_t cn = bw_format_cents(sb.confirmed_cents, cb, sizeof cb);
+                            sc_balance.assign(cb, cn);
+                            if (sb.pending_cents != 0) {
+                                cn = bw_format_cents(sb.pending_cents, cb, sizeof cb);
+                                sc_pending.assign(cb, cn);
+                            }
+                        }
+
+                        // The deposit address follows the same rule as the
+                        // wallet's: fetched once, never on this timer.
+                        if (g_sc_addr.empty()) {
+                            char ab[256] = {0};
+                            size_t an = bw_sc_receive_address(ctx, coin, 0, ab, sizeof ab);
+                            if (an > 0)
+                                g_sc_addr.assign(ab, an);
+                        }
+                        sc_addr = g_sc_addr;
+
+                        BwScPosition pos[16];
+                        size_t pn = bw_sc_positions(ctx, coin, pos, 16);
+                        for (size_t k = 0; k < pn; ++k) {
+                            char cb[48];
+                            size_t cn = bw_format_cents(pos[k].amount_cents, cb, sizeof cb);
+                            std::string line = std::string(cb, cn);
+                            if (pos[k].can_redeem) {
+                                line += "  — redeemable";
+                                sc_redeemable.push_back(slint::SharedString(line));
+                                sc_vault_ids.push_back(std::string(pos[k].id, pos[k].id_len));
+                                sc_vault_cents.push_back(pos[k].amount_cents);
+                            } else {
+                                line += "  — locked until block " + group_int(pos[k].unlock_height);
+                            }
+                            sc_vaults.push_back(slint::SharedString(line));
+                        }
+
+                        BwScTx stx[10];
+                        size_t sn2 = bw_sc_transactions(ctx, coin, stx, 10);
+                        for (size_t k = 0; k < sn2; ++k) {
+                            static const char *kinds[] = {"Minted", "Sent", "Received", "Redeemed"};
+                            const char *kind = (stx[k].kind >= 0 && stx[k].kind < 4)
+                                ? kinds[stx[k].kind] : "?";
+                            char cb[48];
+                            size_t cn = bw_format_cents(stx[k].amount_cents, cb, sizeof cb);
+                            sc_txs.push_back(slint::SharedString(
+                                std::string(kind) + "  " + std::string(cb, cn) + "  " +
+                                relative_time(stx[k].time)));
+                        }
+                    }
+                }
+            }
+
             // Prices. The core owns the cadence, the backoff and — importantly —
             // the roster: every registered coin, never narrowed to what's
             // installed, so the request says nothing about what this user holds.
@@ -2176,6 +2449,9 @@ int main()
             post_to_ui([weak, di, bs, daemon_up, sel, disk_frac, disk_free_str, wallet_sec, stage, live_status,
                         mem_frac, mem_used_str, storage_now, du,
                         price_usd, price_change, price_dir, holding_value,
+                        sc_active, sc_status, sc_balance, sc_pending, sc_price, sc_supply,
+                        sc_health, sc_countdown, sc_addr, sc_price_stale, sc_minting_blocked,
+                        sc_vaults, sc_txs, sc_redeemable, sc_vault_ids, sc_vault_cents,
                         ms, hashrate, ew_flags, wallet_state, bal, have_balance,
                         rp, rescanning, txs, recv_addr, decimals, wallet_svc_err, can_send,
                         rpc_ok, busy, coin]() {
@@ -2187,6 +2463,22 @@ int main()
                     return;
                 (*h)->set_disk_frac(disk_frac);
                 (*h)->set_disk_free(slint::SharedString(disk_free_str));
+                (*h)->set_sc_active(sc_active);
+                (*h)->set_sc_status(slint::SharedString(sc_status));
+                (*h)->set_sc_countdown(slint::SharedString(sc_countdown));
+                (*h)->set_sc_balance(slint::SharedString(sc_balance));
+                (*h)->set_sc_pending(slint::SharedString(sc_pending));
+                (*h)->set_sc_price(slint::SharedString(sc_price));
+                (*h)->set_sc_price_stale(sc_price_stale);
+                (*h)->set_sc_supply(slint::SharedString(sc_supply));
+                (*h)->set_sc_health(slint::SharedString(sc_health));
+                (*h)->set_sc_minting_blocked(sc_minting_blocked);
+                (*h)->set_sc_address(slint::SharedString(sc_addr));
+                (*h)->set_sc_vaults(std::make_shared<slint::VectorModel<slint::SharedString>>(sc_vaults));
+                (*h)->set_sc_txs(std::make_shared<slint::VectorModel<slint::SharedString>>(sc_txs));
+                (*h)->set_sc_redeemable(std::make_shared<slint::VectorModel<slint::SharedString>>(sc_redeemable));
+                g_sc_vault_ids = sc_vault_ids;
+                g_sc_vault_cents = sc_vault_cents;
                 (*h)->set_price_usd(slint::SharedString(price_usd));
                 (*h)->set_price_change(slint::SharedString(price_change));
                 (*h)->set_price_dir(price_dir);
