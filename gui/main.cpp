@@ -114,6 +114,12 @@ static std::atomic<bool> g_want_new_addr{false};
 // rather than rewritten over the status line on every poll. UI thread only.
 static std::string g_last_wallet_svc_err;
 
+// The address the Receive QR was last built for, so the poll doesn't re-encode
+// an unchanged one every two seconds. Cleared on selection along with the
+// address cache, so switching to a coin whose address happens to be cached
+// still redraws.
+static std::string g_qr_addr;
+
 // ---- secrets ----------------------------------------------------------------
 // Passwords and seeds cross the C ABI as raw bytes, never as a SharedString —
 // see the secrets contract in include/boxwallet.h. These two are the only way
@@ -303,6 +309,47 @@ static std::string relative_time(int64_t t)
 }
 
 // Turn the core's scalar transactions into display rows.
+// Turn an address into a scannable QR image.
+//
+// Three things this has to get right or a phone can't read it: the 4-module
+// quiet zone (scanners need the margin), black on WHITE regardless of the app's
+// dark theme, and a whole number of pixels per module — the caller then renders
+// it with `image-rendering: pixelated`, because interpolation blurs the module
+// edges into each other.
+//
+// Returns an empty image for an empty or unencodable address, which is what
+// hides the card.
+static slint::Image qr_image(const std::string &text)
+{
+    if (text.empty())
+        return slint::Image();
+
+    static std::vector<uint8_t> mods(BW_QR_MAX_SIDE * BW_QR_MAX_SIDE);
+    uint32_t side = 0;
+    if (bw_qr_encode(text.c_str(), mods.data(), mods.size(), &side) == 0 || side == 0)
+        return slint::Image();
+
+    constexpr uint32_t quiet = 4;  // modules, per the QR spec
+    constexpr uint32_t scale = 4;  // whole pixels per module — never fractional
+    const uint32_t span = side + quiet * 2;
+    const uint32_t px = span * scale;
+
+    slint::SharedPixelBuffer<slint::Rgb8Pixel> buf(px, px);
+    slint::Rgb8Pixel *p = buf.begin();
+    const slint::Rgb8Pixel white{255, 255, 255};
+    const slint::Rgb8Pixel black{0, 0, 0};
+    for (uint32_t y = 0; y < px; ++y) {
+        for (uint32_t x = 0; x < px; ++x) {
+            const uint32_t mx = x / scale, my = y / scale;
+            bool dark = false;
+            if (mx >= quiet && my >= quiet && mx < quiet + side && my < quiet + side)
+                dark = mods[(my - quiet) * side + (mx - quiet)] != 0;
+            p[y * px + x] = dark ? black : white;
+        }
+    }
+    return slint::Image(buf);
+}
+
 static std::shared_ptr<slint::VectorModel<WalletTxRow>>
 make_tx_rows(const std::vector<BwWalletTx> &txs, int decimals)
 {
@@ -548,6 +595,8 @@ static void apply_coin_metadata(const AppWindow *ui, bw_ctx *ctx, int idx)
     ui->set_balance_avail(slint::SharedString("—"));
     ui->set_rescan_frac(0);
     ui->set_receive_address(slint::SharedString(""));
+    ui->set_receive_qr(slint::Image());
+    g_qr_addr.clear();
     ui->set_tx_rows(std::make_shared<slint::VectorModel<WalletTxRow>>(std::vector<WalletTxRow>{}));
     ui->set_mining(false);
     ui->set_mining_threads(0);
@@ -2048,6 +2097,12 @@ int main()
                                              static_cast<double>(rp.target))
                         : 0.0f);
                     (*h)->set_receive_address(slint::SharedString(recv_addr));
+                    // Re-encode only when the address actually changes — this
+                    // runs every poll and the encoder allocates.
+                    if (recv_addr != g_qr_addr) {
+                        g_qr_addr = recv_addr;
+                        (*h)->set_receive_qr(qr_image(recv_addr));
+                    }
                     (*h)->set_tx_rows(make_tx_rows(txs, decimals));
                 }
                 // Only when it changes, so a persistent fault doesn't rewrite

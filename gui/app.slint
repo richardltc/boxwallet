@@ -709,6 +709,10 @@ export component AppWindow inherits Window {
     in property <string> balance-avail: "—";
     in property <float> rescan-frac: 0;
     in property <string> receive-address: "";
+    // The address as a scannable QR, built by the host from bw_qr_encode. Drawn
+    // on its own white card: the pane is dark, and a dark-on-dark QR is
+    // unreadable to a phone camera.
+    in property <image> receive-qr;
     in property <[WalletTxRow]> tx-rows;
     callback new-address();
     callback send-funds(string, string);
@@ -1806,6 +1810,25 @@ export component AppWindow inherits Window {
                                     font-size: 13px;
                                     wrap: word-wrap;
                                 }
+                            }
+                        }
+                        // The QR sits on a white card of its own, with a margin
+                        // standing in for the quiet zone the encoder already
+                        // included. `image-rendering: pixelated` matters: smoothing
+                        // blurs the module edges into each other and scanners lose
+                        // the pattern.
+                        if root.receive-address != "": Rectangle {
+                            width: 188px;
+                            height: 188px;
+                            background: #ffffff;
+                            border-radius: 6px;
+                            Image {
+                                source: root.receive-qr;
+                                image-rendering: pixelated;
+                                width: 172px;
+                                height: 172px;
+                                x: (parent.width - self.width) / 2;
+                                y: (parent.height - self.height) / 2;
                             }
                         }
                         if root.receive-address != "": HorizontalLayout {
