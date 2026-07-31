@@ -370,7 +370,7 @@ make_tx_rows(const std::vector<BwWalletTx> &txs, int decimals)
     rows.reserve(txs.size());
     for (const BwWalletTx &t : txs) {
         bool incoming = (t.direction != 1); // 0 received, 2 mined
-        WalletTxRow r;
+        WalletTxRow r{}; // value-initialised — see the note on NavCoin
         r.direction = slint::SharedString(t.direction == 0   ? "Received"
                                           : t.direction == 1 ? "Sent"
                                                              : "Mined");
@@ -726,7 +726,7 @@ static void browse_refresh(const AppWindow *ui)
         size_t j = start;
         while (j < n && buf[j] != '\n')
             j++;
-        BrowseEntry e;
+        BrowseEntry e{}; // value-initialised — see the note on NavCoin
         e.name = slint::SharedString(std::string_view(buf + start, j - start));
         e.is_dir = (t == 'd');
         g_entries.push_back(e);
@@ -870,7 +870,13 @@ int main()
         size_t nn = bw_coin_name(i, nm, sizeof nm);
         char col[16];
         size_t cn = bw_coin_color(i, col, sizeof col);
-        NavCoin nc;
+        // Value-initialised, not default-initialised. A Slint struct is a plain
+        // aggregate, so its POD members (`index`, `update`) are INDETERMINATE
+        // under `NavCoin nc;` — and a bool holding 143 makes Slint abort the
+        // moment it reads the property. `update` is filled in later by the
+        // update scan, so it was left uninitialised until then; the `{}` is what
+        // stops the next field added here doing the same thing.
+        NavCoin nc{};
         nc.name = slint::SharedString(std::string_view(nm, nn));
         nc.color = parse_hex_color(col, cn);
         nc.index = static_cast<int>(i);
