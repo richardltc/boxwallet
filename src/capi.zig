@@ -1931,6 +1931,57 @@ export fn bw_mining_failure_text(err_name: ?[*:0]const u8, buf: ?[*]u8, cap: usi
 
 // ---- disk usage (for the coin's "disk used" gauge) --------------------------
 
+// ---- the balance-privacy toggle ---------------------------------------------
+
+/// What a hidden balance figure is replaced with — `money.zig`'s, so both
+/// front-ends mask with the same thing.
+const balance_mask = money.balance_mask;
+
+/// Whether balances are currently hidden: 1 yes, 0 no. Reads the same
+/// `hide_balances` key in `boxwallet.conf` the TUI writes, so the preference
+/// follows the user between the two front-ends. Reads a small file — worker
+/// thread, or once at startup.
+export fn bw_hide_balances(ctx: ?*Ctx) c_int {
+    const c = ctx orelse return 0;
+
+    var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const io = sharedIo();
+
+    const raw = conf.readValue(a, io, c.install_root, conf.settings_file, "hide_balances") catch return 0;
+    const val = raw orelse return 0;
+    return if (std.mem.eql(u8, val, "1") or std.ascii.eqlIgnoreCase(val, "true")) 1 else 0;
+}
+
+/// Persist the balance-privacy preference: 0 on success, -1 on failure.
+/// Merges into the shared conf, leaving every other setting alone.
+export fn bw_set_hide_balances(ctx: ?*Ctx, hide: c_int) c_int {
+    const c = ctx orelse return -1;
+
+    var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const io = sharedIo();
+
+    conf.setValue(a, io, c.install_root, conf.settings_file, "hide_balances", if (hide != 0) "1" else "0") catch |err| {
+        c.setError(@errorName(err));
+        return -1;
+    };
+    return 0;
+}
+
+/// The mask to show in place of a hidden figure. Cheap; UI-thread safe.
+///
+/// **Mask at format time, never by skipping the fetch.** The balance is still
+/// polled while hidden, so unhiding is instant rather than waiting for the next
+/// tick — and a front-end that stopped fetching would show a stale figure the
+/// moment it unhid.
+export fn bw_balance_mask(buf: ?[*]u8, cap: usize) usize {
+    const b = buf orelse return 0;
+    return copyOut(b[0..cap], balance_mask);
+}
+
 // ---- system + storage readouts ----------------------------------------------
 
 /// The coin's donation address, written into `buf`; returns its length, or 0 if
@@ -3326,6 +3377,43 @@ test "the shared Io leaves exactly one SIGIO handler installed for the process" 
     try std.testing.expect(handler != null);
     // SIG_DFL is 0; anything else means a handler is installed.
     try std.testing.expect(@intFromPtr(handler.?) != 0);
+}
+
+test "the balance-privacy preference round-trips through the shared conf" {
+    // The same key the TUI writes, in the same file — the preference has to
+    // follow the user between the two front-ends.
+    const io = sharedIo();
+    const root = "test-hide-balances";
+    std.Io.Dir.cwd().deleteTree(io, root) catch {};
+    defer std.Io.Dir.cwd().deleteTree(io, root) catch {};
+
+    var ctx = testCtx(root);
+
+    // Absent means shown — the safe default is not to hide something the user
+    // never asked to hide.
+    try std.testing.expectEqual(@as(c_int, 0), bw_hide_balances(&ctx));
+
+    try std.testing.expectEqual(@as(c_int, 0), bw_set_hide_balances(&ctx, 1));
+    try std.testing.expectEqual(@as(c_int, 1), bw_hide_balances(&ctx));
+    try std.testing.expectEqual(@as(c_int, 0), bw_set_hide_balances(&ctx, 0));
+    try std.testing.expectEqual(@as(c_int, 0), bw_hide_balances(&ctx));
+
+    // And it must not have trampled anything else in the shared file — the TUI
+    // keeps its own settings in there.
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    try conf.setValue(a, io, root, conf.settings_file, "show_prices", "1");
+    try std.testing.expectEqual(@as(c_int, 0), bw_set_hide_balances(&ctx, 1));
+    const kept = try conf.readValue(a, io, root, conf.settings_file, "show_prices");
+    try std.testing.expectEqualStrings("1", kept.?);
+}
+
+test "the mask is the same string both front-ends use" {
+    var buf: [32]u8 = undefined;
+    const n = bw_balance_mask(&buf, buf.len);
+    try std.testing.expectEqualStrings(money.balance_mask, buf[0..n]);
+    try std.testing.expect(n > 0);
 }
 
 test "every coin has a tip address, and it isn't the user's" {

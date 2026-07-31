@@ -16,6 +16,15 @@
 
 const std = @import("std");
 
+/// What a balance figure is replaced with while the privacy toggle is on.
+///
+/// Shared so both front-ends mask with the same thing — and note the rule that
+/// goes with it: **mask at format time, never by skipping the fetch**. The
+/// balance is still polled while hidden, so unhiding is instant instead of
+/// waiting for the next tick, and a front-end that stopped fetching would show a
+/// stale figure the moment it unhid.
+pub const balance_mask = "********";
+
 /// Parse a typed USD amount ("125", "125.5", "125.50") into integer cents, or
 /// null when it isn't a plain non-negative dollars figure (empty, a bare ".",
 /// more than 2 decimal places, stray characters, overflow). Integer arithmetic
