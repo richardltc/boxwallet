@@ -1,5 +1,12 @@
-//! Filesystem capacity for the volume that holds a given path, reported as a
-//! used/total byte pair for the UI's "Disk" bar.
+//! Two different disk questions, both shared by the front-ends:
+//!
+//! * `usage` — filesystem capacity for the volume holding a path, as a
+//!   used/total byte pair. "Am I running out of room?"
+//! * `dirSizeBytes` — how much a directory tree actually occupies. "What is this
+//!   coin costing me?"
+//!
+//! The first is a single cheap syscall; the second walks the tree and is not
+//! something to run on a timer.
 //!
 //! Intentionally allocation-free and bounded: a single fixed `statfs` (POSIX) /
 //! `GetDiskFreeSpaceEx` (Windows) call into a stack struct — nothing that scales
@@ -161,4 +168,35 @@ test "percent is 0 when the total is unknown and exact at the endpoints" {
     try std.testing.expectEqual(@as(f64, 0), (Usage{ .used = 0, .total = 100 }).percent());
     try std.testing.expectEqual(@as(f64, 100), (Usage{ .used = 100, .total = 100 }).percent());
     try std.testing.expectEqual(@as(f64, 25), (Usage{ .used = 1, .total = 4 }).percent());
+}
+
+/// Read the headers pre-sync percentage from the coin's `<datadir>/debug.log`,
+/// in basis points (744 == 7.44%), or null when no presync line is in the tail.
+/// Bitcoin Core 24+ logs "Pre-synchronizing blockheaders, height: N (~X.XX%)"
+/// during the throwaway presync pass; that percentage is the *only* place the
+/// pass's progress surfaces (RPC reports a frozen header height meanwhile). Reads
+/// only the tail (bounded — the log grows unboundedly), mirroring
+/// `setDaemonErrFromDaemonLog`. Best-effort: any IO hiccup, or a non-Core coin
+/// whose log lacks the line, yields null.
+/// Sum the apparent size (bytes) of every regular file under `path`, recursively
+/// — the "Size" figure a file manager's Properties dialog reports. `null` when
+/// `path` can't be opened (e.g. the data dir doesn't exist yet). Best-effort:
+/// an entry that can't be stat'd is skipped rather than aborting the walk, and
+/// the running total saturates rather than overflowing. Memory stays bounded —
+/// the walker holds only a per-depth stack of open dir handles, never a file
+/// list — so it's safe on a chain with hundreds of thousands of block files.
+pub fn dirSizeBytes(io: std.Io, a: std.mem.Allocator, path: []const u8) ?u64 {
+    var dir = std.Io.Dir.cwd().openDir(io, path, .{ .iterate = true }) catch return null;
+    defer dir.close(io);
+    var walker = dir.walk(a) catch return null;
+    defer walker.deinit();
+    var total: u64 = 0;
+    // Stat via the entry's own dir handle + basename (not the full path) per the
+    // stdlib note — avoids `error.NameTooLong` on deeply nested trees.
+    while (walker.next(io) catch null) |entry| {
+        if (entry.kind != .file) continue;
+        const st = entry.dir.statFile(io, entry.basename, .{}) catch continue;
+        total +|= st.size;
+    }
+    return total;
 }

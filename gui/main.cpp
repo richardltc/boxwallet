@@ -508,6 +508,10 @@ static void apply_coin_metadata(const AppWindow *ui, bw_ctx *ctx, int idx)
     size_t an = bw_coin_abbrev(idx, abbrev, sizeof abbrev);
     ui->set_coin_abbrev(slint::SharedString(std::string_view(abbrev, an)));
 
+    char tip[128];
+    size_t tn = bw_tip_address(idx, tip, sizeof tip);
+    ui->set_tip_address(slint::SharedString(std::string_view(tip, tn)));
+
     // Two-tone wordmark, for the three coins that have one — ReddCoin's "Redd" +
     // "Coin", SpiderByte's white "Spider" + brand "Byte", BitcoinZ's "Bitcoin" +
     // "Z". The core owns the split and both colours so the GUI wears exactly the
@@ -607,6 +611,8 @@ static void apply_coin_metadata(const AppWindow *ui, bw_ctx *ctx, int idx)
     ui->set_headers_str(slint::SharedString(""));
     ui->set_blocks_str(slint::SharedString(""));
     ui->set_disk_free(slint::SharedString(""));
+    ui->set_storage_frac(0);
+    ui->set_storage_size(slint::SharedString(""));
     ui->set_status_text(slint::SharedString(""));
     ui->set_live_status(slint::SharedString(""));
     ui->set_status_is_error(false);
@@ -2021,6 +2027,36 @@ int main()
                 }
             }
 
+            // System RAM: a cheap read of the OS's own figures, so every tick.
+            BwDiskUsage mu;
+            std::memset(&mu, 0, sizeof mu);
+            float mem_frac = 0.0f;
+            std::string mem_used_str;
+            if (bw_memory_usage(&mu) == 0 && mu.total_bytes > 0) {
+                mem_frac = static_cast<float>(static_cast<double>(mu.used_bytes) /
+                                              static_cast<double>(mu.total_bytes));
+                mem_used_str = humanize_bytes(mu.used_bytes) + " used";
+            }
+
+            // What the chain occupies. This WALKS the data dir — hundreds of
+            // thousands of files once synced — so it is sampled about every 30s
+            // rather than every tick, and only while the coin is selected.
+            static int64_t last_storage_ms = 0;
+            static uint64_t storage_bytes = 0;
+            static int storage_coin = -1;
+            const int64_t now_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                std::chrono::steady_clock::now().time_since_epoch()).count();
+            if (storage_coin != sel || now_ms - last_storage_ms > 30000) {
+                uint64_t sz = 0;
+                if (bw_data_dir_size(ctx, coin, &sz) == 0)
+                    storage_bytes = sz;
+                else
+                    storage_bytes = 0;
+                storage_coin = sel;
+                last_storage_ms = now_ms;
+            }
+            const uint64_t storage_now = storage_bytes;
+
             // Disk usage is a filesystem read — independent of the daemon.
             BwDiskUsage du;
             std::memset(&du, 0, sizeof du);
@@ -2057,6 +2093,7 @@ int main()
             std::string live_status(sl, sll);
 
             post_to_ui([weak, di, bs, daemon_up, sel, disk_frac, disk_free_str, wallet_sec, stage, live_status,
+                        mem_frac, mem_used_str, storage_now, du,
                         ms, hashrate, ew_flags, wallet_state, bal, have_balance,
                         rp, rescanning, txs, recv_addr, decimals, wallet_svc_err, can_send,
                         rpc_ok, busy, coin]() {
@@ -2068,6 +2105,16 @@ int main()
                     return;
                 (*h)->set_disk_frac(disk_frac);
                 (*h)->set_disk_free(slint::SharedString(disk_free_str));
+                (*h)->set_mem_frac(mem_frac);
+                (*h)->set_mem_used(slint::SharedString(mem_used_str));
+                // Shown as a share of the volume, so it reads against the disk
+                // gauge beside it rather than as a bare number.
+                (*h)->set_storage_frac(du.total_bytes > 0
+                    ? static_cast<float>(static_cast<double>(storage_now) /
+                                         static_cast<double>(du.total_bytes))
+                    : 0.0f);
+                (*h)->set_storage_size(slint::SharedString(
+                    storage_now > 0 ? humanize_bytes(storage_now) : std::string("")));
                 // Skipped while busy: wallet_sec is BW_WSEC_UNKNOWN there and
                 // publishing it would grey the padlock every time the node
                 // stalls, which is the flicker this whole branch exists to stop.
