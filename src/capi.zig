@@ -37,6 +37,7 @@ const money = @import("money.zig");
 const seed_mod = @import("seed.zig");
 const walletmenu = @import("walletmenu.zig");
 const status_mod = @import("status.zig");
+const qrcode = @import("qrcode.zig");
 const coinmod = @import("coin.zig");
 const models = @import("models.zig");
 const conf = @import("conf.zig");
@@ -1928,6 +1929,58 @@ export fn bw_mining_failure_text(err_name: ?[*:0]const u8, buf: ?[*]u8, cap: usi
 
 // ---- disk usage (for the coin's "disk used" gauge) --------------------------
 
+// ---- QR --------------------------------------------------------------------
+
+/// Widest QR a version-40 symbol can be, so callers can size a buffer from it:
+/// 177 × 177 modules, before any quiet zone.
+pub const bw_qr_max_side: usize = 177;
+
+/// Encode `text` as a QR symbol at ECC medium. Writes `side × side` bytes into
+/// `out`, row-major, one byte per module (0 light, 1 dark), and the module count
+/// per side into `out_side`. Returns the bytes written, or 0 if the text is
+/// empty, doesn't fit, or `cap` is too small.
+///
+/// A byte per module rather than packed bits: the caller expands to pixels
+/// either way, so packing would save 31 KB once in the worst case and cost every
+/// reader a shift and a mask. A typical address is version 4-6 — under 1.7 KB.
+///
+/// **Three things the caller must get right or the code won't scan.** Add a
+/// 4-module quiet zone on all sides; draw it black-on-**white** regardless of
+/// theme (a dark UI painting dark modules on a dark background is unreadable);
+/// and scale by a whole number of pixels per module without smoothing, or the
+/// interpolation blurs the module edges.
+///
+/// Cheap and pure — no ctx, no I/O — but it allocates internally, so don't call
+/// it on a timer. Encode when the address changes and cache the result.
+export fn bw_qr_encode(text: ?[*:0]const u8, out: ?[*]u8, cap: usize, out_side: ?*u32) usize {
+    const t = text orelse return 0;
+    const o = out orelse return 0;
+    const os = out_side orelse return 0;
+    const s = std.mem.span(t);
+    if (s.len == 0) return 0;
+
+    var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+    defer arena.deinit();
+
+    const qr = qrcode.encodeText(arena.allocator(), s, .medium) catch return 0;
+    defer qr.deinit();
+
+    const side: usize = qr.size();
+    const needed = side * side;
+    if (side == 0 or needed > cap) return 0;
+
+    const dst = o[0..needed];
+    var y: usize = 0;
+    while (y < side) : (y += 1) {
+        var x: usize = 0;
+        while (x < side) : (x += 1) {
+            dst[y * side + x] = if (qr.get(@intCast(x), @intCast(y))) 1 else 0;
+        }
+    }
+    os.* = @intCast(side);
+    return needed;
+}
+
 // ---- the status line --------------------------------------------------------
 
 /// Everything the status readout reads, flattened for C. Zero it, fill in what
@@ -3227,6 +3280,47 @@ test "the shared Io leaves exactly one SIGIO handler installed for the process" 
     try std.testing.expect(handler != null);
     // SIG_DFL is 0; anything else means a handler is installed.
     try std.testing.expect(@intFromPtr(handler.?) != 0);
+}
+
+test "the QR export reproduces the encoder's own bitmap" {
+    // A real bitcoin address, so the version/size is representative rather than a
+    // toy string.
+    const addr = "1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa";
+    var buf: [bw_qr_max_side * bw_qr_max_side]u8 = undefined;
+    var side: u32 = 0;
+    const n = bw_qr_encode(addr, &buf, buf.len, &side);
+    try std.testing.expect(n > 0);
+    try std.testing.expect(side >= 21 and side <= bw_qr_max_side);
+    try std.testing.expectEqual(@as(usize, side) * side, n);
+
+    // Every module must match what qrcode.zig itself produces — the export is a
+    // copy, and a transposed one would still "look like" a QR while scanning as
+    // nothing.
+    const qr = try qrcode.encodeText(std.testing.allocator, addr, .medium);
+    defer qr.deinit();
+    try std.testing.expectEqual(@as(usize, qr.size()), side);
+    var y: usize = 0;
+    while (y < side) : (y += 1) {
+        var x: usize = 0;
+        while (x < side) : (x += 1) {
+            const want: u8 = if (qr.get(@intCast(x), @intCast(y))) 1 else 0;
+            try std.testing.expectEqual(want, buf[y * side + x]);
+        }
+    }
+
+    // The three finder patterns give a fixed corner: dark border, light ring,
+    // dark core. If the rows and columns were swapped this would still pass, but
+    // the whole-bitmap compare above wouldn't.
+    try std.testing.expectEqual(@as(u8, 1), buf[0]);
+    try std.testing.expectEqual(@as(u8, 0), buf[1 * side + 1]);
+    try std.testing.expectEqual(@as(u8, 1), buf[2 * side + 2]);
+
+    // Refusals: empty text, a buffer too small, and null arguments.
+    try std.testing.expectEqual(@as(usize, 0), bw_qr_encode("", &buf, buf.len, &side));
+    var tiny: [4]u8 = undefined;
+    try std.testing.expectEqual(@as(usize, 0), bw_qr_encode(addr, &tiny, tiny.len, &side));
+    try std.testing.expectEqual(@as(usize, 0), bw_qr_encode(null, &buf, buf.len, &side));
+    try std.testing.expectEqual(@as(usize, 0), bw_qr_encode(addr, &buf, buf.len, null));
 }
 
 test "the status export says exactly what the shared readout says" {

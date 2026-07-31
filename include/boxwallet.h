@@ -275,6 +275,23 @@ typedef struct {
 } BwDiskUsage;
 int     bw_disk_usage(bw_ctx *ctx, size_t idx, BwDiskUsage *out);
 
+/* ---- QR ----------------------------------------------------------------------
+ * Encodes text as a QR symbol at ECC medium: side*side bytes, row-major, one per
+ * module (0 light, 1 dark), with the module count per side in *out_side. Returns
+ * the bytes written, or 0 if the text is empty or doesn't fit.
+ *
+ * THREE THINGS YOU MUST GET RIGHT OR IT WON'T SCAN:
+ *   1. Add a 4-module quiet zone on all sides. Scanners need it.
+ *   2. Draw it black on WHITE regardless of theme. A dark UI painting dark
+ *      modules on a dark background is unreadable to a phone.
+ *   3. Scale by a whole number of pixels per module, with no smoothing —
+ *      interpolation blurs the module edges into each other.
+ *
+ * Pure, but it allocates internally: encode when the address changes and cache
+ * the result. Never call it on a timer. */
+#define BW_QR_MAX_SIDE 177  /* version 40, before any quiet zone */
+size_t  bw_qr_encode(const char *text, uint8_t *out, size_t cap, uint32_t *out_side);
+
 /* ---- the status line ---------------------------------------------------------
  * The TUI's exact wording and priority order, from the same module, so the two
  * front-ends can't describe one daemon differently: installing -> not installed
