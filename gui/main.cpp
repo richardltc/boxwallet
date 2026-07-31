@@ -120,6 +120,11 @@ static std::string g_last_wallet_svc_err;
 // still redraws.
 static std::string g_qr_addr;
 
+// Re-scan which coins have a newer core waiting. Set up in main once the window
+// handle exists; called again whenever an install or update finishes, so the nav
+// marker on the coin you just updated actually goes away.
+static std::function<void()> g_scan_updates;
+
 // ---- secrets ----------------------------------------------------------------
 // Passwords and seeds cross the C ABI as raw bytes, never as a SharedString —
 // see the secrets contract in include/boxwallet.h. These two are the only way
@@ -461,6 +466,10 @@ static void finish_install(slint::ComponentWeakHandle<AppWindow> weak, bw_ctx *c
     size_t vn = bw_installed_version(ctx, static_cast<size_t>(coin), ver, sizeof ver);
     std::string version(ver, vn);
     bool upd = bw_update_available(ctx, static_cast<size_t>(coin)) != 0;
+    // The roll-up and the nav markers cover every coin, so refresh them too —
+    // otherwise the coin just updated keeps its marker until a restart.
+    if (g_scan_updates)
+        g_scan_updates();
     g_installing.store(-1);
 
     post_to_ui([weak, coin, msg, is_err, installed, version, upd]() {
@@ -809,7 +818,7 @@ int main()
     // Build the nav list: every registered coin, sorted alphabetically by name
     // (Home is pinned separately in the UI). The registry index rides along so
     // callbacks can address the coin over the C ABI.
-    std::vector<NavCoin> coins;
+    static std::vector<NavCoin> coins;
     size_t count = bw_coin_count();
     g_recv_addr.assign(count, std::string()); // one address cache slot per coin
     for (size_t i = 0; i < count; ++i) {
@@ -840,8 +849,39 @@ int main()
     });
     ui->set_nav_coins(std::make_shared<slint::VectorModel<NavCoin>>(coins));
 
+
     std::atomic<bool> stop{false};
     slint::ComponentWeakHandle<AppWindow> weak(ui);
+
+    // Which coins have a newer core waiting. One small disk read per coin, so it
+    // runs on a worker at startup rather than on the poll — the answer only
+    // changes when BoxWallet updates or a coin is installed.
+    g_scan_updates = [weak, ctx]() {
+        std::thread([weak, ctx]() {
+            WorkerGuard wg;
+            uint8_t idx[64];
+            size_t n = bw_updates_pending(ctx, idx, sizeof idx);
+            std::vector<uint8_t> pending(idx, idx + n);
+            post_to_ui([weak, pending]() {
+                auto h = weak.lock();
+                if (!h)
+                    return;
+                std::string summary;
+                for (auto &c : coins) {
+                    c.update = std::find(pending.begin(), pending.end(),
+                                         static_cast<uint8_t>(c.index)) != pending.end();
+                    if (c.update) {
+                        if (!summary.empty())
+                            summary += ", ";
+                        summary += std::string(std::string_view(c.name));
+                    }
+                }
+                (*h)->set_nav_coins(std::make_shared<slint::VectorModel<NavCoin>>(coins));
+                (*h)->set_updates_summary(slint::SharedString(summary));
+            });
+        }).detach();
+    };
+    g_scan_updates();
 
     // Nav → select a coin: push its metadata and start polling it. -1 is Home,
     // which has nothing to poll and no metadata to apply — but still has to be

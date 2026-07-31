@@ -1931,6 +1931,32 @@ export fn bw_mining_failure_text(err_name: ?[*:0]const u8, buf: ?[*]u8, cap: usi
 
 // ---- disk usage (for the coin's "disk used" gauge) --------------------------
 
+// ---- pending coin updates ---------------------------------------------------
+
+/// Which coins have a newer bundled core than the version installed, written
+/// into `out` as registry indices; returns how many.
+///
+/// One disk read per coin (a small version marker), so this is a worker-thread
+/// call and not one for the 2s poll — the answer only changes when BoxWallet
+/// itself is updated or a coin is installed. A coin with no marker reads as up
+/// to date rather than out of date: its version is unknown, and assuming it's
+/// behind would nag on every hand-installed binary.
+export fn bw_updates_pending(ctx: ?*Ctx, out: ?*u8, cap: usize) usize {
+    const c = ctx orelse return 0;
+    const o = out orelse return 0;
+    const dst = @as([*]u8, @ptrCast(o))[0..cap];
+
+    var n: usize = 0;
+    var i: usize = 0;
+    while (i < coin_count and n < cap) : (i += 1) {
+        if (bw_update_available(c, i) == 1) {
+            dst[n] = @intCast(i);
+            n += 1;
+        }
+    }
+    return n;
+}
+
 // ---- the balance-privacy toggle ---------------------------------------------
 
 /// What a hidden balance figure is replaced with — `money.zig`'s, so both
@@ -3377,6 +3403,42 @@ test "the shared Io leaves exactly one SIGIO handler installed for the process" 
     try std.testing.expect(handler != null);
     // SIG_DFL is 0; anything else means a handler is installed.
     try std.testing.expect(@intFromPtr(handler.?) != 0);
+}
+
+test "bw_updates_pending agrees with the per-coin answer" {
+    // The roll-up must never disagree with the badge on the coin's own pane —
+    // one of them saying "update available" while the other doesn't is worse
+    // than neither saying it.
+    const io = sharedIo();
+    const root = "test-updates-pending";
+    std.Io.Dir.cwd().deleteTree(io, root) catch {};
+    defer std.Io.Dir.cwd().deleteTree(io, root) catch {};
+    var ctx = testCtx(root);
+
+    var out: [coin_count]u8 = undefined;
+    const n = bw_updates_pending(&ctx, &out[0], out.len);
+
+    var expected: usize = 0;
+    var i: usize = 0;
+    while (i < coin_count) : (i += 1) {
+        if (bw_update_available(&ctx, i) == 1) expected += 1;
+    }
+    try std.testing.expectEqual(expected, n);
+    // Indices are in range and ascending, and each really does have an update.
+    var prev: i32 = -1;
+    for (out[0..n]) |idx| {
+        try std.testing.expect(idx < coin_count);
+        try std.testing.expect(@as(i32, idx) > prev);
+        prev = idx;
+        try std.testing.expectEqual(@as(c_int, 1), bw_update_available(&ctx, idx));
+    }
+
+    // With no markers on disk nothing is out of date — an unknown version must
+    // not read as behind, or every hand-installed binary would nag.
+    try std.testing.expectEqual(@as(usize, 0), n);
+
+    // A cap of zero writes nothing rather than overrunning.
+    try std.testing.expectEqual(@as(usize, 0), bw_updates_pending(&ctx, &out[0], 0));
 }
 
 test "the balance-privacy preference round-trips through the shared conf" {

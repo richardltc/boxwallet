@@ -25,6 +25,7 @@ struct NavCoin {
     name: string,
     color: color,
     index: int, // registry index for bw_* calls (also indexes the embedded logos)
+    update: bool, // a newer bundled core than the installed one
     // Two-tone wordmark, pre-split by the host (bw_coin_wordmark). Empty `tail`
     // means this coin has no wordmark and its name is drawn in one colour.
     head: string,
@@ -61,6 +62,9 @@ component NavItem inherits Rectangle {
     in property <string> tail: "";
     in property <color> head-color: #ffffff;
     in property <color> tail-color: #ffffff;
+    // A newer core is available for this coin. Marked rather than announced —
+    // it's an offer, not a problem, so it shouldn't shout down the nav.
+    in property <bool> update: false;
     property <bool> two-tone: root.selected && root.tail != "";
     callback clicked;
 
@@ -94,6 +98,12 @@ component NavItem inherits Rectangle {
             font-size: root.selected ? 16px : 14px;
             font-weight: root.selected ? 700 : 400;
             color: root.tail-color;
+        }
+        Text {
+            text: root.update ? " \u{2b06}" : "";
+            color: #e0a03a;
+            font-size: 12px;
+            vertical-alignment: center;
         }
     }
     ta := TouchArea {
@@ -498,6 +508,8 @@ export component AppWindow inherits Window {
     // `app-version` has no "v" — the label adds one.
     in property <string> app-name: "BoxWallet";
     in property <string> app-version: "";
+    // Comma-separated names of coins with a newer core waiting; empty when none.
+    in property <string> updates-summary: "";
     in property <color> brand-color: #7ca071;
 
     // Navigation. -1 = Home, otherwise the selected coin's registry index.
@@ -1045,6 +1057,7 @@ export component AppWindow inherits Window {
                                 tail: c.tail;
                                 head-color: c.head-color;
                                 tail-color: c.tail-color;
+                                update: c.update;
                                 selected: root.selected == c.index;
                                 clicked => {
                                     root.selected = c.index;
@@ -1110,6 +1123,20 @@ export component AppWindow inherits Window {
                         text: "Select a coin on the left to see its status.";
                         color: #9a9a9a;
                         font-size: 14px;
+                    }
+                    // Which coins have a newer core waiting, so it's visible
+                    // without clicking through all fourteen.
+                    if root.updates-summary != "": Rectangle { height: 4px; }
+                    if root.updates-summary != "": Text {
+                        text: "\u{2b06} Updates available: " + root.updates-summary;
+                        color: #e0a03a;
+                        font-size: 13px;
+                        wrap: word-wrap;
+                    }
+                    if root.updates-summary != "": Text {
+                        text: "Select the coin on the left and press Update.";
+                        color: #9a9a9a;
+                        font-size: 12px;
                     }
                     // A build-time mistake, surfaced rather than swallowed: the coin
                     // logos no longer line up with the registry, so they've all been
