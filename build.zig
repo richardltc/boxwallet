@@ -1,5 +1,35 @@
 const std = @import("std");
 
+/// Every distributable this repo publishes, in one place per front-end.
+///
+/// `release-all` derives the upload manifest from these two lists, so the
+/// assets, the checksums and the completeness check can't drift from what was
+/// actually built — the same reason `release`'s own `sha256sum` pass reads from
+/// the list rather than a hand-written filename.
+const ReleaseTarget = struct { query: std.Target.Query, name: []const u8 };
+const release_targets = [_]ReleaseTarget{
+    .{ .query = .{ .cpu_arch = .x86_64, .os_tag = .linux, .abi = .musl }, .name = "boxwallet-linux-x86_64" },
+    .{ .query = .{ .cpu_arch = .aarch64, .os_tag = .linux, .abi = .musl }, .name = "boxwallet-linux-aarch64" },
+    .{ .query = .{ .cpu_arch = .x86_64, .os_tag = .macos }, .name = "boxwallet-macos-x86_64" },
+    .{ .query = .{ .cpu_arch = .aarch64, .os_tag = .macos }, .name = "boxwallet-macos-aarch64" },
+    .{ .query = .{ .cpu_arch = .x86_64, .os_tag = .windows }, .name = "boxwallet-windows-x86_64.exe" },
+};
+
+
+const GuiTarget = struct { query: std.Target.Query, name: []const u8 };
+const gui_targets = [_]GuiTarget{
+    // glibc, not musl: the Slint runtime is a glibc binary, so the exe beside
+    // it must be too. Each glibc floor is upstream's, read off its `.so` with
+    // `readelf -V | grep GLIBC_` — Zig links against its own versioned stubs,
+    // so ours never asks for anything newer than the runtime already does.
+    // Pinning higher would exclude machines that can run the bundle fine;
+    // pinning lower would buy nothing, since the loader still has to satisfy
+    // the `.so`. Re-check both when bumping Slint.
+    .{ .query = .{ .cpu_arch = .x86_64, .os_tag = .linux, .abi = .gnu, .glibc_version = .{ .major = 2, .minor = 35, .patch = 0 } }, .name = "boxwallet-gui-linux-x86_64" },
+    .{ .query = .{ .cpu_arch = .aarch64, .os_tag = .linux, .abi = .gnu, .glibc_version = .{ .major = 2, .minor = 30, .patch = 0 } }, .name = "boxwallet-gui-linux-aarch64" },
+};
+
+
 pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
@@ -40,8 +70,16 @@ pub fn build(b: *std.Build) void {
     const test_step = b.step("test", "Run unit tests");
     test_step.dependOn(&run_tests.step);
 
-    addReleaseStep(b);
+    const release_step = addReleaseStep(b);
     addGuiStep(b, target, optimize);
+
+    // Registered here, not inside `addGuiStep`: that one returns early when the
+    // *host* Slint package hasn't been fetched yet, which would leave
+    // `gui-release` (and with it `release-all`) undefined as a step rather than
+    // merely unbuildable — "no such step" for a reason that has nothing to do
+    // with the targets it cross-builds.
+    const gui_release_step = addGuiReleaseStep(b, optimize);
+    addReleaseAllStep(b, release_step, gui_release_step);
 }
 
 /// `zig build gui` builds the optional Slint GUI front-end (proof-of-concept).
@@ -82,7 +120,6 @@ fn addGuiStep(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.bui
     const gui_run_step = b.step("gui-run", "Build and run the Slint GUI");
     gui_run_step.dependOn(&run_cmd.step);
 
-    addGuiReleaseStep(b, optimize);
 }
 
 /// The `build.zig.zon` dependency holding upstream's prebuilt Slint C++ package
@@ -250,7 +287,7 @@ fn buildGuiExe(
 ///
 /// macOS and Windows bundles need a native host — see `slintDepName` — so they
 /// belong in a CI matrix rather than here. `zip`/`strip` are host tools.
-fn addGuiReleaseStep(b: *std.Build, optimize: std.builtin.OptimizeMode) void {
+fn addGuiReleaseStep(b: *std.Build, optimize: std.builtin.OptimizeMode) *std.Build.Step {
     _ = optimize; // release bundles are always ReleaseSafe, like the TUI's
     const step = b.step("gui-release", "Bundle the Linux GUIs (exe + Slint runtime) into zips");
 
@@ -268,18 +305,6 @@ fn addGuiReleaseStep(b: *std.Build, optimize: std.builtin.OptimizeMode) void {
         }),
     });
 
-    const GuiTarget = struct { query: std.Target.Query, name: []const u8 };
-    const gui_targets = [_]GuiTarget{
-        // glibc, not musl: the Slint runtime is a glibc binary, so the exe beside
-        // it must be too. Each glibc floor is upstream's, read off its `.so` with
-        // `readelf -V | grep GLIBC_` — Zig links against its own versioned stubs,
-        // so ours never asks for anything newer than the runtime already does.
-        // Pinning higher would exclude machines that can run the bundle fine;
-        // pinning lower would buy nothing, since the loader still has to satisfy
-        // the `.so`. Re-check both when bumping Slint.
-        .{ .query = .{ .cpu_arch = .x86_64, .os_tag = .linux, .abi = .gnu, .glibc_version = .{ .major = 2, .minor = 35, .patch = 0 } }, .name = "boxwallet-gui-linux-x86_64" },
-        .{ .query = .{ .cpu_arch = .aarch64, .os_tag = .linux, .abi = .gnu, .glibc_version = .{ .major = 2, .minor = 30, .patch = 0 } }, .name = "boxwallet-gui-linux-aarch64" },
-    };
 
     // Bundles are built under `gui-release/staging/<name>/` and the publishable
     // assets land flat in `gui-release/`, because the bare-exe asset and the
@@ -377,6 +402,7 @@ fn addGuiReleaseStep(b: *std.Build, optimize: std.builtin.OptimizeMode) void {
         for (packs) |p| if (p) |ps| sums.step.dependOn(ps);
         step.dependOn(&sums.step);
     }
+    return step;
 }
 
 /// `zig build release` cross-compiles every distributable binary into
@@ -389,15 +415,7 @@ fn addGuiReleaseStep(b: *std.Build, optimize: std.builtin.OptimizeMode) void {
 /// low-spec/old machines) without a runtime dependency; the app links no libc,
 /// so the result is a single self-contained file. Built `ReleaseSafe` to keep
 /// safety checks in a wallet-adjacent tool.
-fn addReleaseStep(b: *std.Build) void {
-    const ReleaseTarget = struct { query: std.Target.Query, name: []const u8 };
-    const release_targets = [_]ReleaseTarget{
-        .{ .query = .{ .cpu_arch = .x86_64, .os_tag = .linux, .abi = .musl }, .name = "boxwallet-linux-x86_64" },
-        .{ .query = .{ .cpu_arch = .aarch64, .os_tag = .linux, .abi = .musl }, .name = "boxwallet-linux-aarch64" },
-        .{ .query = .{ .cpu_arch = .x86_64, .os_tag = .macos }, .name = "boxwallet-macos-x86_64" },
-        .{ .query = .{ .cpu_arch = .aarch64, .os_tag = .macos }, .name = "boxwallet-macos-aarch64" },
-        .{ .query = .{ .cpu_arch = .x86_64, .os_tag = .windows }, .name = "boxwallet-windows-x86_64.exe" },
-    };
+fn addReleaseStep(b: *std.Build) *std.Build.Step {
 
     const release_step = b.step("release", "Cross-build all release binaries + SHA256SUMS into zig-out/release/");
 
@@ -433,4 +451,59 @@ fn addReleaseStep(b: *std.Build) void {
     }
 
     release_step.dependOn(&sums.step);
+    return release_step;
+}
+
+/// `zig build release-all`: everything a published release needs, assembled and
+/// checked in one place — `zig-out/dist/`.
+///
+/// The two release steps each write their own `SHA256SUMS`, and both updaters
+/// fetch `<tag>/SHA256SUMS`. A release can only carry one file of that name, so
+/// publishing either one on its own leaves the *other* front-end unable to find
+/// its asset's checksum — a `verify_failed` on every update check, for everyone.
+/// This merges them into a single manifest covering every asset, which is the
+/// only shape that works: one release, one trust root.
+///
+/// It also refuses to assemble a partial release. `gui-release` skips a target
+/// whose Slint package hasn't been fetched (deliberately — that's what keeps
+/// `zig build` and `test` free of it), so a distracted release could otherwise
+/// publish TUI-only assets under a version the GUI updater then can't satisfy:
+/// every GUI user would be told an update exists and be unable to take it. The
+/// expected filenames come from `release_targets`/`gui_targets`, so the check
+/// tracks whatever is registered rather than a hand-kept list.
+fn addReleaseAllStep(b: *std.Build, release_step: *std.Build.Step, gui_step: *std.Build.Step) void {
+    const step = b.step("release-all", "Assemble every release asset + one SHA256SUMS into zig-out/dist/");
+
+    // What the release must contain. The bare exe and the bundle are both
+    // published per GUI target: the updater takes the exe alone when the
+    // installed Slint runtime already matches, and the bundle when it doesn't.
+    var expected: []const u8 = "";
+    inline for (release_targets) |t| expected = b.fmt("{s} '{s}'", .{ expected, t.name });
+    inline for (gui_targets) |t| expected = b.fmt("{s} '{s}' '{s}.zip'", .{ expected, t.name, t.name });
+    expected = b.fmt("{s} 'RUNTIME'", .{expected});
+
+    // `set -e` so a missing source file stops the assembly rather than leaving a
+    // half-built dist someone might upload. The final `sha256sum -c` is the real
+    // gate: it re-reads every file from `dist/` and fails on a missing or
+    // corrupted one, so what's verified is exactly what gets uploaded.
+    const script = b.fmt(
+        \\set -e
+        \\cd "$1"
+        \\rm -rf dist && mkdir dist
+        \\for f in{0s}; do
+        \\  if [ -f "release/$f" ]; then cp "release/$f" "dist/$f"
+        \\  elif [ -f "gui-release/$f" ]; then cp "gui-release/$f" "dist/$f"
+        \\  else echo "release-all: missing asset: $f" >&2; exit 1; fi
+        \\done
+        \\cat release/SHA256SUMS gui-release/SHA256SUMS > dist/SHA256SUMS
+        \\cd dist && sha256sum -c SHA256SUMS
+        \\echo "release-all: $(ls | grep -vc '^SHA256SUMS$') assets + SHA256SUMS ready to upload"
+    , .{expected});
+
+    const assemble = b.addSystemCommand(&.{
+        "sh", "-c", script, "release-all", b.getInstallPath(.prefix, ""),
+    });
+    assemble.step.dependOn(release_step);
+    assemble.step.dependOn(gui_step);
+    step.dependOn(&assemble.step);
 }
