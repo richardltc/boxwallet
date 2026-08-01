@@ -491,6 +491,10 @@ export component AppWindow inherits Window {
     in property <string> app-version: "";
     // Comma-separated names of coins with a newer core waiting; empty when none.
     in property <string> updates-summary: "";
+    // BoxWallet's own update state, from bw_self_update_check. Empty unless
+    // there is something the user has to act on — a staged release waiting for a
+    // restart, or one we've stopped trying to apply.
+    in property <string> self-update-text: "";
     in property <color> brand-color: #7ca071;
 
     // Navigation. -1 = Home, otherwise the selected coin's registry index.
@@ -1171,6 +1175,16 @@ export component AppWindow inherits Window {
                         text: "Select the coin on the left and press Update.";
                         color: #9a9a9a;
                         font-size: 12px;
+                    }
+                    // BoxWallet itself, not a coin. Same colour as the coin
+                    // notice because it wants the same attention, but it stands
+                    // alone: there's no button to press, only a restart.
+                    if root.self-update-text != "": Rectangle { height: 4px; }
+                    if root.self-update-text != "": Text {
+                        text: "\u{2b06} " + root.self-update-text;
+                        color: #e0a03a;
+                        font-size: 13px;
+                        wrap: word-wrap;
                     }
                     // A build-time mistake, surfaced rather than swallowed: the coin
                     // logos no longer line up with the registry, so they've all been

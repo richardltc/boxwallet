@@ -398,6 +398,44 @@ size_t  bw_format_value(double amount, double usd, char *buf, size_t cap);
 size_t  bw_format_change(double change_24h, int have_change, char *buf, size_t cap);
 int     bw_price_direction(double change_24h, int have_change);
 
+/* ---- BoxWallet's own self-update ---------------------------------------------
+ * The GUI keeps itself current the way the TUI does: check and stage in the
+ * background while the app runs, then swap and re-exec at the next launch.
+ *
+ * A GUI install is an executable plus a version-named `slint-<ver>/` directory
+ * holding the Slint runtime it is linked against, and the two must match — the
+ * exe is BIND_NOW, so a mismatched pair fails inside ld.so before main, with
+ * nothing on screen. The updater therefore fetches the whole bundle when a
+ * release changes the runtime and the bare exe when it doesn't, installs the new
+ * runtime as a *new directory* (never overwriting a live one), and runs the
+ * staged binary with --selftest from its final path before committing. All of
+ * that is inside the core; the two calls below are the whole surface. */
+
+/* Status codes from bw_self_update_check. Values cross the ABI: append only. */
+#define BW_UPDATE_UP_TO_DATE    0
+#define BW_UPDATE_STAGED        1
+#define BW_UPDATE_UNSUPPORTED   2  /* no GUI published for this OS/arch        */
+#define BW_UPDATE_NETWORK_ERROR 3  /* best-effort; retries next launch         */
+#define BW_UPDATE_VERIFY_FAILED 4  /* checksum or runtime pairing didn't match */
+#define BW_UPDATE_GAVE_UP       5  /* staged, but applying failed repeatedly   */
+/* OR-ed into the above: the exe's own directory isn't writable, so the swap
+ * can't happen where the app is installed. Say "move me somewhere writable",
+ * not "restart to apply". */
+#define BW_UPDATE_BLOCKED       (1 << 8)
+
+/* Check for a newer GUI and stage it for next launch. BLOCKING and
+ * network-bound — worker thread only, never the event loop. Writes the release
+ * version ("1.2.3") into `out` and its length into `*out_len`. */
+int     bw_self_update_check(bw_ctx *ctx, char *out, size_t cap, size_t *out_len);
+
+/* Apply a staged update and re-exec into it. DOES NOT RETURN on success.
+ *
+ * Call it at the top of main(), before any window is created and before
+ * bw_init() — it replaces the process image, so anything allocated first would
+ * be leaked at exec. Returns 0 when nothing was pending, 1 when applying
+ * failed; carry on and start normally in both cases. */
+int     bw_self_update_apply(const char *home_dir);
+
 /* ---- pending coin updates ----------------------------------------------------
  * Which coins have a newer bundled core than the installed version, as registry
  * indices; returns how many.

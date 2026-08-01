@@ -282,6 +282,34 @@ ZIG_GLOBAL_CACHE_DIR=zig-pkg zig build gui-release # Linux GUI bundles (x86_64 +
   downloads. Bundles are staged under `gui-release/staging/` and only the
   publishable files sit at the top level — `sha256sum -c SHA256SUMS` must pass
   cleanly there.
+- **The GUI self-updates too, and the two front-ends must not collide.** Each
+  stages into `~/.boxwallet/updates/<front>/` (`update.Front`). They share one
+  install root, and a shared `boxwallet.staged` meant the GUI could stage its
+  binary and the TUI would apply it over itself next launch — `isNewer` can't
+  catch that, because the versions genuinely match. Any new front-end gets its
+  own `Front` variant, never a shared name.
+- **The GUI update is exe-or-bundle, decided by `RUNTIME`.** `checkAndStage(.gui)`
+  reads the release's `RUNTIME` line, hashes the `slint-<ver>/` beside the
+  installed exe, and fetches the bare exe only when both agree — otherwise the
+  full bundle. A missing or unparseable line is `verify_failed`, **never**
+  "probably the same runtime": guessing is precisely how an exe-only update lands
+  against the wrong runtime. Apply order is load-bearing — the runtime goes in
+  **first**, as a create (`slint-<ver>.bw-new/` → rename the *directory*), then
+  the exe swaps. Installing a runtime the old exe doesn't reference changes
+  nothing for it, so every intermediate state still boots; the reverse order
+  leaves a window where the new exe is live with no runtime to load. Never write
+  into a live runtime directory: the kernel refuses to let us overwrite a running
+  *executable* but gives no such protection for a mapped `.so`.
+- **A GUI swap is pre-flighted, and that's what makes it safe.** `swapBinary`
+  runs the new binary with `--selftest` from the target path (so `$ORIGIN`
+  resolves against the real install directory) and rolls back on anything but a
+  clean exit. `--selftest` prints the version and returns *before*
+  `AppWindow::create()`, so it needs no display; because the exe is `BIND_NOW`,
+  reaching that line at all proves the pair links. Verified against real bundles:
+  a wrong-named runtime dir exits 127, a corrupt one takes SIGBUS, and a
+  differently-versioned one is invisible to the loader rather than silently used.
+  Keep `--selftest` above `AppWindow::create()`, and keep the re-exec passing
+  `argv[0]` only so an updated binary can't re-enter it.
 
 ## Conventions
 
