@@ -737,8 +737,36 @@ static void browse_refresh(const AppWindow *ui)
     ui->set_browse_path(slint::SharedString(g_browse_path));
 }
 
-int main()
+int main(int argc, char **argv)
 {
+    // --selftest: print the version and exit, touching no display and no state.
+    //
+    // The self-updater runs this on a newly-staged binary from its final install
+    // path before committing the swap. Because we're linked BIND_NOW against the
+    // Slint runtime, merely reaching this line proves the dynamic linker
+    // resolved all 115 of its symbols — i.e. that this exe and the
+    // slint-<ver>/ directory beside it are a working pair. A mismatched pair
+    // dies in ld.so before main, which is exactly what a non-zero exit here
+    // reports back to the updater.
+    //
+    // It must stay above AppWindow::create(): a machine with no display would
+    // otherwise fail the check for a reason that has nothing to do with the
+    // update. The re-exec after applying passes argv[0] only, so an updated
+    // binary can never re-enter this branch.
+    if (argc > 1 && std::strcmp(argv[1], "--selftest") == 0) {
+        char b[64];
+        size_t n = bw_app_version(b, sizeof b);
+        std::printf("%.*s\n", (int)n, b);
+        return 0;
+    }
+
+    // Swap in an update staged by a previous run and re-exec into it. Does not
+    // return on success. Deliberately the first real thing main() does: it
+    // replaces the process image, so any window or context built first would be
+    // thrown away, and the runtime directory it installs has to land before
+    // anything maps a Slint symbol.
+    bw_self_update_apply(home_dir());
+
     // Give the window a stable Wayland app_id before it's shown. Without one,
     // some compositors (e.g. COSMIC) can't match a taskbar left-click back to the
     // window, so a minimized window won't restore on click (right-click → name
@@ -932,6 +960,41 @@ int main()
         }).detach();
     };
     g_scan_updates();
+
+    // Check for a newer BoxWallet and stage it for the next launch. Network-bound,
+    // so it runs detached and reports back through the event loop; a failure is
+    // silent by design (it retries next launch) but the outcomes the user has to
+    // act on — a download that can't be applied where the app lives, or one we've
+    // stopped retrying — are surfaced rather than swallowed.
+    std::thread([weak, ctx]() {
+        WorkerGuard wg;
+        char ver[64] = {};
+        size_t vn = 0;
+        int rc = bw_self_update_check(ctx, ver, sizeof ver, &vn);
+        std::string version(ver, vn);
+        post_to_ui([weak, rc, version]() {
+            auto h = weak.lock();
+            if (!h)
+                return;
+            const bool blocked = (rc & BW_UPDATE_BLOCKED) != 0;
+            std::string msg;
+            switch (rc & ~BW_UPDATE_BLOCKED) {
+            case BW_UPDATE_STAGED:
+                msg = blocked
+                    ? "Update v" + version + " downloaded, but BoxWallet's folder isn't writable — move it somewhere writable, then restart"
+                    : "Update v" + version + " downloaded — restart to apply";
+                break;
+            case BW_UPDATE_GAVE_UP:
+                msg = "Update v" + version + " couldn't be applied after several tries — reinstall to update";
+                break;
+            default:
+                // Up to date, unsupported target, or a best-effort network or
+                // verification miss that simply retries next launch.
+                return;
+            }
+            (*h)->set_self_update_text(slint::SharedString(msg));
+        });
+    }).detach();
 
     // Nav → select a coin: push its metadata and start polling it. -1 is Home,
     // which has nothing to poll and no metadata to apply — but still has to be

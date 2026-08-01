@@ -813,6 +813,42 @@ pub fn extractLocalTarGzAllowing(
     try extractArchive(io, &archive_reader.interface, .tar_gz, dest_root, strip, allow_top_level, progress, extent, cancel);
 }
 
+/// Extract an already-downloaded zip at `dir_path/name` into `dest_root`
+/// (created if missing).
+///
+/// The zip counterpart to `extractLocalTarGz`, and separate for the same reason
+/// `extractArchive` refuses `.zip`: a zip's central directory sits at EOF, so it
+/// can't be read from a stream — extraction seeks around the on-disk file. Memory
+/// stays flat all the same (a deflate window plus the read buffer).
+///
+/// `strip` is deliberately absent: `std.zip` has no equivalent, and the one
+/// caller (the GUI self-update bundle) wants the archive's own layout preserved
+/// so it can pick the exe and the runtime directory out of it by name.
+pub fn extractLocalZip(
+    allocator: std.mem.Allocator,
+    dir_path: []const u8,
+    name: []const u8,
+    dest_root: []const u8,
+    progress: ?Progress,
+) !void {
+    var threaded: std.Io.Threaded = .init(allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    var dir = try std.Io.Dir.cwd().openDir(io, dir_path, .{});
+    defer dir.close(io);
+
+    var archive = try dir.openFile(io, name, .{});
+    defer archive.close(io);
+
+    var dest = try std.Io.Dir.cwd().createDirPathOpen(io, dest_root, .{});
+    defer dest.close(io);
+
+    var read_buffer: [32 * 1024]u8 = undefined;
+    var archive_reader = archive.reader(io, &read_buffer);
+    try extractZip(&archive_reader, dest, progress);
+}
+
 /// Extract a zip archive (read from the seekable `archive`) into the already-open
 /// `dest` directory. Windows coin bundles ship as zip; unlike tar.gz, zip stores
 /// its directory at the end of the file, so extraction seeks rather than streams

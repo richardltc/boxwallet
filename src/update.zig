@@ -50,6 +50,11 @@ pub const Source = struct {
 /// The checksums asset published alongside the per-platform binaries, in the
 /// standard `sha256sum` format (`<64-hex>␠␠<filename>` per line).
 const sums_name = "SHA256SUMS";
+/// The GUI release's pairing manifest, one line per target:
+/// `<asset>␠␠slint-<ver>␠␠<64-hex>`. Names which Slint runtime that build needs
+/// and hashes the copy the release ships. Itself listed in `SHA256SUMS`, so it
+/// carries the same trust as the downloads — see `Runtime`.
+const runtime_name = "RUNTIME";
 /// Sent as User-Agent — some servers reject requests without one.
 const user_agent = "BoxWallet (https://codeberg.org/" ++ repo ++ ")";
 
@@ -67,6 +72,22 @@ const marker_name = "boxwallet.staged.version";
 /// Records `<version> <n>`: how many times applying that staged version has
 /// failed. Kept after we give up, so a check doesn't just download it again.
 const fails_name = "boxwallet.staged.fails";
+/// The staged bundle's runtime, unpacked at stage time and moved into place
+/// beside the exe at apply time. Named `slint-<ver>` exactly as it must end up,
+/// so the staged exe's `$ORIGIN/slint-<ver>` RUNPATH resolves to it *in the
+/// staging directory* — which is what lets the pre-flight test the real pair.
+const staged_runtime_prefix = "slint-";
+/// Scratch directory the downloaded bundle is unpacked into before its pieces
+/// are moved to their staged names. Removed on every path.
+const unpack_subdir = "unpack";
+/// Suffix for a runtime directory being installed. It's built under this name
+/// and renamed into place, so the live directory is only ever created whole —
+/// never written into while a process might be mapping the `.so` inside it.
+const runtime_new_suffix = ".bw-new";
+/// The Slint shared object inside a runtime directory, and the GUI executable's
+/// name inside a bundle. Both are fixed by `gui-release`'s layout.
+const runtime_so_name = "libslint_cpp.so";
+const gui_exe_name = "boxwallet-gui";
 /// Consecutive failed swaps of one version before we stop retrying it. A swap
 /// that fails three times is a standing condition (read-only dir, no space),
 /// not a blip, and re-downloading 5 MB every launch forever helps nobody.
@@ -95,6 +116,26 @@ pub const Front = enum {
             .gui => "gui",
         };
     }
+
+    /// The GUI is checked before it's committed to; the TUI isn't. A TUI binary
+    /// is self-contained, so there's no pair to get wrong and nothing a
+    /// pre-flight would catch that the checksum didn't. The GUI's exe is one
+    /// half of a pair, and the half that fails loudly and invisibly.
+    fn preflight(self: Front) Preflight {
+        return switch (self) {
+            .tui => .none,
+            .gui => .selftest,
+        };
+    }
+};
+
+/// Whether `swapBinary` proves the new binary runs before committing to it.
+const Preflight = enum {
+    /// Commit the swap once the bytes are in place.
+    none,
+    /// Run the new binary with `--selftest` from its final path and require a
+    /// clean exit first.
+    selftest,
 };
 
 /// The asset name for `front` on *this* build target, or `null` when no such
@@ -126,6 +167,69 @@ pub fn assetFor(comptime front: Front) ?[]const u8 {
 
 /// The TUI's asset name. Kept so existing callers read unchanged.
 pub const asset_name: ?[]const u8 = assetFor(.tui);
+
+/// Which Slint runtime a published GUI build needs, read from the release's
+/// `RUNTIME` manifest.
+///
+/// This is the whole pairing protocol. `boxwallet-gui` is linked `BIND_NOW`
+/// against 115 undefined Slint symbols (21 of them data objects), so an exe and
+/// a runtime from different releases don't degrade — `ld.so` fails the process
+/// *before* `main`, with nothing on screen and none of our recovery code
+/// running. The runtime is therefore installed into a version-named directory
+/// and the exe's RUNPATH points at that exact name, so a mismatched pair can
+/// never be assembled: the old exe keeps finding the old directory.
+///
+/// `dir` is what the exe will look for; `sha` lets us verify a runtime that's
+/// *already installed* before deciding we can skip downloading the bundle.
+const Runtime = struct {
+    /// Directory name, e.g. `slint-1.17.1` — bounded because it's server-supplied
+    /// and ends up in a filesystem path.
+    dir_buf: [64]u8 = @splat(0),
+    dir_len: usize = 0,
+    sha: [32]u8 = @splat(0),
+
+    fn dir(self: *const Runtime) []const u8 {
+        return self.dir_buf[0..self.dir_len];
+    }
+};
+
+/// Pull `asset`'s line out of a `RUNTIME` manifest.
+///
+/// Returns null on anything unexpected — a missing line, a directory name that
+/// isn't `slint-<something>`, a name long enough to overflow the buffer, or a
+/// malformed digest. The caller treats null as `verify_failed` rather than
+/// "probably fine": guessing here is how an exe-only update gets applied against
+/// the wrong runtime, which is precisely the unbootable pair this exists to
+/// prevent.
+fn parseRuntime(text: []const u8, asset: []const u8) ?Runtime {
+    var lines = std.mem.splitScalar(u8, text, '\n');
+    while (lines.next()) |raw| {
+        const line = std.mem.trim(u8, raw, " \t\r");
+        var it = std.mem.tokenizeAny(u8, line, " \t");
+        const name = it.next() orelse continue;
+        if (!std.mem.eql(u8, name, asset)) continue;
+
+        const dir_name = it.next() orelse return null;
+        const hex = it.next() orelse return null;
+        // A stray fourth field means we're reading a format we don't understand.
+        if (it.next() != null) return null;
+
+        // Must look like a runtime directory: the name is joined onto a path, so
+        // a `..` or an absolute path here would escape the install directory.
+        if (!std.mem.startsWith(u8, dir_name, staged_runtime_prefix)) return null;
+        if (dir_name.len <= staged_runtime_prefix.len) return null;
+        if (std.mem.indexOfAny(u8, dir_name, "/\\") != null) return null;
+
+        var rt: Runtime = .{};
+        if (dir_name.len > rt.dir_buf.len) return null;
+        @memcpy(rt.dir_buf[0..dir_name.len], dir_name);
+        rt.dir_len = dir_name.len;
+        if (hex.len != 64) return null;
+        _ = std.fmt.hexToBytes(&rt.sha, hex) catch return null;
+        return rt;
+    }
+    return null;
+}
 
 /// Outcome of a `checkAndStage` round, surfaced to the UI.
 pub const CheckStatus = enum {
@@ -262,18 +366,42 @@ fn checkAndStageInner(
     defer gpa.free(sums_url);
     const sums = try fetchText(gpa, io, sums_url, max_sums);
     defer gpa.free(sums);
-    const want = parseChecksum(sums, asset) orelse return error.VerifyFailed;
+
+    // The GUI ships as an exe plus a Slint runtime that must match it exactly.
+    // Read the release's RUNTIME manifest and compare the runtime it names
+    // against what's installed beside our exe: if they already agree we can take
+    // the 4.8 MB exe on its own, otherwise we need the 16 MB bundle. The TUI is a
+    // single file and skips all of this.
+    var runtime: ?Runtime = null;
+    var fetch_asset = asset;
+    var bundle_buf: [96]u8 = undefined;
+    if (front == .gui) {
+        const rt_url = try std.fmt.allocPrint(gpa, "{s}/{s}/{s}", .{ src.download_base, tag, runtime_name });
+        defer gpa.free(rt_url);
+        const rt_text = try fetchText(gpa, io, rt_url, max_sums);
+        defer gpa.free(rt_text);
+
+        // Fail closed. A missing or unparseable line is not "probably the same
+        // runtime" — assuming that is exactly how an exe-only update lands
+        // against the wrong runtime and the app stops starting.
+        const rt = parseRuntime(rt_text, asset) orelse return error.VerifyFailed;
+        runtime = rt;
+        if (!installedRuntimeMatches(gpa, io, &rt))
+            fetch_asset = try std.fmt.bufPrint(&bundle_buf, "{s}.zip", .{asset});
+    }
+
+    const want = parseChecksum(sums, fetch_asset) orelse return error.VerifyFailed;
 
     // A newer release exists and we're committed to fetching it — let the UI
     // announce the download before we spend time on it.
     if (notify) |n| n.on_download_start(n.ctx, version);
 
     // Stream the binary to disk (flat memory), then verify before trusting it.
-    const asset_url = try std.fmt.allocPrint(gpa, "{s}/{s}/{s}", .{ src.download_base, tag, asset });
+    const asset_url = try std.fmt.allocPrint(gpa, "{s}/{s}/{s}", .{ src.download_base, tag, fetch_asset });
     defer gpa.free(asset_url);
     try install.downloadFile(gpa, asset_url, updates_path, part_name, null);
 
-    var dir = try std.Io.Dir.cwd().openDir(io, updates_path, .{});
+    var dir = try std.Io.Dir.cwd().openDir(io, updates_path, .{ .iterate = true });
     defer dir.close(io);
 
     const got = try sha256File(io, dir, part_name);
@@ -282,9 +410,23 @@ fn checkAndStageInner(
         return error.VerifyFailed;
     }
 
-    // Commit: promote the verified download, then write the marker last so its
-    // presence always implies a complete, verified staged binary.
-    try dir.rename(part_name, dir, staged_name, io);
+    // Clear any runtime staged by an earlier attempt, so what's on disk always
+    // belongs to the version we're about to mark.
+    clearStagedRuntimes(io, dir);
+
+    if (fetch_asset.ptr != asset.ptr) {
+        // A bundle: unpack it and move its two pieces to their staged names. The
+        // runtime keeps its `slint-<ver>` name *here*, so the staged exe's
+        // `$ORIGIN/slint-<ver>` RUNPATH resolves within the staging directory —
+        // which is what lets the pre-flight exercise the real pair before we
+        // commit to it.
+        try unpackStagedBundle(gpa, io, dir, updates_path, asset, &runtime.?);
+    } else {
+        try dir.rename(part_name, dir, staged_name, io);
+    }
+
+    // Commit: the download is promoted, so write the marker last — its presence
+    // always implies a complete, verified stage.
     dir.deleteFile(io, fails_name) catch {};
     try dir.writeFile(io, .{ .sub_path = marker_name, .data = version });
 
@@ -296,6 +438,107 @@ fn checkAndStageInner(
 /// rename the running binary aside and drop the new one beside it). Probes by
 /// creating and deleting a temp file there. Conservative: any failure to even
 /// resolve/open the directory reads as not writable.
+/// The directory holding the running executable — where a GUI's Slint runtime
+/// sits, since its RUNPATH is `$ORIGIN/slint-<ver>`. Caller frees.
+fn exeDirAlloc(gpa: std.mem.Allocator, io: std.Io) ![]u8 {
+    const exe = try std.process.executablePathAlloc(io, gpa);
+    defer gpa.free(exe);
+    return gpa.dupe(u8, std.fs.path.dirname(exe) orelse ".");
+}
+
+/// Is the runtime `rt` names already installed beside our exe, byte-for-byte?
+///
+/// Both halves matter. The *directory* answers "will the new exe find a runtime
+/// at all", and the *hash* answers "is it the right one" — a user who unzipped a
+/// bundle by hand, or a half-finished earlier install, can leave a directory with
+/// the right name and the wrong contents. Getting this wrong means skipping the
+/// bundle download and shipping an exe whose runtime doesn't match, so it's
+/// checked rather than assumed. Only runs when a newer release exists; hashing
+/// 34 MB measures ~84 ms.
+fn installedRuntimeMatches(gpa: std.mem.Allocator, io: std.Io, rt: *const Runtime) bool {
+    const exe_dir = exeDirAlloc(gpa, io) catch return false;
+    defer gpa.free(exe_dir);
+
+    const rt_path = std.fs.path.join(gpa, &.{ exe_dir, rt.dir() }) catch return false;
+    defer gpa.free(rt_path);
+
+    var d = std.Io.Dir.cwd().openDir(io, rt_path, .{}) catch return false;
+    defer d.close(io);
+
+    const got = sha256File(io, d, runtime_so_name) catch return false;
+    return std.mem.eql(u8, &got, &rt.sha);
+}
+
+/// Drop any runtime (and unpack scratch) left in the staging directory.
+///
+/// `dir` must have been opened with `.iterate = true` — scanning it for
+/// `slint-*` is the point, and without that flag the handle can't be read. Called
+/// before a new stage commits, so the runtime sitting there always belongs to
+/// the version the marker names — a stale one would be installed beside the new
+/// exe and produce exactly the mismatch this design exists to rule out.
+fn clearStagedRuntimes(io: std.Io, dir: std.Io.Dir) void {
+    dir.deleteTree(io, unpack_subdir) catch {};
+    var it = dir.iterate();
+    while (it.next(io) catch null) |entry| {
+        if (entry.kind != .directory) continue;
+        if (!std.mem.startsWith(u8, entry.name, staged_runtime_prefix)) continue;
+        dir.deleteTree(io, entry.name) catch {};
+    }
+}
+
+/// Unpack the verified GUI bundle at `part_name` into its staged shape: the exe
+/// at `staged_name` and the runtime at `slint-<ver>/`, both directly under the
+/// staging directory.
+///
+/// The bundle's own layout is `<asset>/boxwallet-gui` plus
+/// `<asset>/slint-<ver>/libslint_cpp.so`, so this flattens one level. The runtime
+/// is re-hashed against `RUNTIME` afterwards: the zip as a whole already matched
+/// `SHA256SUMS`, so this only catches a release whose manifest and bundle
+/// disagree — but that release would produce an unbootable install, and catching
+/// it here costs one pass over a file we just wrote.
+fn unpackStagedBundle(
+    gpa: std.mem.Allocator,
+    io: std.Io,
+    dir: std.Io.Dir,
+    updates_path: []const u8,
+    asset: []const u8,
+    rt: *const Runtime,
+) !void {
+    const unpack_path = try std.fs.path.join(gpa, &.{ updates_path, unpack_subdir });
+    defer gpa.free(unpack_path);
+
+    // Scratch, on every path — a half-unpacked tree left behind would be picked
+    // up by the next `clearStagedRuntimes` anyway, but not before it had wasted
+    // the disk on a machine that may not have it.
+    defer dir.deleteTree(io, unpack_subdir) catch {};
+    defer dir.deleteFile(io, part_name) catch {};
+
+    try install.extractLocalZip(gpa, updates_path, part_name, unpack_path, null);
+
+    var top = try dir.openDir(io, unpack_subdir, .{});
+    defer top.close(io);
+    var inner = try top.openDir(io, asset, .{});
+    defer inner.close(io);
+
+    // Copied rather than renamed so the executable bit is set explicitly: zip
+    // stores modes, but nothing guarantees the extractor honoured them, and the
+    // pre-flight has to be able to *run* this file.
+    try inner.copyFile(gui_exe_name, dir, staged_name, io, .{ .permissions = .executable_file, .replace = true });
+
+    var src_rt = try inner.openDir(io, rt.dir(), .{});
+    defer src_rt.close(io);
+    var dst_rt = try dir.createDirPathOpen(io, rt.dir(), .{});
+    defer dst_rt.close(io);
+    try src_rt.copyFile(runtime_so_name, dst_rt, runtime_so_name, io, .{ .replace = true });
+
+    const got = try sha256File(io, dst_rt, runtime_so_name);
+    if (!std.mem.eql(u8, &got, &rt.sha)) {
+        dir.deleteTree(io, rt.dir()) catch {};
+        dir.deleteFile(io, staged_name) catch {};
+        return error.VerifyFailed;
+    }
+}
+
 fn exeDirWritable(gpa: std.mem.Allocator, io: std.Io) bool {
     const exe = std.process.executablePathAlloc(io, gpa) catch return false;
     defer gpa.free(exe);
@@ -355,7 +598,7 @@ pub fn applyPendingFor(
     const updates_path = try std.fs.path.join(gpa, &.{ install_root, updates_subdir, front.dirName() });
     defer gpa.free(updates_path);
 
-    var dir = std.Io.Dir.cwd().openDir(io, updates_path, .{}) catch {
+    var dir = std.Io.Dir.cwd().openDir(io, updates_path, .{ .iterate = true }) catch {
         gpa.free(exe_path);
         return null;
     };
@@ -399,15 +642,97 @@ pub fn applyPendingFor(
     const staged_abs = try std.fs.path.join(gpa, &.{ updates_path, staged_name });
     defer gpa.free(staged_abs);
 
-    try swapBinary(gpa, io, staged_abs, exe_path);
+    // A staged runtime goes in *first*, and as a create rather than an
+    // overwrite. Order matters and is the reason this is safe to interrupt:
+    // installing a runtime the old exe doesn't reference changes nothing for it,
+    // so between this line and the swap the old pair is still intact and still
+    // boots. The reverse order would leave a window where the new exe is live
+    // with no runtime it can load — an app that won't start.
+    if (try installStagedRuntime(gpa, io, dir, exe_path)) |rt_name| gpa.free(rt_name);
+
+    // Prove the exact pair we're about to commit actually links, before we
+    // commit it. `boxwallet-gui` is BIND_NOW against 115 undefined Slint
+    // symbols, so a mismatch is a failure inside `ld.so` *before* `main` — no
+    // window, no message, and none of our code running to recover. `swapBinary`
+    // runs this on the copy already sitting at the target path, so RUNPATH
+    // resolves against the real install directory and the test is the real
+    // thing rather than an approximation.
+    swapBinary(gpa, io, staged_abs, exe_path, front.preflight()) catch |err| {
+        // The exe never changed (swapBinary rolls back), so the old pair is
+        // still whole. A runtime we installed for a swap that didn't happen is
+        // harmless — nothing references it — and the next attempt reuses it.
+        return err;
+    };
 
     // Swap done — remove the staged files so the re-exec'd process sees nothing
     // pending and runs normally instead of swapping again.
     dir.deleteFile(io, staged_name) catch {};
     dir.deleteFile(io, marker_name) catch {};
     dir.deleteFile(io, fails_name) catch {};
+    clearStagedRuntimes(io, dir);
 
     return .{ .exe_path = exe_path };
+}
+
+/// Move a staged `slint-<ver>/` runtime into place beside `exe_path`, if one is
+/// staged. Returns the directory name installed (or null when there was none —
+/// the ordinary case, where the release only changed the exe).
+///
+/// Installed as a **create**: the files go into `slint-<ver>.bw-new/` and the
+/// *directory* is renamed into place, so a live runtime directory is never
+/// written into. That isn't fussiness — the kernel refuses to let us overwrite a
+/// running executable, but gives no such protection for a mapped `.so`: writing
+/// one under a running process makes it re-read modified pages at old offsets,
+/// or `SIGBUS` if the file shrinks.
+///
+/// An existing directory of the same name is left exactly as it is. It's the
+/// runtime some already-installed exe is using, and the version in the name is
+/// the promise that its contents match.
+fn installStagedRuntime(
+    gpa: std.mem.Allocator,
+    io: std.Io,
+    dir: std.Io.Dir,
+    exe_path: []const u8,
+) !?[]u8 {
+    const name = stagedRuntimeName(gpa, io, dir) orelse return null;
+    errdefer gpa.free(name);
+
+    const exe_dir = std.fs.path.dirname(exe_path) orelse ".";
+    const dest = try std.fs.path.join(gpa, &.{ exe_dir, name });
+    defer gpa.free(dest);
+
+    const cwd = std.Io.Dir.cwd();
+    // Already there — the version in the directory name is the guarantee, and
+    // replacing it would be writing under whichever process is mapping it.
+    if (cwd.access(io, dest, .{})) |_| return name else |_| {}
+
+    const tmp = try std.fmt.allocPrint(gpa, "{s}{s}", .{ dest, runtime_new_suffix });
+    defer gpa.free(tmp);
+    cwd.deleteTree(io, tmp) catch {};
+
+    var src = try dir.openDir(io, name, .{});
+    defer src.close(io);
+    var dst = try cwd.createDirPathOpen(io, tmp, .{});
+    defer dst.close(io);
+    try src.copyFile(runtime_so_name, dst, runtime_so_name, io, .{ .replace = true });
+
+    cwd.rename(tmp, cwd, dest, io) catch |err| {
+        cwd.deleteTree(io, tmp) catch {};
+        return err;
+    };
+    return name;
+}
+
+/// Name of the runtime directory staged alongside the binary, if any. Caller
+/// frees.
+fn stagedRuntimeName(gpa: std.mem.Allocator, io: std.Io, dir: std.Io.Dir) ?[]u8 {
+    var it = dir.iterate();
+    while (it.next(io) catch null) |entry| {
+        if (entry.kind != .directory) continue;
+        if (!std.mem.startsWith(u8, entry.name, staged_runtime_prefix)) continue;
+        return gpa.dupe(u8, entry.name) catch null;
+    }
+    return null;
 }
 
 /// Replace the binary at `target_abs` with the one at `staged_abs`, working
@@ -425,6 +750,7 @@ fn swapBinary(
     io: std.Io,
     staged_abs: []const u8,
     target_abs: []const u8,
+    preflight: Preflight,
 ) !void {
     const cwd = std.Io.Dir.cwd();
 
@@ -436,6 +762,15 @@ fn swapBinary(
     // Land the new binary beside the target (same filesystem) as an executable.
     cwd.deleteFile(io, tmp_abs) catch {};
     try cwd.copyFile(staged_abs, cwd, tmp_abs, io, .{ .permissions = .executable_file, .replace = true });
+
+    // Test it where it will live, not where it was staged: RUNPATH is
+    // `$ORIGIN`-relative, so only a copy sitting in the target directory
+    // resolves the same libraries the committed binary would. If it can't
+    // start, back out now — the target hasn't been touched yet.
+    if (preflight == .selftest and !selftestOk(io, tmp_abs)) {
+        cwd.deleteFile(io, tmp_abs) catch {};
+        return error.SelftestFailed;
+    }
 
     cwd.deleteFile(io, old_abs) catch {};
     try cwd.rename(target_abs, cwd, old_abs, io);
@@ -458,6 +793,32 @@ fn cleanupLegacyStage(gpa: std.mem.Allocator, io: std.Io, install_root: []const 
     defer dir.close(io);
     inline for (.{ staged_name, part_name, marker_name, fails_name }) |name|
         dir.deleteFile(io, name) catch {};
+}
+
+/// Run `path --selftest` and report whether it exited cleanly.
+///
+/// The binary prints its version and exits before opening a window, so this
+/// needs no display and costs ~100 ms, once per update. What it actually proves
+/// is that the dynamic linker resolved every symbol: `boxwallet-gui` is
+/// `BIND_NOW`, so reaching `main` at all means the exe and the Slint runtime
+/// beside it are a working pair. A mismatch dies in `ld.so` with a non-zero
+/// status, which is the case this exists to catch — otherwise the user's first
+/// sign of trouble is an icon that does nothing when clicked.
+///
+/// Anything other than a clean exit — a signal, a spawn failure — reads as a
+/// failure. Refusing an update we can't verify is recoverable; committing one
+/// that won't start is not.
+fn selftestOk(io: std.Io, path: []const u8) bool {
+    var child = std.process.spawn(io, .{
+        .argv = &.{ path, "--selftest" },
+        .stdin = .ignore,
+        .stdout = .ignore,
+        .stderr = .ignore,
+    }) catch return false;
+    return switch (child.wait(io) catch return false) {
+        .exited => |code| code == 0,
+        else => false,
+    };
 }
 
 fn cleanupOld(gpa: std.mem.Allocator, io: std.Io, exe_path: []const u8) void {
@@ -731,7 +1092,7 @@ test "swapBinary replaces the target with the staged binary, keeping a .old" {
     try dir.writeFile(io, .{ .sub_path = "staged", .data = "NEW BINARY" });
     try dir.writeFile(io, .{ .sub_path = "boxwallet", .data = "OLD BINARY" });
 
-    try swapBinary(allocator, io, root ++ "/staged", root ++ "/boxwallet");
+    try swapBinary(allocator, io, root ++ "/staged", root ++ "/boxwallet", .none);
 
     // The target now holds the new bytes, and the old ones are set aside.
     var buf: [64]u8 = undefined;
@@ -844,4 +1205,196 @@ test "applyPending sweeps the pre-per-front-end staging files" {
     try std.testing.expectError(error.FileNotFound, old.access(io, staged_name, .{}));
     try std.testing.expectError(error.FileNotFound, old.access(io, marker_name, .{}));
     try old.access(io, "notes.txt", .{});
+}
+
+test "parseRuntime reads the pairing line for our asset" {
+    const text =
+        \\boxwallet-gui-linux-x86_64  slint-1.17.1  ce76672d4201dfb172215d1d5e6a1052e865740a97b59b6506a99380b65cff82
+        \\boxwallet-gui-linux-aarch64  slint-1.17.1  491aff4f54508deec4aee0140639b739c96dd09ae349e2da2fc111adfe115622
+        \\
+    ;
+    const rt = parseRuntime(text, "boxwallet-gui-linux-aarch64").?;
+    try std.testing.expectEqualStrings("slint-1.17.1", rt.dir());
+
+    var want: [32]u8 = undefined;
+    _ = try std.fmt.hexToBytes(&want, "491aff4f54508deec4aee0140639b739c96dd09ae349e2da2fc111adfe115622");
+    try std.testing.expectEqualSlices(u8, &want, &rt.sha);
+
+    // An asset with no line is null, not the first line that happens to parse.
+    try std.testing.expect(parseRuntime(text, "boxwallet-gui-linux-riscv64") == null);
+}
+
+test "parseRuntime fails closed on anything it doesn't fully understand" {
+    // Every one of these must be null rather than a best guess: the caller turns
+    // null into `verify_failed`, and a wrong guess here is what puts an exe next
+    // to a runtime it can't load — a build that stops starting, with no window
+    // and no message.
+    const asset = "boxwallet-gui-linux-x86_64";
+    const good_sha = "ce76672d4201dfb172215d1d5e6a1052e865740a97b59b6506a99380b65cff82";
+
+    const cases = [_][]const u8{
+        // No runtime directory field.
+        asset ++ "  " ++ good_sha,
+        // No digest.
+        asset ++ "  slint-1.17.1",
+        // Digest isn't hex.
+        asset ++ "  slint-1.17.1  zzzz672d4201dfb172215d1d5e6a1052e865740a97b59b6506a99380b65cff82",
+        // Digest is the wrong length.
+        asset ++ "  slint-1.17.1  ce76672d",
+        // An extra field means a format we don't know; don't guess at it.
+        asset ++ "  slint-1.17.1  " ++ good_sha ++ "  extra",
+        // Not a runtime directory name at all.
+        asset ++ "  runtime  " ++ good_sha,
+        // Bare prefix with no version.
+        asset ++ "  slint-  " ++ good_sha,
+        // Path traversal: this name is joined onto the install directory, so a
+        // separator in it would let a release write outside where we intend.
+        asset ++ "  slint-../../etc  " ++ good_sha,
+        asset ++ "  slint-a/b  " ++ good_sha,
+    };
+    for (cases, 0..) |text, i| {
+        errdefer std.debug.print("case {d} parsed when it should not have: {s}\n", .{ i, text });
+        try std.testing.expect(parseRuntime(text, asset) == null);
+    }
+
+    // A directory name too long for the fixed buffer is refused, not truncated —
+    // truncation would silently name a *different* directory.
+    var long: [200]u8 = undefined;
+    const overlong = try std.fmt.bufPrint(&long, "{s}  slint-{s}  {s}", .{ asset, "9" ** 80, good_sha });
+    try std.testing.expect(parseRuntime(overlong, asset) == null);
+}
+
+test "installStagedRuntime creates the runtime, and never touches one already there" {
+    const allocator = std.testing.allocator;
+
+    var threaded: std.Io.Threaded = .init(allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    const root = "test-update-runtime";
+    std.Io.Dir.cwd().deleteTree(io, root) catch {};
+    defer std.Io.Dir.cwd().deleteTree(io, root) catch {};
+
+    var stage = try std.Io.Dir.cwd().createDirPathOpen(io, root ++ "/stage/slint-1.17.1", .{});
+    defer stage.close(io);
+    try stage.writeFile(io, .{ .sub_path = runtime_so_name, .data = "NEW RUNTIME" });
+
+    var stage_dir = try std.Io.Dir.cwd().openDir(io, root ++ "/stage", .{ .iterate = true });
+    defer stage_dir.close(io);
+
+    var app_dir = try std.Io.Dir.cwd().createDirPathOpen(io, root ++ "/app", .{});
+    defer app_dir.close(io);
+
+    // Nothing installed yet: the runtime lands under its version name.
+    const name = (try installStagedRuntime(allocator, io, stage_dir, root ++ "/app/boxwallet-gui")).?;
+    defer allocator.free(name);
+    try std.testing.expectEqualStrings("slint-1.17.1", name);
+
+    var buf: [64]u8 = undefined;
+    try std.testing.expectEqualStrings("NEW RUNTIME", try app_dir.readFile(io, "slint-1.17.1/" ++ runtime_so_name, &buf));
+
+    // No scratch left behind — a `.bw-new` directory surviving would be copied
+    // over on the next attempt and waste the disk in the meantime.
+    try std.testing.expectError(error.FileNotFound, app_dir.access(io, "slint-1.17.1" ++ runtime_new_suffix, .{}));
+
+    // Run it again against a runtime already in place. It must be left exactly
+    // as it is: some installed exe is linked against it, and overwriting a
+    // mapped .so under a running process is the one thing this design forbids.
+    try app_dir.writeFile(io, .{ .sub_path = "slint-1.17.1/" ++ runtime_so_name, .data = "IN USE" });
+    const again = (try installStagedRuntime(allocator, io, stage_dir, root ++ "/app/boxwallet-gui")).?;
+    defer allocator.free(again);
+    try std.testing.expectEqualStrings("IN USE", try app_dir.readFile(io, "slint-1.17.1/" ++ runtime_so_name, &buf));
+}
+
+test "installStagedRuntime is a no-op when no runtime is staged" {
+    // The ordinary case: a release that only changed the exe stages the bare
+    // binary, and apply must not invent a runtime directory beside it.
+    const allocator = std.testing.allocator;
+
+    var threaded: std.Io.Threaded = .init(allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    const root = "test-update-nort";
+    std.Io.Dir.cwd().deleteTree(io, root) catch {};
+    defer std.Io.Dir.cwd().deleteTree(io, root) catch {};
+
+    var made = try std.Io.Dir.cwd().createDirPathOpen(io, root ++ "/stage", .{});
+    made.close(io);
+    var stage = try std.Io.Dir.cwd().openDir(io, root ++ "/stage", .{ .iterate = true });
+    defer stage.close(io);
+    try stage.writeFile(io, .{ .sub_path = staged_name, .data = "NEW BINARY" });
+
+    try std.testing.expect(try installStagedRuntime(allocator, io, stage, root ++ "/app/boxwallet-gui") == null);
+}
+
+test "clearStagedRuntimes drops staged runtimes and scratch, and nothing else" {
+    const allocator = std.testing.allocator;
+
+    var threaded: std.Io.Threaded = .init(allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    const root = "test-update-clear";
+    std.Io.Dir.cwd().deleteTree(io, root) catch {};
+    defer std.Io.Dir.cwd().deleteTree(io, root) catch {};
+
+    var made = try std.Io.Dir.cwd().createDirPathOpen(io, root, .{});
+    made.close(io);
+    var dir = try std.Io.Dir.cwd().openDir(io, root, .{ .iterate = true });
+    defer dir.close(io);
+    var rt = try dir.createDirPathOpen(io, "slint-1.17.1", .{});
+    rt.close(io);
+    var un = try dir.createDirPathOpen(io, unpack_subdir, .{});
+    un.close(io);
+    try dir.writeFile(io, .{ .sub_path = staged_name, .data = "NEW BINARY" });
+    try dir.writeFile(io, .{ .sub_path = marker_name, .data = "1.2.3" });
+
+    clearStagedRuntimes(io, dir);
+
+    try std.testing.expectError(error.FileNotFound, dir.access(io, "slint-1.17.1", .{}));
+    try std.testing.expectError(error.FileNotFound, dir.access(io, unpack_subdir, .{}));
+    // The staged binary and its marker are the caller's to manage — a stale
+    // runtime is cleared before a *new* stage commits, and the binary isn't.
+    try dir.access(io, staged_name, .{});
+    try dir.access(io, marker_name, .{});
+}
+
+test "swapBinary refuses to commit a binary that fails its pre-flight" {
+    if (builtin.os.tag == .windows) return error.SkipZigTest;
+
+    const allocator = std.testing.allocator;
+
+    var threaded: std.Io.Threaded = .init(allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    const root = "test-update-preflight";
+    std.Io.Dir.cwd().deleteTree(io, root) catch {};
+    defer std.Io.Dir.cwd().deleteTree(io, root) catch {};
+
+    var dir = try std.Io.Dir.cwd().createDirPathOpen(io, root, .{});
+    defer dir.close(io);
+    try dir.writeFile(io, .{ .sub_path = "boxwallet", .data = "OLD BINARY" });
+
+    // Stands in for a GUI exe that can't link against the runtime beside it: a
+    // non-zero exit is exactly what `ld.so` gives us for a mismatched pair.
+    try dir.writeFile(io, .{ .sub_path = "bad", .data = "#!/bin/sh\nexit 1\n", .flags = .{ .permissions = .executable_file } });
+    try std.testing.expectError(
+        error.SelftestFailed,
+        swapBinary(allocator, io, root ++ "/bad", root ++ "/boxwallet", .selftest),
+    );
+
+    // Refusing must leave the working install completely untouched — the whole
+    // point is that a bad update costs the user nothing.
+    var buf: [64]u8 = undefined;
+    try std.testing.expectEqualStrings("OLD BINARY", try dir.readFile(io, "boxwallet", &buf));
+    try std.testing.expectError(error.FileNotFound, dir.access(io, "boxwallet.bw-new", .{}));
+    try std.testing.expectError(error.FileNotFound, dir.access(io, "boxwallet.old", .{}));
+
+    // And a binary that passes goes in as normal.
+    try dir.writeFile(io, .{ .sub_path = "good", .data = "#!/bin/sh\nexit 0\n", .flags = .{ .permissions = .executable_file } });
+    try swapBinary(allocator, io, root ++ "/good", root ++ "/boxwallet", .selftest);
+    try std.testing.expectEqualStrings("#!/bin/sh\nexit 0\n", try dir.readFile(io, "boxwallet", &buf));
+    try std.testing.expectEqualStrings("OLD BINARY", try dir.readFile(io, "boxwallet.old", &buf));
 }

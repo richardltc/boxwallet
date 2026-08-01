@@ -2502,6 +2502,109 @@ export fn bw_price_direction(change_24h: f64, have_change: c_int) c_int {
     };
 }
 
+// ---- BoxWallet's own self-update --------------------------------------------
+
+/// Status codes for `bw_self_update_check`, mirroring `update.CheckStatus`.
+/// Kept as explicit values because they cross the ABI — append, never renumber.
+pub const BW_UPDATE_UP_TO_DATE: c_int = 0;
+pub const BW_UPDATE_STAGED: c_int = 1;
+pub const BW_UPDATE_UNSUPPORTED: c_int = 2;
+pub const BW_UPDATE_NETWORK_ERROR: c_int = 3;
+pub const BW_UPDATE_VERIFY_FAILED: c_int = 4;
+pub const BW_UPDATE_GAVE_UP: c_int = 5;
+/// Set alongside `BW_UPDATE_STAGED`/`BW_UPDATE_GAVE_UP` when the executable's own
+/// directory isn't writable, so the swap can't happen wherever the app is
+/// installed. The UI needs this to say "move me somewhere writable" rather than
+/// a "restart to apply" that silently wouldn't.
+pub const BW_UPDATE_BLOCKED: c_int = 1 << 8;
+
+/// Check for a newer BoxWallet GUI and stage it for the next launch.
+///
+/// **Blocking and network-bound** — call it from a worker thread, never the
+/// event loop. Returns one of the `BW_UPDATE_*` codes, OR-ed with
+/// `BW_UPDATE_BLOCKED`; the release version (e.g. "1.2.3") is written to `out`
+/// and its length returned via `out_len` when known.
+///
+/// This stages the *GUI* asset, which is a different download from the TUI's and
+/// stages into a different directory. The GUI ships as an exe plus a matching
+/// Slint runtime, so a release that changes the runtime is fetched as the full
+/// bundle and a release that doesn't takes the exe alone — that decision, and
+/// the verification behind it, lives in `update.zig`.
+export fn bw_self_update_check(ctx: ?*Ctx, out: ?[*]u8, cap: usize, out_len: ?*usize) c_int {
+    const c = ctx orelse return BW_UPDATE_NETWORK_ERROR;
+
+    var threaded: std.Io.Threaded = .init(c.allocator, .{});
+    defer threaded.deinit();
+
+    const res = updater.checkAndStageFor(
+        .gui,
+        c.allocator,
+        threaded.io(),
+        c.install_root,
+        version.app_version,
+        null,
+        .default,
+    );
+
+    if (out) |o| {
+        const n = copyOut(o[0..cap], res.version.slice());
+        if (out_len) |l| l.* = n;
+    } else if (out_len) |l| l.* = 0;
+
+    const code: c_int = switch (res.status) {
+        .up_to_date => BW_UPDATE_UP_TO_DATE,
+        .staged => BW_UPDATE_STAGED,
+        .unsupported => BW_UPDATE_UNSUPPORTED,
+        .network_error => BW_UPDATE_NETWORK_ERROR,
+        .verify_failed => BW_UPDATE_VERIFY_FAILED,
+        .gave_up => BW_UPDATE_GAVE_UP,
+    };
+    return code | (if (res.blocked) BW_UPDATE_BLOCKED else 0);
+}
+
+/// Apply a staged GUI update and re-exec into it. **Does not return on success**
+/// — the new binary replaces this process image.
+///
+/// Call it at the top of `main`, before any window exists: the swap moves the
+/// running executable aside and installs the matching Slint runtime beside it,
+/// and re-execing is what makes the new pair the one actually running. Returns 0
+/// when there was nothing to apply and 1 when applying failed, in both cases
+/// leaving the caller to carry on with the current build — a failed update is
+/// never a reason not to start.
+///
+/// Takes `home_dir` rather than a `Ctx` because it runs before `bw_init`: it
+/// replaces the process, so anything allocated first would be leaked at exec.
+export fn bw_self_update_apply(home_dir: ?[*:0]const u8) c_int {
+    const hd_z = home_dir orelse return 0;
+    const hd = std.mem.span(hd_z);
+    if (hd.len == 0) return 0;
+
+    // The updater must not be the thing that kills the app: `Threaded` toggles a
+    // process-wide SIGIO handler, and this runs before `bw_init` would pin ours.
+    sigguard.install();
+
+    // The same allocator `bw_init` uses. This call either replaces the process
+    // or returns having freed everything, so there's nothing for a tracking
+    // allocator to catch that the tests don't.
+    const a = std.heap.page_allocator;
+
+    var threaded: std.Io.Threaded = .init(a, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    const root = install.installRoot(a, hd) catch return 0;
+    defer a.free(root);
+
+    const applied = (updater.applyPendingFor(.gui, a, io, root, version.app_version) catch return 1) orelse return 0;
+    defer a.free(applied.exe_path);
+
+    // Only returns on failure. The binary on disk is already the new one by this
+    // point, so the next launch is clean either way — run the old image for now.
+    const err = std.process.replace(io, .{ .argv = &.{applied.exe_path} });
+    std.log.warn("self-update re-exec failed: {s}", .{@errorName(err)});
+    return 1;
+}
+
 // ---- pending coin updates ---------------------------------------------------
 
 /// Which coins have a newer bundled core than the version installed, written
