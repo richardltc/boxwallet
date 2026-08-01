@@ -211,6 +211,8 @@ ZIG_GLOBAL_CACHE_DIR=zig-pkg zig build release # cross-build all release binarie
 ZIG_GLOBAL_CACHE_DIR=zig-pkg zig build gui         # build the Slint GUI
 ZIG_GLOBAL_CACHE_DIR=zig-pkg zig build gui-run     # build + launch the GUI
 ZIG_GLOBAL_CACHE_DIR=zig-pkg zig build gui-release # Linux GUI bundles (x86_64 + aarch64)
+
+ZIG_GLOBAL_CACHE_DIR=zig-pkg zig build release-all  # every asset + ONE SHA256SUMS -> zig-out/dist/
 ```
 
 - The ZigZag dependency is vendored under `zig-pkg/`;
@@ -219,13 +221,27 @@ ZIG_GLOBAL_CACHE_DIR=zig-pkg zig build gui-release # Linux GUI bundles (x86_64 +
 - Manage dependencies with `zig fetch --save …` plus the build.zig wiring.
   **Don't hand-edit anything under `zig-pkg/`.**
 - Treat work as **done only when `zig build` and `zig build test` both pass.**
-- **Releasing / auto-update:** `zig build release` cross-compiles every
+- **Releasing / auto-update:** `zig build release` cross-compiles every TUI
   distributable into `zig-out/release/` (Linux = static musl, all `ReleaseSafe`
-  + stripped), named `boxwallet-<os>-<arch>[.exe]` with a `SHA256SUMS`. The app
-  self-updates in-app (`src/update.zig` + apply/re-exec in `main.zig` + the
-  background check in `app.zig`): to cut a release, bump `app_version` in
-  **`src/version.zig`**, run `zig build release`, and upload all six files to the
-  GitHub release. That constant is the single source of truth — `app.zig`
+  + stripped), named `boxwallet-<os>-<arch>[.exe]` with a `SHA256SUMS`; `zig
+  build gui-release` does the same for the two Linux GUI bundles. Both
+  front-ends self-update in-app (`src/update.zig` + apply/re-exec in `main.zig`
+  and `bw_self_update_apply`, background checks in `app.zig` and `gui/main.cpp`).
+
+  **To cut a release: bump `app_version` in `src/version.zig`, run `zig build
+  release-all`, and upload the 11 files in `zig-out/dist/`.** Use that step, not
+  the two underneath it — both write a file called `SHA256SUMS`, and *both*
+  updaters fetch `<tag>/SHA256SUMS`. A release carries one file of that name, so
+  publishing either manifest alone leaves the other front-end unable to find its
+  asset's checksum: `verify_failed` on every check, for every user of it.
+  `release-all` merges them into one manifest over every asset, then refuses to
+  assemble at all if anything is missing — `gui-release` skips a target whose
+  lazy Slint package hasn't been fetched, which would otherwise publish
+  TUI-only assets under a version the GUI updater can't satisfy. The expected
+  filenames come from `release_targets`/`gui_targets` at the top of `build.zig`,
+  so the check tracks what's registered rather than a hand-kept list, and the
+  final `sha256sum -c` runs over `dist/` itself, so what's verified is exactly
+  what gets uploaded. `app_version` is the single source of truth — `app.zig`
   re-exports it for the TUI and `capi.zig` exposes it as `bw_app_version` for the
   GUI, so **never** write the version anywhere else (it was a literal in
   `gui/app.slint` once, which is how a UI ends up announcing a release it isn't). Asset names + checksums come from one list in `build.zig`, so they
