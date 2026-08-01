@@ -28,11 +28,25 @@ const install = @import("install.zig");
 
 /// The Codeberg repo BoxWallet releases come from.
 const repo = "richardltc/BoxWallet";
-/// Latest-release metadata endpoint (Forgejo API; returns JSON carrying
-/// `tag_name`).
-const latest_release_url = "https://codeberg.org/api/v1/repos/" ++ repo ++ "/releases/latest";
-/// Base for a release's downloadable assets: `<base>/<tag>/<asset>`.
-const download_base = "https://codeberg.org/" ++ repo ++ "/releases/download";
+
+/// Where releases are fetched from. A struct rather than two constants purely so
+/// tests can point it at a local `std.http.Server`: without this seam none of the
+/// check → stage → apply path can be exercised offline, which for something that
+/// replaces a wallet's own binary is not a reasonable place to be.
+///
+/// Callers should pass `Source.default`. Nothing in the app overrides it.
+pub const Source = struct {
+    /// Latest-release metadata endpoint (Forgejo API; returns JSON carrying
+    /// `tag_name`).
+    latest_release_url: []const u8,
+    /// Base for a release's downloadable assets: `<base>/<tag>/<asset>`.
+    download_base: []const u8,
+
+    pub const default: Source = .{
+        .latest_release_url = "https://codeberg.org/api/v1/repos/" ++ repo ++ "/releases/latest",
+        .download_base = "https://codeberg.org/" ++ repo ++ "/releases/download",
+    };
+};
 /// The checksums asset published alongside the per-platform binaries, in the
 /// standard `sha256sum` format (`<64-hex>␠␠<filename>` per line).
 const sums_name = "SHA256SUMS";
@@ -40,6 +54,7 @@ const sums_name = "SHA256SUMS";
 const user_agent = "BoxWallet (https://codeberg.org/" ++ repo ++ ")";
 
 /// Where staged updates live, relative to the install root (`~/.boxwallet`).
+/// Each front-end gets its own subdirectory beneath this — see `Front.dirName`.
 const updates_subdir = "updates";
 /// The verified, ready-to-apply binary.
 const staged_name = "boxwallet.staged";
@@ -49,31 +64,68 @@ const part_name = "boxwallet.staged.part";
 /// presence means a complete, verified staged binary. Read on next launch to
 /// decide whether to apply (and guard against re-applying a stale stage).
 const marker_name = "boxwallet.staged.version";
+/// Records `<version> <n>`: how many times applying that staged version has
+/// failed. Kept after we give up, so a check doesn't just download it again.
+const fails_name = "boxwallet.staged.fails";
+/// Consecutive failed swaps of one version before we stop retrying it. A swap
+/// that fails three times is a standing condition (read-only dir, no space),
+/// not a blip, and re-downloading 5 MB every launch forever helps nobody.
+const max_apply_failures = 3;
 
 /// Caps on the small metadata reads, so a hostile/broken server can't make us
 /// balloon memory. The real binary is streamed to disk, never buffered.
 const max_release_json = 1 << 20; // 1 MiB
 const max_sums = 1 << 18; // 256 KiB
 
-/// The native binary asset name for *this* build target. Releases publish one
-/// bare executable per OS/arch (no archive — they're small), named with this
-/// convention; `null` means no binary is published for this target, so the
-/// updater stays dormant. Matches the per-coin comptime download selection.
-pub const asset_name: ?[]const u8 = blk: {
-    const os = switch (builtin.os.tag) {
-        .linux => "linux",
-        .macos => "macos",
-        .windows => "windows",
-        else => break :blk null,
-    };
+/// Which front-end is updating itself. They ship as different assets, stage into
+/// different directories, and are published for different targets — the TUI
+/// everywhere, the GUI only where `gui-release` builds a bundle.
+pub const Front = enum {
+    tui,
+    gui,
+
+    /// Staging subdirectory, so the two never collide. They share one install
+    /// root, and before this they shared one `boxwallet.staged` too: with both
+    /// installed, the GUI could stage its binary and the TUI would apply it over
+    /// itself on the next launch. `isNewer` can't catch that — the versions
+    /// genuinely match — and the result is a GUI exe with no runtime beside it.
+    fn dirName(self: Front) []const u8 {
+        return switch (self) {
+            .tui => "tui",
+            .gui => "gui",
+        };
+    }
+};
+
+/// The asset name for `front` on *this* build target, or `null` when no such
+/// asset is published — which is what keeps the updater dormant rather than
+/// erroring. The TUI ships a bare executable per OS/arch; the GUI only exists
+/// for the two Linux targets `gui-release` builds, so `assetFor(.gui)` is null
+/// everywhere else for free.
+pub fn assetFor(comptime front: Front) ?[]const u8 {
     const arch = switch (builtin.cpu.arch) {
         .x86_64 => "x86_64",
         .aarch64 => "aarch64",
-        else => break :blk null,
+        else => return null,
     };
-    const ext = if (builtin.os.tag == .windows) ".exe" else "";
-    break :blk "boxwallet-" ++ os ++ "-" ++ arch ++ ext;
-};
+    return switch (front) {
+        .tui => blk: {
+            const os = switch (builtin.os.tag) {
+                .linux => "linux",
+                .macos => "macos",
+                .windows => "windows",
+                else => return null,
+            };
+            const ext = if (builtin.os.tag == .windows) ".exe" else "";
+            break :blk "boxwallet-" ++ os ++ "-" ++ arch ++ ext;
+        },
+        // Linux only, and only the two arches with a prebuilt Slint runtime.
+        .gui => if (builtin.os.tag == .linux) "boxwallet-gui-linux-" ++ arch else null,
+    };
+}
+
+/// The TUI's asset name. Kept so existing callers read unchanged.
+pub const asset_name: ?[]const u8 = assetFor(.tui);
 
 /// Outcome of a `checkAndStage` round, surfaced to the UI.
 pub const CheckStatus = enum {
@@ -87,6 +139,9 @@ pub const CheckStatus = enum {
     network_error,
     /// The download didn't match the published checksum — refused.
     verify_failed,
+    /// This release was staged and its swap failed `max_apply_failures` times in
+    /// a row, so we've stopped retrying it. A later release clears the count.
+    gave_up,
 };
 
 /// A version string in a fixed inline buffer, so a worker thread can hand its
@@ -141,8 +196,22 @@ pub fn checkAndStage(
     current_version: []const u8,
     notify: ?Notify,
 ) Check {
-    const asset = asset_name orelse return .{ .status = .unsupported };
-    return checkAndStageInner(gpa, io, install_root, current_version, asset, notify) catch |err| .{
+    return checkAndStageFor(.tui, gpa, io, install_root, current_version, notify, .default);
+}
+
+/// As `checkAndStage`, for a named front-end and release source. `src` exists so
+/// tests can serve a synthetic release locally; pass `.default` in the app.
+pub fn checkAndStageFor(
+    comptime front: Front,
+    gpa: std.mem.Allocator,
+    io: std.Io,
+    install_root: []const u8,
+    current_version: []const u8,
+    notify: ?Notify,
+    src: Source,
+) Check {
+    const asset = comptime assetFor(front) orelse return .{ .status = .unsupported };
+    return checkAndStageInner(gpa, io, install_root, current_version, asset, notify, front, src) catch |err| .{
         .status = switch (err) {
             error.VerifyFailed => .verify_failed,
             else => .network_error,
@@ -157,8 +226,10 @@ fn checkAndStageInner(
     current_version: []const u8,
     asset: []const u8,
     notify: ?Notify,
+    front: Front,
+    src: Source,
 ) !Check {
-    const json = try fetchText(gpa, io, latest_release_url, max_release_json);
+    const json = try fetchText(gpa, io, src.latest_release_url, max_release_json);
     defer gpa.free(json);
 
     const tag = parseTagName(json) orelse return error.ParseFailed;
@@ -168,7 +239,7 @@ fn checkAndStageInner(
 
     if (!isNewer(version, current_version)) return .{ .status = .up_to_date, .version = vbuf };
 
-    const updates_path = try std.fs.path.join(gpa, &.{ install_root, updates_subdir });
+    const updates_path = try std.fs.path.join(gpa, &.{ install_root, updates_subdir, front.dirName() });
     defer gpa.free(updates_path);
 
     // Already staged this exact version on a previous launch? The marker is only
@@ -180,9 +251,14 @@ fn checkAndStageInner(
             return .{ .status = .staged, .version = vbuf, .blocked = !exeDirWritable(gpa, io) };
     }
 
+    // Gave up on this exact version already? The count outlives the staged files,
+    // so this is what stops a failing swap from re-downloading every launch.
+    if (readFails(io, updates_path, version) >= max_apply_failures)
+        return .{ .status = .gave_up, .version = vbuf, .blocked = !exeDirWritable(gpa, io) };
+
     // Pull the checksum for our asset out of the release's SHA256SUMS first, so a
     // missing/garbled checksum fails before we spend bandwidth on the binary.
-    const sums_url = try std.fmt.allocPrint(gpa, "{s}/{s}/{s}", .{ download_base, tag, sums_name });
+    const sums_url = try std.fmt.allocPrint(gpa, "{s}/{s}/{s}", .{ src.download_base, tag, sums_name });
     defer gpa.free(sums_url);
     const sums = try fetchText(gpa, io, sums_url, max_sums);
     defer gpa.free(sums);
@@ -193,7 +269,7 @@ fn checkAndStageInner(
     if (notify) |n| n.on_download_start(n.ctx, version);
 
     // Stream the binary to disk (flat memory), then verify before trusting it.
-    const asset_url = try std.fmt.allocPrint(gpa, "{s}/{s}/{s}", .{ download_base, tag, asset });
+    const asset_url = try std.fmt.allocPrint(gpa, "{s}/{s}/{s}", .{ src.download_base, tag, asset });
     defer gpa.free(asset_url);
     try install.downloadFile(gpa, asset_url, updates_path, part_name, null);
 
@@ -209,6 +285,7 @@ fn checkAndStageInner(
     // Commit: promote the verified download, then write the marker last so its
     // presence always implies a complete, verified staged binary.
     try dir.rename(part_name, dir, staged_name, io);
+    dir.deleteFile(io, fails_name) catch {};
     try dir.writeFile(io, .{ .sub_path = marker_name, .data = version });
 
     return .{ .status = .staged, .version = vbuf, .blocked = !exeDirWritable(gpa, io) };
@@ -254,6 +331,18 @@ pub fn applyPending(
     install_root: []const u8,
     current_version: []const u8,
 ) !?Applied {
+    return applyPendingFor(.tui, gpa, io, install_root, current_version);
+}
+
+/// As `applyPending`, for a named front-end. Each stages into its own directory,
+/// so the TUI can never apply a binary the GUI staged (or the reverse).
+pub fn applyPendingFor(
+    front: Front,
+    gpa: std.mem.Allocator,
+    io: std.Io,
+    install_root: []const u8,
+    current_version: []const u8,
+) !?Applied {
     const exe_path = std.process.executablePathAlloc(io, gpa) catch return null;
     errdefer gpa.free(exe_path);
 
@@ -261,8 +350,9 @@ pub fn applyPending(
     // just-exited parent may still hold it; if so this fails and a later run gets
     // it. (`deleteFile` tolerates a missing path.)
     cleanupOld(gpa, io, exe_path);
+    cleanupLegacyStage(gpa, io, install_root);
 
-    const updates_path = try std.fs.path.join(gpa, &.{ install_root, updates_subdir });
+    const updates_path = try std.fs.path.join(gpa, &.{ install_root, updates_subdir, front.dirName() });
     defer gpa.free(updates_path);
 
     var dir = std.Io.Dir.cwd().openDir(io, updates_path, .{}) catch {
@@ -293,6 +383,19 @@ pub fn applyPending(
         return null;
     };
 
+    // Count the attempt *before* making it, so a swap that dies mid-way (killed,
+    // power cut) still burns a try rather than looping forever on the same fault.
+    const fails = readFailsDir(io, dir, staged_ver);
+    if (fails >= max_apply_failures) {
+        // Out of tries: drop the staged binary and marker but keep the count, so
+        // the next check reports `gave_up` instead of downloading it all again.
+        dir.deleteFile(io, staged_name) catch {};
+        dir.deleteFile(io, marker_name) catch {};
+        gpa.free(exe_path);
+        return null;
+    }
+    writeFails(io, dir, staged_ver, fails + 1);
+
     const staged_abs = try std.fs.path.join(gpa, &.{ updates_path, staged_name });
     defer gpa.free(staged_abs);
 
@@ -302,6 +405,7 @@ pub fn applyPending(
     // pending and runs normally instead of swapping again.
     dir.deleteFile(io, staged_name) catch {};
     dir.deleteFile(io, marker_name) catch {};
+    dir.deleteFile(io, fails_name) catch {};
 
     return .{ .exe_path = exe_path };
 }
@@ -343,6 +447,19 @@ fn swapBinary(
 }
 
 /// Delete a leftover `<exe>.old` from a prior update. Best-effort.
+/// Staging moved from `updates/` to `updates/<front>/` when a second front-end
+/// gained an updater (a shared name would have let the GUI's binary be swapped
+/// over the TUI's). Anything left at the old path is ours and now unreachable,
+/// so drop it rather than leaving a stale 5 MB binary behind forever.
+fn cleanupLegacyStage(gpa: std.mem.Allocator, io: std.Io, install_root: []const u8) void {
+    const path = std.fs.path.join(gpa, &.{ install_root, updates_subdir }) catch return;
+    defer gpa.free(path);
+    var dir = std.Io.Dir.cwd().openDir(io, path, .{}) catch return;
+    defer dir.close(io);
+    inline for (.{ staged_name, part_name, marker_name, fails_name }) |name|
+        dir.deleteFile(io, name) catch {};
+}
+
 fn cleanupOld(gpa: std.mem.Allocator, io: std.Io, exe_path: []const u8) void {
     const old = std.fmt.allocPrint(gpa, "{s}.old", .{exe_path}) catch return;
     defer gpa.free(old);
@@ -414,6 +531,37 @@ fn readMarker(gpa: std.mem.Allocator, io: std.Io, updates_path: []const u8) ?[]u
 
 /// Read the staged-version marker from an open updates `dir`. Caller owns the
 /// returned (trimmed) slice; null if the marker is absent or unreadable.
+/// Failed-apply count for `version`, or 0 when the file is absent, unreadable,
+/// or records some *other* version (a newer release always starts fresh).
+fn readFails(io: std.Io, updates_path: []const u8, version: []const u8) u32 {
+    var dir = std.Io.Dir.cwd().openDir(io, updates_path, .{}) catch return 0;
+    defer dir.close(io);
+    return readFailsDir(io, dir, version);
+}
+
+fn readFailsDir(io: std.Io, dir: std.Io.Dir, version: []const u8) u32 {
+    var f = dir.openFile(io, fails_name, .{}) catch return 0;
+    defer f.close(io);
+
+    var rbuf: [128]u8 = undefined;
+    var fr = f.reader(io, &rbuf);
+    var out: [128]u8 = undefined;
+    const n = fr.interface.readSliceShort(&out) catch return 0;
+    const line = std.mem.trim(u8, out[0..n], " \t\r\n");
+
+    var it = std.mem.splitScalar(u8, line, ' ');
+    const ver = it.next() orelse return 0;
+    if (!std.mem.eql(u8, ver, version)) return 0;
+    const count = it.next() orelse return 0;
+    return std.fmt.parseInt(u32, count, 10) catch 0;
+}
+
+fn writeFails(io: std.Io, dir: std.Io.Dir, version: []const u8, count: u32) void {
+    var buf: [160]u8 = undefined;
+    const line = std.fmt.bufPrint(&buf, "{s} {d}", .{ version, count }) catch return;
+    dir.writeFile(io, .{ .sub_path = fails_name, .data = line }) catch {};
+}
+
 fn readMarkerDir(gpa: std.mem.Allocator, io: std.Io, dir: std.Io.Dir) ?[]u8 {
     var f = dir.openFile(io, marker_name, .{}) catch return null;
     defer f.close(io);
@@ -589,4 +737,111 @@ test "swapBinary replaces the target with the staged binary, keeping a .old" {
     var buf: [64]u8 = undefined;
     try std.testing.expectEqualStrings("NEW BINARY", try dir.readFile(io, "boxwallet", &buf));
     try std.testing.expectEqualStrings("OLD BINARY", try dir.readFile(io, "boxwallet.old", &buf));
+}
+
+test "the front-ends stage into separate directories" {
+    // The whole point: a shared `updates/` let the GUI's staged binary be read
+    // by the TUI's marker and swapped over the TUI's exe, with `isNewer` unable
+    // to notice because the versions genuinely match.
+    try std.testing.expectEqualStrings("tui", Front.tui.dirName());
+    try std.testing.expectEqualStrings("gui", Front.gui.dirName());
+    try std.testing.expect(!std.mem.eql(u8, Front.tui.dirName(), Front.gui.dirName()));
+}
+
+test "assetFor names a per-front-end asset, and nothing where none is published" {
+    // The TUI ships everywhere we build; the GUI is Linux-only, which is what
+    // keeps its updater correctly dormant on macOS/Windows for free.
+    try std.testing.expect(assetFor(.tui) != null);
+    switch (builtin.os.tag) {
+        .linux => {
+            const gui = assetFor(.gui).?;
+            try std.testing.expect(std.mem.startsWith(u8, gui, "boxwallet-gui-linux-"));
+            // Never the same name as the TUI's, or they'd collide in a release.
+            try std.testing.expect(!std.mem.eql(u8, gui, assetFor(.tui).?));
+        },
+        else => try std.testing.expect(assetFor(.gui) == null),
+    }
+}
+
+test "the apply-failure count is scoped to its version" {
+    const allocator = std.testing.allocator;
+
+    var threaded: std.Io.Threaded = .init(allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    const root = "test-update-fails";
+    std.Io.Dir.cwd().deleteTree(io, root) catch {};
+    defer std.Io.Dir.cwd().deleteTree(io, root) catch {};
+
+    var dir = try std.Io.Dir.cwd().createDirPathOpen(io, root, .{});
+    defer dir.close(io);
+
+    // Absent file reads as zero, so a first attempt is never mistaken for a retry.
+    try std.testing.expectEqual(@as(u32, 0), readFailsDir(io, dir, "1.2.3"));
+
+    writeFails(io, dir, "1.2.3", 2);
+    try std.testing.expectEqual(@as(u32, 2), readFailsDir(io, dir, "1.2.3"));
+
+    // A *different* release starts with a clean slate — otherwise one broken
+    // build would permanently wedge the updater against every later one.
+    try std.testing.expectEqual(@as(u32, 0), readFailsDir(io, dir, "1.2.4"));
+
+    // Garbage in the file must read as zero, not as "give up".
+    try dir.writeFile(io, .{ .sub_path = fails_name, .data = "not a count" });
+    try std.testing.expectEqual(@as(u32, 0), readFailsDir(io, dir, "1.2.3"));
+}
+
+test "applyPending stops retrying a version that keeps failing" {
+    const allocator = std.testing.allocator;
+
+    var threaded: std.Io.Threaded = .init(allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    const root = "test-update-giveup";
+    std.Io.Dir.cwd().deleteTree(io, root) catch {};
+    defer std.Io.Dir.cwd().deleteTree(io, root) catch {};
+
+    const stage = root ++ "/" ++ updates_subdir ++ "/tui";
+    var dir = try std.Io.Dir.cwd().createDirPathOpen(io, stage, .{});
+    defer dir.close(io);
+    try dir.writeFile(io, .{ .sub_path = staged_name, .data = "NEW BINARY" });
+    try dir.writeFile(io, .{ .sub_path = marker_name, .data = "99.0.0" });
+    writeFails(io, dir, "99.0.0", max_apply_failures);
+
+    // Out of tries: it must not swap, and must clear the staged files so the
+    // next launch doesn't keep re-reading them.
+    try std.testing.expect(try applyPendingFor(.tui, allocator, io, root, "1.0.0") == null);
+    try std.testing.expectError(error.FileNotFound, dir.access(io, staged_name, .{}));
+    try std.testing.expectError(error.FileNotFound, dir.access(io, marker_name, .{}));
+
+    // The count survives, which is what makes the next check report `gave_up`
+    // instead of cheerfully downloading the same broken release again.
+    try std.testing.expectEqual(max_apply_failures, readFailsDir(io, dir, "99.0.0"));
+}
+
+test "applyPending sweeps the pre-per-front-end staging files" {
+    const allocator = std.testing.allocator;
+
+    var threaded: std.Io.Threaded = .init(allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    const root = "test-update-legacy";
+    std.Io.Dir.cwd().deleteTree(io, root) catch {};
+    defer std.Io.Dir.cwd().deleteTree(io, root) catch {};
+
+    var old = try std.Io.Dir.cwd().createDirPathOpen(io, root ++ "/" ++ updates_subdir, .{});
+    defer old.close(io);
+    try old.writeFile(io, .{ .sub_path = staged_name, .data = "STALE BINARY" });
+    try old.writeFile(io, .{ .sub_path = marker_name, .data = "0.9.0" });
+    // Something we didn't write must be left alone.
+    try old.writeFile(io, .{ .sub_path = "notes.txt", .data = "user's own file" });
+
+    _ = applyPendingFor(.tui, allocator, io, root, "1.0.0") catch null;
+
+    try std.testing.expectError(error.FileNotFound, old.access(io, staged_name, .{}));
+    try std.testing.expectError(error.FileNotFound, old.access(io, marker_name, .{}));
+    try old.access(io, "notes.txt", .{});
 }

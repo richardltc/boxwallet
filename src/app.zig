@@ -4456,6 +4456,9 @@ pub const App = struct {
                         self.logf("{s}: update v{s} downloaded — restart to apply", .{ home_brand_text, self.update_version.slice() });
                 },
                 .up_to_date => self.logf("{s}: up to date (v{s})", .{ home_brand_text, app_version }),
+                // Repeatedly failed to swap this version in, so we've stopped
+                // trying it. Say so — silence here would look like "no update".
+                .gave_up => self.logf("{s}: update v{s} couldn't be applied after several tries — giving up on it (reinstall to update)", .{ home_brand_text, self.update_version.slice() }),
                 // Quiet otherwise: no published binary for this target, or a
                 // best-effort network/verify miss that retries next launch.
                 .unsupported, .network_error, .verify_failed => {},
