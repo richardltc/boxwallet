@@ -248,18 +248,40 @@ ZIG_GLOBAL_CACHE_DIR=zig-pkg zig build gui-release # Linux GUI bundles (x86_64 +
 - **GUI bundles are glibc, not musl.** The prebuilt Slint runtime is
   glibc-linked and needs the system graphics stack (fontconfig, freetype,
   libxkbcommon, libinput, libgbm, libudev, libstdc++), so `gui-release` targets
-  `linux-gnu.2.35` and the bundle is exe + `libslint_cpp.so` + Slint's licences,
-  zipped. The runtime ships **unmodified** (stripping it saves 0.7 MB of a
-  13.7 MB zip, and no stripper handles both arches). The **static-musl TUI stays
+  `linux-gnu.2.35` and the bundle is exe + `slint-<ver>/libslint_cpp.so` +
+  Slint's licences, zipped. The runtime ships **unmodified** (stripping it saves
+  0.7 MB of a 16 MB zip, and no stripper handles both arches). The **static-musl TUI stays
   the answer for old, low-spec, or headless machines** — don't "unify" the two
   release paths.
 - **macOS and Windows GUIs need a native host.** Upstream publishes no Intel
   macOS package and its Darwin build needs the Apple SDK; the Windows package is
   an MSVC-ABI NSIS installer `zig fetch` can't even unpack. Those belong in a CI
   matrix on native runners — don't try to cross them from Linux.
-- **The GUI can't self-update the way the TUI does.** `src/update.zig` swaps a
-  single executable; a GUI bundle is an exe plus a sidecar `.so`. Settle that
-  before publishing GUI assets, since the naming gets baked into the updater.
+- **The Slint runtime lives in a version-named directory, and that is load-bearing.**
+  `slint-<ver>/libslint_cpp.so`, with the exe's RUNPATH pointing at that exact
+  directory (`slint_version` in `build.zig` — keep it in step with the URLs in
+  `build.zig.zon`). It exists so the GUI can self-update: an exe and a runtime
+  from different releases reference *different paths*, so they can never be
+  mistaken for a pair, and installing a new runtime is a create rather than an
+  overwrite. Verified: a runtime under the wrong version name is invisible to the
+  loader, not silently loaded.
+
+  This matters because `boxwallet-gui` is **`BIND_NOW` with 115 undefined Slint
+  symbols, 21 of them data objects**. A mismatched pair fails in `ld.so` *before
+  `main`* — nothing on screen, and none of our code runs to recover. Don't
+  "simplify" this back to a bare `$ORIGIN`.
+
+  Versioning the *directory* rather than the filename is also deliberate:
+  `tools/fixneeded.zig` can only shorten `DT_NEEDED` to a tail of the baked
+  string, so it can't express a versioned filename without string-table surgery.
+- **`gui-release` publishes four things per target**, all covered by `SHA256SUMS`:
+  the bare exe (what the updater fetches when the installed runtime already
+  matches), the `.zip` bundle (when it doesn't), and a `RUNTIME` file naming the
+  Slint version each target needs plus its runtime hash. `RUNTIME` is hashed into
+  `SHA256SUMS` too, so the pairing information carries the same trust as the
+  downloads. Bundles are staged under `gui-release/staging/` and only the
+  publishable files sit at the top level — `sha256sum -c SHA256SUMS` must pass
+  cleanly there.
 
 ## Conventions
 
