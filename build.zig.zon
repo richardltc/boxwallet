@@ -24,6 +24,11 @@
             .url = "https://github.com/slint-ui/slint/releases/download/v1.17.1/slint-compiler-Linux-aarch64.tar.gz",
             .hash = "N-V-__8AAIiuqgCmQ4G3F3VYl7w30H09nJ4snjpCNDccKlCt",
         },
+        .slint_macos_aarch64 = .{
+            .url = "https://github.com/slint-ui/slint/releases/download/v1.17.1/Slint-cpp-1.17.1-Darwin-arm64.tar.gz",
+            .hash = "N-V-__8AAO41FAKGRMRnRg2Iem38xBGatGpaDOlGN16flQlx",
+            .lazy = true,
+        },
     },
     .paths = .{
         "build.zig",

@@ -213,6 +213,7 @@ ZIG_GLOBAL_CACHE_DIR=zig-pkg zig build gui-run     # build + launch the GUI
 ZIG_GLOBAL_CACHE_DIR=zig-pkg zig build gui-release # Linux GUI bundles (x86_64 + aarch64)
 
 ZIG_GLOBAL_CACHE_DIR=zig-pkg zig build release-all  # every asset + ONE SHA256SUMS -> zig-out/dist/
+ZIG_GLOBAL_CACHE_DIR=zig-pkg zig build gui-release-unverified # macOS arm64 bundle (not releasable yet)
 ```
 
 - The ZigZag dependency is vendored under `zig-pkg/`;
@@ -269,10 +270,31 @@ ZIG_GLOBAL_CACHE_DIR=zig-pkg zig build release-all  # every asset + ONE SHA256SU
   0.7 MB of a 16 MB zip, and no stripper handles both arches). The **static-musl TUI stays
   the answer for old, low-spec, or headless machines** — don't "unify" the two
   release paths.
-- **macOS and Windows GUIs need a native host.** Upstream publishes no Intel
-  macOS package and its Darwin build needs the Apple SDK; the Windows package is
-  an MSVC-ABI NSIS installer `zig fetch` can't even unpack. Those belong in a CI
-  matrix on native runners — don't try to cross them from Linux.
+- **macOS arm64 cross-builds from Linux; Windows and Intel macOS don't.**
+  Measured, not assumed:
+  - **macOS aarch64** builds here with no Mac and no Apple SDK. Our code never
+    references a framework, so the dylib's 21 framework dependencies stay its own
+    and dyld resolves them on the target; Zig also ad-hoc code-signs the output,
+    which Apple Silicon requires. `tools/fixneeded.zig` has no Mach-O
+    counterpart to write — the dylib's install name is already
+    `@rpath/libslint_cpp.dylib`, so the linker records that and
+    `@loader_path/slint-<ver>` resolves it, exactly mirroring ELF.
+  - **macOS x86_64 is impossible** short of building Slint from source: upstream
+    publishes no `Slint-cpp-…-Darwin-x86_64` at all, and Rosetta translates
+    x86_64→arm64 on Apple Silicon, not the reverse, so an Intel Mac can't run the
+    arm64 runtime either. Intel Macs get the TUI.
+  - **Windows needs a native host.** The runtime is an MSVC-ABI NSIS installer
+    `zig fetch` can't unpack, and MSVC only runs on Windows.
+- **Building a GUI target is not the same as being allowed to release it.**
+  Nothing on a Linux host can *execute* a Mach-O, so the `--selftest` pre-flight
+  — the thing that catches an exe/runtime mismatch before it fails invisibly
+  inside the loader — can't be run for macOS here. Such targets live in
+  `gui_targets_unverified`, build under `zig build gui-release-unverified` into
+  their own output directory, and are **deliberately absent from `release-all`**,
+  so no release can publish one by accident. `assetFor(.gui)` also returns null
+  for them, so the updater stays dormant rather than chasing an asset that was
+  never published. Move an entry into `gui_targets` (and light up `assetFor`)
+  only once the bundle has actually launched on real hardware.
 - **The Slint runtime lives in a version-named directory, and that is load-bearing.**
   `slint-<ver>/libslint_cpp.so`, with the exe's RUNPATH pointing at that exact
   directory (`slint_version` in `build.zig` — keep it in step with the URLs in
