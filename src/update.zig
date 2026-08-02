@@ -84,9 +84,17 @@ const unpack_subdir = "unpack";
 /// and renamed into place, so the live directory is only ever created whole —
 /// never written into while a process might be mapping the `.so` inside it.
 const runtime_new_suffix = ".bw-new";
-/// The Slint shared object inside a runtime directory, and the GUI executable's
+/// The Slint shared library inside a runtime directory, and the GUI executable's
 /// name inside a bundle. Both are fixed by `gui-release`'s layout.
-const runtime_so_name = "libslint_cpp.so";
+///
+/// Per-OS because the pairing scheme keys off this exact filename: it's what
+/// `RUNTIME` hashes, what sits in `slint-<ver>/`, and what we hash to decide
+/// whether the installed runtime already matches. Must stay in step with
+/// `slintRuntimeName` in `build.zig`.
+const runtime_so_name = switch (builtin.os.tag) {
+    .macos => "libslint_cpp.dylib",
+    else => "libslint_cpp.so",
+};
 const gui_exe_name = "boxwallet-gui";
 /// Consecutive failed swaps of one version before we stop retrying it. A swap
 /// that fails three times is a standing condition (read-only dir, no space),
@@ -160,8 +168,20 @@ pub fn assetFor(comptime front: Front) ?[]const u8 {
             const ext = if (builtin.os.tag == .windows) ".exe" else "";
             break :blk "boxwallet-" ++ os ++ "-" ++ arch ++ ext;
         },
-        // Linux only, and only the two arches with a prebuilt Slint runtime.
-        .gui => if (builtin.os.tag == .linux) "boxwallet-gui-linux-" ++ arch else null,
+        // Only where upstream publishes a Slint runtime we can build against.
+        // Null everywhere else is what keeps the GUI updater dormant rather
+        // than erroring — no asset was ever published for those targets.
+        .gui => switch (builtin.os.tag) {
+            .linux => "boxwallet-gui-linux-" ++ arch,
+            // Apple Silicon only: there is no Intel macOS Slint package at all.
+            // Not yet published — the bundle builds but hasn't been launched on
+            // real hardware, so it's built by `gui-release-unverified` and left
+            // out of `release-all`. Until a release carries it, a check here
+            // finds no asset in SHA256SUMS and reports verify_failed, so this
+            // stays null until the bundle actually ships.
+            .macos => null,
+            else => null,
+        },
     };
 }
 
@@ -314,7 +334,11 @@ pub fn checkAndStageFor(
     notify: ?Notify,
     src: Source,
 ) Check {
-    const asset = comptime assetFor(front) orelse return .{ .status = .unsupported };
+    // Resolved at comptime, but the `orelse` has to stay ordinary control flow:
+    // `comptime <expr> orelse return` puts the return inside the comptime scope,
+    // which fails to compile on exactly the targets where the answer is null.
+    const maybe_asset = comptime assetFor(front);
+    const asset = maybe_asset orelse return .{ .status = .unsupported };
     return checkAndStageInner(gpa, io, install_root, current_version, asset, notify, front, src) catch |err| .{
         .status = switch (err) {
             error.VerifyFailed => .verify_failed,

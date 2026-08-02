@@ -17,6 +17,17 @@ const release_targets = [_]ReleaseTarget{
 
 
 const GuiTarget = struct { query: std.Target.Query, name: []const u8 };
+
+/// GUI targets not yet cleared for release. They build correctly here, but
+/// nothing on this host can *run* a Mach-O, and the whole point of the
+/// `--selftest` pre-flight is that an exe/runtime mismatch fails inside the
+/// loader before `main` — invisibly. So these are built by their own step and
+/// deliberately left out of `release-all`, which means no release can publish
+/// one by accident. Move an entry into `gui_targets` once it has launched on
+/// real hardware.
+const gui_targets_unverified = [_]GuiTarget{
+    .{ .query = .{ .cpu_arch = .aarch64, .os_tag = .macos }, .name = "boxwallet-gui-macos-aarch64" },
+};
 const gui_targets = [_]GuiTarget{
     // glibc, not musl: the Slint runtime is a glibc binary, so the exe beside
     // it must be too. Each glibc floor is upstream's, read off its `.so` with
@@ -78,8 +89,22 @@ pub fn build(b: *std.Build) void {
     // `gui-release` (and with it `release-all`) undefined as a step rather than
     // merely unbuildable — "no such step" for a reason that has nothing to do
     // with the targets it cross-builds.
-    const gui_release_step = addGuiReleaseStep(b, optimize);
+    const gui_release_step = addGuiReleaseStep(b, optimize, .{
+        .step_name = "gui-release",
+        .desc = "Bundle the Linux GUIs (exe + Slint runtime) into zips",
+        .out_dir = "gui-release",
+        .targets = &gui_targets,
+    });
     addReleaseAllStep(b, release_step, gui_release_step);
+
+    // Built, but not releasable: see `gui_targets_unverified`. Its own step and
+    // its own output directory, and deliberately not wired into `release-all`.
+    _ = addGuiReleaseStep(b, optimize, .{
+        .step_name = "gui-release-unverified",
+        .desc = "Bundle GUI targets that have not yet been launched on real hardware",
+        .out_dir = "gui-release-unverified",
+        .targets = &gui_targets_unverified,
+    });
 }
 
 /// `zig build gui` builds the optional Slint GUI front-end (proof-of-concept).
@@ -153,11 +178,46 @@ pub const slint_version = "1.17.1";
 pub const slint_dir = "slint-" ++ slint_version;
 
 fn slintDepName(t: std.Target) ?[]const u8 {
-    if (t.os.tag != .linux) return null;
-    return switch (t.cpu.arch) {
-        .x86_64 => "slint_linux_x86_64",
-        .aarch64 => "slint_linux_aarch64",
+    return switch (t.os.tag) {
+        .linux => switch (t.cpu.arch) {
+            .x86_64 => "slint_linux_x86_64",
+            .aarch64 => "slint_linux_aarch64",
+            else => null,
+        },
+        // Apple Silicon only. Upstream publishes no Intel macOS package at all
+        // (no `Slint-cpp-…-Darwin-x86_64`, no `slint-compiler-Darwin-x86_64`),
+        // and Rosetta can't help — it translates x86_64 to arm64 on Apple
+        // Silicon, not the reverse, so an Intel Mac can't run the arm64 runtime.
+        // Intel Macs get the TUI. Building this from Linux needs no Mac and no
+        // Apple SDK: our code never touches a framework, so the dylib's 21
+        // framework dependencies stay its own and are resolved by dyld on the
+        // target machine.
+        .macos => switch (t.cpu.arch) {
+            .aarch64 => "slint_macos_aarch64",
+            else => null,
+        },
         else => null,
+    };
+}
+
+/// The Slint runtime's filename for `t`. Named per-OS because the whole
+/// pairing scheme keys off this file: it's what gets hashed into `RUNTIME`,
+/// what lands in `slint-<ver>/`, and what `src/update.zig` looks for when
+/// deciding whether it can fetch the bare exe.
+fn slintRuntimeName(os: std.Target.Os.Tag) []const u8 {
+    return switch (os) {
+        .macos => "libslint_cpp.dylib",
+        else => "libslint_cpp.so",
+    };
+}
+
+/// The loader's "directory containing me" token for `t`. ELF spells it
+/// `$ORIGIN`, Mach-O `@loader_path`; both take the same version-scoped
+/// subdirectory after it, so the self-update design carries over unchanged.
+fn originToken(os: std.Target.Os.Tag) []const u8 {
+    return switch (os) {
+        .macos => "@loader_path",
+        else => "$ORIGIN",
     };
 }
 
@@ -261,14 +321,18 @@ fn buildGuiExe(
     exe_mod.addIncludePath(b.path("include")); // boxwallet.h
     exe_mod.addIncludePath(slint_inc_dir); // <slint.h> and its "private/…" tree
     exe_mod.linkLibrary(core);
-    exe_mod.addObjectFile(slint_lib_dir.path(b, "libslint_cpp.so"));
+    exe_mod.addObjectFile(slint_lib_dir.path(b, slintRuntimeName(target.result.os.tag)));
     switch (rpath) {
         .package_dir => exe_mod.addRPath(slint_lib_dir),
-        // Not a bare `$ORIGIN`: the runtime lives in a version-scoped
+        // Not a bare origin token: the runtime lives in a version-scoped
         // subdirectory so a new exe and an old one resolve *different* files.
         // That is what makes the self-updater's two-file problem a one-file
         // problem — see `slint_version`.
-        .origin => exe_mod.addRPathSpecial("$ORIGIN/" ++ slint_dir),
+        //
+        // Mach-O needs this as much as ELF does, and more visibly: the dylib's
+        // install name is `@rpath/libslint_cpp.dylib`, so without an `LC_RPATH`
+        // dyld has nothing to resolve it against and the binary won't launch.
+        .origin => exe_mod.addRPathSpecial(b.fmt("{s}/{s}", .{ originToken(target.result.os.tag), slint_dir })),
     }
 
     return b.addExecutable(.{ .name = "boxwallet-gui", .root_module = exe_mod });
@@ -287,9 +351,19 @@ fn buildGuiExe(
 ///
 /// macOS and Windows bundles need a native host — see `slintDepName` — so they
 /// belong in a CI matrix rather than here. `zip`/`strip` are host tools.
-fn addGuiReleaseStep(b: *std.Build, optimize: std.builtin.OptimizeMode) *std.Build.Step {
+fn addGuiReleaseStep(
+    b: *std.Build,
+    optimize: std.builtin.OptimizeMode,
+    comptime opts: struct {
+        step_name: []const u8,
+        desc: []const u8,
+        /// Output directory under `zig-out/`, and the prefix for staging.
+        out_dir: []const u8,
+        targets: []const GuiTarget,
+    },
+) *std.Build.Step {
     _ = optimize; // release bundles are always ReleaseSafe, like the TUI's
-    const step = b.step("gui-release", "Bundle the Linux GUIs (exe + Slint runtime) into zips");
+    const step = b.step(opts.step_name, opts.desc);
 
     // Rewrites an exe's DT_NEEDED for libslint_cpp.so to the bare basename so the
     // `$ORIGIN` rpath resolves it from beside the exe on another machine (the
@@ -311,21 +385,33 @@ fn addGuiReleaseStep(b: *std.Build, optimize: std.builtin.OptimizeMode) *std.Bui
     // bundle directory would otherwise want the same name.
     var sum_cmds: []const u8 = "";
     var hash_names: []const u8 = "";
-    var packs: [gui_targets.len]?*std.Build.Step = @splat(null);
+    var packs: [opts.targets.len]?*std.Build.Step = @splat(null);
 
-    inline for (gui_targets, 0..) |t, ti| {
+    inline for (opts.targets, 0..) |t, ti| {
         const resolved = b.resolveTargetQuery(t.query);
         // Skipped rather than failed while a lazy package is still being fetched
         // (and on a host with no slint-compiler), so the step re-runs complete.
         if (buildGuiExe(b, resolved, .ReleaseSafe, .origin)) |exe| {
             const dep = b.lazyDependency(slintDepName(resolved.result).?, .{}).?;
-            const stage = "gui-release/staging/" ++ t.name;
+            const stage = opts.out_dir ++ "/staging/" ++ t.name;
 
             // exe → staging/<bundle>/boxwallet-gui
             const inst_exe = b.addInstallFile(exe.getEmittedBin(), stage ++ "/boxwallet-gui");
-            const fix = b.addRunArtifact(fixer);
-            fix.addArg(b.getInstallPath(.prefix, stage ++ "/boxwallet-gui"));
-            fix.step.dependOn(&inst_exe.step);
+
+            // ELF only. `addObjectFile` bakes the fetched package's absolute
+            // path into DT_NEEDED (the `.so` has no SONAME), so it has to be cut
+            // back to a bare basename for the rpath to find it on another
+            // machine. Mach-O needs no such fix: the dylib carries its own
+            // install name, `@rpath/libslint_cpp.dylib`, and that is what the
+            // linker records — verified on a cross-built binary.
+            const ready: *std.Build.Step = if (resolved.result.os.tag == .macos) blk: {
+                break :blk &inst_exe.step;
+            } else blk: {
+                const fix = b.addRunArtifact(fixer);
+                fix.addArg(b.getInstallPath(.prefix, stage ++ "/boxwallet-gui"));
+                fix.step.dependOn(&inst_exe.step);
+                break :blk &fix.step;
+            };
 
             // The Slint runtime, shipped exactly as upstream published it, in a
             // directory named for its version — see `slint_version` for why the
@@ -337,9 +423,10 @@ fn addGuiReleaseStep(b: *std.Build, optimize: std.builtin.OptimizeMode) *std.Bui
             // objcopy --strip-debug` reports "unimplemented" for a shared object.
             // Not worth a hand-rolled ELF rewriter, and an untouched binary still
             // matches upstream's own checksum.
+            const so_name = comptime slintRuntimeName(t.query.os_tag.?);
             const inst_so = b.addInstallFile(
-                dep.path("lib/libslint_cpp.so"),
-                stage ++ "/" ++ slint_dir ++ "/libslint_cpp.so",
+                dep.path("lib/" ++ so_name),
+                stage ++ "/" ++ slint_dir ++ "/" ++ so_name,
             );
 
             // Slint's licence + third-party notices travel with the binary we
@@ -358,9 +445,9 @@ fn addGuiReleaseStep(b: *std.Build, optimize: std.builtin.OptimizeMode) *std.Bui
                     .{t.name},
                 ),
                 "pack-gui",
-                b.getInstallPath(.prefix, "gui-release"),
+                b.getInstallPath(.prefix, opts.out_dir),
             });
-            pack.step.dependOn(&fix.step);
+            pack.step.dependOn(ready);
             pack.step.dependOn(&inst_so.step);
             pack.step.dependOn(&inst_lic.step);
             pack.step.dependOn(&inst_third.step);
@@ -380,8 +467,8 @@ fn addGuiReleaseStep(b: *std.Build, optimize: std.builtin.OptimizeMode) *std.Bui
             // a missing file and a release look corrupt. RUNTIME *is* listed in
             // SHA256SUMS, so it's verified like everything else.
             sum_cmds = b.fmt(
-                "{0s} && printf '%s  {2s}  ' {1s} >> RUNTIME && (cd staging/{1s}/{2s} && sha256sum libslint_cpp.so | cut -d' ' -f1) >> RUNTIME",
-                .{ sum_cmds, t.name, slint_dir },
+                "{0s} && printf '%s  {2s}  ' {1s} >> RUNTIME && (cd staging/{1s}/{2s} && sha256sum {3s} | cut -d' ' -f1) >> RUNTIME",
+                .{ sum_cmds, t.name, slint_dir, so_name },
             );
             hash_names = b.fmt("{s} {1s} {1s}.zip", .{ hash_names, t.name });
         }
@@ -397,7 +484,7 @@ fn addGuiReleaseStep(b: *std.Build, optimize: std.builtin.OptimizeMode) *std.Bui
             "sh", "-c",
             b.fmt("cd \"$1\" && rm -f SHA256SUMS RUNTIME{s} && sha256sum{s} RUNTIME > SHA256SUMS", .{ sum_cmds, hash_names }),
             "sums-gui",
-            b.getInstallPath(.prefix, "gui-release"),
+            b.getInstallPath(.prefix, opts.out_dir),
         });
         for (packs) |p| if (p) |ps| sums.step.dependOn(ps);
         step.dependOn(&sums.step);
