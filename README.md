@@ -55,7 +55,7 @@ actions unlock automatically the moment the chain reaches it.
 ## Install
 
 Download the latest binary for your platform from the
-[Releases](https://codeberg.org/richardltc/BoxWallet/releases) page and run it —
+[Releases](https://github.com/richardltc/boxwallet/releases) page and run it —
 no install step needed.
 
 | Platform | File |
@@ -105,8 +105,8 @@ regular user), the swap can't happen; the Home pane explains why.
 Requires [Zig 0.16](https://ziglang.org/download/).
 
 ```sh
-git clone https://codeberg.org/richardltc/BoxWallet.git
-cd BoxWallet
+git clone https://github.com/richardltc/boxwallet.git
+cd boxwallet
 ZIG_GLOBAL_CACHE_DIR=zig-pkg zig build run     # launch the TUI
 ZIG_GLOBAL_CACHE_DIR=zig-pkg zig build test    # run offline unit tests
 ZIG_GLOBAL_CACHE_DIR=zig-pkg zig build release # cross-compile all release binaries
@@ -115,3 +115,10 @@ ZIG_GLOBAL_CACHE_DIR=zig-pkg zig build release # cross-compile all release binar
 `ZIG_GLOBAL_CACHE_DIR=zig-pkg` points the build at the vendored
 [ZigZag](https://github.com/meszmate/zigzag) dependency for a fully offline,
 reproducible build.
+
+## The original Go version
+
+BoxWallet started life as a Go CLI. That version still works, and its complete
+source and history live on the [`master`](https://github.com/richardltc/boxwallet/tree/master)
+branch of this repository, untouched — along with all of its releases. This
+branch (`main`) is the Zig rewrite, which is where development continues.

@@ -26,8 +26,11 @@ const std = @import("std");
 const builtin = @import("builtin");
 const install = @import("install.zig");
 
-/// The Codeberg repo BoxWallet releases come from.
-const repo = "richardltc/BoxWallet";
+/// The GitHub repo BoxWallet releases come from. Lower-case: that is the
+/// canonical name, and the repo also holds the archived Go version's history and
+/// its ~100 old releases (whose asset names deliberately share nothing with
+/// ours, so a stray old release can only ever fail `parseChecksum`).
+const repo = "richardltc/boxwallet";
 
 /// Where releases are fetched from. A struct rather than two constants purely so
 /// tests can point it at a local `std.http.Server`: without this seam none of the
@@ -36,15 +39,27 @@ const repo = "richardltc/BoxWallet";
 ///
 /// Callers should pass `Source.default`. Nothing in the app overrides it.
 pub const Source = struct {
-    /// Latest-release metadata endpoint (Forgejo API; returns JSON carrying
-    /// `tag_name`).
+    /// Latest-release metadata endpoint, returning JSON carrying `tag_name`.
+    /// GitHub's REST API and Forgejo's agree on that field and on returning a
+    /// single release object here, which is why `parseTagName` needed no change
+    /// when this moved hosts.
+    ///
+    /// Unauthenticated, so GitHub rate-limits it to 60 requests per hour per IP.
+    /// A launch-time check is nowhere near that, but a shared NAT could be: a
+    /// limit hit comes back non-200 and lands in `network_error`, which is
+    /// deliberately quiet and retries on the next launch. That is the behaviour
+    /// we want — just not obvious from the call site.
     latest_release_url: []const u8,
     /// Base for a release's downloadable assets: `<base>/<tag>/<asset>`.
+    ///
+    /// GitHub 302s these to `release-assets.githubusercontent.com` rather than
+    /// serving them directly. Both `fetchText` and `install.downloadFile` pass a
+    /// redirect buffer to `receiveHead`, so the chain is followed for us.
     download_base: []const u8,
 
     pub const default: Source = .{
-        .latest_release_url = "https://codeberg.org/api/v1/repos/" ++ repo ++ "/releases/latest",
-        .download_base = "https://codeberg.org/" ++ repo ++ "/releases/download",
+        .latest_release_url = "https://api.github.com/repos/" ++ repo ++ "/releases/latest",
+        .download_base = "https://github.com/" ++ repo ++ "/releases/download",
     };
 };
 /// The checksums asset published alongside the per-platform binaries, in the
@@ -56,7 +71,7 @@ const sums_name = "SHA256SUMS";
 /// carries the same trust as the downloads — see `Runtime`.
 const runtime_name = "RUNTIME";
 /// Sent as User-Agent — some servers reject requests without one.
-const user_agent = "BoxWallet (https://codeberg.org/" ++ repo ++ ")";
+const user_agent = "BoxWallet (https://github.com/" ++ repo ++ ")";
 
 /// Where staged updates live, relative to the install root (`~/.boxwallet`).
 /// Each front-end gets its own subdirectory beneath this — see `Front.dirName`.
@@ -1076,8 +1091,14 @@ test "stripV drops a leading v" {
 }
 
 test "parseTagName pulls tag_name out of release JSON" {
+    // Shaped like GitHub's `/releases/latest`, which puts several URL fields and
+    // an `author` object ahead of `tag_name` — so this also exercises the fact
+    // that the scan takes the first `tag_name` and nothing earlier confuses it.
     const json =
-        \\{"url":"https://codeberg.org/api/v1/...","tag_name": "v0.1.2","name":"Release"}
+        \\{"url":"https://api.github.com/repos/richardltc/boxwallet/releases/1",
+        \\"html_url":"https://github.com/richardltc/boxwallet/releases/tag/v0.1.2",
+        \\"author":{"login":"richardltc","id":1},
+        \\"tag_name": "v0.1.2","name":"Release","draft":false,"prerelease":false}
     ;
     try std.testing.expectEqualStrings("v0.1.2", parseTagName(json).?);
     try std.testing.expect(parseTagName("{\"name\":\"no tag here\"}") == null);
