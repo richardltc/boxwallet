@@ -230,7 +230,8 @@ ZIG_GLOBAL_CACHE_DIR=zig-pkg zig build gui-release-unverified # macOS arm64 bund
   and `bw_self_update_apply`, background checks in `app.zig` and `gui/main.cpp`).
 
   **To cut a release: bump `app_version` in `src/version.zig`, run `zig build
-  release-all`, and upload the 11 files in `zig-out/dist/`.** Use that step, not
+  release-all`, and upload the 11 files in `zig-out/dist/`** to a GitHub release
+  on `github.com/richardltc/boxwallet`. Use that step, not
   the two underneath it — both write a file called `SHA256SUMS`, and *both*
   updaters fetch `<tag>/SHA256SUMS`. A release carries one file of that name, so
   publishing either manifest alone leaves the other front-end unable to find its
@@ -320,6 +321,22 @@ ZIG_GLOBAL_CACHE_DIR=zig-pkg zig build gui-release-unverified # macOS arm64 bund
   downloads. Bundles are staged under `gui-release/staging/` and only the
   publishable files sit at the top level — `sha256sum -c SHA256SUMS` must pass
   cleanly there.
+- **Releases live on GitHub, and that is not just a preference.** BoxWallet was
+  hosted on Codeberg until 2026-08; their Terms of Use § 2 (1) 6 explicitly list
+  "cryptocurrency related projects" among content they do not tolerate, with
+  § 2 (2) providing for removal and account suspension. Since `update.zig` bakes
+  the release host into every shipped binary, a takedown would have silently
+  stopped updates for every install (`network_error` is deliberately quiet).
+  Don't move release hosting back, and don't add a host without checking its
+  terms permit this project.
+
+  The repo also carries the **archived Go version** on `master` — 1152 commits
+  and ~100 releases, left byte-for-byte alone. `main` is the Zig rewrite. Old
+  release assets are all `boxwallet_<ver>_<os>_<arch>.tar.gz` and share no name
+  with ours, so an old release surfacing as "latest" can only ever fail
+  `parseChecksum` rather than install a Go binary — one of the two reasons the
+  version series didn't need renumbering (the other: GitHub picks "latest" by
+  publish date, and every Zig release postdates every Go one).
 - **The GUI self-updates too, and the two front-ends must not collide.** Each
   stages into `~/.boxwallet/updates/<front>/` (`update.Front`). They share one
   install root, and a shared `boxwallet.staged` meant the GUI could stage its
