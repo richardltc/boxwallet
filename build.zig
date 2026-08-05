@@ -145,6 +145,36 @@ fn addGuiStep(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.bui
     const gui_run_step = b.step("gui-run", "Build and run the Slint GUI");
     gui_run_step.dependOn(&run_cmd.step);
 
+    // `zig build gui-install-desktop`: register the dev build with the desktop,
+    // so the panel shows the BoxWallet logo instead of a generic placeholder.
+    //
+    // Needed because Wayland gives an application no way to set its own window
+    // icon — `Window.icon` in app.slint reaches `winit::Window::set_window_icon`,
+    // which is an X11-only path. The compositor instead matches the window's
+    // app_id against an installed desktop entry, so one has to exist. See
+    // gui/boxwallet.desktop.
+    //
+    // The same shell script ships in the release bundle, so end users and this
+    // build step take the identical code path; it derives the executable path
+    // from its own location, which is why it's pointed at zig-out/bin here.
+    const desktop_step = b.step("gui-install-desktop", "Install a desktop entry + icon so the panel shows the logo");
+    // The script locates everything relative to *itself* (`dirname $0`), so it
+    // has to run from a directory laid out like the bundle: the exe, the entry
+    // template and `icons/` all beside it. zig-out/bin already holds the exe,
+    // so stage the other three there and run that copy — no second layout for
+    // the script to know about.
+    const stage_entry = b.addInstallFile(b.path("gui/boxwallet.desktop"), "bin/boxwallet.desktop");
+    const stage_icon = b.addInstallFile(b.path("gui/icons/boxwallet.png"), "bin/icons/boxwallet.png");
+    const stage_script = b.addInstallFile(b.path("gui/install-desktop.sh"), "bin/install-desktop.sh");
+    const install_desktop = b.addSystemCommand(&.{
+        "sh",
+        b.getInstallPath(.bin, "install-desktop.sh"),
+    });
+    install_desktop.step.dependOn(&install_exe.step);
+    install_desktop.step.dependOn(&stage_entry.step);
+    install_desktop.step.dependOn(&stage_icon.step);
+    install_desktop.step.dependOn(&stage_script.step);
+    desktop_step.dependOn(&install_desktop.step);
 }
 
 /// The `build.zig.zon` dependency holding upstream's prebuilt Slint C++ package
@@ -434,6 +464,20 @@ fn addGuiReleaseStep(
             const inst_lic = b.addInstallFile(dep.path("licenses/LICENSE.md"), stage ++ "/SLINT-LICENSE.md");
             const inst_third = b.addInstallFile(dep.path("licenses/THIRDPARTY.md"), stage ++ "/SLINT-THIRDPARTY.md");
 
+            // Desktop integration, so the panel and app launcher show the
+            // BoxWallet logo rather than a generic placeholder. On Wayland an
+            // app can't set its own window icon, so the compositor matches the
+            // window's app_id against an installed desktop entry — there has to
+            // be one. Optional to *run* BoxWallet, which is why it's a script
+            // the user chooses to run rather than something we do behind their
+            // back on first launch.
+            //
+            // These sit inside the zip, so SHA256SUMS needs no new lines: the
+            // bundle's existing hash covers them.
+            const inst_desktop = b.addInstallFile(b.path("gui/boxwallet.desktop"), stage ++ "/boxwallet.desktop");
+            const inst_appicon = b.addInstallFile(b.path("gui/icons/boxwallet.png"), stage ++ "/icons/boxwallet.png");
+            const inst_dscript = b.addInstallFile(b.path("gui/install-desktop.sh"), stage ++ "/install-desktop.sh");
+
             // Zip the bundle from staging into gui-release/, and drop a copy of
             // the bare exe beside it. Both are published: the updater fetches the
             // 4.8 MB exe alone when the installed runtime already matches, and
@@ -441,7 +485,11 @@ fn addGuiReleaseStep(
             const pack = b.addSystemCommand(&.{
                 "sh", "-c",
                 b.fmt(
-                    "cd \"$1\" && rm -f {0s}.zip {0s} && (cd staging && zip -r -q ../{0s}.zip {0s}) && cp staging/{0s}/boxwallet-gui {0s}",
+                    // chmod before zipping: `addInstallFile` drops the execute
+                    // bit, and zip stores whatever mode it finds — so without
+                    // this the installer arrives non-executable and has to be
+                    // run as `sh install-desktop.sh`.
+                    "cd \"$1\" && chmod +x staging/{0s}/install-desktop.sh && rm -f {0s}.zip {0s} && (cd staging && zip -r -q ../{0s}.zip {0s}) && cp staging/{0s}/boxwallet-gui {0s}",
                     .{t.name},
                 ),
                 "pack-gui",
@@ -451,6 +499,9 @@ fn addGuiReleaseStep(
             pack.step.dependOn(&inst_so.step);
             pack.step.dependOn(&inst_lic.step);
             pack.step.dependOn(&inst_third.step);
+            pack.step.dependOn(&inst_desktop.step);
+            pack.step.dependOn(&inst_appicon.step);
+            pack.step.dependOn(&inst_dscript.step);
             step.dependOn(&pack.step);
             packs[ti] = &pack.step;
 

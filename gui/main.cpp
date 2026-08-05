@@ -767,6 +767,14 @@ int main(int argc, char **argv)
     // anything maps a Slint symbol.
     bw_self_update_apply(home_dir());
 
+    // This string is also how the desktop finds our icon, and it must stay in
+    // step with the basename of gui/boxwallet.desktop. Wayland gives an app no
+    // way to set its own window icon — `Window.icon` in app.slint reaches
+    // winit's `set_window_icon`, which only has an X11 implementation — so the
+    // compositor matches this app_id against an installed desktop entry and
+    // reads the icon from there. Change one name without the other and the
+    // panel silently falls back to a generic icon.
+    //
     // Give the window a stable Wayland app_id before it's shown. Without one,
     // some compositors (e.g. COSMIC) can't match a taskbar left-click back to the
     // window, so a minimized window won't restore on click (right-click → name
