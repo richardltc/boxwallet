@@ -116,6 +116,25 @@ ZIG_GLOBAL_CACHE_DIR=zig-pkg zig build release # cross-compile all release binar
 [ZigZag](https://github.com/meszmate/zigzag) dependency for a fully offline,
 reproducible build.
 
+## Desktop integration (Linux GUI)
+
+The GUI bundle ships a `.desktop` entry and app icon. Run this once, from the
+folder you extracted it into, to get the BoxWallet logo in your panel and an
+entry in your applications menu:
+
+```sh
+./install-desktop.sh
+```
+
+It writes only to `~/.local/share` — no root. Re-run it if you move the folder,
+so the launcher keeps pointing at the right place.
+
+This is needed because Wayland gives an application no way to set its own window
+icon: the compositor looks it up by matching the window against an installed
+desktop entry, so one has to exist. Without it you get a generic placeholder.
+Building from source? `zig build gui-install-desktop` does the same for the
+binary in `zig-out/bin`.
+
 ## The original Go version
 
 BoxWallet started life as a Go CLI. That version still works, and its complete

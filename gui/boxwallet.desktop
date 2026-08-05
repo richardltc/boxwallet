@@ -1,0 +1,29 @@
+[Desktop Entry]
+# This file's basename is load-bearing. On Wayland an application cannot set its
+# own window icon (winit's Wayland backend has no icon path, and the runtime
+# carries no xdg_toplevel_icon support), so the compositor finds the icon by
+# matching the window's app_id against a desktop entry of the same name.
+#
+# `boxwallet.desktop` therefore has to match the `slint::set_xdg_app_id("boxwallet")`
+# call in gui/main.cpp. Rename one without the other and the panel silently falls
+# back to a generic icon — which is exactly the bug this file fixes.
+Type=Application
+Name=BoxWallet
+GenericName=Cryptocurrency Wallet Manager
+Comment=Install, start, and monitor coin daemons from one window
+# Substituted at install time with the absolute path of the executable. The
+# bundle is a zip the user extracts wherever they like, so this is not knowable
+# until then — see install-desktop.sh.
+Exec=@EXEC@
+# Resolved through the icon theme: ~/.local/share/icons/hicolor/256x256/apps/boxwallet.png
+Icon=boxwallet
+Terminal=false
+# Exactly one *main* category (Office) plus additional ones. Listing a second
+# main category (Network) makes desktop-file-validate warn that the app may show
+# up twice in the menu, which it does.
+Categories=Office;Finance;
+Keywords=crypto;cryptocurrency;wallet;bitcoin;monero;daemon;node;
+# Redundant on Wayland (app_id does the matching there), but makes the same file
+# correct under X11, where the class is what a taskbar matches on.
+StartupWMClass=boxwallet
+StartupNotify=true
