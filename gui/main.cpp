@@ -255,7 +255,22 @@ static std::string group_int(int64_t n)
     return neg ? "-" + s : s;
 }
 
-// Bytes -> "12.3 GB".
+// A chain's on-disk size, from the core ("12.34 GB", SI units).
+//
+// Not humanize_bytes below: that one scales in *binary* units, so the same data
+// directory read "11.5 GB" in the GUI and "12.34 GB" in the TUI. Storage text
+// comes from the core's timefmt.storageGB, which is what the TUI has always
+// used, so one chain now gets one number. humanize_bytes stays for download
+// progress, where auto-scaling down to KB/MB is what you want.
+static std::string fmt_storage(uint64_t bytes)
+{
+    char buf[48];
+    size_t n = bw_format_storage(bytes, buf, sizeof buf);
+    return std::string(buf, n);
+}
+
+// Bytes -> "12.3 GB", binary units, auto-scaling. Download/transfer progress
+// only — see fmt_storage for anything the TUI also displays.
 static std::string humanize_bytes(uint64_t b)
 {
     static const char *unit[] = {"B", "KB", "MB", "GB", "TB", "PB"};
@@ -628,7 +643,6 @@ static void apply_coin_metadata(const AppWindow *ui, bw_ctx *ctx, int idx)
     ui->set_headers_str(slint::SharedString(""));
     ui->set_blocks_str(slint::SharedString(""));
     ui->set_disk_free(slint::SharedString(""));
-    ui->set_storage_frac(0);
     ui->set_storage_size(slint::SharedString(""));
     ui->set_price_usd(slint::SharedString(""));
     // DigiDollar metadata + a clean slate; the tab only appears for a coin that
@@ -2562,14 +2576,11 @@ int main(int argc, char **argv)
                 (*h)->set_holding_value(slint::SharedString(holding_value));
                 (*h)->set_mem_frac(mem_frac);
                 (*h)->set_mem_used(slint::SharedString(mem_used_str));
-                // Shown as a share of the volume, so it reads against the disk
-                // gauge beside it rather than as a bare number.
-                (*h)->set_storage_frac(du.total_bytes > 0
-                    ? static_cast<float>(static_cast<double>(storage_now) /
-                                         static_cast<double>(du.total_bytes))
-                    : 0.0f);
-                (*h)->set_storage_size(slint::SharedString(
-                    storage_now > 0 ? humanize_bytes(storage_now) : std::string("")));
+                // Formatted by the core, not by humanize_bytes: that one uses
+                // binary units, so the same chain read "11.5 GB" here and
+                // "12.34 GB" in the TUI. bw_format_storage is the TUI's own
+                // formatter, so the two now agree.
+                (*h)->set_storage_size(slint::SharedString(fmt_storage(storage_now)));
                 // Skipped while busy: wallet_sec is BW_WSEC_UNKNOWN there and
                 // publishing it would grey the padlock every time the node
                 // stalls, which is the flicker this whole branch exists to stop.

@@ -473,6 +473,19 @@ export fn bw_format_duration(secs: i64, buf: ?[*]u8, cap: usize) usize {
     return copyOut(b[0..cap], timefmt.duration(&tmp, secs));
 }
 
+/// Format a byte count as storage ("12.34 GB", SI units), for the figure showing
+/// what a coin's data directory occupies.
+///
+/// Shares `timefmt.storageGB` with the TUI on purpose. The GUI used to format
+/// this itself in binary units, so the same chain read "11.5 GB" here and
+/// "12.34 GB" there — two front-ends disagreeing about one number. Cheap;
+/// UI-thread safe.
+export fn bw_format_storage(bytes: u64, buf: ?[*]u8, cap: usize) usize {
+    const b = buf orelse return 0;
+    var tmp: [48]u8 = undefined;
+    return copyOut(b[0..cap], timefmt.storageGB(&tmp, bytes));
+}
+
 /// Drop trailing zeros (and a bare decimal point) from a figure produced by
 /// `bw_format_amount`: "498.00000000" → "498", "2.50000000" → "2.5". For a
 /// transaction *list*, where a column of full-precision figures is noise.
@@ -4937,4 +4950,21 @@ test "bw_wallet_balance gates a managed wallet on open, an in-daemon one on noth
     // And the managed-wallet spelling refuses an in-daemon coin outright, so the
     // two can't be confused for one another.
     try std.testing.expectEqual(@as(c_int, -1), bw_ext_wallet_balance(&ctx, in_daemon, &out));
+}
+
+test "bw_format_storage matches the TUI's own storage figure" {
+    // The GUI used to format this itself in binary units, so one data directory
+    // read "11.5 GB" there and "12.34 GB" in the TUI. Both now go through
+    // timefmt.storageGB, and this asserts the C ABI really does hand back that
+    // string rather than something merely similar.
+    var buf: [48]u8 = undefined;
+    var want: [48]u8 = undefined;
+
+    for ([_]u64{ 0, 1000 * 1000 * 1000, 1024 * 1024 * 1024, 523_450_000_000 }) |bytes| {
+        const n = bw_format_storage(bytes, &buf, buf.len);
+        try std.testing.expectEqualStrings(timefmt.storageGB(&want, bytes), buf[0..n]);
+    }
+
+    // A null buffer is a no-op rather than a crash, like every other bw_format_*.
+    try std.testing.expectEqual(@as(usize, 0), bw_format_storage(1, null, 0));
 }

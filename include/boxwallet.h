@@ -118,6 +118,10 @@ int64_t bw_parse_dollars_to_cents(const char *text);
 size_t  bw_format_cents(int64_t cents, char *buf, size_t cap);
 size_t  bw_format_micro_usd(uint64_t micro, char *buf, size_t cap);
 size_t  bw_format_duration(int64_t secs, char *buf, size_t cap);
+/* Byte count as storage, "12.34 GB" in SI units. Use this rather than formatting
+ * bytes locally: it's the same timefmt.storageGB the TUI uses, so both
+ * front-ends report one number for one chain. */
+size_t  bw_format_storage(uint64_t bytes, char *buf, size_t cap);
 
 /* ---- application identity (no ctx needed) -----------------------------------
  * BoxWallet's own name, version and brand colour. The version has no "v" prefix
