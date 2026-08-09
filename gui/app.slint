@@ -780,7 +780,8 @@ export component AppWindow inherits Window {
     // different questions from `disk-frac`, which is the volume's fill level.
     in property <float> mem-frac: 0;
     in property <string> mem-used: "";
-    in property <float> storage-frac: 0;
+    // The chain's on-disk size, already formatted by the core (bw_format_storage,
+    // shared with the TUI). Shown as a figure, so there's no fraction to carry.
     in property <string> storage-size: "";
     // The coin's donation address, for the Settings tab.
     in property <string> tip-address: "";
@@ -1588,20 +1589,37 @@ export component AppWindow inherits Window {
                                 fill: root.coin-color;
                                 value: root.disk-free;
                             }
-                            // What this coin costs on disk, as a share of the
-                            // volume — distinct from "Disk used", which is the
-                            // whole filesystem including everything else.
-                            if root.storage-size != "": CircleGauge {
-                                label: "Chain size";
-                                frac: root.storage-frac;
-                                fill: root.coin-color;
-                                value: root.storage-size;
-                            }
                             CircleGauge {
                                 label: "Memory";
                                 frac: root.mem-frac;
                                 fill: root.coin-color;
                                 value: root.mem-used;
+                            }
+                        }
+                        // What this coin's chain occupies on disk. A plain figure
+                        // rather than a gauge: a gauge needs a meaningful "full",
+                        // and the only one available was the chain as a share of
+                        // the whole volume — which reads as a fill level it isn't,
+                        // and sat next to "Disk used", which really is one. The
+                        // number is the answer here, so show the number. Matches
+                        // the TUI, which has always shown this as a figure.
+                        if root.storage-size != "": HorizontalBox {
+                            padding: 0;
+                            spacing: 6px;
+                            alignment: start;
+                            Text {
+                                text: "Blockchain size:";
+                                color: #9a9a9a;
+                                font-size: 13px;
+                                vertical-alignment: center;
+                            }
+                            Text {
+                                text: root.storage-size;
+                                color: #d0d0d0;
+                                font-size: 13px;
+                                font-weight: 700;
+                                font-family: "DejaVu Sans Mono";
+                                vertical-alignment: center;
                             }
                         }
                         // Status line — the latest info/action message (like the TUI).
