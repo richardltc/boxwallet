@@ -512,7 +512,10 @@ export component AppWindow inherits Window {
     property <[image]> coin-logos: [
         @image-url("coin-logos/nexa.png"), // 0
         @image-url("coin-logos/divi.png"), // 1
-        @image-url("coin-logos/ergo.png"), // 2
+        // SVG rather than PNG: the Slint runtime links resvg, so it's rasterised
+        // at the size it's drawn — crisp at any scale factor — and it's the shape
+        // upstream publishes. Any coin-logos entry may be either format.
+        @image-url("coin-logos/ergo.svg"), // 2
         @image-url("coin-logos/digibyte.png"), // 3
         @image-url("coin-logos/zano.png"), // 4
         @image-url("coin-logos/nerva.png"), // 5

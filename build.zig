@@ -297,8 +297,22 @@ fn buildGuiExe(
     // fetched package (an argv string would have to be a repo-relative path).
     const gen = std.Build.Step.Run.create(b, "slint-compiler app.slint");
     gen.addFileArg(slint_compiler.path("slint-compiler"));
-    gen.addArgs(&.{ "-f", "cpp", "--style", "fluent", "-o" });
+    gen.addArgs(&.{ "-f", "cpp", "--style", "fluent" });
+    // `--embed-resources embed-files` bakes every `@image-url` (the coin logos and
+    // the app icon) into the generated header as bytes. The compiler's default is
+    // `as-absolute-path`, which records this build machine's paths and loads them
+    // at run time — fine on the host, but a released bundle ships only the exe and
+    // `slint-<ver>/`, so on any other machine every logo silently resolves to
+    // nothing. Embedding is what makes the bundle self-contained. SVG sources stay
+    // SVG (resvg rasterises them at draw size); only the bytes move.
+    gen.addArgs(&.{ "--embed-resources", "embed-files" });
+    gen.addArgs(&.{"-o"});
     const gen_header = gen.addOutputFileArg("app.slint.h");
+    // The images are now inputs to this step, not paths read later, so the build
+    // has to know about them: without the depfile a swapped logo leaves the cached
+    // header — and the old bytes — in place.
+    gen.addArgs(&.{"--depfile"});
+    _ = gen.addDepFileOutputArg("app.slint.d");
     gen.addFileArg(b.path("gui/app.slint"));
 
     // The Zig core as a static library exposing the C ABI (src/capi.zig).
