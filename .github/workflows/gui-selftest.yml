@@ -76,6 +76,12 @@ jobs:
       - name: Verify checksums
         run: cd zig-out/gui-release-unverified && sha256sum -c SHA256SUMS
 
+      # Runs here rather than in the Windows job on purpose: CI runners have the
+      # VC++ redistributable installed, so a dependency that would strand a real
+      # user passes --selftest quite happily. Only a static check catches it.
+      - name: Check the Windows bundle's DLL dependencies
+        run: ./tools/check-windows-deps.sh zig-out/gui-release-unverified/staging/boxwallet-gui-windows-x86_64
+
       - uses: actions/upload-artifact@v4
         with:
           name: gui-bundles

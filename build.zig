@@ -668,6 +668,17 @@ fn addGuiReleaseStep(
                 const inst_dscript = b.addInstallFile(b.path("gui/install-desktop.sh"), stage ++ "/install-desktop.sh");
                 desktop_steps = .{ &inst_desktop.step, &inst_appicon.step, &inst_dscript.step };
                 desktop_len = 3;
+            } else {
+                // Windows ships a readme instead, and it earns its place: the
+                // Slint runtime links Microsoft's C++ runtime, which is *not*
+                // part of Windows, and when it's absent the loader refuses the
+                // program before `main` — no window, no message, nothing we can
+                // report. A user with a clean install sees a double-click do
+                // nothing, so the one place that can explain it is a file in the
+                // folder. `tools/check-windows-deps.sh` keeps this honest.
+                const inst_readme = b.addInstallFile(b.path("gui/README-WINDOWS.txt"), stage ++ "/README.txt");
+                desktop_steps[0] = &inst_readme.step;
+                desktop_len = 1;
             }
 
             // Zip the bundle from staging into gui-release/, and drop a copy of
