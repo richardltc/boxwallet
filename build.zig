@@ -508,7 +508,15 @@ fn buildGuiExe(
         // and delay-load only ever covers function thunks. The DLL therefore has
         // to sit beside the exe, which is the first place the loader looks — see
         // `gui_targets_unverified` for what that costs the self-updater.
-        return b.addExecutable(.{ .name = "boxwallet-gui", .root_module = exe_mod });
+        const gui = b.addExecutable(.{ .name = "boxwallet-gui", .root_module = exe_mod });
+
+        // Without this the PE is marked console-subsystem and Windows opens a
+        // console window behind the GUI on every launch. `main` still works as
+        // the entry point: mingw-w64's `WinMainCRTStartup` and `mainCRTStartup`
+        // both call the same `__tmainCRTStartup`, so switching the subsystem
+        // doesn't oblige us to write a `WinMain`.
+        gui.subsystem = .windows;
+        return gui;
     }
     switch (rpath) {
         .package_dir => exe_mod.addRPath(slint_lib_dir),
