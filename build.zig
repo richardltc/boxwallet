@@ -97,6 +97,17 @@ pub fn build(b: *std.Build) void {
     });
     addReleaseAllStep(b, release_step, gui_release_step);
 
+    // `zig build slint-windows`: materialise upstream's Windows package on its
+    // own. Every other platform's package arrives as a lazy `build.zig.zon`
+    // dependency that `zig fetch` can pre-warm and verify; this one can't be, so
+    // this is the equivalent hook — a way to check the download, the pinned hash
+    // and the NSIS unpack in isolation, without building a GUI around it.
+    const slint_win_step = b.step("slint-windows", "Fetch + unpack upstream's Slint Windows C++ package");
+    const slint_win = slintWindowsPackage(b);
+    const show_slint_win = b.addSystemCommand(&.{ "sh", "-c", "ls -la \"$1\"/lib", "slint-windows-show" });
+    show_slint_win.addDirectoryArg(slint_win.root);
+    slint_win_step.dependOn(&show_slint_win.step);
+
     // Built, but not releasable: see `gui_targets_unverified`. Its own step and
     // its own output directory, and deliberately not wired into `release-all`.
     _ = addGuiReleaseStep(b, optimize, .{
@@ -183,10 +194,11 @@ fn addGuiStep(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.bui
 /// the target, which is how the GUI stays Linux-only for now without any target
 /// check of its own:
 ///
-///   * macOS: only `Darwin-arm64` is published (no Intel build), and linking it
-///     needs the Apple SDK frameworks Zig doesn't ship — a native macOS host.
-///   * Windows: published as an NSIS installer `.exe` (not an archive `zig
-///     fetch` can unpack) built against the MSVC ABI — a native Windows host.
+///   * macOS: only `Darwin-arm64` is published (no Intel build).
+///   * Windows: published as an NSIS installer `.exe`, which `zig fetch` refuses
+///     outright (`unsupported Content-Disposition header value`). It is fetched
+///     and unpacked by `slintWindowsPackage` instead — see there for why the
+///     MSVC ABI it was built against costs us nothing.
 /// The Slint release the GUI links against, and the name of the directory the
 /// runtime ships in.
 ///
@@ -226,8 +238,106 @@ fn slintDepName(t: std.Target) ?[]const u8 {
             .aarch64 => "slint_macos_aarch64",
             else => null,
         },
+        // Windows has no `build.zig.zon` entry at all — see `slintWindowsPackage`.
         else => null,
     };
+}
+
+/// Upstream's Windows C++ package, and the SHA-256 of the exact bytes we accept.
+/// **Bump alongside `slint_version`** — the URL embeds it, and the hash pins the
+/// one file that version resolves to.
+const slint_windows_url = "https://github.com/slint-ui/slint/releases/download/v" ++
+    slint_version ++ "/Slint-cpp-" ++ slint_version ++ "-win64-MSVC-AMD64.exe";
+const slint_windows_sha256 = "f5b537da448c1e3d72a24a774e19518ae412b9706b8ef49bdee64b62b878fe56";
+
+/// A Slint C++ package, however it was obtained. Upstream lays every platform's
+/// package out identically — `lib/` (runtime, plus the import library on
+/// Windows), `include/slint/`, `licenses/` — so callers only ever need the root,
+/// and the two very different ways of getting one collapse to a single type.
+const SlintPackage = struct {
+    root: std.Build.LazyPath,
+
+    fn lib(self: SlintPackage, b: *std.Build) std.Build.LazyPath {
+        return self.root.path(b, "lib");
+    }
+    fn include(self: SlintPackage, b: *std.Build) std.Build.LazyPath {
+        return self.root.path(b, "include/slint");
+    }
+    fn licenses(self: SlintPackage, b: *std.Build) std.Build.LazyPath {
+        return self.root.path(b, "licenses");
+    }
+};
+
+/// Fetch + unpack upstream's Slint **Windows** package, returning its root.
+///
+/// Windows is the one target whose package can't be a `build.zig.zon` dependency:
+/// upstream publishes it as an NSIS installer `.exe` and `zig fetch` rejects that
+/// outright. `7z` unpacks it perfectly well, so this does by hand what the lazy
+/// deps do for every other target — download, verify against a pinned hash,
+/// unpack — and keeps the two properties that matter: nothing binary is committed
+/// to the repo, and the bytes are pinned rather than trusted.
+///
+/// **The MSVC ABI it was built against costs us nothing**, which is why no native
+/// Windows host appears anywhere in this build. Slint's cross-DLL surface is pure
+/// C — 385 `slint_*` functions and 25 `*VTable` data objects, zero C++-mangled
+/// symbols — and its C++ API is a header-only layer compiled by *our* compiler.
+/// So `x86_64-windows-gnu` links against the MSVC-built import library and the
+/// only thing crossing the DLL boundary is C. (Verified: the exe uses Zig's
+/// mingw/libc++ while the DLL uses MSVCP140/VCRUNTIME140, and nothing that would
+/// care — no allocation, `FILE*`, or exception — ever crosses.)
+///
+/// Memoised: `buildGuiExe` and `addGuiReleaseStep` both want this, and a second
+/// call would mean a second download.
+var slint_windows_memo: ?SlintPackage = null;
+
+fn slintWindowsPackage(b: *std.Build) SlintPackage {
+    if (slint_windows_memo) |p| return p;
+
+    // `$PLUGINSDIR` is NSIS's own installer scaffolding (its UI plugin DLLs), not
+    // part of the package — dropped so what's left is exactly the payload, and a
+    // stray `.dll` in there can never be mistaken for the runtime.
+    const script =
+        \\set -e
+        \\out="$1"
+        \\command -v curl >/dev/null || { echo "slint-windows: curl not found" >&2; exit 1; }
+        \\command -v 7z   >/dev/null || { echo "slint-windows: 7z not found (install p7zip-full) - it is what unpacks upstream's NSIS installer" >&2; exit 1; }
+        \\rm -rf "$out"; mkdir -p "$out"
+        \\tmp="$out/.installer.exe"
+        \\curl -fsSL -o "$tmp" "$2"
+        \\got=$(sha256sum "$tmp" | cut -d' ' -f1)
+        \\if [ "$got" != "$3" ]; then
+        \\  echo "slint-windows: checksum mismatch for $2" >&2
+        \\  echo "  expected $3" >&2
+        \\  echo "  got      $got" >&2
+        \\  exit 1
+        \\fi
+        \\7z x -y -o"$out" "$tmp" >/dev/null
+        \\rm -rf "$tmp" "$out/\$PLUGINSDIR"
+        \\test -f "$out/lib/slint_cpp.dll" || { echo "slint-windows: no lib/slint_cpp.dll in the unpacked package" >&2; exit 1; }
+        \\test -f "$out/lib/slint_cpp.dll.lib" || { echo "slint-windows: no import library in the unpacked package" >&2; exit 1; }
+    ;
+
+    const run = b.addSystemCommand(&.{ "sh", "-c", script, "slint-windows" });
+    const out = run.addOutputDirectoryArg("slint-windows");
+    run.addArgs(&.{ slint_windows_url, slint_windows_sha256 });
+
+    const pkg = SlintPackage{ .root = out };
+    slint_windows_memo = pkg;
+    return pkg;
+}
+
+/// The Slint package for `t`, from whichever source that target uses. Null where
+/// upstream publishes nothing for it, and on the first run of a build that still
+/// has to fetch a lazy dependency.
+fn slintPackage(b: *std.Build, t: std.Target) ?SlintPackage {
+    if (t.os.tag == .windows) {
+        // Only x86_64 for now; upstream also publishes a win64-MSVC-ARM64 build.
+        if (t.cpu.arch != .x86_64) return null;
+        return slintWindowsPackage(b);
+    }
+    const dep_name = slintDepName(t) orelse return null;
+    const dep = b.lazyDependency(dep_name, .{}) orelse return null;
+    return .{ .root = dep.path("") };
 }
 
 /// The Slint runtime's filename for `t`. Named per-OS because the whole
@@ -237,7 +347,18 @@ fn slintDepName(t: std.Target) ?[]const u8 {
 fn slintRuntimeName(os: std.Target.Os.Tag) []const u8 {
     return switch (os) {
         .macos => "libslint_cpp.dylib",
+        .windows => "slint_cpp.dll",
         else => "libslint_cpp.so",
+    };
+}
+
+/// What the *linker* is given, which on Windows is not what ships. ELF and Mach-O
+/// link the runtime itself; PE links a separate import library and the DLL is
+/// resolved at load time by the bare name recorded in the import table.
+fn slintLinkName(os: std.Target.Os.Tag) []const u8 {
+    return switch (os) {
+        .windows => "slint_cpp.dll.lib",
+        else => slintRuntimeName(os),
     };
 }
 
@@ -282,10 +403,9 @@ fn buildGuiExe(
     optimize: std.builtin.OptimizeMode,
     rpath: RPathKind,
 ) ?*std.Build.Step.Compile {
-    const dep_name = slintDepName(target.result) orelse return null;
-    const slint = b.lazyDependency(dep_name, .{}) orelse return null;
-    const slint_lib_dir = slint.path("lib");
-    const slint_inc_dir = slint.path("include/slint");
+    const slint = slintPackage(b, target.result) orelse return null;
+    const slint_lib_dir = slint.lib(b);
+    const slint_inc_dir = slint.include(b);
 
     // slint-compiler: gui/app.slint -> generated C++ header. It runs on the build
     // host, so it comes from the host's package, not the target's — and unlike
@@ -365,7 +485,16 @@ fn buildGuiExe(
     exe_mod.addIncludePath(b.path("include")); // boxwallet.h
     exe_mod.addIncludePath(slint_inc_dir); // <slint.h> and its "private/…" tree
     exe_mod.linkLibrary(core);
-    exe_mod.addObjectFile(slint_lib_dir.path(b, slintRuntimeName(target.result.os.tag)));
+    exe_mod.addObjectFile(slint_lib_dir.path(b, slintLinkName(target.result.os.tag)));
+    // Windows has no rpath of any kind, and no delay-load escape either: 21 of the
+    // imports are *data* objects (`RectangleVTable`, `EmptyVTable`, …) and
+    // delay-load only ever covers function thunks. The DLL therefore has to sit
+    // beside the exe, which is the first place the loader looks — see
+    // `gui_targets` for what that costs the self-updater.
+    if (target.result.os.tag == .windows) return b.addExecutable(.{
+        .name = "boxwallet-gui",
+        .root_module = exe_mod,
+    });
     switch (rpath) {
         .package_dir => exe_mod.addRPath(slint_lib_dir),
         // Not a bare origin token: the runtime lives in a version-scoped
@@ -436,7 +565,9 @@ fn addGuiReleaseStep(
         // Skipped rather than failed while a lazy package is still being fetched
         // (and on a host with no slint-compiler), so the step re-runs complete.
         if (buildGuiExe(b, resolved, .ReleaseSafe, .origin)) |exe| {
-            const dep = b.lazyDependency(slintDepName(resolved.result).?, .{}).?;
+            // Non-null for the same reason the exe is: `buildGuiExe` returns null
+            // unless the package is already on disk.
+            const dep = slintPackage(b, resolved.result).?;
             const stage = opts.out_dir ++ "/staging/" ++ t.name;
 
             // exe → staging/<bundle>/boxwallet-gui
@@ -469,14 +600,14 @@ fn addGuiReleaseStep(
             // matches upstream's own checksum.
             const so_name = comptime slintRuntimeName(t.query.os_tag.?);
             const inst_so = b.addInstallFile(
-                dep.path("lib/" ++ so_name),
+                dep.lib(b).path(b, so_name),
                 stage ++ "/" ++ slint_dir ++ "/" ++ so_name,
             );
 
             // Slint's licence + third-party notices travel with the binary we
             // redistribute; shipping the runtime without them isn't ours to do.
-            const inst_lic = b.addInstallFile(dep.path("licenses/LICENSE.md"), stage ++ "/SLINT-LICENSE.md");
-            const inst_third = b.addInstallFile(dep.path("licenses/THIRDPARTY.md"), stage ++ "/SLINT-THIRDPARTY.md");
+            const inst_lic = b.addInstallFile(dep.licenses(b).path(b, "LICENSE.md"), stage ++ "/SLINT-LICENSE.md");
+            const inst_third = b.addInstallFile(dep.licenses(b).path(b, "THIRDPARTY.md"), stage ++ "/SLINT-THIRDPARTY.md");
 
             // Desktop integration, so the panel and app launcher show the
             // BoxWallet logo rather than a generic placeholder. On Wayland an

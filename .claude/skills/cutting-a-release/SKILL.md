@@ -52,7 +52,7 @@ description: How to cut a BoxWallet release, and the release/GUI-bundling mechan
   0.7 MB of a 16 MB zip, and no stripper handles both arches). The **static-musl TUI stays
   the answer for old, low-spec, or headless machines** — don't "unify" the two
   release paths.
-- **macOS arm64 cross-builds from Linux; Windows and Intel macOS don't.**
+- **macOS arm64 and Windows x86_64 cross-build from Linux; Intel macOS can't.**
   Measured, not assumed:
   - **macOS aarch64** builds here with no Mac and no Apple SDK. Our code never
     references a framework, so the dylib's 21 framework dependencies stay its own
@@ -65,8 +65,23 @@ description: How to cut a BoxWallet release, and the release/GUI-bundling mechan
     publishes no `Slint-cpp-…-Darwin-x86_64` at all, and Rosetta translates
     x86_64→arm64 on Apple Silicon, not the reverse, so an Intel Mac can't run the
     arm64 runtime either. Intel Macs get the TUI.
-  - **Windows needs a native host.** The runtime is an MSVC-ABI NSIS installer
-    `zig fetch` can't unpack, and MSVC only runs on Windows.
+  - **Windows x86_64 needs no native host** — the "MSVC only runs on Windows"
+    worry doesn't apply. Slint's cross-DLL surface is **pure C** (385 `slint_*`
+    functions + 25 `*VTable` data objects, zero mangled symbols) and its C++ API
+    is a header-only layer compiled by *our* compiler, so `x86_64-windows-gnu`
+    links against the MSVC-built import library with only C crossing the
+    boundary. What *is* true is that `zig fetch` rejects the NSIS installer
+    (`unsupported Content-Disposition header value`), so it can't be a
+    `build.zig.zon` dep — `slintWindowsPackage` in `build.zig` downloads it,
+    checks a pinned SHA-256 and unpacks it with `7z` instead. `zig build
+    slint-windows` exercises that on its own. Three things don't port from
+    ELF/Mach-O: there is **no rpath**, and no delay-load escape either (21 of the
+    imports are *data* objects and delay-load covers only function thunks), so
+    the DLL ships **flat beside the exe** rather than in `slint-<ver>/`;
+    `tools/fixneeded.zig` has no PE counterpart to write (the import table
+    already records the bare `slint_cpp.dll`); and the runtime needs
+    **`VCRUNTIME140.dll`/`MSVCP140.dll`**, which upstream does *not* bundle — a
+    machine without the VC++ redist fails in the loader before `main`, silently.
 - **Building a GUI target is not the same as being allowed to release it.**
   Nothing on a Linux host can *execute* a Mach-O, so the `--selftest` pre-flight
   — the thing that catches an exe/runtime mismatch before it fails invisibly
