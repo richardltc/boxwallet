@@ -27,6 +27,13 @@ const GuiTarget = struct { query: std.Target.Query, name: []const u8 };
 /// real hardware.
 const gui_targets_unverified = [_]GuiTarget{
     .{ .query = .{ .cpu_arch = .aarch64, .os_tag = .macos }, .name = "boxwallet-gui-macos-aarch64" },
+    // `gnu` (mingw), not `msvc`: nothing about the Slint DLL requires the MSVC
+    // ABI — its exported surface is pure C — and mingw is what Zig can produce
+    // without a Windows host. See `slintWindowsPackage`.
+    //
+    // Unverified for a different reason than macOS: a Windows runner *can* run
+    // `--selftest`, so this one has a real path to `gui_targets` once CI does.
+    .{ .query = .{ .cpu_arch = .x86_64, .os_tag = .windows, .abi = .gnu }, .name = "boxwallet-gui-windows-x86_64" },
 };
 const gui_targets = [_]GuiTarget{
     // glibc, not musl: the Slint runtime is a glibc binary, so the exe beside
@@ -486,15 +493,23 @@ fn buildGuiExe(
     exe_mod.addIncludePath(slint_inc_dir); // <slint.h> and its "private/…" tree
     exe_mod.linkLibrary(core);
     exe_mod.addObjectFile(slint_lib_dir.path(b, slintLinkName(target.result.os.tag)));
-    // Windows has no rpath of any kind, and no delay-load escape either: 21 of the
-    // imports are *data* objects (`RectangleVTable`, `EmptyVTable`, …) and
-    // delay-load only ever covers function thunks. The DLL therefore has to sit
-    // beside the exe, which is the first place the loader looks — see
-    // `gui_targets` for what that costs the self-updater.
-    if (target.result.os.tag == .windows) return b.addExecutable(.{
-        .name = "boxwallet-gui",
-        .root_module = exe_mod,
-    });
+    if (target.result.os.tag == .windows) {
+        // `std.crypto.Certificate.Bundle` reads the Windows system cert store, so
+        // every HTTPS path in the core (RPC, install, price, the updater) needs
+        // crypt32. The TUI gets it for free — Zig propagates the `extern
+        // "crypt32"` dependency for a Zig-root exe — but here the core is a
+        // *static library* linked into a C++ executable, and that propagation
+        // stops at the archive. Without this the link fails on CertOpenSystemStoreW
+        // and friends.
+        exe_mod.linkSystemLibrary("crypt32", .{});
+
+        // Windows has no rpath of any kind, and no delay-load escape either: 21
+        // of the imports are *data* objects (`RectangleVTable`, `EmptyVTable`, …)
+        // and delay-load only ever covers function thunks. The DLL therefore has
+        // to sit beside the exe, which is the first place the loader looks — see
+        // `gui_targets_unverified` for what that costs the self-updater.
+        return b.addExecutable(.{ .name = "boxwallet-gui", .root_module = exe_mod });
+    }
     switch (rpath) {
         .package_dir => exe_mod.addRPath(slint_lib_dir),
         // Not a bare origin token: the runtime lives in a version-scoped
@@ -569,21 +584,35 @@ fn addGuiReleaseStep(
             // unless the package is already on disk.
             const dep = slintPackage(b, resolved.result).?;
             const stage = opts.out_dir ++ "/staging/" ++ t.name;
+            const is_windows = comptime t.query.os_tag.? == .windows;
 
-            // exe → staging/<bundle>/boxwallet-gui
-            const inst_exe = b.addInstallFile(exe.getEmittedBin(), stage ++ "/boxwallet-gui");
+            // What the exe is called inside the bundle, and the name of the
+            // bare-exe asset published beside the zip. Windows needs the `.exe`
+            // in both places — the loader keys off it, and a browser download
+            // without it is inert.
+            const bundle_exe = if (is_windows) "boxwallet-gui.exe" else "boxwallet-gui";
+            const exe_asset = if (is_windows) t.name ++ ".exe" else t.name;
+
+            // exe → staging/<bundle>/boxwallet-gui[.exe]
+            const inst_exe = b.addInstallFile(exe.getEmittedBin(), stage ++ "/" ++ bundle_exe);
 
             // ELF only. `addObjectFile` bakes the fetched package's absolute
             // path into DT_NEEDED (the `.so` has no SONAME), so it has to be cut
             // back to a bare basename for the rpath to find it on another
             // machine. Mach-O needs no such fix: the dylib carries its own
             // install name, `@rpath/libslint_cpp.dylib`, and that is what the
-            // linker records — verified on a cross-built binary.
-            const ready: *std.Build.Step = if (resolved.result.os.tag == .macos) blk: {
+            // linker records — verified on a cross-built binary. PE needs none
+            // either: the import table records the bare `slint_cpp.dll` that the
+            // import library named, never a build-machine path.
+            const needs_fix = comptime switch (t.query.os_tag.?) {
+                .macos, .windows => false,
+                else => true,
+            };
+            const ready: *std.Build.Step = if (!needs_fix) blk: {
                 break :blk &inst_exe.step;
             } else blk: {
                 const fix = b.addRunArtifact(fixer);
-                fix.addArg(b.getInstallPath(.prefix, stage ++ "/boxwallet-gui"));
+                fix.addArg(b.getInstallPath(.prefix, stage ++ "/" ++ bundle_exe));
                 fix.step.dependOn(&inst_exe.step);
                 break :blk &fix.step;
             };
@@ -598,10 +627,18 @@ fn addGuiReleaseStep(
             // objcopy --strip-debug` reports "unimplemented" for a shared object.
             // Not worth a hand-rolled ELF rewriter, and an untouched binary still
             // matches upstream's own checksum.
+            //
+            // Windows is the exception, and it isn't a choice: PE has no rpath,
+            // and delay-load — the usual stand-in — can't help when 21 of the
+            // imports are data objects. The DLL therefore ships **flat beside the
+            // exe**, the first place the loader looks. The pairing that
+            // `slint-<ver>/` buys everyone else is recovered in the updater
+            // instead, by selftesting the staged pair before it swaps.
+            const runtime_in_bundle = if (is_windows) "" else slint_dir ++ "/";
             const so_name = comptime slintRuntimeName(t.query.os_tag.?);
             const inst_so = b.addInstallFile(
                 dep.lib(b).path(b, so_name),
-                stage ++ "/" ++ slint_dir ++ "/" ++ so_name,
+                stage ++ "/" ++ runtime_in_bundle ++ so_name,
             );
 
             // Slint's licence + third-party notices travel with the binary we
@@ -619,9 +656,19 @@ fn addGuiReleaseStep(
             //
             // These sit inside the zip, so SHA256SUMS needs no new lines: the
             // bundle's existing hash covers them.
-            const inst_desktop = b.addInstallFile(b.path("gui/boxwallet.desktop"), stage ++ "/boxwallet.desktop");
-            const inst_appicon = b.addInstallFile(b.path("gui/icons/boxwallet.png"), stage ++ "/icons/boxwallet.png");
-            const inst_dscript = b.addInstallFile(b.path("gui/install-desktop.sh"), stage ++ "/install-desktop.sh");
+            //
+            // Skipped on Windows: an XDG desktop entry, a PNG icon and a shell
+            // installer mean nothing there, and shipping a `.sh` in a Windows zip
+            // only invites someone to run it.
+            var desktop_steps: [3]*std.Build.Step = undefined;
+            var desktop_len: usize = 0;
+            if (!is_windows) {
+                const inst_desktop = b.addInstallFile(b.path("gui/boxwallet.desktop"), stage ++ "/boxwallet.desktop");
+                const inst_appicon = b.addInstallFile(b.path("gui/icons/boxwallet.png"), stage ++ "/icons/boxwallet.png");
+                const inst_dscript = b.addInstallFile(b.path("gui/install-desktop.sh"), stage ++ "/install-desktop.sh");
+                desktop_steps = .{ &inst_desktop.step, &inst_appicon.step, &inst_dscript.step };
+                desktop_len = 3;
+            }
 
             // Zip the bundle from staging into gui-release/, and drop a copy of
             // the bare exe beside it. Both are published: the updater fetches the
@@ -633,9 +680,15 @@ fn addGuiReleaseStep(
                     // chmod before zipping: `addInstallFile` drops the execute
                     // bit, and zip stores whatever mode it finds — so without
                     // this the installer arrives non-executable and has to be
-                    // run as `sh install-desktop.sh`.
-                    "cd \"$1\" && chmod +x staging/{0s}/install-desktop.sh && rm -f {0s}.zip {0s} && (cd staging && zip -r -q ../{0s}.zip {0s}) && cp staging/{0s}/boxwallet-gui {0s}",
-                    .{t.name},
+                    // run as `sh install-desktop.sh`. Nothing to chmod in a
+                    // Windows bundle, which ships no scripts.
+                    "cd \"$1\" && {3s}rm -f {0s}.zip {2s} && (cd staging && zip -r -q ../{0s}.zip {0s}) && cp staging/{0s}/{1s} {2s}",
+                    .{
+                        t.name,
+                        bundle_exe,
+                        exe_asset,
+                        if (is_windows) "" else "chmod +x staging/" ++ t.name ++ "/install-desktop.sh && ",
+                    },
                 ),
                 "pack-gui",
                 b.getInstallPath(.prefix, opts.out_dir),
@@ -644,9 +697,7 @@ fn addGuiReleaseStep(
             pack.step.dependOn(&inst_so.step);
             pack.step.dependOn(&inst_lic.step);
             pack.step.dependOn(&inst_third.step);
-            pack.step.dependOn(&inst_desktop.step);
-            pack.step.dependOn(&inst_appicon.step);
-            pack.step.dependOn(&inst_dscript.step);
+            for (desktop_steps[0..desktop_len]) |s| pack.step.dependOn(s);
             step.dependOn(&pack.step);
             packs[ti] = &pack.step;
 
@@ -662,11 +713,19 @@ fn addGuiReleaseStep(
             // asset: listing it by its in-bundle path made `sha256sum -c` report
             // a missing file and a release look corrupt. RUNTIME *is* listed in
             // SHA256SUMS, so it's verified like everything else.
+            //
+            // Windows keeps the `slint-<ver>` token even though it has no such
+            // directory: the version is the *pairing key* the updater compares,
+            // not a path, so the manifest stays one shape across front-ends and
+            // platforms. Only where the hash is read from differs.
+            // The name printed is the *asset* (`…-x86_64.exe` on Windows) because
+            // that is what the updater looks itself up by; the directory read
+            // from is the *staging* one, which never carries the suffix.
             sum_cmds = b.fmt(
-                "{0s} && printf '%s  {2s}  ' {1s} >> RUNTIME && (cd staging/{1s}/{2s} && sha256sum {3s} | cut -d' ' -f1) >> RUNTIME",
-                .{ sum_cmds, t.name, slint_dir, so_name },
+                "{0s} && printf '%s  {2s}  ' {1s} >> RUNTIME && (cd staging/{4s}/{5s} && sha256sum {3s} | cut -d' ' -f1) >> RUNTIME",
+                .{ sum_cmds, exe_asset, slint_dir, so_name, t.name, if (is_windows) "." else slint_dir },
             );
-            hash_names = b.fmt("{s} {1s} {1s}.zip", .{ hash_names, t.name });
+            hash_names = b.fmt("{0s} {1s} {2s}.zip", .{ hash_names, exe_asset, t.name });
         }
     }
 
