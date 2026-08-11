@@ -129,6 +129,11 @@ jobs:
           Rename-Item -Path (Join-Path $dir 'slint_cpp.dll.hidden') -NewName 'slint_cpp.dll'
           if ($code -eq 0) { throw "selftest passed with no runtime present - the gate has no teeth" }
           Write-Host "correctly failed without the runtime (exit $code)"
+          # The step is expected to end with a non-zero $LASTEXITCODE - that is
+          # the result being asserted. GitHub's pwsh wrapper exits the step with
+          # whatever it holds, so say so explicitly or a *passing* check reports
+          # as a failed step.
+          exit 0
 
   macos:
     name: Selftest on macOS (arm64)
@@ -173,8 +178,11 @@ jobs:
           dir="$GITHUB_WORKSPACE/boxwallet-gui-macos-aarch64"
           rt=$(ls -d "$dir"/slint-* | head -n1)
           mv "$rt" "$rt.hidden"
-          "$dir/boxwallet-gui" --selftest >/dev/null 2>&1
-          code=$?
+          # Run it as an `if` condition, not a bare command. GitHub's default
+          # shell is `bash -e`, which `set -uo pipefail` does not undo, so a bare
+          # call would kill the step on the very failure being asserted - and a
+          # command tested by `if` is the one place `-e` stands down.
+          if "$dir/boxwallet-gui" --selftest >/dev/null 2>&1; then code=0; else code=$?; fi
           mv "$rt.hidden" "$rt"
           test "$code" -ne 0 || { echo "selftest passed with no runtime present - the gate has no teeth" >&2; exit 1; }
           echo "correctly failed without the runtime (exit $code)"
