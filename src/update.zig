@@ -108,9 +108,34 @@ const runtime_new_suffix = ".bw-new";
 /// `slintRuntimeName` in `build.zig`.
 const runtime_so_name = switch (builtin.os.tag) {
     .macos => "libslint_cpp.dylib",
+    .windows => "slint_cpp.dll",
     else => "libslint_cpp.so",
 };
-const gui_exe_name = "boxwallet-gui";
+const gui_exe_name = if (builtin.os.tag == .windows) "boxwallet-gui.exe" else "boxwallet-gui";
+
+/// Whether the Slint runtime sits *beside* the exe rather than in `slint-<ver>/`.
+///
+/// True only on Windows, and not by choice: PE has no rpath, and delay-load —
+/// the usual stand-in — can't help when 21 of the imports are data objects
+/// (`RectangleVTable`, `EmptyVTable`, …), since it only ever covers function
+/// thunks. So the DLL has to live in the exe's own directory, the first place
+/// the loader looks.
+///
+/// That costs the property everything else relies on: an exe and a runtime from
+/// different releases resolve *different paths* elsewhere, so they can never be
+/// mistaken for a pair, and every intermediate state of an update still boots.
+/// Flat, both halves are one filename each and the swap is two renames that
+/// aren't atomic together — a crash between them leaves a mismatched pair that
+/// fails inside the loader before `main`. What replaces the guarantee is
+/// `preflightPath`: the pair is proven to link *in the staging directory*,
+/// before either rename happens.
+const runtime_flat = builtin.os.tag == .windows;
+
+/// Where a flat runtime is moved aside to when it's being replaced. Windows
+/// won't let us delete or overwrite a DLL that's mapped into a running process,
+/// but it does allow renaming one — the same trick `swapBinary` uses for the
+/// running exe. Swept by `cleanupOld` on a later launch.
+const runtime_old_suffix = ".old";
 /// Consecutive failed swaps of one version before we stop retrying it. A swap
 /// that fails three times is a standing condition (read-only dir, no space),
 /// not a blip, and re-downloading 5 MB every launch forever helps nobody.
@@ -195,6 +220,13 @@ pub fn assetFor(comptime front: Front) ?[]const u8 {
             // finds no asset in SHA256SUMS and reports verify_failed, so this
             // stays null until the bundle actually ships.
             .macos => null,
+            // Builds and bundles correctly (`gui-release-unverified`), and the
+            // flat-runtime apply path below is written for it — but it stays
+            // null until a Windows machine has actually run `--selftest` on the
+            // bundle and it moves into `gui_targets`. Lighting this up first
+            // would have every Windows user told an update exists and then fail
+            // to find the asset in SHA256SUMS.
+            .windows => null,
             else => null,
         },
     };
@@ -498,7 +530,14 @@ fn installedRuntimeMatches(gpa: std.mem.Allocator, io: std.Io, rt: *const Runtim
     const exe_dir = exeDirAlloc(gpa, io) catch return false;
     defer gpa.free(exe_dir);
 
-    const rt_path = std.fs.path.join(gpa, &.{ exe_dir, rt.dir() }) catch return false;
+    // Flat: there is only ever one runtime beside the exe and its name carries no
+    // version, so the hash answers the whole question on its own — which is the
+    // stronger half of the test anyway. The directory check the versioned layout
+    // gets for free simply has nothing to look at here.
+    const rt_path = if (runtime_flat)
+        gpa.dupe(u8, exe_dir) catch return false
+    else
+        std.fs.path.join(gpa, &.{ exe_dir, rt.dir() }) catch return false;
     defer gpa.free(rt_path);
 
     var d = std.Io.Dir.cwd().openDir(io, rt_path, .{}) catch return false;
@@ -517,6 +556,9 @@ fn installedRuntimeMatches(gpa: std.mem.Allocator, io: std.Io, rt: *const Runtim
 /// exe and produce exactly the mismatch this design exists to rule out.
 fn clearStagedRuntimes(io: std.Io, dir: std.Io.Dir) void {
     dir.deleteTree(io, unpack_subdir) catch {};
+    // Flat staging keeps the runtime as a single file beside the staged exe,
+    // with no `slint-*` directory for the scan below to find.
+    if (runtime_flat) dir.deleteFile(io, runtime_so_name) catch {};
     var it = dir.iterate();
     while (it.next(io) catch null) |entry| {
         if (entry.kind != .directory) continue;
@@ -564,15 +606,19 @@ fn unpackStagedBundle(
     // pre-flight has to be able to *run* this file.
     try inner.copyFile(gui_exe_name, dir, staged_name, io, .{ .permissions = .executable_file, .replace = true });
 
-    var src_rt = try inner.openDir(io, rt.dir(), .{});
-    defer src_rt.close(io);
-    var dst_rt = try dir.createDirPathOpen(io, rt.dir(), .{});
-    defer dst_rt.close(io);
+    // Flat: the bundle has the runtime beside the exe, not under `slint-<ver>/`,
+    // and it stays beside the staged exe here — which is precisely what lets the
+    // pre-flight run the real pair out of the staging directory, since that's the
+    // directory the loader will search.
+    var src_rt = if (runtime_flat) inner else try inner.openDir(io, rt.dir(), .{});
+    defer if (!runtime_flat) src_rt.close(io);
+    var dst_rt = if (runtime_flat) dir else try dir.createDirPathOpen(io, rt.dir(), .{});
+    defer if (!runtime_flat) dst_rt.close(io);
     try src_rt.copyFile(runtime_so_name, dst_rt, runtime_so_name, io, .{ .replace = true });
 
     const got = try sha256File(io, dst_rt, runtime_so_name);
     if (!std.mem.eql(u8, &got, &rt.sha)) {
-        dir.deleteTree(io, rt.dir()) catch {};
+        if (runtime_flat) dir.deleteFile(io, runtime_so_name) catch {} else dir.deleteTree(io, rt.dir()) catch {};
         dir.deleteFile(io, staged_name) catch {};
         return error.VerifyFailed;
     }
@@ -687,7 +733,8 @@ pub fn applyPendingFor(
     // so between this line and the swap the old pair is still intact and still
     // boots. The reverse order would leave a window where the new exe is live
     // with no runtime it can load — an app that won't start.
-    if (try installStagedRuntime(gpa, io, dir, exe_path)) |rt_name| gpa.free(rt_name);
+    const installed_rt: ?[]u8 = try installStagedRuntime(gpa, io, dir, exe_path);
+    defer if (installed_rt) |p| gpa.free(p);
 
     // Prove the exact pair we're about to commit actually links, before we
     // commit it. `boxwallet-gui` is BIND_NOW against 115 undefined Slint
@@ -700,6 +747,12 @@ pub fn applyPendingFor(
         // The exe never changed (swapBinary rolls back), so the old pair is
         // still whole. A runtime we installed for a swap that didn't happen is
         // harmless — nothing references it — and the next attempt reuses it.
+        //
+        // Except when it's flat, where "nothing references it" is exactly what
+        // stops being true: the still-live old exe loads that same filename, so
+        // leaving the new runtime there would break the app we just declined to
+        // update. Put the old one back.
+        if (runtime_flat) if (installed_rt) |p| restoreFlatRuntime(gpa, io, p);
         return err;
     };
 
@@ -733,17 +786,19 @@ fn installStagedRuntime(
     dir: std.Io.Dir,
     exe_path: []const u8,
 ) !?[]u8 {
+    if (runtime_flat) return installFlatRuntime(gpa, io, dir, exe_path);
+
     const name = stagedRuntimeName(gpa, io, dir) orelse return null;
-    errdefer gpa.free(name);
+    defer gpa.free(name);
 
     const exe_dir = std.fs.path.dirname(exe_path) orelse ".";
     const dest = try std.fs.path.join(gpa, &.{ exe_dir, name });
-    defer gpa.free(dest);
+    errdefer gpa.free(dest);
 
     const cwd = std.Io.Dir.cwd();
     // Already there — the version in the directory name is the guarantee, and
     // replacing it would be writing under whichever process is mapping it.
-    if (cwd.access(io, dest, .{})) |_| return name else |_| {}
+    if (cwd.access(io, dest, .{})) |_| return dest else |_| {}
 
     const tmp = try std.fmt.allocPrint(gpa, "{s}{s}", .{ dest, runtime_new_suffix });
     defer gpa.free(tmp);
@@ -759,7 +814,71 @@ fn installStagedRuntime(
         cwd.deleteTree(io, tmp) catch {};
         return err;
     };
-    return name;
+    return dest;
+}
+
+/// The flat (Windows) half of `installStagedRuntime`: put the staged
+/// `slint_cpp.dll` beside the exe, returning its destination path (caller frees)
+/// or null when the release only changed the exe.
+///
+/// Unlike the versioned layout there is no "already there, leave it alone" case:
+/// one filename holds whichever runtime is current, so installing genuinely
+/// replaces. The old DLL is *renamed* aside rather than deleted or written over —
+/// Windows refuses both for a mapped image, but allows a rename, which is the
+/// same trick `swapBinary` uses on the running exe.
+///
+/// Ordering is the same as everywhere else — runtime first, then the exe — which
+/// is what makes `swapBinary`'s pre-flight meaningful here: by the time it runs
+/// the new exe from the target directory, the runtime beside it is already the
+/// new one, so what gets tested is the pair that is about to go live. The cost is
+/// that this window is *not* inert on Windows the way it is elsewhere: the old
+/// exe loads this same filename, so a failed swap must put the old runtime back
+/// (`restoreFlatRuntime`).
+fn installFlatRuntime(
+    gpa: std.mem.Allocator,
+    io: std.Io,
+    dir: std.Io.Dir,
+    exe_path: []const u8,
+) !?[]u8 {
+    dir.access(io, runtime_so_name, .{}) catch return null;
+
+    const exe_dir = std.fs.path.dirname(exe_path) orelse ".";
+    const dest = try std.fs.path.join(gpa, &.{ exe_dir, runtime_so_name });
+    errdefer gpa.free(dest);
+
+    const cwd = std.Io.Dir.cwd();
+    const tmp = try std.fmt.allocPrint(gpa, "{s}{s}", .{ dest, runtime_new_suffix });
+    defer gpa.free(tmp);
+    const old = try std.fmt.allocPrint(gpa, "{s}{s}", .{ dest, runtime_old_suffix });
+    defer gpa.free(old);
+
+    // Land the new runtime beside the target first, so the replacing rename is
+    // the only step that touches the live filename.
+    cwd.deleteFile(io, tmp) catch {};
+    try dir.copyFile(runtime_so_name, cwd, tmp, io, .{ .replace = true });
+
+    cwd.deleteFile(io, old) catch {};
+    // Missing is fine: a first install, or a hand-unzipped tree.
+    const had_old = if (cwd.rename(dest, cwd, old, io)) |_| true else |_| false;
+
+    cwd.rename(tmp, cwd, dest, io) catch |err| {
+        if (had_old) cwd.rename(old, cwd, dest, io) catch {};
+        cwd.deleteFile(io, tmp) catch {};
+        return err;
+    };
+    return dest;
+}
+
+/// Undo `installFlatRuntime` after a swap that didn't happen, so the exe that is
+/// still live keeps the runtime it was built against. Best-effort: if the old
+/// runtime can't be moved back the pair is already broken, and there is nothing
+/// further this process can do about it.
+fn restoreFlatRuntime(gpa: std.mem.Allocator, io: std.Io, dest: []const u8) void {
+    const old = std.fmt.allocPrint(gpa, "{s}{s}", .{ dest, runtime_old_suffix }) catch return;
+    defer gpa.free(old);
+    const cwd = std.Io.Dir.cwd();
+    cwd.access(io, old, .{}) catch return;
+    cwd.rename(old, cwd, dest, io) catch {};
 }
 
 /// Name of the runtime directory staged alongside the binary, if any. Caller
@@ -806,6 +925,11 @@ fn swapBinary(
     // `$ORIGIN`-relative, so only a copy sitting in the target directory
     // resolves the same libraries the committed binary would. If it can't
     // start, back out now — the target hasn't been touched yet.
+    //
+    // The same rule holds flat, for a different reason: the loader searches the
+    // exe's own directory, and the runtime there is already the new one because
+    // `installStagedRuntime` ran first. So this tests the exact pair about to go
+    // live either way — which is the whole reason the runtime goes first.
     if (preflight == .selftest and !selftestOk(io, tmp_abs)) {
         cwd.deleteFile(io, tmp_abs) catch {};
         return error.SelftestFailed;
@@ -844,6 +968,12 @@ fn cleanupLegacyStage(gpa: std.mem.Allocator, io: std.Io, install_root: []const 
 /// status, which is the case this exists to catch — otherwise the user's first
 /// sign of trouble is an icon that does nothing when clicked.
 ///
+/// Windows gives the same guarantee for free: imports are resolved from the PE
+/// import table at load time, so a missing or wrong-version `slint_cpp.dll`
+/// fails before `main` there too. It matters more, if anything — flat layout has
+/// no versioned directory keeping a mismatched pair apart, so this is the only
+/// thing standing between a bad pair and an app that stops starting.
+///
 /// Anything other than a clean exit — a signal, a spawn failure — reads as a
 /// failure. Refusing an update we can't verify is recoverable; committing one
 /// that won't start is not.
@@ -863,7 +993,18 @@ fn selftestOk(io: std.Io, path: []const u8) bool {
 fn cleanupOld(gpa: std.mem.Allocator, io: std.Io, exe_path: []const u8) void {
     const old = std.fmt.allocPrint(gpa, "{s}.old", .{exe_path}) catch return;
     defer gpa.free(old);
-    std.Io.Dir.cwd().deleteFile(io, old) catch {};
+    const cwd = std.Io.Dir.cwd();
+    cwd.deleteFile(io, old) catch {};
+
+    // The flat runtime is set aside the same way and can't be deleted while the
+    // process that mapped it is alive, so it's swept on a later launch like the
+    // exe's own `.old`.
+    if (runtime_flat) {
+        const exe_dir = std.fs.path.dirname(exe_path) orelse ".";
+        const rt_old = std.fs.path.join(gpa, &.{ exe_dir, runtime_so_name ++ runtime_old_suffix }) catch return;
+        defer gpa.free(rt_old);
+        cwd.deleteFile(io, rt_old) catch {};
+    }
 }
 
 /// HTTP GET `url` into a freshly allocated buffer, capped at `max_bytes`. Used
@@ -1330,10 +1471,14 @@ test "installStagedRuntime creates the runtime, and never touches one already th
     var app_dir = try std.Io.Dir.cwd().createDirPathOpen(io, root ++ "/app", .{});
     defer app_dir.close(io);
 
-    // Nothing installed yet: the runtime lands under its version name.
+    // Nothing installed yet: the runtime lands under its version name. What comes
+    // back is the *destination path*, not the bare name — the flat (Windows) form
+    // has no directory name to report, and its caller needs the path to be able
+    // to put the old runtime back after a failed swap.
     const name = (try installStagedRuntime(allocator, io, stage_dir, root ++ "/app/boxwallet-gui")).?;
     defer allocator.free(name);
-    try std.testing.expectEqualStrings("slint-1.17.1", name);
+    try std.testing.expect(std.mem.endsWith(u8, name, "slint-1.17.1"));
+    try std.testing.expect(std.mem.indexOf(u8, name, root ++ "/app") != null);
 
     var buf: [64]u8 = undefined;
     try std.testing.expectEqualStrings("NEW RUNTIME", try app_dir.readFile(io, "slint-1.17.1/" ++ runtime_so_name, &buf));
@@ -1349,6 +1494,94 @@ test "installStagedRuntime creates the runtime, and never touches one already th
     const again = (try installStagedRuntime(allocator, io, stage_dir, root ++ "/app/boxwallet-gui")).?;
     defer allocator.free(again);
     try std.testing.expectEqualStrings("IN USE", try app_dir.readFile(io, "slint-1.17.1/" ++ runtime_so_name, &buf));
+}
+
+test "installFlatRuntime replaces the runtime beside the exe, keeping the old one" {
+    // The Windows layout. Exercised on every host on purpose: `runtime_flat` is
+    // comptime-false everywhere but Windows, so without calling these directly
+    // the whole flat path would never even be analysed here, let alone run — and
+    // it is the half of the updater with no versioned directory to fall back on.
+    const allocator = std.testing.allocator;
+
+    var threaded: std.Io.Threaded = .init(allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    const root = "test-update-flat";
+    std.Io.Dir.cwd().deleteTree(io, root) catch {};
+    defer std.Io.Dir.cwd().deleteTree(io, root) catch {};
+
+    var stage_dir = try std.Io.Dir.cwd().createDirPathOpen(io, root ++ "/stage", .{});
+    defer stage_dir.close(io);
+    var app_dir = try std.Io.Dir.cwd().createDirPathOpen(io, root ++ "/app", .{});
+    defer app_dir.close(io);
+
+    const exe = root ++ "/app/boxwallet-gui";
+    var buf: [64]u8 = undefined;
+
+    // Nothing staged: a release that only changed the exe must not invent one.
+    try std.testing.expect((try installFlatRuntime(allocator, io, stage_dir, exe)) == null);
+
+    // First install, with no runtime already beside the exe.
+    try stage_dir.writeFile(io, .{ .sub_path = runtime_so_name, .data = "RUNTIME A" });
+    const first = (try installFlatRuntime(allocator, io, stage_dir, exe)).?;
+    defer allocator.free(first);
+    try std.testing.expectEqualStrings("RUNTIME A", try app_dir.readFile(io, runtime_so_name, &buf));
+    // No scratch left behind, and nothing to set aside on a first install.
+    try std.testing.expectError(error.FileNotFound, app_dir.access(io, runtime_so_name ++ runtime_new_suffix, .{}));
+    try std.testing.expectError(error.FileNotFound, app_dir.access(io, runtime_so_name ++ runtime_old_suffix, .{}));
+
+    // Replacing: unlike the versioned layout there is no "leave it alone" case —
+    // one filename holds whichever runtime is current — but the old bytes have to
+    // survive, because a failed swap has to be able to put them back.
+    try stage_dir.writeFile(io, .{ .sub_path = runtime_so_name, .data = "RUNTIME B" });
+    const second = (try installFlatRuntime(allocator, io, stage_dir, exe)).?;
+    defer allocator.free(second);
+    try std.testing.expectEqualStrings("RUNTIME B", try app_dir.readFile(io, runtime_so_name, &buf));
+    try std.testing.expectEqualStrings("RUNTIME A", try app_dir.readFile(io, runtime_so_name ++ runtime_old_suffix, &buf));
+    try std.testing.expectError(error.FileNotFound, app_dir.access(io, runtime_so_name ++ runtime_new_suffix, .{}));
+}
+
+test "restoreFlatRuntime puts the old runtime back after a swap that didn't happen" {
+    // Flat is the one layout where a runtime installed for an abandoned swap is
+    // *not* inert: the old exe is still live and loads that exact filename, so
+    // failing to roll back would break the app we just declined to update.
+    const allocator = std.testing.allocator;
+
+    var threaded: std.Io.Threaded = .init(allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    const root = "test-update-flat-restore";
+    std.Io.Dir.cwd().deleteTree(io, root) catch {};
+    defer std.Io.Dir.cwd().deleteTree(io, root) catch {};
+
+    var stage_dir = try std.Io.Dir.cwd().createDirPathOpen(io, root ++ "/stage", .{});
+    defer stage_dir.close(io);
+    var app_dir = try std.Io.Dir.cwd().createDirPathOpen(io, root ++ "/app", .{});
+    defer app_dir.close(io);
+
+    const exe = root ++ "/app/boxwallet-gui";
+    var buf: [64]u8 = undefined;
+
+    try app_dir.writeFile(io, .{ .sub_path = runtime_so_name, .data = "IN USE" });
+    try stage_dir.writeFile(io, .{ .sub_path = runtime_so_name, .data = "REPLACEMENT" });
+
+    const dest = (try installFlatRuntime(allocator, io, stage_dir, exe)).?;
+    defer allocator.free(dest);
+    try std.testing.expectEqualStrings("REPLACEMENT", try app_dir.readFile(io, runtime_so_name, &buf));
+
+    // The swap fails here — roll the runtime back so the still-live exe keeps
+    // the one it was built against.
+    restoreFlatRuntime(allocator, io, dest);
+    try std.testing.expectEqualStrings("IN USE", try app_dir.readFile(io, runtime_so_name, &buf));
+    // The set-aside copy is consumed by the restore, not left to shadow it.
+    try std.testing.expectError(error.FileNotFound, app_dir.access(io, runtime_so_name ++ runtime_old_suffix, .{}));
+
+    // Restoring with nothing set aside must leave what's there alone rather than
+    // deleting the live runtime.
+    restoreFlatRuntime(allocator, io, dest);
+    try std.testing.expectEqualStrings("IN USE", try app_dir.readFile(io, runtime_so_name, &buf));
 }
 
 test "installStagedRuntime is a no-op when no runtime is staged" {
