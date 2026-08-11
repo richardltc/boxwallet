@@ -3268,7 +3268,7 @@ const Activity = struct {
     /// reports alive (we fall back to trusting the launcher's exit code, the
     /// prior behaviour).
     fn confirmAlive(self: *Activity, io: std.Io) bool {
-        return proc_mod.stayedAlive(io, self.coin.daemonFile());
+        return proc_mod.stayedAlive(io, self.coin.daemonFile(), self.coin.daemonProcessCmdline());
     }
 
     /// Surface a failed start's reason from the coin's own daemon log (e.g.
@@ -7362,7 +7362,7 @@ pub const App = struct {
                     .scanned = @intCast(act.rescan_scanned),
                     .target = @intCast(act.rescan_target),
                 }) * 100;
-                const text = std.fmt.allocPrint(a, "Rescanning… {d:.0}%", .{pct}) catch "Rescanning…";
+                const text = std.fmt.allocPrint(a, "Rescanning… {d:.1}%", .{pct}) catch "Rescanning…";
                 break :blk (zz.Style{}).bold(true).fg(.yellow).render(a, text) catch text;
             }
             break :blk (zz.Style{}).bold(true).fg(.green).render(a, "Unlocked") catch "Unlocked";
@@ -7930,7 +7930,7 @@ pub const App = struct {
         }
         if (info.total_supply_cents > 0 or info.total_collateral > 0) {
             var sbuf: [32]u8 = undefined;
-            const stats = try std.fmt.allocPrint(a, "Supply: {s}   Locked collateral: {d:.0}   Health: {d:.0}%", .{
+            const stats = try std.fmt.allocPrint(a, "Supply: {s}   Locked collateral: {d:.0}   Health: {d:.1}%", .{
                 formatCents(&sbuf, info.total_supply_cents), info.total_collateral, info.health_ratio,
             });
             const stats_dim = (zz.Style{}).dim(true).render(a, stats) catch stats;
@@ -9461,7 +9461,7 @@ fn coloredBar(a: std.mem.Allocator, current: u64, total: u64, fill: zz.Color) ![
     p.setTotal(@floatFromInt(@max(total, 1)));
     p.setValue(@floatFromInt(if (total == 0) 0 else current));
     // Render our own percentage instead of ZigZag's whole-number "{d:.0}%": we
-    // want two decimal places (e.g. "42.37%") for in-progress values, but plain
+    // want one decimal place (e.g. "42.4%") for in-progress values, but plain
     // "0%"/"100%" at the endpoints so the common cases stay tidy.
     p.show_percent = false;
     const bar_str = try p.view(a);
@@ -9471,7 +9471,7 @@ fn coloredBar(a: std.mem.Allocator, current: u64, total: u64, fill: zz.Color) ![
     else if (pct >= 100)
         try std.fmt.allocPrint(a, " 100%", .{})
     else
-        try std.fmt.allocPrint(a, " {d:.2}%", .{pct});
+        try std.fmt.allocPrint(a, " {d:.1}%", .{pct});
     const pct_styled = try p.percent_style.render(a, pct_str);
     return std.mem.concat(a, u8, &.{ bar_str, pct_styled });
 }
@@ -9931,7 +9931,7 @@ test "renderStatus appends the presync percentage only on the presync line" {
     act.presync = true;
     act.presync_bp = 744;
     const with_pct = renderStatus(a, &act, brand);
-    try std.testing.expect(std.mem.indexOf(u8, with_pct, "Pre-synching headers… 7.44%") != null);
+    try std.testing.expect(std.mem.indexOf(u8, with_pct, "Pre-synching headers… 7.4%") != null);
 
     // Same presync state but no scraped percentage (log line not in the tail) →
     // the base line shows, with no trailing percentage.
@@ -9956,13 +9956,13 @@ test "renderStatus shows the block-loading sub-stage and percentage during .load
     act.load_stage = .loading_blocks;
     act.load_pct_bp = 1000;
     const loading = renderStatus(a, &act, brand);
-    try std.testing.expect(std.mem.indexOf(u8, loading, "Loading blocks… 10.00%") != null);
+    try std.testing.expect(std.mem.indexOf(u8, loading, "Loading blocks… 10.0%") != null);
 
     // "Processing blocks…" sub-stage.
     act.load_stage = .processing_blocks;
     act.load_pct_bp = 1234;
     const processing = renderStatus(a, &act, brand);
-    try std.testing.expect(std.mem.indexOf(u8, processing, "Processing blocks… 12.34%") != null);
+    try std.testing.expect(std.mem.indexOf(u8, processing, "Processing blocks… 12.3%") != null);
 
     // No sub-stage found in the log (yet) → falls back to the plain generic
     // label, no percentage.
@@ -11600,7 +11600,7 @@ test "coin pane renders a Disk bar from the app's disk-usage figure" {
     const out = app.renderDetail(arena.allocator());
 
     try std.testing.expect(std.mem.indexOf(u8, out, "Disk") != null);
-    try std.testing.expect(std.mem.indexOf(u8, out, "25.00%") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "25.0%") != null);
 }
 
 test "coin pane renders a Memory line with the current used figure" {
@@ -11632,7 +11632,7 @@ test "coin pane renders a Memory line with the current used figure" {
     const out = app.renderDetail(arena.allocator());
 
     try std.testing.expect(std.mem.indexOf(u8, out, "Memory") != null);
-    try std.testing.expect(std.mem.indexOf(u8, out, "50.00%") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "50.0%") != null);
 }
 
 test "coin pane renders a Storage line with the coin's on-disk size" {

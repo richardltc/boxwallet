@@ -875,6 +875,13 @@ pub const Coin = struct {
         /// when the RPC probe found no phase and the daemon is believed up. Null
         /// for coins whose warm-up is fully visible over RPC (the common case).
         warmup_phase_from_log: ?*const fn (ptr: *anyopaque, tail: []const u8) models.LoadingPhase = null,
+        /// Optional: a fragment of the daemon's command line that identifies its
+        /// process, for a daemon that doesn't run under its own name. Ergo is
+        /// `java -jar ergo-<ver>.jar`, so the OS sees `java` and a liveness check
+        /// against `daemon_file` finds nothing. Must be specific to this coin —
+        /// it's matched against every process's command line. Null (the common
+        /// case) means the daemon runs as `daemon_file` and is matched by name.
+        daemon_process_cmdline: ?*const fn (ptr: *anyopaque) []const u8 = null,
         /// Optional: the daemon's own log file, as a name relative to the coin's
         /// data dir (`debug.log` for bitcoin-derived daemons, `nerva.log` /
         /// `salvium.log` / `zanod.log` for the epee family). Its tail is read to
@@ -1353,6 +1360,15 @@ pub const Coin = struct {
     /// bitcoin-style warm-up (their loading phase is always `none`).
     pub fn warmupProbeMethod(self: Coin) ?[]const u8 {
         if (self.vtable.warmup_probe_method) |f| return f(self.ptr);
+        return null;
+    }
+
+    /// A command-line fragment identifying this coin's daemon process, for a
+    /// daemon that doesn't run under its own name (Ergo: `java -jar ergo-x.jar`).
+    /// Null for the common case — pass it to `proc.aliveMatching` alongside
+    /// `daemonFile()` and a null simply matches by name.
+    pub fn daemonProcessCmdline(self: Coin) ?[]const u8 {
+        if (self.vtable.daemon_process_cmdline) |f| return f(self.ptr);
         return null;
     }
 

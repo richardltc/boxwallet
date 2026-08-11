@@ -792,7 +792,7 @@ export fn bw_blockchain_state(ctx: ?*Ctx, idx: usize, out: ?*BwBlockchainState) 
 
 /// What the daemon is doing while its RPC can't answer a status call yet.
 /// Writes the stage label into `buf` — "Loading block index…", "Rewinding…",
-/// "Verifying…", "Loading blocks… 42.00%" — and returns its length. 0 means not
+/// "Verifying…", "Loading blocks… 42.0%" — and returns its length. 0 means not
 /// warming up: the daemon is either answering normally or genuinely not running.
 ///
 /// This is the difference between an honest status and a wrong one. A
@@ -825,6 +825,26 @@ export fn bw_daemon_stage(ctx: ?*Ctx, idx: usize, buf: ?[*]u8, cap: usize) usize
     return copyOut(b[0..cap], text);
 }
 
+/// Whether a process named after this coin's daemon binary is alive — 1 yes,
+/// 0 no. `proc.alive`, the same check the TUI's start path uses, over the ABI.
+///
+/// The companion to `bw_daemon_stage`, for the coins that can't answer it. A
+/// bitcoin-derived daemon narrates its start-up over `-28`, so the stage label
+/// alone tells a starting daemon from a stopped one; a coin with no such
+/// warm-up protocol (Ergo, whose REST API simply refuses the connection until
+/// it's ready) reports no stage at any point, and is indistinguishable from
+/// "not running" without this.
+///
+/// **Not on its own a claim that the daemon is starting.** The process is also
+/// alive while it shuts down and flushes — the reason `bw_daemon_stage`
+/// deliberately doesn't look at liveness. A caller that reads this as "coming
+/// up" must know a stop isn't in flight.
+export fn bw_daemon_alive(ctx: ?*Ctx, idx: usize) c_int {
+    _ = ctx orelse return 0;
+    const coin = coinByIndex(idx) orelse return 0;
+    return if (proc.aliveMatching(sharedIo(), coin.daemonFile(), coin.daemonProcessCmdline())) 1 else 0;
+}
+
 // ---- daemon control + wallet lock/unlock (the action buttons) ---------------
 //
 // These mirror the TUI's launch/stop/lock paths, driven through the same `Coin`
@@ -848,7 +868,7 @@ fn ctxAuth(a: std.mem.Allocator, io: std.Io, coin: Coin, ctx: *Ctx) !models.Coin
 fn confirmAlive(coin: Coin) bool {
     var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
     defer arena.deinit();
-    return proc.stayedAlive(sharedIo(), coin.daemonFile());
+    return proc.stayedAlive(sharedIo(), coin.daemonFile(), coin.daemonProcessCmdline());
 }
 
 /// Non-blocking check of a spawned child: null while still running, else its
@@ -3178,7 +3198,7 @@ export fn bw_wallet_restore_file_offline(ctx: ?*Ctx, idx: usize, src_path: ?[*:0
     const a = arena.allocator();
     const io = sharedIo();
 
-    if (proc.alive(io, coin.daemonFile())) {
+    if (proc.aliveMatching(io, coin.daemonFile(), coin.daemonProcessCmdline())) {
         c.setError("Stop the daemon before restoring a wallet file — it holds the wallet open.");
         c.setErrorCode("DaemonRunning");
         return -1;

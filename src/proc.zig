@@ -19,10 +19,24 @@ const builtin = @import("builtin");
 /// and no `pgrep`) it conservatively reports alive, so a live daemon is never
 /// declared dead by mistake.
 pub fn alive(io: std.Io, name: []const u8) bool {
+    return aliveMatching(io, name, null);
+}
+
+/// `alive`, for a daemon that doesn't run under its own name.
+///
+/// An interpreter-launched daemon is not the file we launched: Ergo is
+/// `java -jar ergo-<ver>.jar`, so its `comm` is `java` and matching on the
+/// daemon file finds nothing. `cmdline_needle` switches the match to the
+/// process's *command line*, which still carries the jar. It must be specific
+/// enough to identify this coin alone — `java` would match any JVM on the
+/// machine, `ergo-<ver>.jar` matches ours. Null matches by name, as `alive`.
+pub fn aliveMatching(io: std.Io, name: []const u8, cmdline_needle: ?[]const u8) bool {
     if (builtin.os.tag == .windows) return true;
     var proc = std.Io.Dir.cwd().openDir(io, "/proc", .{ .iterate = true }) catch
-        return aliveByPgrep(io, name);
+        return aliveByPgrep(io, name, cmdline_needle);
     defer proc.close(io);
+
+    if (cmdline_needle) |needle| return aliveByCmdline(io, proc, needle);
 
     // comm is truncated to TASK_COMM_LEN-1 (15) bytes.
     const want = if (name.len > 15) name[0..15] else name;
@@ -41,12 +55,42 @@ pub fn alive(io: std.Io, name: []const u8) bool {
     return false;
 }
 
-/// `pgrep -x` fallback for `alive` on POSIX systems without `/proc` (macOS):
-/// exit 0 = at least one live match, 1 = none. Anything else (pgrep missing or
-/// erroring) conservatively reads as alive, per the caller's contract.
-fn aliveByPgrep(io: std.Io, name: []const u8) bool {
+/// True while some process's command line contains `needle`. The `/proc` half of
+/// `aliveMatching`'s interpreter case: `comm` is deliberately not consulted (it's
+/// the interpreter's name, not the coin's), so the needle carries the whole
+/// burden of identifying the process — see `aliveMatching`.
+///
+/// cmdline is NUL-separated argv; the needle is matched against those bytes, so
+/// it must not span an argument boundary. A jar path in `-jar <path>` is one
+/// argument, so it matches whether or not it's given with a directory prefix.
+fn aliveByCmdline(io: std.Io, proc: std.Io.Dir, needle: []const u8) bool {
+    var it = proc.iterate();
+    while (it.next(io) catch null) |entry| {
+        if (entry.kind != .directory or entry.name.len == 0 or !std.ascii.isDigit(entry.name[0])) continue;
+        var path_buf: [32]u8 = undefined;
+        const cl_path = std.fmt.bufPrint(&path_buf, "{s}/cmdline", .{entry.name}) catch continue;
+        var f = proc.openFile(io, cl_path, .{}) catch continue;
+        defer f.close(io);
+        // Bounded, like every other read here: a JVM launch line is long (module
+        // flags, classpath), but the jar sits early in it, and a truncated read
+        // only ever costs a match we'd have made — never a false one.
+        var lbuf: [4096]u8 = undefined;
+        const n = f.readPositionalAll(io, &lbuf, 0) catch continue;
+        if (std.mem.indexOf(u8, lbuf[0..n], needle) != null) return true;
+    }
+    return false;
+}
+
+/// `pgrep` fallback for `aliveMatching` on POSIX systems without `/proc`
+/// (macOS): exit 0 = at least one live match, 1 = none. Anything else (pgrep
+/// missing or erroring) conservatively reads as alive, per the caller's
+/// contract. `-x` matches the process name exactly; `-f` matches the full
+/// command line, which is the interpreter case.
+fn aliveByPgrep(io: std.Io, name: []const u8, cmdline_needle: ?[]const u8) bool {
+    const flag = if (cmdline_needle == null) "-x" else "-f";
+    const pattern = cmdline_needle orelse name;
     var child = std.process.spawn(io, .{
-        .argv = &.{ "pgrep", "-x", name },
+        .argv = &.{ "pgrep", flag, pattern },
         .stdin = .ignore,
         .stdout = .ignore,
         .stderr = .ignore,
@@ -57,16 +101,16 @@ fn aliveByPgrep(io: std.Io, name: []const u8) bool {
     };
 }
 
-/// Poll `alive` over a short window, returning false the moment the process is
-/// seen gone. A daemon that dies during init is gone almost immediately, while
-/// a healthy one is present from the fork on — so this separates the two
-/// without waiting on RPC (which a bitcoin-derived daemon won't answer for
-/// minutes while it loads the block index).
-pub fn stayedAlive(io: std.Io, name: []const u8) bool {
+/// Poll `aliveMatching` over a short window, returning false the moment the
+/// process is seen gone. A daemon that dies during init is gone almost
+/// immediately, while a healthy one is present from the fork on — so this
+/// separates the two without waiting on RPC (which a bitcoin-derived daemon
+/// won't answer for minutes while it loads the block index).
+pub fn stayedAlive(io: std.Io, name: []const u8, cmdline_needle: ?[]const u8) bool {
     var i: u8 = 0;
     while (i < 8) : (i += 1) {
         io.sleep(.fromMilliseconds(250), .awake) catch {};
-        if (!alive(io, name)) return false;
+        if (!aliveMatching(io, name, cmdline_needle)) return false;
     }
     return true;
 }

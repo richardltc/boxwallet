@@ -1081,6 +1081,7 @@ pub const Ergo = struct {
         .balance_decimals = vtBalanceDecimals,
         .conf_file = vtConfFile,
         .daemon_file = vtDaemonFile,
+        .daemon_process_cmdline = vtDaemonProcessCmdline,
         .rpc_default_port = vtRpcDefaultPort,
         .rpc_default_username = vtRpcDefaultUsername,
         .blockchain_state = vtBlockchainState,
@@ -1176,6 +1177,12 @@ pub const Ergo = struct {
     /// Ergo has no native daemon binary; the jar name stands in for the few places
     /// the bitcoin fork path would use it (Ergo never takes that path).
     fn vtDaemonFile(_: *anyopaque) []const u8 {
+        return jar_file;
+    }
+    /// The node is a jar, not an executable: the process the OS sees is `java`,
+    /// so liveness has to match the command line instead. The versioned jar name
+    /// is what makes it ours and not some other JVM on the machine.
+    fn vtDaemonProcessCmdline(_: *anyopaque) []const u8 {
         return jar_file;
     }
     fn vtRpcDefaultPort(_: *anyopaque) []const u8 {
@@ -1805,6 +1812,28 @@ test "the extra-index readiness gate holds until the index catches up" {
         const ready = ih.fullHeight > 0 and ih.indexedHeight >= ih.fullHeight - slack;
         try std.testing.expectEqual(c[1], ready);
     }
+}
+
+test "Ergo identifies its daemon process by command line, not by name" {
+    // The node is a jar: `java -jar ergo-<ver>.jar` runs as `java`, so a liveness
+    // check against `daemonFile()` matches nothing and the GUI reads a healthy,
+    // still-starting node as stopped. The needle has to be the versioned jar —
+    // specific enough that another JVM on the machine can't answer for us.
+    var e: Ergo = .{};
+    const needle = e.coin().daemonProcessCmdline() orelse
+        return error.ErgoMustMatchByCmdline;
+    try std.testing.expectEqualStrings(Ergo.jar_file, needle);
+    try std.testing.expect(std.mem.endsWith(u8, needle, ".jar"));
+    // Not the bare interpreter, which every other Java program shares.
+    try std.testing.expect(!std.mem.eql(u8, needle, "java"));
+}
+
+test "a coin whose daemon runs under its own name declares no cmdline match" {
+    // The hook is the exception, not the rule: the default must stay null so
+    // every ordinary coin keeps matching by process name.
+    const Nexa = @import("nexa.zig").Nexa;
+    var n: Nexa = .{};
+    try std.testing.expect(n.coin().daemonProcessCmdline() == null);
 }
 
 test "Ergo declares no headers pre-synchronization pass" {

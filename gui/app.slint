@@ -173,11 +173,21 @@ component CircleGauge inherits VerticalBox {
     in property <string> label;
     in property <string> value; // e.g. "4,136,946" or "12.3 GB free"
     in property <string> full-text; // shown in place of "100%" when full (e.g. "Synced")
+    // The measurement isn't available — not "0%", which is a claim of its own.
+    // A sync gauge with no known network tip has no denominator, so it reads
+    // "—" over an empty ring until one arrives.
+    in property <bool> unknown: false;
 
     property <float> f: Math.max(0.0, Math.min(1.0, root.frac));
     // Smoothly sweep the ring (and count the % readout) whenever the underlying
     // fraction jumps — e.g. a poll advancing the sync, or clearing to 0 on stop.
     animate f { duration: 600ms; easing: ease-in-out; }
+    // One decimal place, matching the TUI. Slint has no number formatting, so
+    // the readout is built from integer tenths-of-a-percent: interpolating the
+    // float directly would print its full binary expansion.
+    property <int> tenths: Math.round(root.f * 1000);
+    property <int> pct-whole: Math.floor(root.tenths / 10);
+    property <string> pct-text: "\{root.pct-whole}.\{root.tenths - root.pct-whole * 10}%";
     property <length> dia: 72px;
 
     padding: 0;
@@ -212,9 +222,14 @@ component CircleGauge inherits VerticalBox {
                 border-radius: (parent.width - 8px) / 2;
                 background: #1e1e1e;
                 Text {
-                    text: (root.f >= 0.999 && root.full-text != "") ? root.full-text : Math.round(root.f * 100) + "%";
-                    color: #e6e6e6;
-                    font-size: (root.f >= 0.999 && root.full-text != "") ? 13px : 15px;
+                    text: root.unknown
+                        ? "—"
+                        : ((root.f >= 0.999 && root.full-text != "") ? root.full-text : root.pct-text);
+                    color: root.unknown ? #8a8a8a : #e6e6e6;
+                    // A step down for the two long readouts — the full-text word,
+                    // and "100.0%", which is two characters wider than the "100%"
+                    // this used to show and would otherwise crowd the ring.
+                    font-size: (!root.unknown && (root.tenths >= 1000 || (root.f >= 0.999 && root.full-text != ""))) ? 13px : 15px;
                     horizontal-alignment: center;
                     vertical-alignment: center;
                 }
@@ -670,7 +685,7 @@ export component AppWindow inherits Window {
     in-out property <bool> daemon-loading: false;
     // What the daemon is doing while it's still coming up, straight from its own
     // warm-up report (bw_daemon_stage): "Loading block index…", "Rewinding…",
-    // "Verifying…", "Loading blocks… 42.00%". Empty when it isn't warming up.
+    // "Verifying…", "Loading blocks… 42.0%". Empty when it isn't warming up.
     in-out property <string> daemon-stage: "";
     // Wallet lock state (from bw_wallet_security): 0 unknown, 1 unencrypted,
     // 2 locked, 3 unlocked, 4 unlocked-for-staking. 0 (unknown) greys the glyph.
@@ -775,6 +790,10 @@ export component AppWindow inherits Window {
     in property <float> sync-percent: 0;
     in property <float> headers-frac: 0;
     in property <float> blocks-frac: 0;
+    // No network tip to measure against yet (no peers, or the peer query
+    // failed), so neither sync gauge has a denominator. Set by the poll; both
+    // gauges then read "—" rather than a number derived from our own height.
+    in property <bool> sync-unknown: false;
     in property <float> disk-frac: 0;
     in property <string> headers-str: ""; // formatted header count
     in property <string> blocks-str: "";  // formatted block count
@@ -1405,23 +1424,45 @@ export component AppWindow inherits Window {
                             motion: "pulse";
                             moving: root.daemon-loading;
                         }
-                        // Peers — lit when connected; hint shows the count.
+                        // Peers — lit when connected; hint shows the count. Once the
+                        // daemon is *running* with nobody connected yet it pulses
+                        // like the smiley does, to say "looking for peers", and stops
+                        // the moment the first one lands.
+                        //
+                        // Running, not merely loading: a daemon still opening its
+                        // block index hasn't started networking, so pulsing through
+                        // the load would show it hunting for peers before it can.
+                        // The smiley carries that window on its own.
                         StatusIcon {
                             icon: @image-url("icons/wifi.svg");
                             accent: root.coin-color;
                             active: root.running && root.peers > 0;
-                            hint: "Peers: " + root.peers;
+                            hint: root.peers > 0
+                                ? "Peers: " + root.peers
+                                : (root.running ? "Looking for peers…" : "Peers: 0");
+                            motion: "pulse";
+                            moving: root.running && root.peers == 0;
                             // Pulse once whenever a new peer connection is picked up.
                             pulse-on-increase: root.peers;
                         }
-                        // Sync — spins while syncing, static when synced.
+                        // Sync — spins while syncing, static when synced. Nothing can
+                        // sync without a peer to sync from, so it holds still until
+                        // the peer count is off zero: a spinner with no connection
+                        // would be claiming progress that isn't happening.
                         StatusIcon {
                             icon: @image-url("icons/refresh-cw.svg");
                             accent: root.coin-color;
-                            active: root.running;
-                            hint: root.running ? (root.synced ? "Synced" : "Syncing…") : "Not running";
+                            // Grey until there's a peer: with nobody connected the
+                            // node isn't syncing and can't even tell whether it's
+                            // behind, so a lit glyph would be reporting a state we
+                            // haven't observed.
+                            active: root.running && root.peers > 0;
+                            hint: !root.running ? "Not running"
+                                : root.synced ? "Synced"
+                                : root.peers == 0 ? "Waiting for peers…"
+                                : "Syncing…";
                             motion: "spin";
-                            moving: root.running && !root.synced;
+                            moving: root.running && !root.synced && root.peers > 0;
                         }
                         // Wallet lock — open/closed padlock, lit once we know the
                         // wallet's state. A coin with a *managed* wallet (Nerva) has
@@ -1578,6 +1619,7 @@ export component AppWindow inherits Window {
                                 fill: root.coin-color;
                                 value: root.headers-str;
                                 full-text: "Synced";
+                                unknown: root.sync-unknown;
                             }
                             CircleGauge {
                                 label: "Blocks";
@@ -1585,6 +1627,7 @@ export component AppWindow inherits Window {
                                 fill: root.coin-color;
                                 value: root.blocks-str;
                                 full-text: "Synced";
+                                unknown: root.sync-unknown;
                             }
                             CircleGauge {
                                 label: "Disk used";
@@ -1683,6 +1726,10 @@ export component AppWindow inherits Window {
                                     font-size: 13px;
                                 }
                                 Text {
+                                    // Tenths of a percent, so the readout carries one
+                                    // decimal like every other percentage in the UI.
+                                    property <int> tenths: Math.round(Math.max(0.0, Math.min(1.0, root.install-frac)) * 1000);
+                                    property <int> whole: Math.floor(self.tenths / 10);
                                     // Downloading shows real transferred bytes. Extracting
                                     // deliberately shows only a percentage: its byte counts
                                     // are positions in the *compressed* archive, so printing
@@ -1690,7 +1737,7 @@ export component AppWindow inherits Window {
                                     // and understate what lands on disk. The percentage is
                                     // the honest part of that measure.
                                     text: root.install-phase == 2
-                                        ? (root.install-frac < 0 ? "" : "\{Math.round(root.install-frac * 100)}%")
+                                        ? (root.install-frac < 0 ? "" : "\{self.whole}.\{self.tenths - self.whole * 10}%")
                                         : root.install-bytes;
                                     color: #9a9a9a;
                                     font-size: 13px;
