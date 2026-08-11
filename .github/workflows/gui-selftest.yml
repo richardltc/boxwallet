@@ -1,0 +1,180 @@
+# Verification gate for the GUI bundles that Linux can build but can't run.
+#
+# `zig build gui-release-unverified` cross-builds the macOS arm64 and Windows
+# x86_64 bundles from Linux, but nothing on a Linux host can execute a Mach-O or
+# a PE — and an exe/runtime mismatch fails *inside the loader, before main*, with
+# no window and no message. That is precisely the failure `--selftest` exists to
+# catch, so until it has run on the real OS a bundle stays in
+# `gui_targets_unverified` and out of `release-all`.
+#
+# This workflow is that missing step: build once on Linux exactly as a release
+# would, then run the bundle on a real runner of each OS. A target only earns its
+# way into `gui_targets` (and `assetFor` in src/update.zig) once this is green.
+#
+# It publishes nothing and needs no secrets - it only ever reads the repo.
+name: GUI bundle selftest
+
+on:
+  workflow_dispatch:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: read
+
+env:
+  # Pinned, and fetched with its published checksum rather than through a
+  # third-party setup action - the same standard the Slint packages are held to.
+  ZIG_VERSION: '0.16.0'
+  ZIG_SHA256: '70e49664a74374b48b51e6f3fdfbf437f6395d42509050588bd49abe52ba3d00'
+
+jobs:
+  build:
+    name: Cross-build the unverified bundles
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+
+      # 7z unpacks upstream's Slint Windows package (an NSIS installer that `zig
+      # fetch` refuses); zip builds the bundles.
+      - name: Install build tools
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends p7zip-full zip
+
+      - name: Install Zig ${{ env.ZIG_VERSION }}
+        run: |
+          set -euo pipefail
+          url="https://ziglang.org/download/${ZIG_VERSION}/zig-x86_64-linux-${ZIG_VERSION}.tar.xz"
+          curl -fsSL -o zig.tar.xz "$url"
+          echo "${ZIG_SHA256}  zig.tar.xz" | sha256sum -c -
+          tar -xf zig.tar.xz
+          echo "$PWD/zig-x86_64-linux-${ZIG_VERSION}" >> "$GITHUB_PATH"
+
+      # The dependency tree is hash-pinned in build.zig.zon, so a cache hit can
+      # only ever be the same bytes a fetch would produce.
+      - name: Cache fetched dependencies
+        uses: actions/cache@v4
+        with:
+          path: zig-pkg
+          key: zig-pkg-${{ runner.os }}-${{ env.ZIG_VERSION }}-${{ hashFiles('build.zig.zon') }}
+
+      # The single source of truth for the version, so the selftest jobs can
+      # assert the bundle reports what this commit says it is.
+      - name: Read app_version
+        id: version
+        run: |
+          set -euo pipefail
+          v=$(sed -n 's/.*app_version[[:space:]]*=[[:space:]]*"\([^"]*\)".*/\1/p' src/version.zig | head -n1)
+          test -n "$v" || { echo "could not read app_version from src/version.zig" >&2; exit 1; }
+          echo "version=$v" >> "$GITHUB_OUTPUT"
+
+      - name: Build the unverified GUI bundles
+        run: ZIG_GLOBAL_CACHE_DIR=zig-pkg zig build gui-release-unverified
+
+      - name: Verify checksums
+        run: cd zig-out/gui-release-unverified && sha256sum -c SHA256SUMS
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: gui-bundles
+          # The zips, not the loose exes: artifact upload does not preserve the
+          # executable bit, but a mode stored inside a zip survives it.
+          path: |
+            zig-out/gui-release-unverified/*.zip
+            zig-out/gui-release-unverified/RUNTIME
+          if-no-files-found: error
+
+  windows:
+    name: Selftest on Windows
+    needs: build
+    runs-on: windows-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: gui-bundles
+
+      - name: Unpack the bundle
+        shell: pwsh
+        run: Expand-Archive -Path boxwallet-gui-windows-x86_64.zip -DestinationPath .
+
+      # Run from a different working directory on purpose. Windows resolves an
+      # implicit import from the *executable's* directory, not the caller's, and
+      # that is the whole reason the DLL may sit flat beside the exe - so prove
+      # it, rather than accidentally passing because cwd happened to be right.
+      - name: Selftest
+        shell: pwsh
+        working-directory: 'C:\'
+        env:
+          EXPECTED: ${{ needs.build.outputs.version }}
+        run: |
+          $exe = Join-Path $env:GITHUB_WORKSPACE 'boxwallet-gui-windows-x86_64\boxwallet-gui.exe'
+          $out = (& $exe --selftest 2>&1 | Out-String).Trim()
+          if ($LASTEXITCODE -ne 0) { throw "selftest exited $LASTEXITCODE - the exe and slint_cpp.dll are not a working pair" }
+          if ($out -ne $env:EXPECTED) { throw "selftest reported '$out', expected '$env:EXPECTED'" }
+          Write-Host "selftest OK: $out"
+
+      # A gate that cannot fail is not a gate. Take the runtime away and require
+      # the selftest to notice - otherwise a --selftest that silently returned 0
+      # would wave every broken pair straight through.
+      - name: Selftest must fail without its runtime
+        shell: pwsh
+        run: |
+          $dir = Join-Path $env:GITHUB_WORKSPACE 'boxwallet-gui-windows-x86_64'
+          Rename-Item -Path (Join-Path $dir 'slint_cpp.dll') -NewName 'slint_cpp.dll.hidden'
+          & (Join-Path $dir 'boxwallet-gui.exe') --selftest 2>&1 | Out-Null
+          $code = $LASTEXITCODE
+          Rename-Item -Path (Join-Path $dir 'slint_cpp.dll.hidden') -NewName 'slint_cpp.dll'
+          if ($code -eq 0) { throw "selftest passed with no runtime present - the gate has no teeth" }
+          Write-Host "correctly failed without the runtime (exit $code)"
+
+  macos:
+    name: Selftest on macOS (arm64)
+    needs: build
+    runs-on: macos-latest
+    timeout-minutes: 15
+    steps:
+      # The bundle is arm64-only - upstream publishes no Intel macOS Slint
+      # package - and an arm64 Mach-O simply will not run on an Intel runner
+      # (Rosetta translates the other way). GitHub has moved what `macos-latest`
+      # points at before, so assert it rather than discover it as a baffling
+      # "cannot execute binary file".
+      - name: Require an Apple Silicon runner
+        run: |
+          set -euo pipefail
+          arch=$(uname -m)
+          test "$arch" = "arm64" || { echo "need an arm64 runner, got $arch" >&2; exit 1; }
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: gui-bundles
+
+      # unzip, not ditto/Expand-Archive: it preserves the stored mode, and the
+      # bundle has to stay executable for this to mean anything.
+      - name: Unpack the bundle
+        run: unzip -q boxwallet-gui-macos-aarch64.zip
+
+      - name: Selftest
+        working-directory: /
+        env:
+          EXPECTED: ${{ needs.build.outputs.version }}
+        run: |
+          set -euo pipefail
+          exe="$GITHUB_WORKSPACE/boxwallet-gui-macos-aarch64/boxwallet-gui"
+          out=$("$exe" --selftest)
+          test "$out" = "$EXPECTED" || { echo "selftest reported '$out', expected '$EXPECTED'" >&2; exit 1; }
+          echo "selftest OK: $out"
+
+      - name: Selftest must fail without its runtime
+        run: |
+          set -uo pipefail
+          dir="$GITHUB_WORKSPACE/boxwallet-gui-macos-aarch64"
+          rt=$(ls -d "$dir"/slint-* | head -n1)
+          mv "$rt" "$rt.hidden"
+          "$dir/boxwallet-gui" --selftest >/dev/null 2>&1
+          code=$?
+          mv "$rt.hidden" "$rt"
+          test "$code" -ne 0 || { echo "selftest passed with no runtime present - the gate has no teeth" >&2; exit 1; }
+          echo "correctly failed without the runtime (exit $code)"
