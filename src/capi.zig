@@ -998,6 +998,25 @@ fn startDaemon(ctx: *Ctx, idx: usize) !void {
     return error.DaemonStartFailed;
 }
 
+/// Reap the retained foreground child if it has already exited, so it doesn't
+/// linger as a zombie for the life of the app. A no-op when there's no handle,
+/// when it was reaped already, or when it's still running (`probeChild` is
+/// `WNOHANG`), and on Windows, where there are no zombies to collect.
+///
+/// A foreground daemon is deliberately not waited on at spawn — it has to
+/// outlive `startDaemon` — but we stay its parent, so *something* must
+/// eventually reap it. The kill path does so inline; an RPC shutdown (or the
+/// process dying on its own) needs this. Mirrors the TUI's `reapDaemonChild`.
+///
+/// `daemon_child[idx]` is only touched by the action worker driving that coin,
+/// so this inherits the same serialization as the start/stop paths.
+fn reapDaemonChild(ctx: *Ctx, idx: usize) void {
+    if (idx >= coin_count) return;
+    if (ctx.daemon_child[idx]) |*child| {
+        if (probeChild(child)) |_| ctx.daemon_child[idx] = null;
+    }
+}
+
 fn stopDaemon(ctx: *Ctx, idx: usize) !void {
     var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
     defer arena.deinit();
@@ -1006,28 +1025,57 @@ fn stopDaemon(ctx: *Ctx, idx: usize) !void {
 
     const coin = coinByIndex(idx) orelse return error.NoSuchCoin;
 
-    if (coin.hasRpcStop()) {
-        const auth = try ctxAuth(a, io, coin, ctx);
-        coin.requestStop(a, auth) catch |err| {
-            ctx.setError(@errorName(err));
-            return err;
-        };
-        // Wait (bounded) for it to actually go down.
-        var i: u8 = 0;
-        while (i < 40) : (i += 1) {
-            io.sleep(.fromMilliseconds(250), .awake) catch {};
-            var probe = std.heap.ArenaAllocator.init(std.heap.page_allocator);
-            defer probe.deinit();
-            _ = coin.daemonInfo(probe.allocator(), auth) catch break;
-        }
-    } else if (ctx.daemon_child[idx]) |*child| {
+    if (!coin.hasRpcStop()) {
         // No shutdown RPC (Zano): terminate the process we launched *for this
         // coin*. Only this coin's slot is ever touched, so stopping it can't
         // reach another coin's daemon.
-        child.kill(io);
-        ctx.daemon_child[idx] = null;
-    } else {
+        if (ctx.daemon_child[idx]) |*child| {
+            child.kill(io);
+            ctx.daemon_child[idx] = null;
+            return;
+        }
         return error.CannotStop;
+    }
+
+    const auth = try ctxAuth(a, io, coin, ctx);
+
+    // Ask the daemon to shut down. A failed request is **not** proof it's still
+    // up, so it isn't returned here — only remembered. A busy daemon can act on
+    // the request and still not answer it: nervad seconds into its init takes
+    // the stop and tears the RPC server down before the reply lands, so we see a
+    // read failure or a timeout for a stop that worked. Reporting that as a
+    // failed stop flips the daemon back to running in the UI. The probe below is
+    // the real answer; the remembered error only speaks if the daemon is still
+    // answering at the end. Mirrors the TUI's `requestStop`.
+    const req_err: ?anyerror = if (coin.requestStop(a, auth)) null else |err| err;
+
+    // Probe on a small arena reset each round so the wait stays flat in memory.
+    // The daemon drops its RPC port early in shutdown, so the first failed probe
+    // means it's on its way down; cap the wait so a wedged daemon doesn't pin
+    // the worker forever.
+    //
+    // A foreground daemon we launched is still our child, and an RPC shutdown
+    // exits it behind our back — nothing has waited on it. Reap it each round
+    // (and once more on the way out) so it doesn't sit as a zombie until the app
+    // quits; a fork coin's launcher was already waited on at spawn, and a
+    // prior-session daemon isn't ours, so both no-op here.
+    var probe = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+    defer probe.deinit();
+    defer reapDaemonChild(ctx, idx);
+    var i: u8 = 0;
+    while (i < 40) : (i += 1) {
+        io.sleep(.fromMilliseconds(250), .awake) catch {};
+        _ = probe.reset(.retain_capacity);
+        reapDaemonChild(ctx, idx);
+        _ = coin.daemonInfo(probe.allocator(), auth) catch return;
+    }
+
+    // Still answering after the whole wait: the daemon is genuinely up. If the
+    // stop request itself failed, that error is the honest reason to show;
+    // otherwise it took the request and is simply slow to go.
+    if (req_err) |err| {
+        ctx.setError(@errorName(err));
+        return err;
     }
 }
 
