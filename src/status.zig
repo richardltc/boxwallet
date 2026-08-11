@@ -199,7 +199,7 @@ pub fn readout(in: Input) Readout {
     };
 }
 
-/// The figure to append after the status text, into `buf` — " 7.44%" for a
+/// The figure to append after the status text, into `buf` — " 7.4%" for a
 /// presync or block-loading percentage, " ~20%" for the approximate block-index
 /// estimate, or "" when there's nothing to add.
 ///
@@ -215,7 +215,7 @@ pub fn suffix(buf: []u8, in: Input, r: Readout) []const u8 {
     else
         null;
     if (bp) |v| {
-        return std.fmt.bufPrint(buf, " {d:.2}%", .{@as(f64, @floatFromInt(v)) / 100.0}) catch "";
+        return std.fmt.bufPrint(buf, " {d:.1}%", .{@as(f64, @floatFromInt(v)) / 100.0}) catch "";
     }
     if (r.block_index_load and in.load_eta_pct > 0) {
         return std.fmt.bufPrint(buf, " ~{d}%", .{in.load_eta_pct}) catch "";
@@ -421,9 +421,9 @@ test "suffix appends only the figure its line actually takes" {
     in.headers_total = 900_000;
     in.presync = true;
     in.presync_bp = 744;
-    try std.testing.expectEqualStrings(" 7.44%", suffix(&buf, in, readout(in)));
+    try std.testing.expectEqualStrings(" 7.4%", suffix(&buf, in, readout(in)));
 
-    // Zero means "not scraped yet" — no bogus " 0.00%".
+    // Zero means "not scraped yet" — no bogus " 0.0%".
     in.presync_bp = 0;
     try std.testing.expectEqualStrings("", suffix(&buf, in, readout(in)));
 

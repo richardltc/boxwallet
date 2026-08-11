@@ -719,7 +719,7 @@ int     bw_blockchain_state(bw_ctx *ctx, size_t idx, BwBlockchainState *out);
 
 /* What the daemon is doing while it can't answer the reads above yet: fills buf
  * with its start-up stage ("Loading block index…", "Rewinding…", "Verifying…",
- * "Loading blocks… 42.00%") and returns the length. 0 means it isn't warming
+ * "Loading blocks… 42.0%") and returns the length. 0 means it isn't warming
  * up — answering normally, or genuinely not running.
  *
  * A bitcoin-derived daemon opens its RPC port long before it can serve getinfo
@@ -728,6 +728,20 @@ int     bw_blockchain_state(bw_ctx *ctx, size_t idx, BwBlockchainState *out);
  * healthy start. Call this when it does, to tell "still loading" from "not
  * running". Blocks on RPC + a log read: worker thread only. */
 size_t  bw_daemon_stage(bw_ctx *ctx, size_t idx, char *buf, size_t cap);
+
+/* Whether a process named after this coin's daemon binary is alive: 1 yes, 0 no.
+ * Scans /proc (pgrep elsewhere) — no RPC, no auth. Worker thread only.
+ *
+ * The companion to bw_daemon_stage, for the coins that can't answer it. A
+ * bitcoin-derived daemon narrates its start-up over -28, so a stage label alone
+ * separates "coming up" from "not running"; a coin with no such warm-up protocol
+ * (Ergo, whose REST API just refuses the connection until it's ready) reports no
+ * stage at any point in its start-up and would otherwise read as stopped.
+ *
+ * NOT on its own a claim that the daemon is starting: the process is alive while
+ * it shuts down and flushes too. Only ask it when you know no stop is in
+ * flight. */
+int     bw_daemon_alive(bw_ctx *ctx, size_t idx);
 
 /* ---- external wallet: service lifecycle + state -----------------------------
  * For a BW_EW_HAS_PROCESS coin the wallet is a *second* process BoxWallet spawns

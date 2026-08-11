@@ -167,7 +167,7 @@ pub fn phaseText(p: models.LoadingPhase) []const u8 {
 }
 
 /// The one-line label for a warm-up `Status`, written into `buf` — e.g.
-/// "Loading blocks… 42.00%", "Rewinding blocks…", "Verifying blocks…". Empty
+/// "Loading blocks… 42.0%", "Rewinding blocks…", "Verifying blocks…". Empty
 /// for `.none`. Returns a slice into `buf` (or a static string when there's
 /// nothing to format), so it lives as long as the caller's buffer.
 ///
@@ -186,7 +186,7 @@ pub fn label(status: Status, buf: []u8) []const u8 {
         };
         if (status.progress.pct_bp > 0) {
             const pct = @as(f64, @floatFromInt(status.progress.pct_bp)) / 100.0;
-            return std.fmt.bufPrint(buf, "{s} {d:.2}%", .{ text, pct }) catch text;
+            return std.fmt.bufPrint(buf, "{s} {d:.1}%", .{ text, pct }) catch text;
         }
         return text;
     }
@@ -261,7 +261,7 @@ test "the daemon's own wording names the stage, tidied for display" {
     // The log's live sub-stage still wins over the coarser message.
     var s = statusWith(.loading, "Loading block index...");
     s.progress = .{ .stage = .loading_blocks, .pct_bp = 1000 };
-    try std.testing.expectEqualStrings("Loading blocks… 10.00%", label(s, &buf));
+    try std.testing.expectEqualStrings("Loading blocks… 10.0%", label(s, &buf));
 }
 
 test "a warm-up message is scraped out of the daemon's -28 reply" {
@@ -296,7 +296,7 @@ test "the label refines the coarse loading phase with the log's sub-stage" {
     try std.testing.expectEqualStrings("Loading…", label(.{ .phase = .loading }, &buf));
 
     // With a sub-stage the finer wording and its live percentage win.
-    try std.testing.expectEqualStrings("Processing blocks… 42.00%", label(.{
+    try std.testing.expectEqualStrings("Processing blocks… 42.0%", label(.{
         .phase = .loading,
         .progress = .{ .stage = .processing_blocks, .pct_bp = 4200 },
     }, &buf));

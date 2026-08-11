@@ -53,6 +53,13 @@ static std::atomic<uint64_t> g_sel_gen{0};
 // whatever coin they switched to.
 static std::atomic<int> g_installing{-1};
 
+// Registry index of the coin whose daemon is being stopped, or -1 for none.
+// bw_stop_daemon blocks until the daemon stops answering, so the poller can tick
+// during a shutdown and find the RPC dead but the process still alive — the one
+// state that looks exactly like a start-up (see bw_daemon_alive). This says
+// which it is.
+static std::atomic<int> g_stopping{-1};
+
 // Number of detached worker threads still using the bw_ctx.
 //
 // Every action here runs detached, but `ui->run()` returning goes straight on to
@@ -602,6 +609,7 @@ static void apply_coin_metadata(const AppWindow *ui, bw_ctx *ctx, int idx)
     ui->set_peers(0);
     ui->set_headers_frac(0);
     ui->set_blocks_frac(0);
+    ui->set_sync_unknown(false);
     ui->set_disk_frac(0);
     ui->set_wallet_sec(0);
     const int ew_flags = bw_coin_ext_wallet(idx);
@@ -1793,9 +1801,14 @@ int main(int argc, char **argv)
         if (coin < 0)
             return;
         begin_status(weak, "Stopping daemon…");
+        g_stopping.store(coin);
         std::thread([weak, ctx, coin, wake_poll, finish_action]() {
             WorkerGuard wg; // keeps bw_ctx alive until this worker is done
             int rc = bw_stop_daemon(ctx, static_cast<size_t>(coin));
+            // Released only once the daemon has actually gone (bw_stop_daemon
+            // waits for it), so no poll in between mistakes the dying process
+            // for one coming up.
+            g_stopping.store(-1);
             finish_action(weak, ctx, rc, "Daemon stopped");
             wake_poll();
         }).detach();
@@ -2230,11 +2243,21 @@ int main(int argc, char **argv)
             // -28 with the stage it's at. Ask for that stage, so the UI reports
             // "Loading block index…" / "Rewinding…" / "Verifying…" rather than
             // claiming the daemon it just started isn't running.
+            //
+            // A named stage is the best answer but not the only one: a coin with
+            // no `-28` warm-up protocol (Ergo) never reports one, so "no stage"
+            // there means "we can't see inside the start-up", not "there isn't
+            // one". Fall back to the daemon process itself being alive — the same
+            // liveness check the TUI's start path uses — but only when no stop is
+            // in flight, since a daemon flushing on its way out is alive too.
             std::string stage;
+            bool coming_up = false;
             if (!daemon_up) {
                 char sb[128] = {0};
                 size_t sn = bw_daemon_stage(ctx, coin, sb, sizeof sb);
                 stage.assign(sb, sn);
+                coming_up = !stage.empty() ||
+                            (g_stopping.load() != sel && bw_daemon_alive(ctx, coin) == 1);
             }
 
             // The managed wallet lives in a second process we spawn alongside the
@@ -2391,7 +2414,10 @@ int main(int argc, char **argv)
                         sc_supply = "Supply " + std::string(b, n);
                         if (si2.health_ratio > 0) {
                             char hb[32];
-                            std::snprintf(hb, sizeof hb, "System health %.0f%%", si2.health_ratio * 100.0);
+                            // `health_ratio` is the daemon's `health_percentage` —
+                            // already a percentage, so it is printed as-is (the TUI
+                            // does the same); scaling it again read as e.g. 25000%.
+                            std::snprintf(hb, sizeof hb, "System health %.1f%%", si2.health_ratio);
                             sc_health.assign(hb);
                         }
 
@@ -2526,18 +2552,23 @@ int main(int argc, char **argv)
             si.sync = daemon_up ? (bs.synced ? 2 : 1) : 0;
             si.headers_cur = static_cast<uint64_t>(bs.headers < 0 ? 0 : bs.headers);
             si.blocks_cur = static_cast<uint64_t>(bs.blocks < 0 ? 0 : bs.blocks);
+            // Same tip rule as the gauges below, and as the TUI: peers, and a
+            // height learned from them, or nothing. Falling back to our own
+            // headers/blocks would hand the core a total derived from the very
+            // number being measured — `status.inHeadersPhase` documents 0 as "tip
+            // unknown" and handles it; a self-referential total reads as complete.
             {
-                int64_t tip = bs.network_height > 0
-                    ? bs.network_height
-                    : (bs.headers > bs.blocks ? bs.headers : bs.blocks);
-                si.headers_total = static_cast<uint64_t>(tip < 0 ? 0 : tip);
+                const int64_t net = bs.network_height;
+                const bool have_tip = si.peers > 0 && net > 0;
+                const int64_t tip = have_tip ? (net > bs.headers ? net : bs.headers) : 0;
+                si.headers_total = static_cast<uint64_t>(tip);
                 si.blocks_total = si.headers_total;
             }
             char sl[192] = {0};
             size_t sll = rpc_ok ? bw_status_line(&si, sl, sizeof sl) : 0;
             std::string live_status(sl, sll);
 
-            post_to_ui([weak, di, bs, daemon_up, sel, disk_frac, disk_free_str, wallet_sec, stage, live_status,
+            post_to_ui([weak, di, bs, daemon_up, sel, disk_frac, disk_free_str, wallet_sec, stage, coming_up, live_status,
                         mem_frac, mem_used_str, storage_now, du,
                         price_usd, price_change, price_dir, holding_value,
                         sc_active, sc_status, sc_balance, sc_pending, sc_price, sc_supply,
@@ -2634,16 +2665,34 @@ int main(int argc, char **argv)
                 // twice (the second attempt just hits the datadir lock).
                 (*h)->set_live_status(slint::SharedString(live_status));
                 (*h)->set_daemon_stage(slint::SharedString(stage));
-                (*h)->set_daemon_loading(!running && !stage.empty());
+                // `coming_up`, not `!stage.empty()`: the pulse means "starting",
+                // and a coin that can't name its stage is still starting. Gating
+                // on the label made the smiley go grey between the Start click and
+                // the first RPC answer on every such coin.
+                (*h)->set_daemon_loading(!running && coming_up);
                 // Three states, not two. `rpc_ok` publishes fresh figures;
                 // `busy` holds the last ones (the daemon is up, we just couldn't
                 // read it this tick, and zeroing would make the gauges stutter);
                 // down clears everything.
                 if (rpc_ok) {
                     bool synced = bs.synced != 0;
-                    int64_t tip = bs.network_height > 0
-                        ? bs.network_height
-                        : (bs.headers > bs.blocks ? bs.headers : bs.blocks);
+                    // The same rule the TUI applies (app.zig `headers_total`): a
+                    // tip counts only with peers to have learned it from, and
+                    // taking the larger of it and our own headers keeps a node
+                    // fractionally ahead of its peers from overshooting the ring.
+                    //
+                    // The old fallback here — max(headers, blocks) when no network
+                    // height was known — made the Headers gauge measure itself, so
+                    // it read a full ring and "Synced" from the first poll on a
+                    // node that had barely started. Ergo shows it plainly
+                    // (`maxPeerHeight` is null until peers connect), but any coin
+                    // whose peer query hasn't answered yet was affected.
+                    int64_t peers = di.connections > 0 ? di.connections : 0;
+                    int64_t tip = (peers > 0 && bs.network_height > 0)
+                        ? (bs.network_height > bs.headers ? bs.network_height : bs.headers)
+                        : 0;
+                    bool tip_unknown = !synced && tip <= 0;
+                    (*h)->set_sync_unknown(tip_unknown);
                     (*h)->set_blocks(static_cast<int>(bs.blocks));
                     (*h)->set_headers(static_cast<int>(bs.headers));
                     (*h)->set_peers(static_cast<int>(di.connections));
@@ -2672,6 +2721,9 @@ int main(int argc, char **argv)
                     (*h)->set_synced(false);
                     (*h)->set_headers_frac(0);
                     (*h)->set_blocks_frac(0);
+                    // A stopped daemon isn't an unmeasurable one: the gauges read
+                    // an empty 0%, the same as every other figure clearing here.
+                    (*h)->set_sync_unknown(false);
                     (*h)->set_sync_percent(0);
                     (*h)->set_headers_str(slint::SharedString(""));
                     (*h)->set_blocks_str(slint::SharedString(""));
