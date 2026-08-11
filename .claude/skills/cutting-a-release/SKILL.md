@@ -92,6 +92,19 @@ description: How to cut a BoxWallet release, and the release/GUI-bundling mechan
   for them, so the updater stays dormant rather than chasing an asset that was
   never published. Move an entry into `gui_targets` (and light up `assetFor`)
   only once the bundle has actually launched on real hardware.
+
+  **`.github/workflows/gui-selftest.yml` is how that happens.** It cross-builds
+  the unverified bundles on Linux exactly as a release would, then runs each one
+  on a real runner of its own OS — `windows-latest` and an Apple Silicon
+  `macos-latest` — asserting the selftest exits 0 *and* reports this commit's
+  `app_version`. Each job then hides the runtime and requires the selftest to
+  fail, because a gate that cannot fail is not a gate: a `--selftest` that
+  silently returned 0 would wave every broken pair straight through. The Windows
+  job deliberately runs from `C:\`, since Windows resolves an implicit import
+  from the *executable's* directory and that is the whole premise of the flat
+  layout. Triggered manually (`workflow_dispatch`) or by a `v*` tag; it publishes
+  nothing and needs no secrets. A green run is the evidence for promoting a
+  target — nothing else is.
 - **The Slint runtime lives in a version-named directory, and that is load-bearing.**
   `slint-<ver>/libslint_cpp.so`, with the exe's RUNPATH pointing at that exact
   directory (`slint_version` in `build.zig` — keep it in step with the URLs in
