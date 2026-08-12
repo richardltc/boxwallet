@@ -3,9 +3,10 @@
 # Build a BoxWallet release and publish it to GitHub.
 #
 # Cross-builds every distributable asset (`zig build release-all`: the five
-# TUI binaries, the two Linux GUI exes + their .zip bundles, and RUNTIME,
-# with one merged SHA256SUMS covering all of it), creates the `vX.Y.Z` git
-# tag from `app_version`, and publishes a GitHub release with all 11 files.
+# TUI binaries, the three GUI exes (two Linux + Windows x86_64) with their
+# .zip bundles, and RUNTIME, with one merged SHA256SUMS covering all of it),
+# creates the `vX.Y.Z` git tag from `app_version`, and publishes a GitHub
+# release with all 13 files.
 # Both front-ends' in-app updater downloads from exactly this release, so
 # what's published here is what users auto-update to.
 #

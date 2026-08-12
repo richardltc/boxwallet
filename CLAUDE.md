@@ -6,7 +6,8 @@ BoxWallet is a multi-coin cryptocurrency wallet manager written in **Zig 0.16**,
 using [ZigZag](https://github.com/meszmate/zigzag) for its TUI — there is **no
 web frontend**.
 
-There is also an **optional desktop GUI** (Slint, Linux-only for now) over the
+There is also an **optional desktop GUI** (Slint; Linux and Windows, macOS still
+unreleased — see the `cutting-a-release` skill) over the
 same core: `gui/main.cpp` + `gui/app.slint` drive the `Coin` vtable through the
 C ABI in `src/capi.zig` (declared in `include/boxwallet.h`). It is a second
 *front-end*, never a second implementation — anything a front-end needs that

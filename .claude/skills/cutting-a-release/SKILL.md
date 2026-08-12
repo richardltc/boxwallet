@@ -6,12 +6,13 @@ description: How to cut a BoxWallet release, and the release/GUI-bundling mechan
 - **Releasing / auto-update:** `zig build release` cross-compiles every TUI
   distributable into `zig-out/release/` (Linux = static musl, all `ReleaseSafe`
   + stripped), named `boxwallet-<os>-<arch>[.exe]` with a `SHA256SUMS`; `zig
-  build gui-release` does the same for the two Linux GUI bundles. Both
+  build gui-release` does the same for the releasable GUI bundles (two Linux,
+  plus Windows x86_64 since v0.8.6). Both
   front-ends self-update in-app (`src/update.zig` + apply/re-exec in `main.zig`
   and `bw_self_update_apply`, background checks in `app.zig` and `gui/main.cpp`).
 
   **To cut a release: bump `app_version` in `src/version.zig`, run `zig build
-  release-all`, and upload the 11 files in `zig-out/dist/`** to a GitHub release
+  release-all`, and upload the 13 files in `zig-out/dist/`** to a GitHub release
   on `github.com/richardltc/boxwallet`. Use that step, not
   the two underneath it — both write a file called `SHA256SUMS`, and *both*
   updaters fetch `<tag>/SHA256SUMS`. A release carries one file of that name, so
@@ -91,12 +92,15 @@ description: How to cut a BoxWallet release, and the release/GUI-bundling mechan
   so no release can publish one by accident. `assetFor(.gui)` also returns null
   for them, so the updater stays dormant rather than chasing an asset that was
   never published. Move an entry into `gui_targets` (and light up `assetFor`)
-  only once the bundle has actually launched on real hardware.
+  only once the bundle has actually launched on real hardware. **macOS arm64 is
+  the only one left there**; Windows x86_64 was promoted after a green run on the
+  `v0.8.5` tag, and ships from v0.8.6 on.
 
   **`.github/workflows/gui-selftest.yml` is how that happens.** It cross-builds
-  the unverified bundles on Linux exactly as a release would, then runs each one
-  on a real runner of its own OS — `windows-latest` and an Apple Silicon
-  `macos-latest` — asserting the selftest exits 0 *and* reports this commit's
+  the bundles on Linux exactly as a release would — `gui-release` for Windows now
+  that it's releasable, `gui-release-unverified` for macOS — then runs each one
+  on a real runner of its own OS (`windows-latest` and an Apple Silicon
+  `macos-latest`), asserting the selftest exits 0 *and* reports this commit's
   `app_version`. Each job then hides the runtime and requires the selftest to
   fail, because a gate that cannot fail is not a gate: a `--selftest` that
   silently returned 0 would wave every broken pair straight through. The Windows
@@ -104,7 +108,14 @@ description: How to cut a BoxWallet release, and the release/GUI-bundling mechan
   from the *executable's* directory and that is the whole premise of the flat
   layout. Triggered manually (`workflow_dispatch`) or by a `v*` tag; it publishes
   nothing and needs no secrets. A green run is the evidence for promoting a
-  target — nothing else is.
+  target — nothing else is. Promotion doesn't retire the job: it is what stops a
+  released bundle regressing on the next tag.
+- **A Windows GUI asset is `…-x86_64.exe`; its bundle is `…-x86_64.zip`.** The
+  two stems differ by that suffix on Windows and nowhere else, so anything
+  deriving one from the other must go through `bundleBase` (`src/update.zig`) or
+  `guiExeAsset` (`build.zig`). Concatenating `.zip` onto the asset asks a release
+  for `…-x86_64.exe.zip` and 404s — reported to the user as a network error, on
+  every Windows update that needs the runtime.
 - **The Slint runtime lives in a version-named directory, and that is load-bearing.**
   `slint-<ver>/libslint_cpp.so`, with the exe's RUNPATH pointing at that exact
   directory (`slint_version` in `build.zig` — keep it in step with the URLs in
