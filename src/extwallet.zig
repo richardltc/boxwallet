@@ -312,10 +312,33 @@ test "ensure: a launch-with-password wallet is not spawned eagerly" {
     try std.testing.expect(!sess.attempted);
 }
 
+/// Is something already listening on 127.0.0.1:`port_text`? Test-only, and
+/// deliberately probed by *binding*: a successful bind is proof nothing else
+/// holds the port, where a connect attempt only tells us about this instant.
+fn portServed(comptime port_text: []const u8) bool {
+    var threaded: std.Io.Threaded = .init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    const port = std.fmt.parseInt(u16, port_text, 10) catch unreachable;
+    const addr = std.Io.net.IpAddress.parseIp4("127.0.0.1", port) catch unreachable;
+    var server = addr.listen(io, .{}) catch return true;
+    server.deinit(io);
+    return false;
+}
+
 test "ensure: a missing wallet-rpc binary is reported once, not every tick" {
     var c: nerva.Nerva = .{};
     const coin = c.coin();
     var sess: Session = .{};
+
+    // `ensure` refuses a busy port before it ever tries to spawn, so this test's
+    // premise only holds while nothing is serving that port. A developer running
+    // BoxWallet against a real Nerva wallet on the same machine would otherwise
+    // see a green suite turn red for a reason that has nothing to do with their
+    // change — the sibling test below skips for the same reason, from the other
+    // side of the same check.
+    if (portServed(nerva.Nerva.wallet_rpc_port)) return error.SkipZigTest;
 
     // No install under this root, so the spawn can't find the wallet-rpc binary —
     // exactly what an install from before it was bundled looks like.

@@ -6,8 +6,8 @@ BoxWallet is a multi-coin cryptocurrency wallet manager written in **Zig 0.16**,
 using [ZigZag](https://github.com/meszmate/zigzag) for its TUI — there is **no
 web frontend**.
 
-There is also an **optional desktop GUI** (Slint; Linux and Windows, macOS still
-unreleased — see the `cutting-a-release` skill) over the
+There is also an **optional desktop GUI** (Slint; Linux, Windows, and Apple
+Silicon macOS — see the `cutting-a-release` skill) over the
 same core: `gui/main.cpp` + `gui/app.slint` drive the `Coin` vtable through the
 C ABI in `src/capi.zig` (declared in `include/boxwallet.h`). It is a second
 *front-end*, never a second implementation — anything a front-end needs that
@@ -191,10 +191,10 @@ ZIG_GLOBAL_CACHE_DIR=zig-pkg zig build release # cross-build all release binarie
 
 ZIG_GLOBAL_CACHE_DIR=zig-pkg zig build gui         # build the Slint GUI
 ZIG_GLOBAL_CACHE_DIR=zig-pkg zig build gui-run     # build + launch the GUI
-ZIG_GLOBAL_CACHE_DIR=zig-pkg zig build gui-release # Linux GUI bundles (x86_64 + aarch64)
+ZIG_GLOBAL_CACHE_DIR=zig-pkg zig build gui-release # GUI bundles (Linux x86_64/aarch64, Windows x86_64, macOS arm64)
 
 ZIG_GLOBAL_CACHE_DIR=zig-pkg zig build release-all  # every asset + ONE SHA256SUMS -> zig-out/dist/
-ZIG_GLOBAL_CACHE_DIR=zig-pkg zig build gui-release-unverified # macOS arm64 bundle (not releasable yet)
+ZIG_GLOBAL_CACHE_DIR=zig-pkg zig build gui-release-unverified # bundles awaiting a CI selftest (none right now)
 ```
 
 - The ZigZag dependency is vendored under `zig-pkg/`;
