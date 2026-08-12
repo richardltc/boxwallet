@@ -18,6 +18,8 @@ const builtin = @import("builtin");
 /// elsewhere; where neither can run (Windows, or a POSIX box with no `/proc`
 /// and no `pgrep`) it conservatively reports alive, so a live daemon is never
 /// declared dead by mistake.
+///
+/// A **zombie doesn't count** — see `isZombie`.
 pub fn alive(io: std.Io, name: []const u8) bool {
     return aliveMatching(io, name, null);
 }
@@ -50,9 +52,50 @@ pub fn aliveMatching(io: std.Io, name: []const u8, cmdline_needle: ?[]const u8) 
         defer f.close(io);
         var cbuf: [64]u8 = undefined;
         const n = f.readPositionalAll(io, &cbuf, 0) catch continue;
-        if (std.mem.eql(u8, std.mem.trim(u8, cbuf[0..n], " \t\r\n"), want)) return true;
+        if (!std.mem.eql(u8, std.mem.trim(u8, cbuf[0..n], " \t\r\n"), want)) continue;
+        if (isZombie(io, proc, entry.name)) continue;
+        return true;
     }
     return false;
+}
+
+/// True if `/proc/<pid>` is a zombie — the process has exited and only its exit
+/// status is left, waiting for its parent to reap it.
+///
+/// A zombie keeps its `comm`, so the name match above sees a daemon that is long
+/// dead. That matters because we are frequently that unreaped parent: a
+/// foreground daemon (Nerva, Salvium, Zano, Ergo, Epic) is spawned detached and
+/// deliberately not waited on, so one that dies on its own — a crash, an OOM
+/// kill, an operator `kill` — sits as our zombie child until something reaps it.
+/// Counting that as alive told the GUI the daemon was still coming up, which
+/// greys out Start (it's "starting") *and* Stop (it isn't running) — with no way
+/// out short of restarting the app.
+///
+/// Best-effort: anything unreadable reads as not-a-zombie, keeping the
+/// conservative "never declare a live daemon dead" bias.
+fn isZombie(io: std.Io, proc: std.Io.Dir, pid_name: []const u8) bool {
+    var path_buf: [32]u8 = undefined;
+    const stat_path = std.fmt.bufPrint(&path_buf, "{s}/stat", .{pid_name}) catch return false;
+    var f = proc.openFile(io, stat_path, .{}) catch return false;
+    defer f.close(io);
+    // "pid (comm) S ..." — the state is the third field. comm is at most 15
+    // bytes, so the state always lands well inside this buffer.
+    var buf: [128]u8 = undefined;
+    const n = f.readPositionalAll(io, &buf, 0) catch return false;
+    return stateFromStat(buf[0..n]) == 'Z';
+}
+
+/// The state character out of a `/proc/<pid>/stat` line, or 0 if it isn't there.
+///
+/// Field 2 is the comm in parentheses and may itself contain spaces *and*
+/// parentheses (`(my (odd) name)`), so splitting on whitespace or the first `)`
+/// picks the wrong field. The state is the first non-space byte after the
+/// **last** `)`.
+fn stateFromStat(line: []const u8) u8 {
+    const close = std.mem.lastIndexOfScalar(u8, line, ')') orelse return 0;
+    var i = close + 1;
+    while (i < line.len and line[i] == ' ') i += 1;
+    return if (i < line.len) line[i] else 0;
 }
 
 /// True while some process's command line contains `needle`. The `/proc` half of
@@ -63,6 +106,9 @@ pub fn aliveMatching(io: std.Io, name: []const u8, cmdline_needle: ?[]const u8) 
 /// cmdline is NUL-separated argv; the needle is matched against those bytes, so
 /// it must not span an argument boundary. A jar path in `-jar <path>` is one
 /// argument, so it matches whether or not it's given with a directory prefix.
+///
+/// No `isZombie` check is needed here: the kernel empties `cmdline` when a
+/// process dies, so a zombie matches no needle and drops out on its own.
 fn aliveByCmdline(io: std.Io, proc: std.Io.Dir, needle: []const u8) bool {
     var it = proc.iterate();
     while (it.next(io) catch null) |entry| {
@@ -86,6 +132,10 @@ fn aliveByCmdline(io: std.Io, proc: std.Io.Dir, needle: []const u8) bool {
 /// missing or erroring) conservatively reads as alive, per the caller's
 /// contract. `-x` matches the process name exactly; `-f` matches the full
 /// command line, which is the interpreter case.
+///
+/// Unlike the `/proc` path this can't filter zombies (pgrep lists them), so a
+/// daemon that dies unreaped on macOS still reads as alive until its parent
+/// collects it — which the GUI's poll now does every tick (`bw_reap_daemon`).
 fn aliveByPgrep(io: std.Io, name: []const u8, cmdline_needle: ?[]const u8) bool {
     const flag = if (cmdline_needle == null) "-x" else "-f";
     const pattern = cmdline_needle orelse name;
@@ -268,6 +318,39 @@ test "the running test binary is found by its own comm name" {
     var buf: [64]u8 = undefined;
     const n = try f.readPositionalAll(io, &buf, 0);
     try std.testing.expect(alive(io, std.mem.trim(u8, buf[0..n], " \t\r\n")));
+}
+
+test "the state character survives a comm containing spaces and parentheses" {
+    try std.testing.expectEqual(@as(u8, 'Z'), stateFromStat("12008 (nervad) Z 11714 12008"));
+    try std.testing.expectEqual(@as(u8, 'S'), stateFromStat("42 (my (odd) name) S 1 42"));
+    try std.testing.expectEqual(@as(u8, 0), stateFromStat("truncated"));
+}
+
+test "an unreaped dead child is not reported alive" {
+    if (builtin.os.tag != .linux) return error.SkipZigTest;
+
+    var threaded: std.Io.Threaded = .init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    // Deliberately never waited on, so it becomes our zombie — the shape a
+    // foreground daemon that died on its own leaves behind. Its `comm` still
+    // reads "true", so only the state check keeps it out of `alive`.
+    var child = try std.process.spawn(io, .{
+        .argv = &.{"/bin/true"},
+        .stdin = .ignore,
+        .stdout = .ignore,
+        .stderr = .ignore,
+    });
+    defer _ = child.wait(io) catch {};
+
+    // Wait for the exit itself (a fresh child is briefly, legitimately alive),
+    // then assert — a zombie that read as alive would never clear this loop.
+    var i: u8 = 0;
+    while (i < 40 and alive(io, "true")) : (i += 1) {
+        io.sleep(.fromMilliseconds(50), .awake) catch {};
+    }
+    try std.testing.expect(!alive(io, "true"));
 }
 
 test "reapNoHang: a pid that was never our child reads as gone" {

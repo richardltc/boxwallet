@@ -743,6 +743,18 @@ size_t  bw_daemon_stage(bw_ctx *ctx, size_t idx, char *buf, size_t cap);
  * flight. */
 int     bw_daemon_alive(bw_ctx *ctx, size_t idx);
 
+/* Collect a foreground daemon (Nerva/Salvium/Zano/Ergo/Epic) that exited on its
+ * own, so it doesn't sit as a zombie child of this process. Call once per status
+ * tick, from the poller — it is cheap (a WNOHANG wait), never blocks, and no-ops
+ * while a start/stop is in flight, when there's nothing to collect, and on
+ * Windows.
+ *
+ * Not housekeeping: such a daemon is spawned detached and never waited on, so a
+ * crash or an OOM kill leaves a zombie that keeps the daemon's name — which read
+ * as "still coming up", greying out Start (starting) and Stop (not running) at
+ * once, with no way out but restarting the app. */
+void    bw_reap_daemon(bw_ctx *ctx, size_t idx);
+
 /* ---- external wallet: service lifecycle + state -----------------------------
  * For a BW_EW_HAS_PROCESS coin the wallet is a *second* process BoxWallet spawns
  * alongside the daemon (Nerva's nerva-wallet-rpc) and tears down with it. It is
