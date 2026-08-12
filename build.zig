@@ -685,8 +685,10 @@ fn addGuiReleaseStep(
             const inst_lic = b.addInstallFile(dep.licenses(b).path(b, "LICENSE.md"), stage ++ "/SLINT-LICENSE.md");
             const inst_third = b.addInstallFile(dep.licenses(b).path(b, "THIRDPARTY.md"), stage ++ "/SLINT-THIRDPARTY.md");
 
-            // Desktop integration, so the panel and app launcher show the
-            // BoxWallet logo rather than a generic placeholder. On Wayland an
+            // Per-platform extras, and *only* where they mean something.
+            //
+            // Linux gets desktop integration, so the panel and app launcher show
+            // the BoxWallet logo rather than a generic placeholder. On Wayland an
             // app can't set its own window icon, so the compositor matches the
             // window's app_id against an installed desktop entry — there has to
             // be one. Optional to *run* BoxWallet, which is why it's a script
@@ -696,18 +698,20 @@ fn addGuiReleaseStep(
             // These sit inside the zip, so SHA256SUMS needs no new lines: the
             // bundle's existing hash covers them.
             //
-            // Skipped on Windows: an XDG desktop entry, a PNG icon and a shell
-            // installer mean nothing there, and shipping a `.sh` in a Windows zip
-            // only invites someone to run it.
-            var desktop_steps: [3]*std.Build.Step = undefined;
-            var desktop_len: usize = 0;
-            if (!is_windows) {
+            // Keyed on `linux`, not "not Windows": an XDG desktop entry, a PNG
+            // icon and a shell installer are as meaningless on macOS as they are
+            // on Windows. The macOS bundle shipped all three for one release
+            // (v0.8.7) because this branch predated having a macOS target at all.
+            var extra_steps: [3]*std.Build.Step = undefined;
+            var extra_len: usize = 0;
+            const is_linux = comptime t.query.os_tag.? == .linux;
+            if (is_linux) {
                 const inst_desktop = b.addInstallFile(b.path("gui/boxwallet.desktop"), stage ++ "/boxwallet.desktop");
                 const inst_appicon = b.addInstallFile(b.path("gui/icons/boxwallet.png"), stage ++ "/icons/boxwallet.png");
                 const inst_dscript = b.addInstallFile(b.path("gui/install-desktop.sh"), stage ++ "/install-desktop.sh");
-                desktop_steps = .{ &inst_desktop.step, &inst_appicon.step, &inst_dscript.step };
-                desktop_len = 3;
-            } else {
+                extra_steps = .{ &inst_desktop.step, &inst_appicon.step, &inst_dscript.step };
+                extra_len = 3;
+            } else if (is_windows) {
                 // Windows ships a readme instead, and it earns its place: the
                 // Slint runtime links Microsoft's C++ runtime, which is *not*
                 // part of Windows, and when it's absent the loader refuses the
@@ -716,9 +720,14 @@ fn addGuiReleaseStep(
                 // nothing, so the one place that can explain it is a file in the
                 // folder. `tools/check-windows-deps.sh` keeps this honest.
                 const inst_readme = b.addInstallFile(b.path("gui/README-WINDOWS.txt"), stage ++ "/README.txt");
-                desktop_steps[0] = &inst_readme.step;
-                desktop_len = 1;
+                extra_steps[0] = &inst_readme.step;
+                extra_len = 1;
             }
+            // macOS gets nothing here yet. It has its own first-launch trap —
+            // the bundle is ad-hoc signed, not notarized, so a browser download
+            // carries `com.apple.quarantine` and Gatekeeper refuses it — which
+            // wants the same treatment Windows got, but that text is a separate
+            // change from removing files that were never meant for it.
 
             // Zip the bundle from staging into gui-release/, and drop a copy of
             // the bare exe beside it. Both are published: the updater fetches the
@@ -730,14 +739,15 @@ fn addGuiReleaseStep(
                     // chmod before zipping: `addInstallFile` drops the execute
                     // bit, and zip stores whatever mode it finds — so without
                     // this the installer arrives non-executable and has to be
-                    // run as `sh install-desktop.sh`. Nothing to chmod in a
-                    // Windows bundle, which ships no scripts.
+                    // run as `sh install-desktop.sh`. Only Linux ships that
+                    // script; anywhere else this is an `&&` chain that would
+                    // fail on a file the bundle deliberately doesn't have.
                     "cd \"$1\" && {3s}rm -f {0s}.zip {2s} && (cd staging && zip -r -q ../{0s}.zip {0s}) && cp staging/{0s}/{1s} {2s}",
                     .{
                         t.name,
                         bundle_exe,
                         exe_asset,
-                        if (is_windows) "" else "chmod +x staging/" ++ t.name ++ "/install-desktop.sh && ",
+                        if (is_linux) "chmod +x staging/" ++ t.name ++ "/install-desktop.sh && " else "",
                     },
                 ),
                 "pack-gui",
@@ -747,7 +757,7 @@ fn addGuiReleaseStep(
             pack.step.dependOn(&inst_so.step);
             pack.step.dependOn(&inst_lic.step);
             pack.step.dependOn(&inst_third.step);
-            for (desktop_steps[0..desktop_len]) |s| pack.step.dependOn(s);
+            for (extra_steps[0..extra_len]) |s| pack.step.dependOn(s);
             step.dependOn(&pack.step);
             packs[ti] = &pack.step;
 
