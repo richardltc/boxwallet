@@ -2211,6 +2211,12 @@ int main(int argc, char **argv)
             }
             size_t coin = static_cast<size_t>(sel);
 
+            // Collect a foreground daemon that died on its own before asking
+            // anything about it — an unreaped zombie keeps the daemon's name, so
+            // the liveness check below would read a dead daemon as one still
+            // coming up and grey out both Start and Stop.
+            bw_reap_daemon(ctx, coin);
+
             BwDaemonInfo di;
             BwBlockchainState bs;
             std::memset(&di, 0, sizeof di);

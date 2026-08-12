@@ -154,6 +154,11 @@ const Ctx = struct {
     // overwritten by whichever started last, and stopping the one coin without an
     // RPC stop (Zano) then killed some other coin's daemon.
     daemon_child: [coin_count]?std.process.Child = @splat(null),
+    /// Whether a start/stop worker currently owns `daemon_child[idx]`. The poll
+    /// thread reaps self-died foreground daemons between ticks (`bw_reap_daemon`)
+    /// and must not touch a slot a worker is writing; this is the GUI's
+    /// counterpart to the TUI's `daemon_thread == null` guard.
+    daemon_action: [coin_count]std.atomic.Value(u8) = @splat(.init(0)),
     // Install progress. Unlike the rest of Ctx these are genuinely cross-thread —
     // the install worker writes them while the UI poll thread reads them every
     // frame — so they're atomic rather than plain fields. `install_phase` holds a
@@ -934,6 +939,11 @@ fn startDaemon(ctx: *Ctx, idx: usize) !void {
 
     const coin = coinByIndex(idx) orelse return error.NoSuchCoin;
 
+    // Collect the previous run's child before its handle is overwritten below —
+    // once the slot is replaced nothing can wait on it, and it would sit as a
+    // zombie for the life of the app.
+    reapDaemonChild(ctx, idx);
+
     // Conf must carry RPC creds / API key before the daemon reads it, or it's
     // unmanageable over RPC. Idempotent; keeps existing values.
     try coin.prepareConf(a, io, ctx.install_root, ctx.home_dir);
@@ -1029,7 +1039,8 @@ fn startDaemon(ctx: *Ctx, idx: usize) !void {
 /// process dying on its own) needs this. Mirrors the TUI's `reapDaemonChild`.
 ///
 /// `daemon_child[idx]` is only touched by the action worker driving that coin,
-/// so this inherits the same serialization as the start/stop paths.
+/// or by the poll thread while no such worker holds `daemon_action[idx]`, so
+/// this inherits the same serialization as the start/stop paths.
 fn reapDaemonChild(ctx: *Ctx, idx: usize) void {
     if (idx >= coin_count) return;
     if (ctx.daemon_child[idx]) |*child| {
@@ -1307,6 +1318,8 @@ export fn bw_start_daemon(ctx: ?*Ctx, idx: usize) c_int {
     // port still held by a service the last run orphaned) stays failed for the
     // rest of the session even after the cause is gone.
     if (idx < coin_count) c.wallet[idx].attempted = false;
+    const held = holdDaemonAction(c, idx);
+    defer releaseDaemonAction(c, idx, held);
     startDaemon(c, idx) catch |err| {
         if (!c.hasError()) c.setError(@errorName(err));
         return -1;
@@ -1316,11 +1329,51 @@ export fn bw_start_daemon(ctx: ?*Ctx, idx: usize) c_int {
 
 export fn bw_stop_daemon(ctx: ?*Ctx, idx: usize) c_int {
     const c = ctx orelse return -1;
+    const held = holdDaemonAction(c, idx);
+    defer releaseDaemonAction(c, idx, held);
     stopDaemon(c, idx) catch |err| {
         if (!c.hasError()) c.setError(@errorName(err));
         return -1;
     };
     return 0;
+}
+
+/// Claim `daemon_child[idx]` for this worker, so a concurrent `bw_reap_daemon`
+/// on the poll thread leaves the slot alone. Returns whether the claim applies
+/// (a bad index owns nothing).
+fn holdDaemonAction(ctx: *Ctx, idx: usize) bool {
+    if (idx >= coin_count) return false;
+    ctx.daemon_action[idx].store(1, .monotonic);
+    return true;
+}
+
+/// Release the claim, publishing this worker's writes to `daemon_child[idx]` to
+/// whichever thread reaps next (`.release` here pairs with the reaper's
+/// `.acquire`).
+fn releaseDaemonAction(ctx: *Ctx, idx: usize, held: bool) void {
+    if (held) ctx.daemon_action[idx].store(0, .release);
+}
+
+/// Collect a foreground daemon that exited on its own, so it doesn't linger as a
+/// zombie. Meant to be called from the status poll, once per tick.
+///
+/// A foreground daemon (Nerva, Salvium, Zano, Ergo, Epic) is spawned detached and
+/// deliberately not waited on — it has to outlive the start call — so we stay its
+/// parent. The stop path reaps it; a daemon that dies *by itself* (crash, OOM
+/// kill, an operator `kill`) has no such path, and its zombie kept `comm`, which
+/// read as "the daemon is still coming up": Start greyed out because it was
+/// starting, Stop greyed out because it wasn't running. `proc.isZombie` now keeps
+/// the buttons honest either way, but the corpse still has to be collected — and
+/// on a platform without `/proc` reaping it is the *only* thing that clears the
+/// state. Mirrors the TUI's per-tick `reapDaemonChild`.
+///
+/// A no-op while a start/stop worker owns the slot, when there's nothing to
+/// collect, and on Windows, where there are no zombies.
+export fn bw_reap_daemon(ctx: ?*Ctx, idx: usize) void {
+    const c = ctx orelse return;
+    if (idx >= coin_count) return;
+    if (c.daemon_action[idx].load(.acquire) != 0) return;
+    reapDaemonChild(c, idx);
 }
 
 fn walletAction(ctx: *Ctx, idx: usize, comptime lock: bool, pass: []const u8, staking: bool) !void {
