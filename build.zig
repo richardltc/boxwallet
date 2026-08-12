@@ -722,12 +722,18 @@ fn addGuiReleaseStep(
                 const inst_readme = b.addInstallFile(b.path("gui/README-WINDOWS.txt"), stage ++ "/README.txt");
                 extra_steps[0] = &inst_readme.step;
                 extra_len = 1;
+            } else if (comptime t.query.os_tag.? == .macos) {
+                // macOS has a first-launch trap of the same shape, and the same
+                // answer: a file in the folder, because nothing of ours gets to
+                // run. The bundle is ad-hoc signed (which Apple Silicon demands
+                // of any binary) but not notarized, which needs a paid developer
+                // account — so a zip downloaded through a browser carries
+                // `com.apple.quarantine` and Gatekeeper refuses it with a
+                // message that reads like a corrupt download.
+                const inst_readme = b.addInstallFile(b.path("gui/README-MACOS.txt"), stage ++ "/README.txt");
+                extra_steps[0] = &inst_readme.step;
+                extra_len = 1;
             }
-            // macOS gets nothing here yet. It has its own first-launch trap —
-            // the bundle is ad-hoc signed, not notarized, so a browser download
-            // carries `com.apple.quarantine` and Gatekeeper refuses it — which
-            // wants the same treatment Windows got, but that text is a separate
-            // change from removing files that were never meant for it.
 
             // Zip the bundle from staging into gui-release/, and drop a copy of
             // the bare exe beside it. Both are published: the updater fetches the
