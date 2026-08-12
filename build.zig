@@ -24,16 +24,10 @@ const GuiTarget = struct { query: std.Target.Query, name: []const u8 };
 /// loader before `main` — invisibly. So these are built by their own step and
 /// deliberately left out of `release-all`, which means no release can publish
 /// one by accident. Move an entry into `gui_targets` once it has launched on
-/// real hardware.
+/// real hardware — which for macOS means a green `macos` job in
+/// `.github/workflows/gui-selftest.yml`, since no runner here can do it.
 const gui_targets_unverified = [_]GuiTarget{
     .{ .query = .{ .cpu_arch = .aarch64, .os_tag = .macos }, .name = "boxwallet-gui-macos-aarch64" },
-    // `gnu` (mingw), not `msvc`: nothing about the Slint DLL requires the MSVC
-    // ABI — its exported surface is pure C — and mingw is what Zig can produce
-    // without a Windows host. See `slintWindowsPackage`.
-    //
-    // Unverified for a different reason than macOS: a Windows runner *can* run
-    // `--selftest`, so this one has a real path to `gui_targets` once CI does.
-    .{ .query = .{ .cpu_arch = .x86_64, .os_tag = .windows, .abi = .gnu }, .name = "boxwallet-gui-windows-x86_64" },
 };
 const gui_targets = [_]GuiTarget{
     // glibc, not musl: the Slint runtime is a glibc binary, so the exe beside
@@ -45,7 +39,26 @@ const gui_targets = [_]GuiTarget{
     // the `.so`. Re-check both when bumping Slint.
     .{ .query = .{ .cpu_arch = .x86_64, .os_tag = .linux, .abi = .gnu, .glibc_version = .{ .major = 2, .minor = 35, .patch = 0 } }, .name = "boxwallet-gui-linux-x86_64" },
     .{ .query = .{ .cpu_arch = .aarch64, .os_tag = .linux, .abi = .gnu, .glibc_version = .{ .major = 2, .minor = 30, .patch = 0 } }, .name = "boxwallet-gui-linux-aarch64" },
+    // `gnu` (mingw), not `msvc`: nothing about the Slint DLL requires the MSVC
+    // ABI — its exported surface is pure C — and mingw is what Zig can produce
+    // without a Windows host. See `slintWindowsPackage`.
+    //
+    // Verified, unlike macOS arm64, because a Windows runner can actually run
+    // the thing: the `windows` job in `.github/workflows/gui-selftest.yml`
+    // unzips this bundle, runs `--selftest` from a different cwd, and asserts it
+    // fails with the DLL taken away. Green on the v0.8.5 tag, which is what
+    // moved this out of `gui_targets_unverified`. It publishes an
+    // `…-x86_64.exe` bare asset (not the bare name) — see `exe_asset`.
+    .{ .query = .{ .cpu_arch = .x86_64, .os_tag = .windows, .abi = .gnu }, .name = "boxwallet-gui-windows-x86_64" },
 };
+
+/// The bare-exe asset published for `t`, as distinct from `t.name`, which names
+/// the bundle (`<name>.zip`) and the directory inside it. Windows needs the
+/// `.exe`: the loader keys off it and a browser download without it is inert.
+/// `assetFor(.gui)` in `src/update.zig` returns this same name.
+fn guiExeAsset(comptime t: GuiTarget) []const u8 {
+    return if (t.query.os_tag.? == .windows) t.name ++ ".exe" else t.name;
+}
 
 
 pub fn build(b: *std.Build) void {
@@ -98,7 +111,7 @@ pub fn build(b: *std.Build) void {
     // with the targets it cross-builds.
     const gui_release_step = addGuiReleaseStep(b, optimize, .{
         .step_name = "gui-release",
-        .desc = "Bundle the Linux GUIs (exe + Slint runtime) into zips",
+        .desc = "Bundle the releasable GUIs (exe + Slint runtime) into zips",
         .out_dir = "gui-release",
         .targets = &gui_targets,
     });
@@ -506,8 +519,9 @@ fn buildGuiExe(
         // Windows has no rpath of any kind, and no delay-load escape either: 21
         // of the imports are *data* objects (`RectangleVTable`, `EmptyVTable`, …)
         // and delay-load only ever covers function thunks. The DLL therefore has
-        // to sit beside the exe, which is the first place the loader looks — see
-        // `gui_targets_unverified` for what that costs the self-updater.
+        // to sit beside the exe, which is the first place the loader looks. What
+        // that costs the self-updater — no versioned pairing, so a staged
+        // `--selftest` instead — is in `src/update.zig`'s `runtime_flat`.
         const gui = b.addExecutable(.{ .name = "boxwallet-gui", .root_module = exe_mod });
 
         // Without this the PE is marked console-subsystem and Windows opens a
@@ -534,19 +548,23 @@ fn buildGuiExe(
     return b.addExecutable(.{ .name = "boxwallet-gui", .root_module = exe_mod });
 }
 
-/// `zig build gui-release`: a distributable bundle per Linux target — the GUI exe
-/// (rpath `$ORIGIN`) beside a stripped `libslint_cpp.so` and Slint's licences,
-/// zipped so it runs on another machine after unzip (no install, just the files
-/// together).
+/// `zig build gui-release`: a distributable bundle per target — the GUI exe
+/// beside the Slint runtime it was linked against and Slint's licences, zipped so
+/// it runs on another machine after unzip (no install, just the files together).
+/// The exe finds the runtime by rpath (`$ORIGIN/slint-<ver>/`) everywhere except
+/// Windows, which has no rpath and takes the DLL flat instead.
 ///
-/// Linux-only, and unlike the TUI's `release` step these are **not** static musl
-/// binaries: the prebuilt Slint runtime is glibc-linked and pulls in the system
-/// graphics stack (fontconfig, freetype, libxkbcommon, libinput, libgbm, libudev,
-/// libstdc++), so a bundle needs a reasonably current desktop Linux. The TUI
-/// remains the option for old or headless machines.
+/// Every target here cross-builds from this one Linux host — including Windows,
+/// whose only Slint dependency is a DLL with a pure-C export surface. What a
+/// native host is still needed for is *running* the result, which is why the
+/// `--selftest` gate lives in CI (`.github/workflows/gui-selftest.yml`) and
+/// anything it hasn't cleared stays in `gui_targets_unverified`.
 ///
-/// macOS and Windows bundles need a native host — see `slintDepName` — so they
-/// belong in a CI matrix rather than here. `zip`/`strip` are host tools.
+/// Unlike the TUI's `release` step these are **not** static musl binaries: the
+/// prebuilt Slint runtime is glibc-linked and pulls in the system graphics stack
+/// (fontconfig, freetype, libxkbcommon, libinput, libgbm, libudev, libstdc++), so
+/// a Linux bundle needs a reasonably current desktop. The TUI remains the option
+/// for old or headless machines. `zip`/`strip` are host tools.
 fn addGuiReleaseStep(
     b: *std.Build,
     optimize: std.builtin.OptimizeMode,
@@ -595,11 +613,11 @@ fn addGuiReleaseStep(
             const is_windows = comptime t.query.os_tag.? == .windows;
 
             // What the exe is called inside the bundle, and the name of the
-            // bare-exe asset published beside the zip. Windows needs the `.exe`
-            // in both places — the loader keys off it, and a browser download
-            // without it is inert.
+            // bare-exe asset published beside the zip (`guiExeAsset`). Windows
+            // needs the `.exe` in both places — the loader keys off it, and a
+            // browser download without it is inert.
             const bundle_exe = if (is_windows) "boxwallet-gui.exe" else "boxwallet-gui";
-            const exe_asset = if (is_windows) t.name ++ ".exe" else t.name;
+            const exe_asset = comptime guiExeAsset(t);
 
             // exe → staging/<bundle>/boxwallet-gui[.exe]
             const inst_exe = b.addInstallFile(exe.getEmittedBin(), stage ++ "/" ++ bundle_exe);
@@ -838,9 +856,12 @@ fn addReleaseAllStep(b: *std.Build, release_step: *std.Build.Step, gui_step: *st
     // What the release must contain. The bare exe and the bundle are both
     // published per GUI target: the updater takes the exe alone when the
     // installed Slint runtime already matches, and the bundle when it doesn't.
+    // The two are *not* the same stem on Windows — `…-x86_64.exe` beside
+    // `…-x86_64.zip` — so the exe is asked for by `guiExeAsset` and only the zip
+    // is derived from `t.name`.
     var expected: []const u8 = "";
     inline for (release_targets) |t| expected = b.fmt("{s} '{s}'", .{ expected, t.name });
-    inline for (gui_targets) |t| expected = b.fmt("{s} '{s}' '{s}.zip'", .{ expected, t.name, t.name });
+    inline for (gui_targets) |t| expected = b.fmt("{s} '{s}' '{s}.zip'", .{ expected, comptime guiExeAsset(t), t.name });
     expected = b.fmt("{s} 'RUNTIME'", .{expected});
 
     // `set -e` so a missing source file stops the assembly rather than leaving a

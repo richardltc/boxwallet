@@ -1,15 +1,19 @@
 # Verification gate for the GUI bundles that Linux can build but can't run.
 #
-# `zig build gui-release-unverified` cross-builds the macOS arm64 and Windows
-# x86_64 bundles from Linux, but nothing on a Linux host can execute a Mach-O or
-# a PE — and an exe/runtime mismatch fails *inside the loader, before main*, with
-# no window and no message. That is precisely the failure `--selftest` exists to
-# catch, so until it has run on the real OS a bundle stays in
-# `gui_targets_unverified` and out of `release-all`.
+# The macOS arm64 and Windows x86_64 bundles cross-build from Linux, but nothing
+# on a Linux host can execute a Mach-O or a PE — and an exe/runtime mismatch
+# fails *inside the loader, before main*, with no window and no message. That is
+# precisely the failure `--selftest` exists to catch, so until it has run on the
+# real OS a bundle stays in `gui_targets_unverified` and out of `release-all`.
 #
 # This workflow is that missing step: build once on Linux exactly as a release
 # would, then run the bundle on a real runner of each OS. A target only earns its
 # way into `gui_targets` (and `assetFor` in src/update.zig) once this is green.
+#
+# Windows has since earned it, so its bundle now comes from `gui-release` while
+# macOS still comes from `gui-release-unverified` — hence both steps below. The
+# gate does not retire when a target graduates: it is what keeps a released
+# bundle from silently regressing on the next tag.
 #
 # It publishes nothing and needs no secrets - it only ever reads the repo.
 name: GUI bundle selftest
@@ -30,7 +34,7 @@ env:
 
 jobs:
   build:
-    name: Cross-build the unverified bundles
+    name: Cross-build the GUI bundles
     runs-on: ubuntu-latest
     timeout-minutes: 30
     outputs:
@@ -70,26 +74,47 @@ jobs:
           test -n "$v" || { echo "could not read app_version from src/version.zig" >&2; exit 1; }
           echo "version=$v" >> "$GITHUB_OUTPUT"
 
-      - name: Build the unverified GUI bundles
-        run: ZIG_GLOBAL_CACHE_DIR=zig-pkg zig build gui-release-unverified
+      # Both steps: the Windows bundle is releasable now and so is built by
+      # `gui-release`, while macOS arm64 is still awaiting its first green run
+      # below. `gui-release` also builds the two Linux bundles, which this
+      # workflow doesn't test - they are built and run on the same OS as the
+      # release host, so the loader mismatch this gate exists for can't hide.
+      - name: Build the GUI bundles
+        run: |
+          set -euo pipefail
+          ZIG_GLOBAL_CACHE_DIR=zig-pkg zig build gui-release
+          ZIG_GLOBAL_CACHE_DIR=zig-pkg zig build gui-release-unverified
 
       - name: Verify checksums
-        run: cd zig-out/gui-release-unverified && sha256sum -c SHA256SUMS
+        run: |
+          set -euo pipefail
+          (cd zig-out/gui-release && sha256sum -c SHA256SUMS)
+          (cd zig-out/gui-release-unverified && sha256sum -c SHA256SUMS)
 
       # Runs here rather than in the Windows job on purpose: CI runners have the
       # VC++ redistributable installed, so a dependency that would strand a real
       # user passes --selftest quite happily. Only a static check catches it.
       - name: Check the Windows bundle's DLL dependencies
-        run: ./tools/check-windows-deps.sh zig-out/gui-release-unverified/staging/boxwallet-gui-windows-x86_64
+        run: ./tools/check-windows-deps.sh zig-out/gui-release/staging/boxwallet-gui-windows-x86_64
+
+      # Gathered into one directory first, and uploaded as that single path.
+      # `upload-artifact` roots a multi-path artifact at the common ancestor of
+      # what it matched, so listing the two output directories would nest the
+      # zips under `gui-release/` and `gui-release-unverified/` - and the jobs
+      # below unzip by bare filename.
+      - name: Collect the bundles to test
+        run: |
+          set -euo pipefail
+          mkdir -p ci-bundles
+          cp zig-out/gui-release/boxwallet-gui-windows-x86_64.zip ci-bundles/
+          cp zig-out/gui-release-unverified/boxwallet-gui-macos-aarch64.zip ci-bundles/
 
       - uses: actions/upload-artifact@v4
         with:
           name: gui-bundles
           # The zips, not the loose exes: artifact upload does not preserve the
           # executable bit, but a mode stored inside a zip survives it.
-          path: |
-            zig-out/gui-release-unverified/*.zip
-            zig-out/gui-release-unverified/RUNTIME
+          path: ci-bundles/
           if-no-files-found: error
 
   windows:

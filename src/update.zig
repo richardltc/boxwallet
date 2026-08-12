@@ -188,8 +188,8 @@ const Preflight = enum {
 
 /// The asset name for `front` on *this* build target, or `null` when no such
 /// asset is published — which is what keeps the updater dormant rather than
-/// erroring. The TUI ships a bare executable per OS/arch; the GUI only exists
-/// for the two Linux targets `gui-release` builds, so `assetFor(.gui)` is null
+/// erroring. The TUI ships a bare executable per OS/arch; the GUI ships only for
+/// the targets in `build.zig`'s `gui_targets`, so `assetFor(.gui)` is null
 /// everywhere else for free.
 pub fn assetFor(comptime front: Front) ?[]const u8 {
     const arch = switch (builtin.cpu.arch) {
@@ -220,13 +220,12 @@ pub fn assetFor(comptime front: Front) ?[]const u8 {
             // finds no asset in SHA256SUMS and reports verify_failed, so this
             // stays null until the bundle actually ships.
             .macos => null,
-            // Builds and bundles correctly (`gui-release-unverified`), and the
-            // flat-runtime apply path below is written for it — but it stays
-            // null until a Windows machine has actually run `--selftest` on the
-            // bundle and it moves into `gui_targets`. Lighting this up first
-            // would have every Windows user told an update exists and then fail
-            // to find the asset in SHA256SUMS.
-            .windows => null,
+            // Published since the bundle cleared `--selftest` on a real Windows
+            // runner. The `.exe` is part of the asset name here and nowhere else:
+            // the bundle zip and the directory inside it are named without it, so
+            // anything deriving one from the other goes through `bundleBase`.
+            // x86_64 only — that is the sole Windows Slint package upstream has.
+            .windows => if (builtin.cpu.arch == .x86_64) "boxwallet-gui-windows-x86_64.exe" else null,
             else => null,
         },
     };
@@ -234,6 +233,20 @@ pub fn assetFor(comptime front: Front) ?[]const u8 {
 
 /// The TUI's asset name. Kept so existing callers read unchanged.
 pub const asset_name: ?[]const u8 = assetFor(.tui);
+
+/// The bundle's stem for a bare-exe `asset`: the zip is `<stem>.zip` and the
+/// single directory inside it is `<stem>`.
+///
+/// Identical to the asset everywhere but Windows, where the published exe carries
+/// a `.exe` the bundle's name doesn't (`…-x86_64.exe` beside `…-x86_64.zip`) —
+/// see `guiExeAsset` in `build.zig`, which is the other half of this pairing.
+/// Deriving the zip name by concatenation instead would ask a release for
+/// `…-x86_64.exe.zip`, get a 404, and report it as a network error on every
+/// Windows update that needs the runtime.
+fn bundleBase(asset: []const u8) []const u8 {
+    const suffix = ".exe";
+    return if (std.mem.endsWith(u8, asset, suffix)) asset[0 .. asset.len - suffix.len] else asset;
+}
 
 /// Which Slint runtime a published GUI build needs, read from the release's
 /// `RUNTIME` manifest.
@@ -458,7 +471,7 @@ fn checkAndStageInner(
         const rt = parseRuntime(rt_text, asset) orelse return error.VerifyFailed;
         runtime = rt;
         if (!installedRuntimeMatches(gpa, io, &rt))
-            fetch_asset = try std.fmt.bufPrint(&bundle_buf, "{s}.zip", .{asset});
+            fetch_asset = try std.fmt.bufPrint(&bundle_buf, "{s}.zip", .{bundleBase(asset)});
     }
 
     const want = parseChecksum(sums, fetch_asset) orelse return error.VerifyFailed;
@@ -491,7 +504,7 @@ fn checkAndStageInner(
         // `$ORIGIN/slint-<ver>` RUNPATH resolves within the staging directory —
         // which is what lets the pre-flight exercise the real pair before we
         // commit to it.
-        try unpackStagedBundle(gpa, io, dir, updates_path, asset, &runtime.?);
+        try unpackStagedBundle(gpa, io, dir, updates_path, bundleBase(asset), &runtime.?);
     } else {
         try dir.rename(part_name, dir, staged_name, io);
     }
@@ -571,9 +584,10 @@ fn clearStagedRuntimes(io: std.Io, dir: std.Io.Dir) void {
 /// at `staged_name` and the runtime at `slint-<ver>/`, both directly under the
 /// staging directory.
 ///
-/// The bundle's own layout is `<asset>/boxwallet-gui` plus
-/// `<asset>/slint-<ver>/libslint_cpp.so`, so this flattens one level. The runtime
-/// is re-hashed against `RUNTIME` afterwards: the zip as a whole already matched
+/// The bundle's own layout is `<base>/boxwallet-gui` plus
+/// `<base>/slint-<ver>/libslint_cpp.so`, so this flattens one level. `base` is
+/// the zip's stem, which is *not* the asset name on Windows — see `bundleBase`.
+/// The runtime is re-hashed against `RUNTIME` afterwards: the zip already matched
 /// `SHA256SUMS`, so this only catches a release whose manifest and bundle
 /// disagree — but that release would produce an unbootable install, and catching
 /// it here costs one pass over a file we just wrote.
@@ -582,7 +596,7 @@ fn unpackStagedBundle(
     io: std.Io,
     dir: std.Io.Dir,
     updates_path: []const u8,
-    asset: []const u8,
+    base: []const u8,
     rt: *const Runtime,
 ) !void {
     const unpack_path = try std.fs.path.join(gpa, &.{ updates_path, unpack_subdir });
@@ -598,7 +612,7 @@ fn unpackStagedBundle(
 
     var top = try dir.openDir(io, unpack_subdir, .{});
     defer top.close(io);
-    var inner = try top.openDir(io, asset, .{});
+    var inner = try top.openDir(io, base, .{});
     defer inner.close(io);
 
     // Copied rather than renamed so the executable bit is set explicitly: zip
@@ -1296,18 +1310,37 @@ test "the front-ends stage into separate directories" {
 }
 
 test "assetFor names a per-front-end asset, and nothing where none is published" {
-    // The TUI ships everywhere we build; the GUI is Linux-only, which is what
-    // keeps its updater correctly dormant on macOS/Windows for free.
+    // The TUI ships everywhere we build; the GUI ships only where a bundle has
+    // cleared `--selftest` on real hardware, which is what keeps its updater
+    // correctly dormant on macOS for free.
     try std.testing.expect(assetFor(.tui) != null);
     switch (builtin.os.tag) {
-        .linux => {
+        .linux, .windows => {
             const gui = assetFor(.gui).?;
-            try std.testing.expect(std.mem.startsWith(u8, gui, "boxwallet-gui-linux-"));
+            const prefix = if (builtin.os.tag == .windows) "boxwallet-gui-windows-" else "boxwallet-gui-linux-";
+            try std.testing.expect(std.mem.startsWith(u8, gui, prefix));
             // Never the same name as the TUI's, or they'd collide in a release.
             try std.testing.expect(!std.mem.eql(u8, gui, assetFor(.tui).?));
         },
         else => try std.testing.expect(assetFor(.gui) == null),
     }
+}
+
+test "the bundle's name drops the Windows exe suffix, and nothing else" {
+    // The one that matters: `<asset>.zip` would ask a release for
+    // `boxwallet-gui-windows-x86_64.exe.zip`, which no release has ever carried.
+    try std.testing.expectEqualStrings(
+        "boxwallet-gui-windows-x86_64",
+        bundleBase("boxwallet-gui-windows-x86_64.exe"),
+    );
+    // Every other asset is its own bundle stem, suffix-free already.
+    try std.testing.expectEqualStrings(
+        "boxwallet-gui-linux-x86_64",
+        bundleBase("boxwallet-gui-linux-x86_64"),
+    );
+    // Only a *trailing* suffix, and only the whole thing — not a name that
+    // merely contains the letters.
+    try std.testing.expectEqualStrings("boxwallet.exe-gui", bundleBase("boxwallet.exe-gui"));
 }
 
 test "the apply-failure count is scoped to its version" {
