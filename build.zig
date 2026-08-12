@@ -18,17 +18,21 @@ const release_targets = [_]ReleaseTarget{
 
 const GuiTarget = struct { query: std.Target.Query, name: []const u8 };
 
-/// GUI targets not yet cleared for release. They build correctly here, but
-/// nothing on this host can *run* a Mach-O, and the whole point of the
-/// `--selftest` pre-flight is that an exe/runtime mismatch fails inside the
-/// loader before `main` — invisibly. So these are built by their own step and
-/// deliberately left out of `release-all`, which means no release can publish
-/// one by accident. Move an entry into `gui_targets` once it has launched on
-/// real hardware — which for macOS means a green `macos` job in
-/// `.github/workflows/gui-selftest.yml`, since no runner here can do it.
-const gui_targets_unverified = [_]GuiTarget{
-    .{ .query = .{ .cpu_arch = .aarch64, .os_tag = .macos }, .name = "boxwallet-gui-macos-aarch64" },
-};
+/// GUI targets not yet cleared for release: they build here, but nothing on this
+/// host can *run* them, and the whole point of the `--selftest` pre-flight is
+/// that an exe/runtime mismatch fails inside the loader before `main` —
+/// invisibly. Entries here are built by their own step and deliberately left out
+/// of `release-all`, so no release can publish one by accident, and
+/// `assetFor(.gui)` returns null for them so the updater stays dormant rather
+/// than chasing an asset nobody published.
+///
+/// **Empty, for the first time since it was introduced** — every target we build
+/// has now been run on real hardware by
+/// `.github/workflows/gui-selftest.yml`. Kept rather than deleted because it is
+/// the holding pen the *next* one lands in: a new OS/arch starts here, gets its
+/// green run, and only then moves down. `gui-release-unverified` builds nothing
+/// while this is empty, which is the correct answer to "what is unverified?".
+const gui_targets_unverified = [_]GuiTarget{};
 const gui_targets = [_]GuiTarget{
     // glibc, not musl: the Slint runtime is a glibc binary, so the exe beside
     // it must be too. Each glibc floor is upstream's, read off its `.so` with
@@ -43,13 +47,21 @@ const gui_targets = [_]GuiTarget{
     // ABI — its exported surface is pure C — and mingw is what Zig can produce
     // without a Windows host. See `slintWindowsPackage`.
     //
-    // Verified, unlike macOS arm64, because a Windows runner can actually run
-    // the thing: the `windows` job in `.github/workflows/gui-selftest.yml`
-    // unzips this bundle, runs `--selftest` from a different cwd, and asserts it
-    // fails with the DLL taken away. Green on the v0.8.5 tag, which is what
-    // moved this out of `gui_targets_unverified`. It publishes an
+    // Verified by the `windows` job in `.github/workflows/gui-selftest.yml`,
+    // which unzips this bundle, runs `--selftest` from a different cwd, and
+    // asserts it fails with the DLL taken away. Green on the v0.8.5 tag, which
+    // is what moved this out of `gui_targets_unverified`. It publishes an
     // `…-x86_64.exe` bare asset (not the bare name) — see `exe_asset`.
     .{ .query = .{ .cpu_arch = .x86_64, .os_tag = .windows, .abi = .gnu }, .name = "boxwallet-gui-windows-x86_64" },
+    // Apple Silicon only — upstream publishes no Intel macOS Slint package at
+    // all, and Rosetta translates x86_64→arm64, not the reverse, so an Intel Mac
+    // can't run this one either. Intel Macs get the TUI.
+    //
+    // Cross-built here with no Mac and no Apple SDK: our code references no
+    // framework, so the dylib's framework dependencies stay its own, and Zig
+    // ad-hoc code-signs the output as Apple Silicon requires. Verified by the
+    // `macos` job on an Apple Silicon runner, green on the v0.8.6 tag.
+    .{ .query = .{ .cpu_arch = .aarch64, .os_tag = .macos }, .name = "boxwallet-gui-macos-aarch64" },
 };
 
 /// The bare-exe asset published for `t`, as distinct from `t.name`, which names
@@ -128,7 +140,8 @@ pub fn build(b: *std.Build) void {
     show_slint_win.addDirectoryArg(slint_win.root);
     slint_win_step.dependOn(&show_slint_win.step);
 
-    // Built, but not releasable: see `gui_targets_unverified`. Its own step and
+    // Built, but not releasable: see `gui_targets_unverified` — currently empty,
+    // so this step builds nothing until a new target arrives. Its own step and
     // its own output directory, and deliberately not wired into `release-all`.
     _ = addGuiReleaseStep(b, optimize, .{
         .step_name = "gui-release-unverified",

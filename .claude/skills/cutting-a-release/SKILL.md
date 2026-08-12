@@ -7,12 +7,12 @@ description: How to cut a BoxWallet release, and the release/GUI-bundling mechan
   distributable into `zig-out/release/` (Linux = static musl, all `ReleaseSafe`
   + stripped), named `boxwallet-<os>-<arch>[.exe]` with a `SHA256SUMS`; `zig
   build gui-release` does the same for the releasable GUI bundles (two Linux,
-  plus Windows x86_64 since v0.8.6). Both
+  plus Windows x86_64 since v0.8.6 and macOS arm64 since v0.8.7). Both
   front-ends self-update in-app (`src/update.zig` + apply/re-exec in `main.zig`
   and `bw_self_update_apply`, background checks in `app.zig` and `gui/main.cpp`).
 
   **To cut a release: bump `app_version` in `src/version.zig`, run `zig build
-  release-all`, and upload the 13 files in `zig-out/dist/`** to a GitHub release
+  release-all`, and upload the 15 files in `zig-out/dist/`** to a GitHub release
   on `github.com/richardltc/boxwallet`. Use that step, not
   the two underneath it — both write a file called `SHA256SUMS`, and *both*
   updaters fetch `<tag>/SHA256SUMS`. A release carries one file of that name, so
@@ -41,8 +41,8 @@ description: How to cut a BoxWallet release, and the release/GUI-bundling mechan
   `zig build test` and `zig build release` never touch it. Add or bump one with
   `zig fetch --save=<name> <url>`, then set `.lazy = true` by hand.
   `build.zig`'s `slintDepName` maps target → package and returns null where
-  upstream ships none, which is what keeps the GUI Linux-only without a separate
-  platform check. **Never commit the package into the repo** — it was vendored
+  upstream ships none (Intel macOS, every non-x86_64 Windows), which is what
+  bounds the GUI to buildable targets without a separate platform check. **Never commit the package into the repo** — it was vendored
   under `third_party/` once, and 46 MB of unverifiable binary in git is what
   this replaced.
 - **GUI bundles are glibc, not musl.** The prebuilt Slint runtime is
@@ -92,15 +92,18 @@ description: How to cut a BoxWallet release, and the release/GUI-bundling mechan
   so no release can publish one by accident. `assetFor(.gui)` also returns null
   for them, so the updater stays dormant rather than chasing an asset that was
   never published. Move an entry into `gui_targets` (and light up `assetFor`)
-  only once the bundle has actually launched on real hardware. **macOS arm64 is
-  the only one left there**; Windows x86_64 was promoted after a green run on the
-  `v0.8.5` tag, and ships from v0.8.6 on.
+  only once the bundle has actually launched on real hardware. **`gui_targets_unverified`
+  is currently empty** — Windows x86_64 was promoted on a green `v0.8.5` run and
+  ships from v0.8.6; macOS arm64 on a green `v0.8.6` run, shipping from v0.8.7.
+  The list and its step are kept anyway: they are the holding pen the next new
+  platform starts in, and `gui-release-unverified` correctly builds nothing until
+  then.
 
   **`.github/workflows/gui-selftest.yml` is how that happens.** It cross-builds
-  the bundles on Linux exactly as a release would — `gui-release` for Windows now
-  that it's releasable, `gui-release-unverified` for macOS — then runs each one
-  on a real runner of its own OS (`windows-latest` and an Apple Silicon
-  `macos-latest`), asserting the selftest exits 0 *and* reports this commit's
+  the bundles on Linux exactly as a release would (`gui-release`, now that
+  everything in it is releasable), then runs each one on a real runner of its own
+  OS (`windows-latest` and an Apple Silicon `macos-latest`), asserting the
+  selftest exits 0 *and* reports this commit's
   `app_version`. Each job then hides the runtime and requires the selftest to
   fail, because a gate that cannot fail is not a gate: a `--selftest` that
   silently returned 0 would wave every broken pair straight through. The Windows

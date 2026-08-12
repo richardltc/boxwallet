@@ -213,13 +213,11 @@ pub fn assetFor(comptime front: Front) ?[]const u8 {
         // than erroring — no asset was ever published for those targets.
         .gui => switch (builtin.os.tag) {
             .linux => "boxwallet-gui-linux-" ++ arch,
-            // Apple Silicon only: there is no Intel macOS Slint package at all.
-            // Not yet published — the bundle builds but hasn't been launched on
-            // real hardware, so it's built by `gui-release-unverified` and left
-            // out of `release-all`. Until a release carries it, a check here
-            // finds no asset in SHA256SUMS and reports verify_failed, so this
-            // stays null until the bundle actually ships.
-            .macos => null,
+            // Apple Silicon only: there is no Intel macOS Slint package at all,
+            // so an Intel Mac has no GUI bundle to update to and stays null —
+            // which is what keeps its updater dormant instead of reporting
+            // verify_failed against an asset no release carries.
+            .macos => if (builtin.cpu.arch == .aarch64) "boxwallet-gui-macos-aarch64" else null,
             // Published since the bundle cleared `--selftest` on a real Windows
             // runner. The `.exe` is part of the asset name here and nowhere else:
             // the bundle zip and the directory inside it are named without it, so
@@ -1310,20 +1308,29 @@ test "the front-ends stage into separate directories" {
 }
 
 test "assetFor names a per-front-end asset, and nothing where none is published" {
-    // The TUI ships everywhere we build; the GUI ships only where a bundle has
-    // cleared `--selftest` on real hardware, which is what keeps its updater
-    // correctly dormant on macOS for free.
+    // The TUI ships everywhere we build; the GUI ships only where upstream has a
+    // Slint runtime *and* the bundle has cleared `--selftest` on real hardware.
+    // Intel macOS is the one that has neither, and must stay null: a name here
+    // is a promise the release carries the asset, and nothing publishes that one.
     try std.testing.expect(assetFor(.tui) != null);
-    switch (builtin.os.tag) {
-        .linux, .windows => {
-            const gui = assetFor(.gui).?;
-            const prefix = if (builtin.os.tag == .windows) "boxwallet-gui-windows-" else "boxwallet-gui-linux-";
-            try std.testing.expect(std.mem.startsWith(u8, gui, prefix));
-            // Never the same name as the TUI's, or they'd collide in a release.
-            try std.testing.expect(!std.mem.eql(u8, gui, assetFor(.tui).?));
-        },
-        else => try std.testing.expect(assetFor(.gui) == null),
+    const published = switch (builtin.os.tag) {
+        .linux, .windows => true,
+        .macos => builtin.cpu.arch == .aarch64,
+        else => false,
+    };
+    if (!published) {
+        try std.testing.expect(assetFor(.gui) == null);
+        return;
     }
+    const gui = assetFor(.gui).?;
+    const prefix = switch (builtin.os.tag) {
+        .windows => "boxwallet-gui-windows-",
+        .macos => "boxwallet-gui-macos-",
+        else => "boxwallet-gui-linux-",
+    };
+    try std.testing.expect(std.mem.startsWith(u8, gui, prefix));
+    // Never the same name as the TUI's, or they'd collide in a release.
+    try std.testing.expect(!std.mem.eql(u8, gui, assetFor(.tui).?));
 }
 
 test "the bundle's name drops the Windows exe suffix, and nothing else" {
