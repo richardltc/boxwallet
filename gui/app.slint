@@ -1292,7 +1292,7 @@ export component AppWindow inherits Window {
                                 // overlapping text reads as a bug, truncated text reads
                                 // as a small window.
                                 property <length> bal-x: max(
-                                    ver-el.x + ver-el.preferred-width + 18px,
+                                    upd-el.x + upd-el.width + 18px,
                                     title-row.width - tick-el.preferred-width
                                         - title-row.bal-gap - bal-el.preferred-width);
 
@@ -1312,14 +1312,54 @@ export component AppWindow inherits Window {
                                     font-size: 28px;
                                     font-weight: 800;
                                 }
+                                // The version actually on disk when we know it —
+                                // only the bundled (target) version otherwise. An
+                                // out-of-date install that showed the bundled number
+                                // would claim to be a version it isn't running.
                                 ver-el := Text {
-                                    text: root.coin-version;
+                                    text: root.update-available && root.installed-version != ""
+                                        ? root.installed-version
+                                        : root.coin-version;
                                     color: #808080;
                                     font-size: 13px;
                                     x: title-el.preferred-width + 8px;
                                     // Bottom-align to the title, nudged up so the
                                     // baselines (not the box bottoms) line up.
                                     y: parent.height - self.preferred-height - 4px;
+                                }
+                                // Update badge, riding beside the installed version so
+                                // both numbers are on the same line — what you have,
+                                // and what's waiting. The TUI says the same thing in
+                                // its coin header. Empty (zero-width, so the balance
+                                // shifts back over) when there's nothing to update.
+                                //
+                                // It's also a second way to press Update: same confirm
+                                // modal, same guard against pressing it mid-install or
+                                // while the daemon is starting/stopping. Clicking the
+                                // notice is the obvious thing to try, so it works.
+                                upd-el := TouchArea {
+                                    x: ver-el.x + ver-el.preferred-width
+                                        + (root.update-available ? 10px : 0);
+                                    y: parent.height - upd-text.preferred-height - 4px;
+                                    width: upd-text.preferred-width;
+                                    height: upd-text.preferred-height;
+                                    enabled: root.installed && root.update-available
+                                        && !root.install-busy && !root.daemon-busy;
+                                    mouse-cursor: self.enabled ? pointer : default;
+                                    clicked => {
+                                        root.update-open = true;
+                                    }
+                                    upd-text := Text {
+                                        text: root.update-available
+                                            ? "\u{2b06} " + root.coin-version + " available"
+                                            : "";
+                                        // Brightens under the pointer, so it reads as
+                                        // something you can press rather than a label.
+                                        color: upd-el.has-hover && upd-el.enabled
+                                            ? #f5bd5e : #e0a03a;
+                                        font-size: 13px;
+                                        font-weight: 700;
+                                    }
                                 }
                                 // The ticker wears the coin's brand colour, like the
                                 // title does; the figure stays neutral so the number
