@@ -13,7 +13,7 @@ const std = @import("std");
 /// (see CLAUDE.md): `zig build release` names its assets from it and
 /// `update.zig` compares against it, so the TUI's Home pane, the GUI's Home page
 /// and the updater can't disagree about what's running.
-pub const app_version = "0.8.6";
+pub const app_version = "0.8.7";
 
 /// The brand hex used for the "BoxWallet" wording in both front-ends.
 pub const brand_color = "#7ca071";
