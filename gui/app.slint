@@ -113,6 +113,45 @@ component NavItem inherits Rectangle {
     }
 }
 
+// An icon-only button that puts an address on the clipboard. The label lives in
+// a hover tooltip rather than beside the icon: these sit next to addresses,
+// which are already as wide as the pane. `copied` swaps the clipboard glyph for
+// a tick in the same box — an acknowledgement that can't shift the layout — and
+// the caller clears it (see `copied-reset`) so the icon always says what the
+// next press would do.
+component CopyIconButton inherits Rectangle {
+    in property <bool> copied;
+    in property <string> hint: "Copy address";
+    callback clicked;
+
+    width: 30px;
+    height: 30px;
+    border-radius: 6px;
+    border-width: 1px;
+    border-color: root.copied ? #3f6b3f : #333333;
+    background: root.copied ? #1c261c : (ta.has-hover ? #262626 : #1d1d1d);
+
+    Image {
+        source: root.copied
+            ? @image-url("icons/check.svg")
+            : @image-url("icons/copy.svg");
+        colorize: root.copied ? #7ec27e : (ta.has-hover ? #e6e6e6 : #9a9a9a);
+        width: 16px;
+        height: 16px;
+        x: (parent.width - self.width) / 2;
+        y: (parent.height - self.height) / 2;
+    }
+    ta := TouchArea {
+        mouse-cursor: pointer;
+        clicked => {
+            root.clicked();
+        }
+    }
+    Tooltip {
+        text: @markdown("\{root.copied ? "Copied" : root.hint}");
+    }
+}
+
 // One tab in the detail strip: a monochrome SVG icon (tinted to the accent via
 // `colorize`) beside its label, with an accent underline when selected.
 component TabButton inherits Rectangle {
@@ -999,6 +1038,13 @@ export component AppWindow inherits Window {
     callback nav-step(/* current */ int, /* delta */ int) -> int;
     property <int> no-move: -2;
 
+    // "Copied" acknowledgement on the two copy buttons — the Receive tab's
+    // address and the Settings tab's tip address — cleared by `copied-reset` a
+    // couple of seconds later. They live here rather than in the tab bodies
+    // because a Timer can't sit inside a conditional element, and each tab is one.
+    property <bool> tip-copied: false;
+    property <bool> receive-copied: false;
+
     // Select `idx` exactly as clicking its nav row would, so the poller is told
     // either way. `no-move` means the key was a no-op.
     function go-to(idx: int) {
@@ -1038,6 +1084,20 @@ export component AppWindow inherits Window {
         if (t == 5) { return root.has-mining; }
         if (t == 6) { return root.has-stablecoin; }
         return t == 0 || t == 4;
+    }
+
+    // Puts a copy button back to its clipboard icon a beat after it acknowledged,
+    // so the icon always matches what the next press would do. Starts idle and
+    // only runs while an acknowledgement is showing — a permanently running timer
+    // would wake the UI thread for nothing. One timer serves both buttons: only
+    // one tab is on screen at a time, so only one can be lit.
+    copied-reset := Timer {
+        interval: 2s;
+        running: root.tip-copied || root.receive-copied;
+        triggered => {
+            root.tip-copied = false;
+            root.receive-copied = false;
+        }
     }
 
     // Everything lives inside this FocusScope so unhandled keys bubble up to it
@@ -2037,19 +2097,71 @@ export component AppWindow inherits Window {
                             font-size: 13px;
                             wrap: word-wrap;
                         }
-                        if root.receive-address != "": Rectangle {
-                            height: 72px;
-                            background: #181818;
+                        // Two rules hold this card together, both about the same
+                        // thing: an address wraps, so its height depends on its
+                        // width, and Slint only gets that right where the width is
+                        // settled before the height is asked for.
+                        //
+                        //  * The card is always in the tree, collapsing to nothing
+                        //    when there's no address — behind an `if` it reserved a
+                        //    line less than the address needed and the tail spilled
+                        //    over whatever came next.
+                        //  * The copy button is positioned inside it rather than
+                        //    laid out beside it, for the same reason: as a sibling
+                        //    it takes width the card is then measured without.
+                        //    Padding keeps the text clear of it instead.
+                        Rectangle {
+                            // Sized off the address it holds — the same card as the
+                            // tip address on the Settings tab, so the two read alike:
+                            // one line for a bitcoin address, as many as a Monero one
+                            // needs. Half an address is worse than none, so it grows
+                            // rather than clipping.
+                            min-height: root.receive-address == "" ? 0px : 40px;
+                            max-height: root.receive-address == "" ? 0px : 100000px;
+                            background: root.receive-address == "" ? transparent : #181818;
                             border-radius: 6px;
                             VerticalLayout {
-                                padding: 10px;
+                                padding: root.receive-address == "" ? 0px : 8px;
+                                // Room at the right for the copy button.
+                                padding-right: root.receive-address == "" ? 0px : 48px;
                                 alignment: center;
-                                Text {
+                                // A read-only TextInput rather than a Text: the
+                                // clipboard gets whatever the element has selected,
+                                // so `copy()` needs something that can hold a
+                                // selection. It also lets someone drag-select the
+                                // address by hand. Editing is off, so what's on
+                                // screen is always the address the core handed us.
+                                recv-input := TextInput {
                                     text: root.receive-address;
+                                    read-only: true;
+                                    single-line: false;
+                                    // char-wrap, not word-wrap: an address has no
+                                    // spaces to break at, so word-wrap would run it
+                                    // off the edge of the card.
+                                    wrap: char-wrap;
                                     color: #e6e6e6;
                                     font-family: "monospace";
                                     font-size: 13px;
-                                    wrap: word-wrap;
+                                }
+                            }
+                            CopyIconButton {
+                                // `visible`, not an `if`: an invisible element is
+                                // neither drawn nor hit-tested, and it keeps the
+                                // card free of the conditional that costs it a line.
+                                visible: root.receive-address != "";
+                                x: parent.width - self.width - 9px;
+                                y: 5px;
+                                copied: root.receive-copied;
+                                clicked => {
+                                    // The clipboard gets the selection, so select
+                                    // first. Deliberately without focusing the
+                                    // input: focus here would leave the arrow keys
+                                    // walking the address instead of the coin list,
+                                    // and neither select-all nor copy needs it.
+                                    recv-input.select-all();
+                                    recv-input.copy();
+                                    recv-input.clear-selection();
+                                    root.receive-copied = true;
                                 }
                             }
                         }
@@ -2188,9 +2300,62 @@ export component AppWindow inherits Window {
                         // own receive address — that confusion would send someone's
                         // coins to the wrong place.
                         if root.tip-address != "": Rectangle { height: 6px; }
-                        if root.tip-address != "": SettingsRow {
-                            label: "Tip the dev";
-                            value: root.tip-address;
+                        // Label above the address rather than beside it, unlike the
+                        // rows above, and the same always-there card with a
+                        // positioned button as the Receive tab — see the note there.
+                        // A fixed-width label sharing this row would leave the
+                        // address measured at a width it doesn't get, and the tail
+                        // of a long address spilling over the rows below.
+                        if root.tip-address != "": Text {
+                            text: "Tip the dev:";
+                            color: #9a9a9a;
+                            font-size: 13px;
+                        }
+                        Rectangle {
+                            min-height: root.tip-address == "" ? 0px : 40px;
+                            max-height: root.tip-address == "" ? 0px : 100000px;
+                            background: root.tip-address == "" ? transparent : #181818;
+                            border-radius: 6px;
+                            VerticalLayout {
+                                padding: root.tip-address == "" ? 0px : 8px;
+                                padding-right: root.tip-address == "" ? 0px : 48px;
+                                alignment: center;
+                                // A read-only TextInput rather than a Text: the
+                                // clipboard gets whatever the element has selected,
+                                // so `copy()` needs something that can hold a
+                                // selection. It also lets someone drag-select the
+                                // address by hand. Editing is off, so the address on
+                                // screen is always the core's.
+                                tip-input := TextInput {
+                                    text: root.tip-address;
+                                    read-only: true;
+                                    single-line: false;
+                                    // char-wrap, not word-wrap: an address has no
+                                    // spaces to break at.
+                                    wrap: char-wrap;
+                                    color: #cfcfcf;
+                                    font-family: "DejaVu Sans Mono";
+                                    font-size: 13px;
+                                }
+                            }
+                            CopyIconButton {
+                                visible: root.tip-address != "";
+                                x: parent.width - self.width - 9px;
+                                y: 5px;
+                                hint: "Copy tip address";
+                                copied: root.tip-copied;
+                                clicked => {
+                                    // The clipboard gets the selection, so select
+                                    // first. Deliberately without focusing the
+                                    // input: focus here would leave the arrow keys
+                                    // walking the address instead of the coin list,
+                                    // and neither select-all nor copy needs it.
+                                    tip-input.select-all();
+                                    tip-input.copy();
+                                    tip-input.clear-selection();
+                                    root.tip-copied = true;
+                                }
+                            }
                         }
 
                         Rectangle { height: 6px; }
