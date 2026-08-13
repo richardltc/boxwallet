@@ -2731,6 +2731,7 @@ export component AppWindow inherits Window {
                         open-pw := LineEdit {
                             placeholder-text: "Password";
                             input-type: password;
+                            init => { self.focus(); }
                             accepted => {
                                 root.wallet-setup(root.wallet-op, self.text, "", root.picked-file);
                                 self.text = "";
@@ -2759,6 +2760,7 @@ export component AppWindow inherits Window {
                         new-pw := LineEdit {
                             placeholder-text: "Password";
                             input-type: password;
+                            init => { self.focus(); }
                         }
                         new-pw2 := LineEdit {
                             placeholder-text: "Confirm password";
@@ -2808,6 +2810,7 @@ export component AppWindow inherits Window {
                         }
                         seed-in := LineEdit {
                             placeholder-text: "seed words, separated by spaces";
+                            init => { self.focus(); }
                         }
                         res-pw := LineEdit {
                             placeholder-text: "Password";
@@ -3051,6 +3054,9 @@ export component AppWindow inherits Window {
                     pw := LineEdit {
                         placeholder-text: "Passphrase";
                         input-type: password;
+                        // The modal exists to take a password, so take the caret
+                        // with it — typing works the moment it opens, no click.
+                        init => { self.focus(); }
                         accepted => {
                             root.unlock-wallet(self.text);
                             self.text = "";
@@ -3486,6 +3492,7 @@ export component AppWindow inherits Window {
                         wa-pw := LineEdit {
                             placeholder-text: root.wa-confirm-pw ? "New password" : "Password";
                             input-type: password;
+                            init => { self.focus(); }
                         }
                         // Always present, collapsed when not needed: the
                         // Continue handler compares against it, and Slint can't
