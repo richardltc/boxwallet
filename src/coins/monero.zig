@@ -1084,6 +1084,7 @@ pub const Monero = struct {
         timestamp: i64 = 0,
         confirmations: i64 = 0,
         type: []const u8 = "",
+        txid: []const u8 = "",
     };
 
     /// `get_transfers` groups entries by state; direction falls out of the
@@ -1147,12 +1148,16 @@ pub const Monero = struct {
 
     /// One entry → the normalized row (atomic units → whole XMR).
     fn mapEntry(e: TransferEntry, direction: models.TxDirection) models.WalletTx {
-        return .{
+        var tx: models.WalletTx = .{
             .direction = direction,
             .amount = @as(f64, @floatFromInt(e.amount)) / atomic_per_xmr,
             .time = e.timestamp,
             .confirmations = e.confirmations,
         };
+        // Copied into the row's own buffer — `e` points into the parsed reply,
+        // which is freed before the row is shown.
+        tx.setTxid(e.txid);
+        return tx;
     }
 
     /// Sort helper: newest (largest timestamp) first.

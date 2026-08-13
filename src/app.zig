@@ -3054,34 +3054,15 @@ const Activity = struct {
         self.poll_headers.store(@as(u64, @intCast(@max(state.headers, 0))), .monotonic);
         self.poll_blocks.store(@as(u64, @intCast(@max(state.blocks, 0))), .monotonic);
         self.poll_network.store(@as(u64, @intCast(@max(state.network_height, 0))), .monotonic);
-        // Seconds behind the tip. A coin that can't report a tip timestamp gives
-        // the figure directly (`seconds_behind` >= 0; e.g. Nerva from its block
-        // gap); otherwise it's wall-clock now − tip block timestamp. The real-time
+        // The tip block's date and how far behind it puts us, for the hint beside
+        // the Blocks bar. Both resolved by `models.BlockchainState.syncDistance`
+        // (shared with the GUI, which asks the same question over the C ABI), from
+        // whichever of `tip_time`/`seconds_behind` the coin reports. The real-time
         // clock is reachable here (in the poll worker) but not in the render path,
-        // so derive it now; -1 when neither is available.
-        const now_secs = std.Io.Clock.real.now(io).toSeconds();
-        self.poll_behind.store(
-            if (state.seconds_behind >= 0)
-                state.seconds_behind
-            else if (state.tip_time > 0)
-                now_secs - state.tip_time
-            else
-                -1,
-            .monotonic,
-        );
-        // Tip block's own timestamp, for the "date/time of the block being synced"
-        // hint. Reported directly by most daemons; for a coin that only gives a
-        // `seconds_behind` gap (no tip timestamp), reconstruct it from now − gap.
-        // 0 when neither is available.
-        self.poll_tip_time.store(
-            if (state.tip_time > 0)
-                state.tip_time
-            else if (state.seconds_behind >= 0)
-                now_secs - state.seconds_behind
-            else
-                0,
-            .monotonic,
-        );
+        // so derive it now; 0 / -1 mean "unavailable".
+        const dist = state.syncDistance(std.Io.Clock.real.now(io).toSeconds());
+        self.poll_behind.store(dist.behind_secs, .monotonic);
+        self.poll_tip_time.store(dist.tip_time, .monotonic);
         self.poll_synced.store(@intFromBool(state.synced), .monotonic);
 
         // Headers pre-sync progress (Bitcoin Core 24+). While syncing, the
@@ -7740,8 +7721,9 @@ pub const App = struct {
 
     /// A transaction counts as settled once it has more than this many
     /// confirmations; at or below it, the raw count is shown instead so the user
-    /// can watch it climb.
-    const tx_confirmed_threshold: i64 = 6;
+    /// can watch it climb. Shared with the GUI (`bw_tx_confirmed_threshold`) so
+    /// the two front-ends draw the same line.
+    const tx_confirmed_threshold: i64 = models.tx_confirmed_threshold;
 
     /// The confirmation status for one Transactions row: a bold green
     /// "Confirmed" once `confirmations` exceeds `tx_confirmed_threshold`,

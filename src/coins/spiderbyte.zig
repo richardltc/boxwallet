@@ -288,6 +288,7 @@ pub const SpiderByte = struct {
         amount: f64 = 0,
         time: i64 = 0,
         confirmations: i64 = 0,
+        txid: []const u8 = "",
     };
 
     /// The wallet's most recent transactions, newest-first, via
@@ -335,6 +336,9 @@ pub const SpiderByte = struct {
                 .time = raw[i].time,
                 .confirmations = raw[i].confirmations,
             };
+            // Copied into the row's own buffer — `raw` points into the parsed
+            // reply, which is freed as soon as this returns.
+            out[n].setTxid(raw[i].txid);
             n += 1;
         }
         return out;

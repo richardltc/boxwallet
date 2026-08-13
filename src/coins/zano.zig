@@ -761,6 +761,7 @@ pub const Zano = struct {
         is_income: bool = false,
         is_mining: bool = false,
         is_service: bool = false,
+        tx_hash: []const u8 = "",
     };
 
     /// `get_recent_txs_and_info`'s provision info (subset): the wallet's synced
@@ -832,6 +833,9 @@ pub const Zano = struct {
                 .time = e.timestamp,
                 .confirmations = if (e.height > 0 and tip > e.height) tip - e.height else 0,
             };
+            // Copied into the row's own buffer — `transfers` points into the
+            // parsed reply, which is freed as soon as this returns.
+            out[n].setTxid(e.tx_hash);
             n += 1;
         }
         return out;

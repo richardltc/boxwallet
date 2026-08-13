@@ -416,16 +416,39 @@ pub const WalletBalance = struct {
 /// from/sent to another party.
 pub const TxDirection = enum { received, sent, stake };
 
+/// A transaction counts as settled once it has **more** than this many
+/// confirmations; at or below it, the raw count is shown so the user can watch
+/// it climb. Shared so both front-ends draw the same line (the TUI's Status
+/// column, the GUI's confirmations column) — it's a policy, not presentation.
+pub const tx_confirmed_threshold: i64 = 6;
+
 /// One wallet transaction, normalized for display. Deliberately scalar-only
 /// (no owned strings) so a bounded, fixed-capacity cache of these can be
 /// memcpy'd across the poll-worker/UI-thread boundary the same way the daemon
 /// version string already is (`Activity.poll_version_buf` in `app.zig`) — no
-/// per-entry allocation or `deinit`.
+/// per-entry allocation or `deinit`. The transaction id follows the same rule
+/// as `StablecoinPosition.id`: a bounded buffer plus a length, never a slice
+/// into the parsed RPC reply, which is freed before the row is shown.
 pub const WalletTx = struct {
     direction: TxDirection,
     amount: f64, // positive magnitude; `direction` carries the sign
     time: i64, // unix seconds
     confirmations: i64,
+    /// The daemon's own transaction hash, for the row's expanded detail. 64 hex
+    /// characters everywhere BoxWallet looks (bitcoin family, CryptoNote, Ergo);
+    /// empty when a coin's list RPC doesn't report one.
+    txid_buf: [64]u8 = undefined,
+    txid_len: usize = 0,
+
+    pub fn txid(self: *const WalletTx) []const u8 {
+        return self.txid_buf[0..self.txid_len];
+    }
+
+    pub fn setTxid(self: *WalletTx, id: []const u8) void {
+        const n = @min(id.len, self.txid_buf.len);
+        @memcpy(self.txid_buf[0..n], id[0..n]);
+        self.txid_len = n;
+    }
 };
 
 /// Outcome of a send attempt, normalized for display. `failed` carries the
@@ -731,7 +754,38 @@ pub const BlockchainState = struct {
     pub fn deinit(self: BlockchainState, allocator: std.mem.Allocator) void {
         allocator.free(self.chain);
     }
+
+    /// How far back in *time* the local tip sits — the two figures a front-end
+    /// shows beside the Blocks readout, resolved from whichever of the two
+    /// fields the coin filled in. `now_secs` is wall-clock unix seconds (the
+    /// caller reads the clock: the TUI does it in its poll worker, not on the
+    /// render path).
+    ///
+    /// Each figure falls back to the other: a coin that reports only a
+    /// `seconds_behind` gap still gets a tip date (now − gap), and a coin that
+    /// reports only a tip timestamp still gets a distance (now − tip). `.tip_time
+    /// == 0` / `.behind_secs == -1` mean the answer isn't available at all.
+    pub fn syncDistance(self: BlockchainState, now_secs: i64) SyncDistance {
+        return .{
+            .tip_time = if (self.tip_time > 0)
+                self.tip_time
+            else if (self.seconds_behind >= 0)
+                now_secs - self.seconds_behind
+            else
+                0,
+            .behind_secs = if (self.seconds_behind >= 0)
+                self.seconds_behind
+            else if (self.tip_time > 0)
+                now_secs - self.tip_time
+            else
+                -1,
+        };
+    }
 };
+
+/// The tip block's own timestamp and how far behind the chain that puts us —
+/// see `BlockchainState.syncDistance`. 0 / -1 stand for "unavailable".
+pub const SyncDistance = struct { tip_time: i64, behind_secs: i64 };
 
 /// Derived sync state: caught up, and how far along.
 pub const SyncStatus = struct { synced: bool, progress: f64 };
@@ -753,6 +807,43 @@ pub fn syncFromNetworkHeight(blocks: i64, network_height: i64) SyncStatus {
     if (network_height <= 0) return .{ .synced = false, .progress = 0 };
     const p = @as(f64, @floatFromInt(blocks)) / @as(f64, @floatFromInt(network_height));
     return .{ .synced = blocks >= network_height, .progress = std.math.clamp(p, 0, 1) };
+}
+
+test "sync distance fills each figure in from the other" {
+    const now: i64 = 1_700_000_000;
+    const base: BlockchainState = .{
+        .chain = "main",
+        .blocks = 100,
+        .headers = 100,
+        .verification_progress = 0.5,
+        .synced = false,
+    };
+
+    // A tip timestamp only (most daemons): the distance is now − tip.
+    var s = base;
+    s.tip_time = now - 3600;
+    var d = s.syncDistance(now);
+    try std.testing.expectEqual(@as(i64, now - 3600), d.tip_time);
+    try std.testing.expectEqual(@as(i64, 3600), d.behind_secs);
+
+    // A gap only (Nerva): the tip date is reconstructed from now − gap.
+    s = base;
+    s.seconds_behind = 7200;
+    d = s.syncDistance(now);
+    try std.testing.expectEqual(@as(i64, now - 7200), d.tip_time);
+    try std.testing.expectEqual(@as(i64, 7200), d.behind_secs);
+
+    // The coin's own answer wins over the derivation when both are present.
+    s = base;
+    s.tip_time = now - 3600;
+    s.seconds_behind = 60;
+    d = s.syncDistance(now);
+    try std.testing.expectEqual(@as(i64, 60), d.behind_secs);
+
+    // Neither: unavailable, not "caught up".
+    d = base.syncDistance(now);
+    try std.testing.expectEqual(@as(i64, 0), d.tip_time);
+    try std.testing.expectEqual(@as(i64, -1), d.behind_secs);
 }
 
 test "sync state derives from the local height against the peer tip" {

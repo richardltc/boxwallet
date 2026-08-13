@@ -47,6 +47,8 @@ struct WalletTxRow {
     amount: string,      // signed, already to the coin's decimals
     when: string,        // "3 hours ago"
     confirmations: string,
+    settled: bool,       // past the confirmed threshold — colours the status
+    txid: string,        // the daemon's own hash, shown when the row is expanded
     incoming: bool,      // colours the row
 }
 
@@ -836,6 +838,13 @@ export component AppWindow inherits Window {
     in property <float> disk-frac: 0;
     in property <string> headers-str: ""; // formatted header count
     in property <string> blocks-str: "";  // formatted block count
+    // How far back in time the chain sits, both formatted by the core
+    // (bw_sync_tip_date / bw_sync_behind, the TUI's own wording): the tip
+    // block's date in UTC, and the wall-clock distance from it. Only fed while
+    // syncing — a caught-up chain has no distance — and either can be empty for
+    // a coin whose daemon reports neither a tip timestamp nor a block gap.
+    in property <string> tip-date: "";
+    in property <string> sync-behind: "";
     in property <string> disk-free: "";    // free space, e.g. "12.3 GB free"
     // System RAM, and what this coin's data dir occupies on disk. The two answer
     // different questions from `disk-frac`, which is the volume's fill level.
@@ -1054,6 +1063,19 @@ export component AppWindow inherits Window {
     // because a Timer can't sit inside a conditional element, and each tab is one.
     property <bool> tip-copied: false;
     property <bool> receive-copied: false;
+    property <bool> tx-copied: false;
+
+    // Which Transactions row is showing its transaction id, by index; -1 for
+    // none. An accordion rather than a per-row flag: the rows come from the core
+    // as a plain model that the poller replaces wholesale, so the open/closed
+    // state has to live outside it.
+    property <int> tx-expanded: -1;
+
+    // Collapse it when the pane changes underneath it — a row index means
+    // nothing once a different coin's transactions are in the model.
+    changed selected => {
+        root.tx-expanded = -1;
+    }
 
     // Select `idx` exactly as clicking its nav row would, so the poller is told
     // either way. `no-move` means the key was a no-op.
@@ -1103,10 +1125,11 @@ export component AppWindow inherits Window {
     // one tab is on screen at a time, so only one can be lit.
     copied-reset := Timer {
         interval: 2s;
-        running: root.tip-copied || root.receive-copied;
+        running: root.tip-copied || root.receive-copied || root.tx-copied;
         triggered => {
             root.tip-copied = false;
             root.receive-copied = false;
+            root.tx-copied = false;
         }
     }
 
@@ -1752,6 +1775,43 @@ export component AppWindow inherits Window {
                                 value: root.mem-used;
                             }
                         }
+                        // Where the chain has got to *in time* — the date of the
+                        // block being synced, then how far back that puts us
+                        // ("2021-04-18 09:12   4 years and 3 months behind").
+                        // The same hint the TUI shows beside its Blocks bar, and
+                        // the answer to "the gauge has barely moved, how far is
+                        // there to go?" that a block count alone can't give. Both
+                        // strings come from the core, so the two front-ends can't
+                        // word the distance differently. The row is absent unless
+                        // there's something to say: cleared once synced, and when
+                        // the daemon stops.
+                        if root.tip-date != "" || root.sync-behind != "": HorizontalBox {
+                            padding: 0;
+                            spacing: 6px;
+                            alignment: start;
+                            Text {
+                                text: "Chain tip:";
+                                color: #9a9a9a;
+                                font-size: 13px;
+                                vertical-alignment: center;
+                            }
+                            if root.tip-date != "": Text {
+                                text: root.tip-date;
+                                color: #d0d0d0;
+                                font-size: 13px;
+                                font-weight: 700;
+                                font-family: "DejaVu Sans Mono";
+                                vertical-alignment: center;
+                            }
+                            // Dimmer than the date: a derived reading of it,
+                            // rather than a second figure competing with it.
+                            if root.sync-behind != "": Text {
+                                text: root.sync-behind;
+                                color: #9a9a9a;
+                                font-size: 13px;
+                                vertical-alignment: center;
+                            }
+                        }
                         // What this coin's chain occupies on disk. A plain figure
                         // rather than a gauge: a gauge needs a meaningful "full",
                         // and the only one available was the chain as a share of
@@ -2071,42 +2131,113 @@ export component AppWindow inherits Window {
                         }
                         if root.tx-rows.length > 0: ListView {
                             vertical-stretch: 1;
-                            for row in root.tx-rows: Rectangle {
-                                height: 34px;
-                                HorizontalLayout {
-                                    spacing: 10px;
-                                    // Keep the confirmations column clear of the
-                                    // scrollbar, which the list overlays on its own
-                                    // content once there's more than a pane-full.
-                                    padding-right: 14px;
-                                    Text {
-                                        text: row.direction;
-                                        color: row.incoming ? #7ec27e : #d59b6a;
-                                        font-size: 13px;
-                                        vertical-alignment: center;
-                                        width: 80px;
+                            for row[idx] in root.tx-rows: Rectangle {
+                                // Fixed heights, not measured from the content: a
+                                // row sized by a child that is sized by the row is
+                                // a binding loop, and the detail below is one line
+                                // beside a copy button either way.
+                                height: root.tx-expanded == idx ? 78px : 34px;
+                                VerticalLayout {
+                                    spacing: 0;
+                                    Rectangle {
+                                        height: 34px;
+                                        HorizontalLayout {
+                                            spacing: 10px;
+                                            // Keep the confirmations column clear of the
+                                            // scrollbar, which the list overlays on its own
+                                            // content once there's more than a pane-full.
+                                            padding-right: 14px;
+                                            // The caret only has to say which way
+                                            // this row goes — the whole header is
+                                            // the hit target, not just the arrow.
+                                            Text {
+                                                text: root.tx-expanded == idx ? "\u{25be}" : "\u{25b8}";
+                                                color: hdr.has-hover ? #e6e6e6 : #8a8a8a;
+                                                font-size: 13px;
+                                                vertical-alignment: center;
+                                                width: 12px;
+                                            }
+                                            Text {
+                                                text: row.direction;
+                                                color: row.incoming ? #7ec27e : #e06c6c;
+                                                font-size: 13px;
+                                                vertical-alignment: center;
+                                                width: 80px;
+                                            }
+                                            Text {
+                                                text: row.amount;
+                                                color: #e6e6e6;
+                                                font-family: "monospace";
+                                                font-size: 13px;
+                                                vertical-alignment: center;
+                                                horizontal-stretch: 1;
+                                            }
+                                            Text {
+                                                text: row.when;
+                                                color: #8a8a8a;
+                                                font-size: 12px;
+                                                vertical-alignment: center;
+                                            }
+                                            // Still settling reads as a live figure
+                                            // (amber, and it climbs); settled goes
+                                            // quiet — same split as the TUI's Status.
+                                            Text {
+                                                text: row.confirmations;
+                                                color: row.settled ? #6a6a6a : #c9a227;
+                                                font-size: 12px;
+                                                vertical-alignment: center;
+                                                width: 90px;
+                                                horizontal-alignment: right;
+                                            }
+                                        }
+                                        hdr := TouchArea {
+                                            mouse-cursor: pointer;
+                                            clicked => {
+                                                // One row open at a time, and
+                                                // clicking the open one closes it.
+                                                root.tx-expanded = root.tx-expanded == idx ? -1 : idx;
+                                            }
+                                        }
                                     }
-                                    Text {
-                                        text: row.amount;
-                                        color: #e6e6e6;
-                                        font-family: "monospace";
-                                        font-size: 13px;
-                                        vertical-alignment: center;
-                                        horizontal-stretch: 1;
-                                    }
-                                    Text {
-                                        text: row.when;
-                                        color: #8a8a8a;
-                                        font-size: 12px;
-                                        vertical-alignment: center;
-                                    }
-                                    Text {
-                                        text: row.confirmations;
-                                        color: #6a6a6a;
-                                        font-size: 12px;
-                                        vertical-alignment: center;
-                                        width: 90px;
-                                        horizontal-alignment: right;
+                                    if root.tx-expanded == idx: Rectangle {
+                                        background: #181818;
+                                        border-radius: 6px;
+                                        HorizontalLayout {
+                                            padding: 7px;
+                                            spacing: 8px;
+                                            // A read-only TextInput rather than a
+                                            // Text, for the same reason as the
+                                            // receive address: the clipboard takes
+                                            // what the element has selected, so
+                                            // `copy()` needs something that can hold
+                                            // a selection.
+                                            txid-input := TextInput {
+                                                text: row.txid == "" ? "This coin's wallet doesn't report a transaction id." : row.txid;
+                                                read-only: true;
+                                                single-line: true;
+                                                color: row.txid == "" ? #8a8a8a : #e6e6e6;
+                                                font-family: row.txid == "" ? "" : "monospace";
+                                                font-size: 12px;
+                                                vertical-alignment: center;
+                                                horizontal-stretch: 1;
+                                            }
+                                            CopyIconButton {
+                                                visible: row.txid != "";
+                                                hint: "Copy transaction ID";
+                                                copied: root.tx-copied;
+                                                clicked => {
+                                                    // Select first — the clipboard
+                                                    // gets the selection — but don't
+                                                    // focus, or the arrow keys would
+                                                    // walk the id instead of the
+                                                    // coin list.
+                                                    txid-input.select-all();
+                                                    txid-input.copy();
+                                                    txid-input.clear-selection();
+                                                    root.tx-copied = true;
+                                                }
+                                            }
+                                        }
                                     }
                                 }
                             }
