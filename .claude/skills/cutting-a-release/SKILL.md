@@ -11,10 +11,22 @@ description: How to cut a BoxWallet release, and the release/GUI-bundling mechan
   front-ends self-update in-app (`src/update.zig` + apply/re-exec in `main.zig`
   and `bw_self_update_apply`, background checks in `app.zig` and `gui/main.cpp`).
 
-  **To cut a release: bump `app_version` in `src/version.zig`, run `zig build
-  release-all`, and upload the 15 files in `zig-out/dist/`** to a GitHub release
-  on `github.com/richardltc/boxwallet`. Use that step, not
-  the two underneath it — both write a file called `SHA256SUMS`, and *both*
+  **To cut a release: bump `app_version` in `src/version.zig`, commit it, then
+  run `scripts/release.sh`.** The script is the release process — it reads the
+  version, runs `zig build test` and `zig build release-all`, verifies
+  `sha256sum -c` inside `zig-out/dist/`, then tags `vX.Y.Z`, pushes the tag and
+  creates the GitHub release with all 15 assets via `gh`. It refuses to run on a
+  dirty tree, so the tag always points at exactly what was built, and it's
+  idempotent: re-running after a partial failure reuses the tag and re-uploads
+  with `--clobber`. It needs `gh` authenticated (`gh auth login`) and takes the
+  repo slug from the `origin` URL. It does **not** push your branch commits (do
+  that first) and writes empty release notes. Pushing the `v*` tag is what fires
+  the GUI selftest workflow below.
+
+  By hand, that is: `zig build release-all`, then upload the 15 files in
+  `zig-out/dist/` to a GitHub release on `github.com/richardltc/boxwallet`. Use
+  that step, not the two underneath it — both write a file called
+  `SHA256SUMS`, and *both*
   updaters fetch `<tag>/SHA256SUMS`. A release carries one file of that name, so
   publishing either manifest alone leaves the other front-end unable to find its
   asset's checksum: `verify_failed` on every check, for every user of it.
