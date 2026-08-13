@@ -123,6 +123,18 @@ size_t  bw_format_duration(int64_t secs, char *buf, size_t cap);
  * front-ends report one number for one chain. */
 size_t  bw_format_storage(uint64_t bytes, char *buf, size_t cap);
 
+/* How far back in time a chain sits, from a bw_blockchain_state read: the tip
+ * block's own date ("2026-08-01 12:34", UTC) and the wall-clock distance from it
+ * ("3 days and 2 hours behind"). Either can be empty — a coin may report neither
+ * a tip timestamp nor a gap, and the distance is empty once caught up.
+ *
+ * Take these rather than doing the arithmetic locally: which of tip_time /
+ * seconds_behind a coin fills in varies (Nerva supplies only the gap, most
+ * daemons only the timestamp), each falls back to the other, and the wording is
+ * the TUI's. They read the clock themselves. Cheap, UI-thread safe. */
+size_t  bw_sync_tip_date(const BwBlockchainState *in, char *buf, size_t cap);
+size_t  bw_sync_behind(const BwBlockchainState *in, char *buf, size_t cap);
+
 /* ---- application identity (no ctx needed) -----------------------------------
  * BoxWallet's own name, version and brand colour. The version has no "v" prefix
  * — add your own. Take these rather than hardcoding: they come from the same
@@ -855,12 +867,23 @@ void    bw_ext_wallet_seed_discard(bw_ctx *ctx);
 #define BW_BUSY (-2)
 typedef struct { double  total, available; } BwWalletBalance;
 typedef struct { int64_t scanned, target;  } BwRescanProgress;
+/* `txid` follows BwScPosition.id: an explicit length rather than a NUL
+ * terminator, because a txid is exactly 64 hex characters everywhere BoxWallet
+ * looks and terminating it would truncate the last one. txid_len is 0 for a coin
+ * whose list RPC reports no hash. */
 typedef struct {
     int     direction;      /* 0 received, 1 sent, 2 stake/mined */
     double  amount;         /* positive magnitude; direction carries the sign */
     int64_t time;           /* unix seconds */
     int64_t confirmations;
+    char    txid[64];
+    size_t  txid_len;
 } BwWalletTx;
+
+/* The confirmation count above which a transaction reads as settled — at or
+ * below it, show the count climbing. One line for both front-ends. Cheap;
+ * UI-thread safe. */
+int64_t bw_tx_confirmed_threshold(void);
 
 /* The coin's wallet balance, whichever backing it has: 0 with *out filled,
  * BW_BUSY, or -1. A managed wallet answers from its own wallet-rpc, an in-daemon

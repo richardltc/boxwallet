@@ -833,6 +833,9 @@ pub const Ergo = struct {
             var parsed = fetchIndexedTx(allocator, ref.id) catch continue;
             defer parsed.deinit();
             out[n] = walletTxFromIndexed(parsed.value, wallet_addrs);
+            // The id we looked the tx up by, copied into the row's own buffer —
+            // `refs` points into the parsed reply, freed on return.
+            out[n].setTxid(ref.id);
             n += 1;
         }
         return out[0..n];

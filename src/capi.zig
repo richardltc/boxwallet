@@ -491,6 +491,49 @@ export fn bw_format_storage(bytes: u64, buf: ?[*]u8, cap: usize) usize {
     return copyOut(b[0..cap], timefmt.storageGB(&tmp, bytes));
 }
 
+/// How far back in time the chain a `bw_blockchain_state` read describes sits:
+/// the tip block's own timestamp and the wall-clock distance from it, resolved
+/// from whichever field the coin filled in (`models.BlockchainState.syncDistance`
+/// — the same derivation the TUI's Blocks hint uses). The clock is read here, so
+/// a caller needs no time of its own; -1 / 0 for "unavailable".
+fn stateDistance(in: *const BwBlockchainState) models.SyncDistance {
+    const state: models.BlockchainState = .{
+        .chain = "",
+        .blocks = in.blocks,
+        .headers = in.headers,
+        .verification_progress = in.verification_progress,
+        .synced = in.synced != 0,
+        .network_height = in.network_height,
+        .tip_time = in.tip_time,
+        .seconds_behind = in.seconds_behind,
+    };
+    return state.syncDistance(std.Io.Clock.real.now(sharedIo()).toSeconds());
+}
+
+/// The tip block's own date/time as "YYYY-MM-DD HH:MM" in **UTC** — the moment
+/// the block being synced was mined. Empty when the coin reports no timestamp
+/// and no gap to reconstruct one from. Cheap; UI-thread safe.
+export fn bw_sync_tip_date(in: ?*const BwBlockchainState, buf: ?[*]u8, cap: usize) usize {
+    const s = in orelse return 0;
+    const b = buf orelse return 0;
+    var tmp: [timefmt.max_len]u8 = undefined;
+    return copyOut(b[0..cap], timefmt.blockTime(&tmp, stateDistance(s).tip_time));
+}
+
+/// How far the local tip is behind the chain, as "3 days and 2 hours behind".
+/// Empty when caught up (under a minute) or when the distance is unknown, so a
+/// caller can render nothing rather than "0 minutes behind". Shares the TUI's
+/// wording — a chain half a year back must not read one way here and another
+/// there. Cheap; UI-thread safe.
+export fn bw_sync_behind(in: ?*const BwBlockchainState, buf: ?[*]u8, cap: usize) usize {
+    const s = in orelse return 0;
+    const b = buf orelse return 0;
+    const secs = stateDistance(s).behind_secs;
+    if (secs <= 0) return 0;
+    var tmp: [timefmt.max_len]u8 = undefined;
+    return copyOut(b[0..cap], timefmt.behind(&tmp, secs));
+}
+
 /// Drop trailing zeros (and a bare decimal point) from a figure produced by
 /// `bw_format_amount`: "498.00000000" → "498", "2.50000000" → "2.5". For a
 /// transaction *list*, where a column of full-precision figures is noise.
@@ -1887,12 +1930,25 @@ export fn bw_ext_wallet_rescan(ctx: ?*Ctx, idx: usize, out: ?*BwRescanProgress) 
 /// `models.TxDirection` (0 received, 1 sent, 2 stake/mined) and `amount` is a
 /// positive magnitude, so a fixed-capacity array of these memcpys across with
 /// nothing owned on either side.
+/// `txid` follows `BwScPosition.id`: an explicit length rather than a NUL
+/// terminator, because a txid is exactly 64 hex characters everywhere BoxWallet
+/// looks and terminating it would truncate the last one. `txid_len` is 0 for a
+/// coin whose list RPC reports no hash.
 pub const BwWalletTx = extern struct {
     direction: c_int,
     amount: f64,
     time: i64,
     confirmations: i64,
+    txid: [64]u8,
+    txid_len: usize,
 };
+
+/// The confirmation count above which a transaction reads as settled. One line
+/// for both front-ends, so the TUI's Status column and the GUI's confirmations
+/// column can't drift apart. Cheap; UI-thread safe.
+export fn bw_tx_confirmed_threshold() i64 {
+    return models.tx_confirmed_threshold;
+}
 
 /// The open wallet's most recent transactions, newest first. Writes up to `cap`
 /// into `out` and returns how many. 0 on any failure — a transaction list that
@@ -1917,12 +1973,17 @@ export fn bw_wallet_transactions(ctx: ?*Ctx, idx: usize, out: ?*BwWalletTx, cap:
     const txs = coin.walletTransactions(a, auth, cap) catch return 0;
     const n = @min(txs.len, cap);
     const dst = @as([*]BwWalletTx, @ptrCast(o))[0..n];
-    for (dst, txs[0..n]) |*d, t| d.* = .{
-        .direction = @intFromEnum(t.direction),
-        .amount = t.amount,
-        .time = t.time,
-        .confirmations = t.confirmations,
-    };
+    for (dst, txs[0..n]) |*d, t| {
+        d.* = .{
+            .direction = @intFromEnum(t.direction),
+            .amount = t.amount,
+            .time = t.time,
+            .confirmations = t.confirmations,
+            .txid = undefined,
+            .txid_len = t.txid_len,
+        };
+        @memcpy(d.txid[0..t.txid_len], t.txid());
+    }
     return n;
 }
 
@@ -5197,4 +5258,31 @@ test "bw_format_storage matches the TUI's own storage figure" {
 
     // A null buffer is a no-op rather than a crash, like every other bw_format_*.
     try std.testing.expectEqual(@as(usize, 0), bw_format_storage(1, null, 0));
+}
+
+test "bw_sync_* hands back the TUI's distance wording" {
+    var st: BwBlockchainState = std.mem.zeroes(BwBlockchainState);
+    st.seconds_behind = -1;
+    var buf: [64]u8 = undefined;
+
+    // Nothing to measure: both read empty rather than "0 minutes behind" or a
+    // date at the unix epoch.
+    try std.testing.expectEqual(@as(usize, 0), bw_sync_tip_date(&st, &buf, buf.len));
+    try std.testing.expectEqual(@as(usize, 0), bw_sync_behind(&st, &buf, buf.len));
+
+    // A coin reporting only the gap still gets both: the wording from
+    // timefmt.behind, and a tip date reconstructed from now − gap.
+    st.seconds_behind = 2 * std.time.s_per_hour + 5 * std.time.s_per_min;
+    var n = bw_sync_behind(&st, &buf, buf.len);
+    try std.testing.expectEqualStrings("2 hours and 5 minutes behind", buf[0..n]);
+    n = bw_sync_tip_date(&st, &buf, buf.len);
+    try std.testing.expectEqual(@as(usize, 16), n); // "YYYY-MM-DD HH:MM"
+
+    // Caught up reads as nothing at all, so a front-end shows no hint.
+    st.seconds_behind = 0;
+    try std.testing.expectEqual(@as(usize, 0), bw_sync_behind(&st, &buf, buf.len));
+
+    // Null in, null out — no crash, like every other formatter here.
+    try std.testing.expectEqual(@as(usize, 0), bw_sync_behind(null, &buf, buf.len));
+    try std.testing.expectEqual(@as(usize, 0), bw_sync_tip_date(&st, null, 0));
 }

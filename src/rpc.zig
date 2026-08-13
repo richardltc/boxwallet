@@ -353,6 +353,7 @@ pub const ListTxEntry = struct {
     amount: f64 = 0,
     time: i64 = 0,
     confirmations: i64 = 0,
+    txid: []const u8 = "",
 };
 
 /// The wallet's most recent transactions, newest-first, via
@@ -405,6 +406,9 @@ pub fn mapListTransactions(
             .time = raw[i].time,
             .confirmations = raw[i].confirmations,
         };
+        // Copied into the row's own buffer — `raw` points into the parsed reply,
+        // which is freed as soon as this returns.
+        out[n].setTxid(raw[i].txid);
         n += 1;
     }
     return out;
@@ -1311,10 +1315,10 @@ test "mapListTransactions reverses to newest-first, maps categories, drops unmap
     // The daemon returns oldest-to-newest; a "send" amount already arrives
     // negated (ValueFromAmount(-nDebit) upstream).
     const raw = [_]ListTxEntry{
-        .{ .category = "generate", .amount = 5.0, .time = 100, .confirmations = 500 }, // oldest
-        .{ .category = "receive", .amount = 2.5, .time = 200, .confirmations = 10 },
+        .{ .category = "generate", .amount = 5.0, .time = 100, .confirmations = 500, .txid = "aa" }, // oldest
+        .{ .category = "receive", .amount = 2.5, .time = 200, .confirmations = 10, .txid = "bb" },
         .{ .category = "move", .amount = 1.0, .time = 250, .confirmations = 10 }, // dropped: unmapped
-        .{ .category = "send", .amount = -1.25, .time = 300, .confirmations = 1 }, // newest
+        .{ .category = "send", .amount = -1.25, .time = 300, .confirmations = 1, .txid = "cc" }, // newest
     };
 
     const txs = try mapListTransactions(allocator, &raw, testDirFromCategory);
@@ -1328,18 +1332,24 @@ test "mapListTransactions reverses to newest-first, maps categories, drops unmap
     try std.testing.expectEqual(models.TxDirection.received, txs[1].direction);
     try std.testing.expectEqual(models.TxDirection.stake, txs[2].direction);
     try std.testing.expectEqual(@as(i64, 500), txs[2].confirmations);
+
+    // The txid rides along in the row's own buffer (the reply it came from is
+    // freed before the row is shown), and follows the same reversal.
+    try std.testing.expectEqualStrings("cc", txs[0].txid());
+    try std.testing.expectEqualStrings("bb", txs[1].txid());
+    try std.testing.expectEqualStrings("aa", txs[2].txid());
 }
 
 test "parses a listtransactions reply into ListTxEntry entries" {
     const allocator = std.testing.allocator;
 
     // A canned reply shaped like a bitcoin-core listtransactions result, with the
-    // fields BoxWallet doesn't use (address/label/txid/...) dropped via
+    // fields BoxWallet doesn't use (address/label/fee/...) dropped via
     // ignore_unknown_fields.
     const raw =
         \\{"result":[
-        \\{"address":"bc1qabc","category":"receive","amount":2.5,"label":"","confirmations":10,"time":200},
-        \\{"address":"bc1qdef","category":"send","amount":-1.25,"fee":-0.0001,"confirmations":1,"time":300}
+        \\{"address":"bc1qabc","category":"receive","amount":2.5,"label":"","confirmations":10,"time":200,"txid":"a1"},
+        \\{"address":"bc1qdef","category":"send","amount":-1.25,"fee":-0.0001,"confirmations":1,"time":300,"txid":"b2"}
         \\],"error":null,"id":"boxwallet"}
     ;
 
@@ -1357,6 +1367,8 @@ test "parses a listtransactions reply into ListTxEntry entries" {
     try std.testing.expectApproxEqAbs(@as(f64, 2.5), r[0].amount, 1e-9);
     try std.testing.expectEqualStrings("send", r[1].category);
     try std.testing.expectApproxEqAbs(@as(f64, -1.25), r[1].amount, 1e-9);
+    try std.testing.expectEqualStrings("a1", r[0].txid);
+    try std.testing.expectEqualStrings("b2", r[1].txid);
 }
 
 test "parses a getaddressesbylabel reply (dynamic address keys) and its -11 miss" {

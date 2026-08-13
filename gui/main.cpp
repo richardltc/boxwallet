@@ -400,9 +400,15 @@ make_tx_rows(const std::vector<BwWalletTx> &txs, int decimals)
         // the sign is applied here rather than guessed from the number.
         r.amount = slint::SharedString((incoming ? "+" : "-") + format_amount_trimmed(t.amount, decimals));
         r.when = slint::SharedString(relative_time(t.time));
+        // Past the settled threshold the exact count stops being news — the
+        // same line the TUI's Status column draws, from the same constant.
         r.confirmations = slint::SharedString(
-            t.confirmations <= 0 ? std::string("unconfirmed")
-                                 : group_int(t.confirmations) + " conf");
+            t.confirmations > bw_tx_confirmed_threshold() ? std::string("confirmed")
+            : t.confirmations <= 0                        ? std::string("unconfirmed")
+                                                          : group_int(t.confirmations) + " conf");
+        r.settled = t.confirmations > bw_tx_confirmed_threshold();
+        // Explicitly length-counted: the core doesn't NUL-terminate a txid.
+        r.txid = slint::SharedString(std::string(t.txid, t.txid_len));
         r.incoming = incoming;
         rows.push_back(std::move(r));
     }
@@ -650,6 +656,8 @@ static void apply_coin_metadata(const AppWindow *ui, bw_ctx *ctx, int idx)
     ui->set_chain(slint::SharedString(""));
     ui->set_headers_str(slint::SharedString(""));
     ui->set_blocks_str(slint::SharedString(""));
+    ui->set_tip_date(slint::SharedString(""));
+    ui->set_sync_behind(slint::SharedString(""));
     ui->set_disk_free(slint::SharedString(""));
     ui->set_storage_size(slint::SharedString(""));
     ui->set_price_usd(slint::SharedString(""));
@@ -2584,8 +2592,26 @@ int main(int argc, char **argv)
             std::string live_status(sp.message);
             std::string live_cur(sp.cur), live_join(sp.joiner), live_total(sp.total);
 
+            // How far back in time the chain sits while it's still catching up:
+            // the tip block's own date (UTC — the moment the block being synced
+            // was mined) and the wall-clock distance from it. Both come from the
+            // core, which resolves whichever of tip_time/seconds_behind this coin
+            // reports and words the distance exactly as the TUI's Blocks hint
+            // does. Only while syncing — a caught-up chain has no distance to
+            // report — and either can come back empty when the coin can't answer.
+            std::string tip_date, sync_behind;
+            if (rpc_ok && !bs.synced) {
+                char tb[64] = {0};
+                size_t tn = bw_sync_tip_date(&bs, tb, sizeof tb);
+                tip_date.assign(tb, tn);
+                char bb[64] = {0};
+                size_t bn = bw_sync_behind(&bs, bb, sizeof bb);
+                sync_behind.assign(bb, bn);
+            }
+
             post_to_ui([weak, di, bs, daemon_up, sel, disk_frac, disk_free_str, wallet_sec, stage, coming_up, live_status,
                         live_cur, live_join, live_total,
+                        tip_date, sync_behind,
                         mem_frac, mem_used_str, storage_now, du,
                         price_usd, price_change, price_dir, holding_value,
                         sc_active, sc_status, sc_balance, sc_pending, sc_price, sc_supply,
@@ -2730,6 +2756,10 @@ int main(int argc, char **argv)
                     (*h)->set_blocks_frac(sync_frac(bs.blocks, tip, synced));
                     (*h)->set_headers_str(slint::SharedString(group_int(bs.headers)));
                     (*h)->set_blocks_str(slint::SharedString(group_int(bs.blocks)));
+                    // Both empty once synced, so the historical-distance line
+                    // disappears when there's no distance left to report.
+                    (*h)->set_tip_date(slint::SharedString(tip_date));
+                    (*h)->set_sync_behind(slint::SharedString(sync_behind));
                     (*h)->set_sync_percent(synced
                             ? 100.0f
                             : static_cast<float>(bs.verification_progress * 100.0));
@@ -2755,6 +2785,10 @@ int main(int argc, char **argv)
                     (*h)->set_sync_percent(0);
                     (*h)->set_headers_str(slint::SharedString(""));
                     (*h)->set_blocks_str(slint::SharedString(""));
+                    // A stopped daemon has no tip to be behind of; a stale date
+                    // would keep claiming a chain position nothing is holding.
+                    (*h)->set_tip_date(slint::SharedString(""));
+                    (*h)->set_sync_behind(slint::SharedString(""));
                     // The miner dies with the daemon, so a stale hashrate here
                     // would be a lie, not merely out of date.
                     (*h)->set_mining(false);
