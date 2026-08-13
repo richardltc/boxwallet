@@ -2980,7 +2980,7 @@ fn statusInputFrom(in: *const BwStatusInput) status_mod.Input {
 ///
 /// The height is rendered plainly here ("Syncing blocks… 123,456 of 850,000").
 /// A caller that wants to colour the parts separately, as the TUI does, should
-/// use `bw_status_height` instead and assemble them.
+/// use `bw_status_parts` instead and assemble them.
 export fn bw_status_line(in: ?*const BwStatusInput, buf: ?[*]u8, cap: usize) usize {
     const i = in orelse return 0;
     const b = buf orelse return 0;
@@ -3010,6 +3010,57 @@ export fn bw_status_line(in: ?*const BwStatusInput, buf: ?[*]u8, cap: usize) usi
         },
     }
     return copyOut(b[0..cap], w.buffered());
+}
+
+/// The status line split into the segments a front-end paints in different
+/// colours. Concatenating `message`, `cur`, `joiner`, `total` with single spaces
+/// (skipping the empty ones) reproduces `bw_status_line` exactly — the order is
+/// fixed, so a caller lays them out left to right without deciding anything.
+///
+/// All four are fixed, NUL-terminated buffers.
+pub const BwStatusParts = extern struct {
+    /// The status text with any appended percentage — "Syncing blocks…",
+    /// "Pre-synching headers… 7.4%". For a bare height this carries the trailing
+    /// "at" ("Synced at"), which keeps the field order above unconditional.
+    message: [96]u8,
+    /// The current height, grouped ("123,456"), or empty when the line carries
+    /// no height.
+    cur: [32]u8,
+    /// "of", between the two figures while syncing; empty otherwise.
+    joiner: [8]u8,
+    /// The tip height, grouped, or empty when there's no `joiner`.
+    total: [32]u8,
+};
+
+/// The same status line as `bw_status_line`, in pieces — same wording, same
+/// formatting, so a front-end that colours the parts can't drift from one that
+/// prints the whole sentence. Pure and cheap; safe on the UI thread.
+export fn bw_status_parts(in: ?*const BwStatusInput, out: ?*BwStatusParts) void {
+    const o = out orelse return;
+    @memset(std.mem.asBytes(o), 0);
+    const i = in orelse return;
+    const snap = statusInputFrom(i);
+    const r = status_mod.readout(snap);
+
+    var sbuf: [32]u8 = undefined;
+    const suffix = status_mod.suffix(&sbuf, snap, r);
+    const h = status_mod.height(snap, r);
+
+    var mbuf: [96]u8 = undefined;
+    const tail = if (h == .at) " at" else "";
+    setField(&o.message, std.fmt.bufPrint(&mbuf, "{s}{s}{s}", .{ r.text, suffix, tail }) catch r.text);
+
+    var cb: [64]u8 = undefined;
+    var tb: [64]u8 = undefined;
+    switch (h) {
+        .none => {},
+        .at => |cur| setField(&o.cur, money.formatAmount(&cb, @floatFromInt(cur), 0)),
+        .progress => |p| {
+            setField(&o.cur, money.formatAmount(&cb, @floatFromInt(p.cur), 0));
+            setField(&o.joiner, "of");
+            setField(&o.total, money.formatAmount(&tb, @floatFromInt(p.total), 0));
+        },
+    }
 }
 
 /// The status's tone: 0 idle, 1 working, 2 warning, 3 ok. Pure; UI-thread safe.
@@ -4597,6 +4648,64 @@ test "the status export says exactly what the shared readout says" {
     // A null input is answered, not dereferenced.
     try std.testing.expectEqual(@as(usize, 0), bw_status_line(null, &buf, buf.len));
     try std.testing.expectEqual(@as(c_int, 0), bw_status_tone(null));
+}
+
+test "bw_status_parts splits the same line the GUI paints in two colours" {
+    const span = struct {
+        fn s(field: []const u8) []const u8 {
+            return std.mem.sliceTo(field, 0);
+        }
+    }.s;
+
+    var in: BwStatusInput = std.mem.zeroes(BwStatusInput);
+    in.installed = 1;
+    in.daemon = 2;
+    in.peers = 8;
+    in.sync = 1;
+    in.blocks_cur = 123456;
+    in.blocks_total = 850000;
+    in.headers_cur = 850000;
+    in.headers_total = 850000;
+
+    var p: BwStatusParts = undefined;
+    bw_status_parts(&in, &p);
+    try std.testing.expectEqualStrings("Syncing blocks…", span(&p.message));
+    try std.testing.expectEqualStrings("123,456", span(&p.cur));
+    try std.testing.expectEqualStrings("of", span(&p.joiner));
+    try std.testing.expectEqualStrings("850,000", span(&p.total));
+
+    // A bare height keeps its "at" with the message, so the segments always lay
+    // out left to right in the one order — the GUI never reorders them.
+    in.sync = 2;
+    bw_status_parts(&in, &p);
+    try std.testing.expectEqualStrings("Synced at", span(&p.message));
+    try std.testing.expectEqualStrings("123,456", span(&p.cur));
+    try std.testing.expectEqualStrings("", span(&p.joiner));
+    try std.testing.expectEqualStrings("", span(&p.total));
+
+    // No height at all: just the message.
+    in.peers = 0;
+    bw_status_parts(&in, &p);
+    try std.testing.expectEqualStrings("Waiting for peers…", span(&p.message));
+    try std.testing.expectEqualStrings("", span(&p.cur));
+
+    // Joining the parts reproduces `bw_status_line` verbatim — that equivalence
+    // is the whole reason the two front-ends can't word one daemon differently.
+    in.peers = 8;
+    in.sync = 1;
+    bw_status_parts(&in, &p);
+    var joined: [160]u8 = undefined;
+    const line = try std.fmt.bufPrint(&joined, "{s} {s} {s} {s}", .{
+        span(&p.message), span(&p.cur), span(&p.joiner), span(&p.total),
+    });
+    var buf: [160]u8 = undefined;
+    const n = bw_status_line(&in, &buf, buf.len);
+    try std.testing.expectEqualStrings(buf[0..n], line);
+
+    // A null input (or output) is answered, not dereferenced.
+    bw_status_parts(null, &p);
+    try std.testing.expectEqualStrings("", span(&p.message));
+    bw_status_parts(&in, null);
 }
 
 test "bw_wallet_menu returns exactly what the shared policy decides" {

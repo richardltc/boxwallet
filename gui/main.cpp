@@ -686,6 +686,9 @@ static void apply_coin_metadata(const AppWindow *ui, bw_ctx *ctx, int idx)
     ui->set_holding_value(slint::SharedString(""));
     ui->set_status_text(slint::SharedString(""));
     ui->set_live_status(slint::SharedString(""));
+    ui->set_live_status_cur(slint::SharedString(""));
+    ui->set_live_status_join(slint::SharedString(""));
+    ui->set_live_status_total(slint::SharedString(""));
     ui->set_status_is_error(false);
     // Including the warm-up readout: the coin we're leaving may well still be
     // loading, and its stage must not read as this one's.
@@ -2570,11 +2573,19 @@ int main(int argc, char **argv)
                 si.headers_total = static_cast<uint64_t>(tip);
                 si.blocks_total = si.headers_total;
             }
-            char sl[192] = {0};
-            size_t sll = rpc_ok ? bw_status_line(&si, sl, sizeof sl) : 0;
-            std::string live_status(sl, sll);
+            // In segments rather than as one sentence: the message and the "of"
+            // paint in the coin's brand colour and the two heights don't, so the
+            // core hands us the pieces (same wording and grouping as the whole
+            // line) and the .slint assembles them.
+            BwStatusParts sp;
+            std::memset(&sp, 0, sizeof sp);
+            if (rpc_ok)
+                bw_status_parts(&si, &sp);
+            std::string live_status(sp.message);
+            std::string live_cur(sp.cur), live_join(sp.joiner), live_total(sp.total);
 
             post_to_ui([weak, di, bs, daemon_up, sel, disk_frac, disk_free_str, wallet_sec, stage, coming_up, live_status,
+                        live_cur, live_join, live_total,
                         mem_frac, mem_used_str, storage_now, du,
                         price_usd, price_change, price_dir, holding_value,
                         sc_active, sc_status, sc_balance, sc_pending, sc_price, sc_supply,
@@ -2669,7 +2680,18 @@ int main(int argc, char **argv)
                 // Start stays latched for that whole window, so the daemon
                 // coming up can't be mistaken for a stopped one and started
                 // twice (the second attempt just hits the datadir lock).
-                (*h)->set_live_status(slint::SharedString(live_status));
+                // Same three states as the gauges below: a fresh read publishes,
+                // a busy daemon keeps the last readout, and only a daemon that's
+                // actually down clears it. Clearing on a busy tick dropped the
+                // line back to the last action message — so a node that stalled
+                // one RPC mid-sync (routine: they all do it under load) read as
+                // "Daemon running" instead of the sync progress it was making.
+                if (rpc_ok || !daemon_up) {
+                    (*h)->set_live_status(slint::SharedString(live_status));
+                    (*h)->set_live_status_cur(slint::SharedString(live_cur));
+                    (*h)->set_live_status_join(slint::SharedString(live_join));
+                    (*h)->set_live_status_total(slint::SharedString(live_total));
+                }
                 (*h)->set_daemon_stage(slint::SharedString(stage));
                 // `coming_up`, not `!stage.empty()`: the pulse means "starting",
                 // and a coin that can't name its stage is still starting. Gating
