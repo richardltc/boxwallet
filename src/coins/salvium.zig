@@ -4,6 +4,7 @@ const models = @import("../models.zig");
 const install_mod = @import("../install.zig");
 const conf = @import("../conf.zig");
 const rpc = @import("../rpc.zig");
+const warmup = @import("../warmup.zig");
 const Coin = @import("../coin.zig").Coin;
 
 /// Salvium (SAL) backend. Salvium is a Monero/CryptoNote fork (RandomX PoW), so it
@@ -387,6 +388,15 @@ pub const Salvium = struct {
     /// startup-failure reason when the daemon dies without saying why on stderr.
     pub fn daemonLogFile() []const u8 {
         return "salvium.log";
+    }
+
+    /// The stage salviumd is at while it starts, read from `salvium.log` — its
+    /// RPC server comes up last, so the log is the only source for the whole
+    /// start-up. Salvium keeps Monero's default log categories
+    /// (`*:WARNING,global:INFO`), which already carry these lines. Shared epee
+    /// wording; see `warmup.epeeStage`.
+    pub fn warmupStageFromLog(tail: []const u8) []const u8 {
+        return warmup.epeeStage(tail);
     }
 
     /// `salviumd --non-interactive` so it runs as a server rather than opening its
@@ -1287,6 +1297,7 @@ pub const Salvium = struct {
         .prepare_conf = vtPrepareConf,
         .launch_mode = vtLaunchMode,
         .daemon_log_file = vtDaemonLogFile,
+        .warmup_stage_from_log = vtWarmupStageFromLog,
         .daemon_argv = vtDaemonArgv,
         .request_stop = vtRequestStop,
         .wallet_transactions = vtWalletTransactions,
@@ -1435,6 +1446,9 @@ pub const Salvium = struct {
     }
     fn vtDaemonLogFile(_: *anyopaque) []const u8 {
         return daemonLogFile();
+    }
+    fn vtWarmupStageFromLog(_: *anyopaque, tail: []const u8) []const u8 {
+        return warmupStageFromLog(tail);
     }
     fn vtDaemonArgv(
         _: *anyopaque,

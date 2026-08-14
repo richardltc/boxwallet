@@ -4,6 +4,7 @@ const models = @import("../models.zig");
 const rpc = @import("../rpc.zig");
 const install_mod = @import("../install.zig");
 const conf = @import("../conf.zig");
+const warmup = @import("../warmup.zig");
 const Coin = @import("../coin.zig").Coin;
 
 /// Zano (ZANO) backend. Ported from `cmd/cli/cmd/coins/zano/zano.go`.
@@ -414,19 +415,42 @@ pub const Zano = struct {
         return "zanod.log";
     }
 
-    /// The full launch command: `zanod --no-console`. Caller owns the returned
-    /// slice and every string in it.
+    /// The stage zanod is at while it starts, read from `zanod.log`. Zano logs
+    /// these at its default level — no flag needed — but writes the file to
+    /// `--log-dir`, which `daemonArgv` has to point at the data dir for this (and
+    /// the startup-failure reason) to find it at all.
+    ///
+    /// Zano binds its RPC port early but only *starts* serving after the core is
+    /// initialized, so a probe still can't see the load; the log can. Shared epee
+    /// wording (Zano capitalises differently — "Core rpc server started ok" —
+    /// which `warmup.epeeStage` matches case-insensitively).
+    pub fn warmupStageFromLog(tail: []const u8) []const u8 {
+        return warmup.epeeStage(tail);
+    }
+
+    /// The full launch command: `zanod --no-console --log-dir <datadir>`. Caller
+    /// owns the returned slice and every string in it.
+    ///
+    /// `--log-dir` is not cosmetic. Left to itself zanod writes `zanod.log` beside
+    /// its *binary* (the install root), while everything that reads a daemon log —
+    /// the startup-failure reason and `warmupStageFromLog` — looks under the data
+    /// dir, where `daemonLogFile` says it is. Pointing it there is what makes both
+    /// work, and puts the log with the chain it describes.
     ///
     /// `--no-predownload` is deliberately omitted: it would disable Zano's
     /// bootstrap-snapshot download and force a full P2P sync of the whole chain,
     /// which is glacially slow on the low-spec hardware BoxWallet targets. Letting
     /// predownload run gives a fresh node a recent DB to start from.
-    pub fn daemonArgv(allocator: std.mem.Allocator, install_root: []const u8, _: []const u8) ![]const []const u8 {
+    pub fn daemonArgv(allocator: std.mem.Allocator, install_root: []const u8, home: []const u8) ![]const []const u8 {
         const path = try daemonPath(allocator, install_root);
         errdefer allocator.free(path);
-        const argv = try allocator.alloc([]const u8, 2);
+        const data_dir = try dataDir(allocator, home);
+        errdefer allocator.free(data_dir);
+        const argv = try allocator.alloc([]const u8, 4);
         argv[0] = path;
         argv[1] = try allocator.dupe(u8, "--no-console");
+        argv[2] = try allocator.dupe(u8, "--log-dir");
+        argv[3] = data_dir;
         return argv;
     }
 
@@ -976,6 +1000,7 @@ pub const Zano = struct {
         .prepare_conf = vtPrepareConf,
         .launch_mode = vtLaunchMode,
         .daemon_log_file = vtDaemonLogFile,
+        .warmup_stage_from_log = vtWarmupStageFromLog,
         .daemon_argv = vtDaemonArgv,
         // No `.request_stop`: zanod exposes no shutdown RPC, so app.zig stops it
         // by terminating the process (see the requestStop note above).
@@ -1109,6 +1134,9 @@ pub const Zano = struct {
     }
     fn vtDaemonLogFile(_: *anyopaque) []const u8 {
         return daemonLogFile();
+    }
+    fn vtWarmupStageFromLog(_: *anyopaque, tail: []const u8) []const u8 {
+        return warmupStageFromLog(tail);
     }
     fn vtDaemonArgv(
         _: *anyopaque,
@@ -1537,6 +1565,25 @@ test "atomicFromAmount converts ZANO to 12-decimal atomic units and rejects bad 
     try std.testing.expect(Zano.atomicFromAmount(-1.0) == null);
     try std.testing.expect(Zano.atomicFromAmount(std.math.inf(f64)) == null);
     try std.testing.expect(Zano.atomicFromAmount(1e30) == null);
+}
+
+test "daemonArgv points zanod's log at the data dir" {
+    const allocator = std.testing.allocator;
+    const argv = try Zano.daemonArgv(allocator, "/opt/bw", "/home/u");
+    defer {
+        for (argv) |s| allocator.free(s);
+        allocator.free(argv);
+    }
+
+    try std.testing.expectEqual(@as(usize, 4), argv.len);
+    try std.testing.expectEqualStrings("--no-console", argv[1]);
+    // Load-bearing: left to itself zanod writes `zanod.log` beside its binary,
+    // where neither the startup-failure reason nor `warmupStageFromLog` — both of
+    // which look under the data dir — would ever find it.
+    try std.testing.expectEqualStrings("--log-dir", argv[2]);
+    const data_dir = try Zano.dataDir(allocator, "/home/u");
+    defer allocator.free(data_dir);
+    try std.testing.expectEqualStrings(data_dir, argv[3]);
 }
 
 test "coin vtable exposes transactions, receive address, and send for Zano" {

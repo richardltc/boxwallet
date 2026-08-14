@@ -57,6 +57,13 @@ pub const Input = struct {
     awaiting_status: bool = false,
 
     loading_phase: models.LoadingPhase = .none,
+    /// The daemon's *own* wording for the stage it's in ("Rewinding blocks…",
+    /// "Loading masternode cache…", "Loading blockchain…"), from its `-28` reply
+    /// or its log. Preferred over `loading_phase`'s text whenever it's present:
+    /// the enum folds every "Loading X…" stage into one value, while this names
+    /// the stage the daemon is actually in and changes as it moves through them.
+    /// Empty when the daemon gave none.
+    loading_text: []const u8 = "",
     load_stage: warmup.Stage = .none,
     /// Block-loading percentage in basis points, scraped from the daemon's log.
     load_pct_bp: u32 = 0,
@@ -166,6 +173,12 @@ pub fn readout(in: Input) Readout {
                     .active = true,
                     .block_index_load = true,
                 };
+            }
+            // Otherwise the daemon's own wording, which names the exact stage,
+            // beats the coarse phase text — "Rewinding blocks…" rather than
+            // "Loading…". Only when it gave none do we fall back to the enum.
+            if (in.loading_text.len != 0) {
+                break :blk .{ .text = in.loading_text, .tone = .warning, .active = true };
             }
             break :blk .{ .text = warmup.phaseText(in.loading_phase), .tone = .warning, .active = true };
         } else if (in.peers == 0)
@@ -366,6 +379,37 @@ test "warm-up outranks peers, and the sub-stage refines the label" {
     in = running;
     in.loading_phase = .loading;
     try std.testing.expectEqualStrings(warmup.phaseText(.loading), readout(in).text);
+}
+
+test "the daemon's own wording for a stage beats the coarse phase text" {
+    const running: Input = .{ .installed = true, .daemon = .running };
+
+    // `.loading` covers every "Loading X…" stage, so on its own it can only say
+    // "Loading…". The daemon knows better, and each of these is a distinct,
+    // minutes-long stage the user would otherwise watch in silence.
+    var in = running;
+    in.loading_phase = .loading;
+    in.loading_text = "Rewinding blocks if needed…";
+    try std.testing.expectEqualStrings("Rewinding blocks if needed…", readout(in).text);
+    try std.testing.expect(readout(in).active);
+
+    in.loading_text = "Loading masternode cache…";
+    try std.testing.expectEqualStrings("Loading masternode cache…", readout(in).text);
+
+    // Coins with no `-28` protocol get theirs from the daemon log — this is the
+    // whole of what an epee or Ergo start-up can report.
+    in.loading_text = "Loading blockchain…";
+    try std.testing.expectEqualStrings("Loading blockchain…", readout(in).text);
+
+    // A live percentage still wins: it says as much *and* moves.
+    in.load_stage = .loading_blocks;
+    try std.testing.expectEqualStrings("Loading blocks…", readout(in).text);
+    try std.testing.expect(readout(in).load_progress);
+
+    // Nothing from the daemon: the coarse phase stands, as before.
+    in = running;
+    in.loading_phase = .verifying;
+    try std.testing.expectEqualStrings(warmup.phaseText(.verifying), readout(in).text);
 }
 
 test "the headers phase, presync and block catch-up are told apart" {

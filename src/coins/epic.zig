@@ -5,6 +5,7 @@ const install_mod = @import("../install.zig");
 const rpc = @import("../rpc.zig");
 const conf = @import("../conf.zig");
 const bip39 = @import("../bip39.zig");
+const warmup = @import("../warmup.zig");
 const Coin = @import("../coin.zig").Coin;
 
 /// Epic Cash (EPIC) backend — the node daemon plus a managed `epic-wallet`
@@ -117,12 +118,59 @@ pub const Epic = struct {
     //     DNS (preferred peers are merged with the seed set regardless of mode), as
     //     a reliability hedge if DNS resolution ever fails. Not a replacement for
     //     discovery — just a fallback.
+    //   * `log_to_file` — on. Epic defaults to stdout only, and BoxWallet launches
+    //     the node detached with stdout discarded, so its entire start-up
+    //     narration would go nowhere. This is what gives `warmupStageFromLog` (and
+    //     the startup-failure reason) something to read.
+    //   * `file_log_level` — Info, down from Epic's default of Debug: the file is
+    //     only turned on for the handful of lines above, and Debug would spend
+    //     rotations' worth of disk on a machine BoxWallet is meant to be light on.
+    //     `log_file_path` is deliberately *not* managed — the generator writes it
+    //     absolute into the data dir, and a user who moved it chose that.
     const ManagedKey = struct { section: []const u8, key: []const u8, value: []const u8 };
     const managed_conf = [_]ManagedKey{
         .{ .section = "server", .key = "api_http_addr", .value = "\"127.0.0.1:" ++ rpc_default_port ++ "\"" },
         .{ .section = "server", .key = "run_tui", .value = "false" },
         .{ .section = "server.p2p_config", .key = "seeding_type", .value = "\"DNSSeed\"" },
         .{ .section = "server.p2p_config", .key = "peers_preferred", .value = "[\"144.202.75.237:3414\"]" },
+        .{ .section = "logging", .key = "log_to_file", .value = "true" },
+        .{ .section = "logging", .key = "file_log_level", .value = "\"Info\"" },
+    };
+
+    /// The node's log under the data dir, once `log_to_file` above is on. Read for
+    /// a startup-failure reason and for the stage the node is at while it loads.
+    pub fn daemonLogFile() []const u8 {
+        return "epic-server.log";
+    }
+
+    /// The stage the Epic node is at while it starts, read from `epic-server.log`.
+    ///
+    /// Epic's Owner API refuses the connection until the node is up, so — as with
+    /// Ergo — nothing can be asked during the load and the log is the only source.
+    /// The genesis warm-up and the database resize are the parts that take real
+    /// time on a cold start.
+    pub fn warmupStageFromLog(tail: []const u8) []const u8 {
+        return warmup.lastStage(tail, &epic_markers);
+    }
+
+    /// Epic's start-up lines, matched case-insensitively, freshest wins. Taken
+    /// from a real `epic server run` on mainnet.
+    ///
+    /// "Epic node server started." is the end of the start-up and has to be tested
+    /// before the "warm up epic node server" needle it shares wording with.
+    const epic_markers = [_]warmup.Marker{
+        // Up, or going down.
+        .{ .needle = "epic node server started", .text = "" },
+        .{ .needle = "shutting down", .text = "" },
+        .{ .needle = "shutdown complete", .text = "" },
+        .{ .needle = "api server has been stopped", .text = "" },
+        // Coming up.
+        .{ .needle = "this is epic version", .text = "Starting node…" },
+        .{ .needle = "starting epic w/o ui", .text = "Starting node…" },
+        .{ .needle = "warm up epic node server", .text = "Loading blockchain…" },
+        .{ .needle = "resized database", .text = "Loading blockchain…" },
+        .{ .needle = "init: saved genesis", .text = "Loading blockchain…" },
+        .{ .needle = "starting http node apis server", .text = "Starting API server…" },
     };
 
     // Epic's MimbleWimble block target is 60s; used to turn the height gap into a
@@ -2087,6 +2135,8 @@ pub const Epic = struct {
         .install = vtInstall,
         .prepare_conf = vtPrepareConf,
         .launch_mode = vtLaunchMode,
+        .daemon_log_file = vtDaemonLogFile,
+        .warmup_stage_from_log = vtWarmupStageFromLog,
         .daemon_argv = vtDaemonArgv,
         .request_stop = vtRequestStop,
         .wallet_path = vtWalletPath,
@@ -2199,6 +2249,12 @@ pub const Epic = struct {
     }
     fn vtLaunchMode(_: *anyopaque) Coin.LaunchMode {
         return launchMode();
+    }
+    fn vtDaemonLogFile(_: *anyopaque) []const u8 {
+        return daemonLogFile();
+    }
+    fn vtWarmupStageFromLog(_: *anyopaque, tail: []const u8) []const u8 {
+        return warmupStageFromLog(tail);
     }
     fn vtDaemonArgv(
         _: *anyopaque,
@@ -2491,6 +2547,67 @@ test "patchTomlAlloc revives a commented-out key and drops duplicates" {
     try std.testing.expect(std.mem.indexOf(u8, out, "seeding_type = \"DNSSeed\"") != null);
 }
 
+test "patchTomlAlloc turns the node's file log on without touching its path" {
+    const allocator = std.testing.allocator;
+    // The `[logging]` block `epic server config` generates, verbatim: file
+    // logging off, Debug level, and an absolute path already inside the data dir.
+    const input =
+        \\[logging]
+        \\log_to_stdout = true
+        \\stdout_log_level = "INFO"
+        \\log_to_file = false
+        \\file_log_level = "DEBUG"
+        \\log_file_path = "/home/u/.epic/main/epic-server.log"
+        \\log_max_size = 16777216
+        \\
+    ;
+    const out = try Epic.patchTomlAlloc(allocator, input, &Epic.managed_conf);
+    defer allocator.free(out);
+
+    // Without this the node's whole start-up goes to a stdout we discard.
+    try std.testing.expect(std.mem.indexOf(u8, out, "log_to_file = true") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "log_to_file = false") == null);
+    // Debug would cost rotations of disk for the handful of lines we want.
+    try std.testing.expect(std.mem.indexOf(u8, out, "file_log_level = \"Info\"") != null);
+    // Where the node puts its log is the node's business — and it's already the
+    // data dir, where `daemonLogFile` looks.
+    try std.testing.expect(std.mem.indexOf(u8, out, "log_file_path = \"/home/u/.epic/main/epic-server.log\"") != null);
+    // Unmanaged keys in the section survive untouched.
+    try std.testing.expect(std.mem.indexOf(u8, out, "log_max_size = 16777216") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "log_to_stdout = true") != null);
+}
+
+test "the node's start-up stage is read from epic-server.log" {
+    // Verbatim from a live `epic server run`, in order.
+    const warming =
+        \\2026-08-13 20:18:27.923 INFO This is Epic version 4.0.3 (git v4.0.3)
+        \\2026-08-13 20:18:28.923 INFO Starting EPIC w/o UI...
+        \\2026-08-13 20:18:28.936 INFO Warm up Epic node server from genesis(454018a56d86), ...
+        \\
+    ;
+    try std.testing.expectEqualStrings("Loading blockchain…", Epic.warmupStageFromLog(warming));
+
+    try std.testing.expectEqualStrings("Starting API server…", Epic.warmupStageFromLog(warming ++
+        "2026-08-13 20:18:29.117 INFO Starting HTTP Node APIs server at 127.0.0.1:3413.\n"));
+
+    // "Epic node server started." ends the start-up — and has to beat the
+    // "warm up epic node server" needle it shares wording with.
+    try std.testing.expectEqualStrings("", Epic.warmupStageFromLog(warming ++
+        "2026-08-13 20:18:29.119 INFO Epic node server started.\n"));
+
+    // A stopped node is not a starting one.
+    try std.testing.expectEqualStrings("", Epic.warmupStageFromLog(
+        \\2026-08-13 20:18:59.486 WARN Shutting down...
+        \\2026-08-13 20:19:00.487 WARN Shutdown complete.
+        \\
+    ));
+
+    // Steady-state peer traffic says nothing about a start-up.
+    try std.testing.expectEqualStrings("", Epic.warmupStageFromLog(
+        "2026-08-13 20:18:45.442 INFO Asking 89.58.53.79:3414 for more peers.\n",
+    ));
+}
+
 test "coin vtable dispatches to Epic metadata and the external wallet" {
     const allocator = std.testing.allocator;
     var epic: Epic = .{};
@@ -2502,7 +2619,9 @@ test "coin vtable dispatches to Epic metadata and the external wallet" {
     try std.testing.expect(!c.isProofOfStake());
     try std.testing.expectEqualStrings("3413", c.rpcDefaultPort());
     try std.testing.expectEqual(Coin.LaunchMode.foreground, c.launchMode());
-    try std.testing.expectEqual(@as(?[]const u8, null), c.daemonLogFile());
+    // Epic logs to stdout by default (which we discard); `managed_conf` turns the
+    // file on so there's something under the data dir to read.
+    try std.testing.expectEqualStrings("epic-server.log", c.daemonLogFile().?);
     // Epic drives a launch-with-password external wallet, backed by a separate
     // `epic-wallet owner_api` process the app (re)launches per-open with the password
     // (it won't serve without one). (The bitcoin-style in-daemon hooks —

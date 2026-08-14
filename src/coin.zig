@@ -875,6 +875,32 @@ pub const Coin = struct {
         /// when the RPC probe found no phase and the daemon is believed up. Null
         /// for coins whose warm-up is fully visible over RPC (the common case).
         warmup_phase_from_log: ?*const fn (ptr: *anyopaque, tail: []const u8) models.LoadingPhase = null,
+        /// Optional: the daemon's own wording for the start-up stage it's at,
+        /// read from a tail of its log. Returns a display-ready string (empty
+        /// when the log shows no start-up in progress); the returned slice must
+        /// outlive the tail, so it is a static string, not a slice into it.
+        ///
+        /// For a coin whose start-up is invisible over RPC this is the *only*
+        /// source: the epee family (Monero, Nerva, Salvium, Zano) brings its RPC
+        /// server up last, so nothing can be asked until the load is already
+        /// over. Those four share `warmup.epeeStage`. Null (the common case)
+        /// leaves the generic bitcoin-family `init message:` scrape to it.
+        warmup_stage_from_log: ?*const fn (ptr: *anyopaque, tail: []const u8) []const u8 = null,
+        /// Optional: the working directory to spawn the daemon in. Null (the
+        /// common case) inherits BoxWallet's own, which is right for a daemon that
+        /// takes every path as an argument and writes nothing relative.
+        ///
+        /// Ergo needs it: its logback config writes `ergo.log` relative, so the
+        /// node scatters its log — and any JVM crash dump — into whatever
+        /// directory BoxWallet happened to be launched from, where nothing can
+        /// find it. Pointing the child at the data dir puts the log beside the
+        /// chain it describes, which is what `daemon_log_file` promises. Caller
+        /// owns the returned path (built on `allocator`).
+        daemon_cwd: ?*const fn (
+            ptr: *anyopaque,
+            allocator: std.mem.Allocator,
+            home_dir: []const u8,
+        ) anyerror!?[]const u8 = null,
         /// Optional: a fragment of the daemon's command line that identifies its
         /// process, for a daemon that doesn't run under its own name. Ergo is
         /// `java -jar ergo-<ver>.jar`, so the OS sees `java` and a liveness check
@@ -1363,6 +1389,17 @@ pub const Coin = struct {
         return null;
     }
 
+    /// The working directory to spawn the daemon in, or null to inherit ours.
+    /// Caller owns the returned path.
+    pub fn daemonCwd(
+        self: Coin,
+        allocator: std.mem.Allocator,
+        home_dir: []const u8,
+    ) !?[]const u8 {
+        const f = self.vtable.daemon_cwd orelse return null;
+        return f(self.ptr, allocator, home_dir);
+    }
+
     /// A command-line fragment identifying this coin's daemon process, for a
     /// daemon that doesn't run under its own name (Ergo: `java -jar ergo-x.jar`).
     /// Null for the common case — pass it to `proc.aliveMatching` alongside
@@ -1378,6 +1415,14 @@ pub const Coin = struct {
     pub fn warmupPhaseFromLog(self: Coin, tail: []const u8) models.LoadingPhase {
         if (self.vtable.warmup_phase_from_log) |f| return f(self.ptr, tail);
         return .none;
+    }
+
+    /// The daemon's own wording for the start-up stage it's at, from a tail of
+    /// its log. Empty for coins that don't wire the hook, so the caller falls
+    /// back to the generic bitcoin-family `init message:` scrape.
+    pub fn warmupStageFromLog(self: Coin, tail: []const u8) []const u8 {
+        if (self.vtable.warmup_stage_from_log) |f| return f(self.ptr, tail);
+        return "";
     }
 
     /// The daemon's own log file name (relative to the coin's data dir), or null

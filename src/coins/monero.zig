@@ -4,6 +4,7 @@ const models = @import("../models.zig");
 const install_mod = @import("../install.zig");
 const conf = @import("../conf.zig");
 const rpc = @import("../rpc.zig");
+const warmup = @import("../warmup.zig");
 const Coin = @import("../coin.zig").Coin;
 
 /// Monero (XMR) backend — the original CryptoNote privacy coin the Nerva/Salvium
@@ -559,6 +560,18 @@ pub const Monero = struct {
     /// not `monero.log`.
     pub fn daemonLogFile() []const u8 {
         return "bitmonero.log";
+    }
+
+    /// The stage monerod is at while it starts, read from `bitmonero.log`.
+    ///
+    /// There is nothing to ask over RPC: monerod brings its core RPC server up
+    /// *last*, after the LMDB open that is the slow part of a start (minutes on a
+    /// synced chain), so a probe just gets a refused connection for the whole
+    /// window. Its log narrates every step, and monerod's default categories
+    /// (`*:WARNING,global:INFO`) already include them, so nothing extra is asked
+    /// of it. The wording is the epee family's, shared with Nerva/Salvium/Zano.
+    pub fn warmupStageFromLog(tail: []const u8) []const u8 {
+        return warmup.epeeStage(tail);
     }
 
     /// `monerod --non-interactive` so it runs as a server rather than opening its
@@ -1315,6 +1328,7 @@ pub const Monero = struct {
         .prepare_conf = vtPrepareConf,
         .launch_mode = vtLaunchMode,
         .daemon_log_file = vtDaemonLogFile,
+        .warmup_stage_from_log = vtWarmupStageFromLog,
         .daemon_argv = vtDaemonArgv,
         .request_stop = vtRequestStop,
         .wallet_transactions = vtWalletTransactions,
@@ -1451,6 +1465,9 @@ pub const Monero = struct {
     }
     fn vtDaemonLogFile(_: *anyopaque) []const u8 {
         return daemonLogFile();
+    }
+    fn vtWarmupStageFromLog(_: *anyopaque, tail: []const u8) []const u8 {
+        return warmupStageFromLog(tail);
     }
     fn vtDaemonArgv(
         _: *anyopaque,
