@@ -183,6 +183,12 @@ const Ctx = struct {
     /// counterpart to the TUI's `Activity.ext_wallet_open`; atomic because the
     /// poll thread reads it while an action worker writes it.
     wallet_open: [coin_count]std.atomic.Value(u8) = @splat(.init(0)),
+    /// Whether each coin's in-daemon wallet has been loaded for this daemon run.
+    /// The GUI's counterpart to the TUI's `Activity.wallet_ensured` — Bitcoin-Core
+    /// 0.21+ forks (Bitcoin, Litecoin, DigiByte, ReddCoin) auto-load no wallet, so
+    /// every wallet RPC answers `-18 "no wallet loaded"` until one is. Atomic
+    /// because the poll thread latches it while a start worker clears it.
+    wallet_ensured: [coin_count]std.atomic.Value(u8) = @splat(.init(0)),
     /// Serialises every wallet-touching export. Mutating ops (create/restore/
     /// open/teardown) take it **blocking**; polled reads `tryLock` and report
     /// busy instead, so a multi-minute restore can never stall the 2s status
@@ -787,11 +793,34 @@ fn fetchDaemonInfo(ctx: *Ctx, idx: usize, out: *BwDaemonInfo) !void {
     const data_dir = try coin.dataDir(a, ctx.home_dir);
     const auth = try conf.readAuth(a, io, data_dir, coin.confFile(), coin.rpcDefaultUsername(), coin.rpcDefaultPort());
 
+    // Load-or-create the named wallet before the status read, so the same tick's
+    // `staking`/`bw_wallet_security` calls already see it (the TUI does this in
+    // the same place, for the same reason).
+    ensureWalletLoaded(ctx, idx, a, coin, auth);
+
     const di = try coin.daemonInfo(a, auth);
     out.blocks = di.blocks;
     out.connections = di.connections;
     out.staking_active = if (di.staking_active) 1 else 0;
     setField(out.version[0..], di.version);
+}
+
+/// Load-or-create the coin's named wallet, once per daemon run, for the coins
+/// whose daemon auto-loads none (`needsWallet`). Without it the daemon holds no
+/// wallet at all and every wallet RPC — balance, receive address, `staking`,
+/// `getwalletinfo` — fails with `-18`; the wallet state then reads as *unknown*,
+/// which by design offers no wallet menu, so the GUI had no way to encrypt,
+/// unlock, or unlock-for-staking a Bitcoin/Litecoin/DigiByte/ReddCoin wallet.
+///
+/// Best-effort and latched: a failure (daemon still in warm-up) just retries on
+/// the next poll, and `bw_start_daemon` clears the latch because a freshly
+/// started daemon has dropped the load again.
+fn ensureWalletLoaded(ctx: *Ctx, idx: usize, a: std.mem.Allocator, coin: Coin, auth: models.CoinAuth) void {
+    if (!coin.needsWallet()) return;
+    if (idx >= coin_count) return;
+    if (ctx.wallet_ensured[idx].load(.acquire) != 0) return;
+    coin.ensureWallet(a, auth) catch return;
+    ctx.wallet_ensured[idx].store(1, .release);
 }
 
 fn fetchBlockchainState(ctx: *Ctx, idx: usize, out: *BwBlockchainState) !void {
@@ -1368,6 +1397,9 @@ export fn bw_start_daemon(ctx: ?*Ctx, idx: usize) c_int {
     // port still held by a service the last run orphaned) stays failed for the
     // rest of the session even after the cause is gone.
     if (idx < coin_count) c.wallet[idx].attempted = false;
+    // A freshly (re)started daemon won't have our named wallet loaded (Core only
+    // auto-loads the unnamed default), so let the next poll load it again.
+    if (idx < coin_count) c.wallet_ensured[idx].store(0, .release);
     const held = holdDaemonAction(c, idx);
     defer releaseDaemonAction(c, idx, held);
     startDaemon(c, idx) catch |err| {
