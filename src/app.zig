@@ -1495,6 +1495,12 @@ const Activity = struct {
     /// daemon holds `wallet.dat` open while running, e.g. SpiderByte). Cleared as it
     /// advances.
     wallet_restore_await_stop: bool = false,
+    /// Whether that restore should start the daemon once the swap is done — set
+    /// only when the restore itself stopped a *running* daemon. A user who
+    /// stopped the node first (the offline restore is now reachable that way, and
+    /// it's the state the whole action wants) didn't ask for it back up, so it's
+    /// left as they had it.
+    wallet_restore_restart: bool = false,
     /// The running daemon's self-reported version (empty when down/unknown), for
     /// the "Running" line. Folded from `poll_version_*` after a poll; cleared on
     /// stop. Program-lifetime fixed buffer.
@@ -4692,18 +4698,27 @@ pub const App = struct {
                 if (act.daemonState() == .stopped) {
                     if (self.coinAt(i)) |c| {
                         const src = act.wallet_file_buf[0..act.wallet_file_len];
+                        const restart = act.wallet_restore_restart;
                         if (c.walletRestoreFileOffline(self.allocator, self.home_dir, src)) {
-                            self.logf("{s}: wallet restored — restarting daemon", .{c.coinName()});
+                            if (restart) {
+                                self.logf("{s}: wallet restored — restarting daemon", .{c.coinName()});
+                            } else {
+                                self.logf("{s}: wallet restored — start the daemon to load it", .{c.coinName()});
+                            }
                         } else |err| {
                             self.logf("{s}: wallet restore failed ({s})", .{ c.coinName(), @errorName(err) });
                         }
                         act.wallet_file_len = 0;
-                        // Restart regardless: the user expects the node back up. On a
-                        // failed swap the previous wallet.dat (or its .bak) is intact.
-                        self.beginDaemonStart(c, act);
+                        act.wallet_restore_restart = false;
+                        // Restart regardless of the outcome, but only if we were the
+                        // ones who stopped it: the user expects their node back the
+                        // way it was. On a failed swap the previous wallet.dat (or
+                        // its .bak) is intact either way.
+                        if (restart) self.beginDaemonStart(c, act);
                     }
                 } else {
                     act.wallet_file_len = 0;
+                    act.wallet_restore_restart = false;
                     if (self.coinAt(i)) |c| self.logf("{s}: restore aborted (daemon wouldn't stop)", .{c.coinName()});
                 }
             }
@@ -6813,8 +6828,17 @@ pub const App = struct {
         act.install_root = self.install_root;
 
         act.wallet_restore_await_stop = true;
-        self.logf("{s}: restoring wallet — stopping daemon…", .{coin.coinName()});
-        self.tryStop();
+        // Only bounce a daemon that's actually up. With it already down there's
+        // nothing to stop and nothing to restart — the swap just happens on the
+        // next tick, and the node stays as the user left it.
+        if (act.daemonState() == .running) {
+            act.wallet_restore_restart = true;
+            self.logf("{s}: restoring wallet — stopping daemon…", .{coin.coinName()});
+            self.tryStop();
+        } else {
+            act.wallet_restore_restart = false;
+            self.logf("{s}: restoring wallet…", .{coin.coinName()});
+        }
     }
 
     /// Point the file picker at a start directory and focus it, for the
@@ -6848,9 +6872,15 @@ pub const App = struct {
     }
 
     /// Open the `w` wallet menu for the selected coin. Gated: the coin must
-    /// expose a manageable wallet, be installed with a running daemon, and have a
-    /// resolved wallet state offering at least one action. When it can't open, the
-    /// reason is logged rather than popping an empty modal.
+    /// expose a manageable wallet, be installed, and have a wallet state offering
+    /// at least one action. When it can't open, the reason is logged rather than
+    /// popping an empty modal.
+    ///
+    /// A *running* daemon is deliberately not required. Almost every action needs
+    /// one, and with the daemon down the wallet state reads `.unknown`, for which
+    /// the menu holds only the offline `wallet.dat` restore — the one action that
+    /// requires the daemon **stopped**. Demanding a running daemon here refused it
+    /// exactly when it was usable.
     fn openWalletModal(self: *App) void {
         const coin = self.selectedCoin() orelse return;
         const act = &self.activities[self.selected];
@@ -6861,14 +6891,16 @@ pub const App = struct {
             self.logf("{s}: wallet management isn't supported", .{coin.coinName()});
             return;
         }
-        if (!act.installed or act.daemonState() != .running) {
-            self.logf("{s}: start the daemon first to manage the wallet", .{coin.coinName()});
+        if (!act.installed) {
+            self.logf("{s}: install the coin first to manage the wallet", .{coin.coinName()});
             return;
         }
         var opts: [walletmenu.max_options]WalletAction = undefined;
         const n = walletmenu.optionsFor(act.wallet, .of(coin), &opts);
-        if (act.wallet == .unknown or n == 0) {
-            self.logf("{s}: wallet state not known yet — try again in a moment", .{coin.coinName()});
+        if (n == 0) {
+            // Nothing this state permits: either the daemon hasn't reported the
+            // wallet yet, or it's down and this coin has no offline restore.
+            self.logf("{s}: wallet state not known yet — start the daemon, or try again in a moment", .{coin.coinName()});
             return;
         }
 
@@ -8498,9 +8530,16 @@ pub const App = struct {
                     try modalRow(&out.writer, vbar, inner_w, (zz.Style{}).fg(.red).render(a, note) catch note, zz.width(note));
                 }
             },
-            // Confirm the offline file restore (daemon bounced, wallet.dat swapped).
+            // Confirm the offline file restore (wallet.dat swapped with the daemon
+            // down). It only bounces a daemon that's actually running — started
+            // from a stopped one, the node is left stopped, so don't promise a
+            // restart that isn't coming.
             .restore_file_confirm => {
-                const warn = "This replaces the current wallet.dat with the selected backup and restarts the daemon. The existing wallet.dat is kept as a timestamped .bak.";
+                const running = self.activities[m.coin_idx].daemonState() == .running;
+                const warn = if (running)
+                    "This replaces the current wallet.dat with the selected backup and restarts the daemon. The existing wallet.dat is kept as a timestamped .bak."
+                else
+                    "This replaces the current wallet.dat with the selected backup. The existing wallet.dat is kept as a timestamped .bak. Start the daemon afterwards to load it.";
                 try wrapIntoRows(a, &out.writer, vbar, inner_w, warn, (zz.Style{}).bold(true).fg(brand));
             },
             .setup_file => unreachable, // handled by the early return above

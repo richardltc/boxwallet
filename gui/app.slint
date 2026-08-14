@@ -2080,10 +2080,19 @@ export component AppWindow inherits Window {
                             // and the core decides which, not this file.
                             if root.ew-flags == 0: Button {
                                 text: "Wallet\u{2026}";
-                                // Nothing to offer until the daemon has said what
-                                // it holds (BW_WSEC_UNKNOWN), and the core returns
-                                // an empty menu for that state anyway.
-                                enabled: root.running && root.wallet-sec != 0 && root.wallet-menu-count > 0;
+                                // The core's menu is the only gate: it returns an
+                                // empty one when there is nothing this state
+                                // permits, and the button greys out with it.
+                                //
+                                // Deliberately NOT also requiring `running` and a
+                                // known wallet state. A stopped daemon has no RPC
+                                // to ask, so it always reads BW_WSEC_UNKNOWN — and
+                                // the offline wallet.dat restore is the one action
+                                // that *requires* the daemon stopped. Gating on
+                                // those two greyed it out whenever it was usable
+                                // and the restore itself refused whenever it
+                                // wasn't, so it could never be reached at all.
+                                enabled: root.wallet-menu-count > 0;
                                 clicked => {
                                     root.wallet-menu-open();
                                 }
