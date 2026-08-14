@@ -52,6 +52,40 @@ pub fn looksLikeKeyDump(allocator: std.mem.Allocator, path: []const u8) bool {
     return std.mem.startsWith(u8, head, dump_header_prefix);
 }
 
+/// Where a Bitcoin-Core 0.17+ daemon keeps the **named** wallet `name` — the
+/// directory holding its `wallet.dat`. Caller owns the returned path.
+///
+/// Core's own rule (`GetWalletDir()`): the wallet root is `<data_dir>/wallets`
+/// **when that directory already exists**, and `<data_dir>` otherwise. It is not
+/// created on demand, so a data dir that `createwallet` built has the wallet
+/// straight under it — `~/.reddcoin/BoxWallet/wallet.dat`, not
+/// `~/.reddcoin/wallets/BoxWallet/wallet.dat` (verified on reddcoind 4.22.9,
+/// litecoind 0.21.5.5 and digibyted 9.26.5, all of which put a freshly created
+/// wallet at `<data_dir>/<name>/`). A data dir adopted from another install may
+/// well have the `wallets/` parent, though, so both layouts have to be handled
+/// rather than one hard-coded — which is why this resolves against the disk
+/// instead of joining a fixed string.
+pub fn coreWalletDir(
+    allocator: std.mem.Allocator,
+    data_dir: []const u8,
+    name: []const u8,
+) ![]u8 {
+    var threaded: std.Io.Threaded = .init(allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    const wallets = try std.fs.path.join(allocator, &.{ data_dir, "wallets" });
+    defer allocator.free(wallets);
+
+    if (std.Io.Dir.cwd().openDir(io, wallets, .{})) |*d| {
+        var dir = d.*;
+        dir.close(io);
+        return std.fs.path.join(allocator, &.{ wallets, name });
+    } else |_| {
+        return std.fs.path.join(allocator, &.{ data_dir, name });
+    }
+}
+
 /// Replace `<dest_dir>/<wallet_file>` with the wallet file at `src_path`, with
 /// the daemon stopped.
 ///
@@ -154,6 +188,41 @@ test "looksLikeKeyDump separates a dumpwallet text file from a binary wallet fil
         const p = try std.fs.path.join(allocator, &.{ root, c.name });
         defer allocator.free(p);
         try std.testing.expectEqual(c.dump, looksLikeKeyDump(allocator, p));
+    }
+}
+
+test "coreWalletDir follows Core's rule: wallets/ only when it already exists" {
+    if (builtin.os.tag == .windows) return error.SkipZigTest;
+    const allocator = std.testing.allocator;
+
+    var threaded: std.Io.Threaded = .init(allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    const root = "test-walletfile-walletdir";
+    std.Io.Dir.cwd().deleteTree(io, root) catch {};
+    defer std.Io.Dir.cwd().deleteTree(io, root) catch {};
+
+    // A data dir as `createwallet` leaves it: no `wallets/` parent, so the
+    // named wallet sits directly under the data dir.
+    const plain = root ++ "/plain";
+    var pd = try std.Io.Dir.cwd().createDirPathOpen(io, plain, .{});
+    pd.close(io);
+    {
+        const got = try coreWalletDir(allocator, plain, "BoxWallet");
+        defer allocator.free(got);
+        try std.testing.expectEqualStrings(plain ++ "/BoxWallet", got);
+    }
+
+    // A data dir adopted from an install that has one — the wallet lives under
+    // it, and reading it as the plain layout would point at nothing.
+    const adopted = root ++ "/adopted";
+    var ad = try std.Io.Dir.cwd().createDirPathOpen(io, adopted ++ "/wallets", .{});
+    ad.close(io);
+    {
+        const got = try coreWalletDir(allocator, adopted, "BoxWallet");
+        defer allocator.free(got);
+        try std.testing.expectEqualStrings(adopted ++ "/wallets/BoxWallet", got);
     }
 }
 
