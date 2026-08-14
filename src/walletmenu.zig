@@ -128,13 +128,26 @@ pub const Caps = struct {
 /// `buf` and returned by count.
 ///
 /// Unencrypted → encrypt; locked → unlock (plus unlock-for-staking on
-/// proof-of-stake coins); unlocked → lock; unknown → none.
+/// proof-of-stake coins); unlocked → lock.
 ///
 /// Backup/restore are offered only while the wallet is reachable for a key dump
 /// — unencrypted or unlocked, never locked, because the daemon rejects
 /// `dumpwallet`/`importwallet` on a locked wallet. The *offline* file restore is
 /// a daemon-stopped file swap, so it needs no live or unlocked wallet and is
-/// offered in every known state, locked included.
+/// offered in every state, locked and **unknown** included.
+///
+/// That last one is the whole point of it. Every other action is decided by what
+/// the daemon says it holds, so `unknown` offers none of them — a menu built on a
+/// guess is a menu that can destroy a wallet. But `unknown` is exactly what a
+/// *stopped* daemon reads as (there's no RPC to ask), and the offline restore is
+/// the one action that **requires** the daemon stopped. Excluding it here made it
+/// unreachable in both front-ends: greyed out while the daemon was down, and
+/// refused by the restore itself once it was up.
+///
+/// Offering it in `unknown` doesn't guess at anything — it's a file swap, not a
+/// wallet operation: it depends on no lock state, refuses a key dump or an empty
+/// file, and keeps the wallet it replaces aside under a timestamped name (see
+/// `walletfile.restoreOffline`).
 pub fn optionsFor(
     state: models.WalletSecurity,
     caps: Caps,
@@ -188,9 +201,16 @@ pub fn optionsFor(
                 n += 1;
             }
         },
-        // Nothing is offered until the daemon has told us what it holds — a menu
-        // built on a guess is a menu that can destroy a wallet.
-        .unknown => {},
+        // Nothing that depends on what the daemon holds is offered until it has
+        // said — a menu built on a guess is a menu that can destroy a wallet.
+        // The offline file restore doesn't depend on it, and a stopped daemon
+        // (which is what it needs) always reads as unknown, so it is offered.
+        .unknown => {
+            if (caps.restore_offline) {
+                buf[n] = .restore_file_offline;
+                n += 1;
+            }
+        },
     }
     return n;
 }
@@ -288,10 +308,11 @@ pub fn choicesFor(coin: Coin, buf: *[max_choices]SetupChoice) usize {
     return n;
 }
 
-test "an unknown wallet state offers nothing at all" {
-    // The daemon hasn't said what it holds yet. A menu built on that guess is a
-    // menu that can destroy a wallet, so it must be empty — including for a coin
-    // that supports everything.
+test "an unknown wallet state offers nothing that depends on the daemon" {
+    // The daemon hasn't said what it holds yet, so every action decided by that
+    // is withheld — a menu built on the guess is a menu that can destroy a
+    // wallet. Only the offline file swap, which asks the daemon nothing and needs
+    // it stopped, survives (see the dedicated test below).
     var buf: [max_options]Action = undefined;
     const all: Caps = .{
         .proof_of_stake = true,
@@ -300,7 +321,10 @@ test "an unknown wallet state offers nothing at all" {
         .import = true,
         .restore_offline = true,
     };
-    try std.testing.expectEqual(@as(usize, 0), optionsFor(.unknown, all, &buf));
+    const n = optionsFor(.unknown, all, &buf);
+    for (buf[0..n]) |act| {
+        try std.testing.expectEqual(Action.restore_file_offline, act);
+    }
 }
 
 test "each wallet state offers the actions that fit it" {
@@ -357,12 +381,13 @@ test "a daemon that can't encrypt is never offered encryption" {
     try std.testing.expectEqual(Action.backup, buf[0]);
 }
 
-test "the offline file restore is offered in every known state, locked included" {
+test "the offline file restore is offered in every state, unknown included" {
     // It is a daemon-stopped file swap, so unlike the key-dump pair it needs no
-    // live or unlocked wallet.
+    // live or unlocked wallet — and `unknown` is what a stopped daemon reads as,
+    // so leaving it out of that state is what made it unreachable.
     var buf: [max_options]Action = undefined;
     const caps: Caps = .{ .restore_offline = true };
-    for ([_]models.WalletSecurity{ .unencrypted, .locked, .unlocked, .unlocked_for_staking }) |state| {
+    for (std.enums.values(models.WalletSecurity)) |state| {
         const n = optionsFor(state, caps, &buf);
         var found = false;
         for (buf[0..n]) |a| {
@@ -370,8 +395,30 @@ test "the offline file restore is offered in every known state, locked included"
         }
         try std.testing.expect(found);
     }
-    // Still not in the unknown state.
-    try std.testing.expectEqual(@as(usize, 0), optionsFor(.unknown, caps, &buf));
+}
+
+test "unknown offers the offline restore and nothing else" {
+    // Every other action is decided by what the daemon says it holds, and in
+    // this state it has said nothing — offering one would be a guess.
+    var buf: [max_options]Action = undefined;
+    const all: Caps = .{
+        .proof_of_stake = true,
+        .encrypt = true,
+        .backup = true,
+        .import = true,
+        .restore_offline = true,
+    };
+    const n = optionsFor(.unknown, all, &buf);
+    try std.testing.expectEqual(@as(usize, 1), n);
+    try std.testing.expectEqual(Action.restore_file_offline, buf[0]);
+
+    // …and a coin without the offline restore still gets no menu at all.
+    try std.testing.expectEqual(@as(usize, 0), optionsFor(.unknown, .{
+        .proof_of_stake = true,
+        .encrypt = true,
+        .backup = true,
+        .import = true,
+    }, &buf));
 }
 
 test "no state ever overflows the option buffer" {

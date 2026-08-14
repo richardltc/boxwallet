@@ -4841,12 +4841,18 @@ test "bw_wallet_menu returns exactly what the shared policy decides" {
                 try std.testing.expectEqual(@intFromEnum(exp), got);
             }
         }
-        // An unknown state offers nothing, for every coin — a menu built before
-        // the daemon has said what it holds can destroy a wallet.
+        // An unknown state offers nothing that depends on what the daemon holds —
+        // a menu built before it has said can destroy a wallet. The exception is
+        // the offline wallet-file swap, which needs the daemon *stopped*, and a
+        // stopped daemon is exactly what reads as unknown.
+        const un = bw_wallet_menu(i, @intFromEnum(models.WalletSecurity.unknown), &out[0], out.len);
         try std.testing.expectEqual(
-            @as(usize, 0),
-            bw_wallet_menu(i, @intFromEnum(models.WalletSecurity.unknown), &out[0], out.len),
+            @as(usize, if (coin.supportsWalletRestoreOffline()) 1 else 0),
+            un,
         );
+        for (out[0..un]) |got| {
+            try std.testing.expectEqual(@intFromEnum(walletmenu.Action.restore_file_offline), got);
+        }
     }
 
     // Out-of-range states are refused rather than folded onto a real one.
