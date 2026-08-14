@@ -2347,16 +2347,31 @@ int main(int argc, char **argv)
             // no `-28` warm-up protocol (Ergo) never reports one, so "no stage"
             // there means "we can't see inside the start-up", not "there isn't
             // one". Fall back to the daemon process itself being alive — the same
-            // liveness check the TUI's start path uses — but only when no stop is
-            // in flight, since a daemon flushing on its way out is alive too.
+            // liveness check the TUI's start path uses.
+            //
+            // Gated on `rpc_ok`, NOT on `daemon_up`, and the difference is the
+            // whole feature for half the coins. `daemon_up` is true as soon as the
+            // RPC *port* answers a connect — and a bitcoin-derived daemon binds
+            // that port first and loads the chain afterwards, answering -28 the
+            // whole time. That is precisely the window this reports, so gating on
+            // `daemon_up` skipped the stage for exactly the coins that narrate one
+            // best: ReddCoin's minute of "Loading block index…" / "Verifying
+            // blocks…" never appeared, and the status line sat on the Start
+            // action's "Daemon running" until the chain was loaded. The epee family
+            // brings its RPC server up last, so it fell the other side of the same
+            // gate and worked — which is what made this look coin-specific.
+            //
+            // Not while a stop is in flight: a daemon flushing on its way out is
+            // both alive and briefly still listening, and its log's last start-up
+            // line is history. Reporting that as a stage reads as "starting".
             std::string stage;
             bool coming_up = false;
-            if (!daemon_up) {
+            if (!rpc_ok && g_stopping.load() != sel) {
                 char sb[128] = {0};
                 size_t sn = bw_daemon_stage(ctx, coin, sb, sizeof sb);
                 stage.assign(sb, sn);
                 coming_up = !stage.empty() ||
-                            (g_stopping.load() != sel && bw_daemon_alive(ctx, coin) == 1);
+                            (!daemon_up && bw_daemon_alive(ctx, coin) == 1);
             }
 
             // The managed wallet lives in a second process we spawn alongside the
@@ -2805,7 +2820,16 @@ int main(int argc, char **argv)
                 // and a coin that can't name its stage is still starting. Gating
                 // on the label made the smiley go grey between the Start click and
                 // the first RPC answer on every such coin.
-                (*h)->set_daemon_loading(!running && coming_up);
+                //
+                // Paired with `!rpc_ok` rather than `!running` for the same reason
+                // the stage above is: a bitcoin-derived daemon is "running" (its
+                // port answers) for the whole minute it spends loading the chain,
+                // so `!running` said "not loading" through the entire load and the
+                // smiley sat still with a "Daemon running" tooltip while the status
+                // line named the stage. `running` itself is left alone — it is what
+                // keeps Start latched, and a second Start here just hits the
+                // datadir lock.
+                (*h)->set_daemon_loading(!rpc_ok && coming_up);
                 // Three states, not two. `rpc_ok` publishes fresh figures;
                 // `busy` holds the last ones (the daemon is up, we just couldn't
                 // read it this tick, and zeroing would make the gauges stutter);
