@@ -140,6 +140,88 @@ static std::vector<std::string> g_sc_vault_ids;
 static std::vector<int64_t> g_sc_vault_cents;
 static std::string g_sc_addr;
 
+// ---- strings into Slint -----------------------------------------------------
+// A Slint string must be valid UTF-8. Its Rust side unwraps a from_utf8 every
+// time it reads one, so a single bad byte doesn't render badly — it aborts the
+// whole process, with no message and no window.
+//
+// Nothing here is in a position to promise that. Every string from the core
+// arrives through a fixed buffer that the ABI truncates by *byte* count
+// (`copyOut`/`setField`), and the words we show are full of multi-byte
+// characters — the "…" on every stage label, the "—" in the tier rows. A cut
+// that lands inside one of those produces exactly the bad byte that kills the
+// app. So does a stale pointer, which is what a dangling warm-up label turned
+// out to be: clicking Start on Salvium aborted the GUI on "Loading blockchain…".
+//
+// The bug behind that one is fixed at its source in the core, where such bugs
+// belong. This is the backstop for the next one: no byte the core hands us
+// should be able to take the window down.
+
+/// How many leading bytes of `s` are valid UTF-8 — the length of the longest
+/// prefix Rust's `from_utf8` would accept. Strict on purpose (it rejects
+/// overlong forms, surrogates and anything past U+10FFFF, as Rust does), since
+/// a prefix this call blesses is one the Slint side will not re-examine.
+static size_t utf8_valid_prefix(std::string_view s)
+{
+    auto cont = [&](size_t i, unsigned char lo, unsigned char hi) {
+        return i < s.size() &&
+               static_cast<unsigned char>(s[i]) >= lo &&
+               static_cast<unsigned char>(s[i]) <= hi;
+    };
+    size_t i = 0;
+    while (i < s.size()) {
+        const unsigned char c = static_cast<unsigned char>(s[i]);
+        size_t len = 0;
+        if (c < 0x80)
+            len = 1;
+        else if (c >= 0xC2 && c <= 0xDF)
+            len = cont(i + 1, 0x80, 0xBF) ? 2 : 0;
+        else if (c == 0xE0)
+            len = (cont(i + 1, 0xA0, 0xBF) && cont(i + 2, 0x80, 0xBF)) ? 3 : 0;
+        else if (c == 0xED) // U+D800..U+DFFF are surrogates, not characters
+            len = (cont(i + 1, 0x80, 0x9F) && cont(i + 2, 0x80, 0xBF)) ? 3 : 0;
+        else if ((c >= 0xE1 && c <= 0xEC) || c == 0xEE || c == 0xEF)
+            len = (cont(i + 1, 0x80, 0xBF) && cont(i + 2, 0x80, 0xBF)) ? 3 : 0;
+        else if (c == 0xF0)
+            len = (cont(i + 1, 0x90, 0xBF) && cont(i + 2, 0x80, 0xBF) && cont(i + 3, 0x80, 0xBF)) ? 4 : 0;
+        else if (c >= 0xF1 && c <= 0xF3)
+            len = (cont(i + 1, 0x80, 0xBF) && cont(i + 2, 0x80, 0xBF) && cont(i + 3, 0x80, 0xBF)) ? 4 : 0;
+        else if (c == 0xF4)
+            len = (cont(i + 1, 0x80, 0x8F) && cont(i + 2, 0x80, 0xBF) && cont(i + 3, 0x80, 0xBF)) ? 4 : 0;
+        if (len == 0)
+            return i;
+        i += len;
+    }
+    return i;
+}
+
+/// Every string this file hands to Slint goes through here. Valid text — which
+/// is all of it, when the core is behaving — is passed straight down; anything
+/// else is cut back to its longest valid prefix.
+///
+/// Literals included, so the rule is one a reviewer can grep rather than
+/// remember: below this point `slint::SharedString(` should appear nowhere. A
+/// site that constructs one directly is the site that gets to kill the app.
+///
+/// Trimming, not replacing: the damage is always at the truncation point, so
+/// what's lost is the tail of a label the user was already only going to half
+/// read. A dropped "…" beats a dead app, and the stderr line says it happened
+/// (once per run — this can be reached from the 2s poll) so it's a bug report
+/// rather than a silent mystery.
+static slint::SharedString ss(std::string_view s)
+{
+    const size_t n = utf8_valid_prefix(s);
+    if (n != s.size()) {
+        static std::atomic<bool> warned{false};
+        if (!warned.exchange(true))
+            std::fprintf(stderr,
+                         "BoxWallet: dropped %zu invalid UTF-8 byte(s) from a string of %zu "
+                         "before showing it — the core truncated or corrupted it\n",
+                         s.size() - n, s.size());
+    }
+    return slint::SharedString(std::string_view(s.data(), n));
+}
+
 // ---- secrets ----------------------------------------------------------------
 // Passwords and seeds cross the C ABI as raw bytes, never as a SharedString —
 // see the secrets contract in include/boxwallet.h. These two are the only way
@@ -199,7 +281,7 @@ static void finish_mining(slint::ComponentWeakHandle<AppWindow> w, bw_ctx *ctx, 
     post_to_ui([w, msg]() {
         if (auto h = w.lock()) {
             (*h)->set_mining_busy(false);
-            (*h)->set_mining_error(slint::SharedString(msg));
+            (*h)->set_mining_error(ss(msg));
         }
     });
 }
@@ -393,22 +475,22 @@ make_tx_rows(const std::vector<BwWalletTx> &txs, int decimals)
     for (const BwWalletTx &t : txs) {
         bool incoming = (t.direction != 1); // 0 received, 2 mined
         WalletTxRow r{}; // value-initialised — see the note on NavCoin
-        r.direction = slint::SharedString(t.direction == 0   ? "Received"
+        r.direction = ss(t.direction == 0   ? "Received"
                                           : t.direction == 1 ? "Sent"
                                                              : "Mined");
         // The core sends a positive magnitude and the direction alongside it, so
         // the sign is applied here rather than guessed from the number.
-        r.amount = slint::SharedString((incoming ? "+" : "-") + format_amount_trimmed(t.amount, decimals));
-        r.when = slint::SharedString(relative_time(t.time));
+        r.amount = ss((incoming ? "+" : "-") + format_amount_trimmed(t.amount, decimals));
+        r.when = ss(relative_time(t.time));
         // Past the settled threshold the exact count stops being news — the
         // same line the TUI's Status column draws, from the same constant.
-        r.confirmations = slint::SharedString(
+        r.confirmations = ss(
             t.confirmations > bw_tx_confirmed_threshold() ? std::string("confirmed")
             : t.confirmations <= 0                        ? std::string("unconfirmed")
                                                           : group_int(t.confirmations) + " conf");
         r.settled = t.confirmations > bw_tx_confirmed_threshold();
         // Explicitly length-counted: the core doesn't NUL-terminate a txid.
-        r.txid = slint::SharedString(std::string(t.txid, t.txid_len));
+        r.txid = ss(std::string(t.txid, t.txid_len));
         r.incoming = incoming;
         rows.push_back(std::move(r));
     }
@@ -422,7 +504,7 @@ static void refresh_update_state(const AppWindow *ui, bw_ctx *ctx, int idx)
 {
     char ver[32];
     size_t n = bw_installed_version(ctx, static_cast<size_t>(idx), ver, sizeof ver);
-    ui->set_installed_version(slint::SharedString(std::string_view(ver, n)));
+    ui->set_installed_version(ss(std::string_view(ver, n)));
     ui->set_update_available(bw_update_available(ctx, static_cast<size_t>(idx)) != 0);
 }
 
@@ -461,7 +543,7 @@ static int run_with_progress(slint::ComponentWeakHandle<AppWindow> weak, bw_ctx 
                 (*h)->set_install_busy(true);
                 (*h)->set_install_phase(static_cast<int>(phase));
                 (*h)->set_install_frac(frac);
-                (*h)->set_install_bytes(slint::SharedString(bytes));
+                (*h)->set_install_bytes(ss(bytes));
             });
             std::this_thread::sleep_for(std::chrono::milliseconds(125));
         }
@@ -515,15 +597,15 @@ static void finish_install(slint::ComponentWeakHandle<AppWindow> weak, bw_ctx *c
         (*h)->set_install_busy(false);
         (*h)->set_install_phase(0);
         (*h)->set_install_frac(0);
-        (*h)->set_install_bytes(slint::SharedString(""));
+        (*h)->set_install_bytes(ss(""));
         // The user may have navigated elsewhere during the install — don't stamp
         // this coin's result onto whatever they're looking at now.
         if (g_selected.load() != coin)
             return;
         (*h)->set_installed(installed);
-        (*h)->set_installed_version(slint::SharedString(version));
+        (*h)->set_installed_version(ss(version));
         (*h)->set_update_available(upd);
-        (*h)->set_status_text(slint::SharedString(msg));
+        (*h)->set_status_text(ss(msg));
         (*h)->set_status_is_error(is_err);
     });
 }
@@ -534,11 +616,11 @@ static void apply_coin_metadata(const AppWindow *ui, bw_ctx *ctx, int idx)
 {
     char name[64];
     size_t nn = bw_coin_name(idx, name, sizeof name);
-    ui->set_coin_name(slint::SharedString(std::string_view(name, nn)));
+    ui->set_coin_name(ss(std::string_view(name, nn)));
 
     char desc[128];
     size_t dn = bw_coin_description(idx, desc, sizeof desc);
-    ui->set_coin_desc(slint::SharedString(std::string_view(desc, dn)));
+    ui->set_coin_desc(ss(std::string_view(desc, dn)));
 
     char color[16];
     size_t cn = bw_coin_color(idx, color, sizeof color);
@@ -546,16 +628,16 @@ static void apply_coin_metadata(const AppWindow *ui, bw_ctx *ctx, int idx)
 
     char ver[32];
     size_t vn = bw_coin_version(idx, ver, sizeof ver);
-    ui->set_coin_version(slint::SharedString(std::string_view(ver, vn)));
+    ui->set_coin_version(ss(std::string_view(ver, vn)));
 
     // Ticker, for the balance label on the title line ("DIVI: 123.45").
     char abbrev[16];
     size_t an = bw_coin_abbrev(idx, abbrev, sizeof abbrev);
-    ui->set_coin_abbrev(slint::SharedString(std::string_view(abbrev, an)));
+    ui->set_coin_abbrev(ss(std::string_view(abbrev, an)));
 
     char tip[128];
     size_t tn = bw_tip_address(idx, tip, sizeof tip);
-    ui->set_tip_address(slint::SharedString(std::string_view(tip, tn)));
+    ui->set_tip_address(ss(std::string_view(tip, tn)));
 
     // Two-tone wordmark, for the three coins that have one — ReddCoin's "Redd" +
     // "Coin", SpiderByte's white "Spider" + brand "Byte", BitcoinZ's "Bitcoin" +
@@ -567,8 +649,8 @@ static void apply_coin_metadata(const AppWindow *ui, bw_ctx *ctx, int idx)
     ui->set_has_wordmark(has_wordmark);
     if (has_wordmark) {
         std::string_view full(name, nn);
-        ui->set_wordmark_head(slint::SharedString(full.substr(0, wm.split)));
-        ui->set_wordmark_tail(slint::SharedString(full.substr(wm.split)));
+        ui->set_wordmark_head(ss(full.substr(0, wm.split)));
+        ui->set_wordmark_tail(ss(full.substr(wm.split)));
         ui->set_wordmark_head_color(parse_hex_color(wm.head_color, std::strlen(wm.head_color)));
         ui->set_wordmark_tail_color(parse_hex_color(wm.tail_color, std::strlen(wm.tail_color)));
     }
@@ -597,7 +679,7 @@ static void apply_coin_metadata(const AppWindow *ui, bw_ctx *ctx, int idx)
     if (!this_installing) {
         ui->set_install_phase(0);
         ui->set_install_frac(0);
-        ui->set_install_bytes(slint::SharedString(""));
+        ui->set_install_bytes(ss(""));
     }
     // A paused transfer belongs to the coin it was started on, and the readout is
     // global to the pane — so switching coins drops it rather than showing another
@@ -632,45 +714,45 @@ static void apply_coin_metadata(const AppWindow *ui, bw_ctx *ctx, int idx)
     // A modal left open over the coin we're leaving would ask its question about
     // the wrong wallet; and any seed still pending was never shown.
     ui->set_wallet_stage(0);
-    ui->set_wallet_seed_words(slint::SharedString(""));
+    ui->set_wallet_seed_words(ss(""));
     bw_ext_wallet_seed_discard(ctx);
     // Settings are per-coin and static; a worker fills them in just after this
     // (see on_coin_selected). Cleared here so the tab never shows the coin we
     // just left — a wallet path is exactly the sort of thing someone copies.
-    ui->set_wallet_file_path(slint::SharedString(""));
-    ui->set_wallet_keys_path(slint::SharedString(""));
+    ui->set_wallet_file_path(ss(""));
+    ui->set_wallet_keys_path(ss(""));
     ui->set_prune_mode(bw_prune_mode(idx));
-    ui->set_prune_text(slint::SharedString(""));
-    ui->set_balance_total(slint::SharedString("—"));
-    ui->set_balance_avail(slint::SharedString("—"));
+    ui->set_prune_text(ss(""));
+    ui->set_balance_total(ss("—"));
+    ui->set_balance_avail(ss("—"));
     ui->set_rescan_frac(0);
-    ui->set_receive_address(slint::SharedString(""));
+    ui->set_receive_address(ss(""));
     ui->set_receive_qr(slint::Image());
     g_qr_addr.clear();
     ui->set_tx_rows(std::make_shared<slint::VectorModel<WalletTxRow>>(std::vector<WalletTxRow>{}));
     ui->set_mining(false);
     ui->set_mining_threads(0);
-    ui->set_mining_hashrate(slint::SharedString(""));
+    ui->set_mining_hashrate(ss(""));
     ui->set_cpu_threads(static_cast<int>(bw_cpu_threads()));
     ui->set_sync_percent(0);
-    ui->set_chain(slint::SharedString(""));
-    ui->set_headers_str(slint::SharedString(""));
-    ui->set_blocks_str(slint::SharedString(""));
-    ui->set_tip_date(slint::SharedString(""));
-    ui->set_sync_behind(slint::SharedString(""));
-    ui->set_disk_free(slint::SharedString(""));
-    ui->set_storage_size(slint::SharedString(""));
-    ui->set_price_usd(slint::SharedString(""));
+    ui->set_chain(ss(""));
+    ui->set_headers_str(ss(""));
+    ui->set_blocks_str(ss(""));
+    ui->set_tip_date(ss(""));
+    ui->set_sync_behind(ss(""));
+    ui->set_disk_free(ss(""));
+    ui->set_storage_size(ss(""));
+    ui->set_price_usd(ss(""));
     // DigiDollar metadata + a clean slate; the tab only appears for a coin that
     // has one, and stale figures from another coin must never show under it.
     {
         char nb[48];
         size_t nn2 = bw_sc_name(idx, nb, sizeof nb);
         if (nn2 > 0)
-            ui->set_sc_name(slint::SharedString(std::string_view(nb, nn2)));
+            ui->set_sc_name(ss(std::string_view(nb, nn2)));
         char sb2[16];
         size_t sn3 = bw_sc_symbol(idx, sb2, sizeof sb2);
-        ui->set_sc_symbol(slint::SharedString(std::string_view(sb2, sn3)));
+        ui->set_sc_symbol(ss(std::string_view(sb2, sn3)));
 
         BwScTier tiers[BW_SC_MAX_TIERS];
         size_t tn2 = bw_sc_tiers(idx, tiers, BW_SC_MAX_TIERS);
@@ -679,29 +761,29 @@ static void apply_coin_metadata(const AppWindow *ui, bw_ctx *ctx, int idx)
             char pb[64];
             std::snprintf(pb, sizeof pb, "%s  —  %u%% collateral",
                           tiers[k].duration, tiers[k].ratio_pct);
-            rows.push_back(slint::SharedString(pb));
+            rows.push_back(ss(pb));
         }
         ui->set_sc_tier_rows(std::make_shared<slint::VectorModel<slint::SharedString>>(rows));
     }
     ui->set_sc_active(false);
-    ui->set_sc_address(slint::SharedString(""));
-    ui->set_sc_balance(slint::SharedString(""));
+    ui->set_sc_address(ss(""));
+    ui->set_sc_balance(ss(""));
     ui->set_sc_stage(0);
     g_sc_addr.clear();
     g_sc_vault_ids.clear();
     g_sc_vault_cents.clear();
-    ui->set_price_change(slint::SharedString(""));
-    ui->set_holding_value(slint::SharedString(""));
-    ui->set_status_text(slint::SharedString(""));
-    ui->set_live_status(slint::SharedString(""));
-    ui->set_live_status_cur(slint::SharedString(""));
-    ui->set_live_status_join(slint::SharedString(""));
-    ui->set_live_status_total(slint::SharedString(""));
+    ui->set_price_change(ss(""));
+    ui->set_holding_value(ss(""));
+    ui->set_status_text(ss(""));
+    ui->set_live_status(ss(""));
+    ui->set_live_status_cur(ss(""));
+    ui->set_live_status_join(ss(""));
+    ui->set_live_status_total(ss(""));
     ui->set_status_is_error(false);
     // Including the warm-up readout: the coin we're leaving may well still be
     // loading, and its stage must not read as this one's.
     ui->set_daemon_loading(false);
-    ui->set_daemon_stage(slint::SharedString(""));
+    ui->set_daemon_stage(ss(""));
 }
 
 // ---- in-app file browser state + helpers ------------------------------------
@@ -760,14 +842,14 @@ static void browse_refresh(const AppWindow *ui)
         while (j < n && buf[j] != '\n')
             j++;
         BrowseEntry e{}; // value-initialised — see the note on NavCoin
-        e.name = slint::SharedString(std::string_view(buf + start, j - start));
+        e.name = ss(std::string_view(buf + start, j - start));
         e.is_dir = (t == 'd');
         g_entries.push_back(e);
         i = j + 1;
     }
 
     ui->set_browse_entries(std::make_shared<slint::VectorModel<BrowseEntry>>(g_entries));
-    ui->set_browse_path(slint::SharedString(g_browse_path));
+    ui->set_browse_path(ss(g_browse_path));
 }
 
 int main(int argc, char **argv)
@@ -832,9 +914,9 @@ int main(int argc, char **argv)
     {
         char b[64];
         size_t n = bw_app_name(b, sizeof b);
-        ui->set_app_name(slint::SharedString(std::string_view(b, n)));
+        ui->set_app_name(ss(std::string_view(b, n)));
         n = bw_app_version(b, sizeof b);
-        ui->set_app_version(slint::SharedString(std::string_view(b, n)));
+        ui->set_app_version(ss(std::string_view(b, n)));
         n = bw_brand_color(b, sizeof b);
         ui->set_brand_color(parse_hex_color(b, n));
     }
@@ -843,7 +925,7 @@ int main(int argc, char **argv)
     {
         char mask[32];
         size_t mn = bw_balance_mask(mask, sizeof mask);
-        ui->set_balance_mask(slint::SharedString(std::string_view(mask, mn)));
+        ui->set_balance_mask(ss(std::string_view(mask, mn)));
         ui->set_hide_balances(bw_hide_balances(ctx) != 0);
     }
     ui->set_prices_enabled(bw_prices_enabled(ctx) != 0);
@@ -895,7 +977,7 @@ int main(int argc, char **argv)
                          "BoxWallet: gui/app.slint's coin logos are out of step with "
                          "src/registry.zig — %s\n",
                          mismatch.c_str());
-            ui->set_logo_mismatch(slint::SharedString(mismatch));
+            ui->set_logo_mismatch(ss(mismatch));
         }
     }
 
@@ -946,7 +1028,7 @@ int main(int argc, char **argv)
         // update scan, so it was left uninitialised until then; the `{}` is what
         // stops the next field added here doing the same thing.
         NavCoin nc{};
-        nc.name = slint::SharedString(std::string_view(nm, nn));
+        nc.name = ss(std::string_view(nm, nn));
         nc.color = parse_hex_color(col, cn);
         nc.index = static_cast<int>(i);
         // Two-tone wordmark, pre-split here so the row can draw it directly.
@@ -955,8 +1037,8 @@ int main(int argc, char **argv)
         BwWordmark wm;
         if (bw_coin_wordmark(i, &wm) == 1 && wm.split > 0 && wm.split < nn) {
             std::string_view full(nm, nn);
-            nc.head = slint::SharedString(full.substr(0, wm.split));
-            nc.tail = slint::SharedString(full.substr(wm.split));
+            nc.head = ss(full.substr(0, wm.split));
+            nc.tail = ss(full.substr(wm.split));
             nc.head_color = parse_hex_color(wm.head_color, std::strlen(wm.head_color));
             nc.tail_color = parse_hex_color(wm.tail_color, std::strlen(wm.tail_color));
         }
@@ -996,7 +1078,7 @@ int main(int argc, char **argv)
                     }
                 }
                 (*h)->set_nav_coins(std::make_shared<slint::VectorModel<NavCoin>>(coins));
-                (*h)->set_updates_summary(slint::SharedString(summary));
+                (*h)->set_updates_summary(ss(summary));
             });
         }).detach();
     };
@@ -1033,7 +1115,7 @@ int main(int argc, char **argv)
                 // verification miss that simply retries next launch.
                 return;
             }
-            (*h)->set_self_update_text(slint::SharedString(msg));
+            (*h)->set_self_update_text(ss(msg));
         });
     }).detach();
 
@@ -1087,9 +1169,9 @@ int main(int argc, char **argv)
                 // user is no longer looking at.
                 if (g_selected.load() != idx)
                     return;
-                (*h)->set_wallet_file_path(slint::SharedString(file));
-                (*h)->set_wallet_keys_path(slint::SharedString(keys));
-                (*h)->set_prune_text(slint::SharedString(prune));
+                (*h)->set_wallet_file_path(ss(file));
+                (*h)->set_wallet_keys_path(ss(keys));
+                (*h)->set_prune_text(ss(prune));
             });
         }).detach();
     });
@@ -1154,7 +1236,7 @@ int main(int argc, char **argv)
                 // wallet for tens of seconds more, so the poll owns that flag
                 // (and the stage shown with it) until the daemon answers RPC or
                 // its process is gone.
-                (*h)->set_status_text(slint::SharedString(msg));
+                (*h)->set_status_text(ss(msg));
                 (*h)->set_status_is_error(is_err);
             }
         });
@@ -1203,11 +1285,11 @@ int main(int argc, char **argv)
             }
             if (rc < 0) {
                 (*h)->set_wallet_result_error(true);
-                (*h)->set_wallet_result(slint::SharedString(err));
+                (*h)->set_wallet_result(ss(err));
                 // A mistyped password is a retry, not a dead end.
                 (*h)->set_wallet_stage(wrong_pw ? (op == 0 ? 3 : (op == 1 ? 4 : 2)) : 10);
                 if (wrong_pw) {
-                    (*h)->set_status_text(slint::SharedString(err));
+                    (*h)->set_status_text(ss(err));
                     (*h)->set_status_is_error(true);
                 }
                 return;
@@ -1218,12 +1300,12 @@ int main(int argc, char **argv)
                 (*h)->set_verify_pos_3(p3);
                 (*h)->set_wallet_verify_step(0);
                 (*h)->set_wallet_verify_bad(false);
-                (*h)->set_wallet_seed_words(slint::SharedString(seed));
+                (*h)->set_wallet_seed_words(ss(seed));
                 (*h)->set_wallet_stage(7);
                 return;
             }
             (*h)->set_wallet_result_error(false);
-            (*h)->set_wallet_result(slint::SharedString(
+            (*h)->set_wallet_result(ss(
                 op == 1 ? "Wallet restored. It will scan the chain for your funds."
                 : op == 2 ? "Wallet imported and unlocked."
                           : "Wallet unlocked."));
@@ -1234,7 +1316,7 @@ int main(int argc, char **argv)
     // Set an "in progress" status on the UI thread (called from the callback).
     auto begin_status = [](slint::ComponentWeakHandle<AppWindow> w, const char *msg) {
         if (auto h = w.lock()) {
-            (*h)->set_status_text(slint::SharedString(msg));
+            (*h)->set_status_text(ss(msg));
             (*h)->set_status_is_error(false);
         }
     };
@@ -1280,10 +1362,10 @@ int main(int argc, char **argv)
                 resume = humanize_bytes(partial) +
                          " already downloaded — this will continue from there.";
             if (auto h = weak.lock()) {
-                (*h)->set_accel_name(slint::SharedString(std::string_view(name, nn)));
-                (*h)->set_accel_detail(slint::SharedString(std::string_view(detail, dn)));
-                (*h)->set_accel_trust(slint::SharedString(std::string_view(trust, tn)));
-                (*h)->set_accel_resume(slint::SharedString(resume));
+                (*h)->set_accel_name(ss(std::string_view(name, nn)));
+                (*h)->set_accel_detail(ss(std::string_view(detail, dn)));
+                (*h)->set_accel_trust(ss(std::string_view(trust, tn)));
+                (*h)->set_accel_resume(ss(resume));
                 // The click set daemon-busy to latch the Start button; the prompt
                 // is now the thing in flight, so release it or the buttons stay
                 // frozen behind the dialog.
@@ -1319,7 +1401,7 @@ int main(int argc, char **argv)
             for (size_t r = 0; r < nrows; ++r) {
                 char lb[64] = {0};
                 size_t ln = bw_prune_preset_label(static_cast<size_t>(coin), r, lb, sizeof lb);
-                rows.push_back(slint::SharedString(std::string_view(lb, ln)));
+                rows.push_back(ss(std::string_view(lb, ln)));
             }
             if (rows.empty()) { // no menu to show — don't block the start on it
                 offer_accel_or_launch(coin);
@@ -1327,7 +1409,7 @@ int main(int argc, char **argv)
             }
             g_prune_coin = coin;
             if (auto h = weak.lock()) {
-                (*h)->set_prune_prompt(slint::SharedString(std::string_view(prompt, pn)));
+                (*h)->set_prune_prompt(ss(std::string_view(prompt, pn)));
                 (*h)->set_prune_rows(std::make_shared<slint::VectorModel<slint::SharedString>>(rows));
                 // Row 0 is the coin's least destructive choice, so the default
                 // selection can't discard a chain on a stray Enter.
@@ -1349,10 +1431,10 @@ int main(int argc, char **argv)
         if (!h)
             return;
         (*h)->set_sc_op(op);
-        (*h)->set_sc_amount(slint::SharedString(""));
-        (*h)->set_sc_dest(slint::SharedString(""));
-        (*h)->set_sc_estimate(slint::SharedString(""));
-        (*h)->set_sc_error(slint::SharedString(""));
+        (*h)->set_sc_amount(ss(""));
+        (*h)->set_sc_dest(ss(""));
+        (*h)->set_sc_estimate(ss(""));
+        (*h)->set_sc_error(ss(""));
         (*h)->set_sc_tier(0);
         (*h)->set_sc_vault_sel(0);
         // Redeem takes a whole vault, so there is no amount to ask for.
@@ -1385,7 +1467,7 @@ int main(int argc, char **argv)
             }
             post_to_ui([weak, text]() {
                 if (auto h = weak.lock())
-                    (*h)->set_sc_estimate(slint::SharedString(text));
+                    (*h)->set_sc_estimate(ss(text));
             });
         }).detach();
     });
@@ -1445,7 +1527,7 @@ int main(int argc, char **argv)
             }
             post_to_ui([weak, msg, rc]() {
                 if (auto h2 = weak.lock()) {
-                    (*h2)->set_sc_result(slint::SharedString(msg));
+                    (*h2)->set_sc_result(ss(msg));
                     (*h2)->set_sc_result_error(rc != 0);
                     (*h2)->set_sc_stage(8);
                 }
@@ -1456,10 +1538,10 @@ int main(int argc, char **argv)
 
     ui->on_sc_cancel([weak]() {
         if (auto h = weak.lock()) {
-            (*h)->set_sc_amount(slint::SharedString(""));
-            (*h)->set_sc_dest(slint::SharedString(""));
-            (*h)->set_sc_estimate(slint::SharedString(""));
-            (*h)->set_sc_error(slint::SharedString(""));
+            (*h)->set_sc_amount(ss(""));
+            (*h)->set_sc_dest(ss(""));
+            (*h)->set_sc_estimate(ss(""));
+            (*h)->set_sc_error(ss(""));
         }
     });
 
@@ -1475,7 +1557,7 @@ int main(int argc, char **argv)
             post_to_ui([weak, addr]() {
                 g_sc_addr = addr;
                 if (auto h = weak.lock())
-                    (*h)->set_sc_address(slint::SharedString(addr));
+                    (*h)->set_sc_address(ss(addr));
             });
             wake_poll();
         }).detach();
@@ -1503,12 +1585,12 @@ int main(int argc, char **argv)
         for (size_t i = 0; i < n; ++i) {
             char lb[64] = {0};
             size_t ln = bw_wallet_action_label(acts[i], lb, sizeof lb);
-            rows.push_back(slint::SharedString(std::string_view(lb, ln)));
+            rows.push_back(ss(std::string_view(lb, ln)));
         }
         (*h)->set_wa_rows(std::make_shared<slint::VectorModel<slint::SharedString>>(rows));
         (*h)->set_wa_pw_mismatch(false);
-        (*h)->set_wa_result(slint::SharedString(""));
-        (*h)->set_picked_file(slint::SharedString(""));
+        (*h)->set_wa_result(ss(""));
+        (*h)->set_picked_file(ss(""));
         (*h)->set_wa_stage(1);
     });
 
@@ -1524,7 +1606,7 @@ int main(int argc, char **argv)
 
         char lb[64] = {0};
         size_t ln = bw_wallet_action_label(action, lb, sizeof lb);
-        (*h)->set_wa_title(slint::SharedString(std::string_view(lb, ln)));
+        (*h)->set_wa_title(ss(std::string_view(lb, ln)));
         (*h)->set_wa_confirm_pw(bw_wallet_action_sets_new_password(action) != 0);
         (*h)->set_wa_pw_mismatch(false);
 
@@ -1537,8 +1619,8 @@ int main(int argc, char **argv)
             // that can lose funds outright if the wrong file is chosen.
             (*h)->set_wa_caution(
                 action == BW_WA_RESTORE_FILE_OFFLINE
-                    ? slint::SharedString("This replaces the current wallet file. Stop the daemon first, and be sure this is the wallet you want.")
-                    : slint::SharedString(""));
+                    ? ss("This replaces the current wallet file. Stop the daemon first, and be sure this is the wallet you want.")
+                    : ss(""));
             (*h)->set_wa_stage(3);
             return;
         }
@@ -1566,7 +1648,7 @@ int main(int argc, char **argv)
             }
             post_to_ui([weak, msg, err]() {
                 if (auto hh = weak.lock()) {
-                    (*hh)->set_wa_result(slint::SharedString(msg));
+                    (*hh)->set_wa_result(ss(msg));
                     (*hh)->set_wa_result_error(err);
                     (*hh)->set_wa_stage(5);
                 }
@@ -1614,7 +1696,7 @@ int main(int argc, char **argv)
             bool err = rc < 0;
             post_to_ui([weak, msg, err]() {
                 if (auto hh = weak.lock()) {
-                    (*hh)->set_wa_result(slint::SharedString(msg));
+                    (*hh)->set_wa_result(ss(msg));
                     (*hh)->set_wa_result_error(err);
                     (*hh)->set_wa_stage(5);
                 }
@@ -1647,7 +1729,7 @@ int main(int argc, char **argv)
                               "the balance is right.");
             post_to_ui([weak, msg, rc]() {
                 if (auto hh = weak.lock()) {
-                    (*hh)->set_wa_result(slint::SharedString(msg));
+                    (*hh)->set_wa_result(ss(msg));
                     (*hh)->set_wa_result_error(rc < 0);
                     (*hh)->set_wa_stage(5);
                 }
@@ -1660,7 +1742,7 @@ int main(int argc, char **argv)
         g_wa_coin = -1;
         g_wa_menu.clear();
         if (auto h = weak.lock())
-            (*h)->set_picked_file(slint::SharedString(""));
+            (*h)->set_picked_file(ss(""));
     });
 
     // The prune choice was made: write it, then carry on with the start.
@@ -1678,7 +1760,7 @@ int main(int argc, char **argv)
             // same call the TUI makes.
             std::string why = last_error_text(ctx, -1);
             if (auto h = weak.lock()) {
-                (*h)->set_status_text(slint::SharedString(
+                (*h)->set_status_text(ss(
                     "Couldn't save the pruning choice (" + why + ") — starting unpruned."));
                 (*h)->set_status_is_error(true);
             }
@@ -1761,7 +1843,7 @@ int main(int argc, char **argv)
                     // frozen bar and byte count are the pump's last values, left
                     // untouched on purpose — they're exactly where it stopped.
                     (*h)->set_accel_paused(true);
-                    (*h)->set_status_text(slint::SharedString(
+                    (*h)->set_status_text(ss(
                         "Paused — " + humanize_bytes(have) + " downloaded, resumes from here"));
                     (*h)->set_status_is_error(false);
                     (*h)->set_daemon_busy(false);
@@ -1770,7 +1852,7 @@ int main(int argc, char **argv)
                 if (rc < 0) {
                     // A failed resumable download keeps its partial, so the next
                     // Start offers to continue rather than begin again.
-                    (*h)->set_status_text(slint::SharedString(msg));
+                    (*h)->set_status_text(ss(msg));
                     (*h)->set_status_is_error(true);
                     (*h)->set_daemon_busy(false);
                     return;
@@ -1892,7 +1974,7 @@ int main(int argc, char **argv)
                         if (!h || g_selected.load() != coin)
                             return;
                         (*h)->set_install_busy(false);
-                        (*h)->set_status_text(slint::SharedString(msg));
+                        (*h)->set_status_text(ss(msg));
                         (*h)->set_status_is_error(true);
                     });
                     return; // leave the old install intact rather than half-replacing it
@@ -1939,7 +2021,7 @@ int main(int argc, char **argv)
                     (*h)->set_daemon_busy(false);
                     if (g_selected.load() != coin)
                         return;
-                    (*h)->set_status_text(slint::SharedString(msg));
+                    (*h)->set_status_text(ss(msg));
                     (*h)->set_status_is_error(is_err);
                 });
             }
@@ -2040,7 +2122,7 @@ int main(int argc, char **argv)
             post_to_ui([weak, rc, msg = last_error_text(ctx, rc)]() {
                 if (auto h = weak.lock()) {
                     (*h)->set_wallet_result_error(rc < 0);
-                    (*h)->set_wallet_result(slint::SharedString(
+                    (*h)->set_wallet_result(ss(
                         rc < 0 ? msg : "Wallet removed. Set up a new one when you're ready."));
                     (*h)->set_wallet_stage(10);
                 }
@@ -2100,7 +2182,7 @@ int main(int argc, char **argv)
         } catch (...) {
             if (auto h = weak.lock()) {
                 (*h)->set_send_result_error(true);
-                (*h)->set_send_result(slint::SharedString("That isn't an amount."));
+                (*h)->set_send_result(ss("That isn't an amount."));
             }
             return;
         }
@@ -2121,7 +2203,7 @@ int main(int argc, char **argv)
                     // A daemon rejection (rc == 1) carries its own reason
                     // verbatim — it's an answer the user needs to read, not a
                     // generic failure.
-                    (*h)->set_send_result(slint::SharedString(
+                    (*h)->set_send_result(ss(
                         rc == 0   ? "Sent. Transaction " + reply
                         : rc == 1 ? reply
                                   : err));
@@ -2142,14 +2224,14 @@ int main(int argc, char **argv)
         std::string addr = g_recv_addr[coin];
         if (addr.empty()) {
             if (auto h = weak.lock()) {
-                (*h)->set_mining_error(slint::SharedString(
+                (*h)->set_mining_error(ss(
                     "No payout address yet — unlock your wallet first."));
             }
             return;
         }
         if (auto h = weak.lock()) {
             (*h)->set_mining_busy(true);
-            (*h)->set_mining_error(slint::SharedString(""));
+            (*h)->set_mining_error(ss(""));
         }
         std::thread([weak, ctx, coin, addr, threads, wake_poll]() {
             WorkerGuard wg;
@@ -2166,7 +2248,7 @@ int main(int argc, char **argv)
             return;
         if (auto h = weak.lock()) {
             (*h)->set_mining_busy(true);
-            (*h)->set_mining_error(slint::SharedString(""));
+            (*h)->set_mining_error(ss(""));
         }
         std::thread([weak, ctx, coin, wake_poll]() {
             WorkerGuard wg;
@@ -2202,7 +2284,7 @@ int main(int argc, char **argv)
             g_browse_path = path_join(g_browse_path, name);
             browse_refresh(&**h);
         } else {
-            (*h)->set_picked_file(slint::SharedString(path_join(g_browse_path, name)));
+            (*h)->set_picked_file(ss(path_join(g_browse_path, name)));
             (*h)->set_browse_open(false);
         }
     });
@@ -2468,13 +2550,13 @@ int main(int argc, char **argv)
                             std::string line = std::string(cb, cn);
                             if (pos[k].can_redeem) {
                                 line += "  — redeemable";
-                                sc_redeemable.push_back(slint::SharedString(line));
+                                sc_redeemable.push_back(ss(line));
                                 sc_vault_ids.push_back(std::string(pos[k].id, pos[k].id_len));
                                 sc_vault_cents.push_back(pos[k].amount_cents);
                             } else {
                                 line += "  — locked until block " + group_int(pos[k].unlock_height);
                             }
-                            sc_vaults.push_back(slint::SharedString(line));
+                            sc_vaults.push_back(ss(line));
                         }
 
                         BwScTx stx[10];
@@ -2485,7 +2567,7 @@ int main(int argc, char **argv)
                                 ? kinds[stx[k].kind] : "?";
                             char cb[48];
                             size_t cn = bw_format_cents(stx[k].amount_cents, cb, sizeof cb);
-                            sc_txs.push_back(slint::SharedString(
+                            sc_txs.push_back(ss(
                                 std::string(kind) + "  " + std::string(cb, cn) + "  " +
                                 relative_time(stx[k].time)));
                         }
@@ -2627,34 +2709,34 @@ int main(int argc, char **argv)
                 if (g_selected.load() != sel)
                     return;
                 (*h)->set_disk_frac(disk_frac);
-                (*h)->set_disk_free(slint::SharedString(disk_free_str));
+                (*h)->set_disk_free(ss(disk_free_str));
                 (*h)->set_sc_active(sc_active);
-                (*h)->set_sc_status(slint::SharedString(sc_status));
-                (*h)->set_sc_countdown(slint::SharedString(sc_countdown));
-                (*h)->set_sc_balance(slint::SharedString(sc_balance));
-                (*h)->set_sc_pending(slint::SharedString(sc_pending));
-                (*h)->set_sc_price(slint::SharedString(sc_price));
+                (*h)->set_sc_status(ss(sc_status));
+                (*h)->set_sc_countdown(ss(sc_countdown));
+                (*h)->set_sc_balance(ss(sc_balance));
+                (*h)->set_sc_pending(ss(sc_pending));
+                (*h)->set_sc_price(ss(sc_price));
                 (*h)->set_sc_price_stale(sc_price_stale);
-                (*h)->set_sc_supply(slint::SharedString(sc_supply));
-                (*h)->set_sc_health(slint::SharedString(sc_health));
+                (*h)->set_sc_supply(ss(sc_supply));
+                (*h)->set_sc_health(ss(sc_health));
                 (*h)->set_sc_minting_blocked(sc_minting_blocked);
-                (*h)->set_sc_address(slint::SharedString(sc_addr));
+                (*h)->set_sc_address(ss(sc_addr));
                 (*h)->set_sc_vaults(std::make_shared<slint::VectorModel<slint::SharedString>>(sc_vaults));
                 (*h)->set_sc_txs(std::make_shared<slint::VectorModel<slint::SharedString>>(sc_txs));
                 (*h)->set_sc_redeemable(std::make_shared<slint::VectorModel<slint::SharedString>>(sc_redeemable));
                 g_sc_vault_ids = sc_vault_ids;
                 g_sc_vault_cents = sc_vault_cents;
-                (*h)->set_price_usd(slint::SharedString(price_usd));
-                (*h)->set_price_change(slint::SharedString(price_change));
+                (*h)->set_price_usd(ss(price_usd));
+                (*h)->set_price_change(ss(price_change));
                 (*h)->set_price_dir(price_dir);
-                (*h)->set_holding_value(slint::SharedString(holding_value));
+                (*h)->set_holding_value(ss(holding_value));
                 (*h)->set_mem_frac(mem_frac);
-                (*h)->set_mem_used(slint::SharedString(mem_used_str));
+                (*h)->set_mem_used(ss(mem_used_str));
                 // Formatted by the core, not by humanize_bytes: that one uses
                 // binary units, so the same chain read "11.5 GB" here and
                 // "12.34 GB" in the TUI. bw_format_storage is the TUI's own
                 // formatter, so the two now agree.
-                (*h)->set_storage_size(slint::SharedString(fmt_storage(storage_now)));
+                (*h)->set_storage_size(ss(fmt_storage(storage_now)));
                 // Skipped while busy: wallet_sec is BW_WSEC_UNKNOWN there and
                 // publishing it would grey the padlock every time the node
                 // stalls, which is the flicker this whole branch exists to stop.
@@ -2675,15 +2757,15 @@ int main(int argc, char **argv)
                 // transaction list every time the node stalled.
                 if (!busy) {
                     (*h)->set_can_send(can_send);
-                    (*h)->set_balance_total(slint::SharedString(
+                    (*h)->set_balance_total(ss(
                         have_balance ? format_amount(bal.total, decimals) : std::string("—")));
-                    (*h)->set_balance_avail(slint::SharedString(
+                    (*h)->set_balance_avail(ss(
                         have_balance ? format_amount(bal.available, decimals) : std::string("—")));
                     (*h)->set_rescan_frac(rescanning && rp.target > 0
                         ? static_cast<float>(static_cast<double>(rp.scanned) /
                                              static_cast<double>(rp.target))
                         : 0.0f);
-                    (*h)->set_receive_address(slint::SharedString(recv_addr));
+                    (*h)->set_receive_address(ss(recv_addr));
                     // Re-encode only when the address actually changes — this
                     // runs every poll and the encoder allocates.
                     if (recv_addr != g_qr_addr) {
@@ -2695,7 +2777,7 @@ int main(int argc, char **argv)
                 // Only when it changes, so a persistent fault doesn't rewrite
                 // the status line every two seconds over whatever else is there.
                 if (!wallet_svc_err.empty() && wallet_svc_err != g_last_wallet_svc_err) {
-                    (*h)->set_status_text(slint::SharedString(wallet_svc_err));
+                    (*h)->set_status_text(ss(wallet_svc_err));
                     (*h)->set_status_is_error(true);
                 }
                 g_last_wallet_svc_err = wallet_svc_err;
@@ -2713,12 +2795,12 @@ int main(int argc, char **argv)
                 // one RPC mid-sync (routine: they all do it under load) read as
                 // "Daemon running" instead of the sync progress it was making.
                 if (rpc_ok || !daemon_up) {
-                    (*h)->set_live_status(slint::SharedString(live_status));
-                    (*h)->set_live_status_cur(slint::SharedString(live_cur));
-                    (*h)->set_live_status_join(slint::SharedString(live_join));
-                    (*h)->set_live_status_total(slint::SharedString(live_total));
+                    (*h)->set_live_status(ss(live_status));
+                    (*h)->set_live_status_cur(ss(live_cur));
+                    (*h)->set_live_status_join(ss(live_join));
+                    (*h)->set_live_status_total(ss(live_total));
                 }
-                (*h)->set_daemon_stage(slint::SharedString(stage));
+                (*h)->set_daemon_stage(ss(stage));
                 // `coming_up`, not `!stage.empty()`: the pulse means "starting",
                 // and a coin that can't name its stage is still starting. Gating
                 // on the label made the smiley go grey between the Start click and
@@ -2754,19 +2836,19 @@ int main(int argc, char **argv)
                     (*h)->set_synced(synced);
                     (*h)->set_headers_frac(sync_frac(bs.headers, tip, synced));
                     (*h)->set_blocks_frac(sync_frac(bs.blocks, tip, synced));
-                    (*h)->set_headers_str(slint::SharedString(group_int(bs.headers)));
-                    (*h)->set_blocks_str(slint::SharedString(group_int(bs.blocks)));
+                    (*h)->set_headers_str(ss(group_int(bs.headers)));
+                    (*h)->set_blocks_str(ss(group_int(bs.blocks)));
                     // Both empty once synced, so the historical-distance line
                     // disappears when there's no distance left to report.
-                    (*h)->set_tip_date(slint::SharedString(tip_date));
-                    (*h)->set_sync_behind(slint::SharedString(sync_behind));
+                    (*h)->set_tip_date(ss(tip_date));
+                    (*h)->set_sync_behind(ss(sync_behind));
                     (*h)->set_sync_percent(synced
                             ? 100.0f
                             : static_cast<float>(bs.verification_progress * 100.0));
-                    (*h)->set_chain(slint::SharedString(bs.chain));
+                    (*h)->set_chain(ss(bs.chain));
                     (*h)->set_mining(ms.active != 0);
                     (*h)->set_mining_threads(static_cast<int>(ms.threads));
-                    (*h)->set_mining_hashrate(slint::SharedString(hashrate));
+                    (*h)->set_mining_hashrate(ss(hashrate));
                 } else if (!busy) {
                     // Daemon down (e.g. just stopped): clear everything it drove so
                     // the gauges unfill to 0 and the counts/peers reset, rather than
@@ -2783,17 +2865,17 @@ int main(int argc, char **argv)
                     // an empty 0%, the same as every other figure clearing here.
                     (*h)->set_sync_unknown(false);
                     (*h)->set_sync_percent(0);
-                    (*h)->set_headers_str(slint::SharedString(""));
-                    (*h)->set_blocks_str(slint::SharedString(""));
+                    (*h)->set_headers_str(ss(""));
+                    (*h)->set_blocks_str(ss(""));
                     // A stopped daemon has no tip to be behind of; a stale date
                     // would keep claiming a chain position nothing is holding.
-                    (*h)->set_tip_date(slint::SharedString(""));
-                    (*h)->set_sync_behind(slint::SharedString(""));
+                    (*h)->set_tip_date(ss(""));
+                    (*h)->set_sync_behind(ss(""));
                     // The miner dies with the daemon, so a stale hashrate here
                     // would be a lie, not merely out of date.
                     (*h)->set_mining(false);
                     (*h)->set_mining_threads(0);
-                    (*h)->set_mining_hashrate(slint::SharedString(""));
+                    (*h)->set_mining_hashrate(ss(""));
                 }
             });
 
