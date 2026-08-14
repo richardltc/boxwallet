@@ -3,6 +3,7 @@ const builtin = @import("builtin");
 const models = @import("../models.zig");
 const install_mod = @import("../install.zig");
 const rpc = @import("../rpc.zig");
+const warmup = @import("../warmup.zig");
 const Coin = @import("../coin.zig").Coin;
 
 /// Ergo (ERG) backend. Ported from the Elixir reference in `ergo/`.
@@ -984,6 +985,59 @@ pub const Ergo = struct {
         return .foreground;
     }
 
+    /// Run the node from its data dir. Ergo's bundled logback config writes
+    /// `ergo.log` with a *relative* path, and a JVM that dies writes its
+    /// `hs_err_pid*.log` the same way, so both land in whatever directory
+    /// BoxWallet was started from — the user's shell CWD, a repo checkout,
+    /// anywhere. Pinning the child here puts them beside the chain they describe,
+    /// which is what `daemonLogFile` below relies on. Every path in `daemonArgv`
+    /// is absolute, so nothing else is affected. Caller owns the path.
+    pub fn daemonCwd(allocator: std.mem.Allocator, home: []const u8) !?[]const u8 {
+        return try dataDir(allocator, home);
+    }
+
+    /// The node's log, relative to the data dir — see `daemonCwd` for why it can
+    /// be relied on to be there. Read for a startup-failure reason and, below, for
+    /// the stage the node is at while it loads.
+    pub fn daemonLogFile() []const u8 {
+        return "ergo.log";
+    }
+
+    /// The stage the Ergo node is at while it starts, read from `ergo.log`.
+    ///
+    /// Ergo has no warm-up protocol at all: its REST API simply refuses the
+    /// connection until the node is up, so a probe can't tell "still loading"
+    /// from "not running" — the reason `bw_daemon_alive` had to exist. The log
+    /// does distinguish them, and names the phase: the LevelDB open, the history
+    /// database read, then the state read (the slow one, and the one that turns
+    /// into a rebuild when state and history disagree), then the wallet.
+    ///
+    /// Only the shutdown lines end the sequence, deliberately: everything else
+    /// the node logs on the way up is worth showing, and once its API answers the
+    /// callers stop asking for a stage anyway.
+    pub fn warmupStageFromLog(tail: []const u8) []const u8 {
+        return warmup.lastStage(tail, &ergo_markers);
+    }
+
+    /// Ergo's start-up lines, matched case-insensitively, freshest wins. Taken
+    /// from a real mainnet node's `ergo.log`.
+    const ergo_markers = [_]warmup.Marker{
+        // Shutting down, not starting.
+        .{ .needle = "going to shutdown all connections", .text = "" },
+        .{ .needle = "stopping ergonodeviewholder", .text = "" },
+        // Coming up.
+        .{ .needle = "running with args", .text = "Starting node…" },
+        .{ .needle = "running in mainnet network mode", .text = "Starting node…" },
+        .{ .needle = "leveldbjni", .text = "Opening databases…" },
+        .{ .needle = "peers read from the database", .text = "Reading history database…" },
+        .{ .needle = "history database read", .text = "Reading state database…" },
+        .{ .needle = "state and history have the same version", .text = "Reading state database…" },
+        .{ .needle = "state database read", .text = "Reading wallet database…" },
+        .{ .needle = "wallet database read", .text = "Starting API…" },
+        .{ .needle = "initializing wallet actor", .text = "Starting API…" },
+        .{ .needle = "rpc is allowed at", .text = "Starting API…" },
+    };
+
     /// The full launch command: the bundled `java` running the node jar against
     /// the HOCON conf. The jar and launcher are located by searching the extracted
     /// bundle (their nesting differs per platform). Caller owns the returned slice
@@ -1085,6 +1139,9 @@ pub const Ergo = struct {
         .conf_file = vtConfFile,
         .daemon_file = vtDaemonFile,
         .daemon_process_cmdline = vtDaemonProcessCmdline,
+        .daemon_cwd = vtDaemonCwd,
+        .daemon_log_file = vtDaemonLogFile,
+        .warmup_stage_from_log = vtWarmupStageFromLog,
         .rpc_default_port = vtRpcDefaultPort,
         .rpc_default_username = vtRpcDefaultUsername,
         .blockchain_state = vtBlockchainState,
@@ -1187,6 +1244,19 @@ pub const Ergo = struct {
     /// is what makes it ours and not some other JVM on the machine.
     fn vtDaemonProcessCmdline(_: *anyopaque) []const u8 {
         return jar_file;
+    }
+    fn vtDaemonCwd(
+        _: *anyopaque,
+        allocator: std.mem.Allocator,
+        home_dir: []const u8,
+    ) anyerror!?[]const u8 {
+        return daemonCwd(allocator, home_dir);
+    }
+    fn vtDaemonLogFile(_: *anyopaque) []const u8 {
+        return daemonLogFile();
+    }
+    fn vtWarmupStageFromLog(_: *anyopaque, tail: []const u8) []const u8 {
+        return warmupStageFromLog(tail);
     }
     fn vtRpcDefaultPort(_: *anyopaque) []const u8 {
         return rpc_default_port;
@@ -1430,6 +1500,45 @@ test "findFile locates the jar and the java launcher under bin/" {
     try std.testing.expect(std.mem.endsWith(u8, java.?, "jre/bin/" ++ java_name));
 }
 
+test "the node's start-up stage is read from ergo.log" {
+    // Verbatim from a real mainnet node's log, in order. Ergo's REST API refuses
+    // the connection for all of this, so the log is the only thing that can tell
+    // a loading node from a stopped one.
+    const opening =
+        \\09:04:03.725 INFO [main] org.ergoplatform.ErgoApp - Running with args: Args(Some(/home/u/.ergo/ergo.conf),Some(MainNet))
+        \\09:04:05.046 INFO [dispatcher-5] scorex.db.LDBFactory$ - Loaded org.fusesource.leveldbjni.JniDBFactory with leveldbjni version 1.8
+        \\
+    ;
+    try std.testing.expectEqualStrings("Opening databases…", Ergo.warmupStageFromLog(opening));
+
+    // The history read finishing means the state read — the slow one — is next.
+    try std.testing.expectEqualStrings("Reading state database…", Ergo.warmupStageFromLog(opening ++
+        "09:04:05.359 INFO [dispatcher-6] o.e.n.history.ErgoHistory$ - History database read\n"));
+
+    try std.testing.expectEqualStrings("Reading wallet database…", Ergo.warmupStageFromLog(
+        \\09:04:05.359 INFO [dispatcher-6] o.e.n.history.ErgoHistory$ - History database read
+        \\09:04:05.556 INFO [dispatcher-6] o.e.n.UtxoNodeViewHolder - State database read, state synchronized
+        \\
+    ));
+
+    try std.testing.expectEqualStrings("Starting API…", Ergo.warmupStageFromLog(
+        "09:04:05.627 INFO [dispatcher-6] o.e.n.UtxoNodeViewHolder - Wallet database read\n",
+    ));
+
+    // A node on its way down is not one coming up.
+    try std.testing.expectEqualStrings("", Ergo.warmupStageFromLog(
+        \\09:05:30.696 INFO [dispatcher-20] s.c.n.NetworkController - Going to shutdown all connections & unbind port
+        \\09:05:30.741 WARN [dispatcher-16] o.e.n.UtxoNodeViewHolder - Stopping ErgoNodeViewHolder
+        \\
+    ));
+
+    // The indexer and peer chatter that fills the log once it's up says nothing
+    // about a start-up.
+    try std.testing.expectEqualStrings("", Ergo.warmupStageFromLog(
+        "09:04:06.417 INFO [dispatcher-13] o.e.n.h.extra.ExtraIndexer - Indexer caught up with chain\n",
+    ));
+}
+
 test "coin vtable dispatches to Ergo metadata" {
     var ergo: Ergo = .{};
     const c = ergo.coin();
@@ -1440,7 +1549,9 @@ test "coin vtable dispatches to Ergo metadata" {
     try std.testing.expectEqualStrings("ergo.conf", c.confFile());
     try std.testing.expectEqualStrings("9053", c.rpcDefaultPort());
     try std.testing.expectEqual(Coin.LaunchMode.foreground, c.launchMode());
-    try std.testing.expectEqual(@as(?[]const u8, null), c.daemonLogFile());
+    // The node logs relative to its CWD, which `daemon_cwd` pins to the data dir
+    // so the log is where this says it is.
+    try std.testing.expectEqualStrings("ergo.log", c.daemonLogFile().?);
     // Ergo drives the external-wallet setup flow, backed by the in-daemon REST
     // wallet (so no separate process), and reports balance through it — not via the
     // standalone `wallet_balance`/bitcoin `wallet_security_state` hooks.

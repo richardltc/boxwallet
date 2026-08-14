@@ -4,6 +4,7 @@ const models = @import("../models.zig");
 const install_mod = @import("../install.zig");
 const conf = @import("../conf.zig");
 const rpc = @import("../rpc.zig");
+const warmup = @import("../warmup.zig");
 const Coin = @import("../coin.zig").Coin;
 
 /// Nerva (XNV) backend. Nerva isn't in the Go app, so this is a fresh backend
@@ -569,8 +570,39 @@ pub const Nerva = struct {
         return "nerva.log";
     }
 
+    /// The stage nervad is at while it starts, read from `nerva.log` — its RPC
+    /// server comes up last, so the log is the only source for the whole
+    /// start-up. Shared epee wording; see `warmup.epeeStage`.
+    ///
+    /// Unlike the rest of the family this only works because `daemonArgv` asks
+    /// for it: NERVA's default log categories are
+    /// `*:ERROR,…,user:INFO`, which drop the `global:INFO` lines these markers
+    /// live on, leaving a completely silent start.
+    pub fn warmupStageFromLog(tail: []const u8) []const u8 {
+        return warmup.epeeStage(tail);
+    }
+
+    /// The log categories nervad is started with, so its start-up is visible.
+    ///
+    /// NERVA's built-in default is `*:ERROR,net:FATAL,…,user:INFO`, which drops
+    /// the `global:INFO` category the init lines are written on — a start logs
+    /// literally nothing between the banner and "the daemon will start
+    /// synchronizing", so `warmupStageFromLog` would have nothing to read. This
+    /// asks for that one category back on top of NERVA's own defaults, verbatim,
+    /// so nothing it chose to log (or chose to silence) changes — the log stays as
+    /// quiet as NERVA intended, with one category added.
+    ///
+    /// Verified against nervad v0.3.0.0: `--log-level` takes a category string as
+    /// well as a number, and this one yields the full init sequence
+    /// (`Initializing core…` → `Loading blockchain from folder …` → `Loading
+    /// checkpoints` → `Core initialized OK` → p2p → RPC).
+    const log_categories = "*:ERROR,net:FATAL,net.http:FATAL,net.p2p:FATAL," ++
+        "net.cn:FATAL,user:INFO,verify:FATAL,stacktrace:INFO,logging:INFO," ++
+        "msgwriter:INFO,global:INFO";
+
     /// `nervad --non-interactive` (so it runs as a server rather than opening its
-    /// interactive console), plus `--quicksync <file>` when the quicksync block-hash
+    /// interactive console) with `--log-level <log_categories>` (see above), plus
+    /// `--quicksync <file>` when the quicksync block-hash
     /// file is present (fetched at install) so the first sync is fast. Passing
     /// `--quicksync` once already caught up is harmless — it only ever skips
     /// recomputing hashes the daemon already has — so it's keyed purely off the file
@@ -583,17 +615,21 @@ pub const Nerva = struct {
         if (quicksyncExists(allocator, install_root)) {
             const qs_path = try std.fs.path.join(allocator, &.{ install_root, quicksync_file });
             errdefer allocator.free(qs_path);
-            const argv = try allocator.alloc([]const u8, 4);
+            const argv = try allocator.alloc([]const u8, 6);
             argv[0] = path;
             argv[1] = try allocator.dupe(u8, "--non-interactive");
-            argv[2] = try allocator.dupe(u8, "--quicksync");
-            argv[3] = qs_path;
+            argv[2] = try allocator.dupe(u8, "--log-level");
+            argv[3] = try allocator.dupe(u8, log_categories);
+            argv[4] = try allocator.dupe(u8, "--quicksync");
+            argv[5] = qs_path;
             return argv;
         }
 
-        const argv = try allocator.alloc([]const u8, 2);
+        const argv = try allocator.alloc([]const u8, 4);
         argv[0] = path;
         argv[1] = try allocator.dupe(u8, "--non-interactive");
+        argv[2] = try allocator.dupe(u8, "--log-level");
+        argv[3] = try allocator.dupe(u8, log_categories);
         return argv;
     }
 
@@ -1347,6 +1383,7 @@ pub const Nerva = struct {
         .prepare_conf = vtPrepareConf,
         .launch_mode = vtLaunchMode,
         .daemon_log_file = vtDaemonLogFile,
+        .warmup_stage_from_log = vtWarmupStageFromLog,
         .daemon_argv = vtDaemonArgv,
         .request_stop = vtRequestStop,
         .wallet_transactions = vtWalletTransactions,
@@ -1518,6 +1555,9 @@ pub const Nerva = struct {
     fn vtDaemonLogFile(_: *anyopaque) []const u8 {
         return daemonLogFile();
     }
+    fn vtWarmupStageFromLog(_: *anyopaque, tail: []const u8) []const u8 {
+        return warmupStageFromLog(tail);
+    }
     fn vtDaemonArgv(
         _: *anyopaque,
         allocator: std.mem.Allocator,
@@ -1677,14 +1717,19 @@ test "daemonArgv adds --quicksync only when the file is present" {
     var rd = try std.Io.Dir.cwd().createDirPathOpen(io, root, .{});
     defer rd.close(io);
 
-    // No quicksync file → bare `--non-interactive`, no quicksync flag.
+    // No quicksync file → `--non-interactive --log-level <categories>`, no
+    // quicksync flag. The log level is always passed: without it nervad logs
+    // nothing at all during start-up (see `log_categories`).
     {
         const argv = try Nerva.daemonArgv(allocator, root, "");
         defer {
             for (argv) |a| allocator.free(a);
             allocator.free(argv);
         }
-        try std.testing.expectEqual(@as(usize, 2), argv.len);
+        try std.testing.expectEqual(@as(usize, 4), argv.len);
+        try std.testing.expectEqualStrings("--log-level", argv[2]);
+        // The `global` category is the one the init lines are written on.
+        try std.testing.expect(std.mem.indexOf(u8, argv[3], "global:INFO") != null);
         const joined = try std.mem.join(allocator, " ", argv);
         defer allocator.free(joined);
         try std.testing.expect(std.mem.indexOf(u8, joined, "--quicksync") == null);
@@ -1698,11 +1743,12 @@ test "daemonArgv adds --quicksync only when the file is present" {
             for (argv) |a| allocator.free(a);
             allocator.free(argv);
         }
-        try std.testing.expectEqual(@as(usize, 4), argv.len);
-        try std.testing.expectEqualStrings("--quicksync", argv[2]);
+        try std.testing.expectEqual(@as(usize, 6), argv.len);
+        try std.testing.expectEqualStrings("--log-level", argv[2]);
+        try std.testing.expectEqualStrings("--quicksync", argv[4]);
         // The flag's argument is the full path to the file under the install root.
-        try std.testing.expect(std.mem.startsWith(u8, argv[3], root));
-        try std.testing.expect(std.mem.endsWith(u8, argv[3], Nerva.quicksync_file));
+        try std.testing.expect(std.mem.startsWith(u8, argv[5], root));
+        try std.testing.expect(std.mem.endsWith(u8, argv[5], Nerva.quicksync_file));
     }
 }
 

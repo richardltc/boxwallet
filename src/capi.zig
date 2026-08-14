@@ -997,6 +997,11 @@ fn startDaemon(ctx: *Ctx, idx: usize) !void {
     var env_map = try currentEnvMap(a);
     defer env_map.deinit();
 
+    // Where to run the daemon — only Ergo asks for one (it writes its log
+    // relative to the CWD); everything else inherits ours. Mirrors the TUI.
+    const child_cwd: std.process.Child.Cwd =
+        if (try coin.daemonCwd(a, ctx.home_dir)) |path| .{ .path = path } else .inherit;
+
     // Capture the process's stderr so a failed start can report the real reason.
     const err_name = try std.fmt.allocPrint(a, ".{s}.startup", .{coin.daemonFile()});
     const err_path = try std.fs.path.join(a, &.{ ctx.install_root, err_name });
@@ -1011,6 +1016,7 @@ fn startDaemon(ctx: *Ctx, idx: usize) !void {
         // spawn detached and retain the handle for a kill-based stop.
         var child = std.process.spawn(io, .{
             .argv = argv,
+            .cwd = child_cwd,
             .stdin = .ignore,
             .stdout = .ignore,
             .stderr = .{ .file = err_file },
@@ -1047,6 +1053,7 @@ fn startDaemon(ctx: *Ctx, idx: usize) !void {
     const forked = try std.mem.concat(a, []const u8, &.{ argv, &.{"-daemon"} });
     var child = try std.process.spawn(io, .{
         .argv = forked,
+        .cwd = child_cwd,
         .stdin = .ignore,
         .stdout = .ignore,
         .stderr = .{ .file = err_file },

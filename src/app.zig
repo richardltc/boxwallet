@@ -1505,6 +1505,17 @@ const Activity = struct {
     /// so those writes are ordered without a separate atomic.
     poll_version_buf: [32]u8 = undefined,
     poll_version_len: usize = 0,
+    /// The daemon's own wording for the warm-up stage it's in ("Rewinding
+    /// blocks…", "Loading masternode cache…"), and its poll-staging counterpart.
+    /// Folded in on every reap alongside `loading_phase` — whether or not the poll
+    /// reached the daemon, since this is published precisely when it didn't.
+    ///
+    /// Same size as `warmup.Status.msg_buf`, which is what fills it: sized for the
+    /// longest stage message with room to spare.
+    stage_buf: [96]u8 = undefined,
+    stage_len: usize = 0,
+    poll_stage_buf: [96]u8 = undefined,
+    poll_stage_len: usize = 0,
     /// The coin's cached recent transactions (Transactions tab), newest-first.
     /// Folded from `poll_tx_*` after a poll; cleared on daemon stop. Only ever
     /// populated for a coin whose `supportsTransactions()` is true — stays empty
@@ -2624,6 +2635,7 @@ const Activity = struct {
             },
             .awaiting_status = self.awaitingStatus(),
             .loading_phase = self.loading_phase,
+            .loading_text = self.stage_buf[0..self.stage_len],
             .load_stage = self.load_stage,
             .load_pct_bp = self.load_pct_bp,
             .load_eta_pct = self.load_eta_pct,
@@ -2781,21 +2793,23 @@ const Activity = struct {
         return rpc.daemonReachable(a, auth);
     }
 
-    /// Reset the block-loading sub-stage/percentage atomics to `.none`/0 — used
-    /// by every early-return branch of `probeLoadingPhase` so a coin with no
+    /// Reset the block-loading sub-stage/percentage and the staged stage message —
+    /// used by every early-return branch of `probeLoadingPhase` so a coin with no
     /// warm-up (or a daemon that's actually stopped) doesn't keep showing a
-    /// stale percentage from a previous poll.
+    /// stale percentage or stage from a previous poll.
     fn clearLoadProgress(self: *Activity) void {
         self.poll_load_stage.store(@intFromEnum(LoadStage.none), .monotonic);
         self.poll_load_pct_bp.store(0, .monotonic);
+        self.poll_stage_len = 0;
     }
 
     /// Probe the daemon's warm-up phase after a failed status fetch. Only worth
     /// doing while we believe the daemon is up (a stopped daemon would just refuse
-    /// the connection); coins with no bitcoin-style warm-up (`warmupProbeMethod`
-    /// null) always read `none`. Runs on the caller's poll arena.
+    /// the connection); coins that report no warm-up at all — neither a `-28`
+    /// reply nor a daemon log — always read `none`. Runs on the caller's poll
+    /// arena.
     fn probeLoadingPhase(self: *Activity, a: std.mem.Allocator) void {
-        if (self.coin.warmupProbeMethod() == null or self.daemonState() == .stopped) {
+        if (!warmup.supported(self.coin) or self.daemonState() == .stopped) {
             self.poll_phase.store(@intFromEnum(models.LoadingPhase.none), .monotonic);
             self.clearLoadProgress();
             return;
@@ -2811,6 +2825,15 @@ const Activity = struct {
         self.poll_phase.store(@intFromEnum(status.phase), .monotonic);
         self.poll_load_stage.store(@intFromEnum(status.progress.stage), .monotonic);
         self.poll_load_pct_bp.store(status.progress.pct_bp, .monotonic);
+
+        // The daemon's own wording for the stage, staged like the version string
+        // (plain buffer, ordered by the `poll_done` release the caller does). This
+        // is the detail the phase enum can't carry — "Rewinding blocks…" and
+        // "Loading wallet…" are both just `.loading` to it.
+        const msg = status.message();
+        const n = @min(msg.len, self.poll_stage_buf.len);
+        @memcpy(self.poll_stage_buf[0..n], msg[0..n]);
+        self.poll_stage_len = n;
     }
 
     /// Resolve the coin's RPC credentials from its conf, then fetch both the
@@ -3125,6 +3148,13 @@ const Activity = struct {
         // Scratch file capturing the spawned process's stderr, read back for the
         // failure reason when a start goes wrong. Per-daemon name so coins
         // starting at once don't share the file.
+        // Where to run the daemon. Only Ergo asks for one — it writes its log (and
+        // any JVM crash dump) relative to the CWD, so left alone it litters
+        // whatever directory BoxWallet was launched from, out of reach of the
+        // startup-failure and warm-up readers. Everything else inherits ours.
+        const child_cwd: std.process.Child.Cwd =
+            if (try self.coin.daemonCwd(a, self.home_dir)) |path| .{ .path = path } else .inherit;
+
         const err_name = try std.fmt.allocPrint(a, ".{s}.startup", .{self.coin.daemonFile()});
         const err_path = try std.fs.path.join(a, &.{ self.install_root, err_name });
         var err_file = try std.Io.Dir.createFileAbsolute(io, err_path, .{ .read = true });
@@ -3151,6 +3181,7 @@ const Activity = struct {
             var child = try std.process.spawn(io, .{
                 .argv = argv,
                 .environ_map = self.environ_map,
+                .cwd = child_cwd,
                 .stdin = .ignore,
                 .stdout = .ignore,
                 .stderr = .{ .file = err_file },
@@ -3212,6 +3243,7 @@ const Activity = struct {
         var child = try std.process.spawn(io, .{
             .argv = forked,
             .environ_map = self.environ_map,
+            .cwd = child_cwd,
             .stdin = .ignore,
             .stdout = .ignore,
             .stderr = .{ .file = err_file },
@@ -3401,7 +3433,7 @@ fn parsePresyncPercentBp(tail: []const u8) ?u32 {
 /// the same stages (see `warmup.zig`).
 const LoadStage = warmup.Stage;
 const LoadProgress = warmup.Progress;
-const readDebugLogTail = warmup.readDebugLogTail;
+const readDaemonLogTail = warmup.readDaemonLogTail;
 const parseLoadProgress = warmup.parseLoadProgress;
 
 /// True if `line` contains any of `needles` (case-insensitive).
@@ -4585,6 +4617,7 @@ pub const App = struct {
                         act.poll_phase.store(@intFromEnum(models.LoadingPhase.none), .monotonic);
                         act.load_stage = .none;
                         act.load_pct_bp = 0;
+                        act.stage_len = 0;
                         act.clearLoadProgress();
                         // Forget the running version — the daemon's down.
                         act.version_len = 0;
@@ -4873,6 +4906,11 @@ pub const App = struct {
                 act.loading_phase = @enumFromInt(act.poll_phase.load(.monotonic));
                 act.load_stage = @enumFromInt(act.poll_load_stage.load(.monotonic));
                 act.load_pct_bp = act.poll_load_pct_bp.load(.monotonic);
+                // ...including the daemon's own wording for that phase, staged in
+                // a plain buffer and ordered by the `poll_done` acquire above.
+                const sn = @min(act.poll_stage_len, act.stage_buf.len);
+                @memcpy(act.stage_buf[0..sn], act.poll_stage_buf[0..sn]);
+                act.stage_len = sn;
                 // On-disk size is disk-derived (published whether or not the poll
                 // reached the daemon), so fold it in here too.
                 act.storage_bytes = act.poll_storage_bytes.load(.monotonic);
@@ -9921,6 +9959,31 @@ test "renderStatus appends the presync percentage only on the presync line" {
     const no_pct = renderStatus(a, &act, brand);
     try std.testing.expect(std.mem.indexOf(u8, no_pct, "Pre-synching headers…") != null);
     try std.testing.expect(std.mem.indexOf(u8, no_pct, "%") == null);
+}
+
+test "renderStatus shows the daemon's own stage wording on the Status line" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const brand = zz.Color.hex(app_color);
+
+    var act: Activity = .{};
+    act.installed = true;
+    act.daemon = .init(@intFromEnum(DaemonState.running));
+    act.loading_phase = .loading;
+
+    // The stage the poll worker staged, folded into `stage_buf` on the reap. This
+    // is the whole point of the buffer: the phase enum can only say "Loading…".
+    const stage = "Loading masternode cache…";
+    @memcpy(act.stage_buf[0..stage.len], stage);
+    act.stage_len = stage.len;
+    const named = renderStatus(a, &act, brand);
+    try std.testing.expect(std.mem.indexOf(u8, named, stage) != null);
+
+    // Cleared (daemon answered normally, or stopped) → back to the coarse text.
+    act.stage_len = 0;
+    const plain = renderStatus(a, &act, brand);
+    try std.testing.expect(std.mem.indexOf(u8, plain, "Loading…") != null);
 }
 
 test "renderStatus shows the block-loading sub-stage and percentage during .loading" {
