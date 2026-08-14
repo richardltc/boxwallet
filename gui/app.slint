@@ -948,6 +948,13 @@ export component AppWindow inherits Window {
     in property <string> browse-path: "";
     in property <[BrowseEntry]> browse-entries;
     in property <string> picked-file: "";
+    // List whatever directory the browser is currently pointed at, without
+    // moving. Raised when the overlay opens: nothing else lists the *starting*
+    // directory, so before this the first screen came up blank — an empty list
+    // and an empty path, with only Up and Close to press. (Up appeared to fix it
+    // only because it lists as a side effect, leaving you one level above where
+    // you meant to start.)
+    callback browse-refresh();
     callback browse-home();
     callback browse-up();
     callback browse-enter(int);
@@ -4196,6 +4203,14 @@ export component AppWindow inherits Window {
         if root.browse-open: Rectangle {
             background: #000000bb;
             TouchArea { }
+
+            // The overlay is built the moment `browse-open` turns true and torn
+            // down when it turns false, so this fires on every open — which makes
+            // it the one place that can't be forgotten by whoever adds the next
+            // way in. (There are three already, and none of them listed anything.)
+            init => {
+                root.browse-refresh();
+            }
 
             panel := Rectangle {
                 width: 82%;

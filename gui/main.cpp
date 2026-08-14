@@ -2268,6 +2268,26 @@ int main(int argc, char **argv)
             browse_refresh(&**h);
         }
     });
+    // Raised when the browser overlay opens. Lists where it already points
+    // without moving, so the first screen shows something: the user's home dir
+    // the first time (seeded at start-up), and afterwards the directory the last
+    // browse ended in — the same "start where you left off" the TUI does.
+    ui->on_browse_refresh([weak, ctx]() {
+        auto h = weak.lock();
+        if (!h)
+            return;
+        // Belt and braces: the start-up seeding leaves this empty if the home dir
+        // couldn't be resolved, and listing "" would land the user right back on
+        // the blank screen this callback exists to prevent.
+        if (g_browse_path.empty()) {
+            char hb[4096];
+            size_t hn = bw_home_dir(ctx, hb, sizeof hb);
+            g_browse_path.assign(hb, hn > 0 ? hn : 0);
+            if (g_browse_path.empty())
+                g_browse_path = "/";
+        }
+        browse_refresh(&**h);
+    });
     ui->on_browse_up([weak]() {
         if (auto h = weak.lock()) {
             g_browse_path = path_parent(g_browse_path);
