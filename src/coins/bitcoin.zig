@@ -317,11 +317,19 @@ pub const Bitcoin = struct {
     }
 
     /// Unlock the wallet via `walletpassphrase`. Bitcoin is proof-of-work, so the
-    /// `staking` flag is irrelevant — a plain unlock with an indefinite timeout (0).
+    /// `staking` flag is irrelevant.
+    ///
+    /// The timeout is a long finite one, **not `0`**: Core treats `0` as a relock
+    /// scheduled for *now*, so the RPC returns success on a wallet that is
+    /// already locked again (measured on the sibling Core forks here — litecoind
+    /// 0.21.5.5, digibyted 9.26.5 and reddcoind 4.22.9 all behave that way; this
+    /// coin's own daemon isn't installed to test against, but it is the same
+    /// upstream code path). Core clamps anything over 100000000s, so 9999999
+    /// (~115 days) is comfortably inside what it accepts.
     pub fn walletUnlock(allocator: std.mem.Allocator, auth: models.CoinAuth, passphrase: []const u8, _: bool) !void {
         const pw = try rpc.jsonQuote(allocator, passphrase);
         defer allocator.free(pw);
-        const params = try std.fmt.allocPrint(allocator, "[{s},0]", .{pw});
+        const params = try std.fmt.allocPrint(allocator, "[{s},9999999]", .{pw});
         defer allocator.free(params);
         return rpc.callExpectOk(allocator, auth, "walletpassphrase", params);
     }

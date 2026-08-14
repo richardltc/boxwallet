@@ -351,12 +351,18 @@ pub const DigiByte = struct {
     }
 
     /// Unlock the wallet via `walletpassphrase`. DigiByte is proof-of-work, so the
-    /// `staking` flag is irrelevant — a plain unlock with an indefinite timeout (0)
-    /// is used either way.
+    /// `staking` flag is irrelevant.
+    ///
+    /// The timeout is a long finite one, **not `0`**: on this daemon `0` sets the
+    /// relock time to *now* and schedules the relock immediately, so the RPC
+    /// returns success on a wallet that is already locked again (verified against
+    /// digibyted 9.26.5 — `unlocked_until` reads 0 straight after). The daemon
+    /// clamps anything over 100000000s, so 9999999 (~115 days) is comfortably
+    /// inside what it accepts.
     pub fn walletUnlock(allocator: std.mem.Allocator, auth: models.CoinAuth, passphrase: []const u8, _: bool) !void {
         const pw = try rpc.jsonQuote(allocator, passphrase);
         defer allocator.free(pw);
-        const params = try std.fmt.allocPrint(allocator, "[{s},0]", .{pw});
+        const params = try std.fmt.allocPrint(allocator, "[{s},9999999]", .{pw});
         defer allocator.free(params);
         return rpc.callExpectOk(allocator, auth, "walletpassphrase", params);
     }

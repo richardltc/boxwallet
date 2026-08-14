@@ -295,19 +295,29 @@ pub const Nexa = struct {
         return rpc.callExpectOk(allocator, auth, "encryptwallet", params);
     }
 
-    /// Unlock the wallet via `walletpassphrase`. A plain unlock uses an indefinite
-    /// timeout (0); `staking` requests an unlock-for-staking with the long timeout
-    /// + `true` flag, mirroring the Go `WalletUnlockFS`.
-    pub fn walletUnlock(allocator: std.mem.Allocator, auth: models.CoinAuth, passphrase: []const u8, staking: bool) !void {
+    /// Unlock the wallet via `walletpassphrase` for `unlock_timeout_secs`.
+    ///
+    /// The `staking` flag is ignored: Nexa is proof-of-work (`proof_of_stake` is
+    /// false, so the wallet menu never offers an unlock-for-staking), and this
+    /// daemon's `walletpassphrase` takes **two** arguments — the third
+    /// `stakingonly` flag the proof-of-stake forks accept is a usage error here.
+    pub fn walletUnlock(allocator: std.mem.Allocator, auth: models.CoinAuth, passphrase: []const u8, _: bool) !void {
         const pw = try rpc.jsonQuote(allocator, passphrase);
         defer allocator.free(pw);
-        const params = if (staking)
-            try std.fmt.allocPrint(allocator, "[{s},9999999,true]", .{pw})
-        else
-            try std.fmt.allocPrint(allocator, "[{s},0]", .{pw});
+        const params = try std.fmt.allocPrint(allocator, "[{s},{d}]", .{ pw, unlock_timeout_secs });
         defer allocator.free(params);
         return rpc.callExpectOk(allocator, auth, "walletpassphrase", params);
     }
+
+    /// How long an unlock lasts, in seconds.
+    ///
+    /// Nexa is stricter than the Core forks at **both** ends: it rejects `0`
+    /// ("The timeout period must be a positive number", RPC `-14`) *and* anything
+    /// above a day ("The timeout period can not be greater than 86400 sec"),
+    /// rather than clamping. BoxWallet used to send `0`, so an unlock here never
+    /// succeeded at all. 86400 is the daemon's own maximum — the longest unlock
+    /// it will grant (verified against nexad 2.1.0.0).
+    const unlock_timeout_secs = 86400;
 
     /// Re-lock the wallet via `walletlock`.
     pub fn walletLock(allocator: std.mem.Allocator, auth: models.CoinAuth) !void {

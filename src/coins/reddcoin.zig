@@ -368,15 +368,23 @@ pub const ReddCoin = struct {
     }
 
     /// Unlock the wallet via `walletpassphrase`. ReddCoin is proof-of-stake, so a
-    /// `staking` unlock uses the long timeout + the third `true` flag
-    /// (unlock-for-staking-only); a plain unlock uses an indefinite timeout (0).
+    /// `staking` unlock adds the third `true` flag (unlock-for-staking-only).
+    ///
+    /// **Both forms pass a long finite timeout, never `0`.** On this Bitcoin-22
+    /// daemon `0` is not "indefinite": it sets the relock time to *now* and
+    /// schedules the relock immediately, so the RPC returns success on a wallet
+    /// that is already locked again — BoxWallet said "Wallet unlocked" while
+    /// `getwalletinfo` still read `unlocked_until: 0` (verified against reddcoind
+    /// 4.22.9). The daemon clamps anything above 100000000s, so 9999999 (~115
+    /// days) is well inside what it accepts and matches the convention the other
+    /// coins here use for "until the user locks it or the daemon restarts".
     pub fn walletUnlock(allocator: std.mem.Allocator, auth: models.CoinAuth, passphrase: []const u8, staking: bool) !void {
         const pw = try rpc.jsonQuote(allocator, passphrase);
         defer allocator.free(pw);
         const params = if (staking)
             try std.fmt.allocPrint(allocator, "[{s},9999999,true]", .{pw})
         else
-            try std.fmt.allocPrint(allocator, "[{s},0]", .{pw});
+            try std.fmt.allocPrint(allocator, "[{s},9999999]", .{pw});
         defer allocator.free(params);
         return rpc.callExpectOk(allocator, auth, "walletpassphrase", params);
     }
