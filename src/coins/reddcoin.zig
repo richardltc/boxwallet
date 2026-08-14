@@ -4,6 +4,7 @@ const models = @import("../models.zig");
 const rpc = @import("../rpc.zig");
 const install_mod = @import("../install.zig");
 const conf = @import("../conf.zig");
+const walletfile = @import("../walletfile.zig");
 const Coin = @import("../coin.zig").Coin;
 
 /// ReddCoin (RDD) backend. Constants seeded from
@@ -183,12 +184,15 @@ pub const ReddCoin = struct {
     }
 
     /// The managed wallet's on-disk location — the bitcoin-core 0.21+ wallet
-    /// directory `<datadir>/wallets/BoxWallet` (holding `wallet.dat`), created by
-    /// `ensureWallet`. Caller owns the returned strings.
+    /// directory holding `wallet.dat`, created by `ensureWallet`. Resolved
+    /// against the disk (`walletfile.coreWalletDir`) rather than hard-coded: the
+    /// daemon only uses a `wallets/` parent when that directory already exists,
+    /// so a data dir BoxWallet created keeps the wallet at `<datadir>/BoxWallet`.
+    /// Caller owns the returned strings.
     pub fn walletPath(allocator: std.mem.Allocator, home: []const u8) !?Coin.WalletFile {
         const data_dir = try dataDir(allocator, home);
         defer allocator.free(data_dir);
-        return .{ .path = try std.fs.path.join(allocator, &.{ data_dir, "wallets", "BoxWallet" }) };
+        return .{ .path = try walletfile.coreWalletDir(allocator, data_dir, "BoxWallet") };
     }
 
     /// True if `reddcoind` (`reddcoind.exe` on Windows) is already present under
@@ -247,11 +251,28 @@ pub const ReddCoin = struct {
         allocator.free(reply);
     }
 
+    /// The name of the wallet BoxWallet loads/creates. Core 22 keeps a named
+    /// wallet in its own directory under the data dir, so this is also the
+    /// directory holding `wallet.dat` — see `walletDir`.
+    pub const wallet_name = "BoxWallet";
+
     /// ReddCoin 4.x (Bitcoin Core 22) doesn't auto-create a wallet, so the
     /// `staking` status and any address/balance RPCs have none to act on until one
     /// exists. Load-or-create a wallet named "BoxWallet" once the daemon is up.
     pub fn ensureWallet(allocator: std.mem.Allocator, auth: models.CoinAuth) !void {
-        return rpc.ensureWallet(allocator, auth, "BoxWallet");
+        return rpc.ensureWallet(allocator, auth, wallet_name);
+    }
+
+    /// The directory holding our named wallet's `wallet.dat`.
+    ///
+    /// Core 22 puts a named wallet in `<data_dir>/<name>/` (it only uses a
+    /// `wallets/` parent when that directory already exists, which it doesn't on
+    /// a data dir created by `createwallet` — verified against reddcoind 4.22.9,
+    /// where our wallet sits at `~/.reddcoin/BoxWallet/wallet.dat`).
+    pub fn walletDir(allocator: std.mem.Allocator, home: []const u8) ![]u8 {
+        const data_dir = try dataDir(allocator, home);
+        defer allocator.free(data_dir);
+        return std.fs.path.join(allocator, &.{ data_dir, wallet_name });
     }
 
     /// Read the wallet's security state from `getwalletinfo`. ReddCoin is
@@ -383,12 +404,49 @@ pub const ReddCoin = struct {
     /// finishes, so on a slow machine this can outlast the client timeout and read
     /// as a failure even though reddcoind keeps rescanning — acceptable for v1.
     /// Like backup, requires the wallet unlocked/unencrypted. Path JSON-escaped.
+    ///
+    /// **The file is checked to be a key dump first**, because `importwallet`
+    /// cannot report that it wasn't: it reads the file line by line and skips
+    /// whatever it can't parse, so handed a *binary* `wallet.dat` it returns a
+    /// clean success having imported zero keys — telling the user their wallet
+    /// was restored when nothing was. A success indistinguishable from a no-op is
+    /// worse than a refusal, so a file without the dump header is rejected and
+    /// pointed at the wallet.dat option (`walletRestoreFileOffline`) instead.
     pub fn walletImportFile(allocator: std.mem.Allocator, auth: models.CoinAuth, src_path: []const u8) !void {
+        if (!walletfile.looksLikeKeyDump(allocator, src_path)) return error.NotAWalletKeyDump;
+
         const qpath = try rpc.jsonQuote(allocator, src_path);
         defer allocator.free(qpath);
         const params = try std.fmt.allocPrint(allocator, "[{s}]", .{qpath});
         defer allocator.free(params);
         return rpc.callExpectOk(allocator, auth, "importwallet", params);
+    }
+
+    /// Restore the wallet by swapping in a user-supplied binary `wallet.dat` —
+    /// the file-level counterpart to `walletImportFile`'s key-dump import, for a
+    /// wallet brought from another Reddcoin Core install (its own backup is a
+    /// `backupwallet` copy, which `importwallet` cannot read). The daemon holds
+    /// `wallet.dat` open while running, so the caller stops it before calling this
+    /// and restarts it after; this hook only touches files and takes no auth.
+    ///
+    /// The swap targets our **named** wallet's directory
+    /// (`<data_dir>/BoxWallet/wallet.dat`), not the data dir root — that's the
+    /// wallet `ensureWallet` loads and every wallet RPC then acts on. A default
+    /// wallet belonging to another Reddcoin install is left untouched.
+    ///
+    /// Safety (in `walletfile.restoreOffline`): a text key dump or an empty file
+    /// is refused before anything is touched, and the current `wallet.dat` is
+    /// moved aside to a timestamped sibling so a wrong-file restore stays
+    /// recoverable.
+    pub fn walletRestoreFileOffline(
+        allocator: std.mem.Allocator,
+        home: []const u8,
+        src_path: []const u8,
+    ) !void {
+        const wallet_dir = try walletDir(allocator, home);
+        defer allocator.free(wallet_dir);
+
+        return walletfile.restoreOffline(allocator, wallet_dir, "wallet.dat", src_path);
     }
 
     /// ReddCoin dropped `getinfo`, so probe `getnetworkinfo` for the daemon's
@@ -435,6 +493,7 @@ pub const ReddCoin = struct {
         .wallet_lock = vtWalletLock,
         .wallet_backup = vtWalletBackup,
         .wallet_import_file = vtWalletImportFile,
+        .wallet_restore_file_offline = vtWalletRestoreFileOffline,
         .warmup_probe_method = vtWarmupProbeMethod,
     };
 
@@ -635,6 +694,14 @@ pub const ReddCoin = struct {
     ) anyerror!void {
         return walletImportFile(allocator, auth, src_path);
     }
+    fn vtWalletRestoreFileOffline(
+        _: *anyopaque,
+        allocator: std.mem.Allocator,
+        home: []const u8,
+        src_path: []const u8,
+    ) anyerror!void {
+        return walletRestoreFileOffline(allocator, home, src_path);
+    }
     fn vtWarmupProbeMethod(_: *anyopaque) []const u8 {
         return warmupProbeMethod();
     }
@@ -806,13 +873,99 @@ test "coin vtable exposes transactions, receive address, and send for ReddCoin" 
     try std.testing.expect(c.supportsSend());
 }
 
+test "coin vtable offers both restore shapes for ReddCoin" {
+    var rdd: ReddCoin = .{};
+    const c = rdd.coin();
+    // The key-dump import (live daemon, importwallet)…
+    try std.testing.expect(c.supportsWalletImport());
+    // …and the daemon-stopped wallet.dat swap, which is what moves a wallet
+    // brought from another Reddcoin Core install (its `backupwallet` copy is
+    // binary — importwallet can't read it).
+    try std.testing.expect(c.supportsWalletRestoreOffline());
+}
+
+test "offline restore swaps the named wallet's wallet.dat, not the data dir root" {
+    if (builtin.os.tag == .windows) return error.SkipZigTest;
+    const allocator = std.testing.allocator;
+
+    var threaded: std.Io.Threaded = .init(allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    const home = "test-rdd-offline-restore";
+    std.Io.Dir.cwd().deleteTree(io, home) catch {};
+    defer std.Io.Dir.cwd().deleteTree(io, home) catch {};
+
+    // The wallet reddcoind actually acts on lives in the *named* wallet dir.
+    const wallet_dir = try ReddCoin.walletDir(allocator, home);
+    defer allocator.free(wallet_dir);
+    var wd = try std.Io.Dir.cwd().createDirPathOpen(io, wallet_dir, .{});
+    defer wd.close(io);
+    try wd.writeFile(io, .{ .sub_path = "wallet.dat", .data = "OLD-WALLET" });
+
+    // A default wallet belonging to some other Reddcoin install, at the data
+    // dir root. The restore must not touch it.
+    const data_dir = try ReddCoin.dataDir(allocator, home);
+    defer allocator.free(data_dir);
+    var dd = try std.Io.Dir.cwd().createDirPathOpen(io, data_dir, .{});
+    defer dd.close(io);
+    try dd.writeFile(io, .{ .sub_path = "wallet.dat", .data = "SOMEONE-ELSES-WALLET" });
+
+    var src = try std.Io.Dir.cwd().createDirPathOpen(io, home ++ "/backups", .{});
+    defer src.close(io);
+    try src.writeFile(io, .{ .sub_path = "wallet.dat", .data = "NEW-WALLET" });
+
+    try ReddCoin.walletRestoreFileOffline(allocator, home, home ++ "/backups/wallet.dat");
+
+    const restored = try wd.readFileAlloc(io, "wallet.dat", allocator, .limited(64));
+    defer allocator.free(restored);
+    try std.testing.expectEqualStrings("NEW-WALLET", restored);
+
+    const other = try dd.readFileAlloc(io, "wallet.dat", allocator, .limited(64));
+    defer allocator.free(other);
+    try std.testing.expectEqualStrings("SOMEONE-ELSES-WALLET", other);
+}
+
+test "walletImportFile refuses a binary wallet.dat, which importwallet would 'succeed' on" {
+    if (builtin.os.tag == .windows) return error.SkipZigTest;
+    const allocator = std.testing.allocator;
+
+    var threaded: std.Io.Threaded = .init(allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    const root = "test-rdd-import-guard";
+    std.Io.Dir.cwd().deleteTree(io, root) catch {};
+    defer std.Io.Dir.cwd().deleteTree(io, root) catch {};
+    var dir = try std.Io.Dir.cwd().createDirPathOpen(io, root, .{});
+    defer dir.close(io);
+    try dir.writeFile(io, .{ .sub_path = "wallet.dat", .data = "\x00\x00\x00\x00\x62\x31\x05\x00binary" });
+
+    // Refused before any RPC — the auth here is never reached, so this needs no
+    // daemon. Handing the file to `importwallet` would report success having
+    // imported nothing.
+    const auth: models.CoinAuth = .{
+        .rpc_user = "u",
+        .rpc_password = "p",
+        .ip_address = "127.0.0.1",
+        .port = "1",
+    };
+    try std.testing.expectError(
+        error.NotAWalletKeyDump,
+        ReddCoin.walletImportFile(allocator, auth, root ++ "/wallet.dat"),
+    );
+}
+
 test "walletPath points at the bitcoin-core BoxWallet directory" {
     if (builtin.os.tag == .windows) return error.SkipZigTest;
     const allocator = std.testing.allocator;
     var rdd: ReddCoin = .{};
+    // No `wallets/` directory under this (non-existent) data dir, so the daemon
+    // would keep the named wallet directly under it — the layout `createwallet`
+    // actually produces. See `walletfile.coreWalletDir`.
     const wf = (try rdd.coin().walletPath(allocator, "/home/alice")).?;
     defer allocator.free(wf.path);
-    try std.testing.expectEqualStrings("/home/alice/.reddcoin/wallets/BoxWallet", wf.path);
+    try std.testing.expectEqualStrings("/home/alice/.reddcoin/BoxWallet", wf.path);
     try std.testing.expect(wf.keys == null);
 }
 

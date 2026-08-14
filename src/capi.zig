@@ -3377,7 +3377,15 @@ export fn bw_wallet_restore_file_offline(ctx: ?*Ctx, idx: usize, src_path: ?[*:0
     }
 
     coin.walletRestoreFileOffline(a, c.home_dir, std.mem.span(src)) catch |err| {
-        c.setError(@errorName(err));
+        // The three refusals a user can actually hit are all "you picked the
+        // wrong file", so say which wrong file it was — the bare error name left
+        // them with no idea whether to re-pick or give up.
+        c.setError(switch (err) {
+            error.IsAWalletKeyDump => "That's a key dump, not a wallet file — use \"Restore from key dump\" for it.",
+            error.EmptyWalletFile => "That file is empty — pick the wallet file you backed up.",
+            error.WalletFileNotFound => "Couldn't read that file.",
+            else => @errorName(err),
+        });
         c.setErrorCode(@errorName(err));
         return -1;
     };
