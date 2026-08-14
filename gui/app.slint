@@ -1565,23 +1565,29 @@ export component AppWindow inherits Window {
                             moving: root.daemon-loading;
                         }
                         // Peers — lit when connected; hint shows the count. Once the
-                        // daemon is *running* with nobody connected yet it pulses
-                        // like the smiley does, to say "looking for peers", and stops
-                        // the moment the first one lands.
+                        // daemon is up with nobody connected yet it pulses like the
+                        // smiley does, to say "looking for peers", and stops the
+                        // moment the first one lands.
                         //
-                        // Running, not merely loading: a daemon still opening its
-                        // block index hasn't started networking, so pulsing through
-                        // the load would show it hunting for peers before it can.
-                        // The smiley carries that window on its own.
+                        // `running && !daemon-loading`, not `running` alone. A
+                        // bitcoin-derived daemon binds its RPC port *before* it
+                        // loads the block index and answers `-28` for the minute or
+                        // more that takes, so `running` is already true for the
+                        // whole load (see the note on `set_daemon_loading` in
+                        // main.cpp, which hit the same thing from the other side).
+                        // A node still opening its chain hasn't started networking,
+                        // so `running` on its own had this pulsing "Looking for
+                        // peers…" through the entire load — hunting for peers it
+                        // cannot yet look for. The smiley carries that window.
                         StatusIcon {
                             icon: @image-url("icons/wifi.svg");
                             accent: root.coin-color;
                             active: root.running && root.peers > 0;
                             hint: root.peers > 0
                                 ? "Peers: " + root.peers
-                                : (root.running ? "Looking for peers…" : "Peers: 0");
+                                : (root.running && !root.daemon-loading ? "Looking for peers…" : "Peers: 0");
                             motion: "pulse";
-                            moving: root.running && root.peers == 0;
+                            moving: root.running && !root.daemon-loading && root.peers == 0;
                             // Pulse once whenever a new peer connection is picked up.
                             pulse-on-increase: root.peers;
                         }
@@ -1597,7 +1603,13 @@ export component AppWindow inherits Window {
                             // behind, so a lit glyph would be reporting a state we
                             // haven't observed.
                             active: root.running && root.peers > 0;
+                            // Loading is checked before the peer count for the same
+                            // reason as the peers glyph above: a daemon still
+                            // opening its block index has no peers *yet to look
+                            // for*, so "Waiting for peers…" named the wrong thing
+                            // to be waiting on for the whole load.
                             hint: !root.running ? "Not running"
+                                : root.daemon-loading ? (root.daemon-stage != "" ? root.daemon-stage : "Daemon loading…")
                                 : root.synced ? "Synced"
                                 : root.peers == 0 ? "Waiting for peers…"
                                 : "Syncing…";
