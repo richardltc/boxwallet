@@ -3769,7 +3769,7 @@ export component AppWindow inherits Window {
             background: #000000bb;
             TouchArea { }
 
-            Rectangle {
+            wa-card := Rectangle {
                 width: 420px;
                 height: wa-body.preferred-height;
                 x: (parent.width - self.width) / 2;
@@ -3778,6 +3778,21 @@ export component AppWindow inherits Window {
                 border-radius: 10px;
                 border-width: 1px;
                 border-color: root.coin-color;
+
+                // The width wrapping text has to measure itself against.
+                //
+                // Slint's vertical layout pass measures a Text at its *natural*
+                // width, so a `wrap: word-wrap` one reports the height of a
+                // single line however many it actually takes. Every wrapped line
+                // past the first then went uncounted in `wa-body.preferred-height`
+                // above, the card came out short, and the last row in it — the
+                // Cancel/Restore buttons — hung out through the bottom border.
+                //
+                // So every wrapping Text in here is pinned to this width and asked
+                // for its own height, which makes its measurement match the width
+                // it is actually laid out at. Derived rather than written as 388px
+                // so it follows the card's width and the body's padding.
+                property <length> text-w: self.width - 2 * wa-body.padding;
 
                 wa-body := VerticalLayout {
                     padding: 16px;
@@ -3792,6 +3807,8 @@ export component AppWindow inherits Window {
                         font-size: 15px;
                         font-weight: 600;
                         wrap: word-wrap;
+                        width: wa-card.text-w;
+                        height: self.preferred-height;
                     }
 
                     // --- 1: what would you like to do? ---
@@ -3831,6 +3848,8 @@ export component AppWindow inherits Window {
                             color: #e0a03a;
                             font-size: 12px;
                             wrap: word-wrap;
+                            width: wa-card.text-w;
+                            height: self.preferred-height;
                         }
                         wa-pw := LineEdit {
                             placeholder-text: root.wa-confirm-pw ? "New password" : "Password";
@@ -3892,6 +3911,8 @@ export component AppWindow inherits Window {
                             color: #e0a03a;
                             font-size: 12px;
                             wrap: word-wrap;
+                            width: wa-card.text-w;
+                            height: self.preferred-height;
                         }
                         Text {
                             text: root.picked-file == ""
@@ -3900,6 +3921,8 @@ export component AppWindow inherits Window {
                             color: #9a9a9a;
                             font-size: 13px;
                             wrap: word-wrap;
+                            width: wa-card.text-w;
+                            height: self.preferred-height;
                         }
                         HorizontalLayout {
                             alignment: end;
@@ -3940,6 +3963,8 @@ export component AppWindow inherits Window {
                             color: root.wa-result-error ? #e05c5c : #7ec27e;
                             font-size: 13px;
                             wrap: word-wrap;
+                            width: wa-card.text-w;
+                            height: self.preferred-height;
                         }
                         HorizontalLayout {
                             alignment: end;
