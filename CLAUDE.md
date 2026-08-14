@@ -145,6 +145,7 @@ modules below, and coins call into them with their own parameters:
 | `src/money.zig` | Amounts and fiat as text: `formatAmount` (fixed decimals, grouped), `trimTrailingZeros`, `parseDollarsToCents`, `pruneValueText`. **Fiat is integer cents, never a float.** |
 | `src/seed.zig` | Mnemonic word counting/indexing and the backup quiz, incl. the CSPRNG position draw. The quiz is the last chance to catch a mis-transcribed seed — don't reimplement it. |
 | `src/walletmenu.zig` | Which wallet actions a coin offers, and in which state, for both wallet shapes. Owns the action labels — `restore` vs `restore_file_offline` take different files and BitcoinZ offers both. |
+| `src/walletfile.zig` | Wallet **files** for the bitcoin family: the daemon-stopped `wallet.dat` swap (`restoreOffline`, with its key-dump/empty guards and timestamped keep-aside), the `dumpwallet` header sniff, and Core's own "where does a named wallet live" rule (`coreWalletDir` — `wallets/` only when that directory already exists). |
 | `src/timefmt.zig` | Durations ("2 hours and 5 minutes"), "… behind", block dates (UTC), storage GB (SI). |
 | `src/sigguard.zig` | Pins process-wide SIGIO/SIGPIPE handlers. **Load-bearing — see below.** |
 | `src/mining.zig` · `src/price.zig` · `src/qrcode.zig` · `src/disk.zig` · `src/memory.zig` · `src/bip39.zig` · `src/bzip2.zig` | Single-purpose helpers, each usable by either front-end. |
