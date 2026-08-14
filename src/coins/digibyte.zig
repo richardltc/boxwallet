@@ -4,6 +4,7 @@ const models = @import("../models.zig");
 const rpc = @import("../rpc.zig");
 const install_mod = @import("../install.zig");
 const conf = @import("../conf.zig");
+const walletfile = @import("../walletfile.zig");
 const Coin = @import("../coin.zig").Coin;
 
 /// DigiByte backend. Constants lifted from
@@ -166,12 +167,15 @@ pub const DigiByte = struct {
     }
 
     /// The managed wallet's on-disk location — the bitcoin-core 0.21+ wallet
-    /// directory `<datadir>/wallets/BoxWallet` (holding `wallet.dat`), created by
-    /// `ensureWallet`. Caller owns the returned strings.
+    /// directory holding `wallet.dat`, created by `ensureWallet`. Resolved
+    /// against the disk (`walletfile.coreWalletDir`) rather than hard-coded: the
+    /// daemon only uses a `wallets/` parent when that directory already exists,
+    /// so a data dir BoxWallet created keeps the wallet at `<datadir>/BoxWallet`.
+    /// Caller owns the returned strings.
     pub fn walletPath(allocator: std.mem.Allocator, home: []const u8) !?Coin.WalletFile {
         const data_dir = try dataDir(allocator, home);
         defer allocator.free(data_dir);
-        return .{ .path = try std.fs.path.join(allocator, &.{ data_dir, "wallets", "BoxWallet" }) };
+        return .{ .path = try walletfile.coreWalletDir(allocator, data_dir, "BoxWallet") };
     }
 
     /// True if `digibyted` (`digibyted.exe` on Windows) is already present under
@@ -1247,9 +1251,12 @@ test "walletPath points at the bitcoin-core BoxWallet directory" {
     if (builtin.os.tag == .windows) return error.SkipZigTest;
     const allocator = std.testing.allocator;
     var dgb: DigiByte = .{};
+    // No `wallets/` directory under this (non-existent) data dir, so the daemon
+    // would keep the named wallet directly under it — the layout `createwallet`
+    // actually produces. See `walletfile.coreWalletDir`.
     const wf = (try dgb.coin().walletPath(allocator, "/home/alice")).?;
     defer allocator.free(wf.path);
-    try std.testing.expectEqualStrings("/home/alice/.digibyte/wallets/BoxWallet", wf.path);
+    try std.testing.expectEqualStrings("/home/alice/.digibyte/BoxWallet", wf.path);
     try std.testing.expect(wf.keys == null);
 }
 
