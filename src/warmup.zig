@@ -365,8 +365,16 @@ pub fn phaseText(p: models.LoadingPhase) []const u8 {
 
 /// The one-line label for a warm-up `Status`, written into `buf` — e.g.
 /// "Loading blocks… 42.0%", "Rewinding blocks…", "Verifying blocks…". Empty
-/// for `.none`. Returns a slice into `buf` (or a static string when there's
-/// nothing to format), so it lives as long as the caller's buffer.
+/// for `.none`. Returns a slice into `buf`, into `status`, or a static string,
+/// so it lives as long as the shorter of the caller's buffer and its `Status`.
+///
+/// **`status` is a pointer for that reason, not for speed.** The message a
+/// daemon gives verbatim is stored *inside* the `Status` (`msg_buf`), and a
+/// message that needs no tidying is returned as a slice of it — so taking the
+/// `Status` by value would hand the caller a pointer into a parameter copy that
+/// dies with this call. It did: the epee family's wording already ends in "…",
+/// so Salvium's "Loading blockchain…" came back as whatever the next call left
+/// on the stack, and the GUI aborted the moment Slint read those bytes as UTF-8.
 ///
 /// Order of preference, most specific first:
 ///  1. the sub-stage and live percentage from `debug.log`, where the daemon
@@ -374,7 +382,7 @@ pub fn phaseText(p: models.LoadingPhase) []const u8 {
 ///  2. the daemon's own warm-up wording, which names the exact stage;
 ///  3. the coarse phase text, for a daemon that gave no message (the
 ///     log-detected block-index load of a NovaCoin-era daemon).
-pub fn label(status: Status, buf: []u8) []const u8 {
+pub fn label(status: *const Status, buf: []u8) []const u8 {
     if (status.phase == .loading and status.progress.stage != .none) {
         const text = switch (status.progress.stage) {
             .loading_blocks => "Loading blocks…",
@@ -545,39 +553,51 @@ fn statusWith(phase: models.LoadingPhase, msg: []const u8) Status {
     return s;
 }
 
-test "the daemon's own wording names the stage, tidied for display" {
+/// The label a `Status` produces, checked against `expected`. `status` is the
+/// parameter here, so its message storage outlives the comparison — see the
+/// lifetime note on `label`.
+fn expectLabel(expected: []const u8, status: Status) !void {
     var buf: [96]u8 = undefined;
+    try std.testing.expectEqualStrings(expected, label(&status, &buf));
+}
 
+test "the daemon's own wording names the stage, tidied for display" {
     // The stages Divi walks through on a normal start, verbatim from its `-28`
     // replies — each one distinct, where `LoadingPhase` folds three of them into
     // the same `.loading`.
-    try std.testing.expectEqualStrings(
-        "Loading block index…",
-        label(statusWith(.loading, "Loading block index..."), &buf),
-    );
-    try std.testing.expectEqualStrings(
-        "Loading wallet…",
-        label(statusWith(.loading, "Loading wallet..."), &buf),
-    );
-    try std.testing.expectEqualStrings(
-        "Rewinding blocks…",
-        label(statusWith(.rewinding, "Rewinding blocks..."), &buf),
-    );
-    try std.testing.expectEqualStrings(
-        "Verifying blocks…",
-        label(statusWith(.verifying, "Verifying blocks..."), &buf),
-    );
+    try expectLabel("Loading block index…", statusWith(.loading, "Loading block index..."));
+    try expectLabel("Loading wallet…", statusWith(.loading, "Loading wallet..."));
+    try expectLabel("Rewinding blocks…", statusWith(.rewinding, "Rewinding blocks..."));
+    try expectLabel("Verifying blocks…", statusWith(.verifying, "Verifying blocks..."));
 
     // A message with no trailing dots is shown as-is.
-    try std.testing.expectEqualStrings(
-        "Activating best chain",
-        label(statusWith(.loading, "Activating best chain"), &buf),
-    );
+    try expectLabel("Activating best chain", statusWith(.loading, "Activating best chain"));
 
     // The log's live sub-stage still wins over the coarser message.
     var s = statusWith(.loading, "Loading block index...");
     s.progress = .{ .stage = .loading_blocks, .pct_bp = 1000 };
-    try std.testing.expectEqualStrings("Loading blocks… 10.0%", label(s, &buf));
+    var buf: [96]u8 = undefined;
+    try std.testing.expectEqualStrings("Loading blocks… 10.0%", label(&s, &buf));
+}
+
+test "a label taken verbatim from the daemon outlives the call that built it" {
+    // The epee family (Monero, Nerva, Salvium, Zano) words its stages with the
+    // "…" already on them, so `label` has nothing to tidy and returns the
+    // message where it sits — inside the `Status`. That storage must be the
+    // caller's, not a parameter copy the return unwinds: the GUI copies these
+    // bytes into a Slint string, and a stale frame's contents are not UTF-8, so
+    // the whole app aborted on the first Start of a Salvium daemon.
+    var buf: [96]u8 = undefined;
+    const s = statusWith(.loading, "Loading blockchain…");
+    const text = label(&s, &buf);
+
+    const in_buf = @intFromPtr(text.ptr) >= @intFromPtr(&buf) and
+        @intFromPtr(text.ptr) < @intFromPtr(&buf) + buf.len;
+    const in_status = @intFromPtr(text.ptr) >= @intFromPtr(&s) and
+        @intFromPtr(text.ptr) < @intFromPtr(&s) + @sizeOf(Status);
+    try std.testing.expect(in_buf or in_status);
+    try std.testing.expectEqualStrings("Loading blockchain…", text);
+    try std.testing.expect(std.unicode.utf8ValidateSlice(text));
 }
 
 test "a warm-up message is scraped out of the daemon's -28 reply" {
@@ -606,31 +626,29 @@ test "a warm-up message is scraped out of the daemon's -28 reply" {
 }
 
 test "the label refines the coarse loading phase with the log's sub-stage" {
-    var buf: [64]u8 = undefined;
-
     // No sub-stage known: the plain phase text, as RPC's `-28` reports it.
-    try std.testing.expectEqualStrings("Loading…", label(.{ .phase = .loading }, &buf));
+    try expectLabel("Loading…", .{ .phase = .loading });
 
     // With a sub-stage the finer wording and its live percentage win.
-    try std.testing.expectEqualStrings("Processing blocks… 42.0%", label(.{
+    try expectLabel("Processing blocks… 42.0%", .{
         .phase = .loading,
         .progress = .{ .stage = .processing_blocks, .pct_bp = 4200 },
-    }, &buf));
+    });
 
     // A percentage-less sub-stage line still refines the wording.
-    try std.testing.expectEqualStrings("Loading blocks…", label(.{
+    try expectLabel("Loading blocks…", .{
         .phase = .loading,
         .progress = .{ .stage = .loading_blocks },
-    }, &buf));
+    });
 
     // The distinct phases are reported as themselves — a sub-stage scraped from
     // an older line in the tail must not relabel them.
-    try std.testing.expectEqualStrings("Rewinding…", label(.{
+    try expectLabel("Rewinding…", .{
         .phase = .rewinding,
         .progress = .{ .stage = .loading_blocks, .pct_bp = 4200 },
-    }, &buf));
-    try std.testing.expectEqualStrings("Verifying…", label(.{ .phase = .verifying }, &buf));
+    });
+    try expectLabel("Verifying…", .{ .phase = .verifying });
 
     // Not warming up: nothing to say.
-    try std.testing.expectEqualStrings("", label(.{}, &buf));
+    try expectLabel("", .{});
 }

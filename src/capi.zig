@@ -868,7 +868,7 @@ export fn bw_daemon_stage(ctx: ?*Ctx, idx: usize, buf: ?[*]u8, cap: usize) usize
     // it shuts down and flushes, which would read as starting up.
     const status = warmup.probe(a, io, coin, c.home_dir);
     var label_buf: [128]u8 = undefined; // the longest message, plus its "…"
-    const text = warmup.label(status, &label_buf);
+    const text = warmup.label(&status, &label_buf);
     if (text.len == 0) return 0;
     return copyOut(b[0..cap], text);
 }
