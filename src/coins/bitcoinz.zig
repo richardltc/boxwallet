@@ -4,6 +4,7 @@ const models = @import("../models.zig");
 const rpc = @import("../rpc.zig");
 const install_mod = @import("../install.zig");
 const conf = @import("../conf.zig");
+const walletfile = @import("../walletfile.zig");
 const Coin = @import("../coin.zig").Coin;
 
 /// BitcoinZ backend.
@@ -565,10 +566,6 @@ pub const BitcoinZ = struct {
         std.Io.Dir.cwd().deleteFile(io, path) catch {};
     }
 
-    /// The header every `dumpwallet` file opens with (upstream `rpcdump.cpp`
-    /// writes "# Wallet dump created by BitcoinZ v…"). Used to tell a real key
-    /// dump from any other file the picker might land on — see `looksLikeKeyDump`.
-    const dump_header_prefix = "# Wallet dump created by";
 
     /// Restore transparent keys from a `dumpwallet` file via `importwallet`,
     /// which imports the keys and rescans the chain (unlike `dumpwallet`, it
@@ -599,28 +596,10 @@ pub const BitcoinZ = struct {
 
     /// True if the file at `path` opens with a `dumpwallet` header — i.e. it's a
     /// text key dump `importwallet` can actually read, not a binary `wallet.dat`
-    /// (or anything else). Only the first bytes are read, so this stays cheap and
-    /// flat regardless of file size. Unreadable/missing reads as false: the
-    /// caller then refuses rather than handing the daemon a file it will silently
-    /// skip. Leading blank lines are tolerated; the header need only be first.
+    /// (or anything else). The sniff itself is shared with the other coins that
+    /// take a key dump (`walletfile.looksLikeKeyDump`).
     fn looksLikeKeyDump(allocator: std.mem.Allocator, path: []const u8) bool {
-        var threaded: std.Io.Threaded = .init(allocator, .{});
-        defer threaded.deinit();
-        const io = threaded.io();
-
-        const dir_path = std.fs.path.dirname(path) orelse ".";
-        const base = std.fs.path.basename(path);
-        var dir = std.Io.Dir.cwd().openDir(io, dir_path, .{}) catch return false;
-        defer dir.close(io);
-        var f = dir.openFile(io, base, .{}) catch return false;
-        defer f.close(io);
-
-        // Short reads are normal (a dump smaller than the buffer) — the count
-        // comes back, no end-of-stream error to handle.
-        var buf: [512]u8 = undefined;
-        const n = f.readPositionalAll(io, &buf, 0) catch return false;
-        const head = std.mem.trimStart(u8, buf[0..n], " \t\r\n");
-        return std.mem.startsWith(u8, head, dump_header_prefix);
+        return walletfile.looksLikeKeyDump(allocator, path);
     }
 
     /// Restore the wallet by swapping in a user-supplied binary `wallet.dat` —
@@ -636,52 +615,17 @@ pub const BitcoinZ = struct {
     /// rejected before anything is clobbered, as is a *text key dump* picked by
     /// mistake (that's `walletImportFile`'s job, and copying one over
     /// `wallet.dat` would leave the daemon unable to open its wallet at all).
-    /// The copy is streamed (no whole-file buffering).
     pub fn walletRestoreFileOffline(
         allocator: std.mem.Allocator,
         home: []const u8,
         src_path: []const u8,
     ) !void {
-        // A key dump is the *other* restore's input; copying it over wallet.dat
-        // would corrupt the wallet slot. Caught before anything is touched.
-        if (looksLikeKeyDump(allocator, src_path)) return error.IsAWalletKeyDump;
-
-        // Self-contained blocking IO (mirrors SpiderByte's offline restore) — the
-        // file work is bounded and this hook takes no `io` from the caller.
-        var threaded: std.Io.Threaded = .init(allocator, .{});
-        defer threaded.deinit();
-        const io = threaded.io();
-
         const data_dir = try dataDir(allocator, home);
         defer allocator.free(data_dir);
 
-        // Open source via (dir, basename) so an absolute picker path works the
-        // same way the conf code does.
-        const src_dir = std.fs.path.dirname(src_path) orelse ".";
-        const src_base = std.fs.path.basename(src_path);
-        var sd = std.Io.Dir.cwd().openDir(io, src_dir, .{}) catch return error.WalletFileNotFound;
-        defer sd.close(io);
-
-        // Reject an empty/missing source before touching the current wallet.
-        const src_stat = sd.statFile(io, src_base, .{}) catch return error.WalletFileNotFound;
-        if (src_stat.size == 0) return error.EmptyWalletFile;
-
-        var dd = try std.Io.Dir.cwd().createDirPathOpen(io, data_dir, .{});
-        defer dd.close(io);
-
-        // Preserve the current wallet.dat (if present) as a timestamped backup so
-        // a wrong-file restore stays recoverable. A missing current wallet is fine.
-        if (dd.statFile(io, "wallet.dat", .{})) |_| {
-            const ns = std.Io.Timestamp.now(io, .real).toNanoseconds();
-            const bak = try std.fmt.allocPrint(allocator, "wallet.dat.bak-{d}", .{ns});
-            defer allocator.free(bak);
-            try dd.rename("wallet.dat", dd, bak, io);
-        } else |err| switch (err) {
-            error.FileNotFound => {},
-            else => return err,
-        }
-
-        try sd.copyFile(src_base, dd, "wallet.dat", io, .{});
+        // zcashd keeps its wallet at the top of the data dir — this lineage
+        // predates Core's named wallet sub-directories.
+        return walletfile.restoreOffline(allocator, data_dir, "wallet.dat", src_path);
     }
 
     /// Probe `getnetworkinfo` for the daemon's warm-up phase (any supported
