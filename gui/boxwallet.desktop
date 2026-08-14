@@ -18,10 +18,11 @@ Exec=@EXEC@
 # Resolved through the icon theme: ~/.local/share/icons/hicolor/256x256/apps/boxwallet.png
 Icon=boxwallet
 Terminal=false
-# Exactly one *main* category (Office) plus additional ones. Listing a second
-# main category (Network) makes desktop-file-validate warn that the app may show
-# up twice in the menu, which it does.
-Categories=Office;Finance;
+# Exactly one *main* category (Utility) plus additional ones. Listing a second
+# main category (Office, Network) makes desktop-file-validate warn that the app
+# may show up twice in the menu, which it does. Finance is an additional
+# category only, so it doesn't count towards that.
+Categories=Utility;Finance;
 Keywords=crypto;cryptocurrency;wallet;bitcoin;monero;daemon;node;
 # Redundant on Wayland (app_id does the matching there), but makes the same file
 # correct under X11, where the class is what a taskbar matches on.
