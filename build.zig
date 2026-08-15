@@ -64,11 +64,40 @@ const gui_targets = [_]GuiTarget{
     .{ .query = .{ .cpu_arch = .aarch64, .os_tag = .macos }, .name = "boxwallet-gui-macos-aarch64" },
 };
 
+/// Marks an asset as the self-updater's, not a download. Mirrored by
+/// `update_asset_prefix` in `src/update.zig`, which is the other end of the same
+/// name — change one and the updater asks a release for a file it doesn't carry.
+const update_asset_prefix = "update-";
+
 /// The bare-exe asset published for `t`, as distinct from `t.name`, which names
 /// the bundle (`<name>.zip`) and the directory inside it. Windows needs the
 /// `.exe`: the loader keys off it and a browser download without it is inert.
 /// `assetFor(.gui)` in `src/update.zig` returns this same name.
+///
+/// The `update-` prefix is for humans, not for the updater. A GitHub release is a
+/// flat, case-insensitively sorted list of files with no folders, so naming is
+/// the only way to separate the four updater-only exes from the eight files
+/// somebody should actually download — the prefix sorts them into one block
+/// below `SHA256SUMS`. It has to be the *name* that says so, because a bare GUI
+/// exe downloaded by hand can't explain itself: it is `BIND_NOW` against the
+/// Slint runtime and dies in `ld.so` before `main`, with no window and no
+/// message. Picking the wrong one of a `…-x86_64` / `…-x86_64.zip` pair used to
+/// look exactly like a corrupt download.
 fn guiExeAsset(comptime t: GuiTarget) []const u8 {
+    return update_asset_prefix ++ guiLegacyExeAsset(t);
+}
+
+/// The same file's pre-v0.8.9 name, published alongside `guiExeAsset` purely so
+/// GUIs already installed can still update themselves.
+///
+/// Their `assetFor(.gui)` is baked in at build time and looks the asset up in
+/// both `SHA256SUMS` and `RUNTIME` by that exact name; a release carrying only
+/// the new name fails `parseChecksum`/`parseRuntime` and reports `verify_failed`
+/// on every launch, permanently — the updater cannot learn a name it wasn't
+/// compiled with. Both names are therefore published, and both are listed in
+/// both manifests. Retire this (and its `release-all` entry) once no supported
+/// install predates the rename — v0.8.8 is the last release that needs it.
+fn guiLegacyExeAsset(comptime t: GuiTarget) []const u8 {
     return if (t.query.os_tag.? == .windows) t.name ++ ".exe" else t.name;
 }
 
@@ -631,6 +660,7 @@ fn addGuiReleaseStep(
             // browser download without it is inert.
             const bundle_exe = if (is_windows) "boxwallet-gui.exe" else "boxwallet-gui";
             const exe_asset = comptime guiExeAsset(t);
+            const legacy_asset = comptime guiLegacyExeAsset(t);
 
             // exe → staging/<bundle>/boxwallet-gui[.exe]
             const inst_exe = b.addInstallFile(exe.getEmittedBin(), stage ++ "/" ++ bundle_exe);
@@ -735,10 +765,12 @@ fn addGuiReleaseStep(
                 extra_len = 1;
             }
 
-            // Zip the bundle from staging into gui-release/, and drop a copy of
-            // the bare exe beside it. Both are published: the updater fetches the
-            // 4.8 MB exe alone when the installed runtime already matches, and
-            // only falls back to the 16 MB bundle when it doesn't.
+            // Zip the bundle from staging into gui-release/, and drop the bare
+            // exe beside it under both its names. All three are published: the
+            // updater fetches the 4.8 MB exe alone when the installed runtime
+            // already matches and falls back to the 16 MB bundle when it
+            // doesn't, and the second copy is the legacy name pre-rename
+            // installs still ask for (`guiLegacyExeAsset`).
             const pack = b.addSystemCommand(&.{
                 "sh", "-c",
                 b.fmt(
@@ -748,12 +780,13 @@ fn addGuiReleaseStep(
                     // run as `sh install-desktop.sh`. Only Linux ships that
                     // script; anywhere else this is an `&&` chain that would
                     // fail on a file the bundle deliberately doesn't have.
-                    "cd \"$1\" && {3s}rm -f {0s}.zip {2s} && (cd staging && zip -r -q ../{0s}.zip {0s}) && cp staging/{0s}/{1s} {2s}",
+                    "cd \"$1\" && {3s}rm -f {0s}.zip {2s} {4s} && (cd staging && zip -r -q ../{0s}.zip {0s}) && cp staging/{0s}/{1s} {2s} && cp {2s} {4s}",
                     .{
                         t.name,
                         bundle_exe,
                         exe_asset,
                         if (is_linux) "chmod +x staging/" ++ t.name ++ "/install-desktop.sh && " else "",
+                        legacy_asset,
                     },
                 ),
                 "pack-gui",
@@ -784,14 +817,20 @@ fn addGuiReleaseStep(
             // directory: the version is the *pairing key* the updater compares,
             // not a path, so the manifest stays one shape across front-ends and
             // platforms. Only where the hash is read from differs.
-            // The name printed is the *asset* (`…-x86_64.exe` on Windows) because
-            // that is what the updater looks itself up by; the directory read
-            // from is the *staging* one, which never carries the suffix.
+            // The name printed is the *asset* (`update-…-x86_64.exe` on Windows)
+            // because that is what the updater looks itself up by; the directory
+            // read from is the *staging* one, which never carries the suffix.
+            //
+            // Two lines per target, differing only in that name: an install from
+            // before the rename looks itself up under the legacy asset, and a
+            // line it can't find is `verify_failed`, not "assume the runtime
+            // matches" — see `guiLegacyExeAsset`. The digest is computed once and
+            // held in `$rt` so the pair can't disagree.
             sum_cmds = b.fmt(
-                "{0s} && printf '%s  {2s}  ' {1s} >> RUNTIME && (cd staging/{4s}/{5s} && sha256sum {3s} | cut -d' ' -f1) >> RUNTIME",
-                .{ sum_cmds, exe_asset, slint_dir, so_name, t.name, if (is_windows) "." else slint_dir },
+                "{0s} && rt=$(cd staging/{4s}/{5s} && sha256sum {3s} | cut -d' ' -f1) && printf '%s  {2s}  %s\\n' {1s} \"$rt\" >> RUNTIME && printf '%s  {2s}  %s\\n' {6s} \"$rt\" >> RUNTIME",
+                .{ sum_cmds, exe_asset, slint_dir, so_name, t.name, if (is_windows) "." else slint_dir, legacy_asset },
             );
-            hash_names = b.fmt("{0s} {1s} {2s}.zip", .{ hash_names, exe_asset, t.name });
+            hash_names = b.fmt("{0s} {1s} {2s} {3s}.zip", .{ hash_names, exe_asset, legacy_asset, t.name });
         }
     }
 
@@ -887,10 +926,12 @@ fn addReleaseAllStep(b: *std.Build, release_step: *std.Build.Step, gui_step: *st
     // installed Slint runtime already matches, and the bundle when it doesn't.
     // The two are *not* the same stem on Windows — `…-x86_64.exe` beside
     // `…-x86_64.zip` — so the exe is asked for by `guiExeAsset` and only the zip
-    // is derived from `t.name`.
+    // is derived from `t.name`. The exe is listed twice, under its own name and
+    // the legacy one pre-rename installs update by (`guiLegacyExeAsset`); drop
+    // the second when that name is retired.
     var expected: []const u8 = "";
     inline for (release_targets) |t| expected = b.fmt("{s} '{s}'", .{ expected, t.name });
-    inline for (gui_targets) |t| expected = b.fmt("{s} '{s}' '{s}.zip'", .{ expected, comptime guiExeAsset(t), t.name });
+    inline for (gui_targets) |t| expected = b.fmt("{s} '{s}' '{s}' '{s}.zip'", .{ expected, comptime guiExeAsset(t), comptime guiLegacyExeAsset(t), t.name });
     expected = b.fmt("{s} 'RUNTIME'", .{expected});
 
     // `set -e` so a missing source file stops the assembly rather than leaving a

@@ -186,11 +186,26 @@ const Preflight = enum {
     selftest,
 };
 
+/// Marks an asset as ours to download rather than a human's. A GitHub release is
+/// a flat, case-insensitively sorted file list with no folders, so this prefix is
+/// the only thing that groups the updater-only GUI exes apart from the bundles
+/// somebody should actually click — they sort into one block below `SHA256SUMS`.
+/// It matters because a bare GUI exe fetched by hand can't run *or* explain
+/// itself: `BIND_NOW` against the Slint runtime means `ld.so` kills it before
+/// `main`. Mirrored by `update_asset_prefix` in `build.zig`, which names the file
+/// this looks for. The TUI's asset is a genuine download and takes no prefix.
+const update_asset_prefix = "update-";
+
 /// The asset name for `front` on *this* build target, or `null` when no such
 /// asset is published — which is what keeps the updater dormant rather than
 /// erroring. The TUI ships a bare executable per OS/arch; the GUI ships only for
 /// the targets in `build.zig`'s `gui_targets`, so `assetFor(.gui)` is null
 /// everywhere else for free.
+///
+/// Releases also carry each GUI exe under its pre-v0.8.9 unprefixed name so
+/// installs older than the rename keep updating (`guiLegacyExeAsset` in
+/// `build.zig`). Nothing here reads that name — a build only ever asks for the
+/// one it was compiled with.
 pub fn assetFor(comptime front: Front) ?[]const u8 {
     const arch = switch (builtin.cpu.arch) {
         .x86_64 => "x86_64",
@@ -212,18 +227,18 @@ pub fn assetFor(comptime front: Front) ?[]const u8 {
         // Null everywhere else is what keeps the GUI updater dormant rather
         // than erroring — no asset was ever published for those targets.
         .gui => switch (builtin.os.tag) {
-            .linux => "boxwallet-gui-linux-" ++ arch,
+            .linux => update_asset_prefix ++ "boxwallet-gui-linux-" ++ arch,
             // Apple Silicon only: there is no Intel macOS Slint package at all,
             // so an Intel Mac has no GUI bundle to update to and stays null —
             // which is what keeps its updater dormant instead of reporting
             // verify_failed against an asset no release carries.
-            .macos => if (builtin.cpu.arch == .aarch64) "boxwallet-gui-macos-aarch64" else null,
+            .macos => if (builtin.cpu.arch == .aarch64) update_asset_prefix ++ "boxwallet-gui-macos-aarch64" else null,
             // Published since the bundle cleared `--selftest` on a real Windows
             // runner. The `.exe` is part of the asset name here and nowhere else:
             // the bundle zip and the directory inside it are named without it, so
             // anything deriving one from the other goes through `bundleBase`.
             // x86_64 only — that is the sole Windows Slint package upstream has.
-            .windows => if (builtin.cpu.arch == .x86_64) "boxwallet-gui-windows-x86_64.exe" else null,
+            .windows => if (builtin.cpu.arch == .x86_64) update_asset_prefix ++ "boxwallet-gui-windows-x86_64.exe" else null,
             else => null,
         },
     };
@@ -235,15 +250,19 @@ pub const asset_name: ?[]const u8 = assetFor(.tui);
 /// The bundle's stem for a bare-exe `asset`: the zip is `<stem>.zip` and the
 /// single directory inside it is `<stem>`.
 ///
-/// Identical to the asset everywhere but Windows, where the published exe carries
-/// a `.exe` the bundle's name doesn't (`…-x86_64.exe` beside `…-x86_64.zip`) —
-/// see `guiExeAsset` in `build.zig`, which is the other half of this pairing.
-/// Deriving the zip name by concatenation instead would ask a release for
-/// `…-x86_64.exe.zip`, get a 404, and report it as a network error on every
-/// Windows update that needs the runtime.
+/// The asset and its bundle differ at both ends. The `update-` prefix is on the
+/// updater-only exe and not on the bundle a human downloads, and on Windows the
+/// exe additionally carries a `.exe` the bundle's name doesn't
+/// (`update-…-x86_64.exe` beside `…-x86_64.zip`) — see `guiExeAsset` in
+/// `build.zig`, which is the other half of this pairing. Deriving the zip name by
+/// concatenation instead would ask a release for `update-…-x86_64.exe.zip`, get a
+/// 404, and report it as a network error on every update that needs the runtime.
 fn bundleBase(asset: []const u8) []const u8 {
+    var base = asset;
+    if (std.mem.startsWith(u8, base, update_asset_prefix)) base = base[update_asset_prefix.len..];
     const suffix = ".exe";
-    return if (std.mem.endsWith(u8, asset, suffix)) asset[0 .. asset.len - suffix.len] else asset;
+    if (std.mem.endsWith(u8, base, suffix)) base = base[0 .. base.len - suffix.len];
+    return base;
 }
 
 /// Which Slint runtime a published GUI build needs, read from the release's
@@ -1323,31 +1342,42 @@ test "assetFor names a per-front-end asset, and nothing where none is published"
         return;
     }
     const gui = assetFor(.gui).?;
-    const prefix = switch (builtin.os.tag) {
+    const prefix = update_asset_prefix ++ switch (builtin.os.tag) {
         .windows => "boxwallet-gui-windows-",
         .macos => "boxwallet-gui-macos-",
         else => "boxwallet-gui-linux-",
     };
     try std.testing.expect(std.mem.startsWith(u8, gui, prefix));
+    // The updater-only marker is the GUI's alone: the TUI asset *is* the
+    // download, and prefixing it would hide the file everyone needs.
+    try std.testing.expect(!std.mem.startsWith(u8, assetFor(.tui).?, update_asset_prefix));
     // Never the same name as the TUI's, or they'd collide in a release.
     try std.testing.expect(!std.mem.eql(u8, gui, assetFor(.tui).?));
 }
 
-test "the bundle's name drops the Windows exe suffix, and nothing else" {
+test "the bundle's name drops the updater prefix and the Windows exe suffix" {
     // The one that matters: `<asset>.zip` would ask a release for
-    // `boxwallet-gui-windows-x86_64.exe.zip`, which no release has ever carried.
+    // `update-boxwallet-gui-windows-x86_64.exe.zip`, which no release carries.
+    // Both ends come off — the bundle is what a human downloads, so it wears
+    // neither the updater marker nor the loader's suffix.
     try std.testing.expectEqualStrings(
         "boxwallet-gui-windows-x86_64",
-        bundleBase("boxwallet-gui-windows-x86_64.exe"),
+        bundleBase("update-boxwallet-gui-windows-x86_64.exe"),
     );
-    // Every other asset is its own bundle stem, suffix-free already.
+    try std.testing.expectEqualStrings(
+        "boxwallet-gui-linux-x86_64",
+        bundleBase("update-boxwallet-gui-linux-x86_64"),
+    );
+    // The pre-rename names still resolve, so a bundle fallback keeps working if
+    // one is ever fed through here.
     try std.testing.expectEqualStrings(
         "boxwallet-gui-linux-x86_64",
         bundleBase("boxwallet-gui-linux-x86_64"),
     );
-    // Only a *trailing* suffix, and only the whole thing — not a name that
-    // merely contains the letters.
+    // Only a *leading* prefix and a *trailing* suffix, and only the whole thing
+    // — not a name that merely contains the letters.
     try std.testing.expectEqualStrings("boxwallet.exe-gui", bundleBase("boxwallet.exe-gui"));
+    try std.testing.expectEqualStrings("gui-update-x86_64", bundleBase("gui-update-x86_64"));
 }
 
 test "the apply-failure count is scoped to its version" {
@@ -1434,17 +1464,37 @@ test "applyPending sweeps the pre-per-front-end staging files" {
 }
 
 test "parseRuntime reads the pairing line for our asset" {
+    // Shaped like a real release's manifest: two lines per target, the prefixed
+    // asset this build asks for and the legacy name pre-rename installs ask for,
+    // both naming the same runtime.
     const text =
+        \\update-boxwallet-gui-linux-x86_64  slint-1.17.1  ce76672d4201dfb172215d1d5e6a1052e865740a97b59b6506a99380b65cff82
         \\boxwallet-gui-linux-x86_64  slint-1.17.1  ce76672d4201dfb172215d1d5e6a1052e865740a97b59b6506a99380b65cff82
+        \\update-boxwallet-gui-linux-aarch64  slint-1.17.1  491aff4f54508deec4aee0140639b739c96dd09ae349e2da2fc111adfe115622
         \\boxwallet-gui-linux-aarch64  slint-1.17.1  491aff4f54508deec4aee0140639b739c96dd09ae349e2da2fc111adfe115622
         \\
     ;
-    const rt = parseRuntime(text, "boxwallet-gui-linux-aarch64").?;
+    const rt = parseRuntime(text, "update-boxwallet-gui-linux-aarch64").?;
     try std.testing.expectEqualStrings("slint-1.17.1", rt.dir());
 
     var want: [32]u8 = undefined;
     _ = try std.fmt.hexToBytes(&want, "491aff4f54508deec4aee0140639b739c96dd09ae349e2da2fc111adfe115622");
     try std.testing.expectEqualSlices(u8, &want, &rt.sha);
+
+    // The legacy name resolves to the same runtime — that pairing is the whole
+    // reason both names are published, and an install that predates the rename
+    // reports verify_failed the moment its line goes missing.
+    const legacy = parseRuntime(text, "boxwallet-gui-linux-aarch64").?;
+    try std.testing.expectEqualStrings(rt.dir(), legacy.dir());
+    try std.testing.expectEqualSlices(u8, &rt.sha, &legacy.sha);
+
+    // Matching is on the whole name, so the prefixed and unprefixed lines never
+    // stand in for each other.
+    try std.testing.expectEqualSlices(
+        u8,
+        &parseRuntime(text, "update-boxwallet-gui-linux-x86_64").?.sha,
+        &parseRuntime(text, "boxwallet-gui-linux-x86_64").?.sha,
+    );
 
     // An asset with no line is null, not the first line that happens to parse.
     try std.testing.expect(parseRuntime(text, "boxwallet-gui-linux-riscv64") == null);
