@@ -15,15 +15,21 @@ description: How to cut a BoxWallet release, and the release/GUI-bundling mechan
   run `scripts/release.sh`.** The script is the release process — it reads the
   version, runs `zig build test` and `zig build release-all`, verifies
   `sha256sum -c` inside `zig-out/dist/`, then tags `vX.Y.Z`, pushes the tag and
-  creates the GitHub release with all 15 assets via `gh`. It refuses to run on a
-  dirty tree, so the tag always points at exactly what was built, and it's
-  idempotent: re-running after a partial failure reuses the tag and re-uploads
-  with `--clobber`. It needs `gh` authenticated (`gh auth login`) and takes the
-  repo slug from the `origin` URL. It does **not** push your branch commits (do
-  that first) and writes empty release notes. Pushing the `v*` tag is what fires
-  the GUI selftest workflow below.
+  creates the GitHub release from everything in `zig-out/dist/` via `gh`. It
+  refuses to run on a dirty tree, so the tag always points at exactly what was
+  built, and it's idempotent: re-running after a partial failure reuses the tag
+  and re-uploads with `--clobber`. It needs `gh` authenticated (`gh auth login`)
+  and takes the repo slug from the `origin` URL. It does **not** push your branch
+  commits (do that first). Pushing the `v*` tag is what fires the GUI selftest
+  workflow below.
 
-  By hand, that is: `zig build release-all`, then upload the 15 files in
+  **The release notes are a fixed "which file do I want?" table** (`NOTES` in
+  `scripts/release.sh`), not a changelog — same text every release, so it can't
+  go stale. It exists because the asset list is flat, sorted and mostly
+  machinery; see the `update-` prefix below. Written only when the release is
+  *created*, never on a re-run, so notes edited by hand on GitHub survive a retry.
+
+  By hand, that is: `zig build release-all`, then upload every file in
   `zig-out/dist/` to a GitHub release on `github.com/richardltc/boxwallet`. Use
   that step, not the two underneath it — both write a file called
   `SHA256SUMS`, and *both*
@@ -125,12 +131,35 @@ description: How to cut a BoxWallet release, and the release/GUI-bundling mechan
   nothing and needs no secrets. A green run is the evidence for promoting a
   target — nothing else is. Promotion doesn't retire the job: it is what stops a
   released bundle regressing on the next tag.
-- **A Windows GUI asset is `…-x86_64.exe`; its bundle is `…-x86_64.zip`.** The
-  two stems differ by that suffix on Windows and nowhere else, so anything
-  deriving one from the other must go through `bundleBase` (`src/update.zig`) or
-  `guiExeAsset` (`build.zig`). Concatenating `.zip` onto the asset asks a release
-  for `…-x86_64.exe.zip` and 404s — reported to the user as a network error, on
-  every Windows update that needs the runtime.
+- **The updater's GUI exes are named `update-…`; the bundles a human downloads
+  are not.** A GitHub release is a flat, case-insensitively sorted file list with
+  no folders, so the prefix (`update_asset_prefix`, defined once in `build.zig`
+  and again in `src/update.zig` — keep them equal) is the only way to group the
+  updater-only exes into their own block below `SHA256SUMS`. It has to be the
+  *name* that warns, because a bare GUI exe downloaded by hand can't warn anyone
+  itself: it's `BIND_NOW` against the Slint runtime that only the `.zip` carries,
+  so `ld.so` kills it before `main` — no window, no message, indistinguishable
+  from a corrupt download. That was the reported confusion this fixes.
+
+  **Both names are published during the transition.** `assetFor(.gui)` is baked
+  into every shipped GUI, and an install predating the rename looks itself up in
+  `SHA256SUMS` *and* `RUNTIME` under the old unprefixed name; a release without
+  those lines fails `parseChecksum`/`parseRuntime` and reports `verify_failed`
+  on every launch, forever — an updater cannot learn a name it wasn't compiled
+  with. `guiLegacyExeAsset` (`build.zig`) publishes the byte-identical second
+  copy and the second `RUNTIME` line. **Until it's retired, the unprefixed
+  updater-only exe is still sitting next to the `.zip`** — the confusion is only
+  fully gone once it's dropped, which is safe when no supported install predates
+  the rename (v0.8.8 is the last that needs it). Drop it in three places:
+  `guiLegacyExeAsset` and its two call sites (`pack`, `sum_cmds`/`hash_names`),
+  and the `release-all` expected list.
+- **A Windows GUI asset is `update-…-x86_64.exe`; its bundle is `…-x86_64.zip`.**
+  The stems differ at both ends — the prefix everywhere, plus that suffix on
+  Windows and nowhere else — so anything deriving one from the other must go
+  through `bundleBase` (`src/update.zig`) or `guiExeAsset` (`build.zig`).
+  Concatenating `.zip` onto the asset asks a release for
+  `update-…-x86_64.exe.zip` and 404s — reported to the user as a network error,
+  on every update that needs the runtime.
 - **The Slint runtime lives in a version-named directory, and that is load-bearing.**
   `slint-<ver>/libslint_cpp.so`, with the exe's RUNPATH pointing at that exact
   directory (`slint_version` in `build.zig` — keep it in step with the URLs in
@@ -150,7 +179,8 @@ description: How to cut a BoxWallet release, and the release/GUI-bundling mechan
   string, so it can't express a versioned filename without string-table surgery.
 - **`gui-release` publishes four things per target**, all covered by `SHA256SUMS`:
   the bare exe (what the updater fetches when the installed runtime already
-  matches), the `.zip` bundle (when it doesn't), and a `RUNTIME` file naming the
+  matches) under both its `update-` name and the legacy one, the `.zip` bundle
+  (fetched when the runtime doesn't match), and a `RUNTIME` file naming the
   Slint version each target needs plus its runtime hash. `RUNTIME` is hashed into
   `SHA256SUMS` too, so the pairing information carries the same trust as the
   downloads. Bundles are staged under `gui-release/staging/` and only the
