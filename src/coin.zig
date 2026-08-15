@@ -2,6 +2,7 @@ const std = @import("std");
 const models = @import("models.zig");
 const install_mod = @import("install.zig");
 const money = @import("money.zig");
+const price = @import("price.zig");
 
 /// Runtime-polymorphic handle to a coin backend — the Zig equivalent of the
 /// Go `Coin` interface in `coins.go`. A frontend (the ZigZag TUI) holds a
@@ -573,6 +574,12 @@ pub const Coin = struct {
         /// state, not an omission: the app simply shows no price for it. A coin
         /// left null is also never sent in the price request.
         price_id: ?*const fn (ptr: *anyopaque) []const u8 = null,
+        /// Optional: this coin's **own** price endpoint, used instead of the
+        /// roster host. For a coin the roster prices badly rather than not at
+        /// all — see `price.Source`. A coin wiring this leaves `price_id` null,
+        /// so it is fetched only from here and never falls back to the number
+        /// that was wrong.
+        price_source: ?*const fn (ptr: *anyopaque) price.Source = null,
         /// Optional: the number of decimal places this coin's balances are shown
         /// to — 8 for bitcoin-derived coins, 12 for the Monero forks (Nerva/Zano),
         /// 9 for Ergo (nanoERG), 2 for Nexa. Drives the fixed-width balance figure
@@ -989,6 +996,15 @@ pub const Coin = struct {
     /// it shows no USD price and is left out of the request entirely).
     pub fn priceId(self: Coin) ?[]const u8 {
         if (self.vtable.price_id) |f| return f(self.ptr);
+        return null;
+    }
+
+    /// This coin's own price endpoint, or null when it takes the roster host's
+    /// number (nearly all of them). A coin has at most one of `priceId` and
+    /// `priceSource`; wiring both would price it twice and let the loser
+    /// overwrite the winner depending on which reply landed last.
+    pub fn priceSource(self: Coin) ?price.Source {
+        if (self.vtable.price_source) |f| return f(self.ptr);
         return null;
     }
 

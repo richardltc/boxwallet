@@ -5306,20 +5306,34 @@ pub const App = struct {
         var ids: [entries.len][]const u8 = undefined;
         var slots: [entries.len]usize = undefined;
         const n = self.priceRoster(&ids, &slots);
-        if (n == 0) {
-            self.price_done.store(true, .release);
-            return;
-        }
 
         var threaded: std.Io.Threaded = .init(a, .{});
         defer threaded.deinit();
+        const io = threaded.io();
 
-        var quotes: [entries.len]price.Quote = undefined;
-        if (price.fetch(a, threaded.io(), ids[0..n], quotes[0..n])) {
-            // Scatter back into `entries`-indexed slots for the UI.
-            for (0..n) |k| self.price_result[slots[k]] = quotes[k];
-            self.price_ok = true;
-        } else |_| {}
+        if (n > 0) {
+            var quotes: [entries.len]price.Quote = undefined;
+            if (price.fetch(a, io, ids[0..n], quotes[0..n])) {
+                // Scatter back into `entries`-indexed slots for the UI.
+                for (0..n) |k| self.price_result[slots[k]] = quotes[k];
+                self.price_ok = true;
+            } else |_| {}
+        }
+
+        // Coins the roster host prices badly fetch from their own endpoint
+        // (Divi → NonKYC). Unconditional, exactly like the roster above: the
+        // request goes out whether or not the coin is installed, so it says
+        // nothing about what this user holds. Independently best-effort — one
+        // host being down leaves the others' quotes standing.
+        for (entries, 0..) |e, i| {
+            if (e == .home) continue;
+            const c = self.coinAt(i) orelse continue;
+            const source = c.priceSource() orelse continue;
+            if (price.fetchOne(a, io, source)) |q| {
+                self.price_result[i] = q;
+                self.price_ok = true;
+            } else |_| {}
+        }
 
         self.price_done.store(true, .release);
     }

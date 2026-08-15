@@ -4,6 +4,7 @@ const models = @import("../models.zig");
 const rpc = @import("../rpc.zig");
 const install_mod = @import("../install.zig");
 const conf = @import("../conf.zig");
+const price = @import("../price.zig");
 const Coin = @import("../coin.zig").Coin;
 
 /// Divi backend. Constants lifted from
@@ -18,9 +19,9 @@ pub const Divi = struct {
     pub const coin_description = "Proof-of-stake coin with blockchain lottery.";
     /// Divi brand colour (`#RRGGBB`), for tinting the coin in the frontend.
     pub const coin_color = "#ED295A";
-    /// This coin's id on the price host, for the USD quote beside its
-    /// balance (see `src/price.zig`).
-    pub const price_id = "divi";
+    // No `price_id`: Divi is priced from its own exchange instead — see
+    // `priceSource` below. Wiring both would fetch it twice and let whichever
+    // reply landed last win.
     /// Donation address for BoxWallet development, in Divi's own
     /// currency.
     pub const tip_address = "DKHL4vUMS9BWcwhT4Y8NMJ62yYxLgeBdZb";
@@ -384,6 +385,91 @@ pub const Divi = struct {
         return argv;
     }
 
+    // --- price ------------------------------------------------------------
+    //
+    // Divi is priced from NonKYC, the exchange its liquid market is actually on,
+    // rather than from the roster host.
+    //
+    // Measured 2026-08-15, the two side by side:
+    //
+    //   CoinGecko `divi`   $0.00035     24h volume $24.51    24h change  -0.07%
+    //   NonKYC DIVI/USDT   $0.0018193   24h volume ~$30k     24h change -14.86%
+    //
+    // CoinGecko's figure isn't stale in the usual sense — its timestamp was
+    // current — it is a live price off a market trading twenty-four dollars a
+    // day, and it is out by a factor of five. A holder was being shown a fifth
+    // of what their Divi is worth, and a flat day when the market had moved 15%.
+    //
+    // The trade-off is going in with eyes open: one venue, no aggregation, a
+    // ~0.8% spread, and nothing to cross-check against. That is worse in theory
+    // than an aggregate and much better in practice than this particular one.
+
+    /// NonKYC's public market endpoint for DIVI/USDT. No API key, and the URL is
+    /// fixed — every BoxWallet requests it on every price cycle whether or not
+    /// Divi is installed, so it reveals nothing about what the user holds (the
+    /// same property the roster request has by construction).
+    const price_url = "https://api.nonkyc.io/api/v2/market/getbysymbol/DIVI_USDT";
+
+    /// The subset of NonKYC's market reply BoxWallet reads. **Every number in it
+    /// arrives as a JSON string** (`"0.001825"`), hence the `[]const u8` fields;
+    /// `isPaused` is the one genuine bool. Defaults keep the parse resilient to
+    /// fields the host drops, and the reply carries ~60 keys in under 2 KB, well
+    /// inside the transport's cap.
+    const NonKycMarket = struct {
+        /// The exchange's own USD conversion of the last trade. Preferred over
+        /// `lastPrice`, which is denominated in USDT — near enough to a dollar
+        /// but not the same thing, and this figure already accounts for it.
+        primaryUsdValue: []const u8 = "",
+        lastPrice: []const u8 = "",
+        changePercent: []const u8 = "",
+        /// A halted market: the last price is whatever it was when trading
+        /// stopped, so it's reported as no price rather than as a live one.
+        isPaused: bool = false,
+    };
+
+    /// Divi's price source, for `price.fetchOne`.
+    pub fn priceSource() price.Source {
+        return .{ .url = price_url, .parse = parsePrice };
+    }
+
+    /// Parse a NonKYC market reply into a quote. Null — meaning "no price", the
+    /// same as an unlisted coin — for a halted market, an unreadable body, or a
+    /// price that isn't a positive finite number. Retains nothing from `body`.
+    fn parsePrice(gpa: std.mem.Allocator, body: []const u8) ?price.Quote {
+        var parsed = std.json.parseFromSlice(
+            NonKycMarket,
+            gpa,
+            body,
+            .{ .ignore_unknown_fields = true },
+        ) catch return null;
+        defer parsed.deinit();
+
+        const m = parsed.value;
+        if (m.isPaused) return null;
+
+        // The USD figure first, the USDT one only if the host omitted it.
+        const usd = parseNum(m.primaryUsdValue) orelse parseNum(m.lastPrice) orelse return null;
+        if (!(usd > 0) or !std.math.isFinite(usd)) return null;
+
+        return .{
+            .usd = usd,
+            // A missing or unreadable change is null, not zero: "no figure" and
+            // "flat" are different claims, and `Quote.change_24h` is optional
+            // precisely so a caller can't confuse them.
+            .change_24h = parseNum(m.changePercent),
+            .have = true,
+        };
+    }
+
+    /// A host number (a JSON string) as f64, or null when it's absent or not a
+    /// number. Scalar out, nothing borrowed.
+    fn parseNum(s: []const u8) ?f64 {
+        if (s.len == 0) return null;
+        const v = std.fmt.parseFloat(f64, s) catch return null;
+        if (!std.math.isFinite(v)) return null;
+        return v;
+    }
+
     /// Ask divid to shut down via the JSON-RPC `stop`.
     pub fn requestStop(allocator: std.mem.Allocator, auth: models.CoinAuth) !void {
         const reply = try rpc.call(allocator, auth, "stop");
@@ -518,7 +604,7 @@ pub const Divi = struct {
         .coin_description = vtCoinDescription,
         .coin_color = vtCoinColor,
         .tip_address = vtTipAddress,
-        .price_id = vtPriceId,
+        .price_source = vtPriceSource,
         .core_version = vtCoreVersion,
         .proof_of_stake = vtProofOfStake,
         .conf_file = vtConfFile,
@@ -563,8 +649,8 @@ pub const Divi = struct {
     fn vtTipAddress(_: *anyopaque) []const u8 {
         return tip_address;
     }
-    fn vtPriceId(_: *anyopaque) []const u8 {
-        return price_id;
+    fn vtPriceSource(_: *anyopaque) price.Source {
+        return priceSource();
     }
     fn vtCoreVersion(_: *anyopaque) []const u8 {
         return core_version;
@@ -1081,4 +1167,78 @@ test "the snapshot capability is wired up as a resumable, applied accelerator" {
     try std.testing.expect(std.mem.startsWith(u8, Divi.snapshot_file, ".boxwallet-"));
     // Upstream serves the tarball whose entries are already the data dir's shape.
     try std.testing.expect(std.mem.endsWith(u8, Divi.snapshot_url, ".tar.gz"));
+}
+
+test "parses a NonKYC market reply into a USD quote" {
+    // A real reply from api.nonkyc.io, captured 2026-08-15 (trimmed to the keys
+    // BoxWallet reads plus a few of its neighbours, so the ignore-unknowns path
+    // is exercised too). Every number in it is a JSON *string* — that is the
+    // shape this parser exists for.
+    const body =
+        \\{"_id":"69093a8681166a1edcbfd0d2","symbol":"DIVI/USDT","primaryName":"Divi",
+        \\"primaryTicker":"DIVI","lastPrice":"0.001825","yesterdayPrice":"0.0021436",
+        \\"highPrice":"0.0023222","lowPrice":"0.001806","volume":"16467044.0000",
+        \\"isPaused":false,"bestAsk":"0.0018267","bestBid":"0.0018112",
+        \\"primaryUsdValue":"0.001819305000","changePercent":"-14.86","spreadPercent":"0.848"}
+    ;
+    const q = Divi.parsePrice(std.testing.allocator, body).?;
+    try std.testing.expect(q.have);
+    // The exchange's own USD figure, not the USDT lastPrice beside it.
+    try std.testing.expectApproxEqAbs(@as(f64, 0.001819305), q.usd, 1e-12);
+    try std.testing.expectApproxEqAbs(@as(f64, -14.86), q.change_24h.?, 1e-9);
+
+    // For scale, this is what the roster host was reporting the same day —
+    // a fifth of the price, off a market doing $24 a day. The gap is the whole
+    // reason Divi is priced from here.
+    try std.testing.expect(q.usd > 0.00035 * 4);
+}
+
+test "a NonKYC reply with no usable price reads as no price, not a wrong one" {
+    const allocator = std.testing.allocator;
+
+    // A halted market: the last trade is whatever it was when trading stopped,
+    // so it must not be shown as a live price.
+    try std.testing.expect(Divi.parsePrice(allocator,
+        \\{"symbol":"DIVI/USDT","primaryUsdValue":"0.0018","isPaused":true}
+    ) == null);
+
+    // No price field at all, a zero, a negative, and a non-numeric one.
+    for ([_][]const u8{
+        \\{"symbol":"DIVI/USDT","isPaused":false}
+        ,
+        \\{"primaryUsdValue":"0","lastPrice":"0","isPaused":false}
+        ,
+        \\{"primaryUsdValue":"-1","isPaused":false}
+        ,
+        \\{"primaryUsdValue":"n/a","isPaused":false}
+        ,
+        \\not json at all
+        ,
+    }) |body| {
+        try std.testing.expect(Divi.parsePrice(allocator, body) == null);
+    }
+
+    // Missing the USD conversion falls back to the USDT last price rather than
+    // dropping the quote — near enough for an ambient figure.
+    const fallback = Divi.parsePrice(allocator,
+        \\{"symbol":"DIVI/USDT","lastPrice":"0.001825","isPaused":false}
+    ).?;
+    try std.testing.expectApproxEqAbs(@as(f64, 0.001825), fallback.usd, 1e-12);
+
+    // An unreadable change is null, not zero: "no figure" and "flat" are
+    // different claims about a market.
+    const no_change = Divi.parsePrice(allocator,
+        \\{"primaryUsdValue":"0.0018","changePercent":"","isPaused":false}
+    ).?;
+    try std.testing.expect(no_change.change_24h == null);
+}
+
+test "Divi is priced from its own source, and never from the roster" {
+    var divi: Divi = .{};
+    const c = divi.coin();
+    try std.testing.expect(c.priceId() == null);
+    const source = c.priceSource().?;
+    try std.testing.expect(std.mem.indexOf(u8, source.url, "nonkyc.io") != null);
+    // The pair matters: a USDT market, whose USD conversion the reply carries.
+    try std.testing.expect(std.mem.endsWith(u8, source.url, "DIVI_USDT"));
 }
