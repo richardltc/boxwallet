@@ -2624,17 +2624,46 @@ export fn bw_prices_service(ctx: ?*Ctx) c_int {
         slots[n] = i;
         n += 1;
     }
-    if (n == 0) return 0;
-
+    // Staged here and published under the lock in one go at the end, so a
+    // partial round never leaves the UI reading half-new, half-old figures.
     var quotes: [coin_count]price.Quote = @splat(.{});
-    price.fetch(a, io, ids[0..n], quotes[0..n]) catch {
+    var got_any = false;
+
+    if (n > 0) {
+        var roster: [coin_count]price.Quote = @splat(.{});
+        if (price.fetch(a, io, ids[0..n], roster[0..n])) {
+            for (roster[0..n], slots[0..n]) |q, slot| quotes[slot] = q;
+            got_any = true;
+        } else |_| {}
+    }
+
+    // Coins the roster host prices badly fetch from their own endpoint (Divi →
+    // NonKYC). Unconditional, exactly like the roster above: the request goes
+    // out whether or not the coin is installed, so it reveals nothing about
+    // what this user holds. Independently best-effort — one host being down
+    // leaves the others' quotes standing.
+    i = 0;
+    while (i < coin_count) : (i += 1) {
+        const coin = coinByIndex(i) orelse continue;
+        const source = coin.priceSource() orelse continue;
+        if (price.fetchOne(a, io, source)) |q| {
+            quotes[i] = q;
+            got_any = true;
+        } else |_| {}
+    }
+
+    if (!got_any) {
         c.price_failures +|= 1;
         return 0;
-    };
+    }
 
     c.price_mtx.lockUncancelable(io);
     defer c.price_mtx.unlock(io);
-    for (quotes[0..n], slots[0..n]) |q, slot| c.prices[slot] = q;
+    for (quotes, 0..) |q, slot| {
+        // Only overwrite what this round actually fetched: a coin whose host
+        // failed keeps its previous quote until it ages out of `max_age_s`.
+        if (q.have) c.prices[slot] = q;
+    }
     c.price_fetched_at = now;
     c.price_failures = 0;
     return 1;
@@ -4486,6 +4515,25 @@ test "the price roster covers every coin, never just the installed ones" {
         const id = coin.priceId() orelse continue;
         try std.testing.expect(id.len > 0);
         for (id) |ch| try std.testing.expect(ch == '-' or (ch >= 'a' and ch <= 'z') or (ch >= '0' and ch <= '9'));
+    }
+}
+
+test "a coin is priced from exactly one place, and its own source leaks nothing" {
+    // A coin wiring both would be fetched twice, with whichever reply landed
+    // last winning — which for Divi means a 1-in-2 chance of the CoinGecko
+    // figure it was moved off *because* it was wrong.
+    var i: usize = 0;
+    while (i < coin_count) : (i += 1) {
+        const coin = coinByIndex(i) orelse return error.Unexpected;
+        const source = coin.priceSource() orelse continue;
+        try std.testing.expect(coin.priceId() == null);
+
+        // The same privacy property the roster has, pinned for these too: a
+        // fixed https URL with nothing per-user in it. These requests are made
+        // unconditionally, so a URL that varied by user — or by which coins are
+        // installed — would be the disclosure the roster is careful to avoid.
+        try std.testing.expect(std.mem.startsWith(u8, source.url, "https://"));
+        for (source.url) |ch| try std.testing.expect(ch > ' ' and ch < 127);
     }
 }
 

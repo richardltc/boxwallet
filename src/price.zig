@@ -34,15 +34,42 @@ pub const Quote = struct {
     have: bool = false,
 };
 
+/// A coin's own price endpoint, for the ones the roster host prices badly.
+///
+/// The roster call covers almost everything, but "the host lists it" and "the
+/// host's number is right" are different claims. Divi is the worked example:
+/// CoinGecko publishes a price off a market doing **$24 a day**, five times
+/// below where Divi actually trades, so a balance was shown at a fifth of its
+/// worth. A coin in that position declares a source here and is left out of the
+/// roster request entirely — there is no falling back to a wrong number, since
+/// showing nothing is honest and showing a fifth of the value is not.
+///
+/// The URL and the reply's shape are the coin's business, so both live in the
+/// coin file; this module only carries them to the same capped, best-effort
+/// transport the roster uses.
+pub const Source = struct {
+    /// The complete request URL. **Fixed, with nothing per-user in it** — see
+    /// the note on privacy above: this request is made by every BoxWallet on
+    /// every cycle whether or not the coin is installed, exactly like the roster
+    /// call, so it says nothing about what anyone holds.
+    url: []const u8,
+    /// Turn this host's reply into a quote. Null for a reply that carries no
+    /// usable price — a halted market, a zero — which reads the same as an
+    /// unlisted coin: no price shown. Must not retain anything from `body`.
+    parse: *const fn (gpa: std.mem.Allocator, body: []const u8) ?Quote,
+};
+
 /// How stale a quote may get before the UI should stop showing it. Prices that
 /// keep sitting on screen while every refresh fails would misrepresent what a
 /// balance is worth, which is worse than showing nothing.
 pub const max_age_s: i64 = 60 * 60;
 
-/// The polling cadence: one call for the whole roster every 5 minutes (~12/hour).
-/// The public tier allows a few calls per *minute* and refreshes its own numbers
-/// only every minute or two, so polling harder would burn budget re-fetching
-/// identical values. Rate limits are per-IP, so each user has their own budget.
+/// The polling cadence: every 5 minutes (~12/hour), one call for the whole
+/// roster plus one for each coin with its own `Source` (Divi today — so two
+/// calls per cycle). The public tier allows a few calls per *minute* and
+/// refreshes its own numbers only every minute or two, so polling harder would
+/// burn budget re-fetching identical values. Rate limits are per-IP, so each
+/// user has their own budget.
 pub const refresh_interval_s: i64 = 5 * 60;
 
 /// Backoff after a failed fetch: 5 → 10 → 20 → 40 min, capped at an hour, so an
@@ -109,6 +136,16 @@ pub fn fetch(
         const raw = parsed.value.map.get(id) orelse continue;
         q.* = .{ .usd = raw.usd, .change_24h = raw.usd_24h_change, .have = raw.usd > 0 };
     }
+}
+
+/// Fetch one coin's quote from its own `Source`. Same transport, cap and
+/// best-effort contract as `fetch`: an error means "no update this round", and a
+/// reply the source can't read means "no price" (`have` false) rather than an
+/// error the caller has to surface.
+pub fn fetchOne(gpa: std.mem.Allocator, io: std.Io, source: Source) !Quote {
+    const body = try fetchText(gpa, io, source.url);
+    defer gpa.free(body);
+    return source.parse(gpa, body) orelse .{};
 }
 
 /// Build the query URL for `ids` (comma-joined). Caller owns the result.
