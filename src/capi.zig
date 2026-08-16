@@ -723,6 +723,17 @@ export fn bw_coin_supports_send(idx: usize) c_int {
     return if (c.supportsSend()) 1 else 0;
 }
 
+/// Whether this coin has an explicit stake action (drives the Stake control on
+/// the Send tab). Salvium only, so far.
+///
+/// Asked here rather than off `bw_coin_wallet_caps`' `BW_WCAP_STAKE_ACTION`:
+/// that read describes an *in-daemon* wallet and answers 0 for a coin that
+/// manages its wallet in a second process — which is exactly what Salvium does.
+export fn bw_coin_supports_stake(idx: usize) c_int {
+    const c = coinByIndex(idx) orelse return 0;
+    return if (c.supportsStakeAction()) 1 else 0;
+}
+
 /// Decimal places this coin's amounts are shown to.
 export fn bw_coin_balance_decimals(idx: usize) u8 {
     const c = coinByIndex(idx) orelse return 8;
@@ -5307,11 +5318,25 @@ test "the remaining tab capabilities track their vtable hooks" {
         try std.testing.expectEqual(coin.supportsTransactions(), bw_coin_supports_transactions(i) != 0);
         try std.testing.expectEqual(coin.supportsReceiveAddress(), bw_coin_supports_receive_address(i) != 0);
         try std.testing.expectEqual(coin.supportsSend(), bw_coin_supports_send(i) != 0);
+        try std.testing.expectEqual(coin.supportsStakeAction(), bw_coin_supports_stake(i) != 0);
     }
     // An index that isn't a coin claims nothing.
     try std.testing.expectEqual(@as(c_int, 0), bw_coin_supports_transactions(coin_count));
     try std.testing.expectEqual(@as(c_int, 0), bw_coin_supports_receive_address(coin_count));
     try std.testing.expectEqual(@as(c_int, 0), bw_coin_supports_send(coin_count));
+    try std.testing.expectEqual(@as(c_int, 0), bw_coin_supports_stake(coin_count));
+}
+
+test "a coin with a stake action carries a hint to show with it" {
+    // The Stake confirm step is the user's one chance to read what they're
+    // committing to (a ~30-day lock), so a coin that offers the action must have
+    // something to say about it — an empty hint would confirm a lock-up silently.
+    var i: usize = 0;
+    var buf: [256]u8 = undefined;
+    while (i < coin_count) : (i += 1) {
+        if (bw_coin_supports_stake(i) == 0) continue;
+        try std.testing.expect(bw_stake_hint(i, &buf, buf.len) > 0);
+    }
 }
 
 test "bw_wallet_balance gates a managed wallet on open, an in-daemon one on nothing" {
