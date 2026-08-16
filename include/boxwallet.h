@@ -200,6 +200,11 @@ int     bw_coin_supports_balance(size_t idx);
 int     bw_coin_supports_transactions(size_t idx);
 int     bw_coin_supports_receive_address(size_t idx);
 int     bw_coin_supports_send(size_t idx);
+/* Whether the coin has an explicit stake action (the Stake control on the Send
+ * tab) — Salvium only, so far. Ask this rather than BW_WCAP_STAKE_ACTION: the
+ * caps word describes an in-daemon wallet and answers 0 for a coin whose wallet
+ * lives in a second process, which is exactly Salvium's shape. */
+int     bw_coin_supports_stake(size_t idx);
 uint8_t bw_coin_balance_decimals(size_t idx);
 
 /* ---- status ----------------------------------------------------------------- */

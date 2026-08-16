@@ -664,6 +664,15 @@ static void apply_coin_metadata(const AppWindow *ui, bw_ctx *ctx, int idx)
     ui->set_has_transactions(bw_coin_supports_transactions(idx) != 0);
     ui->set_has_receive(bw_coin_supports_receive_address(idx) != 0);
     ui->set_has_send(bw_coin_supports_send(idx) != 0);
+    // Staking — an explicit, term-locking stake transaction (Salvium), shown
+    // beside Send. The hint is the coin's own words for what the lock commits
+    // to; it rides along here because it's metadata, and the confirm step must
+    // never come up without it.
+    const bool has_stake = bw_coin_supports_stake(idx) != 0;
+    ui->set_has_stake(has_stake);
+    char hint[256] = {0};
+    size_t hn = has_stake ? bw_stake_hint(idx, hint, sizeof hint) : 0;
+    ui->set_stake_hint(ss(std::string_view(hint, hn)));
     // Whether a send can go through is live state, not metadata: it needs the
     // wallet unlocked, which only the poll knows. Start closed.
     ui->set_can_send(false);
@@ -2205,6 +2214,50 @@ int main(int argc, char **argv)
                     // generic failure.
                     (*h)->set_send_result(ss(
                         rc == 0   ? "Sent. Transaction " + reply
+                        : rc == 1 ? reply
+                                  : err));
+                }
+            });
+            wake_poll();
+        }).detach();
+    });
+
+    // Stake (Salvium). A stake pays the wallet's own address — the coin builds
+    // that itself — so there is no destination to collect or confirm; what the
+    // modal showed instead was the term the amount locks for. Shares the send
+    // readout: both spend from the one wallet, and the core serialises them on
+    // the wallet lock anyway.
+    ui->on_stake_funds([weak, ctx, wake_poll](slint::SharedString amount) {
+        int coin = g_selected.load();
+        if (coin < 0)
+            return;
+        double amt = 0;
+        try {
+            amt = std::stod(std::string(std::string_view(amount)));
+        } catch (...) {
+            if (auto h = weak.lock()) {
+                (*h)->set_send_result_error(true);
+                (*h)->set_send_result(ss("That isn't an amount."));
+            }
+            return;
+        }
+        if (auto h = weak.lock())
+            (*h)->set_send_busy(true);
+
+        std::thread([weak, ctx, coin, amt, wake_poll]() {
+            WorkerGuard wg;
+            char out[256] = {0};
+            int rc = bw_wallet_stake(ctx, static_cast<size_t>(coin), amt, out, sizeof out);
+            std::string reply(out);
+            std::string err = (rc < 0) ? last_error_text(ctx, rc) : std::string();
+            post_to_ui([weak, rc, reply, err]() {
+                if (auto h = weak.lock()) {
+                    (*h)->set_send_busy(false);
+                    (*h)->set_send_result_error(rc != 0);
+                    // rc == 1 is the daemon's own refusal (too little to stake,
+                    // funds still locked, …) — its wording, verbatim.
+                    (*h)->set_send_result(ss(
+                        rc == 0   ? "Staked. Transaction " + reply
                         : rc == 1 ? reply
                                   : err));
                 }

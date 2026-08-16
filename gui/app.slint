@@ -757,6 +757,12 @@ export component AppWindow inherits Window {
     // balances and history on a locked wallet, but refuses to sign until it's
     // unlocked. So the Send tab exists on `has-send` and its button lives on this.
     in property <bool> can-send: false;
+    // Whether this coin has an explicit stake action (Salvium). Not the passive
+    // "unlock and it stakes" of the proof-of-stake coins — a stake here is a
+    // transaction that LOCKS the amount for a term, so it lives beside Send and
+    // is confirmed the same way, with the coin's own hint spelling out the term.
+    in property <bool> has-stake: false;
+    in property <string> stake-hint: "";
     // Canonical restore-seed length for this wallet (bw_coin_seed_word_counts'
     // first entry), for the seed-entry prompt and its live word counter.
     in property <int> seed-word-count: 25;
@@ -772,12 +778,20 @@ export component AppWindow inherits Window {
     in property <[WalletTxRow]> tx-rows;
     callback new-address();
     callback send-funds(string, string);
+    // A stake pays the wallet's own address — the coin works that out itself —
+    // so this takes an amount and nothing else. It shares send-busy/send-result
+    // with the send above: both spend from the same wallet, one at a time, and
+    // one readout is what the TUI shows too.
+    callback stake-funds(string);
     in-out property <bool> send-busy: false;
     in-out property <string> send-result: "";
     in-out property <bool> send-result-error: false;
     in-out property <bool> send-confirm-open: false;
     in-out property <string> send-confirm-address: "";
     in-out property <string> send-confirm-amount: "";
+    // Which of the two the open confirm modal is for. Mirrors the TUI's send
+    // modal Mode: same chrome, same last-chance read, no address stage.
+    in-out property <bool> send-confirm-is-stake: false;
 
     // ---- wallet setup modal ----
     // One overlay, one stage machine — the GUI's mirror of the TUI's wallet
@@ -2434,7 +2448,51 @@ export component AppWindow inherits Window {
                                             root.send-confirm-address = send-addr.text;
                                             root.send-confirm-amount = send-amt.text;
                                             root.send-result = "";
+                                            root.send-confirm-is-stake = false;
                                             root.send-confirm-open = true;
+                                        }
+                                    }
+                                }
+                            }
+
+                            // Stake (Salvium). Kept below the send form and
+                            // ruled off from it: staking commits funds for a
+                            // term, and a button that shared a row with Send
+                            // would be one slip away from locking up a balance
+                            // someone meant to spend. Its own amount field, for
+                            // the same reason — a stake must never pick up the
+                            // figure typed for a send.
+                            if root.has-stake: Rectangle {
+                                height: 1px;
+                                background: #2e2e2e;
+                            }
+                            if root.has-stake: VerticalLayout {
+                                spacing: 8px;
+                                Text {
+                                    text: "Stake";
+                                    color: #e6e6e6;
+                                    font-size: 15px;
+                                    font-weight: 600;
+                                }
+                                if root.stake-hint != "": Text {
+                                    text: root.stake-hint;
+                                    color: #8a8a8a;
+                                    font-size: 12px;
+                                    wrap: word-wrap;
+                                }
+                                stake-amt := LineEdit { placeholder-text: "Amount to stake"; }
+                                HorizontalLayout {
+                                    alignment: start;
+                                    Button {
+                                        text: "Stake\u{2026}";
+                                        enabled: !root.send-busy;
+                                        clicked => {
+                                            if (stake-amt.text != "") {
+                                                root.send-confirm-amount = stake-amt.text;
+                                                root.send-result = "";
+                                                root.send-confirm-is-stake = true;
+                                                root.send-confirm-open = true;
+                                            }
                                         }
                                     }
                                 }
@@ -2871,9 +2929,13 @@ export component AppWindow inherits Window {
         }
 
 
-        // ---- send confirm ----
+        // ---- send / stake confirm ----
         // The address is shown in FULL and never truncated: a wrong address is
         // unrecoverable, and this is the last moment anyone can catch one.
+        //
+        // A stake has no address to check — it pays the wallet itself — so that
+        // half is replaced by the coin's own hint: the term it locks for is what
+        // there is to reconsider, and this is the last moment to do it.
         if root.send-confirm-open: Rectangle {
             background: #000000bb;
             TouchArea { }
@@ -2894,19 +2956,20 @@ export component AppWindow inherits Window {
                     spacing: 10px;
                     alignment: start;
                     Text {
-                        text: "Send " + root.send-confirm-amount + " " + root.coin-name + "?";
+                        text: (root.send-confirm-is-stake ? "Stake " : "Send ")
+                            + root.send-confirm-amount + " " + root.coin-name + "?";
                         color: #e6e6e6;
                         font-size: 15px;
                         font-weight: 600;
                         wrap: word-wrap;
                     }
-                    Text {
+                    if !root.send-confirm-is-stake: Text {
                         text: "To this address — check every character:";
                         color: #9a9a9a;
                         font-size: 12px;
                         wrap: word-wrap;
                     }
-                    Rectangle {
+                    if !root.send-confirm-is-stake: Rectangle {
                         height: 64px;
                         background: #181818;
                         border-radius: 6px;
@@ -2922,10 +2985,19 @@ export component AppWindow inherits Window {
                             }
                         }
                     }
+                    if root.send-confirm-is-stake && root.stake-hint != "": Text {
+                        text: root.stake-hint;
+                        color: #9a9a9a;
+                        font-size: 12px;
+                        wrap: word-wrap;
+                    }
                     Text {
-                        text: "A sent transaction cannot be reversed.";
+                        text: root.send-confirm-is-stake
+                            ? "A stake cannot be cancelled before its term ends."
+                            : "A sent transaction cannot be reversed.";
                         color: #e05c5c;
                         font-size: 11px;
+                        wrap: word-wrap;
                     }
                     HorizontalLayout {
                         alignment: end;
@@ -2935,10 +3007,14 @@ export component AppWindow inherits Window {
                             clicked => { root.send-confirm-open = false; }
                         }
                         Button {
-                            text: "Send";
+                            text: root.send-confirm-is-stake ? "Stake" : "Send";
                             clicked => {
                                 root.send-confirm-open = false;
-                                root.send-funds(root.send-confirm-address, root.send-confirm-amount);
+                                if (root.send-confirm-is-stake) {
+                                    root.stake-funds(root.send-confirm-amount);
+                                } else {
+                                    root.send-funds(root.send-confirm-address, root.send-confirm-amount);
+                                }
                             }
                         }
                     }
