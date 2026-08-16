@@ -121,6 +121,15 @@ static std::atomic<bool> g_want_new_addr{false};
 // rather than rewritten over the status line on every poll. UI thread only.
 static std::string g_last_wallet_svc_err;
 
+// Where the Headers/Blocks odometers last landed, so the next push knows what to
+// roll *from*. Reset to 0 on selection and when a daemon goes down, which is what
+// makes a count roll up from zero the first time it appears rather than snapping
+// into being. `g_count_roll` ticks on every push; the UI keys the roll off it
+// rather than off the models changing. UI thread only.
+static int64_t g_odo_headers = 0;
+static int64_t g_odo_blocks = 0;
+static int g_count_roll = 0;
+
 // The address the Receive QR was last built for, so the poll doesn't re-encode
 // an unchanged one every two seconds. Cleared on selection along with the
 // address cache, so switching to a coin whose address happens to be cached
@@ -342,6 +351,54 @@ static std::string group_int(int64_t n)
     for (int i = static_cast<int>(s.size()) - 3; i > 0; i -= 3)
         s.insert(static_cast<size_t>(i), ",");
     return neg ? "-" + s : s;
+}
+
+// Split a height into odometer columns for the Headers/Blocks gauges: where each
+// digit column starts, how far it travels to land on `to`, and whether a comma
+// follows it — most-significant first, ready to lay out left to right.
+//
+// This lives here rather than in app.slint because Slint evaluates arithmetic in
+// f32 (its generated C++ casts every division to `(float)`), and f32 is exact
+// only to 16,777,216 — below DigiByte's ~23.6M block heights, where dividing the
+// height down to its digits would quietly drop the low ones and the count would
+// never land on an odd number. int64 here is exact, and everything handed over
+// is small enough for f32 to hold.
+//
+// `steps` mod 10 always lands the column on the right digit; the rest is full
+// rotations. Capping those is the point of max_turns: the first roll of a synced
+// chain runs 0 → several million, and an uncapped ones column would spin
+// hundreds of thousands of times in 700ms — an aliased blur rather than a count.
+// Columns near the top are under the cap and still travel a digit or two, which
+// is what gives the cascade.
+static std::shared_ptr<slint::VectorModel<DigitSlot>> digit_slots(int64_t from, int64_t to)
+{
+    std::vector<DigitSlot> slots;
+    if (to < 0) // no reading — an empty model draws nothing
+        return std::make_shared<slint::VectorModel<DigitSlot>>(std::move(slots));
+
+    constexpr int64_t max_turns = 2;
+    // How many columns the new value needs. `to` is what's being displayed, so a
+    // value that shrank simply drops the columns it no longer fills.
+    int digits = 1;
+    for (int64_t v = to; v >= 10; v /= 10)
+        ++digits;
+
+    int64_t pow10 = 1;
+    for (int i = 0; i < digits; ++i, pow10 *= 10) {
+        const int64_t from_col = (from < 0 ? 0 : from) / pow10;
+        const int64_t to_col = to / pow10;
+        const int64_t delta = to_col - from_col;
+        const int64_t turns = std::min(std::abs(delta) / 10, max_turns);
+
+        DigitSlot s{}; // value-initialised — see the note on NavCoin
+        s.start = static_cast<int>(from_col % 10);
+        s.steps = static_cast<int>(delta % 10 + (delta < 0 ? -10 : 10) * turns);
+        s.comma = (i % 3 == 0 && i > 0);
+        slots.push_back(s);
+    }
+    // Built ones-first; the UI lays them out left to right.
+    std::reverse(slots.begin(), slots.end());
+    return std::make_shared<slint::VectorModel<DigitSlot>>(std::move(slots));
 }
 
 // A chain's on-disk size, from the core ("12.34 GB", SI units).
@@ -745,8 +802,12 @@ static void apply_coin_metadata(const AppWindow *ui, bw_ctx *ctx, int idx)
     ui->set_cpu_threads(static_cast<int>(bw_cpu_threads()));
     ui->set_sync_percent(0);
     ui->set_chain(ss(""));
-    ui->set_headers_str(ss(""));
-    ui->set_blocks_str(ss(""));
+    // Blank both odometers and forget where they landed, so the new coin's first
+    // reading rolls up from zero instead of counting on from the last coin's.
+    g_odo_headers = 0;
+    g_odo_blocks = 0;
+    ui->set_headers_slots(digit_slots(0, -1));
+    ui->set_blocks_slots(digit_slots(0, -1));
     ui->set_tip_date(ss(""));
     ui->set_sync_behind(ss(""));
     ui->set_disk_free(ss(""));
@@ -2933,8 +2994,14 @@ int main(int argc, char **argv)
                     (*h)->set_synced(synced);
                     (*h)->set_headers_frac(sync_frac(bs.headers, tip, synced));
                     (*h)->set_blocks_frac(sync_frac(bs.blocks, tip, synced));
-                    (*h)->set_headers_str(ss(group_int(bs.headers)));
-                    (*h)->set_blocks_str(ss(group_int(bs.blocks)));
+                    // Roll the counts from wherever they last landed to where
+                    // they are now. One shared tick for both, so the two gauges
+                    // move together rather than a frame apart.
+                    (*h)->set_headers_slots(digit_slots(g_odo_headers, bs.headers));
+                    (*h)->set_blocks_slots(digit_slots(g_odo_blocks, bs.blocks));
+                    (*h)->set_count_roll(++g_count_roll);
+                    g_odo_headers = bs.headers;
+                    g_odo_blocks = bs.blocks;
                     // Both empty once synced, so the historical-distance line
                     // disappears when there's no distance left to report.
                     (*h)->set_tip_date(ss(tip_date));
@@ -2962,8 +3029,13 @@ int main(int argc, char **argv)
                     // an empty 0%, the same as every other figure clearing here.
                     (*h)->set_sync_unknown(false);
                     (*h)->set_sync_percent(0);
-                    (*h)->set_headers_str(ss(""));
-                    (*h)->set_blocks_str(ss(""));
+                    // Same as on selection: blank the odometers and forget where
+                    // they were, so the next start rolls up from zero.
+                    g_odo_headers = 0;
+                    g_odo_blocks = 0;
+                    (*h)->set_headers_slots(digit_slots(0, -1));
+                    (*h)->set_blocks_slots(digit_slots(0, -1));
+                    (*h)->set_count_roll(++g_count_roll);
                     // A stopped daemon has no tip to be behind of; a stale date
                     // would keep claiming a chain position nothing is holding.
                     (*h)->set_tip_date(ss(""));

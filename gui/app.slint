@@ -52,6 +52,21 @@ struct WalletTxRow {
     incoming: bool,      // colours the row
 }
 
+// One digit column of an odometer count, pre-split by the host, most-significant
+// first. Slint evaluates arithmetic in f32 (the generated C++ casts every
+// division to `(float)`), which is exact only to 16,777,216 — below DigiByte's
+// ~23.6M block heights, where dividing the height down to its digits here would
+// silently drop the low ones. So C++ does that in int64 and this side only
+// animates: every number below is small enough for f32 to hold exactly.
+struct DigitSlot {
+    start: int,  // digit this column begins on, 0-9
+    // Digit-steps to travel to land on the new value. Mod 10 it lands on the
+    // right digit; the rest is full rotations, already capped by the host so a
+    // roll up from zero doesn't spin the ones column into a blur.
+    steps: int,
+    comma: bool, // a thousands separator follows this column
+}
+
 // One row in the left nav.
 component NavItem inherits Rectangle {
     in property <string> label;
@@ -204,6 +219,112 @@ component TabButton inherits Rectangle {
     }
 }
 
+// A count that rolls like an odometer instead of snapping: each digit is a strip
+// of 0-9 clipped to one cell, slid to bring the right one into view. Columns
+// whose digit doesn't change sit still, and because the host derives each column
+// from a different power of ten, the ones column spins while the millions barely
+// move — the cascade a mechanical counter makes.
+//
+// The host hands over pre-split columns (see DigitSlot) and this side does no
+// grouping, digit-counting or leading-zero logic: it lays the model out left to
+// right and animates it. An empty model draws nothing.
+component OdometerCount inherits HorizontalLayout {
+    in property <[DigitSlot]> slots;
+    // Bumped by the host on every push. `slots` changing is what we actually
+    // react to, but a `changed` on a model property isn't something to lean on,
+    // so the host hands us an explicit tick to key the roll off.
+    in property <int> roll;
+    in property <color> ink: #c8c8c8;
+    in property <length> fs: 12px;
+
+    spacing: 0px;
+    alignment: center;
+
+    // Measured from a real glyph rather than derived from the font size: the
+    // strip has to be exactly one digit tall or the wrap won't line up. Pinned to
+    // zero and clipped, so the probe takes part in nothing and never draws.
+    Rectangle {
+        max-width: 0px;
+        max-height: 0px;
+        horizontal-stretch: 0;
+        clip: true;
+        probe := Text {
+            text: "0";
+            font-family: "DejaVu Sans Mono";
+            font-size: root.fs;
+        }
+    }
+    property <length> cell-w: probe.preferred-width;
+    property <length> cell-h: probe.preferred-height;
+
+    // Frame-clock ramp, in the same shape as StatusIcon's one-shot pulse: reading
+    // `animation-tick()` is what keeps frames coming, so it's read only while
+    // `rolling` and the whole thing goes quiet between polls.
+    property <duration> start-tick: 0ms;
+    property <bool> rolling: false;
+    changed roll => {
+        root.start-tick = animation-tick();
+        root.rolling = true;
+    }
+    property <float> t: root.rolling
+        ? Math.clamp((animation-tick() - root.start-tick) / 700ms, 0.0, 1.0)
+        : 1.0;
+    changed t => {
+        if root.rolling && root.t >= 1.0 {
+            root.rolling = false;
+        }
+    }
+    // Ease-out cubic — quick off the mark, settling into place. At rest p is 1.0,
+    // which parks every column on `start + steps`: the correct final digit, with
+    // no need to rebase anything once the roll ends.
+    property <float> p: 1.0 - Math.pow(1.0 - root.t, 3);
+
+    for s in root.slots: HorizontalLayout {
+        spacing: 0px;
+        // The viewport: one digit tall, everything else clipped away.
+        Rectangle {
+            width: root.cell-w;
+            height: root.cell-h;
+            horizontal-stretch: 0;
+            clip: true;
+            // The strip: 0-9 and then a SECOND 0. That duplicate is what makes
+            // the 9→0 wrap seamless — by the bottom of the strip you're already
+            // looking at a 0, so when the offset wraps back to the top the
+            // pixels are identical and nothing appears to jump.
+            Rectangle {
+                width: parent.width;
+                height: root.cell-h * 11;
+                // One binding for the whole column rather than one per digit.
+                // The +1000 bias keeps Math.mod on the positive side if a reorg
+                // ever walks a column backwards.
+                y: -Math.mod(s.start + s.steps * root.p + 1000, 10) * root.cell-h;
+                for d[k] in [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 0]: Text {
+                    y: k * root.cell-h;
+                    width: parent.width;
+                    height: root.cell-h;
+                    text: "\{d}";
+                    color: root.ink;
+                    font-family: "DejaVu Sans Mono";
+                    font-size: root.fs;
+                    horizontal-alignment: center;
+                    vertical-alignment: center;
+                }
+            }
+        }
+        // The thousands separator, when this column is followed by one. Static:
+        // a comma has nothing to count through.
+        if s.comma: Text {
+            width: root.cell-w;
+            text: ",";
+            color: root.ink;
+            font-family: "DejaVu Sans Mono";
+            font-size: root.fs;
+            horizontal-alignment: center;
+            vertical-alignment: center;
+        }
+    }
+}
+
 // A circular (donut) progress gauge: an arc filled to `frac` of a full turn in
 // the coin's brand colour over a grey track, a percentage in the middle, and a
 // caption underneath. Drawn with a conic-gradient ring + a hole punched in the
@@ -212,7 +333,12 @@ component CircleGauge inherits VerticalBox {
     in property <float> frac;
     in property <brush> fill;
     in property <string> label;
-    in property <string> value; // e.g. "4,136,946" or "12.3 GB free"
+    in property <string> value; // e.g. "12.3 GB free"
+    // A count to roll instead of `value`, for the gauges whose readout is a bare
+    // number (Headers, Blocks). Empty means "this gauge has no count" — Disk and
+    // Memory carry units, so they keep the plain string above.
+    in property <[DigitSlot]> count-slots;
+    in property <int> count-roll;
     in property <string> full-text; // shown in place of "100%" when full (e.g. "Synced")
     // The measurement isn't available — not "0%", which is a claim of its own.
     // A sync gauge with no known network tip has no denominator, so it reads
@@ -277,8 +403,16 @@ component CircleGauge inherits VerticalBox {
             }
         }
     }
-    // Value below the ring (count / free space), monospaced.
-    Text {
+    // Value below the ring (count / free space), monospaced. Slint has no
+    // `else`, so the two readouts are mutually-exclusive conditionals on whether
+    // this gauge was given a count to roll.
+    if root.count-slots.length > 0: OdometerCount {
+        slots: root.count-slots;
+        roll: root.count-roll;
+        ink: #c8c8c8;
+        fs: 12px;
+    }
+    if root.count-slots.length == 0: Text {
         text: root.value;
         color: #c8c8c8;
         font-size: 12px;
@@ -850,8 +984,13 @@ export component AppWindow inherits Window {
     // gauges then read "—" rather than a number derived from our own height.
     in property <bool> sync-unknown: false;
     in property <float> disk-frac: 0;
-    in property <string> headers-str: ""; // formatted header count
-    in property <string> blocks-str: "";  // formatted block count
+    // The two sync counts, pre-split into odometer columns by the host so they
+    // roll rather than snap (see DigitSlot). Empty = no reading yet, which is
+    // what a just-selected or stopped coin shows. `count-roll` ticks on every
+    // push and is what the roll keys off.
+    in property <[DigitSlot]> headers-slots;
+    in property <[DigitSlot]> blocks-slots;
+    in property <int> count-roll;
     // How far back in time the chain sits, both formatted by the core
     // (bw_sync_tip_date / bw_sync_behind, the TUI's own wording): the tip
     // block's date in UTC, and the wall-clock distance from it. Only fed while
@@ -1783,7 +1922,8 @@ export component AppWindow inherits Window {
                                 label: "Headers";
                                 frac: root.headers-frac;
                                 fill: root.coin-color;
-                                value: root.headers-str;
+                                count-slots: root.headers-slots;
+                                count-roll: root.count-roll;
                                 full-text: "Synced";
                                 unknown: root.sync-unknown;
                             }
@@ -1791,7 +1931,8 @@ export component AppWindow inherits Window {
                                 label: "Blocks";
                                 frac: root.blocks-frac;
                                 fill: root.coin-color;
-                                value: root.blocks-str;
+                                count-slots: root.blocks-slots;
+                                count-roll: root.count-roll;
                                 full-text: "Synced";
                                 unknown: root.sync-unknown;
                             }
