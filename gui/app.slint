@@ -228,7 +228,7 @@ component TabButton inherits Rectangle {
 // The host hands over pre-split columns (see DigitSlot) and this side does no
 // grouping, digit-counting or leading-zero logic: it lays the model out left to
 // right and animates it. An empty model draws nothing.
-component OdometerCount inherits HorizontalLayout {
+component OdometerCount inherits Rectangle {
     in property <[DigitSlot]> slots;
     // Bumped by the host on every push. `slots` changing is what we actually
     // react to, but a `changed` on a model property isn't something to lean on,
@@ -237,16 +237,17 @@ component OdometerCount inherits HorizontalLayout {
     in property <color> ink: #c8c8c8;
     in property <length> fs: 12px;
 
-    spacing: 0px;
-    alignment: center;
-
     // Measured from a real glyph rather than derived from the font size: the
-    // strip has to be exactly one digit tall or the wrap won't line up. Pinned to
-    // zero and clipped, so the probe takes part in nothing and never draws.
+    // strip has to be exactly one digit tall or the wrap won't line up.
+    //
+    // This deliberately sits OUTSIDE the row below, as a child of a plain
+    // Rectangle rather than of a layout: a layout sizes its children from their
+    // own minimums, so a "zero-width" probe inside one still claimed a cell and
+    // drew its glyph — every count came out with a leading 0. Nothing here takes
+    // part in a layout, so a 0×0 clipped box really is 0×0.
     Rectangle {
-        max-width: 0px;
-        max-height: 0px;
-        horizontal-stretch: 0;
+        width: 0px;
+        height: 0px;
         clip: true;
         probe := Text {
             text: "0";
@@ -256,6 +257,10 @@ component OdometerCount inherits HorizontalLayout {
     }
     property <length> cell-w: probe.preferred-width;
     property <length> cell-h: probe.preferred-height;
+    // Pin the height for the enclosing VerticalBox, which would otherwise
+    // measure this from the (zero) probe and give the row nothing to sit in.
+    min-height: root.cell-h;
+    max-height: root.cell-h;
 
     // Frame-clock ramp, in the same shape as StatusIcon's one-shot pulse: reading
     // `animation-tick()` is what keeps frames coming, so it's read only while
@@ -279,48 +284,56 @@ component OdometerCount inherits HorizontalLayout {
     // no need to rebase anything once the roll ends.
     property <float> p: 1.0 - Math.pow(1.0 - root.t, 3);
 
-    for s in root.slots: HorizontalLayout {
+    // The digits themselves, centred in whatever width the gauge gives us — the
+    // same placement the plain value Text had.
+    HorizontalLayout {
         spacing: 0px;
-        // The viewport: one digit tall, everything else clipped away.
-        Rectangle {
-            width: root.cell-w;
-            height: root.cell-h;
-            horizontal-stretch: 0;
-            clip: true;
-            // The strip: 0-9 and then a SECOND 0. That duplicate is what makes
-            // the 9→0 wrap seamless — by the bottom of the strip you're already
-            // looking at a 0, so when the offset wraps back to the top the
-            // pixels are identical and nothing appears to jump.
+        alignment: center;
+
+        for s in root.slots: HorizontalLayout {
+            spacing: 0px;
+            // The viewport: one digit tall, everything else clipped away.
             Rectangle {
-                width: parent.width;
-                height: root.cell-h * 11;
-                // One binding for the whole column rather than one per digit.
-                // The +1000 bias keeps Math.mod on the positive side if a reorg
-                // ever walks a column backwards.
-                y: -Math.mod(s.start + s.steps * root.p + 1000, 10) * root.cell-h;
-                for d[k] in [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 0]: Text {
-                    y: k * root.cell-h;
+                width: root.cell-w;
+                height: root.cell-h;
+                horizontal-stretch: 0;
+                clip: true;
+                // The strip: 0-9 and then a SECOND 0. That duplicate is what
+                // makes the 9→0 wrap seamless — by the bottom of the strip
+                // you're already looking at a 0, so when the offset wraps back
+                // to the top the pixels are identical and nothing appears to
+                // jump.
+                Rectangle {
                     width: parent.width;
-                    height: root.cell-h;
-                    text: "\{d}";
-                    color: root.ink;
-                    font-family: "DejaVu Sans Mono";
-                    font-size: root.fs;
-                    horizontal-alignment: center;
-                    vertical-alignment: center;
+                    height: root.cell-h * 11;
+                    // One binding for the whole column rather than one per
+                    // digit. The +1000 bias keeps Math.mod on the positive side
+                    // if a reorg ever walks a column backwards.
+                    y: -Math.mod(s.start + s.steps * root.p + 1000, 10) * root.cell-h;
+                    for d[k] in [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 0]: Text {
+                        y: k * root.cell-h;
+                        width: parent.width;
+                        height: root.cell-h;
+                        text: "\{d}";
+                        color: root.ink;
+                        font-family: "DejaVu Sans Mono";
+                        font-size: root.fs;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                    }
                 }
             }
-        }
-        // The thousands separator, when this column is followed by one. Static:
-        // a comma has nothing to count through.
-        if s.comma: Text {
-            width: root.cell-w;
-            text: ",";
-            color: root.ink;
-            font-family: "DejaVu Sans Mono";
-            font-size: root.fs;
-            horizontal-alignment: center;
-            vertical-alignment: center;
+            // The thousands separator, when this column is followed by one.
+            // Static: a comma has nothing to count through.
+            if s.comma: Text {
+                width: root.cell-w;
+                text: ",";
+                color: root.ink;
+                font-family: "DejaVu Sans Mono";
+                font-size: root.fs;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+            }
         }
     }
 }
