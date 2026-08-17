@@ -985,6 +985,27 @@ fn currentEnvMap(a: std.mem.Allocator) !std.process.Environ.Map {
     return map;
 }
 
+/// The same environment as an `Environ`, for handing to `std.Io.Threaded.init`.
+///
+/// `Threaded.init(a, .{})` leaves its `environ` **empty**, and that is what both
+/// `processSpawn` and `processReplace` fall back to when a call passes no
+/// `environ_map` — so it decides the environment of anything those instances
+/// start. Setting it is the one-line way to make every child of a `Threaded`
+/// inherit ours, rather than remembering an `environ_map` at each call site.
+///
+/// Borrows libc's block instead of copying it (no allocation, nothing to free);
+/// comptime-gated exactly as `currentEnvMap` is, so the libc-free offline-test
+/// binary still compiles.
+fn currentEnviron() std.process.Environ {
+    if (builtin.os.tag != .windows and builtin.link_libc) {
+        const env = std.c.environ;
+        var count: usize = 0;
+        while (env[count] != null) : (count += 1) {}
+        return .{ .block = .{ .slice = @ptrCast(env[0..count :null]) } };
+    }
+    return .empty;
+}
+
 /// Surface a failed start's reason from the coin's own daemon log — a daemonized
 /// child logs there rather than to the stderr we captured, and the epee family
 /// writes fatal init errors to its log, not stderr. Best-effort: leaves the
@@ -2963,7 +2984,11 @@ export fn bw_self_update_apply(home_dir: ?[*:0]const u8) c_int {
     // allocator to catch that the tests don't.
     const a = std.heap.page_allocator;
 
-    var threaded: std.Io.Threaded = .init(a, .{});
+    // Carry our environment on this `Threaded`, because the swap's `--selftest`
+    // pre-flight is spawned through it: with the default (empty) environ the
+    // check would run the candidate binary under an environment no real launch
+    // ever has. See `currentEnviron`.
+    var threaded: std.Io.Threaded = .init(a, .{ .environ = currentEnviron() });
     defer threaded.deinit();
     const io = threaded.io();
 
@@ -2973,9 +2998,26 @@ export fn bw_self_update_apply(home_dir: ?[*:0]const u8) c_int {
     const applied = (updater.applyPendingFor(.gui, a, io, root, version.app_version) catch return 1) orelse return 0;
     defer a.free(applied.exe_path);
 
+    // The new image must inherit our environment, and that has to be said here:
+    // a null `environ_map` hands the replacement an *empty* one (verified — the
+    // exec'd process saw zero variables), and that killed exactly this restart.
+    // With no `$WAYLAND_DISPLAY`/`$DISPLAY` Slint doesn't fail gracefully: it
+    // reads the empty environment as "no compositor, we must own the screen",
+    // picks its linuxkms backend, and aborts on the first frame with
+    // `Error presenting framebuffer on screen: Permission denied` because the
+    // real compositor holds DRM master. And with no `$HOME` we'd resolve the
+    // install root to `/.boxwallet`. The user saw the restart-to-apply launch
+    // die and the *next* one work, because by then the swap was done and nothing
+    // re-exec'd. Same trap as `currentEnvMap`, one call over.
+    var env_map = currentEnvMap(a) catch {
+        std.log.warn("self-update re-exec: could not read the environment", .{});
+        return 1;
+    };
+    defer env_map.deinit();
+
     // Only returns on failure. The binary on disk is already the new one by this
     // point, so the next launch is clean either way — run the old image for now.
-    const err = std.process.replace(io, .{ .argv = &.{applied.exe_path} });
+    const err = std.process.replace(io, .{ .argv = &.{applied.exe_path}, .environ_map = &env_map });
     std.log.warn("self-update re-exec failed: {s}", .{@errorName(err)});
     return 1;
 }
