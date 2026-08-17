@@ -809,6 +809,47 @@ pub fn syncFromNetworkHeight(blocks: i64, network_height: i64) SyncStatus {
     return .{ .synced = blocks >= network_height, .progress = std.math.clamp(p, 0, 1) };
 }
 
+/// "Synced" for the CryptoNote/Monero family (`get_info`), which reports a
+/// `synchronized` flag, the local `height`, and `target_height` — the highest tip
+/// a peer has announced, which the daemon zeroes once it believes it's caught up.
+///
+/// **Both have to agree**, because either one alone lies:
+///
+///   * The flag on its own goes true as soon as the daemon drains the blocks it
+///     had queued, while `target_height` still names a higher tip a peer told it
+///     about. That is the readout saying "Synced" with blocks plainly short of
+///     headers — the whole reason this helper exists.
+///   * `target_height == 0` on its own is just as bad the other way: a daemon
+///     that has only just started and heard no peer height reports 0 too, so a
+///     chain a few hundred blocks deep would read as finished.
+///
+/// So the daemon must *say* it is synchronized **and** its height must have
+/// reached every tip a peer has told it about. `height > 0` keeps a daemon that
+/// has loaded nothing at all from qualifying.
+pub fn cryptonoteSynced(height: i64, target_height: i64, synchronized: bool) bool {
+    return synchronized and height > 0 and height >= target_height;
+}
+
+test "cryptonoteSynced needs the flag and the height together" {
+    // Caught up: the daemon says so and has zeroed the target.
+    try std.testing.expect(cryptonoteSynced(1_500_000, 0, true));
+
+    // The bug: `synchronized` true while a peer's tip is still ahead.
+    try std.testing.expect(!cryptonoteSynced(900_000, 1_500_000, true));
+
+    // Mid-sync, flag honest.
+    try std.testing.expect(!cryptonoteSynced(900_000, 1_500_000, false));
+
+    // Just started, no peer height yet — target 0 must not read as finished.
+    try std.testing.expect(!cryptonoteSynced(400, 0, false));
+
+    // Nothing loaded at all.
+    try std.testing.expect(!cryptonoteSynced(0, 0, true));
+
+    // A block arrived past the last announced tip — still synced.
+    try std.testing.expect(cryptonoteSynced(1_500_001, 1_500_000, true));
+}
+
 test "sync distance fills each figure in from the other" {
     const now: i64 = 1_700_000_000;
     const base: BlockchainState = .{

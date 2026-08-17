@@ -286,8 +286,10 @@ pub const Monero = struct {
     }
 
     /// Live `get_info`, normalized for a frontend. Monero has no
-    /// `verificationprogress`; sync is the `synchronized` flag, or `height`
-    /// reaching the network `target_height` (which is 0 once caught up).
+    /// `verificationprogress`; sync is `models.cryptonoteSynced` — the
+    /// `synchronized` flag *and* `height` having reached the peer-announced
+    /// `target_height` (which is 0 once caught up), because either alone reads as
+    /// synced while blocks are still short of headers.
     pub fn blockchainState(
         allocator: std.mem.Allocator,
         auth: models.CoinAuth,
@@ -298,7 +300,7 @@ pub const Monero = struct {
         const r = parsed.value.result orelse return error.EmptyRpcResult;
         const tip = @max(r.target_height, r.height);
         const chain = if (r.testnet) "testnet" else if (r.stagenet) "stagenet" else "mainnet";
-        const synced = r.synchronized or (r.height > 0 and (r.target_height == 0 or r.height >= r.target_height));
+        const synced = models.cryptonoteSynced(r.height, r.target_height, r.synchronized);
         return .{
             .chain = try allocator.dupe(u8, chain),
             .blocks = r.height,
@@ -1529,7 +1531,7 @@ test "estimateSecondsBehind turns the block gap into a behind-by estimate" {
 test "a daemon still catching up reads as not synced" {
     // Mid-sync: height behind target_height and not yet synchronized.
     const r: Monero.MoneroInfo = .{ .height = 900_000, .target_height = 3_400_000, .synchronized = false };
-    const synced = r.synchronized or (r.height > 0 and (r.target_height == 0 or r.height >= r.target_height));
+    const synced = models.cryptonoteSynced(r.height, r.target_height, r.synchronized);
     try std.testing.expect(!synced);
     try std.testing.expectEqual(@as(i64, 3_400_000), @max(r.target_height, r.height));
 }

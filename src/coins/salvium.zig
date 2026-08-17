@@ -216,8 +216,10 @@ pub const Salvium = struct {
     }
 
     /// Live `get_info`, normalized for a frontend. Monero has no
-    /// `verificationprogress`; sync is the `synchronized` flag, or `height`
-    /// reaching the network `target_height` (which is 0 once caught up).
+    /// `verificationprogress`; sync is `models.cryptonoteSynced` — the
+    /// `synchronized` flag *and* `height` having reached the peer-announced
+    /// `target_height` (which is 0 once caught up), because either alone reads as
+    /// synced while blocks are still short of headers.
     pub fn blockchainState(
         allocator: std.mem.Allocator,
         auth: models.CoinAuth,
@@ -228,7 +230,7 @@ pub const Salvium = struct {
         const r = parsed.value.result orelse return error.EmptyRpcResult;
         const tip = @max(r.target_height, r.height);
         const chain = if (r.testnet) "testnet" else if (r.stagenet) "stagenet" else "mainnet";
-        const synced = r.synchronized or (r.height > 0 and (r.target_height == 0 or r.height >= r.target_height));
+        const synced = models.cryptonoteSynced(r.height, r.target_height, r.synchronized);
         return .{
             .chain = try allocator.dupe(u8, chain),
             .blocks = r.height,
@@ -1494,7 +1496,7 @@ test "parses get_info into a synced BlockchainState" {
         .blocks = r.height,
         .headers = tip,
         .verification_progress = 0,
-        .synced = r.synchronized or (r.height > 0 and (r.target_height == 0 or r.height >= r.target_height)),
+        .synced = models.cryptonoteSynced(r.height, r.target_height, r.synchronized),
         .network_height = tip,
     };
     defer state.deinit(allocator);
@@ -1518,9 +1520,30 @@ test "estimateSecondsBehind turns the block gap into a behind-by estimate" {
 test "a daemon still catching up reads as not synced" {
     // Mid-sync: height behind target_height and not yet synchronized.
     const r: Salvium.SalviumInfo = .{ .height = 900_000, .target_height = 1_500_000, .synchronized = false };
-    const synced = r.synchronized or (r.height > 0 and (r.target_height == 0 or r.height >= r.target_height));
+    const synced = models.cryptonoteSynced(r.height, r.target_height, r.synchronized);
     try std.testing.expect(!synced);
     try std.testing.expectEqual(@as(i64, 1_500_000), @max(r.target_height, r.height));
+}
+
+test "salviumd claiming synchronized with a peer tip ahead is not synced" {
+    // The reported bug: `synchronized` flips true the moment the daemon drains the
+    // blocks it had queued, while a peer's announced `target_height` is still
+    // ahead — so blocks read "Synced" without ever matching headers. Both the flag
+    // and the height have to agree now.
+    const r: Salvium.SalviumInfo = .{ .height = 900_000, .target_height = 1_500_000, .synchronized = true };
+    const tip = @max(r.target_height, r.height);
+    const synced = models.cryptonoteSynced(r.height, r.target_height, r.synchronized);
+    try std.testing.expect(!synced);
+    try std.testing.expect(r.height < tip); // blocks genuinely short of headers
+    // And the "behind by …" hint is shown rather than suppressed.
+    try std.testing.expect(Salvium.estimateSecondsBehind(tip, r.height, synced) > 0);
+}
+
+test "a freshly started salviumd with no peer height is not synced" {
+    // No peer has announced a tip yet, so `target_height` is 0 — the same value a
+    // caught-up daemon reports. A few hundred blocks in must not read as finished.
+    const r: Salvium.SalviumInfo = .{ .height = 400, .target_height = 0, .synchronized = false };
+    try std.testing.expect(!models.cryptonoteSynced(r.height, r.target_height, r.synchronized));
 }
 
 test "maps get_info into DaemonInfo (connections summed, PoW so no staking)" {
