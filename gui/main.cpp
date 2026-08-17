@@ -2774,18 +2774,12 @@ int main(int argc, char **argv)
             // System RAM: a cheap read of the OS's own figures, so every tick.
             BwDiskUsage mu;
             std::memset(&mu, 0, sizeof mu);
+            // Only the fraction: the Memory gauge is drawn as a bare ring, with
+            // no figure beside it to format.
             float mem_frac = 0.0f;
-            // Negative until read: the gauge shows nothing rather than "0 B".
-            float mem_used_value = -1.0f;
-            std::string mem_used_suffix;
-            int mem_used_decimals = 1;
             if (bw_memory_usage(&mu) == 0 && mu.total_bytes > 0) {
                 mem_frac = static_cast<float>(static_cast<double>(mu.used_bytes) /
                                               static_cast<double>(mu.total_bytes));
-                const ScaledBytes s = scale_bytes(mu.used_bytes);
-                mem_used_value = static_cast<float>(s.value);
-                mem_used_suffix = std::string(" ") + s.unit + " used";
-                mem_used_decimals = s.decimals;
             }
 
             // What the chain occupies. This WALKS the data dir — hundreds of
@@ -2880,7 +2874,7 @@ int main(int argc, char **argv)
                         disk_free_decimals, wallet_sec, stage, coming_up, live_status,
                         live_cur, live_join, live_total,
                         tip_date, sync_behind,
-                        mem_frac, mem_used_value, mem_used_suffix, mem_used_decimals, storage_now, du,
+                        mem_frac, storage_now, du,
                         price_usd, price_change, price_dir, holding_value,
                         sc_active, sc_status, sc_balance, sc_pending, sc_price, sc_supply,
                         sc_health, sc_countdown, sc_addr, sc_price_stale, sc_minting_blocked,
@@ -2919,9 +2913,6 @@ int main(int argc, char **argv)
                 (*h)->set_price_dir(price_dir);
                 (*h)->set_holding_value(ss(holding_value));
                 (*h)->set_mem_frac(mem_frac);
-                (*h)->set_mem_used_value(mem_used_value);
-                (*h)->set_mem_used_suffix(ss(mem_used_suffix));
-                (*h)->set_mem_used_decimals(mem_used_decimals);
                 // Formatted by the core, not by humanize_bytes: that one uses
                 // binary units, so the same chain read "11.5 GB" here and
                 // "12.34 GB" in the TUI. bw_format_storage is the TUI's own
