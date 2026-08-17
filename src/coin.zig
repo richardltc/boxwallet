@@ -773,6 +773,21 @@ pub const Coin = struct {
         /// user knows what they're agreeing to before locking funds. Paired with
         /// `wallet_stake`; null reads as empty.
         stake_hint: ?*const fn (ptr: *anyopaque) []const u8 = null,
+        /// Optional: the wallet's stakes — what's locked, for how much longer,
+        /// and what already came back — normalized to `models.Stake`, newest
+        /// first, capped at `limit`. Non-null marks a coin whose Staking tab can
+        /// show a live list; `supportsStakeList` keys off this.
+        ///
+        /// Separate from `wallet_stake` because listing and staking are different
+        /// capabilities: a coin could offer the action before anyone works out
+        /// how to enumerate its locked funds, and the tab still earns its place
+        /// (the action alone). A front-end asks each question of its own hook.
+        wallet_stakes: ?*const fn (
+            ptr: *anyopaque,
+            allocator: std.mem.Allocator,
+            auth: models.CoinAuth,
+            limit: usize,
+        ) anyerror![]models.Stake = null,
         /// Optional: the daemon's live CPU-mining state (whether it's mining, on
         /// how many threads, at what hashrate), normalized to `MiningStatus`.
         /// Non-null marks a coin whose daemon mines in-process (the CryptoNote
@@ -1253,6 +1268,25 @@ pub const Coin = struct {
     pub fn stakeHint(self: Coin) []const u8 {
         if (self.vtable.stake_hint) |f| return f(self.ptr);
         return "";
+    }
+
+    /// Whether this coin can enumerate the wallet's stakes (drives the Staking
+    /// tab's list). True iff the coin wires `wallet_stakes`.
+    pub fn supportsStakeList(self: Coin) bool {
+        return self.vtable.wallet_stakes != null;
+    }
+
+    /// The wallet's stakes, newest first, capped at `limit`. Errors
+    /// `error.Unsupported` if the coin can't enumerate them
+    /// (`supportsStakeList` false).
+    pub fn walletStakes(
+        self: Coin,
+        allocator: std.mem.Allocator,
+        auth: models.CoinAuth,
+        limit: usize,
+    ) ![]models.Stake {
+        const f = self.vtable.wallet_stakes orelse return error.Unsupported;
+        return f(self.ptr, allocator, auth, limit);
     }
 
     /// Whether this coin's daemon mines in-process (drives the Mining tab).

@@ -337,6 +337,7 @@ const DetailTab = enum {
     settings,
     mining,
     digidollar,
+    staking,
 
     fn label(self: DetailTab) []const u8 {
         return switch (self) {
@@ -347,26 +348,49 @@ const DetailTab = enum {
             .settings => "Settings",
             .mining => "Mining",
             .digidollar => "DigiDollar",
+            .staking => "Staking",
         };
     }
 };
 
-/// Whether `t` exists on the current coin's strip — the two capability tabs
-/// only exist where the coin wires the capability.
-fn tabVisible(t: DetailTab, has_mining: bool, has_stablecoin: bool) bool {
+/// Which capability tabs the current coin earns. A struct rather than a growing
+/// list of positional bools: every tab-strip helper takes it, so adding a tab is
+/// one field and one `tabVisible` arm instead of re-threading every call site.
+const TabCaps = struct {
+    mining: bool = false,
+    stablecoin: bool = false,
+    staking: bool = false,
+
+    fn of(coin: Coin) TabCaps {
+        return .{
+            .mining = coin.supportsMining(),
+            .stablecoin = coin.supportsStablecoin(),
+            // The *action* earns the tab, not the list: a coin that can stake
+            // but can't yet enumerate its stakes still has something to put
+            // there. The list is the tab's body, and its absence is a shorter
+            // page, not a missing tab.
+            .staking = coin.supportsStakeAction(),
+        };
+    }
+};
+
+/// Whether `t` exists on the current coin's strip — the capability tabs only
+/// exist where the coin wires the capability.
+fn tabVisible(t: DetailTab, caps: TabCaps) bool {
     return switch (t) {
-        .mining => has_mining,
-        .digidollar => has_stablecoin,
+        .mining => caps.mining,
+        .digidollar => caps.stablecoin,
+        .staking => caps.staking,
         else => true,
     };
 }
 
 /// How many tabs the current coin shows — 5 plus its capability tabs. Drives
 /// the strip hint's "1-N".
-fn visibleTabCount(has_mining: bool, has_stablecoin: bool) usize {
+fn visibleTabCount(caps: TabCaps) usize {
     var n: usize = 0;
     inline for (std.meta.tags(DetailTab)) |t| {
-        if (tabVisible(t, has_mining, has_stablecoin)) n += 1;
+        if (tabVisible(t, caps)) n += 1;
     }
     return n;
 }
@@ -375,10 +399,10 @@ fn visibleTabCount(has_mining: bool, has_stablecoin: bool) usize {
 /// end. The numbered jumps go through this so tab numbers are positional over
 /// what's on screen: a coin with a stablecoin tab (and no mining) gets it on
 /// `6`, exactly where a mining coin's Mining tab sits.
-fn visibleTabAt(idx: usize, has_mining: bool, has_stablecoin: bool) ?DetailTab {
+fn visibleTabAt(idx: usize, caps: TabCaps) ?DetailTab {
     var n: usize = 0;
     inline for (std.meta.tags(DetailTab)) |t| {
-        if (tabVisible(t, has_mining, has_stablecoin)) {
+        if (tabVisible(t, caps)) {
             if (n == idx) return t;
             n += 1;
         }
@@ -389,14 +413,14 @@ fn visibleTabAt(idx: usize, has_mining: bool, has_stablecoin: bool) ?DetailTab {
 /// Step to the next/previous detail tab, wrapping around the ends. `delta` is
 /// +1 (right) or -1 (left). Tabs the coin doesn't have (`tabVisible` false) are
 /// skipped straight over, so the cycle only ever lands on the visible strip.
-fn cycleTab(t: DetailTab, delta: i2, has_mining: bool, has_stablecoin: bool) DetailTab {
+fn cycleTab(t: DetailTab, delta: i2, caps: TabCaps) DetailTab {
     const n: i32 = @typeInfo(DetailTab).@"enum".fields.len;
     var next: DetailTab = t;
     // At most enum-length steps: enough to skip past every hidden tab even if
     // they sit adjacent at the wrap point.
     for (0..@typeInfo(DetailTab).@"enum".fields.len) |_| {
         next = @enumFromInt(@mod(@as(i32, @intFromEnum(next)) + delta, n));
-        if (tabVisible(next, has_mining, has_stablecoin)) break;
+        if (tabVisible(next, caps)) break;
     }
     return next;
 }
@@ -1517,6 +1541,13 @@ const Activity = struct {
     /// read by the UI after observing it (acquire).
     poll_tx_buf: [tx_cache_cap]models.WalletTx = undefined,
     poll_tx_count: usize = 0,
+    /// The coin's cached stakes (Staking tab), newest-first, and its poll-staging
+    /// counterpart. Same fixed-capacity, plain-buffer pattern as the transaction
+    /// cache; only ever populated for a coin whose `supportsStakeList()` is true.
+    stake_buf: [stake_cache_cap]models.Stake = undefined,
+    stake_count: usize = 0,
+    poll_stake_buf: [stake_cache_cap]models.Stake = undefined,
+    poll_stake_count: usize = 0,
     /// The coin's cached receive address (Receive tab), and its poll-staging
     /// counterpart — same cross-thread plain-buffer pattern as the version/
     /// transaction caches. Unlike balance/transactions, this is fetched at
@@ -2479,6 +2510,9 @@ const Activity = struct {
         const tn = @min(self.poll_tx_count, self.tx_buf.len);
         @memcpy(self.tx_buf[0..tn], self.poll_tx_buf[0..tn]);
         self.tx_count = tn;
+        const sn = @min(self.poll_stake_count, self.stake_buf.len);
+        @memcpy(self.stake_buf[0..sn], self.poll_stake_buf[0..sn]);
+        self.stake_count = sn;
 
         // Cached receive address, same ordering rationale.
         const an = @min(self.poll_receive_addr_len, self.receive_addr_buf.len);
@@ -2945,6 +2979,17 @@ const Activity = struct {
             } else |_| {}
         }
 
+        // The wallet's stakes (Staking tab), for a coin that can enumerate them.
+        // Same best-effort rule as the transaction list: a hiccup leaves the last
+        // cached list rather than blanking the tab.
+        if (self.coin.supportsStakeList() and wallet_rpc_ready) {
+            if (self.coin.walletStakes(a, wallet_rpc_auth, stake_cache_cap)) |stakes| {
+                const n = @min(stakes.len, stake_cache_cap);
+                @memcpy(self.poll_stake_buf[0..n], stakes[0..n]);
+                self.poll_stake_count = n;
+            } else |_| {}
+        }
+
         // Wallet receive address (Receive tab). Unlike balance/transactions,
         // this is NOT re-fetched every poll: `getaccountaddress` silently
         // rotates once the address has been paid, so polling it passively
@@ -3370,6 +3415,11 @@ const header_tip_slack = status_mod.header_tip_slack;
 /// and fetches per poll. Bounds both the RPC page size and the fixed-capacity
 /// display buffer (`Activity.tx_buf`/`poll_tx_buf`) — no unbounded growth.
 const tx_cache_cap: usize = 20;
+
+/// The same bound for the Staking tab's list. A stake is a rarer event than a
+/// transaction — one every few weeks, by the nature of a 30-day term — so 20
+/// rows is a deep history here, not a page.
+const stake_cache_cap: usize = 20;
 
 const dirSizeBytes = disk.dirSizeBytes;
 
@@ -4030,12 +4080,11 @@ pub const App = struct {
                 }
                 // Detail-pane tabs only exist for a selected coin, not the Home
                 // screen — so left/right and the numbered jumps are live only
-                // then. The capability tabs (Mining, DigiDollar) exist only for
-                // a coin wiring the capability, so their jump/cycle stops are
-                // gated per coin.
+                // then. The capability tabs (Mining, DigiDollar, Staking) exist
+                // only for a coin wiring the capability, so their jump/cycle
+                // stops are gated per coin.
                 const on_coin = self.selectedCoin() != null;
-                const has_mining = if (self.selectedCoin()) |c| c.supportsMining() else false;
-                const has_sc = if (self.selectedCoin()) |c| c.supportsStablecoin() else false;
+                const caps: TabCaps = if (self.selectedCoin()) |c| TabCaps.of(c) else .{};
                 switch (k.key) {
                     .char => |c| switch (c) {
                         'q' => return .quit,
@@ -4071,23 +4120,23 @@ pub const App = struct {
                         // Capital S — lowercase 's' toggles the daemon. Opens the
                         // Stake prompt on the Send tab for coins with a stake
                         // action (openStakeModal checks the capability itself).
-                        'S' => if (on_coin and self.active_tab == .send) self.openStakeModal(),
+                        'S' => if (on_coin and self.active_tab == .staking) self.openStakeModal(),
                         't' => if (on_coin) self.copyTipAddress(ctx),
                         // Jump straight to a tab by number, positional over the
                         // *visible* strip (1 = Home … 5 = Settings, 6 = the
                         // coin's capability tab when it has one).
                         '1'...'7' => if (on_coin) {
-                            if (visibleTabAt(c - '1', has_mining, has_sc)) |t| self.active_tab = t;
+                            if (visibleTabAt(c - '1', caps)) |t| self.active_tab = t;
                         },
                         else => {},
                     },
                     .up => self.move(-1),
                     .down => self.move(1),
                     .left => if (on_coin) {
-                        self.active_tab = cycleTab(self.active_tab, -1, has_mining, has_sc);
+                        self.active_tab = cycleTab(self.active_tab, -1, caps);
                     },
                     .right => if (on_coin) {
-                        self.active_tab = cycleTab(self.active_tab, 1, has_mining, has_sc);
+                        self.active_tab = cycleTab(self.active_tab, 1, caps);
                     },
                     .enter => if (on_coin) switch (self.active_tab) {
                         .send => self.openSendModal(),
@@ -4568,6 +4617,7 @@ pub const App = struct {
                         act.balance_avail = 0;
                         // Drop the cached transaction list — the daemon's gone.
                         act.tx_count = 0;
+                        act.stake_count = 0;
                         act.poll_tx_count = 0;
                         // The miner died with the daemon — clear its readout so
                         // the Mining tab doesn't show a stale hashrate.
@@ -7614,6 +7664,10 @@ pub const App = struct {
                 try renderStablecoinTab(a, sc, act, self.hide_balances)
             else
                 try renderPlaceholderTab(a, self.active_tab),
+            .staking => if (coin.supportsStakeAction())
+                try renderStakingTab(a, coin, act, self.hide_balances)
+            else
+                try renderPlaceholderTab(a, self.active_tab),
         };
 
         // TIP line: persists across every tab (mirrors description/tab_strip),
@@ -7636,11 +7690,10 @@ pub const App = struct {
     /// capability, so they — and the hint's key range — are gated per coin. The
     /// stablecoin tab is labelled with the capability's own name.
     fn renderTabStrip(a: std.mem.Allocator, brand: zz.Color, active: DetailTab, coin: Coin) ![]const u8 {
-        const has_mining = coin.supportsMining();
-        const has_sc = coin.supportsStablecoin();
+        const caps = TabCaps.of(coin);
         var strip: []const u8 = "";
         inline for (std.meta.tags(DetailTab), 0..) |t, i| {
-            if (tabVisible(t, has_mining, has_sc)) {
+            if (tabVisible(t, caps)) {
                 const lbl = if (t == .digidollar) coin.stablecoin().?.name else t.label();
                 const styled = if (t == active)
                     try (zz.Style{}).bold(true).fg(brand).render(a, lbl)
@@ -7650,7 +7703,7 @@ pub const App = struct {
                 strip = if (i == 0) styled else try std.fmt.allocPrint(a, "{s}  {s}  {s}", .{ strip, sep, styled });
             }
         }
-        const hint_text = try std.fmt.allocPrint(a, "   (←/→ or 1-{d} to switch tabs)", .{visibleTabCount(has_mining, has_sc)});
+        const hint_text = try std.fmt.allocPrint(a, "   (←/→ or 1-{d} to switch tabs)", .{visibleTabCount(caps)});
         const hint = try (zz.Style{}).dim(true).render(a, hint_text);
         return std.fmt.allocPrint(a, "{s}{s}", .{ strip, hint });
     }
@@ -7772,6 +7825,114 @@ pub const App = struct {
         return std.fmt.allocPrint(a, "Transactions\n\n{s}", .{body});
     }
 
+    /// The Staking tab body: what staking does on this coin, the key that starts
+    /// one, and the wallet's stakes (`act.stake_buf`/`act.stake_count`) newest
+    /// first — each with the principal, the date it was staked, and either how
+    /// long its term has left or when it paid out and what it earned.
+    ///
+    /// Only reached for a coin with a stake action; a coin that has the action
+    /// but can't enumerate stakes (`supportsStakeList` false) simply gets the
+    /// prompt with no table. Reads only cached `act` fields — no RPC in render.
+    fn renderStakingTab(
+        a: std.mem.Allocator,
+        coin: Coin,
+        act: *const Activity,
+        hide_balances: bool,
+    ) ![]const u8 {
+        const decimals = coin.balanceDecimals();
+        const abbrev = coin.coinNameAbbrev();
+
+        const hint_text = coin.stakeHint();
+        const hint = if (hint_text.len == 0)
+            ""
+        else
+            (zz.Style{}).dim(true).render(a, hint_text) catch hint_text;
+        const key_hint = (zz.Style{}).dim(true).render(a, "(S: stake)") catch "(S: stake)";
+        const head = if (hint.len == 0)
+            try std.fmt.allocPrint(a, "Staking\n\n{s}", .{key_hint})
+        else
+            try std.fmt.allocPrint(a, "Staking\n\n{s}\n\n{s}", .{ hint, key_hint });
+
+        if (!coin.supportsStakeList()) return head;
+        // A wallet that has never staked, and one whose stakes haven't loaded
+        // yet, both read as empty — the prompt above still says what to do.
+        if (act.stake_count == 0)
+            return std.fmt.allocPrint(a, "{s}\n\nNo stakes yet.", .{head});
+
+        // Same column discipline as the Transactions table: pad the plain text to
+        // a common width *before* styling, since ANSI bytes aren't display cells.
+        const date_w: usize = 16;
+        var amount_w: usize = "Amount".len;
+        for (act.stake_buf[0..act.stake_count]) |s| {
+            var buf: [64]u8 = undefined;
+            const text = if (hide_balances) balance_mask else trimTrailingZeros(formatAmount(&buf, s.amount, decimals));
+            amount_w = @max(amount_w, text.len);
+        }
+
+        const header_plain = try std.fmt.allocPrint(a, "  {s}   {s}   Status", .{
+            try padCell(a, "Staked", date_w, false),
+            try padCell(a, "Amount", amount_w, true),
+        });
+        var body: []const u8 = (zz.Style{}).dim(true).render(a, header_plain) catch header_plain;
+
+        for (act.stake_buf[0..act.stake_count]) |s| {
+            var buf: [64]u8 = undefined;
+            const amount = if (hide_balances)
+                balance_mask
+            else
+                trimTrailingZeros(formatAmount(&buf, s.amount, decimals));
+            const line = try std.fmt.allocPrint(a, "  {s}   {s}   {s}", .{
+                try padCell(a, try formatBlockTime(a, s.staked_time), date_w, false),
+                try padCell(a, amount, amount_w, true),
+                try stakeStatusText(a, s, abbrev, decimals, hide_balances),
+            });
+            body = try std.fmt.allocPrint(a, "{s}\n{s}", .{ body, line });
+        }
+        return std.fmt.allocPrint(a, "{s}\n\n{s}", .{ head, body });
+    }
+
+    /// One stake's Status cell. A locked stake counts down in yellow (the same
+    /// "not yours to spend yet" colour the Available balance wears); a matured
+    /// one reads green with the date it unlocked and, where the payout could be
+    /// attributed to it, what it earned. `models.Stake` uses 0 for "not known",
+    /// so an unattributable payout simply loses the extra detail rather than
+    /// showing a zero.
+    fn stakeStatusText(
+        a: std.mem.Allocator,
+        s: models.Stake,
+        abbrev: []const u8,
+        decimals: u8,
+        hide_balances: bool,
+    ) ![]const u8 {
+        if (!s.isMatured()) {
+            var tbuf: [timefmt.max_len]u8 = undefined;
+            const eta = timefmt.duration(&tbuf, s.unlock_eta_seconds);
+            const text = if (eta.len == 0)
+                try std.fmt.allocPrint(a, "Locked, {d} blocks to go", .{s.blocks_remaining})
+            else
+                try std.fmt.allocPrint(a, "Locked, unlocks in {s}", .{eta});
+            return (zz.Style{}).bold(true).fg(.yellow).render(a, text) catch text;
+        }
+
+        const when = if (s.unlocked_time > 0)
+            try std.fmt.allocPrint(a, "Unlocked {s}", .{try formatBlockTime(a, s.unlocked_time)})
+        else
+            try a.dupe(u8, "Unlocked");
+        // The yield is the whole point of having staked, so it rides in the same
+        // cell — but only when this stake's own payout could be told apart from
+        // another's (see `pairStakeReturns`), and never while balances are hidden.
+        const text = if (hide_balances) when else blk: {
+            const earned = s.yield() orelse break :blk when;
+            var buf: [64]u8 = undefined;
+            break :blk try std.fmt.allocPrint(a, "{s}  (+{s} {s})", .{
+                when,
+                trimTrailingZeros(formatAmount(&buf, earned, decimals)),
+                abbrev,
+            });
+        };
+        return (zz.Style{}).bold(true).fg(.green).render(a, text) catch text;
+    }
+
     /// Pad an ASCII cell to `width` display cells with spaces, on the left when
     /// `right` (right-aligned, e.g. amounts) or on the right otherwise. Returns
     /// `text` unchanged when it already meets/exceeds the width. Caller-owned
@@ -7865,9 +8026,9 @@ pub const App = struct {
             const worth_sty = (zz.Style{}).fg(.brightBlack).render(a, worth) catch worth;
             break :blk try std.fmt.allocPrint(a, "{s}  ≈ {s}", .{ bal_str, worth_sty });
         };
-        // Coins with a stake action (Salvium) get the extra key in the hint;
-        // capital S because lowercase 's' toggles the daemon.
-        const hint_text = if (coin.supportsStakeAction()) "(Enter: send   S: stake)" else "(press Enter to send)";
+        // Staking has its own tab on the coins that offer it, so Send is only
+        // ever about paying someone else.
+        const hint_text = "(press Enter to send)";
         const hint = (zz.Style{}).dim(true).render(a, hint_text) catch hint_text;
         return std.fmt.allocPrint(a, "Send\n\nAvailable: {s}\n\n{s}", .{ balance, hint });
     }
@@ -9539,49 +9700,49 @@ fn coloredBar(a: std.mem.Allocator, current: u64, total: u64, fill: zz.Color) ![
 test "cycleTab steps through the detail tabs and wraps at both ends" {
     // Forward from each tab (a coin with neither capability tab — Mining and
     // DigiDollar don't exist for it, so the cycle skips straight over both).
-    try std.testing.expectEqual(DetailTab.transactions, cycleTab(.home, 1, false, false));
-    try std.testing.expectEqual(DetailTab.receive, cycleTab(.transactions, 1, false, false));
-    try std.testing.expectEqual(DetailTab.send, cycleTab(.receive, 1, false, false));
-    try std.testing.expectEqual(DetailTab.settings, cycleTab(.send, 1, false, false));
+    try std.testing.expectEqual(DetailTab.transactions, cycleTab(.home, 1, .{}));
+    try std.testing.expectEqual(DetailTab.receive, cycleTab(.transactions, 1, .{}));
+    try std.testing.expectEqual(DetailTab.send, cycleTab(.receive, 1, .{}));
+    try std.testing.expectEqual(DetailTab.settings, cycleTab(.send, 1, .{}));
     // Forward off the last tab wraps to the first, past the absent capability tabs.
-    try std.testing.expectEqual(DetailTab.home, cycleTab(.settings, 1, false, false));
+    try std.testing.expectEqual(DetailTab.home, cycleTab(.settings, 1, .{}));
     // Backward off the first tab wraps to the last, past the absent capability tabs.
-    try std.testing.expectEqual(DetailTab.settings, cycleTab(.home, -1, false, false));
-    try std.testing.expectEqual(DetailTab.send, cycleTab(.settings, -1, false, false));
+    try std.testing.expectEqual(DetailTab.settings, cycleTab(.home, -1, .{}));
+    try std.testing.expectEqual(DetailTab.send, cycleTab(.settings, -1, .{}));
 }
 
 test "cycleTab includes the Mining tab only for coins that mine" {
     // A mining coin (Nerva) cycles settings → mining → home in both directions.
-    try std.testing.expectEqual(DetailTab.mining, cycleTab(.settings, 1, true, false));
-    try std.testing.expectEqual(DetailTab.home, cycleTab(.mining, 1, true, false));
-    try std.testing.expectEqual(DetailTab.mining, cycleTab(.home, -1, true, false));
-    try std.testing.expectEqual(DetailTab.settings, cycleTab(.mining, -1, true, false));
+    try std.testing.expectEqual(DetailTab.mining, cycleTab(.settings, 1, .{ .mining = true }));
+    try std.testing.expectEqual(DetailTab.home, cycleTab(.mining, 1, .{ .mining = true }));
+    try std.testing.expectEqual(DetailTab.mining, cycleTab(.home, -1, .{ .mining = true }));
+    try std.testing.expectEqual(DetailTab.settings, cycleTab(.mining, -1, .{ .mining = true }));
 }
 
 test "cycleTab includes the DigiDollar tab only for stablecoin coins" {
     // A stablecoin coin (DigiByte) cycles settings → digidollar → home, skipping
     // the absent Mining tab in both directions.
-    try std.testing.expectEqual(DetailTab.digidollar, cycleTab(.settings, 1, false, true));
-    try std.testing.expectEqual(DetailTab.home, cycleTab(.digidollar, 1, false, true));
-    try std.testing.expectEqual(DetailTab.digidollar, cycleTab(.home, -1, false, true));
-    try std.testing.expectEqual(DetailTab.settings, cycleTab(.digidollar, -1, false, true));
+    try std.testing.expectEqual(DetailTab.digidollar, cycleTab(.settings, 1, .{ .stablecoin = true }));
+    try std.testing.expectEqual(DetailTab.home, cycleTab(.digidollar, 1, .{ .stablecoin = true }));
+    try std.testing.expectEqual(DetailTab.digidollar, cycleTab(.home, -1, .{ .stablecoin = true }));
+    try std.testing.expectEqual(DetailTab.settings, cycleTab(.digidollar, -1, .{ .stablecoin = true }));
 }
 
 test "numbered tab jumps are positional over the visible strip" {
     // Plain coin: 1-5, nothing on 6.
-    try std.testing.expectEqual(DetailTab.home, visibleTabAt(0, false, false).?);
-    try std.testing.expectEqual(DetailTab.settings, visibleTabAt(4, false, false).?);
-    try std.testing.expect(visibleTabAt(5, false, false) == null);
+    try std.testing.expectEqual(DetailTab.home, visibleTabAt(0, .{}).?);
+    try std.testing.expectEqual(DetailTab.settings, visibleTabAt(4, .{}).?);
+    try std.testing.expect(visibleTabAt(5, .{}) == null);
     // Mining coin: 6 = Mining.
-    try std.testing.expectEqual(DetailTab.mining, visibleTabAt(5, true, false).?);
+    try std.testing.expectEqual(DetailTab.mining, visibleTabAt(5, .{ .mining = true }).?);
     // Stablecoin coin: 6 = DigiDollar (contiguous — no dead 6 where Mining
     // would sit).
-    try std.testing.expectEqual(DetailTab.digidollar, visibleTabAt(5, false, true).?);
-    try std.testing.expect(visibleTabAt(6, false, true) == null);
+    try std.testing.expectEqual(DetailTab.digidollar, visibleTabAt(5, .{ .stablecoin = true }).?);
+    try std.testing.expect(visibleTabAt(6, .{ .stablecoin = true }) == null);
     // Hint ranges follow the same counts.
-    try std.testing.expectEqual(@as(usize, 5), visibleTabCount(false, false));
-    try std.testing.expectEqual(@as(usize, 6), visibleTabCount(false, true));
-    try std.testing.expectEqual(@as(usize, 6), visibleTabCount(true, false));
+    try std.testing.expectEqual(@as(usize, 5), visibleTabCount(.{}));
+    try std.testing.expectEqual(@as(usize, 6), visibleTabCount(.{ .stablecoin = true }));
+    try std.testing.expectEqual(@as(usize, 6), visibleTabCount(.{ .mining = true }));
 }
 
 test "redeemablePositionAt walks only the redeemable vaults, in cache order" {
@@ -10346,6 +10507,156 @@ test "the Transactions tab only shows live data for a coin that supports it" {
         // 3.0 trims to a bare "3", right-aligned to the "Amount" header's width.
         try std.testing.expect(std.mem.indexOf(u8, pane, "     3") != null);
     }
+}
+
+test "the Staking tab exists only for a coin that stakes, and lists its stakes" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    var app: App = undefined;
+    app.hide_balances = false;
+    app.disk_used = 0;
+    app.disk_total = 0;
+    app.mem_used = 0;
+    app.mem_total = 0;
+    app.active_tab = .staking;
+
+    // A coin with no stake action never grows the tab — the strip is built from
+    // `tabVisible`, so Staking simply isn't on it (per-coin rule: adding this
+    // must not change any other coin's pane). Checked on its Home tab, which is
+    // where a coin switch always lands.
+    {
+        var nexa: Nexa = .{};
+        const coin = nexa.coin();
+        try std.testing.expect(!coin.supportsStakeAction());
+        try std.testing.expect(!tabVisible(.staking, TabCaps.of(coin)));
+
+        var act: Activity = .{
+            .coin = coin,
+            .home_dir = "",
+            .spinner = App.makeSpinner(),
+            .daemon_spinner = App.makeSpinner(),
+            .sync_spinner = zz.Spinner.init(),
+        };
+        act.installed = true;
+        act.daemon.store(@intFromEnum(DaemonState.running), .release);
+        act.poll_completed = true;
+
+        app.active_tab = .home;
+        defer app.active_tab = .staking;
+        const pane = try App.renderCoin(&app, a, coin, &act);
+        try std.testing.expect(std.mem.indexOf(u8, pane, "Staking") == null);
+    }
+
+    var sal: Salvium = .{};
+    const coin = sal.coin();
+    try std.testing.expect(tabVisible(.staking, TabCaps.of(coin)));
+
+    var act: Activity = .{
+        .coin = coin,
+        .home_dir = "",
+        .spinner = App.makeSpinner(),
+        .daemon_spinner = App.makeSpinner(),
+        .sync_spinner = zz.Spinner.init(),
+    };
+    act.installed = true;
+    act.daemon.store(@intFromEnum(DaemonState.running), .release);
+    act.poll_completed = true;
+
+    // Nothing staked yet: the term description and the key to start one still
+    // stand, so the tab tells you what it's for before there's any history.
+    {
+        const pane = try App.renderCoin(&app, a, coin, &act);
+        try std.testing.expect(std.mem.indexOf(u8, pane, "No stakes yet.") != null);
+        try std.testing.expect(std.mem.indexOf(u8, pane, "S: stake") != null);
+        try std.testing.expect(std.mem.indexOf(u8, pane, "30 days") != null);
+    }
+
+    // One locked and one matured stake, the shapes the live wallet produced.
+    act.stake_buf[0] = .{
+        .amount = 1000,
+        .staked_time = 1786963395,
+        .unlock_height = 576_643,
+        .blocks_remaining = 21_592,
+        .unlock_eta_seconds = 21_592 * 120,
+        .unlocked_time = 0,
+        .returned = 0,
+    };
+    act.stake_buf[1] = .{
+        .amount = 1000,
+        .staked_time = 1783463334,
+        .unlock_height = 547_550,
+        .blocks_remaining = 0,
+        .unlock_eta_seconds = 0,
+        .unlocked_time = 1786065414,
+        .returned = 1006.20821166,
+    };
+    act.stake_count = 2;
+    {
+        const pane = try App.renderCoin(&app, a, coin, &act);
+        // The locked one counts down; the matured one says when it paid out and
+        // what the term earned.
+        try std.testing.expect(std.mem.indexOf(u8, pane, "Locked, unlocks in") != null);
+        try std.testing.expect(std.mem.indexOf(u8, pane, "Unlocked 2026-") != null);
+        try std.testing.expect(std.mem.indexOf(u8, pane, "+6.2") != null);
+    }
+
+    // Hidden balances mask the principal and drop the yield with it — a figure
+    // derived from the amount would leak what the mask is there to cover.
+    {
+        app.hide_balances = true;
+        defer app.hide_balances = false;
+        const pane = try App.renderCoin(&app, a, coin, &act);
+        try std.testing.expect(std.mem.indexOf(u8, pane, "+6.2") == null);
+        try std.testing.expect(std.mem.indexOf(u8, pane, "Unlocked 2026-") != null);
+    }
+}
+
+test "stakeStatusText counts down while locked and reports the payout after" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    // A term with under a minute to run has no duration text to show, so the
+    // block count carries it rather than the cell going blank.
+    const nearly: models.Stake = .{
+        .amount = 10,
+        .staked_time = 100,
+        .unlock_height = 200,
+        .blocks_remaining = 1,
+        .unlock_eta_seconds = 0,
+        .unlocked_time = 0,
+        .returned = 0,
+    };
+    try std.testing.expect(std.mem.indexOf(u8, try App.stakeStatusText(a, nearly, "SAL", 8, false), "1 blocks to go") != null);
+
+    // Matured but unattributable (two stakes shared one payout): the date still
+    // shows, the yield doesn't — no invented figure.
+    const shared: models.Stake = .{
+        .amount = 100,
+        .staked_time = 100,
+        .unlock_height = 200,
+        .blocks_remaining = 0,
+        .unlock_eta_seconds = 0,
+        .unlocked_time = 1786065414,
+        .returned = 0,
+    };
+    const text = try App.stakeStatusText(a, shared, "SAL", 8, false);
+    try std.testing.expect(std.mem.indexOf(u8, text, "Unlocked 2026-") != null);
+    try std.testing.expect(std.mem.indexOf(u8, text, "+") == null);
+
+    // Matured with no payout found at all: still honestly "Unlocked", no date.
+    const undated: models.Stake = .{
+        .amount = 25,
+        .staked_time = 100,
+        .unlock_height = 200,
+        .blocks_remaining = 0,
+        .unlock_eta_seconds = 0,
+        .unlocked_time = 0,
+        .returned = 0,
+    };
+    try std.testing.expect(std.mem.indexOf(u8, try App.stakeStatusText(a, undated, "SAL", 8, false), "Unlocked") != null);
 }
 
 test "renderReceiveTab shows an empty state with no cached address" {
@@ -12700,3 +13011,4 @@ test "the price roster covers every listed coin and omits unlisted ones" {
     }
     try std.testing.expectEqual(expected, n);
 }
+

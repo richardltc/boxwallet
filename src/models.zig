@@ -461,6 +461,72 @@ pub const WalletTx = struct {
     }
 };
 
+/// One stake: an amount the wallet locked for the coin's staking term, on a
+/// coin with an explicit stake *action* (Salvium). Scalar-only for the same
+/// reason as `WalletTx` — a fixed-capacity array of these crosses the
+/// poll-worker/UI boundary and the C ABI by memcpy, owning nothing.
+///
+/// The two halves of a stake's life are both representable here, and a front-end
+/// tells them apart by `blocks_remaining`:
+///
+///   * **Still locked** — `blocks_remaining` > 0, `unlock_eta_seconds` estimates
+///     how long that is in wall-clock time. `unlocked_time` and `returned` are 0:
+///     nothing has come back yet.
+///   * **Matured** — `blocks_remaining` is 0. `unlocked_time` is when the term
+///     ended, and `returned` the principal + yield that came back.
+///
+/// `unlocked_time` and `returned` are **0 for "not known"**, which a matured
+/// stake can legitimately be: when two stakes mature in the same block the
+/// daemon pays them back as a single credit, and neither the time nor the amount
+/// can be attributed to one of them. A front-end shows a blank there rather than
+/// inventing a figure.
+pub const Stake = struct {
+    /// The principal locked, in whole coins. Exact — read from the transaction
+    /// itself, not inferred from a fee.
+    amount: f64,
+    /// When the stake was made (unix seconds); 0 while it's still unconfirmed.
+    staked_time: i64,
+    /// The block height the term ends at; 0 while unconfirmed (no height yet).
+    unlock_height: i64,
+    /// Blocks still to go, 0 once the term has ended.
+    blocks_remaining: i64,
+    /// Wall-clock estimate of `blocks_remaining` at the coin's block target;
+    /// 0 once matured. An estimate, not a promise — block times vary.
+    unlock_eta_seconds: i64,
+    /// When the term ended (unix seconds); 0 while locked or when unattributable.
+    unlocked_time: i64,
+    /// Principal + yield that came back; 0 while locked or when unattributable.
+    returned: f64,
+    /// The stake transaction's own hash. Same rule as `WalletTx.txid_buf`.
+    txid_buf: [64]u8 = undefined,
+    txid_len: usize = 0,
+
+    pub fn txid(self: *const Stake) []const u8 {
+        return self.txid_buf[0..self.txid_len];
+    }
+
+    pub fn setTxid(self: *Stake, id: []const u8) void {
+        const n = @min(id.len, self.txid_buf.len);
+        @memcpy(self.txid_buf[0..n], id[0..n]);
+        self.txid_len = n;
+    }
+
+    /// Whether the term has ended. The one question both front-ends ask first,
+    /// so they can't answer it differently.
+    pub fn isMatured(self: Stake) bool {
+        return self.blocks_remaining <= 0;
+    }
+
+    /// The yield alone (what the term earned), or null when the return can't be
+    /// attributed to this stake. Never negative: a return below the principal
+    /// would mean the pairing is wrong, and a "negative yield" on screen is worse
+    /// than no figure.
+    pub fn yield(self: Stake) ?f64 {
+        if (self.returned <= 0 or self.returned < self.amount) return null;
+        return self.returned - self.amount;
+    }
+};
+
 /// Outcome of a send attempt, normalized for display. `failed` carries the
 /// daemon's own message (invalid address / insufficient funds / wallet
 /// locked / ...) verbatim — never collapsed to a generic "failed."

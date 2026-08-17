@@ -1929,6 +1929,19 @@ export fn bw_wallet_balance(ctx: ?*Ctx, idx: usize, out: ?*BwWalletBalance) c_in
     return 0;
 }
 
+/// Whether any of this balance is still settling — mempool or immature funds,
+/// i.e. `total` is ahead of `available`. 1 yes, 0 no (also 0 for a null
+/// balance).
+///
+/// `models.WalletBalance.hasPending` owns the comparison, epsilon and all, so
+/// the GUI can't drift from the TUI on the one question that decides whether the
+/// spendable figure is worth showing. Pure; UI-thread safe.
+export fn bw_balance_has_pending(bal: ?*const BwWalletBalance) c_int {
+    const b = bal orelse return 0;
+    const m: models.WalletBalance = .{ .total = b.total, .available = b.available };
+    return if (m.hasPending()) 1 else 0;
+}
+
 /// Managed-wallet spelling of `bw_wallet_balance`: refuses a coin whose wallet
 /// lives in its daemon, then defers, so the wallet-closed rule stays in exactly
 /// one place.
@@ -2037,6 +2050,92 @@ export fn bw_wallet_transactions(ctx: ?*Ctx, idx: usize, out: ?*BwWalletTx, cap:
         @memcpy(d.txid[0..t.txid_len], t.txid());
     }
     return n;
+}
+
+/// Mirror of `models.Stake`. Scalar-only for the same reason as `BwWalletTx`.
+/// The zeros are load-bearing: `unlocked_time`/`returned` are 0 for "not known",
+/// which a matured stake can legitimately be when two of them were repaid in one
+/// credit. Show a blank there — never a 0 figure, and never a guess.
+pub const BwStake = extern struct {
+    amount: f64,
+    staked_time: i64,
+    unlock_height: i64,
+    blocks_remaining: i64,
+    unlock_eta_seconds: i64,
+    unlocked_time: i64,
+    returned: f64,
+    txid: [64]u8,
+    txid_len: usize,
+};
+
+/// Whether this coin can enumerate the wallet's stakes, so the Staking tab can
+/// show a list rather than only a stake button. Cheap; UI-thread safe.
+export fn bw_coin_supports_stake_list(idx: usize) c_int {
+    const coin = coinByIndex(idx) orelse return 0;
+    return if (coin.supportsStakeList()) 1 else 0;
+}
+
+/// The wallet's stakes, newest first. Writes up to `cap` into `out` and returns
+/// how many. 0 on any failure — same rule as `bw_wallet_transactions`: a list
+/// that can't be read is empty, not an error worth interrupting the user for.
+export fn bw_wallet_stakes(ctx: ?*Ctx, idx: usize, out: ?*BwStake, cap: usize) usize {
+    const c = ctx orelse return 0;
+    const o = out orelse return 0;
+    if (idx >= coin_count or cap == 0) return 0;
+    const coin = coinByIndex(idx) orelse return 0;
+    if (!coin.supportsStakeList()) return 0;
+    if (coin.hasExternalWallet() and c.wallet_open[idx].load(.monotonic) == 0) return 0;
+
+    if (!c.wallet_mtx.tryLock()) return 0;
+
+    var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const io = sharedIo();
+    defer c.wallet_mtx.unlock(io);
+
+    const auth = walletAuth(a, io, coin, c, idx) catch return 0;
+    const stakes = coin.walletStakes(a, auth, cap) catch return 0;
+    const n = @min(stakes.len, cap);
+    const dst = @as([*]BwStake, @ptrCast(o))[0..n];
+    for (dst, stakes[0..n]) |*d, s| {
+        d.* = .{
+            .amount = s.amount,
+            .staked_time = s.staked_time,
+            .unlock_height = s.unlock_height,
+            .blocks_remaining = s.blocks_remaining,
+            .unlock_eta_seconds = s.unlock_eta_seconds,
+            .unlocked_time = s.unlocked_time,
+            .returned = s.returned,
+            .txid = undefined,
+            .txid_len = s.txid_len,
+        };
+        @memcpy(d.txid[0..s.txid_len], s.txid());
+    }
+    return n;
+}
+
+/// What one stake's term earned, written to `out`. 1 when there's a figure to
+/// show, 0 when there isn't — still locked, or a payout that couldn't be told
+/// apart from another stake's.
+///
+/// `models.Stake.yield` owns that rule (including refusing a return below the
+/// principal, which would mean the pairing was wrong), so a front-end can't
+/// decide for itself that a 0 means zero yield. Pure; UI-thread safe.
+export fn bw_stake_yield(stake: ?*const BwStake, out: ?*f64) c_int {
+    const s = stake orelse return 0;
+    const o = out orelse return 0;
+    const m: models.Stake = .{
+        .amount = s.amount,
+        .staked_time = s.staked_time,
+        .unlock_height = s.unlock_height,
+        .blocks_remaining = s.blocks_remaining,
+        .unlock_eta_seconds = s.unlock_eta_seconds,
+        .unlocked_time = s.unlocked_time,
+        .returned = s.returned,
+    };
+    o.* = m.yield() orelse return 0;
+    return 1;
 }
 
 /// The wallet's receive address, written into `buf`; returns its length, or 0 on
@@ -3927,6 +4026,86 @@ test "coin registry exposes all coins and rejects out-of-range" {
     try std.testing.expect(found_divi);
 }
 
+test "bw_balance_has_pending answers the GUI header's show-Available question" {
+    // The GUI appends the spendable figure to its header only while funds are
+    // still settling — the same rule the TUI's header applies — so this export
+    // is what keeps the two from drifting apart.
+    var settled: BwWalletBalance = .{ .total = 1234.5, .available = 1234.5 };
+    try std.testing.expectEqual(@as(c_int, 0), bw_balance_has_pending(&settled));
+
+    var pending: BwWalletBalance = .{ .total = 1234.5, .available = 1000.0 };
+    try std.testing.expectEqual(@as(c_int, 1), bw_balance_has_pending(&pending));
+
+    // An empty wallet has nothing settling, so no second figure appears.
+    var empty: BwWalletBalance = .{ .total = 0, .available = 0 };
+    try std.testing.expectEqual(@as(c_int, 0), bw_balance_has_pending(&empty));
+
+    // Float noise from summing the parts is not "pending" — `hasPending`'s
+    // epsilon owns that, and the GUI inherits it by asking rather than comparing.
+    var noise: BwWalletBalance = .{ .total = 0.1 + 0.2, .available = 0.3 };
+    try std.testing.expectEqual(@as(c_int, 0), bw_balance_has_pending(&noise));
+
+    try std.testing.expectEqual(@as(c_int, 0), bw_balance_has_pending(null));
+}
+
+test "bw_stake_yield reports a term's earnings only when they're attributable" {
+    // Matured, sole unlocker at its height: 1006.208 back on 1000 staked.
+    var earned: BwStake = .{
+        .amount = 1000,
+        .staked_time = 1783463334,
+        .unlock_height = 547_550,
+        .blocks_remaining = 0,
+        .unlock_eta_seconds = 0,
+        .unlocked_time = 1786065414,
+        .returned = 1006.20821166,
+        .txid = undefined,
+        .txid_len = 0,
+    };
+    var out: f64 = -1;
+    try std.testing.expectEqual(@as(c_int, 1), bw_stake_yield(&earned, &out));
+    try std.testing.expectApproxEqAbs(@as(f64, 6.20821166), out, 1e-8);
+
+    // Matured but repaid in a credit shared with another stake: `returned` is 0
+    // for "not known", and must not read as "earned nothing".
+    var shared = earned;
+    shared.returned = 0;
+    try std.testing.expectEqual(@as(c_int, 0), bw_stake_yield(&shared, &out));
+
+    // Still locked: nothing has come back yet.
+    var locked = earned;
+    locked.blocks_remaining = 21_592;
+    locked.returned = 0;
+    locked.unlocked_time = 0;
+    try std.testing.expectEqual(@as(c_int, 0), bw_stake_yield(&locked, &out));
+
+    // A return below the principal means the pairing is wrong; no figure beats a
+    // negative "yield" on screen.
+    var wrong = earned;
+    wrong.returned = 900;
+    try std.testing.expectEqual(@as(c_int, 0), bw_stake_yield(&wrong, &out));
+
+    try std.testing.expectEqual(@as(c_int, 0), bw_stake_yield(null, &out));
+    try std.testing.expectEqual(@as(c_int, 0), bw_stake_yield(&earned, null));
+}
+
+test "bw_wallet_stakes refuses a coin that can't enumerate stakes" {
+    var ctx: Ctx = .{ .allocator = std.testing.allocator, .home_dir = "", .install_root = "" };
+    var out: [4]BwStake = undefined;
+
+    // Every coin without the capability answers 0 rather than reaching for an
+    // RPC — the GUI polls this on a timer for whichever coin is selected.
+    var i: usize = 0;
+    while (i < coin_count) : (i += 1) {
+        const coin = coinByIndex(i) orelse return error.Unexpected;
+        if (coin.supportsStakeList()) continue;
+        try std.testing.expectEqual(@as(usize, 0), bw_wallet_stakes(&ctx, i, &out[0], out.len));
+    }
+    // Out of range, no context, no room: all 0, never a read.
+    try std.testing.expectEqual(@as(usize, 0), bw_wallet_stakes(&ctx, coin_count, &out[0], out.len));
+    try std.testing.expectEqual(@as(usize, 0), bw_wallet_stakes(null, 0, &out[0], out.len));
+    try std.testing.expectEqual(@as(usize, 0), bw_wallet_stakes(&ctx, 0, &out[0], 0));
+}
+
 test "bw_coin_name copies into a caller buffer and reports its length" {
     var buf: [16]u8 = undefined;
     const n = bw_coin_name(1, &buf, buf.len);
@@ -5197,12 +5376,14 @@ test "the remaining tab capabilities track their vtable hooks" {
         try std.testing.expectEqual(coin.supportsReceiveAddress(), bw_coin_supports_receive_address(i) != 0);
         try std.testing.expectEqual(coin.supportsSend(), bw_coin_supports_send(i) != 0);
         try std.testing.expectEqual(coin.supportsStakeAction(), bw_coin_supports_stake(i) != 0);
+        try std.testing.expectEqual(coin.supportsStakeList(), bw_coin_supports_stake_list(i) != 0);
     }
     // An index that isn't a coin claims nothing.
     try std.testing.expectEqual(@as(c_int, 0), bw_coin_supports_transactions(coin_count));
     try std.testing.expectEqual(@as(c_int, 0), bw_coin_supports_receive_address(coin_count));
     try std.testing.expectEqual(@as(c_int, 0), bw_coin_supports_send(coin_count));
     try std.testing.expectEqual(@as(c_int, 0), bw_coin_supports_stake(coin_count));
+    try std.testing.expectEqual(@as(c_int, 0), bw_coin_supports_stake_list(coin_count));
 }
 
 test "a coin with a stake action carries a hint to show with it" {

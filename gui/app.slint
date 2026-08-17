@@ -52,6 +52,18 @@ struct WalletTxRow {
     incoming: bool,      // colours the row
 }
 
+// One row in the Staking list, pre-formatted by the host like WalletTxRow.
+// `detail` is empty when this stake's payout couldn't be told apart from
+// another's — two stakes maturing in the same block come back as one credit —
+// so the row simply carries no yield figure rather than a made-up one.
+struct StakeRow {
+    amount: string,      // principal, with the coin's ticker
+    staked: string,      // "3 weeks ago"
+    status: string,      // "Unlocks in 29 days" | "Unlocked 5 days ago"
+    detail: string,      // "+6.2082 SAL earned", or "" when unattributable
+    locked: bool,        // still inside its term — colours the status
+}
+
 // One digit column of an odometer count, pre-split by the host, most-significant
 // first. Slint evaluates arithmetic in f32 (the generated C++ casts every
 // division to `(float)`), which is exact only to 16,777,216 — below DigiByte's
@@ -1098,6 +1110,12 @@ export component AppWindow inherits Window {
     // Live wallet readouts, all pre-formatted by the host. "—" while unknown.
     in property <string> balance-total: "—";
     in property <string> balance-avail: "—";
+    // Whether any of the balance is still settling — mempool or immature funds,
+    // so `balance-avail` trails `balance-total`. The host reads it from
+    // bw_balance_has_pending rather than comparing the two formatted strings:
+    // the core owns that comparison, and by the time a figure is text it has
+    // already been rounded to the coin's decimals.
+    in property <bool> has-pending: false;
     in property <float> rescan-frac: 0;
     in property <string> receive-address: "";
     // The address as a scannable QR, built by the host from bw_qr_encode. Drawn
@@ -1105,6 +1123,15 @@ export component AppWindow inherits Window {
     // unreadable to a phone camera.
     in property <image> receive-qr;
     in property <[WalletTxRow]> tx-rows;
+    // The wallet's stakes, newest first (Staking tab). Empty for every coin
+    // without a stake action, and while nothing has been staked.
+    in property <[StakeRow]> stake-rows;
+    // Whether this coin can *enumerate* stakes, as opposed to merely making
+    // them. Separate from `has-stake` because the tab is earned by the action:
+    // a coin that can stake but can't list them gets the form with no table,
+    // rather than an empty table captioned "No stakes yet" — which would be a
+    // claim the coin is in no position to make.
+    in property <bool> has-stake-list: false;
     callback new-address();
     callback send-funds(string, string);
     // A stake pays the wallet's own address — the coin works that out itself —
@@ -1394,6 +1421,7 @@ export component AppWindow inherits Window {
         if (k == "5") { return 4; }
         if (k == "6") { return root.has-mining ? 5 : -1; }
         if (k == "7") { return root.has-stablecoin ? 6 : -1; }
+        if (k == "8") { return root.has-stake ? 7 : -1; }
         return -1;
     }
 
@@ -1445,18 +1473,20 @@ export component AppWindow inherits Window {
     // Cycle to the next/previous *visible* tab, skipping the ones this coin
     // doesn't have, and stopping at the ends rather than wrapping. Unrolled for
     // the same reason: no loops in a function body, and there are only ever
-    // seven tabs.
+    // eight tabs — so the walk needs at most seven hops to clear a run of
+    // hidden ones.
     function step-tab(delta: int) {
         if (root.try-tab(root.tab + delta)) { return; }
         if (root.try-tab(root.tab + delta * 2)) { return; }
         if (root.try-tab(root.tab + delta * 3)) { return; }
         if (root.try-tab(root.tab + delta * 4)) { return; }
         if (root.try-tab(root.tab + delta * 5)) { return; }
-        root.try-tab(root.tab + delta * 6);
+        if (root.try-tab(root.tab + delta * 6)) { return; }
+        root.try-tab(root.tab + delta * 7);
     }
 
     function try-tab(t: int) -> bool {
-        if (t < 0 || t > 6 || !root.tab-visible(t)) {
+        if (t < 0 || t > 7 || !root.tab-visible(t)) {
             return false;
         }
         root.tab = t;
@@ -1469,6 +1499,7 @@ export component AppWindow inherits Window {
         if (t == 3) { return root.has-send; }
         if (t == 5) { return root.has-mining; }
         if (t == 6) { return root.has-stablecoin; }
+        if (t == 7) { return root.has-stake; }
         return t == 0 || t == 4;
     }
 
@@ -1732,6 +1763,23 @@ export component AppWindow inherits Window {
                                     root.has-balance && root.balance-total != "—";
                                 // Gap between the branded ticker and the figure.
                                 property <length> bal-gap: 7px;
+                                // Whether to append the spendable figure after the
+                                // total. Same rule as the TUI header: Available is a
+                                // caveat on the big number — "not all of this is yours
+                                // to spend yet" — so it appears only while funds are
+                                // settling and vanishes once they've caught up. Hidden
+                                // balances drop it entirely rather than masking it,
+                                // because showing a masked Available would itself leak
+                                // that there are pending funds.
+                                property <bool> show-avail: title-row.show-balance
+                                    && root.has-pending && !root.hide-balances;
+                                property <length> avail-gap: 14px;
+                                // What Available adds to the group's width — zero when
+                                // it isn't drawn, so a settled wallet's total still sits
+                                // flush right exactly where it did before.
+                                property <length> avail-w: title-row.show-avail
+                                    ? avail-el.preferred-width + title-row.avail-gap
+                                    : 0px;
                                 // Left edge of the ticker + figure group, pinned so the
                                 // group ends at the right edge of the line. Clamped, so
                                 // a long balance on a narrow window clips off the right
@@ -1741,7 +1789,8 @@ export component AppWindow inherits Window {
                                 property <length> bal-x: max(
                                     upd-el.x + upd-el.width + 18px,
                                     title-row.width - tick-el.preferred-width
-                                        - title-row.bal-gap - bal-el.preferred-width);
+                                        - title-row.bal-gap - bal-el.preferred-width
+                                        - title-row.avail-w);
 
                                 // One element for both cases: a coin without a
                                 // wordmark passes an empty tail, which collapses
@@ -1835,6 +1884,23 @@ export component AppWindow inherits Window {
                                     font-size: 14px;
                                     x: title-row.bal-x + tick-el.preferred-width
                                         + title-row.bal-gap;
+                                    y: parent.height - self.preferred-height - 4px;
+                                }
+                                // The spendable figure, riding after the total in the
+                                // same amber the rest of the UI uses for "wait" states.
+                                // Label and figure are one element (so one colour) —
+                                // unlike the ticker, this reads as a caveat rather than
+                                // as the headline number, so nothing here competes with
+                                // the total for attention.
+                                avail-el := Text {
+                                    text: title-row.show-avail
+                                        ? "Available: " + root.balance-avail
+                                        : "";
+                                    color: #e0a03a;
+                                    font-family: "DejaVu Sans Mono";
+                                    font-size: 14px;
+                                    x: bal-el.x + bal-el.preferred-width
+                                        + title-row.avail-gap;
                                     y: parent.height - self.preferred-height - 4px;
                                 }
                             }
@@ -2091,6 +2157,17 @@ export component AppWindow inherits Window {
                             selected: root.tab == 6;
                             clicked => {
                                 root.tab = 6;
+                            }
+                        }
+                        // The same bolt the header's staking status icon wears,
+                        // so one symbol means staking everywhere in the app.
+                        if root.has-stake: TabButton {
+                            label: "Staking";
+                            icon: @image-url("icons/zap.svg");
+                            accent: root.coin-color;
+                            selected: root.tab == 7;
+                            clicked => {
+                                root.tab = 7;
                             }
                         }
                     }
@@ -2773,49 +2850,6 @@ export component AppWindow inherits Window {
                                     }
                                 }
                             }
-
-                            // Stake (Salvium). Kept below the send form and
-                            // ruled off from it: staking commits funds for a
-                            // term, and a button that shared a row with Send
-                            // would be one slip away from locking up a balance
-                            // someone meant to spend. Its own amount field, for
-                            // the same reason — a stake must never pick up the
-                            // figure typed for a send.
-                            if root.has-stake: Rectangle {
-                                height: 1px;
-                                background: #2e2e2e;
-                            }
-                            if root.has-stake: VerticalLayout {
-                                spacing: 8px;
-                                Text {
-                                    text: "Stake";
-                                    color: #e6e6e6;
-                                    font-size: 15px;
-                                    font-weight: 600;
-                                }
-                                if root.stake-hint != "": Text {
-                                    text: root.stake-hint;
-                                    color: #8a8a8a;
-                                    font-size: 12px;
-                                    wrap: word-wrap;
-                                }
-                                stake-amt := LineEdit { placeholder-text: "Amount to stake"; }
-                                HorizontalLayout {
-                                    alignment: start;
-                                    Button {
-                                        text: "Stake\u{2026}";
-                                        enabled: !root.send-busy;
-                                        clicked => {
-                                            if (stake-amt.text != "") {
-                                                root.send-confirm-amount = stake-amt.text;
-                                                root.send-result = "";
-                                                root.send-confirm-is-stake = true;
-                                                root.send-confirm-open = true;
-                                            }
-                                        }
-                                    }
-                                }
-                            }
                             if root.send-result != "": Text {
                                 text: root.send-result;
                                 color: root.send-result-error ? #e05c5c : #7ec27e;
@@ -3236,11 +3270,144 @@ export component AppWindow inherits Window {
                         }
                     }
 
+                    // Staking (Salvium). Everything about locking funds for a
+                    // term lives here rather than on Send: a stake is not a
+                    // payment, and sharing a pane with the send form put a
+                    // "lock this up for 30 days" button one slip away from the
+                    // balance someone meant to spend.
+                    if root.tab == 7 && root.has-stake: VerticalLayout {
+                        spacing: 10px;
+                        vertical-stretch: 1;
+                        Text {
+                            text: "Staking";
+                            color: #e6e6e6;
+                            font-size: 17px;
+                            font-weight: 600;
+                        }
+                        // The coin's own words on what staking commits you to —
+                        // the term, and how the principal comes back — shown
+                        // before the amount field, not after the click.
+                        if root.stake-hint != "": Text {
+                            text: root.stake-hint;
+                            color: #8a8a8a;
+                            font-size: 12px;
+                            wrap: word-wrap;
+                        }
+                        // Same gate as Send, and for the same reason: reading a
+                        // wallet and spending from one are different permissions.
+                        if !root.can-send: Text {
+                            text: !root.running
+                                ? "Start the daemon before staking."
+                                : "Unlock your wallet before staking.";
+                            color: #8a8a8a;
+                            font-size: 13px;
+                        }
+                        if root.can-send: HorizontalLayout {
+                            spacing: 8px;
+                            alignment: start;
+                            stake-amt := LineEdit {
+                                placeholder-text: "Amount to stake";
+                                width: 220px;
+                            }
+                            Button {
+                                text: "Stake\u{2026}";
+                                enabled: !root.send-busy;
+                                clicked => {
+                                    if (stake-amt.text != "") {
+                                        root.send-confirm-amount = stake-amt.text;
+                                        root.send-result = "";
+                                        root.send-confirm-is-stake = true;
+                                        root.send-confirm-open = true;
+                                    }
+                                }
+                            }
+                        }
+                        if root.send-result != "": Text {
+                            text: root.send-result;
+                            color: root.send-result-error ? #e05c5c : #7ec27e;
+                            font-size: 12px;
+                            wrap: word-wrap;
+                        }
+
+                        if root.has-stake-list: Rectangle {
+                            height: 1px;
+                            background: #2e2e2e;
+                        }
+                        // An empty list splits the same three ways the
+                        // Transactions tab's does — "nothing staked" is only one
+                        // of the reasons you might be looking at no rows.
+                        if root.has-stake-list && root.stake-rows.length == 0: Text {
+                            text: !root.running
+                                ? "Start the daemon to see your stakes."
+                                : (root.ew-flags != 0 && root.wallet-state < 2
+                                    ? "Unlock your wallet to see its stakes."
+                                    : "No stakes yet.");
+                            color: #8a8a8a;
+                            font-size: 13px;
+                            wrap: word-wrap;
+                        }
+                        if root.stake-rows.length > 0: ListView {
+                            vertical-stretch: 1;
+                            for row in root.stake-rows: Rectangle {
+                                // Fixed height for the same reason as a
+                                // transaction row: sizing a row from a child that
+                                // is sized by the row is a binding loop.
+                                height: 34px;
+                                HorizontalLayout {
+                                    spacing: 10px;
+                                    // Clear of the scrollbar the list overlays
+                                    // once there is more than a pane-full.
+                                    padding-right: 14px;
+                                    Text {
+                                        // Masked with the balances: a stake is a
+                                        // holding, and its principal says as much
+                                        // about the wallet as the header figure.
+                                        text: root.hide-balances ? root.balance-mask : row.amount;
+                                        color: #e6e6e6;
+                                        font-family: "monospace";
+                                        font-size: 13px;
+                                        vertical-alignment: center;
+                                        width: 150px;
+                                    }
+                                    Text {
+                                        text: row.staked;
+                                        color: #8a8a8a;
+                                        font-size: 12px;
+                                        vertical-alignment: center;
+                                        width: 110px;
+                                    }
+                                    // Amber while the term runs (the "not yours to
+                                    // spend yet" colour used elsewhere), green once
+                                    // it has paid out.
+                                    Text {
+                                        text: row.status;
+                                        color: row.locked ? #e0a03a : #7ec27e;
+                                        font-size: 12px;
+                                        vertical-alignment: center;
+                                        horizontal-stretch: 1;
+                                    }
+                                    // What the term earned. Absent when the payout
+                                    // couldn't be attributed to this stake, and
+                                    // hidden with the balances since it's derived
+                                    // from the amount.
+                                    Text {
+                                        text: root.hide-balances ? "" : row.detail;
+                                        color: #7ec27e;
+                                        font-size: 12px;
+                                        vertical-alignment: center;
+                                        horizontal-alignment: right;
+                                        width: 150px;
+                                    }
+                                }
+                            }
+                        }
+                    }
+
                     // Soaks up the leftover height so every tab except Transactions
                     // stays top-packed, exactly as it did when the pane carried
                     // `alignment: start`. Transactions opts out, and its list grows
                     // into the space instead.
-                    if root.tab != 1: Rectangle {
+                    if root.tab != 1 && root.tab != 7: Rectangle {
                         vertical-stretch: 1;
                     }
                 }
