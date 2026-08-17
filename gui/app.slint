@@ -519,8 +519,9 @@ component CircleGauge inherits VerticalBox {
     // Smoothly sweep the ring (and count the % readout) whenever the underlying
     // fraction jumps — e.g. a poll advancing the sync, or clearing to 0 on stop.
     animate f { duration: 600ms; easing: ease-in-out; }
-    // One decimal place, matching the TUI. Only the "is this readout wide?" test
-    // still needs the integer form; the digits themselves roll off `f` directly.
+    // One decimal place, matching the TUI. Used for the "is this readout wide?"
+    // test and for the at-rest "0%" case; the digits themselves roll off `f`
+    // directly.
     property <int> tenths: Math.round(root.f * 1000);
     // A full ring that has a word to show instead of "100.0%".
     property <bool> full-word: root.f >= 0.999 && root.full-text != "";
@@ -598,7 +599,10 @@ component CircleGauge inherits VerticalBox {
                     y: (parent.height - self.height) / 2;
                     value: root.f * 100;
                     int-cols: 3; // "100.0"
-                    decimals: 1;
+                    // One decimal once there's something to show, but a bare "0%"
+                    // at rest — "0.0%" implies a precision that a gauge sitting at
+                    // zero isn't reporting.
+                    decimals: root.tenths == 0 ? 0 : 1;
                     suffix: "%";
                     ink: #e6e6e6;
                     // A step down for "100.0%", two characters wider than the
