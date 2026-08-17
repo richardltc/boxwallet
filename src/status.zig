@@ -13,9 +13,11 @@
 //! disagree inside one frame. A snapshot can't.
 //!
 //! **Text, not presentation.** `Readout.text` is a static, program-lifetime
-//! string, and the live log records it verbatim on change — so the appended
-//! figures (percentages, heights) are returned separately rather than baked in,
-//! or every poll would churn the log with a new "same" status.
+//! string, and the live log records it verbatim on change — so an appended
+//! percentage is returned separately rather than baked in, or every poll would
+//! churn the log with a new "same" status. Chain heights aren't appended at all:
+//! both front-ends already carry a Blocks readout, so the status line says what
+//! the daemon is *doing* ("Syncing blocks…", then "Synced") and nothing else.
 //!
 //! `PresyncTracker` is the one stateful piece, and it's here rather than in a
 //! front-end because deciding whether a node is in Bitcoin Core's presync pass
@@ -85,7 +87,7 @@ pub const Input = struct {
 
 /// A coin's live status as plain data: the word(s) for the Status line, the tone
 /// they're painted, and whether the state counts as "active" (so the label
-/// brightens). The booleans say which figures `suffix` and `height` may append.
+/// brightens). The booleans say which figure `suffix` may append.
 pub const Readout = struct {
     text: []const u8,
     tone: Tone,
@@ -96,11 +98,6 @@ pub const Readout = struct {
     load_progress: bool = false,
     /// The "Loading block index…" line, which takes the `~NN%` estimate.
     block_index_load: bool = false,
-    /// The syncing/synced lines, which take a chain height.
-    show_blocks: bool = false,
-    /// Set with `show_blocks` on the *syncing* lines only, so the height renders
-    /// as progress toward a tip rather than a bare "at N".
-    sync_progress: bool = false,
 };
 
 /// How far short of the tip a node's headers may sit and still count as caught
@@ -202,11 +199,9 @@ pub fn readout(in: Input) Readout {
                 .tone = .working,
                 .active = true,
                 .presync_pct = is_presync,
-                .show_blocks = true,
-                .sync_progress = true,
             };
         } else if (in.sync == .synced)
-            .{ .text = "Synced", .tone = .ok, .active = true, .show_blocks = true }
+            .{ .text = "Synced", .tone = .ok, .active = true }
         else
             .{ .text = "Running", .tone = .ok, .active = true },
     };
@@ -234,34 +229,6 @@ pub fn suffix(buf: []u8, in: Input, r: Readout) []const u8 {
         return std.fmt.bufPrint(buf, " ~{d}%", .{in.load_eta_pct}) catch "";
     }
     return "";
-}
-
-/// The chain height to show alongside the status, as a decision rather than a
-/// string — the TUI paints "of" in the coin's brand colour and so needs the
-/// pieces, not a sentence.
-pub const Height = union(enum) {
-    /// Nothing to show (no height known yet, or a state that doesn't take one).
-    none,
-    /// A bare height: "Synced at 850,123".
-    at: u64,
-    /// Progress toward a tip: "Syncing blocks… 123,456 of 850,000".
-    progress: struct { cur: u64, total: u64 },
-};
-
-/// Which height the status line should carry.
-///
-/// The tip is the larger of the two denominators — block-validation catch-up for
-/// bitcoin-style chains, network tip for single-height ones. If neither exceeds
-/// the current height yet it falls back to `at`, so the line never reads a
-/// nonsensical "N of N". Suppressed entirely until a height is known, which also
-/// keeps it off the header-download phase where no block has been validated.
-pub fn height(in: Input, r: Readout) Height {
-    if (!r.show_blocks or in.blocks_cur == 0) return .none;
-    const total = @max(in.blocks_total, in.headers_total);
-    if (r.sync_progress and total > in.blocks_cur) {
-        return .{ .progress = .{ .cur = in.blocks_cur, .total = total } };
-    }
-    return .{ .at = in.blocks_cur };
 }
 
 /// A rough, time-based progress estimate for a block-index load: elapsed
@@ -453,9 +420,32 @@ test "peers outrank sync, and synced outranks both" {
     in.sync = .synced;
     const r = readout(in);
     try std.testing.expectEqualStrings("Synced", r.text);
-    try std.testing.expect(r.show_blocks);
-    try std.testing.expect(!r.sync_progress); // a bare height, not "of"
     try std.testing.expectEqual(Tone.ok, r.tone);
+}
+
+test "the sync lines carry no chain height" {
+    // The Blocks readout beside the status already shows how far the chain has
+    // reached, so this line says only what the daemon is doing — "Syncing
+    // blocks…", then "Synced", with nothing appended either side of the change.
+    var buf: [32]u8 = undefined;
+    var in: Input = .{
+        .installed = true,
+        .daemon = .running,
+        .peers = 4,
+        .sync = .syncing,
+        .blocks_cur = 123_456,
+        .blocks_total = 850_000,
+        .headers_cur = 850_000,
+        .headers_total = 850_000,
+    };
+    var r = readout(in);
+    try std.testing.expectEqualStrings("Syncing blocks…", r.text);
+    try std.testing.expectEqualStrings("", suffix(&buf, in, r));
+
+    in.sync = .synced;
+    r = readout(in);
+    try std.testing.expectEqualStrings("Synced", r.text);
+    try std.testing.expectEqualStrings("", suffix(&buf, in, r));
 }
 
 test "suffix appends only the figure its line actually takes" {
@@ -483,43 +473,6 @@ test "suffix appends only the figure its line actually takes" {
     idle.presync_bp = 500;
     idle.load_pct_bp = 500;
     try std.testing.expectEqualStrings("", suffix(&buf, idle, readout(idle)));
-}
-
-test "height reads as progress while syncing and a bare figure once synced" {
-    var in: Input = .{ .installed = true, .daemon = .running, .peers = 4, .sync = .syncing };
-    in.blocks_cur = 123_456;
-    in.blocks_total = 850_000;
-    in.headers_cur = 850_000;
-    in.headers_total = 850_000;
-    switch (height(in, readout(in))) {
-        .progress => |p| {
-            try std.testing.expectEqual(@as(u64, 123_456), p.cur);
-            try std.testing.expectEqual(@as(u64, 850_000), p.total);
-        },
-        else => return error.ExpectedProgress,
-    }
-
-    in.sync = .synced;
-    switch (height(in, readout(in))) {
-        .at => |v| try std.testing.expectEqual(@as(u64, 123_456), v),
-        else => return error.ExpectedBareHeight,
-    }
-
-    // No total above us yet — "at N" rather than a nonsensical "N of N".
-    in.sync = .syncing;
-    in.blocks_total = 123_456;
-    in.headers_total = 0;
-    switch (height(in, readout(in))) {
-        .at => |v| try std.testing.expectEqual(@as(u64, 123_456), v),
-        else => return error.ExpectedBareHeight,
-    }
-
-    // Nothing at all until a height is known, which also keeps it off the
-    // header-download phase where no block has been validated.
-    in.blocks_cur = 0;
-    try std.testing.expectEqual(Height.none, height(in, readout(in)));
-    const idle: Input = .{ .installed = true };
-    try std.testing.expectEqual(Height.none, height(idle, readout(idle)));
 }
 
 test "loadEtaPercent estimates, clamps, and refuses to claim done" {

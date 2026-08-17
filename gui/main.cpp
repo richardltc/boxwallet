@@ -871,9 +871,6 @@ static void apply_coin_metadata(const AppWindow *ui, bw_ctx *ctx, int idx)
     ui->set_holding_value(ss(""));
     ui->set_status_text(ss(""));
     ui->set_live_status(ss(""));
-    ui->set_live_status_cur(ss(""));
-    ui->set_live_status_join(ss(""));
-    ui->set_live_status_total(ss(""));
     ui->set_status_is_error(false);
     // Including the warm-up readout: the coin we're leaving may well still be
     // loading, and its stage must not read as this one's.
@@ -2842,16 +2839,14 @@ int main(int argc, char **argv)
                 si.headers_total = static_cast<uint64_t>(tip);
                 si.blocks_total = si.headers_total;
             }
-            // In segments rather than as one sentence: the message and the "of"
-            // paint in the coin's brand colour and the two heights don't, so the
-            // core hands us the pieces (same wording and grouping as the whole
-            // line) and the .slint assembles them.
-            BwStatusParts sp;
-            std::memset(&sp, 0, sizeof sp);
-            if (rpc_ok)
-                bw_status_parts(&si, &sp);
-            std::string live_status(sp.message);
-            std::string live_cur(sp.cur), live_join(sp.joiner), live_total(sp.total);
+            // One phrase, painted in the coin's brand colour — the height lives
+            // in the Blocks gauge below, not in the sentence.
+            std::string live_status;
+            if (rpc_ok) {
+                char lb[160] = {0};
+                size_t ln = bw_status_line(&si, lb, sizeof lb);
+                live_status.assign(lb, ln);
+            }
 
             // How far back in time the chain sits while it's still catching up:
             // the tip block's own date (UTC — the moment the block being synced
@@ -2872,7 +2867,6 @@ int main(int argc, char **argv)
 
             post_to_ui([weak, di, bs, daemon_up, sel, disk_frac, disk_free_value, disk_free_suffix,
                         disk_free_decimals, wallet_sec, stage, coming_up, live_status,
-                        live_cur, live_join, live_total,
                         tip_date, sync_behind,
                         mem_frac, storage_now, du,
                         price_usd, price_change, price_dir, holding_value,
@@ -2977,9 +2971,6 @@ int main(int argc, char **argv)
                 // "Daemon running" instead of the sync progress it was making.
                 if (rpc_ok || !daemon_up) {
                     (*h)->set_live_status(ss(live_status));
-                    (*h)->set_live_status_cur(ss(live_cur));
-                    (*h)->set_live_status_join(ss(live_join));
-                    (*h)->set_live_status_total(ss(live_total));
                 }
                 (*h)->set_daemon_stage(ss(stage));
                 // `coming_up`, not `!stage.empty()`: the pulse means "starting",
