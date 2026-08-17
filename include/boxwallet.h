@@ -542,23 +542,12 @@ typedef struct {
     uint64_t blocks_cur, blocks_total;
 } BwStatusInput;
 
+/* The status line is the wording alone — "Syncing blocks…", then "Synced", plus
+ * any percentage the stage carries. No chain height is appended: the Blocks
+ * readout is where a height belongs, so this stays one phrase in one colour. */
 size_t  bw_status_line(const BwStatusInput *in, char *buf, size_t cap);
 int     bw_status_tone(const BwStatusInput *in);   /* 0 idle, 1 working, 2 warning, 3 ok */
 int     bw_status_active(const BwStatusInput *in); /* something is happening */
-
-/* The same line in its coloured segments: "Syncing blocks…" + "123,456" + "of" +
- * "850,000". Same wording and grouping as bw_status_line, so a front-end that
- * paints the message and the joiner in the coin's colour can't word it
- * differently. Lay the four out left to right, single-spaced, skipping the empty
- * ones — that order is fixed and reproduces bw_status_line exactly. */
-typedef struct {
-    char message[96];  /* status text + any percentage; carries the trailing "at" */
-    char cur[32];      /* current height, grouped, or "" for no height */
-    char joiner[8];    /* "of" while syncing, else "" */
-    char total[32];    /* tip height, grouped, or "" when there's no joiner */
-} BwStatusParts;
-
-void    bw_status_parts(const BwStatusInput *in, BwStatusParts *out);
 
 /* ---- the in-daemon wallet menu -----------------------------------------------
  * Which actions a wallet state permits is decided in the core, by the same

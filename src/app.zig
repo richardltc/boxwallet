@@ -542,34 +542,17 @@ fn renderStatus(a: std.mem.Allocator, act: *const Activity, brand: zz.Color) []c
     else
         std.fmt.allocPrint(a, "{s}{s}", .{ r.text, suffix }) catch r.text;
 
-    // The live status text reads in BoxWallet green — one consistent brand
-    // colour for the update itself, rather than a per-state cyan/yellow/green.
-    // Inactive states (Not installed / Idle) keep their own tone's grey.
-    const text_col: zz.Color = if (r.active) zz.Color.hex(app_color) else toneColor(r.tone);
-    const base = (zz.Style{}).bold(true).fg(text_col);
-
-    // The chain height, so every coin shows how far it has reached. Which form
-    // — progress toward a tip, or a bare figure — is `status.zig`'s decision;
-    // rendering it in three styled segments is ours, because nesting styles
-    // would reset the trailing figure's colour after the brand-coloured "of".
-    const value = switch (status_mod.height(in, r)) {
-        .none => base.render(a, text) catch text,
-        .at => |cur| blk: {
-            var cur_buf: [64]u8 = undefined;
-            const c = App.formatAmount(&cur_buf, @floatFromInt(cur), 0);
-            break :blk base.render(a, std.fmt.allocPrint(a, "{s} at {s}", .{ text, c }) catch text) catch text;
-        },
-        .progress => |p| blk: {
-            var cur_buf: [64]u8 = undefined;
-            var tot_buf: [64]u8 = undefined;
-            const c = App.formatAmount(&cur_buf, @floatFromInt(p.cur), 0);
-            const t = App.formatAmount(&tot_buf, @floatFromInt(p.total), 0);
-            const lead = base.render(a, std.fmt.allocPrint(a, "{s} {s} ", .{ text, c }) catch text) catch text;
-            const of = (zz.Style{}).bold(true).fg(brand).render(a, "of") catch "of";
-            const trail = base.render(a, std.fmt.allocPrint(a, " {s}", .{t}) catch t) catch t;
-            break :blk std.fmt.allocPrint(a, "{s}{s}{s}", .{ lead, of, trail }) catch text;
-        },
-    };
+    // Every live status reads in the *coin's* colour — one colour for the whole
+    // line, whatever it currently says, rather than BoxWallet green for some
+    // states and a per-state cyan/yellow/green for others. Inactive states (Not
+    // installed / Idle) keep their own tone's grey, which is what pairs them
+    // with the greyed label.
+    //
+    // The wording is the whole line: no chain height is appended, because the
+    // Blocks bar below already says how far the chain has reached — this line
+    // answers "what is it doing?" and reads "Syncing blocks…" then "Synced".
+    const text_col: zz.Color = if (r.active) brand else toneColor(r.tone);
+    const value = (zz.Style{}).bold(true).fg(text_col).render(a, text) catch text;
     return std.fmt.allocPrint(a, "{s}: {s}", .{ label, value }) catch value;
 }
 

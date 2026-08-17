@@ -1279,20 +1279,14 @@ export component AppWindow inherits Window {
     in property <color> wordmark-head-color: #ffffff;
     in property <color> wordmark-tail-color: #ffffff;
     in property <string> status-text: "";  // latest status line
-    // The live status from the core (bw_status_parts): the same wording and
+    // The live status from the core (bw_status_line): the same wording and
     // priority order the TUI shows. Outranks both the warm-up stage and the last
     // action message whenever the poll has produced one.
     //
-    // It arrives in segments because they're painted in two colours — the
-    // message and the joiner in the coin's brand colour, the heights in the
-    // usual grey, so "Syncing blocks… 123,456 of 850,000" reads as a branded
-    // sentence around plain figures. `live-status` is the message alone and is
-    // empty exactly when there's no live readout at all; the other three are
-    // empty when the line carries no height.
+    // The wording alone — "Syncing blocks…", then "Synced". The height it used
+    // to carry lives in the Blocks gauge, so this is one branded phrase and is
+    // empty exactly when there's no live readout at all.
     in property <string> live-status: "";
-    in property <string> live-status-cur: "";
-    in property <string> live-status-join: "";   // "of" while syncing, "at" for a bare height
-    in property <string> live-status-total: "";
     in property <bool> status-is-error: false;
 
     // In-app file browser. Opened from the wallet modal's "pick a wallet file"
@@ -2226,40 +2220,16 @@ export component AppWindow inherits Window {
                                 color: #9a9a9a;
                                 font-size: 13px;
                             }
-                            // The core's live readout first: it's the same sentence
+                            // The core's live readout first: it's the same phrase
                             // the TUI shows, and it already folds in the warm-up
-                            // phase. It comes in segments so the words carry the
-                            // coin's colour and the figures stay plain — one line,
-                            // four Texts, in the fixed order the core hands them
-                            // over ("Syncing blocks…" "123,456" "of" "850,000").
-                            if root.live-status != "": HorizontalLayout {
-                                spacing: 5px;
-                                alignment: start;
+                            // phase. Just the wording, in the coin's colour — the
+                            // chain height belongs to the Blocks gauge above.
+                            if root.live-status != "": Text {
+                                text: root.live-status;
+                                color: root.coin-color;
+                                font-size: 13px;
+                                vertical-alignment: center;
                                 horizontal-stretch: 1;
-                                Text {
-                                    text: root.live-status;
-                                    color: root.coin-color;
-                                    font-size: 13px;
-                                    vertical-alignment: center;
-                                }
-                                if root.live-status-cur != "": Text {
-                                    text: root.live-status-cur;
-                                    color: #c8c8c8;
-                                    font-size: 13px;
-                                    vertical-alignment: center;
-                                }
-                                if root.live-status-join != "": Text {
-                                    text: root.live-status-join;
-                                    color: root.coin-color;
-                                    font-size: 13px;
-                                    vertical-alignment: center;
-                                }
-                                if root.live-status-total != "": Text {
-                                    text: root.live-status-total;
-                                    color: #c8c8c8;
-                                    font-size: 13px;
-                                    vertical-alignment: center;
-                                }
                             }
                             // No live readout yet: a daemon that's still coming up
                             // outranks the last action message — the stage moves on
@@ -2271,10 +2241,14 @@ export component AppWindow inherits Window {
                                 text: root.daemon-stage != ""
                                     ? root.daemon-stage
                                     : (root.status-text != "" ? root.status-text : (root.staking ? "Staking" : ""));
-                                // Live progress is never an error — don't inherit
-                                // the red from an earlier failed action.
+                                // The coin's colour, like the live readout above:
+                                // this is the same Status line saying the same
+                                // kind of thing, so it can't be a different
+                                // colour just because the source differs. Live
+                                // progress is never an error — don't inherit the
+                                // red from an earlier failed action.
                                 color: root.status-is-error && root.daemon-stage == ""
-                                    ? #e74c3c : #c8c8c8;
+                                    ? #e74c3c : root.coin-color;
                                 font-size: 13px;
                                 wrap: word-wrap;
                                 horizontal-stretch: 1;
