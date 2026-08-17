@@ -497,6 +497,11 @@ component CircleGauge inherits VerticalBox {
     // A sync gauge with no known network tip has no denominator, so it reads
     // "—" over an empty ring until one arrives.
     in property <bool> unknown: false;
+    // A fixed word in the middle instead of a percentage, for a gauge where the
+    // arc carries the reading and a figure would only add noise (Memory). The
+    // space beneath the ring stays empty on its own — such a gauge simply passes
+    // neither a count nor a value.
+    in property <string> ring-word: "";
 
     property <float> f: Math.max(0.0, Math.min(1.0, root.frac));
     // Smoothly sweep the ring (and count the % readout) whenever the underlying
@@ -551,21 +556,30 @@ component CircleGauge inherits VerticalBox {
                 // The percentage rolls off `f` — the same animated fraction the
                 // ring around it is drawn from — so the digits and the arc are
                 // one motion rather than two that happen to agree at the end.
-                if root.unknown: Text {
+                if root.ring-word != "": Text {
+                    text: root.ring-word;
+                    // Dimmer than the percentages the other gauges show here: a
+                    // standing label, not a reading that changes.
+                    color: #c8c8c8;
+                    font-size: 13px;
+                    horizontal-alignment: center;
+                    vertical-alignment: center;
+                }
+                if root.ring-word == "" && root.unknown: Text {
                     text: "—";
                     color: #8a8a8a;
                     font-size: 15px;
                     horizontal-alignment: center;
                     vertical-alignment: center;
                 }
-                if !root.unknown && root.full-word: Text {
+                if root.ring-word == "" && !root.unknown && root.full-word: Text {
                     text: root.full-text;
                     color: #e6e6e6;
                     font-size: 13px;
                     horizontal-alignment: center;
                     vertical-alignment: center;
                 }
-                if !root.unknown && !root.full-word: OdometerFloat {
+                if root.ring-word == "" && !root.unknown && !root.full-word: OdometerFloat {
                     // Centred by hand: a Rectangle doesn't centre its children,
                     // and this one is exactly one digit tall rather than filling
                     // the hole the way the Text readouts above do.
@@ -1185,12 +1199,10 @@ export component AppWindow inherits Window {
     in property <float> disk-free-value: -1;
     in property <string> disk-free-suffix: "";
     in property <int> disk-free-decimals: 1;
-    // System RAM, and what this coin's data dir occupies on disk. The two answer
-    // different questions from `disk-frac`, which is the volume's fill level.
+    // How full the machine's RAM is. Answers a different question from
+    // `disk-frac`, which is the volume's fill level. Drawn as a bare ring, so
+    // there's no figure to carry alongside it.
     in property <float> mem-frac: 0;
-    in property <float> mem-used-value: -1;
-    in property <string> mem-used-suffix: "";
-    in property <int> mem-used-decimals: 1;
     // The chain's on-disk size, already formatted by the core (bw_format_storage,
     // shared with the TUI). Shown as a figure, so there's no fraction to carry.
     in property <string> storage-size: "";
@@ -2136,9 +2148,9 @@ export component AppWindow inherits Window {
                                 label: "Memory";
                                 frac: root.mem-frac;
                                 fill: root.coin-color;
-                                num-value: root.mem-used-value;
-                                num-suffix: root.mem-used-suffix;
-                                num-decimals: root.mem-used-decimals;
+                                // The arc carries the reading; a percentage and a
+                                // byte figure on top of it were only noise.
+                                ring-word: "Used";
                             }
                         }
                         // Where the chain has got to *in time* — the date of the
