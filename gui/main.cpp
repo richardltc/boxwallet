@@ -383,8 +383,14 @@ static std::shared_ptr<slint::VectorModel<DigitSlot>> digit_slots(int64_t from, 
     for (int64_t v = to; v >= 10; v /= 10)
         ++digits;
 
-    int64_t pow10 = 1;
-    for (int i = 0; i < digits; ++i, pow10 *= 10) {
+    // Emitted most-significant first, with each thousands separator as a cell of
+    // its own: the UI puts cell N at N × cell-width and does no counting to find
+    // its place, which is only possible if the sequence and the screen positions
+    // line up one to one.
+    for (int i = digits - 1; i >= 0; --i) {
+        int64_t pow10 = 1;
+        for (int k = 0; k < i; ++k)
+            pow10 *= 10;
         const int64_t from_col = (from < 0 ? 0 : from) / pow10;
         const int64_t to_col = to / pow10;
         const int64_t delta = to_col - from_col;
@@ -393,11 +399,13 @@ static std::shared_ptr<slint::VectorModel<DigitSlot>> digit_slots(int64_t from, 
         DigitSlot s{}; // value-initialised — see the note on NavCoin
         s.start = static_cast<int>(from_col % 10);
         s.steps = static_cast<int>(delta % 10 + (delta < 0 ? -10 : 10) * turns);
-        s.comma = (i % 3 == 0 && i > 0);
-        slots.push_back(s);
+        slots.push_back(s); // empty `text` = a rolling digit
+        if (i % 3 == 0 && i > 0) {
+            DigitSlot sep{};
+            sep.text = slint::SharedString(",");
+            slots.push_back(sep);
+        }
     }
-    // Built ones-first; the UI lays them out left to right.
-    std::reverse(slots.begin(), slots.end());
     return std::make_shared<slint::VectorModel<DigitSlot>>(std::move(slots));
 }
 

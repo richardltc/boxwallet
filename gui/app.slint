@@ -59,12 +59,16 @@ struct WalletTxRow {
 // silently drop the low ones. So C++ does that in int64 and this side only
 // animates: every number below is small enough for f32 to hold exactly.
 struct DigitSlot {
-    start: int,  // digit this column begins on, 0-9
+    start: int,  // digit this cell begins on, 0-9
     // Digit-steps to travel to land on the new value. Mod 10 it lands on the
     // right digit; the rest is full rotations, already capped by the host so a
     // roll up from zero doesn't spin the ones column into a blur.
     steps: int,
-    comma: bool, // a thousands separator follows this column
+    // Non-empty makes this a static glyph (a thousands separator) rather than a
+    // rolling digit. Separators are cells of their own so that the sequence maps
+    // one-to-one onto screen positions: in a monospace font every cell is the
+    // same width, so cell N sits at N × cell-width and no layout is needed.
+    text: string,
 }
 
 // One row in the left nav.
@@ -226,25 +230,19 @@ component TabButton inherits Rectangle {
 // That duplicate 0 is what makes the 9→0 carry seamless: by the bottom of the
 // strip you are already looking at a 0, so when the offset wraps back to the top
 // the pixels are identical and nothing appears to jump.
+//
+// Deliberately declares NO geometry of its own: every use sets x/y/width/height
+// explicitly, as a child of a plain Rectangle. Geometry written on a component's
+// own root belongs to whatever contains it — a layout overrides it outright —
+// and that is what stretched the strip to its container's height until the clip
+// stopped cropping to one cell and four digits showed at once. Nothing in this
+// odometer is inside a layout for exactly that reason.
 component DigitStrip inherits Rectangle {
     in property <float> pos;
-    in property <length> cell-w;
     in property <length> cell-h;
     in property <color> ink;
     in property <length> fs;
 
-    // Pinned with constraints rather than plain width/height, and that is
-    // load-bearing: a component's root geometry belongs to its PARENT, so in a
-    // layout a width/height binding here is simply overridden (Slint rejects
-    // setting both anyway). Without the constraints the strip gets stretched to
-    // the row's height, the clip stops cropping to a single cell, and two
-    // half-digits show at once with the '.' and '%' adrift below them.
-    min-width: root.cell-w;
-    max-width: root.cell-w;
-    min-height: root.cell-h;
-    max-height: root.cell-h;
-    horizontal-stretch: 0;
-    vertical-stretch: 0;
     clip: true;
 
     Rectangle {
@@ -278,11 +276,6 @@ component DigitStrip inherits Rectangle {
 // the one thing the block heights could not do. Reading the caller's animated
 // value directly also means it moves in exact step with whatever else that value
 // drives: for a percentage, the ring drawn around it.
-//
-// Columns the value hasn't reached collapse instead of showing a leading zero.
-// Both min- and max-width are pinned to do it: a layout sizes its children from
-// their own minimum, so setting only the maximum leaves the cell at its natural
-// width and draws the digit anyway.
 component OdometerFloat inherits Rectangle {
     in property <float> value;
     // Integer columns to allow for — 3 fits "100.0", 4 fits "1023.9".
@@ -292,6 +285,9 @@ component OdometerFloat inherits Rectangle {
     in property <color> ink: #c8c8c8;
     in property <length> fs: 12px;
 
+    // Measured from a real glyph rather than derived from the font size: the
+    // strip has to be exactly one digit tall or the wrap won't line up. A 0×0
+    // clipped box, so it never draws.
     Rectangle {
         width: 0px;
         height: 0px;
@@ -304,65 +300,87 @@ component OdometerFloat inherits Rectangle {
     }
     property <length> cell-w: fprobe.preferred-width;
     property <length> cell-h: fprobe.preferred-height;
+
+    // How many integer cells the value actually needs — no leading zeros, so
+    // "7.5%" is three cells wide and "100.0%" is six.
+    property <int> icols: Math.min(root.int-cols,
+        root.value >= 1000 ? 4 : (root.value >= 100 ? 3 : (root.value >= 10 ? 2 : 1)));
+    property <int> point-cells: root.decimals > 0 ? 1 : 0;
+    property <int> cells: root.icols + root.point-cells + root.decimals;
+
     min-height: root.cell-h;
     max-height: root.cell-h;
 
-    HorizontalLayout {
-        spacing: 0px;
-        alignment: center;
+    // One row of fixed-width cells, centred by hand. Both centrings are needed:
+    // in the ring this fills the whole 64px hole, while under it a VerticalBox
+    // pins it to a single cell.
+    Rectangle {
+        x: (parent.width - self.width) / 2;
+        y: (parent.height - self.height) / 2;
+        width: root.cells * root.cell-w + (root.suffix != "" ? sfx.preferred-width : 0px);
+        height: root.cell-h;
 
-        // Integer columns, most significant first. Column j stands for 10^j, so
-        // its position is the value divided down by that — which is what gives
-        // the cascade: the units column turns ten times for every turn of the
-        // tens.
+        // Integer cells, most significant first. Cell for 10^j takes its
+        // position from the value divided down by that — which is what gives the
+        // cascade: the units cell turns ten times for every turn of the tens.
         for j in [3, 2, 1, 0]: Rectangle {
-            property <float> unit: Math.pow(10, j);
-            // The units column is always there; the rest appear only once the
-            // value has actually reached them.
-            property <bool> shown: j < root.int-cols && (j == 0 || root.value >= self.unit);
-            min-width: self.shown ? root.cell-w : 0px;
-            max-width: self.shown ? root.cell-w : 0px;
-            min-height: root.cell-h;
-            max-height: root.cell-h;
-            clip: true;
-            opacity: self.shown ? 1.0 : 0.0;
+            // floor(), not the raw quotient. A wheel driven by value/10^j is a
+            // CONTINUOUS position, so at 98.4% the units wheel sits at 98.412
+            // and the tens at 9.84 — both parked a fraction of a cell between
+            // two digits, which reads as a readout frozen mid-roll. Targeting
+            // the whole number lands every wheel dead on its digit, and the
+            // motion comes from animating towards it instead of from riding a
+            // fraction. Unwrapped on purpose: it keeps climbing past 10, so the
+            // 9→0 carry animates forwards rather than winding back.
+            property <float> wheel: Math.floor(root.value / Math.pow(10, j));
+            animate wheel { duration: 250ms; easing: ease-out; }
+            visible: j < root.icols;
+            x: (root.icols - 1 - j) * root.cell-w;
+            y: 0;
+            width: root.cell-w;
+            height: root.cell-h;
             DigitStrip {
-                pos: root.value / parent.unit;
-                cell-w: root.cell-w;
+                pos: parent.wheel;
                 cell-h: root.cell-h;
                 ink: root.ink;
                 fs: root.fs;
             }
         }
         if root.decimals > 0: Text {
-            min-width: root.cell-w;
-            max-width: root.cell-w;
-            horizontal-alignment: center;
+            x: root.icols * root.cell-w;
+            y: 0;
+            width: root.cell-w;
+            height: root.cell-h;
             text: ".";
             color: root.ink;
             font-family: "DejaVu Sans Mono";
             font-size: root.fs;
+            horizontal-alignment: center;
             vertical-alignment: center;
         }
-        // Decimal columns: the mirror of the above, multiplying up instead.
+        // Decimal cells: the mirror of the above, multiplying up instead.
         for m in [1, 2]: Rectangle {
-            min-width: m <= root.decimals ? root.cell-w : 0px;
-            max-width: m <= root.decimals ? root.cell-w : 0px;
-            min-height: root.cell-h;
-            max-height: root.cell-h;
-            clip: true;
-            opacity: m <= root.decimals ? 1.0 : 0.0;
+            property <float> wheel: Math.floor(root.value * Math.pow(10, m));
+            animate wheel { duration: 250ms; easing: ease-out; }
+            visible: m <= root.decimals;
+            x: (root.icols + root.point-cells + m - 1) * root.cell-w;
+            y: 0;
+            width: root.cell-w;
+            height: root.cell-h;
             DigitStrip {
-                pos: root.value * Math.pow(10, m);
-                cell-w: root.cell-w;
+                pos: parent.wheel;
                 cell-h: root.cell-h;
                 ink: root.ink;
                 fs: root.fs;
             }
         }
-        // The unit ("%", " GB free"). Static — it has nothing to count through,
-        // and holding it still is what makes the digits beside it read as moving.
-        if root.suffix != "": Text {
+        // The unit ("%", " GB free"). Static, and not cell-width — it has
+        // nothing to count through, and holding it still is what makes the
+        // digits beside it read as moving.
+        sfx := Text {
+            x: root.cells * root.cell-w;
+            y: 0;
+            height: root.cell-h;
             text: root.suffix;
             color: root.ink;
             font-family: "DejaVu Sans Mono";
@@ -372,14 +390,14 @@ component OdometerFloat inherits Rectangle {
     }
 }
 
-// A count that rolls like an odometer instead of snapping. Columns whose digit
-// doesn't change sit still, and because the host derives each column from a
-// different power of ten, the ones column spins while the millions barely move —
-// the cascade a mechanical counter makes.
+// A count that rolls like an odometer instead of snapping. Cells whose digit
+// doesn't change sit still, and because the host derives each from a different
+// power of ten, the ones cell spins while the millions barely move — the cascade
+// a mechanical counter makes.
 //
-// The host hands over pre-split columns (see DigitSlot) and this side does no
-// grouping, digit-counting or leading-zero logic: it lays the model out left to
-// right and animates it. An empty model draws nothing.
+// The host hands over pre-split cells (see DigitSlot), separators included, so
+// this side does no grouping, digit-counting or leading-zero logic: cell N sits
+// at N × cell-width. An empty model draws nothing.
 component OdometerCount inherits Rectangle {
     in property <[DigitSlot]> slots;
     // Bumped by the host on every push. `slots` changing is what we actually
@@ -389,14 +407,6 @@ component OdometerCount inherits Rectangle {
     in property <color> ink: #c8c8c8;
     in property <length> fs: 12px;
 
-    // Measured from a real glyph rather than derived from the font size: the
-    // strip has to be exactly one digit tall or the wrap won't line up.
-    //
-    // This deliberately sits OUTSIDE the row below, as a child of a plain
-    // Rectangle rather than of a layout: a layout sizes its children from their
-    // own minimums, so a "zero-width" probe inside one still claimed a cell and
-    // drew its glyph — every count came out with a leading 0. Nothing here takes
-    // part in a layout, so a 0×0 clipped box really is 0×0.
     Rectangle {
         width: 0px;
         height: 0px;
@@ -409,8 +419,6 @@ component OdometerCount inherits Rectangle {
     }
     property <length> cell-w: probe.preferred-width;
     property <length> cell-h: probe.preferred-height;
-    // Pin the height for the enclosing VerticalBox, which would otherwise
-    // measure this from the (zero) probe and give the row nothing to sit in.
     min-height: root.cell-h;
     max-height: root.cell-h;
 
@@ -432,36 +440,36 @@ component OdometerCount inherits Rectangle {
         }
     }
     // Ease-out cubic — quick off the mark, settling into place. At rest p is 1.0,
-    // which parks every column on `start + steps`: the correct final digit, with
-    // no need to rebase anything once the roll ends.
+    // which parks every cell on `start + steps`: the correct final digit, with no
+    // need to rebase anything once the roll ends.
     property <float> p: 1.0 - Math.pow(1.0 - root.t, 3);
 
-    // The digits themselves, centred in whatever width the gauge gives us — the
-    // same placement the plain value Text had.
-    HorizontalLayout {
-        spacing: 0px;
-        alignment: center;
+    Rectangle {
+        x: (parent.width - self.width) / 2;
+        y: (parent.height - self.height) / 2;
+        width: root.slots.length * root.cell-w;
+        height: root.cell-h;
 
-        for s in root.slots: HorizontalLayout {
-            spacing: 0px;
-            DigitStrip {
-                pos: s.start + s.steps * root.p;
-                cell-w: root.cell-w;
-                cell-h: root.cell-h;
-                ink: root.ink;
-                fs: root.fs;
-            }
-            // The thousands separator, when this column is followed by one.
-            // Static: a comma has nothing to count through.
-            if s.comma: Text {
-                min-width: root.cell-w;
-                max-width: root.cell-w;
-                text: ",";
+        for s[i] in root.slots: Rectangle {
+            x: i * root.cell-w;
+            y: 0;
+            width: root.cell-w;
+            height: root.cell-h;
+
+            // A separator: a glyph with nothing to count through.
+            if s.text != "": Text {
+                text: s.text;
                 color: root.ink;
                 font-family: "DejaVu Sans Mono";
                 font-size: root.fs;
                 horizontal-alignment: center;
                 vertical-alignment: center;
+            }
+            if s.text == "": DigitStrip {
+                pos: s.start + s.steps * root.p;
+                cell-h: root.cell-h;
+                ink: root.ink;
+                fs: root.fs;
             }
         }
     }
