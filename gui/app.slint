@@ -233,9 +233,18 @@ component DigitStrip inherits Rectangle {
     in property <color> ink;
     in property <length> fs;
 
-    width: root.cell-w;
-    height: root.cell-h;
+    // Pinned with constraints rather than plain width/height, and that is
+    // load-bearing: a component's root geometry belongs to its PARENT, so in a
+    // layout a width/height binding here is simply overridden (Slint rejects
+    // setting both anyway). Without the constraints the strip gets stretched to
+    // the row's height, the clip stops cropping to a single cell, and two
+    // half-digits show at once with the '.' and '%' adrift below them.
+    min-width: root.cell-w;
+    max-width: root.cell-w;
+    min-height: root.cell-h;
+    max-height: root.cell-h;
     horizontal-stretch: 0;
+    vertical-stretch: 0;
     clip: true;
 
     Rectangle {
@@ -313,7 +322,8 @@ component OdometerFloat inherits Rectangle {
             property <bool> shown: j < root.int-cols && (j == 0 || root.value >= self.unit);
             min-width: self.shown ? root.cell-w : 0px;
             max-width: self.shown ? root.cell-w : 0px;
-            height: root.cell-h;
+            min-height: root.cell-h;
+            max-height: root.cell-h;
             clip: true;
             opacity: self.shown ? 1.0 : 0.0;
             DigitStrip {
@@ -325,6 +335,9 @@ component OdometerFloat inherits Rectangle {
             }
         }
         if root.decimals > 0: Text {
+            min-width: root.cell-w;
+            max-width: root.cell-w;
+            horizontal-alignment: center;
             text: ".";
             color: root.ink;
             font-family: "DejaVu Sans Mono";
@@ -335,7 +348,8 @@ component OdometerFloat inherits Rectangle {
         for m in [1, 2]: Rectangle {
             min-width: m <= root.decimals ? root.cell-w : 0px;
             max-width: m <= root.decimals ? root.cell-w : 0px;
-            height: root.cell-h;
+            min-height: root.cell-h;
+            max-height: root.cell-h;
             clip: true;
             opacity: m <= root.decimals ? 1.0 : 0.0;
             DigitStrip {
@@ -440,7 +454,8 @@ component OdometerCount inherits Rectangle {
             // The thousands separator, when this column is followed by one.
             // Static: a comma has nothing to count through.
             if s.comma: Text {
-                width: root.cell-w;
+                min-width: root.cell-w;
+                max-width: root.cell-w;
                 text: ",";
                 color: root.ink;
                 font-family: "DejaVu Sans Mono";
