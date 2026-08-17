@@ -413,8 +413,18 @@ pub const WalletBalance = struct {
 /// Coin-agnostic direction of a wallet transaction, for the Transactions tab.
 /// `stake` covers a proof-of-stake reward (or, on a coin that still mines, a
 /// mined block reward) — coins the wallet minted itself rather than received
-/// from/sent to another party.
-pub const TxDirection = enum { received, sent, stake };
+/// from/sent to another party. It is **incoming**.
+///
+/// `staked` is its opposite and only arises on a coin with an explicit stake
+/// action (Salvium): the wallet locked its own principal for a term, so the
+/// coins *left* the spendable balance. It's neither a reward nor a payment to a
+/// counterparty, which is why it isn't `stake` or `sent` — labelling an
+/// outgoing lock "Mined" (and signing it `+`) told the user the opposite of
+/// what happened.
+///
+/// Ordinals are the GUI's C ABI (`BwWalletTx.direction`) — append, never
+/// insert.
+pub const TxDirection = enum { received, sent, stake, staked };
 
 /// A transaction counts as settled once it has **more** than this many
 /// confirmations; at or below it, the raw count is shown so the user can watch

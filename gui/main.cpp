@@ -546,17 +546,26 @@ static slint::Image qr_image(const std::string &text)
     return slint::Image(buf);
 }
 
+/// `has_stake` is the coin's explicit stake action (Salvium). It only picks the
+/// wording of an incoming minted credit: on a staking coin that credit is a
+/// matured stake returning its principal + yield, which "Mined" would hide, so
+/// it reads "Stake received". Coins that actually mine keep "Mined".
 static std::shared_ptr<slint::VectorModel<WalletTxRow>>
-make_tx_rows(const std::vector<BwWalletTx> &txs, int decimals)
+make_tx_rows(const std::vector<BwWalletTx> &txs, int decimals, bool has_stake)
 {
     std::vector<WalletTxRow> rows;
     rows.reserve(txs.size());
     for (const BwWalletTx &t : txs) {
-        bool incoming = (t.direction != 1); // 0 received, 2 mined
+        // 0 received and 2 minted are credits; 1 sent and 3 staked left the
+        // wallet. Listed positively so an unknown direction isn't read as money
+        // coming in.
+        bool incoming = (t.direction == 0 || t.direction == 2);
         WalletTxRow r{}; // value-initialised — see the note on NavCoin
-        r.direction = ss(t.direction == 0   ? "Received"
-                                          : t.direction == 1 ? "Sent"
-                                                             : "Mined");
+        r.direction = ss(t.direction == 0 ? "Received"
+                       : t.direction == 1 ? "Sent"
+                       : t.direction == 3 ? "Staked"
+                       : has_stake        ? "Stake received"
+                                          : "Mined");
         // The core sends a positive magnitude and the direction alongside it, so
         // the sign is applied here rather than guessed from the number.
         r.amount = ss((incoming ? "+" : "-") + format_amount_trimmed(t.amount, decimals));
@@ -2947,7 +2956,8 @@ int main(int argc, char **argv)
                         g_qr_addr = recv_addr;
                         (*h)->set_receive_qr(qr_image(recv_addr));
                     }
-                    (*h)->set_tx_rows(make_tx_rows(txs, decimals));
+                    (*h)->set_tx_rows(
+                        make_tx_rows(txs, decimals, bw_coin_supports_stake(coin) != 0));
                 }
                 // Only when it changes, so a persistent fault doesn't rewrite
                 // the status line every two seconds over whatever else is there.

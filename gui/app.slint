@@ -43,7 +43,7 @@ struct BrowseEntry {
 // One row in the Transactions list. Pre-formatted by the host — the core owns
 // the numbers, C++ owns how they read.
 struct WalletTxRow {
-    direction: string,   // "Received" | "Sent" | "Mined"
+    direction: string,   // "Received" | "Sent" | "Mined"/"Stake received" | "Staked"
     amount: string,      // signed, already to the coin's decimals
     when: string,        // "3 hours ago"
     confirmations: string,

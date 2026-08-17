@@ -7806,16 +7806,20 @@ pub const App = struct {
     }
 
     /// The direction glyph for one Transactions row: bold green ▼ (received),
-    /// bold red ▲ (sent), or a bold yellow ★ for a stake reward — heavy filled
-    /// shapes so the direction reads at a glance. This daemon reports a stake
-    /// credit the same way a mined block reward would be (see
-    /// `SpiderByte.directionFromCategory`), so it's neither "received from" nor
-    /// "sent to" anyone; the coins were minted by the wallet itself.
+    /// bold red ▲ (sent), a bold yellow ★ for a stake reward, or a bold yellow
+    /// ▲ for an outgoing stake — heavy filled shapes so the direction reads at a
+    /// glance. This daemon reports a stake credit the same way a mined block
+    /// reward would be (see `SpiderByte.directionFromCategory`), so it's neither
+    /// "received from" nor "sent to" anyone; the coins were minted by the wallet
+    /// itself. A `.staked` row is the other half of that: the wallet locking its
+    /// own principal for a term, so it takes the *sent* arrow (the coins did
+    /// leave) in the stake colour rather than the reward star.
     fn txDirectionGlyph(a: std.mem.Allocator, direction: models.TxDirection) []const u8 {
         return switch (direction) {
             .received => (zz.Style{}).bold(true).fg(.green).render(a, "▼") catch "▼",
             .sent => (zz.Style{}).bold(true).fg(.red).render(a, "▲") catch "▲",
             .stake => (zz.Style{}).bold(true).fg(.yellow).render(a, "★") catch "★",
+            .staked => (zz.Style{}).bold(true).fg(.yellow).render(a, "▲") catch "▲",
         };
     }
 
@@ -10114,7 +10118,7 @@ test "loadEtaPercent estimates elapsed vs last load, clamped to 1..99" {
     try std.testing.expectEqual(@as(u8, 99), loadEtaPercent(base, base + 20_000 * ms, 10_000));
 }
 
-test "txDirectionGlyph colors received/sent/stake distinctly" {
+test "txDirectionGlyph colors received/sent/stake/staked distinctly" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const a = arena.allocator();
@@ -10132,6 +10136,15 @@ test "txDirectionGlyph colors received/sent/stake distinctly" {
     try std.testing.expect(std.mem.indexOf(u8, stake, "★") != null);
     try std.testing.expect(std.mem.indexOf(u8, stake, "▼") == null);
     try std.testing.expect(std.mem.indexOf(u8, stake, "▲") == null);
+
+    // An outgoing stake takes the sent arrow, not the reward star and not the
+    // received arrow — the principal did leave the wallet for its term.
+    const staked = App.txDirectionGlyph(a, .staked);
+    try std.testing.expect(std.mem.indexOf(u8, staked, "▲") != null);
+    try std.testing.expect(std.mem.indexOf(u8, staked, "★") == null);
+    try std.testing.expect(std.mem.indexOf(u8, staked, "▼") == null);
+    // …but in the stake colour, so it doesn't read as a payment to someone.
+    try std.testing.expect(!std.mem.eql(u8, staked, sent));
 }
 
 test "txConfirmationText shows the raw count at/below the threshold, 'Confirmed' above it" {
