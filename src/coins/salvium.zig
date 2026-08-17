@@ -985,7 +985,205 @@ pub const Salvium = struct {
         var parsed = try walletCall(GetTransfersResult, allocator, wallet_auth, "get_transfers", "{\"in\":true,\"out\":true,\"pending\":true,\"pool\":true,\"account_index\":0}");
         defer parsed.deinit();
         const r = parsed.value.result orelse return error.EmptyRpcResult;
-        return mapTransfers(allocator, r, limit);
+        const txs = try mapTransfers(allocator, r, limit);
+        // A stake whose term has ended is indistinguishable from a plain send in
+        // the wallet's own record (see `tagMaturedStakes`), so the rows that
+        // still read as sends are checked against the daemon. Best-effort: a
+        // daemon that's down or busy leaves them as sends rather than failing
+        // the whole list.
+        tagMaturedStakes(allocator, txs) catch {};
+        return txs;
+    }
+
+    // ---- stake classification -------------------------------------------------
+    //
+    // `get_transfers` can only be trusted to identify a stake **while it is
+    // locked**: wallet2 reports an in-term stake with `amount == 0` and the
+    // principal folded into `fee` (`mapOutEntry` keys off exactly that). Once
+    // the term ends and the principal returns, the same transaction is reported
+    // in the ordinary send shape — principal in `amount`, network fee in `fee`,
+    // `locked` false — with no field anywhere in the entry marking it a stake.
+    // Verified against a live wallet: all 43 outgoing entries were stakes, but
+    // only the one still inside its term had the zero-amount shape.
+    //
+    // The transaction itself does carry the answer: Salvium's tx format has a
+    // `type` field, and the daemon will decode it (`/get_transactions` with
+    // `decode_as_json`), where a stake reads `type == 6` — the same
+    // `transaction_type::STAKE` this coin sends with. So the rows that still
+    // look like sends are put to the daemon, and the answer is memoised: a
+    // confirmed transaction's type never changes, so each txid costs one lookup
+    // for the life of the process rather than one per two-second poll.
+
+    /// The daemon RPC BoxWallet's managed wallet is already pinned to — the same
+    /// address `walletProcessArgv` hands `salvium-wallet-rpc` as its
+    /// `--daemon-address`, so a wallet whose transactions we can read is by
+    /// definition talking to this daemon. salviumd's RPC is unauthenticated
+    /// (see `rpc_default_username`), so only the address is needed.
+    fn daemonAuth() models.CoinAuth {
+        return .{
+            .rpc_user = "",
+            .rpc_password = "",
+            .ip_address = "127.0.0.1",
+            .port = rpc_default_port,
+        };
+    }
+
+    /// How many txids one `/get_transactions` asks about. The reply carries the
+    /// whole transaction per hash (hex + decoded JSON, ~7 KB each), and
+    /// `moneroPost` hands back one allocated body, so this is what bounds the
+    /// peak: a chunk, not the whole list. Small enough that a full page of
+    /// unknown rows costs a few sub-100 ms round trips, once.
+    const stake_query_chunk = 8;
+
+    /// txid → "is a STAKE tx", for transactions already put to the daemon.
+    /// Fixed-size and overwritten oldest-first: a poll only ever asks about the
+    /// newest `limit` rows (20 in both front-ends), so a page's worth several
+    /// times over is plenty, and it can't grow with wallet history. ~4 KB of
+    /// static state.
+    const stake_memo_cap = 64;
+    var stake_memo_ids: [stake_memo_cap][64]u8 = undefined;
+    var stake_memo_flags: [stake_memo_cap]bool = undefined;
+    var stake_memo_len: usize = 0;
+    var stake_memo_next: usize = 0;
+
+    /// Guards the memo. The critical sections are a scan and a store — no I/O
+    /// under the lock, so a failed `tryLock` just skips the memo for this round
+    /// (an extra daemon lookup, never a wrong answer) instead of spinning.
+    var stake_memo_lock: std.atomic.Mutex = .unlocked;
+
+    /// Exactly 64 lowercase-or-uppercase hex characters — a CryptoNote txid, and
+    /// safe to drop into a JSON string unescaped.
+    fn isTxidHex(id: []const u8) bool {
+        if (id.len != 64) return false;
+        for (id) |ch| if (!std.ascii.isHex(ch)) return false;
+        return true;
+    }
+
+    /// The memoised verdict for `txid`, or null if it hasn't been looked up.
+    fn stakeMemoGet(txid: []const u8) ?bool {
+        if (txid.len != 64) return null;
+        if (!stake_memo_lock.tryLock()) return null;
+        defer stake_memo_lock.unlock();
+        for (stake_memo_ids[0..stake_memo_len], stake_memo_flags[0..stake_memo_len]) |*id, flag| {
+            if (std.mem.eql(u8, id, txid)) return flag;
+        }
+        return null;
+    }
+
+    /// Record a verdict, evicting the oldest entry once full.
+    fn stakeMemoPut(txid: []const u8, is_stake: bool) void {
+        if (txid.len != 64) return;
+        if (!stake_memo_lock.tryLock()) return;
+        defer stake_memo_lock.unlock();
+        stake_memo_ids[stake_memo_next] = txid[0..64].*;
+        stake_memo_flags[stake_memo_next] = is_stake;
+        stake_memo_next = (stake_memo_next + 1) % stake_memo_cap;
+        if (stake_memo_len < stake_memo_cap) stake_memo_len += 1;
+    }
+
+    /// One `/get_transactions` entry, cut down to the two fields the lookup
+    /// needs. The reply also carries the transaction's hex twice over and its
+    /// output indices; leaving those undeclared means the parser walks past them
+    /// instead of allocating them.
+    const DaemonTx = struct {
+        tx_hash: []const u8 = "",
+        as_json: []const u8 = "",
+    };
+    const GetTransactionsResult = struct { txs: []DaemonTx = &.{} };
+
+    /// The decoded transaction, of which only Salvium's `type` matters — the
+    /// `transaction_type` the sender chose, so `tx_type_stake` here is the same
+    /// constant `stakeParams` writes.
+    const DecodedTx = struct { type: u32 = 0 };
+
+    /// Re-tag any `.sent` row that the daemon says was really a stake. Rows
+    /// already known to be stakes (in-term, caught by shape) are untouched, as
+    /// are received rows — a stake is always outgoing.
+    fn tagMaturedStakes(allocator: std.mem.Allocator, txs: []models.WalletTx) !void {
+        var chunk: [stake_query_chunk][]const u8 = undefined;
+        var n: usize = 0;
+        for (txs) |*t| {
+            if (t.direction != .sent) continue;
+            const id = t.txid();
+            // The txid is interpolated into a JSON request body, so it's
+            // verified rather than trusted: 64 hex characters or it isn't asked
+            // about. (It comes from the wallet RPC, but a value that reaches a
+            // request unescaped gets checked at the point of use.)
+            if (!isTxidHex(id)) continue;
+            if (stakeMemoGet(id)) |is_stake| {
+                if (is_stake) t.direction = .staked;
+                continue;
+            }
+            chunk[n] = id;
+            n += 1;
+            if (n == chunk.len) {
+                try queryStakeTypes(allocator, txs, chunk[0..n]);
+                n = 0;
+            }
+        }
+        if (n > 0) try queryStakeTypes(allocator, txs, chunk[0..n]);
+    }
+
+    /// Ask the daemon for `ids`' transaction types and apply the answer to every
+    /// matching row in `txs`, memoising each verdict. `ids` borrows the rows'
+    /// own txid buffers, so nothing here owns a copy of them.
+    fn queryStakeTypes(
+        allocator: std.mem.Allocator,
+        txs: []models.WalletTx,
+        ids: []const []const u8,
+    ) !void {
+        const body = try stakeTypeRequest(allocator, ids);
+        defer allocator.free(body);
+
+        const raw = try rpc.moneroPost(allocator, daemonAuth(), "/get_transactions", body, status_timeout_ms);
+        defer allocator.free(raw);
+
+        var parsed = try std.json.parseFromSlice(
+            GetTransactionsResult,
+            allocator,
+            raw,
+            .{ .ignore_unknown_fields = true, .allocate = .alloc_always },
+        );
+        defer parsed.deinit();
+
+        for (parsed.value.txs) |dt| {
+            if (dt.tx_hash.len != 64 or dt.as_json.len == 0) continue;
+            // `as_json` is a JSON document *inside* a JSON string; the outer
+            // parse already unescaped it, so it parses directly.
+            var decoded = std.json.parseFromSlice(
+                DecodedTx,
+                allocator,
+                dt.as_json,
+                .{ .ignore_unknown_fields = true },
+            ) catch continue;
+            defer decoded.deinit();
+
+            const is_stake = decoded.value.type == tx_type_stake;
+            stakeMemoPut(dt.tx_hash, is_stake);
+            if (!is_stake) continue;
+            for (txs) |*t| {
+                if (t.direction == .sent and std.mem.eql(u8, t.txid(), dt.tx_hash))
+                    t.direction = .staked;
+            }
+        }
+    }
+
+    /// Build the `/get_transactions` body for `ids`. `prune` drops the ring
+    /// signatures from the reply (they're the bulk of a transaction and nothing
+    /// here reads them) while still decoding the header fields `type` lives in.
+    /// Split out so the request shape is unit-testable without a daemon.
+    fn stakeTypeRequest(allocator: std.mem.Allocator, ids: []const []const u8) ![]u8 {
+        var buf: std.ArrayList(u8) = .empty;
+        errdefer buf.deinit(allocator);
+        try buf.appendSlice(allocator, "{\"txs_hashes\":[");
+        for (ids, 0..) |id, i| {
+            if (i > 0) try buf.append(allocator, ',');
+            try buf.append(allocator, '"');
+            try buf.appendSlice(allocator, id);
+            try buf.append(allocator, '"');
+        }
+        try buf.appendSlice(allocator, "],\"decode_as_json\":true,\"prune\":true}");
+        return buf.toOwnedSlice(allocator);
     }
 
     /// Whether an entry's amount is denominated in the primary coin. Entries
@@ -1005,7 +1203,10 @@ pub const Salvium = struct {
         var n: usize = 0;
         for (r.in) |e| {
             if (!isPrimaryAsset(e.asset_type)) continue;
-            // A coinbase credit (type "block") was minted by the wallet itself.
+            // A coinbase credit (type "block") was minted by the wallet itself
+            // rather than paid by anyone — on Salvium that's a matured stake
+            // returning its principal + yield (or a solo-mined block reward;
+            // the entry doesn't distinguish them). Incoming either way.
             const direction: models.TxDirection = if (std.mem.eql(u8, e.type, "block")) .stake else .received;
             all[n] = mapEntry(e, direction);
             n += 1;
@@ -1039,7 +1240,10 @@ pub const Salvium = struct {
     /// `fee` — a normal send instead carries the sent value in `amount`. Left as
     /// a raw send, a stake would show up as a misleading 0-value row, so detect
     /// it (amount 0, nonzero fee) and surface the staked value from `fee` under
-    /// the `.stake` direction. The reported `fee` is principal + network fee, so
+    /// the `.staked` direction — **outgoing**: the principal left the spendable
+    /// balance for the term. (It only reads as a credit later, when the matured
+    /// principal + yield return as an `in` entry.) The reported `fee` is
+    /// principal + network fee, so
     /// the displayed amount is the total that left the wallet for the stake
     /// (a stake of 100 reads as ~100 plus the sub-SAL fee) — the two can't be
     /// separated from this entry, and showing what actually left is honest.
@@ -1049,7 +1253,7 @@ pub const Salvium = struct {
                 .amount = e.fee,
                 .timestamp = e.timestamp,
                 .confirmations = e.confirmations,
-            }, .stake);
+            }, .staked);
         }
         return mapEntry(e, .sent);
     }
@@ -1956,7 +2160,7 @@ test "parses a get_transfers reply into bucketed TransferEntry lists (asset-tagg
     try std.testing.expectApproxEqAbs(@as(f64, 5.0), txs[2].amount, 1e-9);
 }
 
-test "mapTransfers surfaces a Salvium stake (amount 0, principal in fee) as a stake row" {
+test "mapTransfers surfaces a Salvium stake (amount 0, principal in fee) as an outgoing stake row" {
     const allocator = std.testing.allocator;
     // Two out entries: a plain send (value in `amount`) and a stake, which
     // wallet2 reports with amount 0 and the locked principal+fee in `fee`
@@ -1972,8 +2176,11 @@ test "mapTransfers surfaces a Salvium stake (amount 0, principal in fee) as a st
 
     try std.testing.expectEqual(@as(usize, 2), txs.len);
     // Newest-first: the stake row leads; its amount comes from `fee`, not the
-    // zero `amount`, and it's flagged as a stake rather than a 0-value send.
-    try std.testing.expectEqual(models.TxDirection.stake, txs[0].direction);
+    // zero `amount`, and it's flagged `.staked` rather than a 0-value send.
+    // `.staked`, not `.stake`: the principal *left* the wallet for the term —
+    // tagging it as the incoming reward direction had the front-ends drawing it
+    // as a "+" credit labelled "Mined".
+    try std.testing.expectEqual(models.TxDirection.staked, txs[0].direction);
     try std.testing.expectApproxEqAbs(@as(f64, 100.0076256), txs[0].amount, 1e-7);
     try std.testing.expectEqual(models.TxDirection.sent, txs[1].direction);
     try std.testing.expectApproxEqAbs(@as(f64, 1.25), txs[1].amount, 1e-9);
@@ -2036,6 +2243,57 @@ test "stakeParams builds the CLI-equivalent stake transfer request" {
     );
 }
 
+test "stakeTypeRequest asks the daemon to decode exactly the given txids" {
+    const allocator = std.testing.allocator;
+
+    // The lookup that catches a *matured* stake, which the wallet reports in the
+    // ordinary send shape. `prune` keeps the reply small (the ring signatures
+    // are the bulk of a transaction and nothing reads them) while still
+    // decoding the header, which is where `type` lives.
+    const a_id = "a" ** 64;
+    const b_id = "b" ** 64;
+    const body = try Salvium.stakeTypeRequest(allocator, &.{ a_id, b_id });
+    defer allocator.free(body);
+
+    try std.testing.expectEqualStrings(
+        "{\"txs_hashes\":[\"" ++ a_id ++ "\",\"" ++ b_id ++ "\"]," ++
+            "\"decode_as_json\":true,\"prune\":true}",
+        body,
+    );
+}
+
+test "isTxidHex accepts a real txid and rejects anything that could break the request" {
+    // The txid goes into the request body unescaped, so this is the guard that
+    // makes that safe — not a formatting nicety.
+    try std.testing.expect(Salvium.isTxidHex("ab974635d485c30dcc02a633e0d71f94763e31ed05310db7d235ef8c22b42b20"));
+    try std.testing.expect(!Salvium.isTxidHex("")); // no hash reported
+    try std.testing.expect(!Salvium.isTxidHex("ab97")); // truncated
+    try std.testing.expect(!Salvium.isTxidHex("a" ** 65)); // too long
+    // 64 characters, but a quote would close the JSON string and a brace would
+    // open an object — rejected on the character class, not the length.
+    try std.testing.expect(!Salvium.isTxidHex("\"}," ++ ("a" ** 61)));
+    try std.testing.expect(!Salvium.isTxidHex("z" ** 64));
+}
+
+test "stake memo answers only for txids it has been told about" {
+    // Memoised because a confirmed transaction's type never changes: without it
+    // every two-second poll would re-ask the daemon about the same rows.
+    const id = "c" ** 64;
+    try std.testing.expect(Salvium.stakeMemoGet(id) == null);
+
+    Salvium.stakeMemoPut(id, true);
+    try std.testing.expectEqual(@as(?bool, true), Salvium.stakeMemoGet(id));
+
+    // A plain send is remembered as such, so it isn't re-queried either.
+    const other = "d" ** 64;
+    Salvium.stakeMemoPut(other, false);
+    try std.testing.expectEqual(@as(?bool, false), Salvium.stakeMemoGet(other));
+
+    // Junk is never stored, so it can never be answered from the memo.
+    Salvium.stakeMemoPut("nope", true);
+    try std.testing.expect(Salvium.stakeMemoGet("nope") == null);
+}
+
 test "coin vtable exposes the stake action for Salvium" {
     var s: Salvium = .{};
     const c = s.coin();
@@ -2046,3 +2304,4 @@ test "coin vtable exposes the stake action for Salvium" {
     // Distinct from the passive PoS coins: Salvium itself is proof-of-work.
     try std.testing.expect(!c.isProofOfStake());
 }
+

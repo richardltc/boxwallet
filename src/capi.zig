@@ -1977,9 +1977,11 @@ export fn bw_ext_wallet_rescan(ctx: ?*Ctx, idx: usize, out: ?*BwRescanProgress) 
 }
 
 /// Mirror of `models.WalletTx`. Scalar-only: `direction` is the ordinal of
-/// `models.TxDirection` (0 received, 1 sent, 2 stake/mined) and `amount` is a
-/// positive magnitude, so a fixed-capacity array of these memcpys across with
-/// nothing owned on either side.
+/// `models.TxDirection` (0 received, 1 sent, 2 stake/mined credit, 3 outgoing
+/// stake) and `amount` is a positive magnitude, so a fixed-capacity array of
+/// these memcpys across with nothing owned on either side. 0 and 2 are
+/// incoming, 1 and 3 outgoing — the front-end applies the sign from that, so a
+/// direction it doesn't know must not be assumed to be a credit.
 /// `txid` follows `BwScPosition.id`: an explicit length rather than a NUL
 /// terminator, because a txid is exactly 64 hex characters everywhere BoxWallet
 /// looks and terminating it would truncate the last one. `txid_len` is 0 for a
