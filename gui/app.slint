@@ -219,11 +219,149 @@ component TabButton inherits Rectangle {
     }
 }
 
-// A count that rolls like an odometer instead of snapping: each digit is a strip
-// of 0-9 clipped to one cell, slid to bring the right one into view. Columns
-// whose digit doesn't change sit still, and because the host derives each column
-// from a different power of ten, the ones column spins while the millions barely
-// move — the cascade a mechanical counter makes.
+// One digit of an odometer: a strip of 0-9 and then a SECOND 0, clipped to a
+// single cell and slid so that `pos` — a continuous position that wraps every 10
+// — brings the right digit into view.
+//
+// That duplicate 0 is what makes the 9→0 carry seamless: by the bottom of the
+// strip you are already looking at a 0, so when the offset wraps back to the top
+// the pixels are identical and nothing appears to jump.
+component DigitStrip inherits Rectangle {
+    in property <float> pos;
+    in property <length> cell-w;
+    in property <length> cell-h;
+    in property <color> ink;
+    in property <length> fs;
+
+    width: root.cell-w;
+    height: root.cell-h;
+    horizontal-stretch: 0;
+    clip: true;
+
+    Rectangle {
+        width: parent.width;
+        height: root.cell-h * 11;
+        // One binding for the whole column rather than one per digit. The +1000
+        // bias keeps Math.mod on the positive side if a value ever walks
+        // backwards — a chain reorg, a disk filling up.
+        y: -Math.mod(root.pos + 1000, 10) * root.cell-h;
+        for d[k] in [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 0]: Text {
+            y: k * root.cell-h;
+            width: parent.width;
+            height: root.cell-h;
+            text: "\{d}";
+            color: root.ink;
+            font-family: "DejaVu Sans Mono";
+            font-size: root.fs;
+            horizontal-alignment: center;
+            vertical-alignment: center;
+        }
+    }
+}
+
+// A live number that rolls as it changes: the same odometer as OdometerCount
+// below, but driven straight off an already-animated float instead of columns
+// split by the host.
+//
+// It can work that way because everything it shows is small — a percentage at
+// most 100.0, a byte figure under 1024 of whatever unit it settled on — so the
+// digit arithmetic stays well inside what Slint's f32 holds exactly, which is
+// the one thing the block heights could not do. Reading the caller's animated
+// value directly also means it moves in exact step with whatever else that value
+// drives: for a percentage, the ring drawn around it.
+//
+// Columns the value hasn't reached collapse instead of showing a leading zero.
+// Both min- and max-width are pinned to do it: a layout sizes its children from
+// their own minimum, so setting only the maximum leaves the cell at its natural
+// width and draws the digit anyway.
+component OdometerFloat inherits Rectangle {
+    in property <float> value;
+    // Integer columns to allow for — 3 fits "100.0", 4 fits "1023.9".
+    in property <int> int-cols: 3;
+    in property <int> decimals: 1;
+    in property <string> suffix;
+    in property <color> ink: #c8c8c8;
+    in property <length> fs: 12px;
+
+    Rectangle {
+        width: 0px;
+        height: 0px;
+        clip: true;
+        fprobe := Text {
+            text: "0";
+            font-family: "DejaVu Sans Mono";
+            font-size: root.fs;
+        }
+    }
+    property <length> cell-w: fprobe.preferred-width;
+    property <length> cell-h: fprobe.preferred-height;
+    min-height: root.cell-h;
+    max-height: root.cell-h;
+
+    HorizontalLayout {
+        spacing: 0px;
+        alignment: center;
+
+        // Integer columns, most significant first. Column j stands for 10^j, so
+        // its position is the value divided down by that — which is what gives
+        // the cascade: the units column turns ten times for every turn of the
+        // tens.
+        for j in [3, 2, 1, 0]: Rectangle {
+            property <float> unit: Math.pow(10, j);
+            // The units column is always there; the rest appear only once the
+            // value has actually reached them.
+            property <bool> shown: j < root.int-cols && (j == 0 || root.value >= self.unit);
+            min-width: self.shown ? root.cell-w : 0px;
+            max-width: self.shown ? root.cell-w : 0px;
+            height: root.cell-h;
+            clip: true;
+            opacity: self.shown ? 1.0 : 0.0;
+            DigitStrip {
+                pos: root.value / parent.unit;
+                cell-w: root.cell-w;
+                cell-h: root.cell-h;
+                ink: root.ink;
+                fs: root.fs;
+            }
+        }
+        if root.decimals > 0: Text {
+            text: ".";
+            color: root.ink;
+            font-family: "DejaVu Sans Mono";
+            font-size: root.fs;
+            vertical-alignment: center;
+        }
+        // Decimal columns: the mirror of the above, multiplying up instead.
+        for m in [1, 2]: Rectangle {
+            min-width: m <= root.decimals ? root.cell-w : 0px;
+            max-width: m <= root.decimals ? root.cell-w : 0px;
+            height: root.cell-h;
+            clip: true;
+            opacity: m <= root.decimals ? 1.0 : 0.0;
+            DigitStrip {
+                pos: root.value * Math.pow(10, m);
+                cell-w: root.cell-w;
+                cell-h: root.cell-h;
+                ink: root.ink;
+                fs: root.fs;
+            }
+        }
+        // The unit ("%", " GB free"). Static — it has nothing to count through,
+        // and holding it still is what makes the digits beside it read as moving.
+        if root.suffix != "": Text {
+            text: root.suffix;
+            color: root.ink;
+            font-family: "DejaVu Sans Mono";
+            font-size: root.fs;
+            vertical-alignment: center;
+        }
+    }
+}
+
+// A count that rolls like an odometer instead of snapping. Columns whose digit
+// doesn't change sit still, and because the host derives each column from a
+// different power of ten, the ones column spins while the millions barely move —
+// the cascade a mechanical counter makes.
 //
 // The host hands over pre-split columns (see DigitSlot) and this side does no
 // grouping, digit-counting or leading-zero logic: it lays the model out left to
@@ -292,36 +430,12 @@ component OdometerCount inherits Rectangle {
 
         for s in root.slots: HorizontalLayout {
             spacing: 0px;
-            // The viewport: one digit tall, everything else clipped away.
-            Rectangle {
-                width: root.cell-w;
-                height: root.cell-h;
-                horizontal-stretch: 0;
-                clip: true;
-                // The strip: 0-9 and then a SECOND 0. That duplicate is what
-                // makes the 9→0 wrap seamless — by the bottom of the strip
-                // you're already looking at a 0, so when the offset wraps back
-                // to the top the pixels are identical and nothing appears to
-                // jump.
-                Rectangle {
-                    width: parent.width;
-                    height: root.cell-h * 11;
-                    // One binding for the whole column rather than one per
-                    // digit. The +1000 bias keeps Math.mod on the positive side
-                    // if a reorg ever walks a column backwards.
-                    y: -Math.mod(s.start + s.steps * root.p + 1000, 10) * root.cell-h;
-                    for d[k] in [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 0]: Text {
-                        y: k * root.cell-h;
-                        width: parent.width;
-                        height: root.cell-h;
-                        text: "\{d}";
-                        color: root.ink;
-                        font-family: "DejaVu Sans Mono";
-                        font-size: root.fs;
-                        horizontal-alignment: center;
-                        vertical-alignment: center;
-                    }
-                }
+            DigitStrip {
+                pos: s.start + s.steps * root.p;
+                cell-w: root.cell-w;
+                cell-h: root.cell-h;
+                ink: root.ink;
+                fs: root.fs;
             }
             // The thousands separator, when this column is followed by one.
             // Static: a comma has nothing to count through.
@@ -346,12 +460,15 @@ component CircleGauge inherits VerticalBox {
     in property <float> frac;
     in property <brush> fill;
     in property <string> label;
-    in property <string> value; // e.g. "12.3 GB free"
-    // A count to roll instead of `value`, for the gauges whose readout is a bare
-    // number (Headers, Blocks). Empty means "this gauge has no count" — Disk and
-    // Memory carry units, so they keep the plain string above.
+    // The readout below the ring, in one of two shapes. Headers and Blocks are
+    // bare counts too large for f32, so the host splits them into columns
+    // (`count-slots`); Disk and Memory are a small magnitude plus a unit, which
+    // rolls straight off the number (`num-value` < 0 means "nothing to show").
     in property <[DigitSlot]> count-slots;
     in property <int> count-roll;
+    in property <float> num-value: -1;
+    in property <string> num-suffix;
+    in property <int> num-decimals: 1;
     in property <string> full-text; // shown in place of "100%" when full (e.g. "Synced")
     // The measurement isn't available — not "0%", which is a claim of its own.
     // A sync gauge with no known network tip has no denominator, so it reads
@@ -362,13 +479,16 @@ component CircleGauge inherits VerticalBox {
     // Smoothly sweep the ring (and count the % readout) whenever the underlying
     // fraction jumps — e.g. a poll advancing the sync, or clearing to 0 on stop.
     animate f { duration: 600ms; easing: ease-in-out; }
-    // One decimal place, matching the TUI. Slint has no number formatting, so
-    // the readout is built from integer tenths-of-a-percent: interpolating the
-    // float directly would print its full binary expansion.
+    // One decimal place, matching the TUI. Only the "is this readout wide?" test
+    // still needs the integer form; the digits themselves roll off `f` directly.
     property <int> tenths: Math.round(root.f * 1000);
-    property <int> pct-whole: Math.floor(root.tenths / 10);
-    property <string> pct-text: "\{root.pct-whole}.\{root.tenths - root.pct-whole * 10}%";
+    // A full ring that has a word to show instead of "100.0%".
+    property <bool> full-word: root.f >= 0.999 && root.full-text != "";
     property <length> dia: 72px;
+    // The readout below the ring, animated the same 600ms as the ring itself so
+    // the two never disagree about where the measurement got to.
+    property <float> nv: root.num-value < 0 ? 0 : root.num-value;
+    animate nv { duration: 600ms; easing: ease-in-out; }
 
     padding: 0;
     spacing: 6px;
@@ -401,36 +521,61 @@ component CircleGauge inherits VerticalBox {
                 height: parent.height - 8px;
                 border-radius: (parent.width - 8px) / 2;
                 background: #1e1e1e;
-                Text {
-                    text: root.unknown
-                        ? "—"
-                        : ((root.f >= 0.999 && root.full-text != "") ? root.full-text : root.pct-text);
-                    color: root.unknown ? #8a8a8a : #e6e6e6;
-                    // A step down for the two long readouts — the full-text word,
-                    // and "100.0%", which is two characters wider than the "100%"
-                    // this used to show and would otherwise crowd the ring.
-                    font-size: (!root.unknown && (root.tenths >= 1000 || (root.f >= 0.999 && root.full-text != ""))) ? 13px : 15px;
+                // Three mutually-exclusive readouts (Slint has no `else`): no
+                // measurement, a full ring that would rather say "Synced", or
+                // the percentage itself.
+                //
+                // The percentage rolls off `f` — the same animated fraction the
+                // ring around it is drawn from — so the digits and the arc are
+                // one motion rather than two that happen to agree at the end.
+                if root.unknown: Text {
+                    text: "—";
+                    color: #8a8a8a;
+                    font-size: 15px;
                     horizontal-alignment: center;
                     vertical-alignment: center;
+                }
+                if !root.unknown && root.full-word: Text {
+                    text: root.full-text;
+                    color: #e6e6e6;
+                    font-size: 13px;
+                    horizontal-alignment: center;
+                    vertical-alignment: center;
+                }
+                if !root.unknown && !root.full-word: OdometerFloat {
+                    // Centred by hand: a Rectangle doesn't centre its children,
+                    // and this one is exactly one digit tall rather than filling
+                    // the hole the way the Text readouts above do.
+                    y: (parent.height - self.height) / 2;
+                    value: root.f * 100;
+                    int-cols: 3; // "100.0"
+                    decimals: 1;
+                    suffix: "%";
+                    ink: #e6e6e6;
+                    // A step down for "100.0%", two characters wider than the
+                    // "100%" this used to show, which would otherwise crowd the
+                    // ring.
+                    fs: root.tenths >= 1000 ? 13px : 15px;
                 }
             }
         }
     }
-    // Value below the ring (count / free space), monospaced. Slint has no
-    // `else`, so the two readouts are mutually-exclusive conditionals on whether
-    // this gauge was given a count to roll.
+    // Value below the ring — a rolled count (Headers, Blocks) or a rolled
+    // magnitude with its unit held still beside it (Disk, Memory). Nothing at
+    // all when the gauge has neither, which is what a stopped daemon shows.
     if root.count-slots.length > 0: OdometerCount {
         slots: root.count-slots;
         roll: root.count-roll;
         ink: #c8c8c8;
         fs: 12px;
     }
-    if root.count-slots.length == 0: Text {
-        text: root.value;
-        color: #c8c8c8;
-        font-size: 12px;
-        font-family: "DejaVu Sans Mono";
-        horizontal-alignment: center;
+    if root.count-slots.length == 0 && root.num-value >= 0: OdometerFloat {
+        value: root.nv;
+        int-cols: 4; // "1023.9", the most a binary-scaled figure reaches
+        decimals: root.num-decimals;
+        suffix: root.num-suffix;
+        ink: #c8c8c8;
+        fs: 12px;
     }
 }
 
@@ -1011,11 +1156,18 @@ export component AppWindow inherits Window {
     // a coin whose daemon reports neither a tip timestamp nor a block gap.
     in property <string> tip-date: "";
     in property <string> sync-behind: "";
-    in property <string> disk-free: "";    // free space, e.g. "12.3 GB free"
+    // Free space and RAM in use, split by the host into a magnitude and its unit
+    // ("412.7" + " GB free") so the gauge can roll the number while the unit
+    // stays put. A negative magnitude means there's no reading.
+    in property <float> disk-free-value: -1;
+    in property <string> disk-free-suffix: "";
+    in property <int> disk-free-decimals: 1;
     // System RAM, and what this coin's data dir occupies on disk. The two answer
     // different questions from `disk-frac`, which is the volume's fill level.
     in property <float> mem-frac: 0;
-    in property <string> mem-used: "";
+    in property <float> mem-used-value: -1;
+    in property <string> mem-used-suffix: "";
+    in property <int> mem-used-decimals: 1;
     // The chain's on-disk size, already formatted by the core (bw_format_storage,
     // shared with the TUI). Shown as a figure, so there's no fraction to carry.
     in property <string> storage-size: "";
@@ -1953,13 +2105,17 @@ export component AppWindow inherits Window {
                                 label: "Disk used";
                                 frac: root.disk-frac;
                                 fill: root.coin-color;
-                                value: root.disk-free;
+                                num-value: root.disk-free-value;
+                                num-suffix: root.disk-free-suffix;
+                                num-decimals: root.disk-free-decimals;
                             }
                             CircleGauge {
                                 label: "Memory";
                                 frac: root.mem-frac;
                                 fill: root.coin-color;
-                                value: root.mem-used;
+                                num-value: root.mem-used-value;
+                                num-suffix: root.mem-used-suffix;
+                                num-decimals: root.mem-used-decimals;
                             }
                         }
                         // Where the chain has got to *in time* — the date of the

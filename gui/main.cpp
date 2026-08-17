@@ -415,9 +415,15 @@ static std::string fmt_storage(uint64_t bytes)
     return std::string(buf, n);
 }
 
-// Bytes -> "12.3 GB", binary units, auto-scaling. Download/transfer progress
-// only — see fmt_storage for anything the TUI also displays.
-static std::string humanize_bytes(uint64_t b)
+// Bytes -> a magnitude and the unit it settled on, binary units, auto-scaling.
+// Kept split because the gauges roll the number and hold the unit still beside
+// it; humanize_bytes joins them back up for everywhere that just wants text.
+struct ScaledBytes {
+    double value;
+    const char *unit;
+    int decimals; // whole bytes read as integers; everything else to one place
+};
+static ScaledBytes scale_bytes(uint64_t b)
 {
     static const char *unit[] = {"B", "KB", "MB", "GB", "TB", "PB"};
     double v = static_cast<double>(b);
@@ -426,8 +432,16 @@ static std::string humanize_bytes(uint64_t b)
         v /= 1024.0;
         u++;
     }
+    return ScaledBytes{v, unit[u], u == 0 ? 0 : 1};
+}
+
+// Bytes -> "12.3 GB", binary units, auto-scaling. Download/transfer progress
+// only — see fmt_storage for anything the TUI also displays.
+static std::string humanize_bytes(uint64_t b)
+{
+    const ScaledBytes s = scale_bytes(b);
     char buf[32];
-    std::snprintf(buf, sizeof buf, u == 0 ? "%.0f %s" : "%.1f %s", v, unit[u]);
+    std::snprintf(buf, sizeof buf, s.decimals == 0 ? "%.0f %s" : "%.1f %s", s.value, s.unit);
     return std::string(buf);
 }
 
@@ -810,7 +824,10 @@ static void apply_coin_metadata(const AppWindow *ui, bw_ctx *ctx, int idx)
     ui->set_blocks_slots(digit_slots(0, -1));
     ui->set_tip_date(ss(""));
     ui->set_sync_behind(ss(""));
-    ui->set_disk_free(ss(""));
+    // Negative = no reading, so the gauge shows nothing until the poll answers
+    // rather than briefly claiming the new coin has 0 bytes free.
+    ui->set_disk_free_value(-1);
+    ui->set_disk_free_suffix(ss(""));
     ui->set_storage_size(ss(""));
     ui->set_price_usd(ss(""));
     // DigiDollar metadata + a clean slate; the tab only appears for a coin that
@@ -2750,11 +2767,17 @@ int main(int argc, char **argv)
             BwDiskUsage mu;
             std::memset(&mu, 0, sizeof mu);
             float mem_frac = 0.0f;
-            std::string mem_used_str;
+            // Negative until read: the gauge shows nothing rather than "0 B".
+            float mem_used_value = -1.0f;
+            std::string mem_used_suffix;
+            int mem_used_decimals = 1;
             if (bw_memory_usage(&mu) == 0 && mu.total_bytes > 0) {
                 mem_frac = static_cast<float>(static_cast<double>(mu.used_bytes) /
                                               static_cast<double>(mu.total_bytes));
-                mem_used_str = humanize_bytes(mu.used_bytes) + " used";
+                const ScaledBytes s = scale_bytes(mu.used_bytes);
+                mem_used_value = static_cast<float>(s.value);
+                mem_used_suffix = std::string(" ") + s.unit + " used";
+                mem_used_decimals = s.decimals;
             }
 
             // What the chain occupies. This WALKS the data dir — hundreds of
@@ -2780,11 +2803,16 @@ int main(int argc, char **argv)
             BwDiskUsage du;
             std::memset(&du, 0, sizeof du);
             float disk_frac = 0.0f;
-            std::string disk_free_str;
+            float disk_free_value = -1.0f;
+            std::string disk_free_suffix;
+            int disk_free_decimals = 1;
             if (bw_disk_usage(ctx, coin, &du) == 0 && du.total_bytes > 0) {
                 disk_frac = static_cast<float>(static_cast<double>(du.used_bytes) /
                                                static_cast<double>(du.total_bytes));
-                disk_free_str = humanize_bytes(du.total_bytes - du.used_bytes) + " free";
+                const ScaledBytes s = scale_bytes(du.total_bytes - du.used_bytes);
+                disk_free_value = static_cast<float>(s.value);
+                disk_free_suffix = std::string(" ") + s.unit + " free";
+                disk_free_decimals = s.decimals;
             }
 
             // The status line, from the core — same wording and priority order
@@ -2840,10 +2868,11 @@ int main(int argc, char **argv)
                 sync_behind.assign(bb, bn);
             }
 
-            post_to_ui([weak, di, bs, daemon_up, sel, disk_frac, disk_free_str, wallet_sec, stage, coming_up, live_status,
+            post_to_ui([weak, di, bs, daemon_up, sel, disk_frac, disk_free_value, disk_free_suffix,
+                        disk_free_decimals, wallet_sec, stage, coming_up, live_status,
                         live_cur, live_join, live_total,
                         tip_date, sync_behind,
-                        mem_frac, mem_used_str, storage_now, du,
+                        mem_frac, mem_used_value, mem_used_suffix, mem_used_decimals, storage_now, du,
                         price_usd, price_change, price_dir, holding_value,
                         sc_active, sc_status, sc_balance, sc_pending, sc_price, sc_supply,
                         sc_health, sc_countdown, sc_addr, sc_price_stale, sc_minting_blocked,
@@ -2858,7 +2887,9 @@ int main(int argc, char **argv)
                 if (g_selected.load() != sel)
                     return;
                 (*h)->set_disk_frac(disk_frac);
-                (*h)->set_disk_free(ss(disk_free_str));
+                (*h)->set_disk_free_value(disk_free_value);
+                (*h)->set_disk_free_suffix(ss(disk_free_suffix));
+                (*h)->set_disk_free_decimals(disk_free_decimals);
                 (*h)->set_sc_active(sc_active);
                 (*h)->set_sc_status(ss(sc_status));
                 (*h)->set_sc_countdown(ss(sc_countdown));
@@ -2880,7 +2911,9 @@ int main(int argc, char **argv)
                 (*h)->set_price_dir(price_dir);
                 (*h)->set_holding_value(ss(holding_value));
                 (*h)->set_mem_frac(mem_frac);
-                (*h)->set_mem_used(ss(mem_used_str));
+                (*h)->set_mem_used_value(mem_used_value);
+                (*h)->set_mem_used_suffix(ss(mem_used_suffix));
+                (*h)->set_mem_used_decimals(mem_used_decimals);
                 // Formatted by the core, not by humanize_bytes: that one uses
                 // binary units, so the same chain read "11.5 GB" here and
                 // "12.34 GB" in the TUI. bw_format_storage is the TUI's own
