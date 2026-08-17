@@ -893,6 +893,48 @@ int     bw_wallet_balance(bw_ctx *ctx, size_t idx, BwWalletBalance *out);
  * in its daemon, otherwise identical. */
 int     bw_ext_wallet_balance(bw_ctx *ctx, size_t idx, BwWalletBalance *out);
 
+/* 1 if any of the balance is still settling (mempool/immature) — total is ahead
+ * of available — else 0. The core owns the comparison so both front-ends agree
+ * on when the spendable figure is worth showing beside the total. */
+int     bw_balance_has_pending(const BwWalletBalance *bal);
+
+/* One stake: an amount locked for the coin's staking term.
+ *
+ * blocks_remaining > 0 means still locked, and unlock_eta_seconds estimates how
+ * long that is in wall-clock time (feed it to bw_format_duration). 0 means the
+ * term has ended, and unlocked_time / returned say when it paid out and what
+ * came back.
+ *
+ * unlocked_time and returned are 0 for NOT KNOWN, which a matured stake can
+ * legitimately be: two stakes maturing in the same block are repaid as a single
+ * credit that can't be attributed to either. Render a blank for a 0 — never a
+ * zero figure, and never a guess. */
+typedef struct {
+    double  amount;             /* principal locked, whole coins */
+    int64_t staked_time;        /* unix seconds; 0 while unconfirmed */
+    int64_t unlock_height;      /* block the term ends at; 0 while unconfirmed */
+    int64_t blocks_remaining;   /* 0 once matured */
+    int64_t unlock_eta_seconds; /* estimate for blocks_remaining; 0 once matured */
+    int64_t unlocked_time;      /* unix seconds; 0 = locked or unattributable */
+    double  returned;           /* principal + yield; 0 = locked or unattributable */
+    char    txid[64];
+    size_t  txid_len;
+} BwStake;
+
+/* Whether this coin can enumerate the wallet's stakes (drives the Staking tab's
+ * list). Distinct from bw_coin_supports_stake, which is the stake *action*. */
+int     bw_coin_supports_stake_list(size_t idx);
+
+/* The wallet's stakes, newest first. Writes up to cap and returns how many; 0 on
+ * any failure, the same rule bw_wallet_transactions follows. */
+size_t  bw_wallet_stakes(bw_ctx *ctx, size_t idx, BwStake *out, size_t cap);
+
+/* What one stake's term earned, written to *out. 1 when there is a figure worth
+ * showing, 0 when there isn't — still locked, or a payout that can't be told
+ * apart from another stake's. Don't read `returned - amount` yourself: a 0 there
+ * means "not known", not "earned nothing". */
+int     bw_stake_yield(const BwStake *stake, double *out);
+
 /* 1 = still scanning (*out filled), 0 = not scanning, BW_BUSY, -1 = error.
  * After a restore the wallet refreshes from height 0 in the background and its
  * balance reads 0 until it catches up — show this progress rather than an

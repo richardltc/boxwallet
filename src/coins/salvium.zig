@@ -957,6 +957,10 @@ pub const Salvium = struct {
         fee: u64 = 0,
         timestamp: i64 = 0,
         confirmations: i64 = 0,
+        /// Block the transaction landed in; 0 while it's still unconfirmed. The
+        /// Staking tab works in heights (a stake's term is a block count, not a
+        /// duration), so this is what its arithmetic runs on.
+        height: i64 = 0,
         asset_type: []const u8 = "",
         type: []const u8 = "",
         txid: []const u8 = "",
@@ -1035,14 +1039,23 @@ pub const Salvium = struct {
     /// unknown rows costs a few sub-100 ms round trips, once.
     const stake_query_chunk = 8;
 
-    /// txid → "is a STAKE tx", for transactions already put to the daemon.
-    /// Fixed-size and overwritten oldest-first: a poll only ever asks about the
-    /// newest `limit` rows (20 in both front-ends), so a page's worth several
-    /// times over is plenty, and it can't grow with wallet history. ~4 KB of
+    /// What the daemon knows about one outgoing transaction that the wallet's own
+    /// record can't say: whether it was a stake, and — because the decoded
+    /// transaction states it outright — the exact principal that was locked.
+    /// `burnt` is in atomic units and is 0 for a non-stake.
+    const StakeInfo = struct {
+        is_stake: bool = false,
+        burnt: u64 = 0,
+    };
+
+    /// txid → what the daemon said about it, for transactions already looked up.
+    /// Fixed-size and overwritten oldest-first: the two callers ask about the
+    /// newest page of transactions (20 rows) and the newest stakes, so a few
+    /// pages' worth is plenty and it can't grow with wallet history. ~9 KB of
     /// static state.
-    const stake_memo_cap = 64;
+    const stake_memo_cap = 128;
     var stake_memo_ids: [stake_memo_cap][64]u8 = undefined;
-    var stake_memo_flags: [stake_memo_cap]bool = undefined;
+    var stake_memo_infos: [stake_memo_cap]StakeInfo = undefined;
     var stake_memo_len: usize = 0;
     var stake_memo_next: usize = 0;
 
@@ -1060,23 +1073,23 @@ pub const Salvium = struct {
     }
 
     /// The memoised verdict for `txid`, or null if it hasn't been looked up.
-    fn stakeMemoGet(txid: []const u8) ?bool {
+    fn stakeMemoGet(txid: []const u8) ?StakeInfo {
         if (txid.len != 64) return null;
         if (!stake_memo_lock.tryLock()) return null;
         defer stake_memo_lock.unlock();
-        for (stake_memo_ids[0..stake_memo_len], stake_memo_flags[0..stake_memo_len]) |*id, flag| {
-            if (std.mem.eql(u8, id, txid)) return flag;
+        for (stake_memo_ids[0..stake_memo_len], stake_memo_infos[0..stake_memo_len]) |*id, info| {
+            if (std.mem.eql(u8, id, txid)) return info;
         }
         return null;
     }
 
     /// Record a verdict, evicting the oldest entry once full.
-    fn stakeMemoPut(txid: []const u8, is_stake: bool) void {
+    fn stakeMemoPut(txid: []const u8, info: StakeInfo) void {
         if (txid.len != 64) return;
         if (!stake_memo_lock.tryLock()) return;
         defer stake_memo_lock.unlock();
         stake_memo_ids[stake_memo_next] = txid[0..64].*;
-        stake_memo_flags[stake_memo_next] = is_stake;
+        stake_memo_infos[stake_memo_next] = info;
         stake_memo_next = (stake_memo_next + 1) % stake_memo_cap;
         if (stake_memo_len < stake_memo_cap) stake_memo_len += 1;
     }
@@ -1091,46 +1104,58 @@ pub const Salvium = struct {
     };
     const GetTransactionsResult = struct { txs: []DaemonTx = &.{} };
 
-    /// The decoded transaction, of which only Salvium's `type` matters — the
-    /// `transaction_type` the sender chose, so `tx_type_stake` here is the same
-    /// constant `stakeParams` writes.
-    const DecodedTx = struct { type: u32 = 0 };
+    /// The decoded transaction, of which two fields matter: Salvium's `type` —
+    /// the `transaction_type` the sender chose, so `tx_type_stake` here is the
+    /// same constant `stakeParams` writes — and `amount_burnt`, which on a stake
+    /// is the principal locked, stated exactly rather than inferred from a fee.
+    const DecodedTx = struct {
+        type: u32 = 0,
+        amount_burnt: u64 = 0,
+    };
 
-    /// Re-tag any `.sent` row that the daemon says was really a stake. Rows
-    /// already known to be stakes (in-term, caught by shape) are untouched, as
-    /// are received rows — a stake is always outgoing.
-    fn tagMaturedStakes(allocator: std.mem.Allocator, txs: []models.WalletTx) !void {
-        var chunk: [stake_query_chunk][]const u8 = undefined;
+    /// Classify `ids`, filling `out[i]` for `ids[i]` (the two must be the same
+    /// length). Answers from the memo where it can and puts the rest to the
+    /// daemon, `stake_query_chunk` at a time. An id that isn't a well-formed
+    /// txid is left as "not a stake" rather than asked about.
+    fn classifyStakes(
+        allocator: std.mem.Allocator,
+        ids: []const []const u8,
+        out: []StakeInfo,
+    ) !void {
+        std.debug.assert(ids.len == out.len);
+        var miss_ids: [stake_query_chunk][]const u8 = undefined;
+        var miss_at: [stake_query_chunk]usize = undefined;
         var n: usize = 0;
-        for (txs) |*t| {
-            if (t.direction != .sent) continue;
-            const id = t.txid();
+        for (ids, out, 0..) |id, *o, i| {
+            o.* = .{};
             // The txid is interpolated into a JSON request body, so it's
             // verified rather than trusted: 64 hex characters or it isn't asked
             // about. (It comes from the wallet RPC, but a value that reaches a
             // request unescaped gets checked at the point of use.)
             if (!isTxidHex(id)) continue;
-            if (stakeMemoGet(id)) |is_stake| {
-                if (is_stake) t.direction = .staked;
+            if (stakeMemoGet(id)) |info| {
+                o.* = info;
                 continue;
             }
-            chunk[n] = id;
+            miss_ids[n] = id;
+            miss_at[n] = i;
             n += 1;
-            if (n == chunk.len) {
-                try queryStakeTypes(allocator, txs, chunk[0..n]);
+            if (n == miss_ids.len) {
+                try queryStakeTypes(allocator, miss_ids[0..n], miss_at[0..n], out);
                 n = 0;
             }
         }
-        if (n > 0) try queryStakeTypes(allocator, txs, chunk[0..n]);
+        if (n > 0) try queryStakeTypes(allocator, miss_ids[0..n], miss_at[0..n], out);
     }
 
-    /// Ask the daemon for `ids`' transaction types and apply the answer to every
-    /// matching row in `txs`, memoising each verdict. `ids` borrows the rows'
-    /// own txid buffers, so nothing here owns a copy of them.
+    /// Ask the daemon about `ids` and write each answer to `out[at[i]]`,
+    /// memoising as it goes. `ids` borrows its callers' buffers, so nothing here
+    /// owns a copy of them.
     fn queryStakeTypes(
         allocator: std.mem.Allocator,
-        txs: []models.WalletTx,
         ids: []const []const u8,
+        at: []const usize,
+        out: []StakeInfo,
     ) !void {
         const body = try stakeTypeRequest(allocator, ids);
         defer allocator.free(body);
@@ -1158,13 +1183,201 @@ pub const Salvium = struct {
             ) catch continue;
             defer decoded.deinit();
 
-            const is_stake = decoded.value.type == tx_type_stake;
-            stakeMemoPut(dt.tx_hash, is_stake);
-            if (!is_stake) continue;
-            for (txs) |*t| {
-                if (t.direction == .sent and std.mem.eql(u8, t.txid(), dt.tx_hash))
-                    t.direction = .staked;
+            const info: StakeInfo = if (decoded.value.type == tx_type_stake)
+                .{ .is_stake = true, .burnt = decoded.value.amount_burnt }
+            else
+                .{};
+            stakeMemoPut(dt.tx_hash, info);
+
+            // The reply may come back in any order (and may omit a hash the
+            // daemon doesn't have), so each answer is placed by its hash.
+            for (ids, at) |id, i| {
+                if (std.mem.eql(u8, id, dt.tx_hash)) out[i] = info;
             }
+        }
+    }
+
+    /// Re-tag any `.sent` row that the daemon says was really a stake. Rows
+    /// already known to be stakes (in-term, caught by shape) are untouched, as
+    /// are received rows — a stake is always outgoing.
+    fn tagMaturedStakes(allocator: std.mem.Allocator, txs: []models.WalletTx) !void {
+        if (txs.len == 0) return;
+        const ids = try allocator.alloc([]const u8, txs.len);
+        defer allocator.free(ids);
+        const infos = try allocator.alloc(StakeInfo, txs.len);
+        defer allocator.free(infos);
+
+        // Rows that aren't candidates get an empty id, which classifies as "not
+        // a stake" without a lookup — keeping the arrays parallel to `txs` so
+        // the answers map back by position.
+        for (txs, ids) |t, *id| id.* = if (t.direction == .sent) t.txid() else "";
+        try classifyStakes(allocator, ids, infos);
+
+        for (txs, infos) |*t, info| {
+            if (info.is_stake) t.direction = .staked;
+        }
+    }
+
+    // ---- the stake list (Staking tab) ------------------------------------------
+
+    /// The block a stake's principal actually comes back at: the term itself plus
+    /// the block that pays it out. Verified against a live wallet — every one of
+    /// 40 matured stakes was repaid exactly `stake_lock_blocks + 1` blocks after
+    /// the stake landed.
+    const stake_return_offset: i64 = stake_lock_blocks + 1;
+
+    /// How many outgoing transactions the stake list looks back through, newest
+    /// first. Bounds both the daemon lookups and the stack this runs on
+    /// (`TransferEntry` × this), and a wallet whose stakes are all older than its
+    /// 64 most recent outgoing transactions is not the case being designed for.
+    const stake_scan_cap = 64;
+
+    /// The open wallet's stakes, newest first, capped at `limit`. Built from the
+    /// same `get_transfers` reply the Transactions tab uses: the outgoing entries
+    /// say when each stake was made and how many blocks it has been buried, the
+    /// daemon says which of them were stakes and for exactly how much, and the
+    /// incoming `block` credits are what a matured stake's principal + yield came
+    /// back in.
+    fn walletStakes(
+        allocator: std.mem.Allocator,
+        wallet_auth: models.CoinAuth,
+        limit: usize,
+    ) anyerror![]models.Stake {
+        var parsed = try walletCall(GetTransfersResult, allocator, wallet_auth, "get_transfers", "{\"in\":true,\"out\":true,\"pending\":true,\"pool\":true,\"account_index\":0}");
+        defer parsed.deinit();
+        const r = parsed.value.result orelse return error.EmptyRpcResult;
+        return stakesFromTransfers(allocator, r, limit);
+    }
+
+    /// The stake list itself, split from the RPC round-trip so the whole pipeline
+    /// — candidate selection, daemon classification, return pairing — can be run
+    /// over a captured `get_transfers` reply.
+    fn stakesFromTransfers(
+        allocator: std.mem.Allocator,
+        r: GetTransfersResult,
+        limit: usize,
+    ) ![]models.Stake {
+        var cands: [stake_scan_cap]TransferEntry = undefined;
+        const n = collectStakeCandidates(r, &cands);
+
+        // Which candidates are stakes, and each one's exact principal. Walked in
+        // lookup-sized chunks so a wallet whose newest stakes are its first few
+        // entries doesn't pay for the whole scan window: the loop stops as soon
+        // as it has `limit` of them.
+        var picked: [stake_scan_cap]models.Stake = undefined;
+        var found: usize = 0;
+        var i: usize = 0;
+        while (i < n and found < limit) {
+            const end = @min(i + stake_query_chunk, n);
+            var ids: [stake_query_chunk][]const u8 = undefined;
+            var infos: [stake_query_chunk]StakeInfo = undefined;
+            const width = end - i;
+            for (cands[i..end], ids[0..width]) |c, *id| id.* = c.txid;
+            // Best-effort: with the daemon unreachable every verdict comes back
+            // empty and `stakeFromEntry` falls back to what the wallet's own
+            // record can prove (an in-term stake's tell-tale shape).
+            classifyStakes(allocator, ids[0..width], infos[0..width]) catch {
+                for (infos[0..width]) |*info| info.* = .{};
+            };
+            for (cands[i..end], infos[0..width]) |c, info| {
+                if (found == limit) break;
+                if (stakeFromEntry(c, info)) |s| {
+                    picked[found] = s;
+                    found += 1;
+                }
+            }
+            i = end;
+        }
+
+        pairStakeReturns(picked[0..found], r.in);
+
+        const out = try allocator.alloc(models.Stake, found);
+        @memcpy(out, picked[0..found]);
+        return out;
+    }
+
+    /// Gather the outgoing entries a stake could be hiding in — `out` and
+    /// `pending`, primary asset only — newest first, into `buf`. Returns how many
+    /// it wrote. Pure, so the ordering and the cap are testable without a wallet.
+    fn collectStakeCandidates(r: GetTransfersResult, buf: []TransferEntry) usize {
+        var n: usize = 0;
+        for ([_][]TransferEntry{ r.out, r.pending }) |bucket| {
+            for (bucket) |e| {
+                if (!isPrimaryAsset(e.asset_type)) continue;
+                if (n == buf.len) break;
+                buf[n] = e;
+                n += 1;
+            }
+        }
+        std.mem.sort(TransferEntry, buf[0..n], {}, entryNewerFirst);
+        return n;
+    }
+
+    fn entryNewerFirst(_: void, lhs: TransferEntry, rhs: TransferEntry) bool {
+        return lhs.timestamp > rhs.timestamp;
+    }
+
+    /// Turn one outgoing entry into a `Stake`, or null if it isn't one.
+    ///
+    /// `info` is the daemon's verdict and is authoritative when it has one. The
+    /// fallback — amount 0 with a non-zero fee — is the shape wallet2 gives a
+    /// stake that is *still locked*, and it's what keeps the tab populated when
+    /// the daemon can't be reached. It costs precision: `fee` is principal **plus**
+    /// the network fee, where `amount_burnt` is the principal exactly.
+    ///
+    /// Timing runs on `confirmations` rather than a tip height fetched
+    /// separately: the wallet's own count is `tip − height + 1` by construction,
+    /// so it can't disagree with the heights in the same reply. An unconfirmed
+    /// stake (height 0) hasn't started its term, so it reads as the full one.
+    fn stakeFromEntry(e: TransferEntry, info: StakeInfo) ?models.Stake {
+        const shape_says_stake = e.amount == 0 and e.fee > 0;
+        if (!info.is_stake and !shape_says_stake) return null;
+
+        const atomic = if (info.burnt > 0) info.burnt else e.fee;
+        const remaining = if (e.height == 0)
+            stake_return_offset
+        else
+            @max(stake_return_offset - e.confirmations, 0);
+
+        var s: models.Stake = .{
+            .amount = @as(f64, @floatFromInt(atomic)) / atomic_per_sal,
+            .staked_time = e.timestamp,
+            .unlock_height = if (e.height > 0) e.height + stake_return_offset else 0,
+            .blocks_remaining = remaining,
+            .unlock_eta_seconds = remaining * block_target_seconds,
+            .unlocked_time = 0,
+            .returned = 0,
+        };
+        s.setTxid(e.txid);
+        return s;
+    }
+
+    /// Fill in when each matured stake actually paid out, and what came back, by
+    /// matching it to the incoming `block` credit at its unlock height.
+    ///
+    /// The amount is only attributed when exactly one stake unlocks at that
+    /// height. Two stakes maturing in the same block are repaid as a **single**
+    /// credit (seen live: a 100 and a 200 SAL stake returning as one 204.587 SAL
+    /// entry), and splitting that guess-wise would put a number on screen that
+    /// nothing supports. The unlock *time* is still theirs — they did both end at
+    /// that block — so only `returned` is left blank.
+    fn pairStakeReturns(stakes: []models.Stake, ins: []const TransferEntry) void {
+        for (stakes) |*s| {
+            if (!s.isMatured() or s.unlock_height == 0) continue;
+            const credit = for (ins) |e| {
+                if (!isPrimaryAsset(e.asset_type)) continue;
+                if (!std.mem.eql(u8, e.type, "block")) continue;
+                if (e.height == s.unlock_height) break e;
+            } else continue;
+
+            var sharers: usize = 0;
+            for (stakes) |*other| {
+                if (other.unlock_height == s.unlock_height) sharers += 1;
+            }
+
+            s.unlocked_time = credit.timestamp;
+            if (sharers == 1)
+                s.returned = @as(f64, @floatFromInt(credit.amount)) / atomic_per_sal;
         }
     }
 
@@ -1511,6 +1724,7 @@ pub const Salvium = struct {
         .wallet_send = vtWalletSend,
         .wallet_stake = vtWalletStake,
         .stake_hint = vtStakeHint,
+        .wallet_stakes = vtWalletStakes,
         .external_wallet = &external_wallet,
     };
 
@@ -1552,6 +1766,14 @@ pub const Salvium = struct {
     }
     fn vtStakeHint(_: *anyopaque) []const u8 {
         return stake_hint;
+    }
+    fn vtWalletStakes(
+        _: *anyopaque,
+        allocator: std.mem.Allocator,
+        wallet_auth: models.CoinAuth,
+        limit: usize,
+    ) anyerror![]models.Stake {
+        return walletStakes(allocator, wallet_auth, limit);
     }
 
     fn vtCoinName(_: *anyopaque) []const u8 {
@@ -2281,17 +2503,162 @@ test "stake memo answers only for txids it has been told about" {
     const id = "c" ** 64;
     try std.testing.expect(Salvium.stakeMemoGet(id) == null);
 
-    Salvium.stakeMemoPut(id, true);
-    try std.testing.expectEqual(@as(?bool, true), Salvium.stakeMemoGet(id));
+    // The principal rides along with the verdict: it comes from the same decoded
+    // transaction, and the Staking tab needs the exact figure.
+    Salvium.stakeMemoPut(id, .{ .is_stake = true, .burnt = 100_000_000_000 });
+    const got = Salvium.stakeMemoGet(id) orelse return error.Unexpected;
+    try std.testing.expect(got.is_stake);
+    try std.testing.expectEqual(@as(u64, 100_000_000_000), got.burnt);
 
     // A plain send is remembered as such, so it isn't re-queried either.
     const other = "d" ** 64;
-    Salvium.stakeMemoPut(other, false);
-    try std.testing.expectEqual(@as(?bool, false), Salvium.stakeMemoGet(other));
+    Salvium.stakeMemoPut(other, .{});
+    const plain = Salvium.stakeMemoGet(other) orelse return error.Unexpected;
+    try std.testing.expect(!plain.is_stake);
 
     // Junk is never stored, so it can never be answered from the memo.
-    Salvium.stakeMemoPut("nope", true);
+    Salvium.stakeMemoPut("nope", .{ .is_stake = true });
     try std.testing.expect(Salvium.stakeMemoGet("nope") == null);
+}
+
+test "stakeFromEntry reads the principal from the daemon, and the term from confirmations" {
+    // A matured stake: reported in the ordinary send shape, so only the daemon's
+    // verdict identifies it — and `amount_burnt` gives the principal exactly,
+    // where the entry's own `amount` would include nothing of the yield.
+    const matured = Salvium.stakeFromEntry(.{
+        .txid = "a" ** 64,
+        .amount = 100_000_000_000,
+        .fee = 1_143_360,
+        .timestamp = 1783463334,
+        .height = 525_949,
+        .confirmations = 29_102,
+    }, .{ .is_stake = true, .burnt = 100_000_000_000 }) orelse return error.Unexpected;
+    try std.testing.expectApproxEqAbs(@as(f64, 1000), matured.amount, 1e-9);
+    try std.testing.expectEqual(@as(i64, 525_949 + 21_601), matured.unlock_height);
+    try std.testing.expect(matured.isMatured());
+    try std.testing.expectEqual(@as(i64, 0), matured.unlock_eta_seconds);
+
+    // Still locked: 9 blocks in, so the term has 21,592 to run and the ETA is
+    // that many block targets away.
+    const locked = Salvium.stakeFromEntry(.{
+        .txid = "b" ** 64,
+        .amount = 0,
+        .fee = 100_001_107_630,
+        .timestamp = 1786963395,
+        .height = 555_042,
+        .confirmations = 9,
+    }, .{ .is_stake = true, .burnt = 100_000_000_000 }) orelse return error.Unexpected;
+    try std.testing.expectEqual(@as(i64, 21_592), locked.blocks_remaining);
+    try std.testing.expectEqual(@as(i64, 21_592 * 120), locked.unlock_eta_seconds);
+    try std.testing.expect(!locked.isMatured());
+    // The principal is the daemon's figure, not the entry's `fee` — which is the
+    // principal *plus* the network fee (100.0011 SAL for a 1000 SAL stake).
+    try std.testing.expectApproxEqAbs(@as(f64, 1000), locked.amount, 1e-9);
+
+    // A plain send the daemon has spoken for is not a stake.
+    try std.testing.expect(Salvium.stakeFromEntry(.{
+        .txid = "c" ** 64,
+        .amount = 2_500_000_000,
+        .fee = 1_022_110,
+        .height = 190_625,
+        .confirmations = 100,
+    }, .{}) == null);
+
+    // Daemon unreachable (empty verdict): an in-term stake is still recognised
+    // from its shape, falling back to `fee` for the principal.
+    const fallback = Salvium.stakeFromEntry(.{
+        .txid = "d" ** 64,
+        .amount = 0,
+        .fee = 100_001_107_630,
+        .height = 555_042,
+        .confirmations = 9,
+    }, .{}) orelse return error.Unexpected;
+    try std.testing.expectApproxEqAbs(@as(f64, 1000.0110763), fallback.amount, 1e-7);
+
+    // Unconfirmed: no height yet, so the full term is still to run.
+    const pending = Salvium.stakeFromEntry(.{
+        .txid = "e" ** 64,
+        .amount = 0,
+        .fee = 50_000_000,
+        .height = 0,
+        .confirmations = 0,
+    }, .{ .is_stake = true, .burnt = 50_000_000 }) orelse return error.Unexpected;
+    try std.testing.expectEqual(@as(i64, 0), pending.unlock_height);
+    try std.testing.expectEqual(@as(i64, 21_601), pending.blocks_remaining);
+}
+
+test "pairStakeReturns attributes a payout only when one stake unlocks at that height" {
+    // Two matured stakes: the first unlocks alone, the second and third share a
+    // block (the live case — a 100 and a 200 SAL stake repaid as one credit).
+    var stakes = [_]models.Stake{
+        .{ .amount = 1000, .staked_time = 300, .unlock_height = 547_550, .blocks_remaining = 0, .unlock_eta_seconds = 0, .unlocked_time = 0, .returned = 0 },
+        .{ .amount = 100, .staked_time = 200, .unlock_height = 221_307, .blocks_remaining = 0, .unlock_eta_seconds = 0, .unlocked_time = 0, .returned = 0 },
+        .{ .amount = 200, .staked_time = 100, .unlock_height = 221_307, .blocks_remaining = 0, .unlock_eta_seconds = 0, .unlocked_time = 0, .returned = 0 },
+    };
+    const ins = [_]Salvium.TransferEntry{
+        .{ .type = "block", .asset_type = "SAL1", .amount = 100_620_821_166, .timestamp = 1_786_000_000, .height = 547_550 },
+        .{ .type = "block", .asset_type = "SAL1", .amount = 20_458_700_290, .timestamp = 1_780_000_000, .height = 221_307 },
+        .{ .type = "in", .asset_type = "SAL1", .amount = 999, .timestamp = 1_781_000_000, .height = 547_550 },
+    };
+    Salvium.pairStakeReturns(&stakes, &ins);
+
+    // Sole unlocker: both the time and the amount are its own, so the yield
+    // (1006.2 back on 1000 staked) is attributable.
+    try std.testing.expectEqual(@as(i64, 1_786_000_000), stakes[0].unlocked_time);
+    try std.testing.expectApproxEqAbs(@as(f64, 1006.20821166), stakes[0].returned, 1e-8);
+    try std.testing.expectApproxEqAbs(@as(f64, 6.20821166), stakes[0].yield() orelse 0, 1e-8);
+
+    // Shared block: both ended at that moment, so both get the time — but the
+    // single credit can't be split between them, so neither claims an amount.
+    for (stakes[1..]) |s| {
+        try std.testing.expectEqual(@as(i64, 1_780_000_000), s.unlocked_time);
+        try std.testing.expectEqual(@as(f64, 0), s.returned);
+        try std.testing.expect(s.yield() == null);
+    }
+}
+
+test "pairStakeReturns leaves a locked stake, and a matured one with no credit, blank" {
+    var stakes = [_]models.Stake{
+        // Locked: its unlock height is in the future, so nothing has come back.
+        .{ .amount = 1000, .staked_time = 400, .unlock_height = 576_643, .blocks_remaining = 21_592, .unlock_eta_seconds = 21_592 * 120, .unlocked_time = 0, .returned = 0 },
+        // Matured, but the credit isn't in this reply (consolidated elsewhere or
+        // simply not scanned) — "unlocked, date unknown" rather than a guess.
+        .{ .amount = 25, .staked_time = 100, .unlock_height = 232_191, .blocks_remaining = 0, .unlock_eta_seconds = 0, .unlocked_time = 0, .returned = 0 },
+    };
+    const ins = [_]Salvium.TransferEntry{
+        .{ .type = "block", .asset_type = "SAL1", .amount = 500, .timestamp = 1_780_000_000, .height = 111_111 },
+    };
+    Salvium.pairStakeReturns(&stakes, &ins);
+
+    for (stakes) |s| {
+        try std.testing.expectEqual(@as(i64, 0), s.unlocked_time);
+        try std.testing.expectEqual(@as(f64, 0), s.returned);
+    }
+}
+
+test "collectStakeCandidates takes out+pending newest-first, primary asset only" {
+    const out = [_]Salvium.TransferEntry{
+        .{ .txid = "a" ** 64, .asset_type = "SAL1", .timestamp = 100 },
+        .{ .txid = "b" ** 64, .asset_type = "SALUSD", .timestamp = 400 }, // other asset
+        .{ .txid = "c" ** 64, .asset_type = "SAL1", .timestamp = 300 },
+    };
+    const pending = [_]Salvium.TransferEntry{
+        .{ .txid = "d" ** 64, .asset_type = "SAL1", .timestamp = 500 },
+    };
+    var buf: [8]Salvium.TransferEntry = undefined;
+    const n = Salvium.collectStakeCandidates(.{ .out = @constCast(&out), .pending = @constCast(&pending) }, &buf);
+
+    try std.testing.expectEqual(@as(usize, 3), n);
+    try std.testing.expectEqualStrings("d" ** 64, buf[0].txid);
+    try std.testing.expectEqualStrings("c" ** 64, buf[1].txid);
+    try std.testing.expectEqualStrings("a" ** 64, buf[2].txid);
+}
+
+test "collectStakeCandidates stops at the scan window" {
+    var many: [4]Salvium.TransferEntry = undefined;
+    for (&many, 0..) |*e, i| e.* = .{ .txid = "a" ** 64, .asset_type = "SAL1", .timestamp = @intCast(i) };
+    var buf: [2]Salvium.TransferEntry = undefined;
+    try std.testing.expectEqual(@as(usize, 2), Salvium.collectStakeCandidates(.{ .out = &many }, &buf));
 }
 
 test "coin vtable exposes the stake action for Salvium" {
@@ -2304,4 +2671,5 @@ test "coin vtable exposes the stake action for Salvium" {
     // Distinct from the passive PoS coins: Salvium itself is proof-of-work.
     try std.testing.expect(!c.isProofOfStake());
 }
+
 

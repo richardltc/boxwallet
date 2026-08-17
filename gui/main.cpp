@@ -109,6 +109,9 @@ static std::atomic<bool> g_wallet_busy{false};
 // How many transactions the list holds. Fixed, like the TUI's cache: bounded
 // working set beats an unbounded history nobody scrolls through.
 static constexpr size_t TX_CAP = 20;
+// The same bound for the stake list. A stake is a rarer event than a payment —
+// one per term, and a term is 30 days — so this is a deep history, not a page.
+static constexpr size_t STAKE_CAP = 20;
 
 // The receive address, cached per coin. This cache — not the poll timer — is
 // what decides when bw_wallet_receive_address is called, because the underlying
@@ -504,6 +507,45 @@ static std::string relative_time(int64_t t)
     return plural(d / 31536000, "year");
 }
 
+// Turn the core's scalar stakes into display rows.
+//
+// The core decides what is known; this only decides how it reads. Two of those
+// decisions matter: a 0 `unlocked_time` means the payout couldn't be attributed
+// (two stakes repaid in one credit), so the row says "Unlocked" with no date
+// rather than "Unlocked in 1970"; and the yield comes from bw_stake_yield, which
+// owns the same distinction — never `returned - amount`, where a 0 `returned`
+// would read as "earned nothing".
+static std::shared_ptr<slint::VectorModel<StakeRow>>
+make_stake_rows(const std::vector<BwStake> &stakes, int decimals, const std::string &abbrev)
+{
+    std::vector<StakeRow> rows;
+    rows.reserve(stakes.size());
+    for (const BwStake &s : stakes) {
+        StakeRow r{}; // value-initialised — see the note on NavCoin
+        r.amount = ss(format_amount_trimmed(s.amount, decimals) + " " + abbrev);
+        r.staked = ss(relative_time(s.staked_time));
+        r.locked = (s.blocks_remaining > 0);
+        if (r.locked) {
+            char b[64];
+            size_t n = bw_format_duration(s.unlock_eta_seconds, b, sizeof b);
+            // Under a minute of term left has no duration text, so the block
+            // count carries it rather than the cell reading "Unlocks in ".
+            r.status = ss(n > 0
+                ? "Unlocks in " + std::string(b, n)
+                : std::to_string(s.blocks_remaining) + " blocks to go");
+        } else {
+            r.status = ss(s.unlocked_time > 0
+                ? "Unlocked " + relative_time(s.unlocked_time)
+                : std::string("Unlocked"));
+        }
+        double earned = 0;
+        if (bw_stake_yield(&s, &earned) != 0)
+            r.detail = ss("+" + format_amount_trimmed(earned, decimals) + " " + abbrev + " earned");
+        rows.push_back(std::move(r));
+    }
+    return std::make_shared<slint::VectorModel<StakeRow>>(std::move(rows));
+}
+
 // Turn the core's scalar transactions into display rows.
 // Turn an address into a scannable QR image.
 //
@@ -758,6 +800,7 @@ static void apply_coin_metadata(const AppWindow *ui, bw_ctx *ctx, int idx)
     // never come up without it.
     const bool has_stake = bw_coin_supports_stake(idx) != 0;
     ui->set_has_stake(has_stake);
+    ui->set_has_stake_list(bw_coin_supports_stake_list(idx) != 0);
     char hint[256] = {0};
     size_t hn = has_stake ? bw_stake_hint(idx, hint, sizeof hint) : 0;
     ui->set_stake_hint(ss(std::string_view(hint, hn)));
@@ -822,6 +865,8 @@ static void apply_coin_metadata(const AppWindow *ui, bw_ctx *ctx, int idx)
     ui->set_prune_text(ss(""));
     ui->set_balance_total(ss("—"));
     ui->set_balance_avail(ss("—"));
+    ui->set_has_pending(false);
+    ui->set_stake_rows(std::make_shared<slint::VectorModel<StakeRow>>(std::vector<StakeRow>{}));
     ui->set_rescan_frac(0);
     ui->set_receive_address(ss(""));
     ui->set_receive_qr(slint::Image());
@@ -2566,6 +2611,7 @@ int main(int argc, char **argv)
             const bool has_balance_cap = bw_coin_supports_balance(coin) != 0;
             const bool has_tx_cap      = bw_coin_supports_transactions(coin) != 0;
             const bool has_recv_cap    = bw_coin_supports_receive_address(coin) != 0;
+            const bool has_stake_cap   = bw_coin_supports_stake_list(coin) != 0;
             const bool has_send_cap    = bw_coin_supports_send(coin) != 0;
 
             // When the wallet reads are answerable. The two wallet shapes differ,
@@ -2600,6 +2646,7 @@ int main(int argc, char **argv)
             std::memset(&rp, 0, sizeof rp);
             bool rescanning = false;
             std::vector<BwWalletTx> txs;
+            std::vector<BwStake> stakes;
             std::string recv_addr;
             if (reads_ok) {
                 if (has_balance_cap)
@@ -2617,6 +2664,15 @@ int main(int argc, char **argv)
                     BwWalletTx tx_buf[TX_CAP];
                     size_t ntx = bw_wallet_transactions(ctx, coin, tx_buf, TX_CAP);
                     txs.assign(tx_buf, tx_buf + ntx);
+                }
+
+                // The wallet's stakes (Staking tab). Same shape as the
+                // transaction read, and 0 rows on any failure — a list that
+                // can't be read is empty, not an error to interrupt over.
+                if (has_stake_cap) {
+                    BwStake stake_buf[STAKE_CAP];
+                    size_t ns = bw_wallet_stakes(ctx, coin, stake_buf, STAKE_CAP);
+                    stakes.assign(stake_buf, stake_buf + ns);
                 }
 
                 // The address is fetched ONCE and then cached, never on this
@@ -2883,7 +2939,7 @@ int main(int argc, char **argv)
                         sc_health, sc_countdown, sc_addr, sc_price_stale, sc_minting_blocked,
                         sc_vaults, sc_txs, sc_redeemable, sc_vault_ids, sc_vault_cents,
                         ms, hashrate, ew_flags, wallet_state, bal, have_balance,
-                        rp, rescanning, txs, recv_addr, decimals, wallet_svc_err, can_send,
+                        rp, rescanning, txs, stakes, recv_addr, decimals, wallet_svc_err, can_send,
                         rpc_ok, busy, coin]() {
                 auto h = weak.lock();
                 if (!h)
@@ -2945,6 +3001,12 @@ int main(int argc, char **argv)
                         have_balance ? format_amount(bal.total, decimals) : std::string("—")));
                     (*h)->set_balance_avail(ss(
                         have_balance ? format_amount(bal.available, decimals) : std::string("—")));
+                    // Whether the spendable figure is worth showing beside the
+                    // total. The core decides (same rule the TUI header uses) —
+                    // comparing the two formatted strings here would answer on
+                    // figures already rounded to the coin's decimals.
+                    (*h)->set_has_pending(
+                        have_balance && bw_balance_has_pending(&bal) != 0);
                     (*h)->set_rescan_frac(rescanning && rp.target > 0
                         ? static_cast<float>(static_cast<double>(rp.scanned) /
                                              static_cast<double>(rp.target))
@@ -2958,6 +3020,12 @@ int main(int argc, char **argv)
                     }
                     (*h)->set_tx_rows(
                         make_tx_rows(txs, decimals, bw_coin_supports_stake(coin) != 0));
+                    if (bw_coin_supports_stake_list(coin) != 0) {
+                        char ab[16];
+                        size_t an = bw_coin_abbrev(coin, ab, sizeof ab);
+                        (*h)->set_stake_rows(
+                            make_stake_rows(stakes, decimals, std::string(ab, an)));
+                    }
                 }
                 // Only when it changes, so a persistent fault doesn't rewrite
                 // the status line every two seconds over whatever else is there.
