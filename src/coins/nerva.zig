@@ -239,8 +239,10 @@ pub const Nerva = struct {
     }
 
     /// Live `get_info`, normalized for a frontend. Monero has no
-    /// `verificationprogress`; sync is the `synchronized` flag, or `height`
-    /// reaching the network `target_height` (which is 0 once caught up).
+    /// `verificationprogress`; sync is `models.cryptonoteSynced` — the
+    /// `synchronized` flag *and* `height` having reached the peer-announced
+    /// `target_height` (which is 0 once caught up), because either alone reads as
+    /// synced while blocks are still short of headers.
     pub fn blockchainState(
         allocator: std.mem.Allocator,
         auth: models.CoinAuth,
@@ -251,7 +253,7 @@ pub const Nerva = struct {
         const r = parsed.value.result orelse return error.EmptyRpcResult;
         const tip = @max(r.target_height, r.height);
         const chain = if (r.testnet) "testnet" else if (r.stagenet) "stagenet" else "mainnet";
-        const synced = r.synchronized or (r.height > 0 and (r.target_height == 0 or r.height >= r.target_height));
+        const synced = models.cryptonoteSynced(r.height, r.target_height, r.synchronized);
         return .{
             .chain = try allocator.dupe(u8, chain),
             .blocks = r.height,
@@ -1617,7 +1619,7 @@ test "parses get_info into a synced BlockchainState" {
         .blocks = r.height,
         .headers = tip,
         .verification_progress = 0,
-        .synced = r.synchronized or (r.height > 0 and (r.target_height == 0 or r.height >= r.target_height)),
+        .synced = models.cryptonoteSynced(r.height, r.target_height, r.synchronized),
         .network_height = tip,
     };
     defer state.deinit(allocator);
@@ -1641,7 +1643,7 @@ test "estimateSecondsBehind turns the block gap into a behind-by estimate" {
 test "a daemon still catching up reads as not synced" {
     // Mid-sync: height behind target_height and not yet synchronized.
     const r: Nerva.NervaInfo = .{ .height = 900_000, .target_height = 1_500_000, .synchronized = false };
-    const synced = r.synchronized or (r.height > 0 and (r.target_height == 0 or r.height >= r.target_height));
+    const synced = models.cryptonoteSynced(r.height, r.target_height, r.synchronized);
     try std.testing.expect(!synced);
     try std.testing.expectEqual(@as(i64, 1_500_000), @max(r.target_height, r.height));
 }
