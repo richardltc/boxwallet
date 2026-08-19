@@ -505,6 +505,12 @@ component CircleGauge inherits VerticalBox {
     in property <string> num-suffix;
     in property <int> num-decimals: 1;
     in property <string> full-text; // shown in place of "100%" when full (e.g. "Synced")
+    // Whether the thing being measured is actually *finished*, decided by the
+    // host from the heights themselves — not inferred from the fraction. A ring
+    // rounded to 0.999 is a node still hundreds of blocks short of the tip
+    // (Salvium at ~600k blocks: 0.999 is 600 blocks behind), and reading the
+    // word "Synced" off that claimed a sync that hadn't happened.
+    in property <bool> complete: false;
     // The measurement isn't available — not "0%", which is a claim of its own.
     // A sync gauge with no known network tip has no denominator, so it reads
     // "—" over an empty ring until one arrives.
@@ -524,7 +530,7 @@ component CircleGauge inherits VerticalBox {
     // directly.
     property <int> tenths: Math.round(root.f * 1000);
     // A full ring that has a word to show instead of "100.0%".
-    property <bool> full-word: root.f >= 0.999 && root.full-text != "";
+    property <bool> full-word: root.complete && root.full-text != "";
     property <length> dia: 72px;
     // The readout below the ring, animated the same 600ms as the ring itself so
     // the two never disagree about where the measurement got to.
@@ -1205,6 +1211,11 @@ export component AppWindow inherits Window {
     in property <float> sync-percent: 0;
     in property <float> headers-frac: 0;
     in property <float> blocks-frac: 0;
+    // Each sync gauge has *reached* the tip, so its ring may say "Synced".
+    // Kept apart from the fractions above because the near-full rounding of a
+    // fraction is not a sync (see CircleGauge.complete).
+    in property <bool> headers-complete: false;
+    in property <bool> blocks-complete: false;
     // No network tip to measure against yet (no peers, or the peer query
     // failed), so neither sync gauge has a denominator. Set by the poll; both
     // gauges then read "—" rather than a number derived from our own height.
@@ -2200,6 +2211,7 @@ export component AppWindow inherits Window {
                                 count-slots: root.headers-slots;
                                 count-roll: root.count-roll;
                                 full-text: "Synced";
+                                complete: root.headers-complete;
                                 unknown: root.sync-unknown;
                             }
                             CircleGauge {
@@ -2209,6 +2221,7 @@ export component AppWindow inherits Window {
                                 count-slots: root.blocks-slots;
                                 count-roll: root.count-roll;
                                 full-text: "Synced";
+                                complete: root.blocks-complete;
                                 unknown: root.sync-unknown;
                             }
                             CircleGauge {
