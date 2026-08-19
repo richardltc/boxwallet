@@ -837,6 +837,8 @@ static void apply_coin_metadata(const AppWindow *ui, bw_ctx *ctx, int idx)
     ui->set_peers(0);
     ui->set_headers_frac(0);
     ui->set_blocks_frac(0);
+    ui->set_headers_complete(false);
+    ui->set_blocks_complete(false);
     ui->set_sync_unknown(false);
     ui->set_disk_frac(0);
     ui->set_wallet_sec(0);
@@ -3095,6 +3097,12 @@ int main(int argc, char **argv)
                     (*h)->set_synced(synced);
                     (*h)->set_headers_frac(sync_frac(bs.headers, tip, synced));
                     (*h)->set_blocks_frac(sync_frac(bs.blocks, tip, synced));
+                    // Whether each ring may say "Synced", decided from the
+                    // heights rather than from its fraction: a node a few
+                    // hundred blocks short of a million-block tip rounds to a
+                    // full ring, and the word used to be read off that.
+                    (*h)->set_headers_complete(synced || (tip > 0 && bs.headers >= tip));
+                    (*h)->set_blocks_complete(synced || (tip > 0 && bs.blocks >= tip));
                     // Roll the counts from wherever they last landed to where
                     // they are now. One shared tick for both, so the two gauges
                     // move together rather than a frame apart.
@@ -3126,6 +3134,8 @@ int main(int argc, char **argv)
                     (*h)->set_synced(false);
                     (*h)->set_headers_frac(0);
                     (*h)->set_blocks_frac(0);
+                    (*h)->set_headers_complete(false);
+                    (*h)->set_blocks_complete(false);
                     // A stopped daemon isn't an unmeasurable one: the gauges read
                     // an empty 0%, the same as every other figure clearing here.
                     (*h)->set_sync_unknown(false);
