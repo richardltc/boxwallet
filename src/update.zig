@@ -202,10 +202,13 @@ const update_asset_prefix = "update-";
 /// the targets in `build.zig`'s `gui_targets`, so `assetFor(.gui)` is null
 /// everywhere else for free.
 ///
-/// Releases also carry each GUI exe under its pre-v0.8.9 unprefixed name so
-/// installs older than the rename keep updating (`guiLegacyExeAsset` in
-/// `build.zig`). Nothing here reads that name — a build only ever asks for the
-/// one it was compiled with.
+/// Releases up to v0.8.11 also carried each GUI exe under its pre-v0.8.9
+/// unprefixed name, so installs older than the rename kept updating. That copy
+/// is gone as of v0.8.12 — it was the whole remaining source of "which of these
+/// two identical files do I download?" — so a GUI at v0.8.8 or earlier finds no
+/// line under the name baked into it and reports `verify_failed` until it is
+/// re-downloaded by hand. Nothing here ever read the old name: a build only asks
+/// for the one it was compiled with.
 pub fn assetFor(comptime front: Front) ?[]const u8 {
     const arch = switch (builtin.cpu.arch) {
         .x86_64 => "x86_64",
@@ -1368,8 +1371,8 @@ test "the bundle's name drops the updater prefix and the Windows exe suffix" {
         "boxwallet-gui-linux-x86_64",
         bundleBase("update-boxwallet-gui-linux-x86_64"),
     );
-    // The pre-rename names still resolve, so a bundle fallback keeps working if
-    // one is ever fed through here.
+    // A name without the prefix still resolves, so nothing here depends on the
+    // marker being present.
     try std.testing.expectEqualStrings(
         "boxwallet-gui-linux-x86_64",
         bundleBase("boxwallet-gui-linux-x86_64"),
@@ -1464,14 +1467,11 @@ test "applyPending sweeps the pre-per-front-end staging files" {
 }
 
 test "parseRuntime reads the pairing line for our asset" {
-    // Shaped like a real release's manifest: two lines per target, the prefixed
-    // asset this build asks for and the legacy name pre-rename installs ask for,
-    // both naming the same runtime.
+    // Shaped like a real release's manifest: one line per target, named by the
+    // `update-` asset the updater looks itself up by.
     const text =
         \\update-boxwallet-gui-linux-x86_64  slint-1.17.1  ce76672d4201dfb172215d1d5e6a1052e865740a97b59b6506a99380b65cff82
-        \\boxwallet-gui-linux-x86_64  slint-1.17.1  ce76672d4201dfb172215d1d5e6a1052e865740a97b59b6506a99380b65cff82
         \\update-boxwallet-gui-linux-aarch64  slint-1.17.1  491aff4f54508deec4aee0140639b739c96dd09ae349e2da2fc111adfe115622
-        \\boxwallet-gui-linux-aarch64  slint-1.17.1  491aff4f54508deec4aee0140639b739c96dd09ae349e2da2fc111adfe115622
         \\
     ;
     const rt = parseRuntime(text, "update-boxwallet-gui-linux-aarch64").?;
@@ -1481,20 +1481,12 @@ test "parseRuntime reads the pairing line for our asset" {
     _ = try std.fmt.hexToBytes(&want, "491aff4f54508deec4aee0140639b739c96dd09ae349e2da2fc111adfe115622");
     try std.testing.expectEqualSlices(u8, &want, &rt.sha);
 
-    // The legacy name resolves to the same runtime — that pairing is the whole
-    // reason both names are published, and an install that predates the rename
-    // reports verify_failed the moment its line goes missing.
-    const legacy = parseRuntime(text, "boxwallet-gui-linux-aarch64").?;
-    try std.testing.expectEqualStrings(rt.dir(), legacy.dir());
-    try std.testing.expectEqualSlices(u8, &rt.sha, &legacy.sha);
-
-    // Matching is on the whole name, so the prefixed and unprefixed lines never
-    // stand in for each other.
-    try std.testing.expectEqualSlices(
-        u8,
-        &parseRuntime(text, "update-boxwallet-gui-linux-x86_64").?.sha,
-        &parseRuntime(text, "boxwallet-gui-linux-x86_64").?.sha,
-    );
+    // Matching is on the whole name: the unprefixed name a pre-v0.8.9 install
+    // asks for does *not* fall back to the prefixed line for the same target.
+    // That null is what makes those installs report verify_failed rather than
+    // pair themselves against a runtime they were never checked against — the
+    // deliberate cost of dropping the legacy asset.
+    try std.testing.expect(parseRuntime(text, "boxwallet-gui-linux-aarch64") == null);
 
     // An asset with no line is null, not the first line that happens to parse.
     try std.testing.expect(parseRuntime(text, "boxwallet-gui-linux-riscv64") == null);

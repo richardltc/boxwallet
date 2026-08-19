@@ -141,18 +141,17 @@ description: How to cut a BoxWallet release, and the release/GUI-bundling mechan
   so `ld.so` kills it before `main` — no window, no message, indistinguishable
   from a corrupt download. That was the reported confusion this fixes.
 
-  **Both names are published during the transition.** `assetFor(.gui)` is baked
-  into every shipped GUI, and an install predating the rename looks itself up in
-  `SHA256SUMS` *and* `RUNTIME` under the old unprefixed name; a release without
-  those lines fails `parseChecksum`/`parseRuntime` and reports `verify_failed`
-  on every launch, forever — an updater cannot learn a name it wasn't compiled
-  with. `guiLegacyExeAsset` (`build.zig`) publishes the byte-identical second
-  copy and the second `RUNTIME` line. **Until it's retired, the unprefixed
-  updater-only exe is still sitting next to the `.zip`** — the confusion is only
-  fully gone once it's dropped, which is safe when no supported install predates
-  the rename (v0.8.8 is the last that needs it). Drop it in three places:
-  `guiLegacyExeAsset` and its two call sites (`pack`, `sum_cmds`/`hash_names`),
-  and the `release-all` expected list.
+  **The transitional second copy is gone as of v0.8.12.** v0.8.9–v0.8.11 also
+  published each GUI exe under its old unprefixed name, so installs predating
+  the rename could still update — but that copy *was* the remaining confusion,
+  an unprefixed bare exe sitting next to the `.zip`, so it was dropped rather
+  than waited out. The cost is real and one-way: `assetFor(.gui)` is baked into
+  every shipped GUI, so a **v0.8.8-or-earlier GUI** looks itself up in
+  `SHA256SUMS` *and* `RUNTIME` under a name no release now carries, fails
+  `parseChecksum`/`parseRuntime`, and reports `verify_failed` on every launch
+  forever — an updater cannot learn a name it wasn't compiled with. Those users
+  have to download the `.zip` by hand. **Never publish an unprefixed bare GUI
+  exe again**, including as a compatibility alias for some future rename.
 - **A Windows GUI asset is `update-…-x86_64.exe`; its bundle is `…-x86_64.zip`.**
   The stems differ at both ends — the prefix everywhere, plus that suffix on
   Windows and nowhere else — so anything deriving one from the other must go
@@ -177,11 +176,11 @@ description: How to cut a BoxWallet release, and the release/GUI-bundling mechan
   Versioning the *directory* rather than the filename is also deliberate:
   `tools/fixneeded.zig` can only shorten `DT_NEEDED` to a tail of the baked
   string, so it can't express a versioned filename without string-table surgery.
-- **`gui-release` publishes four things per target**, all covered by `SHA256SUMS`:
-  the bare exe (what the updater fetches when the installed runtime already
-  matches) under both its `update-` name and the legacy one, the `.zip` bundle
-  (fetched when the runtime doesn't match), and a `RUNTIME` file naming the
-  Slint version each target needs plus its runtime hash. `RUNTIME` is hashed into
+- **`gui-release` publishes three things per target**, all covered by `SHA256SUMS`:
+  the `update-`prefixed bare exe (what the updater fetches when the installed
+  runtime already matches), the `.zip` bundle (fetched when the runtime doesn't
+  match), and a `RUNTIME` file naming the Slint version each target needs plus
+  its runtime hash. `RUNTIME` is hashed into
   `SHA256SUMS` too, so the pairing information carries the same trust as the
   downloads. Bundles are staged under `gui-release/staging/` and only the
   publishable files sit at the top level — `sha256sum -c SHA256SUMS` must pass
