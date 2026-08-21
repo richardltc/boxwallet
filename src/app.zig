@@ -18,6 +18,7 @@ const price = @import("price.zig");
 const qrcode = @import("qrcode.zig");
 const proc_mod = @import("proc.zig");
 const warmup = @import("warmup.zig");
+const tipwatch = @import("tipwatch.zig");
 const extwallet = @import("extwallet.zig");
 const mining = @import("mining.zig");
 const Coin = @import("coin.zig").Coin;
@@ -1131,6 +1132,11 @@ const Activity = struct {
     /// `ensureWallet` runs on the first successful poll and not every poll. Reset
     /// when the daemon is (re)started, since a fresh daemon won't have it loaded.
     wallet_ensured: bool = false,
+    /// Highest chain heights this coin's daemon has reported since it was
+    /// started, so a peer that knows less than the one it replaced can't walk the
+    /// Headers readout backwards (see `tipwatch`). Reset on start/stop, where a
+    /// lower height is legitimate.
+    tip_marks: tipwatch.Ratchet = .{},
     /// Set once the coin's one-shot post-sync hook (`onSynced`) has been fired, so
     /// it runs the first time the chain reads as fully synced and not every poll
     /// thereafter. Unlike `wallet_ensured` it is *not* reset on daemon restart — the
@@ -3106,8 +3112,10 @@ const Activity = struct {
             }
         }
 
-        const state = try self.coin.blockchainState(a, auth);
+        var state = try self.coin.blockchainState(a, auth);
         defer state.deinit(a);
+        // Don't let a newly-connected, less-informed peer walk the heights back down.
+        self.tip_marks.apply(&state);
         self.poll_headers.store(@as(u64, @intCast(@max(state.headers, 0))), .monotonic);
         self.poll_blocks.store(@as(u64, @intCast(@max(state.blocks, 0))), .monotonic);
         self.poll_network.store(@as(u64, @intCast(@max(state.network_height, 0))), .monotonic);
@@ -6127,6 +6135,9 @@ pub const App = struct {
         // only auto-loads the unnamed default), so re-run ensureWallet on the next
         // poll for coins that need it.
         act.wallet_ensured = false;
+        // A fresh run reports its own heights from scratch (it may even have been
+        // reindexed), so the last run's high-water marks must not floor them.
+        act.tip_marks.clear();
         // Re-attempt the external wallet service for this daemon run (e.g. after a
         // reinstall added the wallet-rpc binary).
         act.wallet_rpc.attempted = false;
@@ -6699,6 +6710,7 @@ pub const App = struct {
     fn beginDaemonStop(self: *App, act: *Activity) void {
         act.daemon_action = .stop;
         act.daemon_err = "";
+        act.tip_marks.clear();
         act.daemon.store(@intFromEnum(DaemonState.stopping), .release);
         act.daemon_thread = std.Thread.spawn(.{}, Activity.runStopDaemon, .{act}) catch {
             act.daemon.store(@intFromEnum(DaemonState.running), .release);
