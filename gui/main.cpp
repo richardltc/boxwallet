@@ -133,6 +133,13 @@ static int64_t g_odo_headers = 0;
 static int64_t g_odo_blocks = 0;
 static int g_count_roll = 0;
 
+// Whether this coin's daemon has ever reported a network tip since it was
+// selected. It is what separates "no peers yet" (nothing to hold — the gauges
+// read "—" as they always have) from "the peers went away" (a reading worth
+// holding, greyed until one returns). Reset on selection and when the daemon
+// goes down. UI thread only.
+static bool g_had_tip = false;
+
 // The address the Receive QR was last built for, so the poll doesn't re-encode
 // an unchanged one every two seconds. Cleared on selection along with the
 // address cache, so switching to a coin whose address happens to be cached
@@ -840,6 +847,8 @@ static void apply_coin_metadata(const AppWindow *ui, bw_ctx *ctx, int idx)
     ui->set_headers_complete(false);
     ui->set_blocks_complete(false);
     ui->set_sync_unknown(false);
+    ui->set_sync_stalled(false);
+    g_had_tip = false;
     ui->set_disk_frac(0);
     ui->set_wallet_sec(0);
     const int ew_flags = bw_coin_ext_wallet(idx);
@@ -3088,21 +3097,38 @@ int main(int argc, char **argv)
                     int64_t tip = (peers > 0 && bs.network_height > 0)
                         ? (bs.network_height > bs.headers ? bs.network_height : bs.headers)
                         : 0;
+                    if (tip > 0)
+                        g_had_tip = true;
+                    // Every peer has gone while the chain was still short of the
+                    // tip. The two sync gauges are *held*, not reset: without a
+                    // peer there's no network height to measure against, and
+                    // unfilling both rings to an unknown 0% reads as a node that
+                    // lost its blocks rather than one that lost its connections.
+                    // Their last reading stays put and fades to grey (see
+                    // CircleGauge.dimmed) until a peer comes back, at which point
+                    // the fractions below resume from where they left off. Only
+                    // once a tip has been seen — a daemon that has never had a
+                    // peer has nothing to hold, and still reads "—".
+                    bool stalled = !synced && peers <= 0 && g_had_tip;
+                    (*h)->set_sync_stalled(stalled);
                     bool tip_unknown = !synced && tip <= 0;
-                    (*h)->set_sync_unknown(tip_unknown);
+                    if (!stalled)
+                        (*h)->set_sync_unknown(tip_unknown);
                     (*h)->set_blocks(static_cast<int>(bs.blocks));
                     (*h)->set_headers(static_cast<int>(bs.headers));
                     (*h)->set_peers(static_cast<int>(di.connections));
                     (*h)->set_staking(di.staking_active != 0);
                     (*h)->set_synced(synced);
-                    (*h)->set_headers_frac(sync_frac(bs.headers, tip, synced));
-                    (*h)->set_blocks_frac(sync_frac(bs.blocks, tip, synced));
-                    // Whether each ring may say "Synced", decided from the
-                    // heights rather than from its fraction: a node a few
-                    // hundred blocks short of a million-block tip rounds to a
-                    // full ring, and the word used to be read off that.
-                    (*h)->set_headers_complete(synced || (tip > 0 && bs.headers >= tip));
-                    (*h)->set_blocks_complete(synced || (tip > 0 && bs.blocks >= tip));
+                    if (!stalled) {
+                        (*h)->set_headers_frac(sync_frac(bs.headers, tip, synced));
+                        (*h)->set_blocks_frac(sync_frac(bs.blocks, tip, synced));
+                        // Whether each ring may say "Synced", decided from the
+                        // heights rather than from its fraction: a node a few
+                        // hundred blocks short of a million-block tip rounds to a
+                        // full ring, and the word used to be read off that.
+                        (*h)->set_headers_complete(synced || (tip > 0 && bs.headers >= tip));
+                        (*h)->set_blocks_complete(synced || (tip > 0 && bs.blocks >= tip));
+                    }
                     // Roll the counts from wherever they last landed to where
                     // they are now. One shared tick for both, so the two gauges
                     // move together rather than a frame apart.
@@ -3139,6 +3165,9 @@ int main(int argc, char **argv)
                     // A stopped daemon isn't an unmeasurable one: the gauges read
                     // an empty 0%, the same as every other figure clearing here.
                     (*h)->set_sync_unknown(false);
+                    // Nor a stalled one: there's no held reading left to grey.
+                    (*h)->set_sync_stalled(false);
+                    g_had_tip = false;
                     (*h)->set_sync_percent(0);
                     // Same as on selection: blank the odometers and forget where
                     // they were, so the next start rolls up from zero.

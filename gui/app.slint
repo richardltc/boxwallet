@@ -493,8 +493,13 @@ component OdometerCount inherits Rectangle {
 // centre (a disc in the pane colour).
 component CircleGauge inherits VerticalBox {
     in property <float> frac;
-    in property <brush> fill;
+    in property <color> fill;
     in property <string> label;
+    // The reading is being *held* rather than updated — see `sync-stalled`: the
+    // daemon has lost every peer, so nothing can advance the ring. The figures
+    // stay exactly where they were and the arc (with its readouts) fades to a
+    // disabled grey, fading back to the coin colour when a peer returns.
+    in property <bool> dimmed: false;
     // The readout below the ring, in one of two shapes. Headers and Blocks are
     // bare counts too large for f32, so the host splits them into columns
     // (`count-slots`); Disk and Memory are a small magnitude plus a unit, which
@@ -532,6 +537,12 @@ component CircleGauge inherits VerticalBox {
     // A full ring that has a word to show instead of "100.0%".
     property <bool> full-word: root.complete && root.full-text != "";
     property <length> dia: 72px;
+    // Arc and readout inks, animated so the fade to grey (and back) is a motion
+    // rather than a snap — the same 600ms the ring itself sweeps in.
+    property <color> arc: root.dimmed ? #4a4a4a : root.fill;
+    property <color> readout-ink: root.dimmed ? #6e6e6e : #e6e6e6;
+    property <color> value-ink: root.dimmed ? #6e6e6e : #c8c8c8;
+    animate arc, readout-ink, value-ink { duration: 600ms; easing: ease-in-out; }
     // The readout below the ring, animated the same 600ms as the ring itself so
     // the two never disagree about where the measurement got to.
     property <float> nv: root.num-value < 0 ? 0 : root.num-value;
@@ -559,7 +570,7 @@ component CircleGauge inherits VerticalBox {
             width: root.dia;
             height: root.dia;
             border-radius: root.dia / 2;
-            background: @conic-gradient(root.fill 0turn, root.fill root.f * 1turn, #3a3a3a root.f * 1turn, #3a3a3a 1turn);
+            background: @conic-gradient(root.arc 0turn, root.arc root.f * 1turn, #3a3a3a root.f * 1turn, #3a3a3a 1turn);
 
             // Centre hole → makes the ring a donut, and holds the readout. The gap
             // (8px vs the outer circle) sets the ring thickness — ~4px.
@@ -593,7 +604,7 @@ component CircleGauge inherits VerticalBox {
                 }
                 if root.ring-word == "" && !root.unknown && root.full-word: Text {
                     text: root.full-text;
-                    color: #e6e6e6;
+                    color: root.readout-ink;
                     font-size: 13px;
                     horizontal-alignment: center;
                     vertical-alignment: center;
@@ -610,7 +621,7 @@ component CircleGauge inherits VerticalBox {
                     // zero isn't reporting.
                     decimals: root.tenths == 0 ? 0 : 1;
                     suffix: "%";
-                    ink: #e6e6e6;
+                    ink: root.readout-ink;
                     // A step down for "100.0%", two characters wider than the
                     // "100%" this used to show, which would otherwise crowd the
                     // ring.
@@ -625,7 +636,7 @@ component CircleGauge inherits VerticalBox {
     if root.count-slots.length > 0: OdometerCount {
         slots: root.count-slots;
         roll: root.count-roll;
-        ink: #c8c8c8;
+        ink: root.value-ink;
         fs: 12px;
     }
     if root.count-slots.length == 0 && root.num-value >= 0: OdometerFloat {
@@ -1220,6 +1231,12 @@ export component AppWindow inherits Window {
     // failed), so neither sync gauge has a denominator. Set by the poll; both
     // gauges then read "—" rather than a number derived from our own height.
     in property <bool> sync-unknown: false;
+    // The daemon is running and was syncing, but every peer has gone. Neither
+    // sync gauge is reset — with no peer there is no tip to measure against, and
+    // unfilling the rings would read as a chain that lost its blocks rather than
+    // a node that lost its connections. Both hold their last reading and fade to
+    // grey until a peer comes back, then carry on from there.
+    in property <bool> sync-stalled: false;
     in property <float> disk-frac: 0;
     // The two sync counts, pre-split into odometer columns by the host so they
     // roll rather than snap (see DigitSlot). Empty = no reading yet, which is
@@ -2208,6 +2225,7 @@ export component AppWindow inherits Window {
                                 label: "Headers";
                                 frac: root.headers-frac;
                                 fill: root.coin-color;
+                                dimmed: root.sync-stalled;
                                 count-slots: root.headers-slots;
                                 count-roll: root.count-roll;
                                 full-text: "Synced";
@@ -2218,6 +2236,7 @@ export component AppWindow inherits Window {
                                 label: "Blocks";
                                 frac: root.blocks-frac;
                                 fill: root.coin-color;
+                                dimmed: root.sync-stalled;
                                 count-slots: root.blocks-slots;
                                 count-roll: root.count-roll;
                                 full-text: "Synced";
