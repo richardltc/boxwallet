@@ -675,9 +675,9 @@ component StatusIcon inherits Rectangle {
     // Grows the icon in sync with the brightness so a pulse "breathes" outward.
     property <float> pulse-scale: 1.0 + 0.28 * (0.5 + 0.5 * Math.sin(root.t * 360deg));
     property <bool> pulsing: root.moving && root.motion == "pulse";
-    // One full turn every 3.6s — quarter speed. A sync can run for hours, so the
+    // One full turn every 7.2s — an eighth speed. A sync can run for hours, so the
     // spinner is there to say "still working", not to hurry anyone along.
-    property <angle> spin: Math.mod(animation-tick() / 1ms, 3600) / 3600 * 360deg;
+    property <angle> spin: Math.mod(animation-tick() / 1ms, 7200) / 7200 * 360deg;
 
     // One-shot "breath": fire a single pulse each time `pulse-on-increase` rises
     // (e.g. the peer count ticking up). Any upward jump — 0→1 or 1→5 — is exactly
