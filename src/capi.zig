@@ -50,6 +50,7 @@ const install = @import("install.zig");
 const updater = @import("update.zig");
 const proc = @import("proc.zig");
 const warmup = @import("warmup.zig");
+const tipwatch = @import("tipwatch.zig");
 const mining = @import("mining.zig");
 const extwallet = @import("extwallet.zig");
 
@@ -189,6 +190,10 @@ const Ctx = struct {
     /// every wallet RPC answers `-18 "no wallet loaded"` until one is. Atomic
     /// because the poll thread latches it while a start worker clears it.
     wallet_ensured: [coin_count]std.atomic.Value(u8) = @splat(.init(0)),
+    /// Highest chain heights each coin's daemon has reported this run, so a peer
+    /// that knows less than the one it replaced can't walk the Headers readout
+    /// backwards (see `tipwatch`). Cleared on start/stop of that coin's daemon.
+    tip_marks: [coin_count]tipwatch.Ratchet = @splat(.{}),
     /// Serialises every wallet-touching export. Mutating ops (create/restore/
     /// open/teardown) take it **blocking**; polled reads `tryLock` and report
     /// busy instead, so a multi-minute restore can never stall the 2s status
@@ -847,7 +852,9 @@ fn fetchBlockchainState(ctx: *Ctx, idx: usize, out: *BwBlockchainState) !void {
 
     // `bs` owns its `chain` string on the arena; the arena frees it on return,
     // so we copy the name into the fixed field before that happens.
-    const bs = try coin.blockchainState(a, auth);
+    var bs = try coin.blockchainState(a, auth);
+    // Don't let a newly-connected, less-informed peer walk the heights back down.
+    if (idx < coin_count) ctx.tip_marks[idx].apply(&bs);
     out.blocks = bs.blocks;
     out.headers = bs.headers;
     out.verification_progress = bs.verification_progress;
@@ -1432,6 +1439,9 @@ export fn bw_start_daemon(ctx: ?*Ctx, idx: usize) c_int {
     // A freshly (re)started daemon won't have our named wallet loaded (Core only
     // auto-loads the unnamed default), so let the next poll load it again.
     if (idx < coin_count) c.wallet_ensured[idx].store(0, .release);
+    // A fresh run reports its own heights from scratch (it may even have been
+    // reindexed), so the last run's high-water marks must not floor them.
+    if (idx < coin_count) c.tip_marks[idx].clear();
     const held = holdDaemonAction(c, idx);
     defer releaseDaemonAction(c, idx, held);
     startDaemon(c, idx) catch |err| {
@@ -1443,6 +1453,7 @@ export fn bw_start_daemon(ctx: ?*Ctx, idx: usize) c_int {
 
 export fn bw_stop_daemon(ctx: ?*Ctx, idx: usize) c_int {
     const c = ctx orelse return -1;
+    if (idx < coin_count) c.tip_marks[idx].clear();
     const held = holdDaemonAction(c, idx);
     defer releaseDaemonAction(c, idx, held);
     stopDaemon(c, idx) catch |err| {

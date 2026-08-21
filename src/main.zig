@@ -75,6 +75,7 @@ test {
     _ = @import("conf.zig");
     _ = @import("proc.zig");
     _ = @import("warmup.zig");
+    _ = @import("tipwatch.zig");
     _ = @import("extwallet.zig");
     _ = @import("mining.zig");
     _ = @import("price.zig");
