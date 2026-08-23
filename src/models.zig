@@ -735,7 +735,7 @@ test "clientVersionString decodes the bitcoin CLIENT_VERSION encoding" {
     const cases = .{
         .{ 8_260_200, "8.26.2" }, // DigiByte 8.26.2 (build 0 dropped)
         .{ 4_220_900, "4.22.9" }, // generic 3-part decode (build 0 dropped)
-        .{ 42_209, "0.4.22.9" }, // ReddCoin's real CLIENT_VERSION → legacy 4-part "0.4.22.9"
+        .{ 42_209, "0.4.22.9" }, // ReddCoin <= 4.22.9's CLIENT_VERSION → legacy 4-part "0.4.22.9"
         .{ 2_000_000, "2.0.0" }, // Nexa 2.0.0.0 → 2.0.0 (pads equal under isNewer)
         .{ 1_020_304, "1.2.3.4" }, // non-zero build is kept
     };
