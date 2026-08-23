@@ -9,7 +9,7 @@ const Coin = @import("../coin.zig").Coin;
 
 /// ReddCoin (RDD) backend. Constants seeded from
 /// `cmd/cli/cmd/coins/reddcoin/reddcoin.go`, but updated to the current
-/// **4.22.9** core (the Go reference's 3.10.3 downloads are gone, and 4.x is a
+/// **4.22.9.4** core (the Go reference's 3.10.3 downloads are gone, and 4.x is a
 /// major upgrade: ReddCoin Core rebased onto Bitcoin Core 22).
 ///
 /// ReddCoin is a bitcoin-derived Proof-of-Stake-Velocity coin, so it shares the
@@ -53,7 +53,7 @@ pub const ReddCoin = struct {
     pub const home_dir_mac: ?[]const u8 = "Reddcoin";
     pub const rpc_default_username = "reddcoinrpc";
     pub const rpc_default_port = "45443";
-    pub const core_version = "4.22.9";
+    pub const core_version = "4.22.9.4";
 
     // Binary names. Windows appends `.exe`; Linux/macOS use the bare names.
     const exe_suffix = if (builtin.os.tag == .windows) ".exe" else "";
@@ -158,11 +158,13 @@ pub const ReddCoin = struct {
         };
 
         // `getnetworkinfo`'s numeric CLIENT_VERSION → dotted string, owned by
-        // `allocator` so it outlives `net`'s deinit. ReddCoin's CLIENT_VERSION
-        // carries a legacy leading-0 major (42209 → "0.4.22.9"), but the release is
-        // branded/distributed as "4.22.9" (== core_version). Drop the "0." so the
-        // Running line and the on-disk version marker line up with the bundled
-        // version — otherwise the same release reads as an endless "update available".
+        // `allocator` so it outlives `net`'s deinit. 4.22.9.4 restored the standard
+        // bitcoin encoding (4_220_904 → "4.22.9.4" == core_version), but 4.22.9 and
+        // earlier packed the version without the major's millions place (42209 →
+        // "0.4.22.9"), so a daemon still on one of those decodes with a spurious
+        // leading "0.". Strip it there so the Running line and the on-disk version
+        // marker stay comparable to the bundled version rather than reading as an
+        // endless "update available".
         const full = try models.clientVersionString(allocator, n.version);
         const version = if (std.mem.startsWith(u8, full, "0.")) blk: {
             defer allocator.free(full);
@@ -755,7 +757,7 @@ test "combines getnetworkinfo + staking into DaemonInfo (no getinfo, PoSV)" {
     // ReddCoin 4.x has no `getinfo`: peers come from getnetworkinfo and staking
     // from the `staking` RPC. Prove each parses, then the staking decode.
     const net_raw =
-        \\{"result":{"version":42209,"subversion":"/ReddCoin:4.22.9/",
+        \\{"result":{"version":4220904,"subversion":"/ReddCoin:4.22.9.4/",
         \\"connections":16,"networkactive":true},"error":null,"id":"boxwallet"}
     ;
     const staking_raw =
@@ -791,17 +793,24 @@ test "combines getnetworkinfo + staking into DaemonInfo (no getinfo, PoSV)" {
 test "daemon CLIENT_VERSION drops ReddCoin's legacy leading-0 major" {
     const allocator = std.testing.allocator;
 
-    // ReddCoin's getnetworkinfo reports CLIENT_VERSION = 42209, which the bitcoin
-    // decoder renders as the 4-part "0.4.22.9". daemonInfo strips the leading "0."
-    // so the Running line and the version marker match the branded "4.22.9"
-    // (== core_version) — otherwise the same release nags as "update available".
-    const full = try models.clientVersionString(allocator, 42209);
-    defer allocator.free(full);
-    try std.testing.expectEqualStrings("0.4.22.9", full);
+    // 4.22.9.4 encodes CLIENT_VERSION the standard bitcoin way (4_220_904), which
+    // decodes straight to the branded, bundled version — the strip is a no-op.
+    const current = try models.clientVersionString(allocator, 4_220_904);
+    defer allocator.free(current);
+    try std.testing.expectEqualStrings("4.22.9.4", current);
+    try std.testing.expectEqualStrings(
+        ReddCoin.core_version,
+        if (std.mem.startsWith(u8, current, "0.")) current[2..] else current,
+    );
 
-    const version = if (std.mem.startsWith(u8, full, "0.")) full[2..] else full;
-    try std.testing.expectEqualStrings("4.22.9", version);
-    try std.testing.expectEqualStrings(ReddCoin.core_version, version);
+    // 4.22.9 and earlier dropped the major's millions place (42209), which the
+    // bitcoin decoder renders as the 4-part "0.4.22.9". daemonInfo strips the
+    // leading "0." so a daemon still on one of those reports the branded "4.22.9"
+    // and stays comparable to core_version instead of reading as a wild mismatch.
+    const legacy = try models.clientVersionString(allocator, 42209);
+    defer allocator.free(legacy);
+    try std.testing.expectEqualStrings("0.4.22.9", legacy);
+    try std.testing.expectEqualStrings("4.22.9", legacy[2..]);
 }
 
 test "staking RPC absent or wallet-locked reads as not staking" {
