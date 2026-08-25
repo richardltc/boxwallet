@@ -46,11 +46,13 @@ fn applyStagedUpdate(init: std.process.Init) void {
     defer init.gpa.free(root);
 
     const applied = (update.applyPending(init.gpa, init.io, root, app.app_version) catch return) orelse return;
-    // `replace` does not return on success — it replaces this process image with
-    // the freshly swapped binary. It only returns (an error) on failure, in which
-    // case the binary on disk is already the new one, so the next launch is clean;
-    // run the current image for now.
-    const err = std.process.replace(init.io, .{ .argv = &.{applied.exe_path} });
+    // `relaunch` does not return on success — it replaces this process image with
+    // the freshly swapped binary (or, where the OS has no exec, runs it as a child
+    // and exits with its status; `.wait` because a terminal app that let go of the
+    // console first would hand the shell its prompt back mid-TUI). It only returns
+    // (an error) on failure, in which case the binary on disk is already the new
+    // one, so the next launch is clean; run the current image for now.
+    const err = update.relaunch(init.io, applied.exe_path, init.environ_map, .wait);
     std.log.warn("self-update re-exec failed: {s}", .{@errorName(err)});
     init.gpa.free(applied.exe_path);
 }
