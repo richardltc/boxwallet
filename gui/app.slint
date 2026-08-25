@@ -525,6 +525,12 @@ component CircleGauge inherits VerticalBox {
     // space beneath the ring stays empty on its own — such a gauge simply passes
     // neither a count nor a value.
     in property <string> ring-word: "";
+    // Whether a *high* reading is bad news. A fill level (Disk used) is: a
+    // volume with no room left stops a sync dead and can corrupt what's already
+    // there, so the ring warns on the way up rather than after. Opt-in, because
+    // for a sync gauge a high reading is the good case — a Blocks ring at 96%
+    // is nearly done, not nearly out.
+    in property <bool> warn-when-high: false;
 
     property <float> f: Math.max(0.0, Math.min(1.0, root.frac));
     // Smoothly sweep the ring (and count the % readout) whenever the underlying
@@ -537,12 +543,26 @@ component CircleGauge inherits VerticalBox {
     // A full ring that has a word to show instead of "100.0%".
     property <bool> full-word: root.complete && root.full-text != "";
     property <length> dia: 72px;
-    // Arc and readout inks, animated so the fade to grey (and back) is a motion
-    // rather than a snap — the same 600ms the ring itself sweeps in.
-    property <color> arc: root.dimmed ? #4a4a4a : root.fill;
+    // The three steps of a fill level going wrong: getting full (amber), nearly
+    // full (red), and about to bite (red, pulsing). Read off the animated `f`,
+    // so a gauge sweeping up to 92% turns amber then red on the way, in step
+    // with the arc rather than ahead of it.
+    property <bool> warn: root.warn-when-high && root.f >= 0.75;
+    property <bool> danger: root.warn-when-high && root.f >= 0.90;
+    property <bool> critical: root.warn-when-high && root.f >= 0.95;
+    // Arc and readout inks, animated so the fade to grey (and back) — and the
+    // step up through amber to red — is a motion rather than a snap: the same
+    // 600ms the ring itself sweeps in.
+    property <color> arc-base: root.dimmed ? #4a4a4a : (root.danger ? #d64545 : (root.warn ? #d99e2b : root.fill));
     property <color> readout-ink: root.dimmed ? #6e6e6e : #e6e6e6;
     property <color> value-ink: root.dimmed ? #6e6e6e : #c8c8c8;
-    animate arc, readout-ink, value-ink { duration: 600ms; easing: ease-in-out; }
+    animate arc-base, readout-ink, value-ink { duration: 600ms; easing: ease-in-out; }
+    // Past `critical` the red breathes, so the gauge catches the eye from
+    // across the room. Frame-clock timed, and only depended on while critical,
+    // so a gauge that isn't in trouble costs no repaints.
+    property <float> pt: Math.mod(animation-tick() / 1ms, 1400) / 1400;
+    property <float> pulse-k: 0.5 + 0.5 * Math.sin(root.pt * 360deg);
+    property <color> arc: root.critical ? root.arc-base.mix(#ff9d94, root.pulse-k) : root.arc-base;
     // The readout below the ring, animated the same 600ms as the ring itself so
     // the two never disagree about where the measurement got to.
     property <float> nv: root.num-value < 0 ? 0 : root.num-value;
@@ -644,7 +664,10 @@ component CircleGauge inherits VerticalBox {
         int-cols: 4; // "1023.9", the most a binary-scaled figure reaches
         decimals: root.num-decimals;
         suffix: root.num-suffix;
-        ink: #c8c8c8;
+        // "1.2 GB free" is the figure the warning is *about*, so it takes the
+        // alert colour with the ring — but never the pulse, which would make
+        // the digits hard to read.
+        ink: root.warn ? root.arc-base : #c8c8c8;
         fs: 12px;
     }
 }
@@ -2447,6 +2470,9 @@ export component AppWindow inherits Window {
                                 label: "Disk used";
                                 frac: root.disk-frac;
                                 fill: root.coin-color;
+                                // The one gauge here where a full ring is bad:
+                                // amber at 75%, red at 90%, pulsing red at 95%.
+                                warn-when-high: true;
                                 num-value: root.disk-free-value;
                                 num-suffix: root.disk-free-suffix;
                                 num-decimals: root.disk-free-decimals;
