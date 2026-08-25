@@ -13,9 +13,9 @@
 //!  2. **Apply on next launch** (`applyPending`), run from `main` *before* the
 //!     TUI starts. If a verified, newer binary is staged, it swaps it into the
 //!     executable's path (moving the running binary aside first — allowed while
-//!     running on every OS) and the caller re-execs into it via
-//!     `std.process.replace`. The swap clears the staged files, so the
-//!     re-exec'd process sees nothing pending and runs normally — no loop.
+//!     running on every OS, though Windows needs `renameImage` to do it) and the
+//!     caller restarts into it via `relaunch`. The swap clears the staged files,
+//!     so the restarted process sees nothing pending and runs normally — no loop.
 //!
 //! Memory stays flat per the project's constraint: the release JSON and
 //! `SHA256SUMS` are small, capped reads; the binary itself is streamed to disk
@@ -99,6 +99,12 @@ const unpack_subdir = "unpack";
 /// and renamed into place, so the live directory is only ever created whole —
 /// never written into while a process might be mapping the `.so` inside it.
 const runtime_new_suffix = ".bw-new";
+/// Suffix for the new *binary* while it waits beside the target for the rename
+/// that commits it. Windows keeps a `.exe` on the end because the pre-flight
+/// runs this exact file, and an executable named for an extension the machine
+/// has never heard of is at the mercy of whatever policy makes of it. The name
+/// lives for one rename either way. Swept by `cleanupOld` if the swap fails.
+const new_exe_suffix = if (builtin.os.tag == .windows) ".bw-new.exe" else ".bw-new";
 /// The Slint shared library inside a runtime directory, and the GUI executable's
 /// name inside a bundle. Both are fixed by `gui-release`'s layout.
 ///
@@ -800,6 +806,51 @@ pub fn applyPendingFor(
     return .{ .exe_path = exe_path };
 }
 
+/// How a front-end wants the restart done on a platform with no `exec`.
+pub const Restart = enum {
+    /// Windowed app: hand the new process the screen and leave immediately.
+    detach,
+    /// Console app: stay until the child exits, so the shell doesn't get its
+    /// prompt back with a TUI still drawing over it.
+    wait,
+};
+
+/// Restart into the binary `applyPending` just swapped in. Returns **only on
+/// failure**, with the error — the same shape as `std.process.replace`, which is
+/// what this is wherever the OS can replace a process image.
+///
+/// Windows can't: `std.process.replace` returns `error.OperationUnsupported`
+/// there, and the caller carried on running the *old* image. On disk the update
+/// had landed, but the window still said the old version and that build's own
+/// update check then re-staged the release it was already sitting on — so the
+/// user restarted, saw "restart to apply" again, and reasonably concluded
+/// nothing had happened. Spawning the new binary and exiting is the closest
+/// Windows gets to the exec, and it makes one restart enough on every platform.
+pub fn relaunch(
+    io: std.Io,
+    exe_path: []const u8,
+    environ_map: ?*const std.process.Environ.Map,
+    mode: Restart,
+) anyerror {
+    if (comptime std.process.can_replace)
+        return std.process.replace(io, .{ .argv = &.{exe_path}, .environ_map = environ_map });
+
+    var child = std.process.spawn(io, .{
+        .argv = &.{exe_path},
+        .environ_map = environ_map,
+    }) catch |err| return err;
+    switch (mode) {
+        .detach => std.process.exit(0),
+        .wait => {
+            const term = child.wait(io) catch |err| return err;
+            std.process.exit(switch (term) {
+                .exited => |code| code,
+                else => 1,
+            });
+        },
+    }
+}
+
 /// Move a staged `slint-<ver>/` runtime into place beside `exe_path`, if one is
 /// staged. Returns the directory name installed (or null when there was none —
 /// the ordinary case, where the release only changed the exe).
@@ -892,11 +943,13 @@ fn installFlatRuntime(
     try dir.copyFile(runtime_so_name, cwd, tmp, io, .{ .replace = true });
 
     cwd.deleteFile(io, old) catch {};
-    // Missing is fine: a first install, or a hand-unzipped tree.
-    const had_old = if (cwd.rename(dest, cwd, old, io)) |_| true else |_| false;
+    // Missing is fine: a first install, or a hand-unzipped tree. `renameImage`
+    // rather than a plain rename because this one moves a *loaded* DLL — see
+    // its note on why Windows refuses that through `std.Io.Dir.rename`.
+    const had_old = if (renameImage(gpa, io, dest, old)) |_| true else |_| false;
 
-    cwd.rename(tmp, cwd, dest, io) catch |err| {
-        if (had_old) cwd.rename(old, cwd, dest, io) catch {};
+    renameImage(gpa, io, tmp, dest) catch |err| {
+        if (had_old) renameImage(gpa, io, old, dest) catch {};
         cwd.deleteFile(io, tmp) catch {};
         return err;
     };
@@ -912,7 +965,7 @@ fn restoreFlatRuntime(gpa: std.mem.Allocator, io: std.Io, dest: []const u8) void
     defer gpa.free(old);
     const cwd = std.Io.Dir.cwd();
     cwd.access(io, old, .{}) catch return;
-    cwd.rename(old, cwd, dest, io) catch {};
+    renameImage(gpa, io, old, dest) catch {};
 }
 
 /// Name of the runtime directory staged alongside the binary, if any. Caller
@@ -926,6 +979,46 @@ fn stagedRuntimeName(gpa: std.mem.Allocator, io: std.Io, dir: std.Io.Dir) ?[]u8 
     }
     return null;
 }
+
+/// Rename `from` to `to`, replacing `to`, where `from` may be a **running
+/// executable or a loaded DLL**. That is the swap's whole job, and it is the one
+/// step of it Windows does not do the same way as everyone else.
+///
+/// POSIX renames a running binary without comment, so there `std.Io.Dir.rename`
+/// is used unchanged. Windows allows it too — but only for a handle opened for
+/// `DELETE` alone. A mapped image is shared for read and delete and nothing
+/// else, so any open that also asks for write comes back
+/// `STATUS_SHARING_VIOLATION`. `std.Io.Dir.rename` opens the source with
+/// `GENERIC_WRITE`, which means it can never rename the exe it is running in: it
+/// takes the sharing violation for a known kernel bug, retries 13 times over
+/// ~4 s, and returns `error.FileBusy`. That is exactly where every Windows
+/// self-update died — the download staged, the app said "restart to apply", and
+/// the restart came back up on the old version with nothing on screen to say
+/// why.
+///
+/// `MoveFileExW` opens with `DELETE` only, which is the documented way to move a
+/// running image aside, so Windows goes through it instead. Paths are passed
+/// unprefixed (no `\\?\`): ours are short, and the prefix would demand a fully
+/// qualified, backslash-only path we can't promise.
+fn renameImage(gpa: std.mem.Allocator, io: std.Io, from: []const u8, to: []const u8) !void {
+    if (builtin.os.tag != .windows) {
+        const cwd = std.Io.Dir.cwd();
+        return cwd.rename(from, cwd, to, io);
+    }
+    const from_w = try std.unicode.wtf8ToWtf16LeAllocZ(gpa, from);
+    defer gpa.free(from_w);
+    const to_w = try std.unicode.wtf8ToWtf16LeAllocZ(gpa, to);
+    defer gpa.free(to_w);
+    if (MoveFileExW(from_w.ptr, to_w.ptr, movefile_replace_existing) == 0) return error.RenameFailed;
+}
+
+const movefile_replace_existing: u32 = 0x1;
+
+extern "kernel32" fn MoveFileExW(
+    lpExistingFileName: [*:0]const u16,
+    lpNewFileName: ?[*:0]const u16,
+    dwFlags: u32,
+) callconv(.winapi) c_int;
 
 /// Replace the binary at `target_abs` with the one at `staged_abs`, working
 /// while `target_abs` is the running executable on every supported OS.
@@ -946,7 +1039,7 @@ fn swapBinary(
 ) !void {
     const cwd = std.Io.Dir.cwd();
 
-    const tmp_abs = try std.fmt.allocPrint(gpa, "{s}.bw-new", .{target_abs});
+    const tmp_abs = try std.fmt.allocPrint(gpa, "{s}{s}", .{ target_abs, new_exe_suffix });
     defer gpa.free(tmp_abs);
     const old_abs = try std.fmt.allocPrint(gpa, "{s}.old", .{target_abs});
     defer gpa.free(old_abs);
@@ -970,10 +1063,10 @@ fn swapBinary(
     }
 
     cwd.deleteFile(io, old_abs) catch {};
-    try cwd.rename(target_abs, cwd, old_abs, io);
-    cwd.rename(tmp_abs, cwd, target_abs, io) catch |err| {
+    try renameImage(gpa, io, target_abs, old_abs);
+    renameImage(gpa, io, tmp_abs, target_abs) catch |err| {
         // Put the original back so we don't leave a hole where the binary was.
-        cwd.rename(old_abs, cwd, target_abs, io) catch {};
+        renameImage(gpa, io, old_abs, target_abs) catch {};
         return err;
     };
 }
@@ -1029,6 +1122,20 @@ fn cleanupOld(gpa: std.mem.Allocator, io: std.Io, exe_path: []const u8) void {
     defer gpa.free(old);
     const cwd = std.Io.Dir.cwd();
     cwd.deleteFile(io, old) catch {};
+
+    // The candidate binary, left beside the target by a swap that failed after
+    // the copy. Windows also sweeps the name used before `new_exe_suffix` gained
+    // its `.exe`: every Windows swap failed at the rename that follows, so every
+    // Windows install has one of these sitting next to its exe.
+    const stale: []const []const u8 = if (builtin.os.tag == .windows)
+        &.{ new_exe_suffix, ".bw-new" }
+    else
+        &.{new_exe_suffix};
+    for (stale) |suffix| {
+        const candidate = std.fmt.allocPrint(gpa, "{s}{s}", .{ exe_path, suffix }) catch return;
+        defer gpa.free(candidate);
+        cwd.deleteFile(io, candidate) catch {};
+    }
 
     // The flat runtime is set aside the same way and can't be deleted while the
     // process that mapped it is alive, so it's swept on a later launch like the

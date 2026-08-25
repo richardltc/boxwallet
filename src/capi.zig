@@ -979,10 +979,24 @@ fn confirmAlive(coin: Coin) bool {
 fn currentEnvMap(a: std.mem.Allocator) !std.process.Environ.Map {
     var map = std.process.Environ.Map.init(a);
     errdefer map.deinit();
-    // libc-linked only (the GUI always links libc). The Zig-entry offline-test
-    // binary doesn't link libc and never calls this — comptime-gating on
-    // `link_libc` prunes the `std.c` reference so that build stays libc-free.
-    if (builtin.os.tag != .windows and builtin.link_libc) {
+    if (builtin.os.tag == .windows) {
+        // Windows keeps the environment in the PEB rather than a `char **`, and
+        // the block moves when anything edits it — so it's read once, here,
+        // never held. `.global` is std's name for "this process's real
+        // environment"; without this the map came back empty and every child we
+        // spawned on Windows (a coin daemon, the updater's `--selftest`
+        // pre-flight) ran with no `%APPDATA%`, no `%PATH%`, no `%SystemRoot%`.
+        const env: std.process.Environ = .{ .block = .global };
+        const block = try env.createWindowsBlock(a, .{});
+        defer block.deinit(a);
+        try map.putWindowsBlock(block.view());
+        return map;
+    }
+    // Elsewhere: libc-linked only (the GUI always links libc). The Zig-entry
+    // offline-test binary doesn't link libc and never calls this — comptime-
+    // gating on `link_libc` prunes the `std.c` reference so that build stays
+    // libc-free.
+    if (builtin.link_libc) {
         const env = std.c.environ;
         var count: usize = 0;
         while (env[count] != null) : (count += 1) {}
@@ -1004,7 +1018,11 @@ fn currentEnvMap(a: std.mem.Allocator) !std.process.Environ.Map {
 /// comptime-gated exactly as `currentEnvMap` is, so the libc-free offline-test
 /// binary still compiles.
 fn currentEnviron() std.process.Environ {
-    if (builtin.os.tag != .windows and builtin.link_libc) {
+    // Windows has no `environ` to point at: the block lives in the PEB, and
+    // `.global` is how std says "read it from there". Left `.empty` this handed
+    // every child spawned through such a `Threaded` an empty environment.
+    if (builtin.os.tag == .windows) return .{ .block = .global };
+    if (builtin.link_libc) {
         const env = std.c.environ;
         var count: usize = 0;
         while (env[count] != null) : (count += 1) {}
@@ -3026,9 +3044,12 @@ export fn bw_self_update_apply(home_dir: ?[*:0]const u8) c_int {
     };
     defer env_map.deinit();
 
-    // Only returns on failure. The binary on disk is already the new one by this
-    // point, so the next launch is clean either way — run the old image for now.
-    const err = std.process.replace(io, .{ .argv = &.{applied.exe_path}, .environ_map = &env_map });
+    // Only returns on failure. `.detach` because we're the windowed front-end:
+    // where the OS has no exec (Windows), `relaunch` starts the new binary and
+    // exits rather than lingering as an invisible parent. The binary on disk is
+    // already the new one by this point, so the next launch is clean either way —
+    // run the old image for now.
+    const err = updater.relaunch(io, applied.exe_path, &env_map, .detach);
     std.log.warn("self-update re-exec failed: {s}", .{@errorName(err)});
     return 1;
 }
