@@ -312,10 +312,45 @@ static void begin_shutdown()
     g_shutting_down.store(true);
 }
 
+// The user's home directory — everything the core resolves per user hangs off
+// it: the install root (`install.installRoot`) and, through it, every coin's
+// data dir and managed wallet.
+//
+// **Windows has no `HOME`.** It keeps the profile path in `%USERPROFILE%`, so
+// reading only `HOME` there fell through to the `/` fallback and put the install
+// root at `C:\AppData\Roaming\BoxWallet` — a path off the drive root that a
+// normal user can't even create. Nothing installed, nothing found, and the coin
+// data dirs went with it. `src/main.zig` and `src/app.zig` (the TUI) have always
+// picked the key by platform; this is the same rule, and the GUI disagreeing with
+// its own updater — `bw_self_update_apply` is handed this too — was the worst of
+// it.
+//
+// Returns nullptr when the environment names no home at all, which is a real
+// answer rather than a guess: `bw_init` refuses it and main() reports the
+// failure, instead of silently scattering an install somewhere nobody asked for.
 static const char *home_dir()
 {
-    const char *h = std::getenv("HOME");
-    return h ? h : "/";
+#ifdef _WIN32
+    if (const char *p = std::getenv("USERPROFILE"); p && *p)
+        return p;
+    // Some environments (MSYS/Git Bash, Cygwin) set a POSIX-style HOME instead.
+    if (const char *h = std::getenv("HOME"); h && *h)
+        return h;
+    // Last resort, the classic Windows pair — `HOMEDRIVE` + `HOMEPATH` — joined
+    // into a static buffer that outlives the call, as the getenv results do.
+    const char *drive = std::getenv("HOMEDRIVE");
+    const char *path = std::getenv("HOMEPATH");
+    if (drive && *drive && path && *path) {
+        static char joined[512];
+        std::snprintf(joined, sizeof joined, "%s%s", drive, path);
+        return joined;
+    }
+    return nullptr;
+#else
+    if (const char *h = std::getenv("HOME"); h && *h)
+        return h;
+    return nullptr;
+#endif
 }
 
 // Parse a "#RRGGBB" brand-colour string into a Slint colour (falls back to grey).
@@ -1032,12 +1067,27 @@ int main(int argc, char **argv)
         return 0;
     }
 
+    // Resolved once and shared by the updater and the core below, so the two can
+    // never disagree about where this user's install root is. Bailing here rather
+    // than letting a null through: without a home there is nowhere to install to,
+    // nowhere to read a coin's conf from, and nowhere a wallet could be — better
+    // said plainly than discovered as an app that finds nothing installed.
+    const char *home = home_dir();
+    if (!home) {
+#ifdef _WIN32
+        std::fprintf(stderr, "cannot locate your home directory (%%USERPROFILE%% is not set)\n");
+#else
+        std::fprintf(stderr, "cannot locate your home directory ($HOME is not set)\n");
+#endif
+        return 1;
+    }
+
     // Swap in an update staged by a previous run and re-exec into it. Does not
     // return on success. Deliberately the first real thing main() does: it
     // replaces the process image, so any window or context built first would be
     // thrown away, and the runtime directory it installs has to land before
     // anything maps a Slint symbol.
-    bw_self_update_apply(home_dir());
+    bw_self_update_apply(home);
 
     // This string is also how the desktop finds our icon, and it must stay in
     // step with the basename of gui/boxwallet.desktop. Wayland gives an app no
@@ -1059,7 +1109,7 @@ int main(int argc, char **argv)
     // consistently with no dependency on a system font being installed.
     ui->window().window_handle().register_font_from_data(mono_font, mono_font_len);
 
-    bw_ctx *ctx = bw_init(home_dir());
+    bw_ctx *ctx = bw_init(home);
     if (!ctx) {
         std::fprintf(stderr, "bw_init failed\n");
         return 1;

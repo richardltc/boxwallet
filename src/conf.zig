@@ -60,6 +60,9 @@ pub fn dataDirHasEntry(allocator: std.mem.Allocator, data_dir: []const u8, entry
 /// each coin to state which convention it follows; getting it wrong points a coin
 /// at an empty directory and orphans a live wallet.
 ///
+/// **`win_base` is required for the same reason `mac_name` is:** Windows has two
+/// conventions and neither is derivable from the names. See `WinBase`.
+///
 /// `home_dir` is the process home directory; the caller owns the returned slice.
 pub fn dataDir(
     allocator: std.mem.Allocator,
@@ -67,8 +70,54 @@ pub fn dataDir(
     posix_name: []const u8,
     win_name: []const u8,
     mac_name: ?[]const u8,
+    win_base: WinBase,
 ) ![]const u8 {
-    return dataDirFor(allocator, home_dir, builtin.os.tag, posix_name, win_name, mac_name);
+    return dataDirFor(allocator, home_dir, builtin.os.tag, posix_name, win_name, mac_name, win_base);
+}
+
+/// Which Windows directory a coin's data dir hangs off. Two conventions are in
+/// play and **nothing in the names says which**, so every coin states its own —
+/// exactly as it must for `mac_name`, and for the same reason: guessing points
+/// BoxWallet at a directory the daemon never touches.
+///
+/// The consequences are quiet rather than loud, which is what makes this worth a
+/// required parameter. Getting it wrong means BoxWallet writes the coin's conf
+/// where the daemon won't read it, reads warm-up progress and start-failure
+/// reasons out of a log that never appears, and puts a managed wallet somewhere
+/// the daemon's own tooling won't find — a daemon that dies during init then
+/// reports nothing at all.
+pub const WinBase = enum {
+    /// `%APPDATA%` — `<home>\AppData\Roaming\<win_name>`. The bitcoin-derived
+    /// coins, and Zano (verified from `zanod --help`).
+    roaming,
+    /// `%ProgramData%` — `C:\ProgramData\<win_name>`. The CryptoNote family picks
+    /// `CSIDL_COMMON_APPDATA` on Windows, not the per-user roaming dir: verified
+    /// from each daemon's own `--help` — `C:\ProgramData\bitmonero` (monerod),
+    /// `C:\ProgramData\nerva` (nervad), `C:\ProgramData\salvium` (salviumd).
+    /// Note it is **not** per-user, so the POSIX `<home>` plays no part in it.
+    program_data,
+};
+
+/// `%ProgramData%`'s standard location. Only the fallback: the real path is read
+/// from the environment (below), since Windows lets it be relocated at install
+/// time and the daemons resolve it through the shell API, not this literal.
+const default_program_data = "C:\\ProgramData";
+
+/// The `%ProgramData%` root, honouring a relocated one. Caller owns the slice.
+///
+/// Off Windows this is the literal default and nothing is read from the
+/// environment — so `dataDirFor`'s Windows branch stays deterministic when a
+/// Linux/macOS test run walks the whole platform matrix (which is the only way
+/// that branch is checkable at all; see `dataDirFor`).
+fn programDataRoot(allocator: std.mem.Allocator) ![]const u8 {
+    if (builtin.os.tag == .windows) {
+        const environ: std.process.Environ = .{ .block = .global };
+        if (environ.getAlloc(allocator, "ProgramData")) |value| {
+            if (value.len > 0) return value;
+            allocator.free(value);
+        } else |_| {}
+    }
+    return allocator.dupe(u8, default_program_data);
 }
 
 /// `dataDir` for an explicit `os`, rather than the build target.
@@ -84,9 +133,17 @@ pub fn dataDirFor(
     posix_name: []const u8,
     win_name: []const u8,
     mac_name: ?[]const u8,
+    win_base: WinBase,
 ) ![]const u8 {
     return switch (os) {
-        .windows => std.fs.path.join(allocator, &.{ home_dir, "AppData", "Roaming", win_name }),
+        .windows => switch (win_base) {
+            .roaming => std.fs.path.join(allocator, &.{ home_dir, "AppData", "Roaming", win_name }),
+            .program_data => blk: {
+                const root = try programDataRoot(allocator);
+                defer allocator.free(root);
+                break :blk std.fs.path.join(allocator, &.{ root, win_name });
+            },
+        },
         // A null `mac_name` means macOS follows the POSIX layout (the CryptoNote
         // family), not that it was forgotten — see `dataDir`.
         .macos => if (mac_name) |m|
@@ -95,6 +152,47 @@ pub fn dataDirFor(
             std.fs.path.join(allocator, &.{ home_dir, posix_name }),
         else => std.fs.path.join(allocator, &.{ home_dir, posix_name }),
     };
+}
+
+/// The directory holding a coin's BoxWallet-managed wallet — `<data_dir>/wallets`,
+/// unless an earlier BoxWallet already put one somewhere else.
+///
+/// Correcting a coin's `win_base` moves its data dir, and the managed wallet
+/// rides along: a Windows user who created a Monero/Nerva/Salvium wallet before
+/// that fix has it under `%APPDATA%\<win_name>\wallets`, because that is where
+/// BoxWallet pointed `--wallet-dir` at the time. It worked — the wallet dir is
+/// passed to the wallet RPC explicitly, so only the *daemon* (always in
+/// `%ProgramData%`) noticed the disagreement. Silently resolving the corrected
+/// dir would leave that wallet on disk but invisible, reading as "no wallet — set
+/// one up" for someone who has funds in it. So the old location wins whenever it
+/// actually holds the wallet (`marker`, e.g. `BoxWallet.keys`) and the new one
+/// does not — never merely because it exists.
+///
+/// A no-op everywhere else: off Windows, for `.roaming` coins, and on any Windows
+/// machine with no such leftover. Caller owns the returned slice.
+pub fn managedWalletDir(
+    allocator: std.mem.Allocator,
+    home_dir: []const u8,
+    data_dir: []const u8,
+    win_name: []const u8,
+    win_base: WinBase,
+    marker: []const u8,
+) ![]const u8 {
+    const current = try std.fs.path.join(allocator, &.{ data_dir, "wallets" });
+    if (builtin.os.tag != .windows or win_base != .program_data) return current;
+    errdefer allocator.free(current);
+
+    // The corrected location wins the moment it holds a wallet, so a machine that
+    // has already moved on never gets dragged back to the leftover.
+    if (dataDirHasEntry(allocator, current, marker)) return current;
+
+    const legacy = try std.fs.path.join(allocator, &.{ home_dir, "AppData", "Roaming", win_name, "wallets" });
+    if (dataDirHasEntry(allocator, legacy, marker)) {
+        allocator.free(current);
+        return legacy;
+    }
+    allocator.free(legacy);
+    return current;
 }
 
 /// Build RPC connection details for a coin daemon by reading its `conf_file`
@@ -518,7 +616,7 @@ test "dataDir builds the coin home per platform, macOS included" {
         .{ .os = .windows, .want = "/home/alice/AppData/Roaming/DIVI" },
     };
     for (cases) |c| {
-        const dir = try dataDirFor(allocator, "/home/alice", c.os, ".divi", "DIVI", "DIVI");
+        const dir = try dataDirFor(allocator, "/home/alice", c.os, ".divi", "DIVI", "DIVI", .roaming);
         defer allocator.free(dir);
         // Compare on '/' so the expectation reads the same regardless of the host's
         // path separator.
@@ -532,7 +630,7 @@ test "dataDir builds the coin home per platform, macOS included" {
     // so they pass their POSIX name as `mac_name`. A shared macOS branch that
     // reached for the Windows name instead would relocate them on Mac and orphan a
     // live wallet.
-    const xmr = try dataDirFor(allocator, "/home/alice", .macos, ".bitmonero", "bitmonero", null);
+    const xmr = try dataDirFor(allocator, "/home/alice", .macos, ".bitmonero", "bitmonero", null, .program_data);
     defer allocator.free(xmr);
     try std.testing.expectEqualStrings("/home/alice/.bitmonero", xmr);
 }
@@ -885,13 +983,101 @@ test "every coin's macOS data dir matches what its own daemon would pick" {
     };
 
     for (cases) |c| {
-        const got = try dataDirFor(allocator, "/h", .macos, c.posix, c.win, c.mac);
+        const got = try dataDirFor(allocator, "/h", .macos, c.posix, c.win, c.mac, .roaming);
         defer allocator.free(got);
         const norm = try allocator.dupe(u8, got);
         defer allocator.free(norm);
         std.mem.replaceScalar(u8, norm, '\\', '/');
         std.testing.expectEqualStrings(c.want, norm) catch |e| {
             std.debug.print("macOS data dir mismatch for {s}\n", .{c.name});
+            return e;
+        };
+    }
+}
+
+test "every coin's Windows data dir matches what its own daemon would pick" {
+    const allocator = std.testing.allocator;
+
+    // The Windows twin of the macOS check above, and the check whose absence let
+    // the CryptoNote coins stay broken on Windows: `%APPDATA%` is *not* the only
+    // convention. Monero and its forks resolve `CSIDL_COMMON_APPDATA`, so their
+    // data dir is `C:\ProgramData\<name>` — BoxWallet resolved a roaming path
+    // nobody wrote to, which left the coin's conf unread, and warm-up progress and
+    // start-failure reasons being looked for in a log that never existed. A
+    // Salvium daemon that failed to start therefore reported nothing at all.
+    //
+    // Every expectation below was read off the daemon's own `--help` on Windows
+    // ("--data-dir arg (=…)"), not inferred. Each case passes the coin's *declared*
+    // base, so a coin that declares the wrong one produces the wrong path and
+    // fails here rather than in the field.
+    const Bitcoin = @import("coins/bitcoin.zig").Bitcoin;
+    const Litecoin = @import("coins/litecoin.zig").Litecoin;
+    const Divi = @import("coins/divi.zig").Divi;
+    const ReddCoin = @import("coins/reddcoin.zig").ReddCoin;
+    const Nexa = @import("coins/nexa.zig").Nexa;
+    const DigiByte = @import("coins/digibyte.zig").DigiByte;
+    const BitcoinZ = @import("coins/bitcoinz.zig").BitcoinZ;
+    const SpiderByte = @import("coins/spiderbyte.zig").SpiderByte;
+    const Monero = @import("coins/monero.zig").Monero;
+    const Nerva = @import("coins/nerva.zig").Nerva;
+    const Salvium = @import("coins/salvium.zig").Salvium;
+    const Zano = @import("coins/zano.zig").Zano;
+
+    const Case = struct {
+        name: []const u8,
+        posix: []const u8,
+        win: []const u8,
+        mac: ?[]const u8,
+        /// The base the coin *declares* — what's under test.
+        base: WinBase,
+        /// The base upstream actually uses, stated here independently so a coin
+        /// that declares the wrong one can't move the goalposts with it.
+        want_base: WinBase,
+        /// The final path component the daemon's `--help` names.
+        want_name: []const u8,
+    };
+    const cases = [_]Case{
+        // Bitcoin-derived: the roaming `%APPDATA%\<Name>`.
+        .{ .name = "bitcoin", .posix = Bitcoin.home_dir, .win = Bitcoin.home_dir_win, .mac = Bitcoin.home_dir_mac, .base = Bitcoin.home_dir_win_base, .want_base = .roaming, .want_name = "Bitcoin" },
+        .{ .name = "litecoin", .posix = Litecoin.home_dir, .win = Litecoin.home_dir_win, .mac = Litecoin.home_dir_mac, .base = Litecoin.home_dir_win_base, .want_base = .roaming, .want_name = "Litecoin" },
+        .{ .name = "divi", .posix = Divi.home_dir, .win = Divi.home_dir_win, .mac = Divi.home_dir_mac, .base = Divi.home_dir_win_base, .want_base = .roaming, .want_name = "DIVI" },
+        .{ .name = "reddcoin", .posix = ReddCoin.home_dir, .win = ReddCoin.home_dir_win, .mac = ReddCoin.home_dir_mac, .base = ReddCoin.home_dir_win_base, .want_base = .roaming, .want_name = "REDDCOIN" },
+        .{ .name = "nexa", .posix = Nexa.home_dir, .win = Nexa.home_dir_win, .mac = Nexa.home_dir_mac, .base = Nexa.home_dir_win_base, .want_base = .roaming, .want_name = "NEXA" },
+        .{ .name = "digibyte", .posix = DigiByte.home_dir, .win = DigiByte.home_dir_win, .mac = DigiByte.home_dir_mac, .base = DigiByte.home_dir_win_base, .want_base = .roaming, .want_name = "DIGIBYTE" },
+        .{ .name = "bitcoinz", .posix = BitcoinZ.home_dir, .win = BitcoinZ.home_dir_win, .mac = BitcoinZ.home_dir_mac, .base = BitcoinZ.home_dir_win_base, .want_base = .roaming, .want_name = "BitcoinZ" },
+        .{ .name = "spiderbyte", .posix = SpiderByte.home_dir, .win = SpiderByte.home_dir_win, .mac = SpiderByte.home_dir_mac, .base = SpiderByte.home_dir_win_base, .want_base = .roaming, .want_name = "SpiderByte" },
+        // Zano is CryptoNote but does *not* follow Monero here — `zanod --help`
+        // names the roaming dir. It sits next to the three that don't precisely so
+        // the difference is on the record rather than looking like an oversight.
+        .{ .name = "zano", .posix = Zano.home_dir, .win = Zano.home_dir_win, .mac = Zano.home_dir_mac, .base = Zano.home_dir_win_base, .want_base = .roaming, .want_name = "ZANO" },
+        // The CryptoNote exception: `%ProgramData%`, per-machine rather than
+        // per-user, so `<home>` plays no part in the result at all.
+        .{ .name = "monero", .posix = Monero.home_dir, .win = Monero.home_dir_win, .mac = Monero.home_dir_mac, .base = Monero.home_dir_win_base, .want_base = .program_data, .want_name = "bitmonero" },
+        .{ .name = "nerva", .posix = Nerva.home_dir, .win = Nerva.home_dir_win, .mac = Nerva.home_dir_mac, .base = Nerva.home_dir_win_base, .want_base = .program_data, .want_name = "nerva" },
+        .{ .name = "salvium", .posix = Salvium.home_dir, .win = Salvium.home_dir_win, .mac = Salvium.home_dir_mac, .base = Salvium.home_dir_win_base, .want_base = .program_data, .want_name = "salvium" },
+    };
+
+    // Built rather than hardcoded so the expectation holds on a machine that has
+    // relocated `%ProgramData%` (off Windows this is the literal default).
+    const pd_root = try programDataRoot(allocator);
+    defer allocator.free(pd_root);
+
+    for (cases) |c| {
+        const want = switch (c.want_base) {
+            .roaming => try std.fmt.allocPrint(allocator, "/h/AppData/Roaming/{s}", .{c.want_name}),
+            .program_data => try std.fmt.allocPrint(allocator, "{s}/{s}", .{ pd_root, c.want_name }),
+        };
+        defer allocator.free(want);
+        std.mem.replaceScalar(u8, want, '\\', '/');
+
+        const got = try dataDirFor(allocator, "/h", .windows, c.posix, c.win, c.mac, c.base);
+        defer allocator.free(got);
+        const norm = try allocator.dupe(u8, got);
+        defer allocator.free(norm);
+        std.mem.replaceScalar(u8, norm, '\\', '/');
+
+        std.testing.expectEqualStrings(want, norm) catch |e| {
+            std.debug.print("Windows data dir mismatch for {s}\n", .{c.name});
             return e;
         };
     }

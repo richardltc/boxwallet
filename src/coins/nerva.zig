@@ -46,10 +46,16 @@ pub const Nerva = struct {
     pub const conf_file = "nerva.conf";
 
     // Data dir names. Monero forks use `~/.<name>` on Linux *and* macOS (not the
-    // macOS Library convention) and `%APPDATA%\<name>` on Windows — exactly what
-    // the shared `conf.dataDir(posix, win)` produces.
+    // macOS Library convention), and on Windows `%ProgramData%\<name>` — **not**
+    // the roaming `%APPDATA%` the bitcoin-derived coins use, which is why
+    // `dataDir` passes `.program_data`. Read straight off the daemon:
+    // `nervad --help` states `--data-dir arg (=C:\ProgramData\nerva)`.
     pub const home_dir = ".nerva";
     pub const home_dir_win = "nerva";
+    /// Which Windows directory that name hangs off. The CryptoNote family uses
+    /// `%ProgramData%`, **not** the roaming `%APPDATA%` of the bitcoin-derived
+    /// coins — verified against the daemon's own `--help`. See `conf.WinBase`.
+    pub const home_dir_win_base: conf.WinBase = .program_data;
     /// macOS data dir name. `null` means macOS uses the **POSIX** path
     /// (`~/.nerva`) rather than a `Library/Application Support`
     /// dir — Monero and its forks are explicit that it's "Unix & Mac:
@@ -394,10 +400,10 @@ pub const Nerva = struct {
 
     // --- Files / paths ---------------------------------------------------
 
-    /// The daemon's default data directory (`~/.nerva`, `%APPDATA%\nerva` on
-    /// Windows), where `nerva.conf` and the chain live.
+    /// The daemon's default data directory (`~/.nerva`, and on Windows
+    /// `%ProgramData%\nerva`), where `nerva.conf` and the chain live.
     pub fn dataDir(allocator: std.mem.Allocator, home: []const u8) ![]const u8 {
-        return conf.dataDir(allocator, home, home_dir, home_dir_win, home_dir_mac);
+        return conf.dataDir(allocator, home, home_dir, home_dir_win, home_dir_mac, home_dir_win_base);
     }
 
     /// True if `nervad` (`nervad.exe` on Windows) is already present under
@@ -645,11 +651,13 @@ pub const Nerva = struct {
     // user-supplied password, never silently. See `coin.zig`'s `ExternalWallet`.
 
     /// The managed wallet directory (`<datadir>/wallets`), where `nerva-wallet-rpc`
-    /// creates and opens `BoxWallet`(+`.keys`). Caller owns the slice.
+    /// creates and opens `BoxWallet`(+`.keys`). Goes through `conf.managedWalletDir`
+    /// so a Windows wallet created before `dataDir` was corrected to
+    /// `%ProgramData%` is still found where it actually sits. Caller owns the slice.
     fn walletDir(allocator: std.mem.Allocator, home: []const u8) ![]const u8 {
         const data_dir = try dataDir(allocator, home);
         defer allocator.free(data_dir);
-        return std.fs.path.join(allocator, &.{ data_dir, "wallets" });
+        return conf.managedWalletDir(allocator, home, data_dir, home_dir_win, home_dir_win_base, wallet_name ++ ".keys");
     }
 
     /// The managed wallet's on-disk location for the Settings tab: the Monero
@@ -1839,6 +1847,10 @@ test "coin vtable dispatches to Nerva metadata" {
 }
 
 test "walletPath reports the Monero wallet file plus its .keys companion" {
+    // POSIX-shaped: it drives `<home>`-relative paths. On Windows this coin's data
+    // dir is the machine-wide `%ProgramData%\<name>`, which ignores `<home>` entirely,
+    // so there is no sandbox to point it at — running it there would write into the
+    // real one. See `conf.WinBase`.
     if (builtin.os.tag == .windows) return error.SkipZigTest;
     const allocator = std.testing.allocator;
     var n: Nerva = .{};
@@ -1850,6 +1862,11 @@ test "walletPath reports the Monero wallet file plus its .keys companion" {
 }
 
 test "prepareConf writes a Monero-valid conf nervad can parse (no bitcoin keys)" {
+    // POSIX-shaped: it drives `<home>`-relative paths. On Windows this coin's data
+    // dir is the machine-wide `%ProgramData%\<name>`, which ignores `<home>` entirely,
+    // so there is no sandbox to point it at — running it there would write into the
+    // real one. See `conf.WinBase`.
+    if (builtin.os.tag == .windows) return error.SkipZigTest;
     const allocator = std.testing.allocator;
 
     var threaded: std.Io.Threaded = .init(allocator, .{});
@@ -2010,6 +2027,11 @@ test "walletProcessArgv binds wallet-rpc to localhost and points it at the daemo
 }
 
 test "walletExists keys off the BoxWallet.keys file on disk" {
+    // POSIX-shaped: it drives `<home>`-relative paths. On Windows this coin's data
+    // dir is the machine-wide `%ProgramData%\<name>`, which ignores `<home>` entirely,
+    // so there is no sandbox to point it at — running it there would write into the
+    // real one. See `conf.WinBase`.
+    if (builtin.os.tag == .windows) return error.SkipZigTest;
     const allocator = std.testing.allocator;
 
     var threaded: std.Io.Threaded = .init(allocator, .{});
@@ -2035,6 +2057,11 @@ test "walletExists keys off the BoxWallet.keys file on disk" {
 }
 
 test "walletRemove drops the wallet dir so a replacement can be set up" {
+    // POSIX-shaped: it drives `<home>`-relative paths. On Windows this coin's data
+    // dir is the machine-wide `%ProgramData%\<name>`, which ignores `<home>` entirely,
+    // so there is no sandbox to point it at — running it there would write into the
+    // real one. See `conf.WinBase`.
+    if (builtin.os.tag == .windows) return error.SkipZigTest;
     const allocator = std.testing.allocator;
 
     var threaded: std.Io.Threaded = .init(allocator, .{});

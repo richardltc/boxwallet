@@ -40,6 +40,9 @@ pub const Bitcoin = struct {
     pub const conf_file = "bitcoin.conf";
     pub const home_dir = ".bitcoin";
     pub const home_dir_win = "Bitcoin";
+    /// Which Windows directory that name hangs off — the roaming `%APPDATA%`, as
+    /// every bitcoin-derived daemon picks. See `conf.WinBase`.
+    pub const home_dir_win_base: conf.WinBase = .roaming;
     /// macOS data dir name. Bitcoin Core: `~/Library/Application Support/Bitcoin`.
     pub const home_dir_mac: ?[]const u8 = "Bitcoin";
     pub const rpc_default_username = "bitcoinrpc";
@@ -152,7 +155,7 @@ pub const Bitcoin = struct {
     /// The daemon's default data directory (`~/.bitcoin`), where `bitcoin.conf`
     /// lives.
     pub fn dataDir(allocator: std.mem.Allocator, home: []const u8) ![]const u8 {
-        return conf.dataDir(allocator, home, home_dir, home_dir_win, home_dir_mac);
+        return conf.dataDir(allocator, home, home_dir, home_dir_win, home_dir_mac, home_dir_win_base);
     }
 
     /// The managed wallet's on-disk location — the bitcoin-core wallet directory

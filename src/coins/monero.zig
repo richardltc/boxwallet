@@ -61,10 +61,16 @@ pub const Monero = struct {
     pub const conf_file = "bitmonero.conf";
 
     // Data dir names. Monero uses `~/.bitmonero` on Linux *and* macOS (not the
-    // macOS Library convention) and `%APPDATA%\bitmonero` on Windows — exactly
-    // what the shared `conf.dataDir(posix, win)` produces.
+    // macOS Library convention), and on Windows `%ProgramData%\bitmonero` —
+    // **not** the roaming `%APPDATA%` the bitcoin-derived coins use, which is why
+    // `dataDir` passes `.program_data`. Read straight off the daemon:
+    // `monerod --help` states `--data-dir arg (=C:\ProgramData\bitmonero)`.
     pub const home_dir = ".bitmonero";
     pub const home_dir_win = "bitmonero";
+    /// Which Windows directory that name hangs off. The CryptoNote family uses
+    /// `%ProgramData%`, **not** the roaming `%APPDATA%` of the bitcoin-derived
+    /// coins — verified against the daemon's own `--help`. See `conf.WinBase`.
+    pub const home_dir_win_base: conf.WinBase = .program_data;
     /// macOS data dir name. `null` means macOS uses the **POSIX** path
     /// (`~/.bitmonero`) rather than a `Library/Application Support`
     /// dir — Monero and its forks are explicit that it's "Unix & Mac:
@@ -347,10 +353,10 @@ pub const Monero = struct {
 
     // --- Files / paths ---------------------------------------------------
 
-    /// The daemon's default data directory (`~/.bitmonero`, `%APPDATA%\bitmonero`
-    /// on Windows), where `bitmonero.conf` and the chain live.
+    /// The daemon's default data directory (`~/.bitmonero`, and on Windows
+    /// `%ProgramData%\bitmonero`), where `bitmonero.conf` and the chain live.
     pub fn dataDir(allocator: std.mem.Allocator, home: []const u8) ![]const u8 {
-        return conf.dataDir(allocator, home, home_dir, home_dir_win, home_dir_mac);
+        return conf.dataDir(allocator, home, home_dir, home_dir_win, home_dir_mac, home_dir_win_base);
     }
 
     /// True if `monerod` (`monerod.exe` on Windows) is already present under
@@ -600,11 +606,13 @@ pub const Monero = struct {
     // `ExternalWallet`.
 
     /// The managed wallet directory (`<datadir>/wallets`), where `monero-wallet-rpc`
-    /// creates and opens `BoxWallet`(+`.keys`). Caller owns the slice.
+    /// creates and opens `BoxWallet`(+`.keys`). Goes through `conf.managedWalletDir`
+    /// so a Windows wallet created before `dataDir` was corrected to
+    /// `%ProgramData%` is still found where it actually sits. Caller owns the slice.
     fn walletDir(allocator: std.mem.Allocator, home: []const u8) ![]const u8 {
         const data_dir = try dataDir(allocator, home);
         defer allocator.free(data_dir);
-        return std.fs.path.join(allocator, &.{ data_dir, "wallets" });
+        return conf.managedWalletDir(allocator, home, data_dir, home_dir_win, home_dir_win_base, wallet_name ++ ".keys");
     }
 
     /// The managed wallet's on-disk location for the Settings tab: the Monero
@@ -1651,6 +1659,10 @@ test "Monero is pure PoW, so it offers no stake action" {
 }
 
 test "walletPath reports the Monero wallet file plus its .keys companion" {
+    // POSIX-shaped: it drives `<home>`-relative paths. On Windows this coin's data
+    // dir is the machine-wide `%ProgramData%\<name>`, which ignores `<home>` entirely,
+    // so there is no sandbox to point it at — running it there would write into the
+    // real one. See `conf.WinBase`.
     if (builtin.os.tag == .windows) return error.SkipZigTest;
     const allocator = std.testing.allocator;
     var m: Monero = .{};
@@ -1788,6 +1800,10 @@ test "walletIsClosed recognises the no-wallet-open reply" {
 }
 
 test "prepareConf writes a Monero-valid conf, and never touches an existing one" {
+    // POSIX-shaped: it drives `<home>`-relative paths. On Windows this coin's data
+    // dir is the machine-wide `%ProgramData%\<name>`, which ignores `<home>` entirely,
+    // so there is no sandbox to point it at — running it there would write into the
+    // real one. See `conf.WinBase`.
     if (builtin.os.tag == .windows) return error.SkipZigTest;
     const allocator = std.testing.allocator;
 
@@ -1836,6 +1852,10 @@ test "prepareConf writes a Monero-valid conf, and never touches an existing one"
 }
 
 test "pruning: offered when unset, then the choice is read back and not re-offered" {
+    // POSIX-shaped: it drives `<home>`-relative paths. On Windows this coin's data
+    // dir is the machine-wide `%ProgramData%\<name>`, which ignores `<home>` entirely,
+    // so there is no sandbox to point it at — running it there would write into the
+    // real one. See `conf.WinBase`.
     if (builtin.os.tag == .windows) return error.SkipZigTest;
     const allocator = std.testing.allocator;
     var xmr: Monero = .{};
@@ -1875,6 +1895,10 @@ test "pruning: offered when unset, then the choice is read back and not re-offer
 }
 
 test "pruning: monerod's true/false spelling reads back, junk reads as unset" {
+    // POSIX-shaped: it drives `<home>`-relative paths. On Windows this coin's data
+    // dir is the machine-wide `%ProgramData%\<name>`, which ignores `<home>` entirely,
+    // so there is no sandbox to point it at — running it there would write into the
+    // real one. See `conf.WinBase`.
     if (builtin.os.tag == .windows) return error.SkipZigTest;
     const allocator = std.testing.allocator;
     var xmr: Monero = .{};
@@ -1905,6 +1929,10 @@ test "pruning: monerod's true/false spelling reads back, junk reads as unset" {
 }
 
 test "pruning is never offered for a chain that was already here" {
+    // POSIX-shaped: it drives `<home>`-relative paths. On Windows this coin's data
+    // dir is the machine-wide `%ProgramData%\<name>`, which ignores `<home>` entirely,
+    // so there is no sandbox to point it at — running it there would write into the
+    // real one. See `conf.WinBase`.
     if (builtin.os.tag == .windows) return error.SkipZigTest;
     const allocator = std.testing.allocator;
     var xmr: Monero = .{};
