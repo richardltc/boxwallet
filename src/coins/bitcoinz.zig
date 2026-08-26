@@ -58,6 +58,9 @@ pub const BitcoinZ = struct {
     pub const conf_file = "bitcoinz.conf";
     pub const home_dir = ".bitcoinz";
     pub const home_dir_win = "BitcoinZ";
+    /// Which Windows directory that name hangs off — the roaming `%APPDATA%`, as
+    /// every bitcoin-derived daemon picks. See `conf.WinBase`.
+    pub const home_dir_win_base: conf.WinBase = .roaming;
     /// macOS data dir name: `~/Library/Application Support/BitcoinZ` (upstream
     /// `util.cpp` `GetDefaultDataDir`).
     pub const home_dir_mac: ?[]const u8 = "BitcoinZ";
@@ -144,7 +147,7 @@ pub const BitcoinZ = struct {
     /// Linux, `~/Library/Application Support/ZcashParams` on macOS,
     /// `%APPDATA%\ZcashParams` on Windows.
     fn paramsDirFor(allocator: std.mem.Allocator, home: []const u8, os: std.Target.Os.Tag) ![]const u8 {
-        return conf.dataDirFor(allocator, home, os, ".zcash-params", "ZcashParams", "ZcashParams");
+        return conf.dataDirFor(allocator, home, os, ".zcash-params", "ZcashParams", "ZcashParams", .roaming);
     }
 
     /// The shared Zcash params directory for the build target. An empty `home`
@@ -273,7 +276,7 @@ pub const BitcoinZ = struct {
     /// The daemon's default data directory (`~/.bitcoinz`), where `bitcoinz.conf`
     /// lives.
     pub fn dataDir(allocator: std.mem.Allocator, home: []const u8) ![]const u8 {
-        return conf.dataDir(allocator, home, home_dir, home_dir_win, home_dir_mac);
+        return conf.dataDir(allocator, home, home_dir, home_dir_win, home_dir_mac, home_dir_win_base);
     }
 
     /// The managed wallet's on-disk location — zcashd-era daemons keep a single

@@ -1044,20 +1044,13 @@ fn setErrorFromDaemonLog(ctx: *Ctx, a: std.mem.Allocator, io: std.Io, coin: Coin
     if (pick.len != 0) ctx.setError(pick);
 }
 
-fn probeChild(child: *std.process.Child) ?std.process.Child.Term {
-    if (builtin.os.tag == .windows) return null;
-    const posix = std.posix;
-    const pid = child.id orelse return .{ .unknown = 0 };
-    var status: if (builtin.link_libc) c_int else u32 = undefined;
-    const rc = posix.system.wait4(pid, &status, posix.W.NOHANG, null);
-    return switch (posix.errno(rc)) {
-        .SUCCESS => if (rc == 0) null else blk: {
-            child.id = null; // reaped here; nothing left to wait/kill
-            break :blk std.Io.Threaded.statusToTerm(@bitCast(status));
-        },
-        .INTR => null,
-        else => .{ .unknown = 0 },
-    };
+/// Non-blocking probe of a just-spawned child — see `proc.probeChild`, which the
+/// TUI drives too. This used to answer null unconditionally on Windows, which is
+/// why a Windows Start that failed reported success and then sat there: the watch
+/// loop below could never see the daemon die, so it never read the reason out of
+/// its stderr.
+fn probeChild(io: std.Io, child: *std.process.Child) ?std.process.Child.Term {
+    return proc.probeChild(io, child);
 }
 
 fn startDaemon(ctx: *Ctx, idx: usize) !void {
@@ -1123,10 +1116,20 @@ fn startDaemon(ctx: *Ctx, idx: usize) !void {
         var i: u8 = 0;
         while (i < 12) : (i += 1) {
             io.sleep(.fromMilliseconds(250), .awake) catch {};
-            if (probeChild(&child)) |_| {
+            if (probeChild(io, &child)) |_| {
+                // Died during init. Prefer its stderr; fall back to the coin's own
+                // daemon log — the epee family (Nerva/Salvium/Zano) reports fatal
+                // init errors there and not on stderr, so without this a Monero-fork
+                // start failure carried no reason at all. Mirrors the TUI.
                 var buf: [8 * 1024]u8 = undefined;
                 const n = err_file.readPositionalAll(io, &buf, 0) catch 0;
-                ctx.setError(if (n > 0) buf[0..n] else "daemon exited during startup (check its log)");
+                if (n > 0) {
+                    ctx.setError(buf[0..n]);
+                } else {
+                    ctx.clearError();
+                    setErrorFromDaemonLog(ctx, a, io, coin);
+                    if (!ctx.hasError()) ctx.setError("daemon exited during startup (check its log)");
+                }
                 return error.DaemonStartFailed;
             }
         }
@@ -1167,7 +1170,9 @@ fn startDaemon(ctx: *Ctx, idx: usize) !void {
 /// Reap the retained foreground child if it has already exited, so it doesn't
 /// linger as a zombie for the life of the app. A no-op when there's no handle,
 /// when it was reaped already, or when it's still running (`probeChild` is
-/// `WNOHANG`), and on Windows, where there are no zombies to collect.
+/// `WNOHANG`). Windows has no zombies, but the probe still runs there: a process
+/// handle held for a daemon that has already exited is a leak of its own, and
+/// releasing it is what lets the slot go empty so Start reads as available again.
 ///
 /// A foreground daemon is deliberately not waited on at spawn — it has to
 /// outlive `startDaemon` — but we stay its parent, so *something* must
@@ -1180,7 +1185,7 @@ fn startDaemon(ctx: *Ctx, idx: usize) !void {
 fn reapDaemonChild(ctx: *Ctx, idx: usize) void {
     if (idx >= coin_count) return;
     if (ctx.daemon_child[idx]) |*child| {
-        if (probeChild(child)) |_| ctx.daemon_child[idx] = null;
+        if (probeChild(sharedIo(), child)) |_| ctx.daemon_child[idx] = null;
     }
 }
 
@@ -4365,7 +4370,18 @@ test "a foreground daemon handle is kept per coin, not in one shared slot" {
     for (ctx.daemon_child) |slot| try std.testing.expect(slot == null);
 
     // Stand in for a live handle: writing one coin's slot must not disturb another.
-    ctx.daemon_child[0] = std.mem.zeroes(std.process.Child);
+    // Spelled out rather than `std.mem.zeroes`, which won't compile on Windows —
+    // `Child.thread_handle` is a plain (non-nullable) HANDLE there, and a zeroed
+    // one is rejected. Only the slot's occupancy is under test; nothing reads the
+    // handle.
+    ctx.daemon_child[0] = .{
+        .id = null,
+        .thread_handle = if (builtin.os.tag == .windows) undefined else {},
+        .stdin = null,
+        .stdout = null,
+        .stderr = null,
+        .request_resource_usage_statistics = false,
+    };
     try std.testing.expect(ctx.daemon_child[0] != null);
     for (ctx.daemon_child[1..]) |slot| try std.testing.expect(slot == null);
 }

@@ -3528,37 +3528,10 @@ fn signalProcessesByName(io: std.Io, name: []const u8, sig: std.posix.SIG) usize
     return signaled;
 }
 
-/// Non-blocking probe of a just-spawned child: null while it's still running,
-/// its exit Term once it has terminated. POSIX reaps via `wait4(NOHANG)`, so
-/// after a non-null return the child must not be `wait`ed on or `kill`ed again
-/// (std treats a double reap as a bug); Windows tests the process handle with a
-/// zero timeout and, once signaled, lets `child.wait` (immediate) collect the
-/// code and release the handles. A probe hiccup reads as "still running" so a
-/// live daemon is never declared dead by mistake.
-fn probeChild(io: std.Io, child: *std.process.Child) ?std.process.Child.Term {
-    if (@import("builtin").os.tag == .windows) {
-        const windows = std.os.windows;
-        const handle = child.id orelse return .{ .unknown = 0 };
-        var timeout: windows.LARGE_INTEGER = 0; // zero = test state, don't wait
-        switch (windows.ntdll.NtWaitForSingleObject(handle, .FALSE, &timeout)) {
-            windows.NTSTATUS.WAIT_0 => {},
-            else => return null, // TIMEOUT (still running), or can't tell
-        }
-        return child.wait(io) catch .{ .unknown = 0 };
-    }
-    const posix = std.posix;
-    const pid = child.id orelse return .{ .unknown = 0 };
-    var status: if (@import("builtin").link_libc) c_int else u32 = undefined;
-    const rc = posix.system.wait4(pid, &status, posix.W.NOHANG, null);
-    return switch (posix.errno(rc)) {
-        .SUCCESS => if (rc == 0) null else blk: {
-            child.id = null; // reaped right here; nothing left for wait/kill
-            break :blk std.Io.Threaded.statusToTerm(@bitCast(status));
-        },
-        .INTR => null, // retried on the next probe round
-        else => .{ .unknown = 0 }, // ECHILD — already gone
-    };
-}
+/// Non-blocking probe of a just-spawned child — see `proc_mod.probeChild`, which
+/// the GUI drives too. Kept as a local alias so the call sites below read
+/// unchanged.
+const probeChild = proc_mod.probeChild;
 
 /// Render a child's exit Term as a short human reason for the failed-start log
 /// line ("exited with code 1", "killed by signal 11") — the last-resort
@@ -10094,7 +10067,11 @@ test "termMessage renders every Term variant as a short reason" {
     var buf: [48]u8 = undefined;
     try std.testing.expectEqualStrings("exited with code 1", termMessage(&buf, .{ .exited = 1 }));
     try std.testing.expectEqualStrings("exited during startup", termMessage(&buf, .{ .unknown = 7 }));
-    if (std.posix.SIG != void) {
+    // POSIX only. `std.posix.SIG` is non-void on Windows too (libc defines a
+    // cut-down set), so the old `!= void` guard compiled the branch there and then
+    // failed on `SIG.KILL`, which Windows has no member for — the whole offline
+    // test binary wouldn't build on Windows because of it.
+    if (@import("builtin").os.tag != .windows) {
         try std.testing.expectEqualStrings(
             "killed by signal 9",
             termMessage(&buf, .{ .signal = std.posix.SIG.KILL }),

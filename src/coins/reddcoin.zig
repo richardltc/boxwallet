@@ -48,6 +48,9 @@ pub const ReddCoin = struct {
     pub const conf_file = "reddcoin.conf";
     pub const home_dir = ".reddcoin";
     pub const home_dir_win = "REDDCOIN";
+    /// Which Windows directory that name hangs off — the roaming `%APPDATA%`, as
+    /// every bitcoin-derived daemon picks. See `conf.WinBase`.
+    pub const home_dir_win_base: conf.WinBase = .roaming;
     /// macOS data dir name. Reddcoin Core: `~/Library/Application Support/Reddcoin` — note the
     /// casing differs from the Windows `REDDCOIN`.
     pub const home_dir_mac: ?[]const u8 = "Reddcoin";
@@ -182,7 +185,7 @@ pub const ReddCoin = struct {
     /// The daemon's default data directory (`~/.reddcoin`), where `reddcoin.conf`
     /// lives.
     pub fn dataDir(allocator: std.mem.Allocator, home: []const u8) ![]const u8 {
-        return conf.dataDir(allocator, home, home_dir, home_dir_win, home_dir_mac);
+        return conf.dataDir(allocator, home, home_dir, home_dir_win, home_dir_mac, home_dir_win_base);
     }
 
     /// The managed wallet's on-disk location — the bitcoin-core 0.21+ wallet

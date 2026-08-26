@@ -57,6 +57,9 @@ pub const SpiderByte = struct {
     pub const conf_file = "SpiderByte.conf";
     pub const home_dir = ".SpiderByte";
     pub const home_dir_win = "SpiderByte";
+    /// Which Windows directory that name hangs off — the roaming `%APPDATA%`, as
+    /// every bitcoin-derived daemon picks. See `conf.WinBase`.
+    pub const home_dir_win_base: conf.WinBase = .roaming;
     /// macOS data dir name. **Unverified and currently unreachable**: SpiderByte
     /// publishes no bundle for any platform (`download` is null), so it can never
     /// be installed and this path is never resolved. The name follows its
@@ -185,7 +188,7 @@ pub const SpiderByte = struct {
     /// The daemon's default data directory (`~/.SpiderByte`), where
     /// `SpiderByte.conf` and the chain/wallet live.
     pub fn dataDir(allocator: std.mem.Allocator, home: []const u8) ![]const u8 {
-        return conf.dataDir(allocator, home, home_dir, home_dir_win, home_dir_mac);
+        return conf.dataDir(allocator, home, home_dir, home_dir_win, home_dir_mac, home_dir_win_base);
     }
 
     /// The managed wallet's on-disk location — the single `wallet.dat` the daemon

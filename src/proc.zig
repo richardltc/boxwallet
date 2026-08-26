@@ -212,7 +212,7 @@ pub fn pickLogError(tail: []const u8) []const u8 {
     var fallback: []const u8 = "";
     var it = std.mem.splitScalar(u8, tail, '\n');
     while (it.next()) |raw| {
-        const line = stripLogTimestamp(std.mem.trim(u8, raw, " \t\r"));
+        const line = stripLogColumns(stripLogTimestamp(std.mem.trim(u8, raw, " \t\r")));
         if (line.len == 0) continue;
         fallback = line;
         if (matchesAny(line, &root_cause)) {
@@ -243,6 +243,22 @@ pub fn stripLogTimestamp(line: []const u8) []const u8 {
     return line;
 }
 
+/// Strip the epee family's tab-separated log columns, leaving just the message.
+///
+/// After the timestamp, Nerva/Salvium/Zano write
+/// `<thread>\t<LEVEL>\t<category>\t<file>:<line>\t<message>` — so the reason
+/// surfaced to the user read
+/// "4224\tERROR\tdaemon\tsrc/daemon/main.cpp:432\tException in main! Failed to
+/// initialize p2p server.", which buries the one part that means anything.
+///
+/// Everything after the **last** tab is the message; a bitcoin-derived
+/// `debug.log` line has no tabs at all and comes back untouched, which is why
+/// this is safe to run over every line rather than per coin family.
+pub fn stripLogColumns(line: []const u8) []const u8 {
+    const last_tab = std.mem.lastIndexOfScalar(u8, line, '\t') orelse return line;
+    return std.mem.trim(u8, line[last_tab + 1 ..], " \t");
+}
+
 /// True if `line` contains any of `needles` (case-insensitive, ASCII).
 pub fn matchesAny(line: []const u8, needles: []const []const u8) bool {
     for (needles) |n| {
@@ -253,6 +269,47 @@ pub fn matchesAny(line: []const u8, needles: []const []const u8) bool {
         }
     }
     return false;
+}
+
+/// Non-blocking probe of a just-spawned child: null while it's still running,
+/// its exit `Term` once it has terminated.
+///
+/// This is what separates "the daemon started" from "it flashed and died" for a
+/// foreground coin, which is spawned detached and can't be waited on — so it is
+/// also the only thing that turns a failed start into a *reported* one. Both
+/// front-ends need it: without it the GUI's Start reported success for a daemon
+/// that never came up, and said nothing at all.
+///
+/// POSIX reaps via `wait4(NOHANG)`, so after a non-null return the child must not
+/// be `wait`ed on or `kill`ed again (std treats a double reap as a bug). Windows
+/// tests the process handle with a zero timeout and, once signaled, lets
+/// `child.wait` (immediate by then) collect the code and release the handles.
+///
+/// A probe hiccup reads as "still running", keeping the same conservative bias as
+/// `alive`: never declare a live daemon dead by mistake.
+pub fn probeChild(io: std.Io, child: *std.process.Child) ?std.process.Child.Term {
+    if (builtin.os.tag == .windows) {
+        const windows = std.os.windows;
+        const handle = child.id orelse return .{ .unknown = 0 };
+        var timeout: windows.LARGE_INTEGER = 0; // zero = test state, don't wait
+        switch (windows.ntdll.NtWaitForSingleObject(handle, .FALSE, &timeout)) {
+            windows.NTSTATUS.WAIT_0 => {},
+            else => return null, // TIMEOUT (still running), or can't tell
+        }
+        return child.wait(io) catch .{ .unknown = 0 };
+    }
+    const posix = std.posix;
+    const pid = child.id orelse return .{ .unknown = 0 };
+    var status: if (builtin.link_libc) c_int else u32 = undefined;
+    const rc = posix.system.wait4(pid, &status, posix.W.NOHANG, null);
+    return switch (posix.errno(rc)) {
+        .SUCCESS => if (rc == 0) null else blk: {
+            child.id = null; // reaped right here; nothing left for wait/kill
+            break :blk std.Io.Threaded.statusToTerm(@bitCast(status));
+        },
+        .INTR => null, // retried on the next probe round
+        else => .{ .unknown = 0 }, // ECHILD — already gone
+    };
 }
 
 /// SIGTERM `pid`, reaping with `WNOHANG` over a `grace_ms` window so a clean
@@ -318,6 +375,26 @@ test "the running test binary is found by its own comm name" {
     var buf: [64]u8 = undefined;
     const n = try f.readPositionalAll(io, &buf, 0);
     try std.testing.expect(alive(io, std.mem.trim(u8, buf[0..n], " \t\r\n")));
+}
+
+test "an epee log line surfaces its message, not its columns" {
+    // The real shape of a Salvium start failure, verified against `salvium.log` on
+    // Windows. Before the columns were stripped this reached the user with the
+    // thread id, level, category and source location in front of it.
+    const tail =
+        "2026-08-26 10:23:47.929\t800\tINFO\tglobal\tsrc/daemon/main.cpp:364\tSalvium 'One' (v1.1.3c-release)\n" ++
+        "2026-08-26 10:27:07.531\t4224\tERROR\tdaemon\tsrc/daemon/main.cpp:432\tException in main! Failed to initialize p2p server.\n";
+    try std.testing.expectEqualStrings(
+        "Exception in main! Failed to initialize p2p server.",
+        pickLogError(tail),
+    );
+
+    // A bitcoin-derived `debug.log` has no columns to strip, so it must come
+    // through exactly as before.
+    try std.testing.expectEqualStrings(
+        "Error: Cannot obtain a lock on data directory",
+        pickLogError("2026-08-26 10:00:00 init message\n2026-08-26 10:00:01 Error: Cannot obtain a lock on data directory\n"),
+    );
 }
 
 test "the state character survives a comm containing spaces and parentheses" {
