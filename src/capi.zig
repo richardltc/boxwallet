@@ -3845,35 +3845,6 @@ pub const BwDiskUsage = extern struct {
     total_bytes: u64,
 };
 
-// Linux `struct statfs` (x86-64). std doesn't expose one, so we make the raw
-// syscall; the GUI is Linux-only, and this is guarded to that target.
-const LinuxStatfs = extern struct {
-    f_type: i64,
-    f_bsize: i64,
-    f_blocks: u64,
-    f_bfree: u64,
-    f_bavail: u64,
-    f_files: u64,
-    f_ffree: u64,
-    f_fsid: [2]i32,
-    f_namelen: i64,
-    f_frsize: i64,
-    f_flags: i64,
-    f_spare: [4]i64,
-};
-
-fn statfsAt(path_z: [:0]const u8, out: *BwDiskUsage) bool {
-    if (builtin.os.tag != .linux) return false;
-    var st: LinuxStatfs = undefined;
-    const rc = std.os.linux.syscall2(.statfs, @intFromPtr(path_z.ptr), @intFromPtr(&st));
-    if (@as(isize, @bitCast(rc)) < 0) return false;
-    if (st.f_blocks == 0 or st.f_bsize <= 0) return false;
-    const bsize: u64 = @intCast(st.f_bsize);
-    out.total_bytes = st.f_blocks * bsize;
-    out.used_bytes = (st.f_blocks - st.f_bfree) * bsize;
-    return true;
-}
-
 fn diskUsage(ctx: *Ctx, idx: usize, out: *BwDiskUsage) !void {
     var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
     defer arena.deinit();
@@ -3881,14 +3852,16 @@ fn diskUsage(ctx: *Ctx, idx: usize, out: *BwDiskUsage) !void {
 
     // Prefer the coin's data dir; if it doesn't exist yet, the home dir sits on
     // the same filesystem the chain would grow into, so it's the right gauge.
+    // `disk.usage` is the shared, per-platform query the TUI already uses
+    // (statfs on Linux/macOS, GetDiskFreeSpaceExW on Windows) — the GUI grew a
+    // Linux-only copy of it back when the GUI was Linux-only, which left the
+    // gauge blank on Windows and macOS.
     const coin = coinByIndex(idx) orelse return error.NoSuchCoin;
     const data_dir = coin.dataDir(a, ctx.home_dir) catch ctx.home_dir;
-    const data_z = try a.dupeZ(u8, data_dir);
-    if (statfsAt(data_z, out)) return;
-
-    const home_z = try a.dupeZ(u8, ctx.home_dir);
-    if (statfsAt(home_z, out)) return;
-    return error.StatfsFailed;
+    const u = disk.usage(data_dir) orelse disk.usage(ctx.home_dir) orelse
+        return error.DiskUsageUnavailable;
+    out.used_bytes = u.used;
+    out.total_bytes = u.total;
 }
 
 export fn bw_disk_usage(ctx: ?*Ctx, idx: usize, out: ?*BwDiskUsage) c_int {
@@ -4206,12 +4179,18 @@ test "copyOut respects the destination bound" {
     try std.testing.expectEqualStrings("he", small[0..2]);
 }
 
-test "statfsAt reports a non-empty filesystem for the root path" {
-    if (builtin.os.tag != .linux) return error.SkipZigTest;
-    var out: BwDiskUsage = undefined;
-    try std.testing.expect(statfsAt("/", &out));
-    try std.testing.expect(out.total_bytes > 0);
-    try std.testing.expect(out.used_bytes <= out.total_bytes);
+test "the disk gauge answers on every platform a front-end ships to" {
+    // The gauge behind `bw_disk_usage` used to be a raw Linux `statfs` here, so
+    // it read blank on Windows and macOS. It now goes through `disk.usage`, the
+    // same per-platform query the TUI uses — the cwd always exists, so any
+    // supported target must produce a figure.
+    switch (builtin.os.tag) {
+        .linux, .macos, .windows => {},
+        else => return error.SkipZigTest,
+    }
+    const u = disk.usage(".") orelse return error.TestUnexpectedResult;
+    try std.testing.expect(u.total > 0);
+    try std.testing.expect(u.used <= u.total);
 }
 
 test "writeEntryLine formats a typed line and stops when it can't fit" {
