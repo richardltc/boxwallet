@@ -14,10 +14,10 @@
 const std = @import("std");
 const builtin = @import("builtin");
 
-/// True while a process named `name` exists. `/proc` on Linux, `pgrep`
-/// elsewhere; where neither can run (Windows, or a POSIX box with no `/proc`
-/// and no `pgrep`) it conservatively reports alive, so a live daemon is never
-/// declared dead by mistake.
+/// True while a process named `name` exists. `/proc` on Linux, the Toolhelp
+/// process snapshot on Windows, `pgrep` elsewhere; where none of those can
+/// answer it conservatively reports alive, so a live daemon is never declared
+/// dead by mistake.
 ///
 /// A **zombie doesn't count** — see `isZombie`.
 pub fn alive(io: std.Io, name: []const u8) bool {
@@ -33,7 +33,14 @@ pub fn alive(io: std.Io, name: []const u8) bool {
 /// enough to identify this coin alone — `java` would match any JVM on the
 /// machine, `ergo-<ver>.jar` matches ours. Null matches by name, as `alive`.
 pub fn aliveMatching(io: std.Io, name: []const u8, cmdline_needle: ?[]const u8) bool {
-    if (builtin.os.tag == .windows) return true;
+    if (builtin.os.tag == .windows) {
+        // Only the by-name case is answerable cheaply here; a Windows process's
+        // command line lives in its PEB, not in the snapshot, so the interpreter
+        // case keeps the conservative "assume alive". Ergo is the only coin that
+        // uses it.
+        if (cmdline_needle != null) return true;
+        return aliveByToolhelp(name);
+    }
     var proc = std.Io.Dir.cwd().openDir(io, "/proc", .{ .iterate = true }) catch
         return aliveByPgrep(io, name, cmdline_needle);
     defer proc.close(io);
@@ -57,6 +64,88 @@ pub fn aliveMatching(io: std.Io, name: []const u8, cmdline_needle: ?[]const u8) 
         return true;
     }
     return false;
+}
+
+// --- Windows process enumeration ------------------------------------------
+//
+// There is no portable stdlib equivalent, and std declares no Toolhelp bindings,
+// so the three kernel32 entry points are declared here. Toolhelp is used rather
+// than `NtQuerySystemInformation` because it is documented, stable, and hands
+// back the image name directly — which is the whole question being asked.
+
+const TH32CS_SNAPPROCESS: u32 = 0x00000002;
+
+/// `PROCESSENTRY32W`. The field order and `dwSize` are load-bearing: the API
+/// rejects a snapshot entry whose `dwSize` isn't `@sizeOf` this struct.
+const PROCESSENTRY32W = extern struct {
+    dwSize: u32,
+    cntUsage: u32,
+    th32ProcessID: u32,
+    th32DefaultHeapID: usize,
+    th32ModuleID: u32,
+    cntThreads: u32,
+    th32ParentProcessID: u32,
+    pcPriClassBase: i32,
+    dwFlags: u32,
+    /// The base image name (`salviumd.exe`), not the full path. MAX_PATH wide
+    /// chars, NUL-terminated.
+    szExeFile: [260]u16,
+};
+
+extern "kernel32" fn CreateToolhelp32Snapshot(
+    dwFlags: u32,
+    th32ProcessID: u32,
+) callconv(.winapi) std.os.windows.HANDLE;
+extern "kernel32" fn Process32FirstW(
+    hSnapshot: std.os.windows.HANDLE,
+    lppe: *PROCESSENTRY32W,
+) callconv(.winapi) std.os.windows.BOOL;
+extern "kernel32" fn Process32NextW(
+    hSnapshot: std.os.windows.HANDLE,
+    lppe: *PROCESSENTRY32W,
+) callconv(.winapi) std.os.windows.BOOL;
+
+/// True while some process's image name equals `name` (case-insensitively — the
+/// Windows filesystem and process table both are).
+///
+/// This replaces an unconditional `return true`, which quietly made every
+/// Windows caller believe a daemon was up: `bw_daemon_alive` always answered yes,
+/// so the GUI's "starting" pulse ran forever, for every coin, from launch, with
+/// nothing running at all.
+///
+/// Keeps the conservative bias on any failure (no snapshot, no first entry): a
+/// live daemon must never be declared dead, and the RPC probe is the real
+/// authority anyway — this only decides whether a *non-answering* daemon reads as
+/// "coming up" or "not there".
+fn aliveByToolhelp(name: []const u8) bool {
+    const windows = std.os.windows;
+    const snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+    if (snapshot == windows.INVALID_HANDLE_VALUE) return true;
+    defer windows.CloseHandle(snapshot);
+
+    var entry: PROCESSENTRY32W = undefined;
+    entry.dwSize = @sizeOf(PROCESSENTRY32W);
+    if (!Process32FirstW(snapshot, &entry).toBool()) return true;
+    while (true) {
+        if (imageNameEquals(&entry.szExeFile, name)) return true;
+        entry.dwSize = @sizeOf(PROCESSENTRY32W);
+        if (!Process32NextW(snapshot, &entry).toBool()) return false;
+    }
+}
+
+/// Case-insensitive ASCII compare of a NUL-terminated WTF-16 image name against
+/// `want`. Daemon filenames are ASCII by construction (each coin declares its
+/// own), so any wide character above 0x7F is a mismatch rather than something to
+/// decode — which also keeps this allocation-free.
+fn imageNameEquals(image: []const u16, want: []const u8) bool {
+    var i: usize = 0;
+    while (i < image.len and image[i] != 0) : (i += 1) {
+        if (i >= want.len) return false; // image is longer
+        const wide = image[i];
+        if (wide > 0x7F) return false;
+        if (!std.ascii.eqlIgnoreCase(&.{@intCast(wide)}, &.{want[i]})) return false;
+    }
+    return i == want.len; // both ended together
 }
 
 /// True if `/proc/<pid>` is a zombie — the process has exited and only its exit
@@ -375,6 +464,62 @@ test "the running test binary is found by its own comm name" {
     var buf: [64]u8 = undefined;
     const n = try f.readPositionalAll(io, &buf, 0);
     try std.testing.expect(alive(io, std.mem.trim(u8, buf[0..n], " \t\r\n")));
+}
+
+test "an image name matches case-insensitively, and only in full" {
+    // The Windows liveness match. `imageNameEquals` is pure, so the whole table
+    // is checkable from any host — the enumeration around it is not.
+    const wide = struct {
+        fn of(comptime s: []const u8) [s.len + 1]u16 {
+            var out: [s.len + 1]u16 = undefined;
+            for (s, 0..) |c, i| out[i] = c;
+            out[s.len] = 0;
+            return out;
+        }
+    };
+
+    const salviumd = wide.of("salviumd.exe");
+    try std.testing.expect(imageNameEquals(&salviumd, "salviumd.exe"));
+    // Windows process names are case-insensitive; the snapshot's casing is not
+    // ours to predict.
+    const shouty = wide.of("SALVIUMD.EXE");
+    try std.testing.expect(imageNameEquals(&shouty, "salviumd.exe"));
+    // A prefix must not match, or `divid.exe` would answer for `divid.exe.bak`
+    // and every coin whose name starts the same way.
+    const longer = wide.of("salviumd.exe.bak");
+    try std.testing.expect(!imageNameEquals(&longer, "salviumd.exe"));
+    const shorter = wide.of("salvium.exe");
+    try std.testing.expect(!imageNameEquals(&shorter, "salviumd.exe"));
+    try std.testing.expect(!imageNameEquals(&salviumd, "monerod.exe"));
+}
+
+test "a process that cannot exist is not reported alive on Windows either" {
+    if (builtin.os.tag != .windows) return error.SkipZigTest;
+
+    var threaded: std.Io.Threaded = .init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    // The regression this guards: `aliveMatching` used to answer true here
+    // unconditionally, which is what left the GUI pulsing "daemon starting" with
+    // no daemon anywhere.
+    try std.testing.expect(!alive(io, "bw-no-such-daemon.exe"));
+
+    // The positive half needs a process whose image name is known to be running,
+    // which nothing here can guarantee offline — so it is covered by the spawned
+    // child below rather than by naming some system process and hoping.
+    var child = std.process.spawn(io, .{
+        // `cmd /c pause` sits waiting on a keypress it will never get, because
+        // stdin is closed — long enough to be seen, and it exits on `kill`.
+        .argv = &.{ "cmd.exe", "/c", "pause" },
+        .stdin = .ignore,
+        .stdout = .ignore,
+        .stderr = .ignore,
+    }) catch return error.SkipZigTest;
+    defer {
+        child.kill(io);
+    }
+    try std.testing.expect(alive(io, "cmd.exe"));
 }
 
 test "an epee log line surfaces its message, not its columns" {
