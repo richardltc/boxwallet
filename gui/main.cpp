@@ -498,6 +498,33 @@ static std::string humanize_bytes(uint64_t b)
     return std::string(buf);
 }
 
+// The filesystem gauge: how full the volume holding a coin's data dir is, and
+// how much room is left on it. Behind the C ABI this is one statfs /
+// GetDiskFreeSpaceExW — microseconds, no tree walk — so it is cheap enough to
+// call straight from the UI thread on selection as well as from the poller,
+// exactly as the TUI's `refreshDisk` does inline.
+struct DiskReadout {
+    float frac = 0.0f;
+    float free_value = -1.0f; // negative = no reading; the gauge shows nothing
+    std::string free_suffix;
+    int free_decimals = 1;
+};
+static DiskReadout read_disk(bw_ctx *ctx, size_t coin)
+{
+    DiskReadout d;
+    BwDiskUsage du;
+    std::memset(&du, 0, sizeof du);
+    if (bw_disk_usage(ctx, coin, &du) == 0 && du.total_bytes > 0) {
+        d.frac = static_cast<float>(static_cast<double>(du.used_bytes) /
+                                    static_cast<double>(du.total_bytes));
+        const ScaledBytes s = scale_bytes(du.total_bytes - du.used_bytes);
+        d.free_value = static_cast<float>(s.value);
+        d.free_suffix = std::string(" ") + s.unit + " free";
+        d.free_decimals = s.decimals;
+    }
+    return d;
+}
+
 // An amount to the coin's own precision, thousands-grouped ("1,234.56789012").
 // Amount text comes from the core, not from a local implementation. It used to
 // be a C++ snprintf plus manual comma insertion, against the TUI's printFloat
@@ -884,7 +911,6 @@ static void apply_coin_metadata(const AppWindow *ui, bw_ctx *ctx, int idx)
     ui->set_sync_unknown(false);
     ui->set_sync_stalled(false);
     g_had_tip = false;
-    ui->set_disk_frac(0);
     ui->set_wallet_sec(0);
     const int ew_flags = bw_coin_ext_wallet(idx);
     ui->set_ew_flags(ew_flags);
@@ -933,10 +959,20 @@ static void apply_coin_metadata(const AppWindow *ui, bw_ctx *ctx, int idx)
     ui->set_blocks_slots(digit_slots(0, -1));
     ui->set_tip_date(ss(""));
     ui->set_sync_behind(ss(""));
-    // Negative = no reading, so the gauge shows nothing until the poll answers
-    // rather than briefly claiming the new coin has 0 bytes free.
-    ui->set_disk_free_value(-1);
-    ui->set_disk_free_suffix(ss(""));
+    // The disk gauge answers "am I running out of room" — a property of the
+    // volume, not of the coin — and reading it is one syscall, so it is filled
+    // in here rather than blanked and left to the poll. Blanking it dropped the
+    // ring to zero and the "N GB free" text to nothing on every coin switch
+    // until the tick finished; on Windows that is long after the click.
+    {
+        const DiskReadout d = read_disk(ctx, static_cast<size_t>(idx));
+        ui->set_disk_frac(d.frac);
+        ui->set_disk_free_value(d.free_value);
+        ui->set_disk_free_suffix(ss(d.free_suffix));
+        ui->set_disk_free_decimals(d.free_decimals);
+    }
+    // What the chain occupies is genuinely per-coin and only a data-dir walk can
+    // answer it, so it stays blank until the storage worker reports back.
     ui->set_storage_size(ss(""));
     ui->set_price_usd(ss(""));
     // DigiDollar metadata + a clean slate; the tab only appears for a coin that
@@ -2919,39 +2955,63 @@ int main(int argc, char **argv)
             }
 
             // What the chain occupies. This WALKS the data dir — hundreds of
-            // thousands of files once synced — so it is sampled about every 30s
-            // rather than every tick, and only while the coin is selected.
-            static int64_t last_storage_ms = 0;
-            static uint64_t storage_bytes = 0;
-            static int storage_coin = -1;
+            // thousands of files once synced, and far slower on Windows, where
+            // every entry costs a file open the page cache can't spare it — so
+            // it runs on its OWN worker rather than inline here. Inline, it held
+            // the entire snapshot behind itself: a cold walk on NTFS takes tens
+            // of seconds to minutes, and for all of it the disk gauge, the
+            // blocks, the peers and the status line stayed at whatever the coin
+            // switch had blanked them to. Sampled about every 30s and again
+            // whenever the selection moves, one walk in flight at a time; the
+            // result is posted on its own, guarded by the selection like every
+            // other worker's.
+            static std::atomic<bool> storage_busy{false};
+            static std::atomic<int> storage_coin{-1};
+            static std::atomic<int64_t> storage_ms{0};
             const int64_t now_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
                 std::chrono::steady_clock::now().time_since_epoch()).count();
-            if (storage_coin != sel || now_ms - last_storage_ms > 30000) {
-                uint64_t sz = 0;
-                if (bw_data_dir_size(ctx, coin, &sz) == 0)
-                    storage_bytes = sz;
-                else
-                    storage_bytes = 0;
-                storage_coin = sel;
-                last_storage_ms = now_ms;
+            if (!storage_busy.load() &&
+                (storage_coin.load() != sel || now_ms - storage_ms.load() > 30000)) {
+                storage_busy.store(true);
+                // The guard is taken HERE, on the poller, not inside the thread:
+                // `detach` returns before the new thread runs its first line, so
+                // a guard constructed in there could land after `poller.join()`
+                // and the shutdown barrier had already counted zero workers — and
+                // the walk would then be holding `ctx` through `bw_deinit`.
+                auto wg = std::make_shared<WorkerGuard>();
+                std::thread([weak, ctx, coin, sel, wg]() {
+                    uint64_t sz = 0;
+                    if (bw_data_dir_size(ctx, coin, &sz) != 0)
+                        sz = 0;
+                    storage_coin.store(sel);
+                    // Timed from when the walk *finished*, so a walk that took
+                    // longer than the interval doesn't start again immediately.
+                    storage_ms.store(std::chrono::duration_cast<std::chrono::milliseconds>(
+                        std::chrono::steady_clock::now().time_since_epoch()).count());
+                    storage_busy.store(false);
+                    post_to_ui([weak, sel, sz]() {
+                        auto h = weak.lock();
+                        if (!h)
+                            return;
+                        if (g_selected.load() != sel)
+                            return;
+                        // Formatted by the core, not by humanize_bytes: that one
+                        // uses binary units, so the same chain read "11.5 GB"
+                        // here and "12.34 GB" in the TUI. bw_format_storage is
+                        // the TUI's own formatter, so the two now agree.
+                        (*h)->set_storage_size(ss(fmt_storage(sz)));
+                    });
+                }).detach();
             }
-            const uint64_t storage_now = storage_bytes;
 
-            // Disk usage is a filesystem read — independent of the daemon.
-            BwDiskUsage du;
-            std::memset(&du, 0, sizeof du);
-            float disk_frac = 0.0f;
-            float disk_free_value = -1.0f;
-            std::string disk_free_suffix;
-            int disk_free_decimals = 1;
-            if (bw_disk_usage(ctx, coin, &du) == 0 && du.total_bytes > 0) {
-                disk_frac = static_cast<float>(static_cast<double>(du.used_bytes) /
-                                               static_cast<double>(du.total_bytes));
-                const ScaledBytes s = scale_bytes(du.total_bytes - du.used_bytes);
-                disk_free_value = static_cast<float>(s.value);
-                disk_free_suffix = std::string(" ") + s.unit + " free";
-                disk_free_decimals = s.decimals;
-            }
+            // Disk usage is a filesystem read — independent of the daemon, and a
+            // single syscall. The coin switch already published one (see
+            // `apply_coin_metadata`); this keeps it current while the chain grows.
+            const DiskReadout dk = read_disk(ctx, coin);
+            const float disk_frac = dk.frac;
+            const float disk_free_value = dk.free_value;
+            const std::string disk_free_suffix = dk.free_suffix;
+            const int disk_free_decimals = dk.free_decimals;
 
             // The status line, from the core — same wording and priority order
             // the TUI uses, rather than a sentence assembled here. We can't fill
@@ -3012,7 +3072,7 @@ int main(int argc, char **argv)
             post_to_ui([weak, di, bs, daemon_up, sel, disk_frac, disk_free_value, disk_free_suffix,
                         disk_free_decimals, wallet_sec, stage, coming_up, live_status,
                         tip_date, sync_behind,
-                        mem_frac, storage_now, du,
+                        mem_frac,
                         price_usd, price_change, price_dir, holding_value,
                         sc_active, sc_status, sc_balance, sc_pending, sc_price, sc_supply,
                         sc_health, sc_countdown, sc_addr, sc_price_stale, sc_minting_blocked,
@@ -3051,11 +3111,6 @@ int main(int argc, char **argv)
                 (*h)->set_price_dir(price_dir);
                 (*h)->set_holding_value(ss(holding_value));
                 (*h)->set_mem_frac(mem_frac);
-                // Formatted by the core, not by humanize_bytes: that one uses
-                // binary units, so the same chain read "11.5 GB" here and
-                // "12.34 GB" in the TUI. bw_format_storage is the TUI's own
-                // formatter, so the two now agree.
-                (*h)->set_storage_size(ss(fmt_storage(storage_now)));
                 // Skipped while busy: wallet_sec is BW_WSEC_UNKNOWN there and
                 // publishing it would grey the padlock every time the node
                 // stalls, which is the flicker this whole branch exists to stop.
