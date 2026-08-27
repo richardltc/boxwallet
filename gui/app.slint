@@ -703,9 +703,12 @@ component StatusIcon inherits Rectangle {
     // seeping back as it falls. Reads off the same clock as the hop itself,
     // so it costs no repaints an idle icon wasn't already skipping.
     property <bool> hopping: root.moving && root.motion == "hop";
-    property <float> pulse-op: 0.4 + 0.6 * (0.5 + 0.5 * Math.sin(root.t * 360deg));
+    // The pulse's 0..1 breathing phase — one sine wave per lap. Opacity, scale
+    // and colour all read this same value, so the three can never drift apart.
+    property <float> pulse-phase: 0.5 + 0.5 * Math.sin(root.t * 360deg);
+    property <float> pulse-op: 0.4 + 0.6 * root.pulse-phase;
     // Grows the icon in sync with the brightness so a pulse "breathes" outward.
-    property <float> pulse-scale: 1.0 + 0.28 * (0.5 + 0.5 * Math.sin(root.t * 360deg));
+    property <float> pulse-scale: 1.0 + 0.28 * root.pulse-phase;
     property <bool> pulsing: root.moving && root.motion == "pulse";
     // One full turn every 7.2s — an eighth speed. A sync can run for hours, so the
     // spinner is there to say "still working", not to hurry anyone along.
@@ -740,7 +743,12 @@ component StatusIcon inherits Rectangle {
 
     Image {
         source: root.icon;
-        colorize: root.active ? root.accent
+        // A pulse breathes its colour too — soaking to the brand colour at full
+        // brightness and draining to grey at the trough, like the hop does with
+        // height. Checked before `active`: the smiley is active *while* loading,
+        // and a solid accent would mask the animation.
+        colorize: root.pulsing ? root.accent.mix(root.idle, 1.0 - root.pulse-phase)
+            : root.active ? root.accent
             : (root.hopping ? root.accent.mix(root.idle, 1.0 - root.hop-air) : root.idle);
         width: 33px;
         height: 33px;
@@ -2581,6 +2589,7 @@ export component AppWindow inherits Window {
                                 text: root.live-status;
                                 color: root.coin-color;
                                 font-size: 13px;
+                                font-weight: 700;
                                 vertical-alignment: center;
                                 horizontal-stretch: 1;
                             }
@@ -2603,6 +2612,7 @@ export component AppWindow inherits Window {
                                 color: root.status-is-error && root.daemon-stage == ""
                                     ? #e74c3c : root.coin-color;
                                 font-size: 13px;
+                                font-weight: 700;
                                 wrap: word-wrap;
                                 horizontal-stretch: 1;
                             }
