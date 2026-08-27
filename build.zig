@@ -474,7 +474,13 @@ fn buildGuiExe(
     // fetched package (an argv string would have to be a repo-relative path).
     const gen = std.Build.Step.Run.create(b, "slint-compiler app.slint");
     gen.addFileArg(slint_compiler.path("slint-compiler"));
-    gen.addArgs(&.{ "-f", "cpp", "--style", "fluent" });
+    // `fluent-dark`, not plain `fluent`: `fluent` resolves light-vs-dark from the
+    // OS colour scheme at run time, but every colour in `gui/app.slint` is a
+    // hard-coded dark one. On a desktop set to light (the Windows default), the
+    // std widgets drew the light palette's near-black text — the Settings tab's
+    // privacy checkboxes were the visible case — on our dark background. Pinning
+    // the scheme keeps the widgets matching the rest of the window everywhere.
+    gen.addArgs(&.{ "-f", "cpp", "--style", "fluent-dark" });
     // `--embed-resources embed-files` bakes every `@image-url` (the coin logos and
     // the app icon) into the generated header as bytes. The compiler's default is
     // `as-absolute-path`, which records this build machine's paths and loads them
