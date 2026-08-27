@@ -2169,7 +2169,12 @@ int main(int argc, char **argv)
             // Stop first: on Windows the running binary can't be replaced at all,
             // and everywhere else a live daemon would keep running the old code.
             if (was_running) {
-                if (bw_stop_daemon(ctx, static_cast<size_t>(coin)) < 0) {
+                // Same flag the Stop button raises: without it the poller reads
+                // the dying daemon as a running one with no peers.
+                g_stopping.store(coin);
+                const int stop_rc = bw_stop_daemon(ctx, static_cast<size_t>(coin));
+                g_stopping.store(-1);
+                if (stop_rc < 0) {
                     char b[256] = {0};
                     size_t n = bw_last_error(ctx, b, sizeof b);
                     std::string msg(b, n);
@@ -2601,6 +2606,9 @@ int main(int argc, char **argv)
             // Only probed when the read failed, so a healthy tick costs nothing.
             const bool busy = !rpc_ok && bw_daemon_reachable(ctx, coin) == 1;
             const bool daemon_up = rpc_ok || busy;
+            // A stop asked for and not yet finished. The daemon answers, and
+            // reports itself peerless, right through its shutdown.
+            const bool stopping = g_stopping.load() == sel;
 
             // Wallet lock state — only meaningful once the daemon actually
             // answers. While busy it would fail too, so keep the last one rather
@@ -2637,7 +2645,7 @@ int main(int argc, char **argv)
             // line is history. Reporting that as a stage reads as "starting".
             std::string stage;
             bool coming_up = false;
-            if (!rpc_ok && g_stopping.load() != sel) {
+            if (!rpc_ok && !stopping) {
                 char sb[128] = {0};
                 size_t sn = bw_daemon_stage(ctx, coin, sb, sizeof sb);
                 stage.assign(sb, sn);
@@ -2948,7 +2956,12 @@ int main(int argc, char **argv)
             BwStatusInput si;
             std::memset(&si, 0, sizeof si);
             si.installed = 1; // the Start button is unreachable otherwise
-            si.daemon = daemon_up ? 2 : 0;
+            // A stop in flight outranks whatever the dying daemon still reports.
+            // It drops its peers before it stops answering, so a plain
+            // running/stopped read had the status line say "Waiting for peers…"
+            // for the whole shutdown — waiting on the wrong thing entirely. This
+            // is the state the TUI already publishes (`DaemonState.stopping`).
+            si.daemon = stopping ? 3 : (daemon_up ? 2 : 0);
             si.peers = static_cast<uint32_t>(di.connections < 0 ? 0 : di.connections);
             si.sync = daemon_up ? (bs.synced ? 2 : 1) : 0;
             si.headers_cur = static_cast<uint64_t>(bs.headers < 0 ? 0 : bs.headers);
@@ -2968,7 +2981,7 @@ int main(int argc, char **argv)
             // One phrase, painted in the coin's brand colour — the height lives
             // in the Blocks gauge below, not in the sentence.
             std::string live_status;
-            if (rpc_ok) {
+            if (rpc_ok || stopping) {
                 char lb[160] = {0};
                 size_t ln = bw_status_line(&si, lb, sizeof lb);
                 live_status.assign(lb, ln);
