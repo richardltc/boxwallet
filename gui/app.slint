@@ -693,7 +693,16 @@ component StatusIcon inherits Rectangle {
     // Shared 0..1 ramp (2s) for hop/pulse; spin has its own, slower one below.
     property <float> t: Math.mod(animation-tick() / 1ms, 2000) / 2000;
     property <float> hp: root.t < 0.35 ? root.t / 0.35 : 1.0;
-    property <length> hop: -12px * (4 * root.hp * (1.0 - root.hp));
+    // Airborne fraction of the hop: 0 on the ground (and through the rest
+    // between hops), 1 at the top of the arc. Drives both the lift and the
+    // colour below, so the two can never drift out of step.
+    property <float> hop-air: 4 * root.hp * (1.0 - root.hp);
+    property <length> hop: -12px * root.hop-air;
+    // While hopping, the brand colour follows the height: fully soaked in
+    // whenever the icon sits on the ground, draining to grey as it rises and
+    // seeping back as it falls. Reads off the same clock as the hop itself,
+    // so it costs no repaints an idle icon wasn't already skipping.
+    property <bool> hopping: root.moving && root.motion == "hop";
     property <float> pulse-op: 0.4 + 0.6 * (0.5 + 0.5 * Math.sin(root.t * 360deg));
     // Grows the icon in sync with the brightness so a pulse "breathes" outward.
     property <float> pulse-scale: 1.0 + 0.28 * (0.5 + 0.5 * Math.sin(root.t * 360deg));
@@ -731,7 +740,8 @@ component StatusIcon inherits Rectangle {
 
     Image {
         source: root.icon;
-        colorize: root.active ? root.accent : root.idle;
+        colorize: root.active ? root.accent
+            : (root.hopping ? root.accent.mix(root.idle, 1.0 - root.hop-air) : root.idle);
         width: 33px;
         height: 33px;
         x: (parent.width - self.width) / 2;
