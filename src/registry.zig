@@ -32,6 +32,7 @@ const Bitcoin = @import("coins/bitcoin.zig").Bitcoin;
 const BitcoinZ = @import("coins/bitcoinz.zig").BitcoinZ;
 const SpiderByte = @import("coins/spiderbyte.zig").SpiderByte;
 const Monero = @import("coins/monero.zig").Monero;
+const Pivx = @import("coins/pivx.zig").Pivx;
 
 /// Every registered coin backend, in C-ABI index order. Append only.
 pub const coin_types = .{
@@ -49,6 +50,7 @@ pub const coin_types = .{
     BitcoinZ,
     SpiderByte,
     Monero,
+    Pivx,
 };
 
 /// How many coins are registered. Every index either front-end passes is in

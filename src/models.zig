@@ -329,6 +329,41 @@ pub const RddWalletInfo = struct {
     immature_balance: f64 = 0,
 };
 
+/// Raw `getblockchaininfo` result for PIVX (subset). PIVX 5.x has real
+/// headers-first sync and a checkpoint-derived `verificationprogress`, but —
+/// unlike the Bitcoin Core lineage — **no tip `time`/`mediantime` fields at
+/// all**, so the behind-by timestamp must come from the tip block itself.
+/// Defaults keep parsing resilient to omitted fields.
+pub const PivxBlockchainInfo = struct {
+    chain: []const u8 = "",
+    blocks: i64 = 0,
+    headers: i64 = 0,
+    bestblockhash: []const u8 = "",
+    verificationprogress: f64 = 0,
+};
+
+/// Raw `getinfo` result for PIVX (subset BoxWallet uses). PIVX kept `getinfo`,
+/// and — like its fork Divi — reports staking through a human-readable
+/// `"staking status"` string (note the literal space). `version` is the numeric
+/// CLIENT_VERSION (5.6.1 → 5060100), unlike Divi's ready-made string.
+pub const PivxGetInfo = struct {
+    version: i64 = 0,
+    blocks: i64 = 0,
+    connections: i64 = 0,
+    @"staking status": []const u8 = "",
+};
+
+/// Raw `getwalletinfo` result for PIVX: numeric `unlocked_until` for security
+/// (absent/0/positive, bitcoin-core style — Divi's `encryption_status` string
+/// came later) plus the balance triplet. PIVX's extra delegated/cold-staking
+/// balances are ignored. Defaults keep parsing resilient to omitted fields.
+pub const PivxWalletInfo = struct {
+    unlocked_until: ?i64 = null,
+    balance: f64 = 0,
+    unconfirmed_balance: f64 = 0,
+    immature_balance: f64 = 0,
+};
+
 /// A wallet mnemonic seed (the 25-word CryptoNote/Monero backup phrase),
 /// returned by an external wallet's `create` so the UI can show it for the user
 /// to write down. Held in a small fixed buffer — the secret never lands on the

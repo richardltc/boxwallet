@@ -84,6 +84,7 @@ test {
     _ = @import("price.zig");
     _ = @import("coins/nexa.zig");
     _ = @import("coins/divi.zig");
+    _ = @import("coins/pivx.zig");
     _ = @import("coins/ergo.zig");
     _ = @import("coins/digibyte.zig");
     _ = @import("coins/zano.zig");
