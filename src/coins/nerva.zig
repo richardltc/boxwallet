@@ -20,7 +20,8 @@ const Coin = @import("../coin.zig").Coin;
 ///     (no `bin/` subdir); the daemon/cli are promoted out and the rest dropped.
 ///   * **RPC** — Monero's daemon RPC, not the bitcoin JSON-RPC. `get_info` is a
 ///     `POST /json_rpc` method returning a flat result; sync is derived from
-///     `height` vs `target_height` (0 once caught up) and the `synchronized` flag,
+///     `height` vs `target_height` (the highest peer tip; nervad never zeroes it)
+///     — nervad predates Monero's `synchronized` flag and sends no such field —
 ///     and the peer count from the connection counts. Shutdown is the direct
 ///     `POST /stop_daemon` endpoint. The daemon is unauthenticated by default, so
 ///     no basic auth is sent (mirrors Ergo's keyless REST).
@@ -163,17 +164,21 @@ pub const Nerva = struct {
 
     // --- RPC (Monero daemon) ---------------------------------------------
 
-    /// Subset of `get_info`'s result. Monero reports a flat object; `synchronized`
-    /// is authoritative for sync state, with `height`/`target_height` as the
-    /// fallback (`target_height` is 0 once caught up). Defaults keep the parse
-    /// resilient to omitted fields.
+    /// Subset of `get_info`'s result. Monero reports a flat object; where a
+    /// `synchronized` flag is present it's authoritative for sync state, with
+    /// `height`/`target_height` as the corroboration. **nervad doesn't send one** —
+    /// NERVA forked from Monero before that field existed (0.3.0.0's `get_info` has
+    /// no `synchronized` key at all), which is why it's `?bool` and not a `bool`
+    /// defaulted to false: the default made the chain read as "Syncing" forever.
+    /// Nerva also never zeroes `target_height`; it stays on the highest peer tip.
+    /// The other defaults keep the parse resilient to omitted fields.
     const NervaInfo = struct {
         status: []const u8 = "",
         height: i64 = 0,
         target_height: i64 = 0,
         outgoing_connections_count: i64 = 0,
         incoming_connections_count: i64 = 0,
-        synchronized: bool = false,
+        synchronized: ?bool = null,
         mainnet: bool = false,
         testnet: bool = false,
         stagenet: bool = false,
@@ -245,10 +250,11 @@ pub const Nerva = struct {
     }
 
     /// Live `get_info`, normalized for a frontend. Monero has no
-    /// `verificationprogress`; sync is `models.cryptonoteSynced` — the
+    /// `verificationprogress`; sync is `models.cryptonoteSyncedOptionalFlag` — the
     /// `synchronized` flag *and* `height` having reached the peer-announced
-    /// `target_height` (which is 0 once caught up), because either alone reads as
-    /// synced while blocks are still short of headers.
+    /// `target_height`, because either alone reads as synced while blocks are still
+    /// short of headers. nervad sends no such flag, so there it's the heights alone
+    /// (height has reached a peer tip we've actually heard).
     pub fn blockchainState(
         allocator: std.mem.Allocator,
         auth: models.CoinAuth,
@@ -259,7 +265,7 @@ pub const Nerva = struct {
         const r = parsed.value.result orelse return error.EmptyRpcResult;
         const tip = @max(r.target_height, r.height);
         const chain = if (r.testnet) "testnet" else if (r.stagenet) "stagenet" else "mainnet";
-        const synced = models.cryptonoteSynced(r.height, r.target_height, r.synchronized);
+        const synced = models.cryptonoteSyncedOptionalFlag(r.height, r.target_height, r.synchronized);
         return .{
             .chain = try allocator.dupe(u8, chain),
             .blocks = r.height,
@@ -1627,7 +1633,7 @@ test "parses get_info into a synced BlockchainState" {
         .blocks = r.height,
         .headers = tip,
         .verification_progress = 0,
-        .synced = models.cryptonoteSynced(r.height, r.target_height, r.synchronized),
+        .synced = models.cryptonoteSyncedOptionalFlag(r.height, r.target_height, r.synchronized),
         .network_height = tip,
     };
     defer state.deinit(allocator);
@@ -1648,10 +1654,40 @@ test "estimateSecondsBehind turns the block gap into a behind-by estimate" {
     try std.testing.expectEqual(@as(i64, 0), Nerva.estimateSecondsBehind(1000, 1000, false));
 }
 
+test "a real nervad reply — no synchronized field — still reads as synced" {
+    const allocator = std.testing.allocator;
+
+    // Verbatim shape of a live `nervad 0.3.0.0` get_info at the tip. Note there is
+    // **no** `synchronized` key: NERVA forked before Monero added it, and it never
+    // zeroes `target_height` either. Parsed into a required `bool = false` this
+    // read as "Syncing" forever, which is the bug this test pins.
+    const raw =
+        \\{"id":"0","jsonrpc":"2.0","result":{"status":"OK","height":4372795,
+        \\"target_height":4372794,"outgoing_connections_count":1,
+        \\"incoming_connections_count":24,"mainnet":true,"testnet":false,
+        \\"stagenet":false,"version":"0.3.0.0"}}
+    ;
+
+    var parsed = try std.json.parseFromSlice(
+        models.JsonRpcResponse(Nerva.NervaInfo),
+        allocator,
+        raw,
+        .{ .ignore_unknown_fields = true },
+    );
+    defer parsed.deinit();
+
+    const r = parsed.value.result.?;
+    try std.testing.expectEqual(@as(?bool, null), r.synchronized);
+    try std.testing.expect(models.cryptonoteSyncedOptionalFlag(r.height, r.target_height, r.synchronized));
+
+    // …and the same daemon 600k blocks back is honestly not synced.
+    try std.testing.expect(!models.cryptonoteSyncedOptionalFlag(3_772_795, 4_372_794, null));
+}
+
 test "a daemon still catching up reads as not synced" {
     // Mid-sync: height behind target_height and not yet synchronized.
     const r: Nerva.NervaInfo = .{ .height = 900_000, .target_height = 1_500_000, .synchronized = false };
-    const synced = models.cryptonoteSynced(r.height, r.target_height, r.synchronized);
+    const synced = models.cryptonoteSyncedOptionalFlag(r.height, r.target_height, r.synchronized);
     try std.testing.expect(!synced);
     try std.testing.expectEqual(@as(i64, 1_500_000), @max(r.target_height, r.height));
 }

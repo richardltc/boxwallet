@@ -906,6 +906,23 @@ pub fn cryptonoteSynced(height: i64, target_height: i64, synchronized: bool) boo
     return synchronized and height > 0 and height >= target_height;
 }
 
+/// Same question for a CryptoNote daemon that may not report the flag at all.
+/// NERVA's `nervad` forked from Monero before `synchronized` was added to
+/// `get_info` (0.3.0.0 has no such field — grep the binary, the string isn't in
+/// there), so a plain `synchronized: bool = false` parse defaults to false on
+/// every poll and the chain reads as "Syncing" forever, however far ahead it is.
+///
+/// With the flag present this is exactly `cryptonoteSynced`. With it absent the
+/// heights have to answer alone: caught up means the daemon has heard a peer tip
+/// (`target_height > 0`, so a just-started daemon that has heard nothing doesn't
+/// read as finished) and has reached it. That's the weaker of the two tests — it
+/// trusts `target_height` without a second opinion — so it's only ever taken for
+/// a daemon that offers no second opinion.
+pub fn cryptonoteSyncedOptionalFlag(height: i64, target_height: i64, synchronized: ?bool) bool {
+    if (synchronized) |flag| return cryptonoteSynced(height, target_height, flag);
+    return height > 0 and target_height > 0 and height >= target_height;
+}
+
 test "cryptonoteSynced needs the flag and the height together" {
     // Caught up: the daemon says so and has zeroed the target.
     try std.testing.expect(cryptonoteSynced(1_500_000, 0, true));
@@ -924,6 +941,23 @@ test "cryptonoteSynced needs the flag and the height together" {
 
     // A block arrived past the last announced tip — still synced.
     try std.testing.expect(cryptonoteSynced(1_500_001, 1_500_000, true));
+}
+
+test "cryptonoteSyncedOptionalFlag falls back to heights when the flag is absent" {
+    // Flag present: identical to cryptonoteSynced, both ways.
+    try std.testing.expect(cryptonoteSyncedOptionalFlag(1_500_000, 0, true));
+    try std.testing.expect(!cryptonoteSyncedOptionalFlag(900_000, 1_500_000, true));
+
+    // The Nerva bug: nervad never sends the field, so a required bool defaulted
+    // to false and the chain never left "Syncing". Absent + caught up is synced.
+    try std.testing.expect(cryptonoteSyncedOptionalFlag(4_372_795, 4_372_794, null));
+
+    // Absent + still behind the announced tip.
+    try std.testing.expect(!cryptonoteSyncedOptionalFlag(900_000, 1_500_000, null));
+
+    // Absent + no peer tip heard yet: not synced, however many blocks are loaded.
+    try std.testing.expect(!cryptonoteSyncedOptionalFlag(400, 0, null));
+    try std.testing.expect(!cryptonoteSyncedOptionalFlag(0, 0, null));
 }
 
 test "sync distance fills each figure in from the other" {
