@@ -3427,6 +3427,10 @@ export component AppWindow inherits Window {
 
                         if root.running && !root.mining && root.wallet-state >= 2 && root.receive-address != "": VerticalLayout {
                             spacing: 10px;
+                            // Without this the block stretches, and the only
+                            // stretchy child is the threads row — so the spin box
+                            // and the button grow to swallow the slack.
+                            alignment: start;
                             Text {
                                 text: "This machine has " + root.cpu-threads + " CPU threads. Mining uses real CPU and power; leave some free for other work.";
                                 color: #7a7a7a;
@@ -3436,6 +3440,7 @@ export component AppWindow inherits Window {
                             HorizontalLayout {
                                 alignment: start;
                                 spacing: 10px;
+                                vertical-stretch: 0;
                                 Text {
                                     text: "Threads";
                                     color: #9a9a9a;
@@ -3464,6 +3469,7 @@ export component AppWindow inherits Window {
 
                         if root.mining: HorizontalLayout {
                             alignment: start;
+                            vertical-stretch: 0;
                             Button {
                                 text: "Stop mining";
                                 enabled: !root.mining-busy;
