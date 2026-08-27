@@ -4060,10 +4060,10 @@ export fn bw_list_dir(path: ?[*:0]const u8, buf: ?[*]u8, cap: usize) usize {
 // ---- offline tests (no daemon, no network, no libc) -------------------------
 
 test "coin registry exposes all coins and rejects out-of-range" {
-    try std.testing.expectEqual(@as(usize, 14), coinCount());
+    try std.testing.expectEqual(@as(usize, 15), coinCount());
     try std.testing.expect(coinByIndex(0) != null);
-    try std.testing.expect(coinByIndex(13) != null);
-    try std.testing.expect(coinByIndex(14) == null);
+    try std.testing.expect(coinByIndex(14) != null);
+    try std.testing.expect(coinByIndex(15) == null);
 
     // Every registered index yields a coin with a non-empty name/abbrev, and
     // Divi is present somewhere in the registry.

@@ -30,6 +30,7 @@ const Zano = @import("coins/zano.zig").Zano;
 const Nerva = @import("coins/nerva.zig").Nerva;
 const Salvium = @import("coins/salvium.zig").Salvium;
 const Monero = @import("coins/monero.zig").Monero;
+const Pivx = @import("coins/pivx.zig").Pivx;
 const ReddCoin = @import("coins/reddcoin.zig").ReddCoin;
 const Epic = @import("coins/epic.zig").Epic;
 const Litecoin = @import("coins/litecoin.zig").Litecoin;
@@ -67,8 +68,8 @@ const balance_mask = money.balance_mask;
 /// pane renders generically through the `Coin` interface, so it needs no per-coin
 /// code. A coin whose per-coin `live` constant is false stays registered here but
 /// is dropped from `entries` — hidden from the nav entirely until it's ready.
-const Entry = enum { home, nexa, divi, ergo, digibyte, zano, nerva, reddcoin, epic, salvium, litecoin, bitcoin, bitcoinz, spiderbyte, monero };
-const coin_entries = [_]Entry{ .nexa, .divi, .ergo, .digibyte, .zano, .nerva, .reddcoin, .epic, .salvium, .litecoin, .bitcoin, .bitcoinz, .spiderbyte, .monero };
+const Entry = enum { home, nexa, divi, ergo, digibyte, zano, nerva, reddcoin, epic, salvium, litecoin, bitcoin, bitcoinz, spiderbyte, monero, pivx };
+const coin_entries = [_]Entry{ .nexa, .divi, .ergo, .digibyte, .zano, .nerva, .reddcoin, .epic, .salvium, .litecoin, .bitcoin, .bitcoinz, .spiderbyte, .monero, .pivx };
 
 /// The registered coin backends as their concrete types. Taken from
 /// `registry.zig` — the one roster both front-ends read — rather than listed
@@ -111,6 +112,7 @@ fn entryLabel(e: Entry) []const u8 {
         .bitcoin => Bitcoin.coin_name,
         .bitcoinz => BitcoinZ.coin_name,
         .spiderbyte => SpiderByte.coin_name,
+        .pivx => Pivx.coin_name,
     };
 }
 
@@ -166,6 +168,7 @@ fn entryColor(e: Entry) zz.Color {
         .bitcoin => zz.Color.hex(Bitcoin.coin_color),
         .bitcoinz => zz.Color.hex(BitcoinZ.coin_color),
         .spiderbyte => zz.Color.hex(SpiderByte.coin_color),
+        .pivx => zz.Color.hex(Pivx.coin_color),
     };
 }
 
@@ -220,6 +223,7 @@ fn entryLive(e: Entry) bool {
         .bitcoin => Bitcoin.live,
         .bitcoinz => BitcoinZ.live,
         .spiderbyte => SpiderByte.live,
+        .pivx => Pivx.live,
     };
 }
 
@@ -3644,6 +3648,7 @@ pub const App = struct {
     bitcoin: Bitcoin,
     bitcoinz: BitcoinZ,
     spiderbyte: SpiderByte,
+    pivx: Pivx,
     selected: usize,
     /// Which tab of the selected coin's detail pane is showing. Global rather
     /// than per-coin: switching coins resets it to Home (see `move`).
@@ -3867,6 +3872,7 @@ pub const App = struct {
             .bitcoin = .{},
             .bitcoinz = .{},
             .spiderbyte = .{},
+            .pivx = .{},
             .selected = 0,
             .activities = undefined,
             .pw_input = zz.TextInput.init(ctx.persistent_allocator),
@@ -5493,6 +5499,7 @@ pub const App = struct {
             .bitcoin => @constCast(&self.bitcoin).coin(),
             .bitcoinz => @constCast(&self.bitcoinz).coin(),
             .spiderbyte => @constCast(&self.spiderbyte).coin(),
+            .pivx => @constCast(&self.pivx).coin(),
         };
     }
 
