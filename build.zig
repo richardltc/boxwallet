@@ -535,13 +535,38 @@ fn buildGuiExe(
 
     // The GUI executable: pure C/C++ (main is in main.cpp), no Zig root. In Zig
     // 0.16 the C-source/include/link wiring lives on the Module.
+    //
+    // `sanitize_c`: the dev build turns UBSan off, the release bundles keep
+    // whatever the optimize mode implies. main.cpp is one translation unit that
+    // swallows the ~110k-line generated `app.slint.h`, so *any* edit to
+    // gui/app.slint recompiles the lot — and `-ftime-report` puts ~56% of that in
+    // machine-code generation, where the trap-on-UB checks are emitted. Dropping
+    // them takes the edit-to-window loop from ~65s to ~52s and costs nothing a
+    // release build relies on. See `dev_cflags` for the other half.
+    const dev_build = rpath == .package_dir;
     const exe_mod = b.createModule(.{
         .target = target,
         .optimize = optimize,
         .link_libcpp = true,
         .strip = strip,
+        .sanitize_c = if (dev_build) .off else null,
     });
-    exe_mod.addCSourceFile(.{ .file = b.path("gui/main.cpp"), .flags = &.{"-std=c++20"} });
+    // Full DWARF for a TU this size is another ~6s of codegen and the biggest
+    // single contributor to its 3 GB peak. `-gline-tables-only` keeps what a dev
+    // loop actually reads — file:line in a backtrace, breakpoints by function —
+    // and drops only variable inspection. `-Dgui-debug` restores full `-g` for
+    // the rare session that needs to step through main.cpp. Release bundles never
+    // take this path.
+    //
+    // Declared inside the `dev_build` arm on purpose: `buildGuiExe` runs once per
+    // release target too, and `b.option` panics if the same name is declared
+    // twice. Only the dev call reaches this.
+    const cflags: []const []const u8 = if (dev_build and
+        !(b.option(bool, "gui-debug", "Full DWARF for the GUI's C++ TU (slower build, steppable main.cpp)") orelse false))
+        &.{ "-std=c++20", "-gline-tables-only" }
+    else
+        &.{"-std=c++20"};
+    exe_mod.addCSourceFile(.{ .file = b.path("gui/main.cpp"), .flags = cflags });
     exe_mod.addIncludePath(font_header.dirname()); // generated monofont.h
     exe_mod.addIncludePath(gen_header.dirname()); // generated app.slint.h (also orders the compile after gen)
     exe_mod.addIncludePath(b.path("gui"));
