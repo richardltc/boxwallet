@@ -708,7 +708,7 @@ component StatusIcon inherits Rectangle {
     property <float> pulse-phase: 0.5 + 0.5 * Math.sin(root.t * 360deg);
     property <float> pulse-op: 0.4 + 0.6 * root.pulse-phase;
     // Grows the icon in sync with the brightness so a pulse "breathes" outward.
-    property <float> pulse-scale: 1.0 + 0.28 * root.pulse-phase;
+    property <float> pulse-scale: 1.0 + 0.42 * root.pulse-phase;
     property <bool> pulsing: root.moving && root.motion == "pulse";
     // One full turn every 7.2s — an eighth speed. A sync can run for hours, so the
     // spinner is there to say "still working", not to hurry anyone along.
@@ -747,7 +747,7 @@ component StatusIcon inherits Rectangle {
         // brightness and draining to grey at the trough, like the hop does with
         // height. Checked before `active`: the smiley is active *while* loading,
         // and a solid accent would mask the animation.
-        colorize: root.pulsing ? root.accent.mix(root.idle, 1.0 - root.pulse-phase)
+        colorize: root.pulsing ? root.accent.mix(root.idle, root.pulse-phase)
             : root.active ? root.accent
             : (root.hopping ? root.accent.mix(root.idle, 1.0 - root.hop-air) : root.idle);
         width: 33px;
@@ -764,6 +764,86 @@ component StatusIcon inherits Rectangle {
     }
     Tooltip {
         text: @markdown("\{root.hint}");
+    }
+}
+
+// A glow that travels anti-clockwise around a modal card while that card's
+// action is in flight — a wallet password being checked, a wallet being opened.
+// Those go out to a daemon over RPC and can sit there for seconds, and a card
+// that just says "Working…" reads as one that didn't hear the click.
+//
+// Size and place it exactly over the card, and declare it BEFORE the card so it
+// paints behind: each layer is a filled rounded rectangle inflated past the
+// card's edge, and the card's own opaque background trims it back to a ring.
+// The outer, fainter copy is the bloom around the crisp one.
+//
+// `animation-tick()` is read only while `running`, so the halo costs no repaints
+// once its action finishes (and none at all on a card that isn't working).
+component BusyHalo inherits Rectangle {
+    in property <color> accent;
+    in property <bool> running: false;
+    // The card's own corner radius. Each layer adds its own inflation to it, so
+    // the halo's corners stay concentric with the card's rather than squaring
+    // off around them.
+    in property <length> card-radius: 10px;
+    in property <length> ring: 2px;   // how far the crisp band reaches out
+    in property <length> bloom: 7px;  // and the soft one
+
+    // One head per lap, 2.4s a lap, with a tail behind it about a third of the
+    // way round. Unhurried on purpose, like the sync spinner: it says "still
+    // working", not "nearly there".
+    property <float> tail-turns: 0.32;
+    // Decreasing with time is what makes it anti-clockwise: a conic gradient's
+    // angle grows *clockwise* from the top, so a band walking down in angle
+    // walks backwards around the ring.
+    property <float> p: root.running
+        ? 1.0 - Math.mod(animation-tick() / 1ms, 2400) / 2400
+        : 0.0;
+    property <color> head: root.accent.brighter(0.8);
+    property <color> gone: root.accent.transparentize(1.0);
+    // A conic gradient doesn't interpolate across the 0/1turn seam, so the part
+    // of each lap where the tail straddles it has to be drawn as its two halves:
+    // the tail's leftover above the seam, and the head below it. `seam` is the
+    // colour the fade has reached by the seam, which both halves bind to so the
+    // ring can't show a join there.
+    // Where the tail ends, and how far it runs past the seam when it straddles
+    // one. Named rather than written inline because a gradient stop whose angle
+    // opens with a bracket parses as a call on the colour before it.
+    property <float> tail-end: root.p + root.tail-turns;
+    property <float> over: root.tail-end - 1.0;
+    property <color> seam: root.head.mix(root.gone, (1.0 - root.p) / root.tail-turns);
+    property <brush> sweep: root.over <= 0.0
+        ? @conic-gradient(
+            root.gone 0turn,
+            root.gone root.p * 1turn,
+            root.head root.p * 1turn,
+            root.gone root.tail-end * 1turn,
+            root.gone 1turn)
+        : @conic-gradient(
+            root.seam 0turn,
+            root.gone root.over * 1turn,
+            root.gone root.p * 1turn,
+            root.head root.p * 1turn,
+            root.seam 1turn);
+
+    background: transparent;
+
+    Rectangle {
+        x: -root.bloom;
+        y: -root.bloom;
+        width: parent.width + 2 * root.bloom;
+        height: parent.height + 2 * root.bloom;
+        border-radius: root.card-radius + root.bloom;
+        background: root.sweep;
+        opacity: 0.28;
+    }
+    Rectangle {
+        x: -root.ring;
+        y: -root.ring;
+        width: parent.width + 2 * root.ring;
+        height: parent.height + 2 * root.ring;
+        border-radius: root.card-radius + root.ring;
+        background: root.sweep;
     }
 }
 
@@ -3863,7 +3943,19 @@ export component AppWindow inherits Window {
             background: #000000bb;
             TouchArea { }
 
-            Rectangle {
+            // Stage 6 is the op out at the wallet service — creating, restoring
+            // or opening. Same halo as the wallet-menu card's stage 4, for the
+            // same reason: these wait on a process and RPC, not on the click.
+            if root.wallet-stage == 6: BusyHalo {
+                x: ws-card.x;
+                y: ws-card.y;
+                width: ws-card.width;
+                height: ws-card.height;
+                accent: root.coin-color;
+                running: true;
+            }
+
+            ws-card := Rectangle {
                 width: 400px;
                 // Hug the content, so each stage is only as tall as it needs to be —
                 // the menu is three buttons, not a full-height slab.
@@ -4645,6 +4737,18 @@ export component AppWindow inherits Window {
         if root.wa-stage != 0: Rectangle {
             background: #000000bb;
             TouchArea { }
+
+            // Stage 4 is the action already out at the daemon — the unlock whose
+            // password is being checked, the backup being written. Ring the card
+            // in its coin colour while that runs. Before the card, so it's behind.
+            if root.wa-stage == 4: BusyHalo {
+                x: wa-card.x;
+                y: wa-card.y;
+                width: wa-card.width;
+                height: wa-card.height;
+                accent: root.coin-color;
+                running: true;
+            }
 
             wa-card := Rectangle {
                 width: 420px;
