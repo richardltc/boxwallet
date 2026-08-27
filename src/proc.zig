@@ -34,11 +34,10 @@ pub fn alive(io: std.Io, name: []const u8) bool {
 /// machine, `ergo-<ver>.jar` matches ours. Null matches by name, as `alive`.
 pub fn aliveMatching(io: std.Io, name: []const u8, cmdline_needle: ?[]const u8) bool {
     if (builtin.os.tag == .windows) {
-        // Only the by-name case is answerable cheaply here; a Windows process's
-        // command line lives in its PEB, not in the snapshot, so the interpreter
-        // case keeps the conservative "assume alive". Ergo is the only coin that
-        // uses it.
-        if (cmdline_needle != null) return true;
+        // The snapshot carries only the image name, so the interpreter case has
+        // to go one step further and read each process's command line out of its
+        // own address space. Ergo is the only coin that takes that path.
+        if (cmdline_needle) |needle| return aliveByCmdlineWindows(needle);
         return aliveByToolhelp(name);
     }
     var proc = std.Io.Dir.cwd().openDir(io, "/proc", .{ .iterate = true }) catch
@@ -105,6 +104,37 @@ extern "kernel32" fn Process32NextW(
     lppe: *PROCESSENTRY32W,
 ) callconv(.winapi) std.os.windows.BOOL;
 
+/// Enough to ask a process where its PEB is and to read a few words out of it —
+/// and no more. `QUERY_LIMITED_INFORMATION` (not `QUERY_INFORMATION`) is the
+/// modern, least-privileged form and is what a same-user process is granted.
+const PROCESS_QUERY_LIMITED_INFORMATION: u32 = 0x1000;
+const PROCESS_VM_READ: u32 = 0x0010;
+
+extern "kernel32" fn OpenProcess(
+    dwDesiredAccess: u32,
+    bInheritHandle: std.os.windows.BOOL,
+    dwProcessId: u32,
+) callconv(.winapi) ?std.os.windows.HANDLE;
+
+extern "kernel32" fn ReadProcessMemory(
+    hProcess: std.os.windows.HANDLE,
+    lpBaseAddress: ?*const anyopaque,
+    lpBuffer: *anyopaque,
+    nSize: usize,
+    lpNumberOfBytesRead: ?*usize,
+) callconv(.winapi) std.os.windows.BOOL;
+
+/// `PROCESS_BASIC_INFORMATION`, of which only `PebBaseAddress` is wanted — the
+/// rest is here so the struct is the size `NtQueryInformationProcess` expects.
+const PROCESS_BASIC_INFORMATION = extern struct {
+    ExitStatus: std.os.windows.NTSTATUS,
+    PebBaseAddress: ?*anyopaque,
+    AffinityMask: usize,
+    BasePriority: std.os.windows.LONG,
+    UniqueProcessId: usize,
+    InheritedFromUniqueProcessId: usize,
+};
+
 /// True while some process's image name equals `name` (case-insensitively — the
 /// Windows filesystem and process table both are).
 ///
@@ -146,6 +176,121 @@ fn imageNameEquals(image: []const u16, want: []const u8) bool {
         if (!std.ascii.eqlIgnoreCase(&.{@intCast(wide)}, &.{want[i]})) return false;
     }
     return i == want.len; // both ended together
+}
+
+/// True while some process's command line contains `needle` — the Windows half
+/// of `aliveMatching`'s interpreter case, and the counterpart to the `/proc`
+/// walk in `aliveByCmdline`.
+///
+/// This replaced an unconditional `return true`, which made Ergo — the only coin
+/// matched this way — read as permanently alive on Windows. Merely *selecting*
+/// Ergo, with nothing running, set the GUI's smiley pulsing "daemon starting"
+/// (`coming_up` in main.cpp falls back to this liveness check for a coin with no
+/// `-28` warm-up protocol to report a stage), and it never stopped. It also made
+/// `stayedAlive` answer yes to a start that had already died.
+///
+/// A Windows command line isn't in the Toolhelp snapshot — that carries only the
+/// image name, which for Ergo is the JVM's and says nothing about which jar it is
+/// running. It lives in the process's own address space, in the
+/// `RTL_USER_PROCESS_PARAMETERS` block the PEB points at, so each process is
+/// opened and walked: PEB address → parameters pointer → the `UNICODE_STRING`
+/// that is the command line → a bounded read of its text.
+///
+/// Keeps the file's conservative bias where it can't tell (no snapshot, no first
+/// entry): a live daemon must never be declared dead. A process that simply
+/// can't be opened is skipped rather than counted as a match — we launch the
+/// daemon ourselves, as this user, so ours is always readable, and every process
+/// that isn't is one we'd have had no business matching.
+fn aliveByCmdlineWindows(needle: []const u8) bool {
+    const windows = std.os.windows;
+    const snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+    if (snapshot == windows.INVALID_HANDLE_VALUE) return true;
+    defer windows.CloseHandle(snapshot);
+
+    var entry: PROCESSENTRY32W = undefined;
+    entry.dwSize = @sizeOf(PROCESSENTRY32W);
+    if (!Process32FirstW(snapshot, &entry).toBool()) return true;
+    while (true) {
+        // Skip pid 0 (the idle process): it has no user-mode address space, so
+        // the walk below can only fail on it.
+        if (entry.th32ProcessID != 0 and cmdlineContains(entry.th32ProcessID, needle)) return true;
+        entry.dwSize = @sizeOf(PROCESSENTRY32W);
+        if (!Process32NextW(snapshot, &entry).toBool()) return false;
+    }
+}
+
+/// True if process `pid`'s command line contains `needle` (case-insensitive
+/// ASCII). False for anything that can't be read — a process we may not open, a
+/// 32-bit process seen from a 64-bit build, one that exited mid-walk.
+fn cmdlineContains(pid: u32, needle: []const u8) bool {
+    const windows = std.os.windows;
+    const handle = OpenProcess(
+        PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_VM_READ,
+        .FALSE,
+        pid,
+    ) orelse return false;
+    defer windows.CloseHandle(handle);
+
+    var pbi: PROCESS_BASIC_INFORMATION = undefined;
+    if (windows.ntdll.NtQueryInformationProcess(
+        handle,
+        .BasicInformation,
+        &pbi,
+        @sizeOf(PROCESS_BASIC_INFORMATION),
+        null,
+    ) != .SUCCESS) return false;
+    const peb = @intFromPtr(pbi.PebBaseAddress orelse return false);
+
+    // Two pointer hops, each a single word read across the process boundary.
+    // `@offsetOf` rather than the documented constants (0x20 / 0x70 on x86_64)
+    // so a stdlib layout change or a 32-bit build can't silently read garbage.
+    var params: usize = 0;
+    if (!readAcross(handle, peb + @offsetOf(windows.PEB, "ProcessParameters"), std.mem.asBytes(&params)))
+        return false;
+
+    var cmdline: windows.UNICODE_STRING = undefined;
+    if (!readAcross(
+        handle,
+        params + @offsetOf(windows.RTL_USER_PROCESS_PARAMETERS, "CommandLine"),
+        std.mem.asBytes(&cmdline),
+    )) return false;
+    const text = @intFromPtr(cmdline.Buffer orelse return false);
+
+    // Bounded, as the `/proc` side is: a JVM launch line is long (heap flags, a
+    // full path to the jar), but the jar sits early in it, and a truncated read
+    // only ever costs a match we'd have made — never a false one. `Length` is a
+    // byte count, and the string is not NUL-terminated.
+    var buf: [2048]u16 = undefined;
+    const chars = @min(cmdline.Length / @sizeOf(u16), buf.len);
+    if (chars == 0) return false;
+    if (!readAcross(handle, text, std.mem.sliceAsBytes(buf[0..chars]))) return false;
+    return wideContains(buf[0..chars], needle);
+}
+
+/// Fill `out` from `addr` in another process. False unless every byte arrived —
+/// a short read means the layout wasn't what we assumed, which is not something
+/// to then go matching against.
+fn readAcross(handle: std.os.windows.HANDLE, addr: usize, out: []u8) bool {
+    if (addr == 0) return false;
+    var read: usize = 0;
+    if (!ReadProcessMemory(handle, @ptrFromInt(addr), out.ptr, out.len, &read).toBool()) return false;
+    return read == out.len;
+}
+
+/// Case-insensitive ASCII substring search of a WTF-16 haystack. The needle is a
+/// coin's daemon/jar filename, ASCII by construction, so any wide character
+/// above 0x7F is simply a non-match — no decoding, no allocation.
+fn wideContains(haystack: []const u16, needle: []const u8) bool {
+    if (needle.len == 0 or needle.len > haystack.len) return false;
+    var i: usize = 0;
+    outer: while (i + needle.len <= haystack.len) : (i += 1) {
+        for (needle, haystack[i .. i + needle.len]) |want, wide| {
+            if (wide > 0x7F) continue :outer;
+            if (!std.ascii.eqlIgnoreCase(&.{@as(u8, @intCast(wide))}, &.{want})) continue :outer;
+        }
+        return true;
+    }
+    return false;
 }
 
 /// True if `/proc/<pid>` is a zombie — the process has exited and only its exit
@@ -520,6 +665,68 @@ test "a process that cannot exist is not reported alive on Windows either" {
         child.kill(io);
     }
     try std.testing.expect(alive(io, "cmd.exe"));
+}
+
+test "wideContains matches a jar name case-insensitively, and only whole" {
+    const wide = struct {
+        fn of(comptime s: []const u8) [s.len]u16 {
+            var out: [s.len]u16 = undefined;
+            for (s, 0..) |c, i| out[i] = c;
+            return out;
+        }
+    };
+
+    // The shape of the real thing: a JVM launch line with the jar mid-way.
+    const line = wide.of("C:\\Users\\me\\java.exe -Xmx2g -jar C:\\bw\\ergo-5.0.32.jar --mainnet");
+    try std.testing.expect(wideContains(&line, "ergo-5.0.32.jar"));
+    // A different version is a different node — the needle carries the whole
+    // burden of saying "this JVM is ours", so a near miss must not match.
+    try std.testing.expect(!wideContains(&line, "ergo-5.0.31.jar"));
+    // Windows paths are case-insensitive and the casing isn't ours to predict.
+    const shouty = wide.of("JAVA.EXE -JAR ERGO-5.0.32.JAR");
+    try std.testing.expect(wideContains(&shouty, "ergo-5.0.32.jar"));
+    // A needle longer than the line can't match, and mustn't read past it.
+    const short = wide.of("java");
+    try std.testing.expect(!wideContains(&short, "ergo-5.0.32.jar"));
+    // Non-ASCII in the path is a mismatch at that position, not a decode.
+    var accented = wide.of("C:\\x\\ergo-5.0.32.jar");
+    accented[3] = 0x00e9; // é
+    try std.testing.expect(wideContains(&accented, "ergo-5.0.32.jar"));
+    accented[8] = 0x00e9;
+    try std.testing.expect(!wideContains(&accented, "ergo-5.0.32.jar"));
+}
+
+test "an interpreter-launched daemon is matched by its command line on Windows" {
+    if (builtin.os.tag != .windows) return error.SkipZigTest;
+
+    var threaded: std.Io.Threaded = .init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    // The regression: the needle case used to `return true` unconditionally, so
+    // Ergo read as running on Windows from the moment it was selected — the GUI
+    // smiley pulsed "daemon starting" with no node anywhere.
+    //
+    // Composed at runtime rather than written as a literal: a literal needle
+    // would sit in this test binary's own command line whenever it is invoked by
+    // name, and match itself.
+    var absent: [32]u8 = undefined;
+    const needle = try std.fmt.bufPrint(&absent, "bw-{s}-{d}.jar", .{ "absent", 4242 });
+    try std.testing.expect(!aliveMatching(io, "irrelevant.exe", needle));
+
+    // The positive half: a child whose command line carries a marker `pause`
+    // ignores. The *name* it runs under is `cmd.exe` — exactly the interpreter
+    // case, where the name says nothing and the needle says everything.
+    var child = std.process.spawn(io, .{
+        .argv = &.{ "cmd.exe", "/c", "pause", "bw-marker-1a2b3c.jar" },
+        .stdin = .ignore,
+        .stdout = .ignore,
+        .stderr = .ignore,
+    }) catch return error.SkipZigTest;
+    defer {
+        child.kill(io);
+    }
+    try std.testing.expect(aliveMatching(io, "no-such-image.exe", "bw-marker-1a2b3c.jar"));
 }
 
 test "an epee log line surfaces its message, not its columns" {
