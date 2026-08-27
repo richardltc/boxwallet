@@ -7694,7 +7694,8 @@ pub const App = struct {
     }
 
     /// The Settings tab body: the on-disk location of the coin's managed wallet
-    /// file (so the user can find/back it up) and — for prune-capable coins
+    /// file (so the user can find/back it up), the daemon's data directory —
+    /// the parent the chain is stored under — and — for prune-capable coins
     /// (Bitcoin/Litecoin/Monero) — the configured prune setting, read-only. Coins BoxWallet manages
     /// no discrete wallet file for (Ergo's node-internal wallet, Epic, Zano) show an
     /// em-dash. Monero-style coins list the `.keys` companion on its own line. All
@@ -7716,6 +7717,18 @@ pub const App = struct {
             const keys_value = (zz.Style{}).dim(true).render(a, k) catch k;
             break :blk std.fmt.allocPrint(a, "\n{s}: {s}", .{ keys_label, keys_value }) catch "";
         } else "";
+        // Where the chain itself lives — the coin daemon's own data dir, the
+        // parent of `blocks/`. Worth naming: it's the directory that grows to
+        // hundreds of GB, the one to point a backup or a bigger disk at, and
+        // (because BoxWallet deliberately adopts the standard data dir) the
+        // proof of *which* copy of the chain this coin is sharing. A pure path
+        // computation — no disk IO in the render path.
+        const chain_label = statusLabel(a, brand, "Blockchain ", true);
+        const chain_dir = coin.dataDir(a, home_dir) catch null;
+        const chain_value: []const u8 = if (chain_dir) |d|
+            (zz.Style{}).dim(true).render(a, d) catch d
+        else
+            (zz.Style{}).fg(.brightBlack).render(a, "—") catch "—";
         // Pruning row, only for coins with the capability (Litecoin). Read-only —
         // the value is chosen once at first start. "Pruning" is padded to the
         // wallet labels' width so the colon lines up.
@@ -7727,8 +7740,9 @@ pub const App = struct {
         return std.fmt.allocPrint(a,
             \\Settings
             \\
-            \\{s}: {s}{s}{s}
-        , .{ wallet_label, wallet_value, keys_row, prune_row });
+            \\{s}: {s}{s}
+            \\{s}: {s}{s}
+        , .{ wallet_label, wallet_value, keys_row, chain_label, chain_value, prune_row });
     }
 
     /// Format a cached prune value (0 = full node, <0 = not configured yet) for the

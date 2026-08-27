@@ -907,6 +907,7 @@ static void apply_coin_metadata(const AppWindow *ui, bw_ctx *ctx, int idx)
     // just left — a wallet path is exactly the sort of thing someone copies.
     ui->set_wallet_file_path(ss(""));
     ui->set_wallet_keys_path(ss(""));
+    ui->set_data_dir_path(ss(""));
     ui->set_prune_mode(bw_prune_mode(idx));
     ui->set_prune_text(ss(""));
     ui->set_balance_total(ss("—"));
@@ -1352,6 +1353,8 @@ int main(int argc, char **argv)
             size_t wn = bw_wallet_file_path(ctx, static_cast<size_t>(idx), wf, sizeof wf);
             char wk[512];
             size_t kn = bw_wallet_keys_path(ctx, static_cast<size_t>(idx), wk, sizeof wk);
+            char dd[512];
+            size_t dn = bw_data_dir(ctx, static_cast<size_t>(idx), dd, sizeof dd);
 
             std::string prune;
             if (bw_prune_mode(static_cast<size_t>(idx)) >= 0) {
@@ -1368,6 +1371,7 @@ int main(int argc, char **argv)
             post_to_ui([weak, idx,
                         file = std::string(wf, wn),
                         keys = std::string(wk, kn),
+                        data_dir = std::string(dd, dn),
                         prune]() {
                 auto h = weak.lock();
                 if (!h)
@@ -1378,6 +1382,7 @@ int main(int argc, char **argv)
                     return;
                 (*h)->set_wallet_file_path(ss(file));
                 (*h)->set_wallet_keys_path(ss(keys));
+                (*h)->set_data_dir_path(ss(data_dir));
                 (*h)->set_prune_text(ss(prune));
             });
         }).detach();

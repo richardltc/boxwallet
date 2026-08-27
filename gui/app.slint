@@ -1433,6 +1433,8 @@ export component AppWindow inherits Window {
     // `prune-mode` is -1 for a coin that doesn't prune, which hides that row.
     in property <string> wallet-file-path: "";
     in property <string> wallet-keys-path: "";
+    // The coin daemon's data directory — the parent the chain is stored under.
+    in property <string> data-dir-path: "";
     in property <int> prune-mode: -1;
     in property <string> prune-text: "";
 
@@ -3122,8 +3124,8 @@ export component AppWindow inherits Window {
                     }
 
                     // Settings — read-only for now, mirroring the TUI's tab: where
-                    // this coin's wallet lives on disk, and how its chain is
-                    // stored. Both are things you need when backing up or
+                    // this coin's wallet lives on disk, where its chain is stored,
+                    // and how. Both are things you need when backing up or
                     // troubleshooting and shouldn't have to go digging for.
                     if root.tab == 4: VerticalLayout {
                         spacing: 14px;
@@ -3155,6 +3157,16 @@ export component AppWindow inherits Window {
                             color: #8a8a8a;
                             font-size: 12px;
                             wrap: word-wrap;
+                        }
+
+                        // Where the chain itself lives. It's the directory that
+                        // grows to hundreds of GB, so it's the one someone points
+                        // a backup or a bigger disk at — and, since BoxWallet
+                        // adopts the daemon's standard data dir, it also shows
+                        // *which* copy of the chain this coin is sharing.
+                        if root.data-dir-path != "": SettingsRow {
+                            label: "Blockchain";
+                            value: root.data-dir-path;
                         }
 
                         // Only for the coins that prune at all (Bitcoin, Litecoin,
