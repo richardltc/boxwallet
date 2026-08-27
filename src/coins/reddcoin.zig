@@ -859,7 +859,7 @@ test "coin vtable dispatches to ReddCoin metadata" {
     try std.testing.expectEqualStrings("#e30613", c.coinColor());
     try std.testing.expect(c.isProofOfStake());
     try std.testing.expectEqualStrings("reddcoin.conf", c.confFile());
-    try std.testing.expectEqualStrings("reddcoind", c.daemonFile());
+    try std.testing.expectEqualStrings("reddcoind" ++ ReddCoin.exe_suffix, c.daemonFile());
     try std.testing.expectEqualStrings("45443", c.rpcDefaultPort());
     // Core-22 fork: needs an explicit wallet created/loaded after start.
     try std.testing.expect(c.needsWallet());

@@ -1316,7 +1316,7 @@ test "coin vtable dispatches to Zano metadata" {
     try std.testing.expectEqualStrings("#274cff", c.coinColor());
     try std.testing.expect(c.isProofOfStake());
     try std.testing.expectEqualStrings("zano.conf", c.confFile());
-    try std.testing.expectEqualStrings("zanod", c.daemonFile());
+    try std.testing.expectEqualStrings("zanod" ++ Zano.exe_suffix, c.daemonFile());
     try std.testing.expectEqualStrings("11211", c.rpcDefaultPort());
     try std.testing.expectEqual(Coin.LaunchMode.foreground, c.launchMode());
     try std.testing.expectEqualStrings("zanod.log", c.daemonLogFile().?);

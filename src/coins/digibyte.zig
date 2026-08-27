@@ -1160,7 +1160,7 @@ test "coin vtable dispatches to DigiByte metadata" {
     try std.testing.expectEqualStrings("#0066CC", c.coinColor());
     try std.testing.expect(!c.isProofOfStake());
     try std.testing.expectEqualStrings("digibyte.conf", c.confFile());
-    try std.testing.expectEqualStrings("digibyted", c.daemonFile());
+    try std.testing.expectEqualStrings("digibyted" ++ DigiByte.exe_suffix, c.daemonFile());
     try std.testing.expectEqualStrings("14022", c.rpcDefaultPort());
     // Core-26 fork: needs an explicit wallet created/loaded after start.
     try std.testing.expect(c.needsWallet());
