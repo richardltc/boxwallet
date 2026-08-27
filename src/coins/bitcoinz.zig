@@ -991,20 +991,22 @@ test "walletPath points at the zcashd-style wallet.dat in the data dir" {
 
 test "params dir resolves to the shared ZcashParams location on every platform" {
     const allocator = std.testing.allocator;
+    const pathtest = @import("../pathtest.zig");
 
+    // Each branch is asked for a *simulated* OS, so the separator in the answer
+    // is the host's and says nothing about correctness — compared on '/' so one
+    // expectation holds on all three hosts.
     const linux = try BitcoinZ.paramsDirFor(allocator, "/home/alice", .linux);
     defer allocator.free(linux);
-    try std.testing.expectEqualStrings("/home/alice/.zcash-params", linux);
+    try pathtest.expectEqual("/home/alice/.zcash-params", linux);
 
     const mac = try BitcoinZ.paramsDirFor(allocator, "/Users/alice", .macos);
     defer allocator.free(mac);
-    try std.testing.expectEqualStrings("/Users/alice/Library/Application Support/ZcashParams", mac);
+    try pathtest.expectEqual("/Users/alice/Library/Application Support/ZcashParams", mac);
 
     const win = try BitcoinZ.paramsDirFor(allocator, "C:\\Users\\alice", .windows);
     defer allocator.free(win);
-    const sep = std.fs.path.sep_str;
-    const expected = "C:\\Users\\alice" ++ sep ++ "AppData" ++ sep ++ "Roaming" ++ sep ++ "ZcashParams";
-    try std.testing.expectEqualStrings(expected, win);
+    try pathtest.expectEqual("C:\\Users\\alice\\AppData\\Roaming\\ZcashParams", win);
 }
 
 test "an empty home dir is refused rather than resolving relative to the CWD" {
