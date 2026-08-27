@@ -959,7 +959,7 @@ test "coin vtable dispatches to Divi metadata" {
     try std.testing.expectEqualStrings("#ED295A", c.coinColor());
     try std.testing.expect(c.isProofOfStake());
     try std.testing.expectEqualStrings("divi.conf", c.confFile());
-    try std.testing.expectEqualStrings("divid", c.daemonFile());
+    try std.testing.expectEqualStrings("divid" ++ Divi.exe_suffix, c.daemonFile());
     try std.testing.expectEqualStrings("51473", c.rpcDefaultPort());
     // Divi's wallet is manageable over RPC — the `w` menu is available.
     try std.testing.expect(c.supportsWallet());

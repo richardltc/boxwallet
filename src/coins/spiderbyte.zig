@@ -1067,7 +1067,7 @@ test "coin vtable dispatches to SpiderByte metadata" {
     try std.testing.expectEqualStrings("#f72585", c.coinColor());
     try std.testing.expect(c.isProofOfStake());
     try std.testing.expectEqualStrings("SpiderByte.conf", c.confFile());
-    try std.testing.expectEqualStrings("spiderbyted", c.daemonFile());
+    try std.testing.expectEqualStrings("spiderbyted" ++ SpiderByte.exe_suffix, c.daemonFile());
     try std.testing.expectEqualStrings("44350", c.rpcDefaultPort());
     // Daemon auto-loads its own wallet.dat → no explicit create/load step.
     try std.testing.expect(!c.needsWallet());
