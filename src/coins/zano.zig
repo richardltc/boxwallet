@@ -71,7 +71,7 @@ pub const Zano = struct {
     pub const home_dir_mac: ?[]const u8 = null;
     pub const rpc_default_username = "zanorpc";
     pub const rpc_default_port = "11211";
-    pub const core_version = "2.2.1.502";
+    pub const core_version = "2.2.1.506";
 
     // Binary names. Windows appends `.exe`; Linux uses the bare names. Zano's CLI
     // is `simplewallet`, and there's no `*-tx` helper (unlike the bitcoin coins).
@@ -105,13 +105,13 @@ pub const Zano = struct {
     // the URL can't be derived from the version alone. Bumping the version means
     // looking up the new hashed filename, which the GitHub release page publishes
     // in its PGP-signed notes (GitHub hosts no assets itself) — e.g.
-    // https://github.com/hyle-team/zano/releases/tag/2.2.1.502. This is the latest
+    // https://github.com/hyle-team/zano/releases/tag/2.2.1.506. This is the latest
     // stable `release`-channel build.
     //
     // The hash must be bumped in lockstep with `core_version`: the two are spliced
     // into one filename, and a mismatched pair resolves to a 404 rather than to the
     // wrong build.
-    const appimage_build_hash = "76a791c";
+    const appimage_build_hash = "b76fa18";
     const appimage_url = "https://build.zano.org/builds/zano-linux-x64-release-v" ++
         core_version ++ "%5B" ++ appimage_build_hash ++ "%5D.AppImage";
     // Windows ships an official .zip (same build hash) carrying zanod.exe /
@@ -321,7 +321,7 @@ pub const Zano = struct {
         return install_mod.probeBinaryVersion(allocator, install_root, daemon_rel, ".zanod.probe");
     }
 
-    /// Zano's `--version` banner reads `Zano v2.2.1.502[76a791c]` (simplewallet
+    /// Zano's `--version` banner reads `Zano v2.2.1.506[b76fa18]` (simplewallet
     /// prefixes an extra word) — the shared banner parser's shape. Aliased so the
     /// parse stays covered from Zano's own tests.
     const parseVersionOutput = install_mod.parseVersionBanner;
@@ -1281,7 +1281,7 @@ test "parseVersionOutput lifts the bare version out of zanod's --version banner"
     // The build hash is dropped, so a freshly-installed binary's banner yields
     // exactly the pinned `core_version` — the whole point of parsing rather than
     // storing the banner, since the marker is compared against it verbatim.
-    const banner = "Zano v" ++ Zano.core_version ++ "[76a791c]";
+    const banner = "Zano v" ++ Zano.core_version ++ "[b76fa18]";
     const v = Zano.parseVersionOutput(banner).?;
     try std.testing.expect(std.mem.indexOfScalar(u8, v, '[') == null);
     try std.testing.expectEqualStrings(Zano.core_version, v);
