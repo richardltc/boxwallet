@@ -602,6 +602,7 @@ pub fn freeAuth(allocator: std.mem.Allocator, auth: models.CoinAuth) void {
 
 test "dataDir builds the coin home per platform, macOS included" {
     const allocator = std.testing.allocator;
+    const pathtest = @import("pathtest.zig");
 
     // Via `dataDirFor`, so all three branches are checked from one run. The old
     // test only covered the build target's branch — which is why the macOS paths
@@ -618,12 +619,10 @@ test "dataDir builds the coin home per platform, macOS included" {
     for (cases) |c| {
         const dir = try dataDirFor(allocator, "/home/alice", c.os, ".divi", "DIVI", "DIVI", .roaming);
         defer allocator.free(dir);
-        // Compare on '/' so the expectation reads the same regardless of the host's
-        // path separator.
-        const norm = try allocator.dupe(u8, dir);
-        defer allocator.free(norm);
-        std.mem.replaceScalar(u8, norm, '\\', '/');
-        try std.testing.expectEqualStrings(c.want, norm);
+        // Compared on '/' so one expectation reads the same on every host — these
+        // resolve paths for a *simulated* OS, so the host's separator is not the
+        // one under test.
+        try pathtest.expectEqual(c.want, dir);
     }
 
     // The CryptoNote exception: Monero and its forks use `~/.<name>` on macOS too,
@@ -632,7 +631,7 @@ test "dataDir builds the coin home per platform, macOS included" {
     // live wallet.
     const xmr = try dataDirFor(allocator, "/home/alice", .macos, ".bitmonero", "bitmonero", null, .program_data);
     defer allocator.free(xmr);
-    try std.testing.expectEqualStrings("/home/alice/.bitmonero", xmr);
+    try pathtest.expectEqual("/home/alice/.bitmonero", xmr);
 }
 
 test "readAuth parses rpc creds from a conf and falls back to defaults" {
@@ -945,6 +944,7 @@ test "every coin's macOS data dir matches what its own daemon would pick" {
     //
     // This is the check whose absence let macOS stay broken: each coin owned its
     // names, but nothing asserted they agreed with upstream.
+    const pathtest = @import("pathtest.zig");
     const Bitcoin = @import("coins/bitcoin.zig").Bitcoin;
     const Litecoin = @import("coins/litecoin.zig").Litecoin;
     const Divi = @import("coins/divi.zig").Divi;
@@ -985,10 +985,7 @@ test "every coin's macOS data dir matches what its own daemon would pick" {
     for (cases) |c| {
         const got = try dataDirFor(allocator, "/h", .macos, c.posix, c.win, c.mac, .roaming);
         defer allocator.free(got);
-        const norm = try allocator.dupe(u8, got);
-        defer allocator.free(norm);
-        std.mem.replaceScalar(u8, norm, '\\', '/');
-        std.testing.expectEqualStrings(c.want, norm) catch |e| {
+        pathtest.expectEqual(c.want, got) catch |e| {
             std.debug.print("macOS data dir mismatch for {s}\n", .{c.name});
             return e;
         };
@@ -1010,6 +1007,7 @@ test "every coin's Windows data dir matches what its own daemon would pick" {
     // ("--data-dir arg (=…)"), not inferred. Each case passes the coin's *declared*
     // base, so a coin that declares the wrong one produces the wrong path and
     // fails here rather than in the field.
+    const pathtest = @import("pathtest.zig");
     const Bitcoin = @import("coins/bitcoin.zig").Bitcoin;
     const Litecoin = @import("coins/litecoin.zig").Litecoin;
     const Divi = @import("coins/divi.zig").Divi;
@@ -1068,15 +1066,11 @@ test "every coin's Windows data dir matches what its own daemon would pick" {
             .program_data => try std.fmt.allocPrint(allocator, "{s}/{s}", .{ pd_root, c.want_name }),
         };
         defer allocator.free(want);
-        std.mem.replaceScalar(u8, want, '\\', '/');
 
         const got = try dataDirFor(allocator, "/h", .windows, c.posix, c.win, c.mac, c.base);
         defer allocator.free(got);
-        const norm = try allocator.dupe(u8, got);
-        defer allocator.free(norm);
-        std.mem.replaceScalar(u8, norm, '\\', '/');
 
-        std.testing.expectEqualStrings(want, norm) catch |e| {
+        pathtest.expectEqual(want, got) catch |e| {
             std.debug.print("Windows data dir mismatch for {s}\n", .{c.name});
             return e;
         };

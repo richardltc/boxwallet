@@ -148,6 +148,7 @@ modules below, and coins call into them with their own parameters:
 | `src/walletfile.zig` | Wallet **files** for the bitcoin family: the daemon-stopped `wallet.dat` swap (`restoreOffline`, with its key-dump/empty guards and timestamped keep-aside), the `dumpwallet` header sniff, and Core's own "where does a named wallet live" rule (`coreWalletDir` — `wallets/` only when that directory already exists). |
 | `src/timefmt.zig` | Durations ("2 hours and 5 minutes"), "… behind", block dates (UTC), storage GB (SI). |
 | `src/sigguard.zig` | Pins process-wide SIGIO/SIGPIPE handlers. **Load-bearing — see below.** |
+| `src/pathtest.zig` | Test-only path assertions that ignore the host's separator. Use these, not `expectEqualStrings`, whenever the value under test is a path — `path.join` emits `\` on Windows, so a `/`-written expectation otherwise passes on two platforms and fails on the third. |
 | `src/mining.zig` · `src/price.zig` · `src/qrcode.zig` · `src/disk.zig` · `src/memory.zig` · `src/bip39.zig` · `src/bzip2.zig` | Single-purpose helpers, each usable by either front-end. |
 | `src/app.zig` | The ZigZag TUI (master/detail). One of two front-ends. |
 | `src/capi.zig` | The C ABI the Slint GUI drives (`export fn bw_*`). The other front-end's entry to the same core. |

@@ -1496,8 +1496,9 @@ test "findFile locates the jar and the java launcher under bin/" {
 
     try std.testing.expect(jar != null);
     try std.testing.expect(java != null);
-    // The launcher picked is the one under bin/, not the decoy.
-    try std.testing.expect(std.mem.endsWith(u8, java.?, "jre/bin/" ++ java_name));
+    // The launcher picked is the one under bin/, not the decoy. `findUnder`
+    // joins with the host's separator, so the suffix is matched on '/'.
+    try @import("../pathtest.zig").expectEndsWith(java.?, "jre/bin/" ++ java_name);
 }
 
 test "the node's start-up stage is read from ergo.log" {

@@ -76,6 +76,7 @@ test {
     _ = @import("memory.zig");
     _ = @import("conf.zig");
     _ = @import("proc.zig");
+    _ = @import("pathtest.zig");
     _ = @import("warmup.zig");
     _ = @import("tipwatch.zig");
     _ = @import("extwallet.zig");

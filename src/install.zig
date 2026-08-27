@@ -2153,6 +2153,15 @@ test "a snapshot writes only the directories it's allowed to" {
     try std.testing.expect(!fileExists(allocator, root ++ "/out", "blocks/link.dat"));
 }
 
+/// Whether this process may create a symlink in `dir` — the privilege, not the
+/// platform. Cleans up after itself; a probe that can't be cleaned up still
+/// answers, since the caller only writes into a throwaway tree.
+fn canSymlink(io: std.Io, dir: std.Io.Dir) bool {
+    dir.symLink(io, "target", "bw-symlink-probe", .{}) catch return false;
+    dir.deleteFile(io, "bw-symlink-probe") catch {};
+    return true;
+}
+
 test "an unfiltered extract still writes the whole archive" {
     const allocator = std.testing.allocator;
 
@@ -2167,6 +2176,14 @@ test "an unfiltered extract still writes the whole archive" {
     var dir = try std.Io.Dir.cwd().createDirPathOpen(io, root, .{});
     defer dir.close(io);
     try dir.writeFile(io, .{ .sub_path = "snap.tar.gz", .data = @embedFile("testdata/fixture-snapshot.tar.gz") });
+
+    // The fixture carries a symlink (`blocks/link.dat`) — the filtered test above
+    // exists to prove it's dropped, so the *unfiltered* extract necessarily tries
+    // to create it. Windows only permits that for an administrator or with
+    // Developer Mode on, and `std.tar.extract` fails the whole extract when it
+    // can't, so a stock Windows box can't run this at all. Probed rather than
+    // assumed off Windows: an elevated shell or Developer Mode runs it for real.
+    if (!canSymlink(io, dir)) return error.SkipZigTest;
 
     // The no-allow-list path is what every coin's install uses, where the whole
     // archive is the point — the filter existing must not have narrowed it.

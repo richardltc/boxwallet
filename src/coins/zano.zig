@@ -1371,7 +1371,11 @@ test "walletRemove drops the wallet dir so a replacement can be set up" {
     try Zano.walletRemove(allocator, home);
 
     // Lay down the single Zano wallet file, then remove it; walletExists flips back.
-    const wallet_dir = try std.fs.path.join(allocator, &.{ home, Zano.home_dir, "wallets" });
+    // Located with `walletDir`, not by hand: the managed wallet hangs off the
+    // *data dir*, which is `<home>/.Zano` only on POSIX — on Windows it's
+    // `<home>/AppData/Roaming/ZANO`. A hand-built POSIX path put the fixture
+    // where `walletExists` was never going to look.
+    const wallet_dir = try Zano.walletDir(allocator, home);
     defer allocator.free(wallet_dir);
     var wd = try std.Io.Dir.cwd().createDirPathOpen(io, wallet_dir, .{});
     defer wd.close(io);
@@ -1399,7 +1403,8 @@ test "launchServerArgv runs simplewallet as a localhost RPC server for the walle
     defer allocator.free(joined);
     // Opens the managed wallet file with the supplied password.
     try std.testing.expect(std.mem.indexOf(u8, joined, "--wallet-file=") != null);
-    try std.testing.expect(std.mem.indexOf(u8, joined, "wallets/BoxWallet") != null);
+    // The wallet path is joined with the host's separator; matched on '/'.
+    try @import("../pathtest.zig").expectContains(joined, "wallets/BoxWallet");
     try std.testing.expect(std.mem.indexOf(u8, joined, "--password=hunter2") != null);
     // Server mode, bound to localhost on the wallet port, pointed at the daemon.
     try std.testing.expect(std.mem.indexOf(u8, joined, "--rpc-bind-ip=127.0.0.1") != null);
@@ -1457,7 +1462,9 @@ test "walletExists keys off the BoxWallet file on disk" {
     defer threaded.deinit();
     const io = threaded.io();
 
-    // A throwaway home; walletExists resolves `<home>/.Zano/wallets/BoxWallet`.
+    // A throwaway home; walletExists resolves `<datadir>/wallets/BoxWallet`,
+    // where the data dir is `<home>/.Zano` on POSIX and
+    // `<home>/AppData/Roaming/ZANO` on Windows.
     const home = "test-zano-wallet-home";
     std.Io.Dir.cwd().deleteTree(io, home) catch {};
     defer std.Io.Dir.cwd().deleteTree(io, home) catch {};
@@ -1465,8 +1472,9 @@ test "walletExists keys off the BoxWallet file on disk" {
     // No wallet yet → false.
     try std.testing.expect(!Zano.walletExists(allocator, home));
 
-    // Lay down the wallet file and it flips to true.
-    const wallet_dir = try std.fs.path.join(allocator, &.{ home, Zano.home_dir, "wallets" });
+    // Lay down the wallet file and it flips to true. Same resolver the code
+    // under test uses, so the fixture lands where it actually looks.
+    const wallet_dir = try Zano.walletDir(allocator, home);
     defer allocator.free(wallet_dir);
     var wd = try std.Io.Dir.cwd().createDirPathOpen(io, wallet_dir, .{});
     defer wd.close(io);
@@ -1493,13 +1501,14 @@ test "restore-from-file streams an external wallet file in as the managed wallet
     const src = try std.fs.path.join(allocator, &.{ home, "mywallet.zan" });
     defer allocator.free(src);
 
-    // Import it; the bytes land at `<home>/.Zano/wallets/BoxWallet`.
+    // Import it; the bytes land at `<datadir>/wallets/BoxWallet` — resolved, not
+    // hardcoded, since the data dir is per-platform.
     try Zano.walletRestoreFile(allocator, undefined, home, src, "pw", undefined);
     try std.testing.expect(Zano.walletExists(allocator, home));
 
-    const dest = try std.fs.path.join(allocator, &.{ home, Zano.home_dir, "wallets", "BoxWallet" });
-    defer allocator.free(dest);
-    var dd = try std.Io.Dir.cwd().openDir(io, std.fs.path.dirname(dest).?, .{});
+    const wallet_dir = try Zano.walletDir(allocator, home);
+    defer allocator.free(wallet_dir);
+    var dd = try std.Io.Dir.cwd().openDir(io, wallet_dir, .{});
     defer dd.close(io);
     var f = try dd.openFile(io, "BoxWallet", .{});
     defer f.close(io);

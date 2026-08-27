@@ -872,7 +872,22 @@ fn installStagedRuntime(
     exe_path: []const u8,
 ) !?[]u8 {
     if (runtime_flat) return installFlatRuntime(gpa, io, dir, exe_path);
+    return installVersionedRuntime(gpa, io, dir, exe_path);
+}
 
+/// The versioned (Linux/macOS) half of `installStagedRuntime` — see its doc
+/// comment for why the directory is renamed into place rather than written into.
+///
+/// Split from the dispatcher for the same reason `installFlatRuntime` is called
+/// directly by its own test: `runtime_flat` is comptime-true on Windows, so
+/// going through the dispatcher there would test the flat path against a
+/// versioned fixture and get a null back.
+fn installVersionedRuntime(
+    gpa: std.mem.Allocator,
+    io: std.Io,
+    dir: std.Io.Dir,
+    exe_path: []const u8,
+) !?[]u8 {
     const name = stagedRuntimeName(gpa, io, dir) orelse return null;
     defer gpa.free(name);
 
@@ -1639,7 +1654,12 @@ test "parseRuntime fails closed on anything it doesn't fully understand" {
     try std.testing.expect(parseRuntime(overlong, asset) == null);
 }
 
-test "installStagedRuntime creates the runtime, and never touches one already there" {
+test "installVersionedRuntime creates the runtime, and never touches one already there" {
+    // The Linux/macOS layout, and called directly rather than through
+    // `installStagedRuntime` — on Windows that dispatches to the flat path,
+    // which would look for a bare `slint_cpp.dll` in the stage dir, find the
+    // versioned fixture below instead, and hand back null. Same reasoning as the
+    // flat test underneath, in the other direction.
     const allocator = std.testing.allocator;
 
     var threaded: std.Io.Threaded = .init(allocator, .{});
@@ -1664,10 +1684,10 @@ test "installStagedRuntime creates the runtime, and never touches one already th
     // back is the *destination path*, not the bare name — the flat (Windows) form
     // has no directory name to report, and its caller needs the path to be able
     // to put the old runtime back after a failed swap.
-    const name = (try installStagedRuntime(allocator, io, stage_dir, root ++ "/app/boxwallet-gui")).?;
+    const name = (try installVersionedRuntime(allocator, io, stage_dir, root ++ "/app/boxwallet-gui")).?;
     defer allocator.free(name);
     try std.testing.expect(std.mem.endsWith(u8, name, "slint-1.17.1"));
-    try std.testing.expect(std.mem.indexOf(u8, name, root ++ "/app") != null);
+    try @import("pathtest.zig").expectContains(name, root ++ "/app");
 
     var buf: [64]u8 = undefined;
     try std.testing.expectEqualStrings("NEW RUNTIME", try app_dir.readFile(io, "slint-1.17.1/" ++ runtime_so_name, &buf));
@@ -1680,7 +1700,7 @@ test "installStagedRuntime creates the runtime, and never touches one already th
     // as it is: some installed exe is linked against it, and overwriting a
     // mapped .so under a running process is the one thing this design forbids.
     try app_dir.writeFile(io, .{ .sub_path = "slint-1.17.1/" ++ runtime_so_name, .data = "IN USE" });
-    const again = (try installStagedRuntime(allocator, io, stage_dir, root ++ "/app/boxwallet-gui")).?;
+    const again = (try installVersionedRuntime(allocator, io, stage_dir, root ++ "/app/boxwallet-gui")).?;
     defer allocator.free(again);
     try std.testing.expectEqualStrings("IN USE", try app_dir.readFile(io, "slint-1.17.1/" ++ runtime_so_name, &buf));
 }
