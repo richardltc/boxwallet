@@ -9,8 +9,10 @@ const Coin = @import("../coin.zig").Coin;
 /// PIVX backend.
 ///
 /// PIVX is the chain Divi forked from, so the two share a lot of surface: the
-/// same `getinfo` with its `"staking status"` string, the same default RPC port
-/// (51473 — PIVX had it first; the daemons can't both serve RPC at once), and a
+/// same `getinfo` with its `"staking status"` string, the same mainnet ports
+/// (51472/51473 — PIVX had them first, and BoxWallet moves PIVX off both in a
+/// data dir it creates, so the two daemons can run at once; see `prepareConf`),
+/// and a
 /// wallet the daemon creates itself at first start. Where they differ, PIVX 5.x
 /// is the more modern lineage: real headers-first sync and a
 /// `verificationprogress` in `getblockchaininfo`, a numeric `unlocked_until`
@@ -49,10 +51,34 @@ pub const Pivx = struct {
     /// macOS data dir name. PIVX Core: `~/Library/Application Support/PIVX`.
     pub const home_dir_mac: ?[]const u8 = "PIVX";
     pub const rpc_default_username = "pivxrpc";
-    /// Mainnet RPC port (upstream `chainparamsbase.cpp`). The same 51473 Divi
-    /// kept when it forked — a user running both daemons at once will see the
-    /// second one fail to bind its RPC, surfaced as a start failure.
+    /// Upstream's mainnet RPC port (`chainparamsbase.cpp`) — what pivxd binds
+    /// when the conf says nothing. This is the *fallback* `conf.readAuth` seeds
+    /// `CoinAuth.port` with, so it must stay equal to the daemon's own default:
+    /// set it to the port we'd merely *prefer* and every conf without an
+    /// explicit `rpcport` (an adopted PIVX Desktop one, say) gets talked to on
+    /// the wrong port. The port BoxWallet actually *writes* is
+    /// `rpc_boxwallet_port`.
     pub const rpc_default_port = "51473";
+
+    // --- Ports for a data dir BoxWallet created --------------------------------
+    //
+    // Divi forked from PIVX and kept both of its mainnet ports, so the two
+    // daemons can't run side by side on the defaults: whichever starts second
+    // dies with "Unable to start HTTP server" (RPC 51473) and then, once that's
+    // cleared, "Failed to listen on any port" (P2P 51472). Divi is the one more
+    // likely to be already synced under the upstream numbers, so PIVX is the one
+    // that moves — but *only in a data dir BoxWallet made itself*. In a dir
+    // adopted from PIVX Desktop these are never written: those ports are that
+    // app's settings, and a user switching between the two wallets must find
+    // their node exactly as they left it. See `prepareConf`.
+
+    /// RPC port written into a `pivx.conf` BoxWallet owns. `populate` writes it
+    /// explicitly, so `readAuth` reads it straight back out of the conf and
+    /// never falls through to `rpc_default_port`.
+    pub const rpc_boxwallet_port = "51475";
+    /// P2P listen port written into a `pivx.conf` BoxWallet owns. Only the
+    /// daemon consumes it, so it's a plain `port=` line that's never read back.
+    pub const p2p_boxwallet_port = "51474";
     pub const core_version = "5.6.1";
 
     // Binary names. Windows appends `.exe`; Linux/macOS use the bare names.
@@ -276,10 +302,43 @@ pub const Pivx = struct {
     /// Ensure `pivx.conf` carries the RPC creds (and `server=1`/`daemon=1`/
     /// `rpcport`) BoxWallet needs before the daemon reads it; existing values are
     /// kept. A standard bitcoin-derived `key=value` conf.
+    ///
+    /// The Divi port clash is settled here, and only for a data dir BoxWallet
+    /// created itself. A dir that was already on disk belongs to PIVX Desktop (or
+    /// another pivxd): its ports are that app's configuration, and moving them
+    /// would silently retune a node the user still switches back to — breaking a
+    /// forwarded 51472 and any tool pointed at RPC 51473 — so an adopted dir keeps
+    /// upstream's numbers and, if Divi is also installed, is left to fail its bind
+    /// honestly rather than be reconfigured behind the user's back.
+    ///
+    /// `blocks/` and the conf itself are the markers (`conf.dataDirHasEntry`, per
+    /// the same rule `pruneShouldOffer` follows), and they're sampled *before*
+    /// `populate` runs — it creates the conf, so checking afterwards would read
+    /// every dir, including ours, as adopted.
     pub fn prepareConf(allocator: std.mem.Allocator, io: std.Io, home: []const u8) !void {
         const data_dir = try dataDir(allocator, home);
         defer allocator.free(data_dir);
-        _ = try conf.populate(allocator, io, data_dir, conf_file, rpc_default_username, rpc_default_port);
+
+        const adopted = conf.dataDirHasEntry(allocator, data_dir, conf_file) or
+            conf.dataDirHasEntry(allocator, data_dir, "blocks");
+
+        _ = try conf.populate(
+            allocator,
+            io,
+            data_dir,
+            conf_file,
+            rpc_default_username,
+            if (adopted) rpc_default_port else rpc_boxwallet_port,
+        );
+        if (adopted) return;
+
+        // Ours to place — but still never clobber a `port` a previous run (or the
+        // user) already put there; `setValue` would replace it in place.
+        if (try conf.readValue(allocator, io, data_dir, conf_file, "port")) |existing| {
+            allocator.free(existing);
+        } else {
+            try conf.setValue(allocator, io, data_dir, conf_file, "port", p2p_boxwallet_port);
+        }
     }
 
     /// PIVX is a bitcoin-derived daemon: it forks itself into the background with
@@ -798,6 +857,8 @@ test "coin vtable dispatches to PIVX metadata" {
     try std.testing.expect(c.isProofOfStake());
     try std.testing.expectEqualStrings("pivx.conf", c.confFile());
     try std.testing.expectEqualStrings("pivxd" ++ Pivx.exe_suffix, c.daemonFile());
+    // Upstream's port, not the 51475 we write: this is the fallback `readAuth`
+    // uses when a conf omits `rpcport`, so it must match what pivxd itself binds.
     try std.testing.expectEqualStrings("51473", c.rpcDefaultPort());
     // pivxd creates its default wallet itself — nothing to ensure after start.
     try std.testing.expect(!c.needsWallet());
@@ -970,4 +1031,97 @@ test "installSaplingParams copies from the archive but never over another app's 
         const n = try f.readPositionalAll(io, &buf, 0);
         try std.testing.expectEqualStrings("theirs", buf[0..n]);
     }
+}
+
+test "prepareConf moves a BoxWallet-created dir off Divi's ports" {
+    if (builtin.os.tag == .windows) return error.SkipZigTest;
+    const allocator = std.testing.allocator;
+
+    var threaded: std.Io.Threaded = .init(allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    const home = "test-pivx-conf-fresh";
+    std.Io.Dir.cwd().deleteTree(io, home) catch {};
+    defer std.Io.Dir.cwd().deleteTree(io, home) catch {};
+
+    const data_dir = try Pivx.dataDir(allocator, home);
+    defer allocator.free(data_dir);
+
+    // Nothing on disk: the dir is ours, so both ports move off Divi's 51472/51473
+    // or the second daemon to start dies on the bind.
+    try Pivx.prepareConf(allocator, io, home);
+    try expectConfValue(allocator, io, data_dir, "rpcport", "51475");
+    try expectConfValue(allocator, io, data_dir, "port", "51474");
+
+    // Idempotent, and the marker check now sees our own conf: a rerun must not
+    // duplicate the keys or fall back to the upstream ports.
+    try Pivx.prepareConf(allocator, io, home);
+    try expectConfValue(allocator, io, data_dir, "rpcport", "51475");
+    try expectConfValue(allocator, io, data_dir, "port", "51474");
+
+    // A listen port the user chose afterwards is theirs — leave it alone.
+    try conf.setValue(allocator, io, data_dir, Pivx.conf_file, "port", "51999");
+    try Pivx.prepareConf(allocator, io, home);
+    try expectConfValue(allocator, io, data_dir, "port", "51999");
+}
+
+test "prepareConf never retunes a data dir adopted from PIVX Desktop" {
+    if (builtin.os.tag == .windows) return error.SkipZigTest;
+    const allocator = std.testing.allocator;
+
+    var threaded: std.Io.Threaded = .init(allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    const home = "test-pivx-conf-adopted";
+    std.Io.Dir.cwd().deleteTree(io, home) catch {};
+    defer std.Io.Dir.cwd().deleteTree(io, home) catch {};
+
+    const data_dir = try Pivx.dataDir(allocator, home);
+    defer allocator.free(data_dir);
+
+    // What a PIVX Desktop ~/.pivx actually looks like: a synced chain, and a conf
+    // that sets neither port because both are already upstream's defaults.
+    const theirs = "# PIVX Desktop\nstaking=1\nmaxconnections=64\n";
+    {
+        var d = try std.Io.Dir.cwd().createDirPathOpen(io, data_dir, .{});
+        defer d.close(io);
+        try d.writeFile(io, .{ .sub_path = Pivx.conf_file, .data = theirs });
+        try d.createDirPath(io, "blocks");
+    }
+
+    try Pivx.prepareConf(allocator, io, home);
+
+    // The P2P port is untouched — the node still listens on 51472, so a forwarded
+    // port and their peers survive the round trip through BoxWallet.
+    try std.testing.expect((try conf.readValue(allocator, io, data_dir, Pivx.conf_file, "port")) == null);
+    // And RPC stays on the port PIVX Desktop and any external tool expect.
+    try expectConfValue(allocator, io, data_dir, "rpcport", "51473");
+    // Which is also the port `readAuth` resolves, so BoxWallet talks to the node
+    // the daemon actually bound.
+    {
+        const auth = try conf.readAuth(allocator, io, data_dir, Pivx.conf_file, Pivx.rpc_default_username, Pivx.rpc_default_port);
+        defer conf.freeAuth(allocator, auth);
+        try std.testing.expectEqualStrings("51473", auth.port);
+    }
+    // Their own settings are still there, verbatim.
+    try expectConfValue(allocator, io, data_dir, "staking", "1");
+    try expectConfValue(allocator, io, data_dir, "maxconnections", "64");
+}
+
+/// Assert `key` in the PIVX conf under `data_dir` reads back as `want`.
+fn expectConfValue(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    data_dir: []const u8,
+    key: []const u8,
+    want: []const u8,
+) !void {
+    const got = (try conf.readValue(allocator, io, data_dir, Pivx.conf_file, key)) orelse {
+        std.debug.print("conf has no `{s}` (expected {s})\n", .{ key, want });
+        return error.TestExpectedEqual;
+    };
+    defer allocator.free(got);
+    try std.testing.expectEqualStrings(want, got);
 }
