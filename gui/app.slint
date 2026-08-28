@@ -98,10 +98,20 @@ component NavItem inherits Rectangle {
     // A newer core is available for this coin. Marked rather than announced —
     // it's an offer, not a problem, so it shouldn't shout down the nav.
     in property <bool> update: false;
+    // The row's mark, drawn left of the label. `show-logo` is false when the
+    // host found the logo array out of step with the registry (see
+    // `logo-mismatch`) — the row then lays out exactly as it did before logos
+    // existed, rather than reserving a gap for a picture that can't be drawn.
+    in property <image> logo;
+    in property <bool> show-logo: false;
+    // Set only for Home, whose mark is a monochrome outline glyph that would
+    // otherwise render near-black on the nav. Coin logos are full-colour
+    // artwork and must never be tinted, so this stays unset for them.
+    in property <brush> logo-tint: transparent;
     property <bool> two-tone: root.selected && root.tail != "";
     callback clicked;
 
-    height: 36px;
+    height: root.show-logo ? 40px : 36px;
     background: selected ? #2b2b2b : (ta.has-hover ? #202020 : transparent);
 
     Rectangle {
@@ -111,32 +121,67 @@ component NavItem inherits Rectangle {
     }
     HorizontalBox {
         alignment: start;
-        padding-left: 16px;
-        // No gap: the two halves are one word ("Redd" + "Coin"), not two.
-        spacing: 0;
-        Text {
-            text: root.two-tone ? root.head : root.label;
-            vertical-alignment: center;
-            // Unselected: the same muted grey as inactive tab headers, normal
-            // size. Selected: brand colour, bold, and a bit bigger so it stands out.
-            font-size: root.selected ? 16px : 14px;
-            font-weight: root.selected ? 700 : 400;
-            color: root.two-tone ? root.head-color : (root.selected ? root.accent : #9a9a9a);
+        // The mark supplies its own left margin, so the text no longer needs the
+        // full indent. Without a mark, the original indent is kept.
+        padding-left: root.show-logo ? 10px : 16px;
+        // Pinned rather than left to the style, so the label's width budget is
+        // the one the nav column was sized against.
+        padding-right: 8px;
+        padding-top: 0;
+        padding-bottom: 0;
+        // Gap between the mark and the wordmark. The wordmark's own two halves
+        // keep their zero spacing in the inner box below.
+        spacing: root.show-logo ? 10px : 0;
+
+        // Fixed-size cell: the image grows on selection, the cell doesn't, so
+        // the label never shifts sideways as you move down the nav.
+        if root.show-logo: Rectangle {
+            width: 24px;
+            height: 24px;
+            Image {
+                source: root.logo;
+                image-fit: contain;
+                colorize: root.logo-tint;
+                // Tracks the label: unselected marks recede to let the brand
+                // colours pick out the current coin, rather than painting the
+                // whole nav. Sized to match the label's own 14→16px step.
+                width: root.selected ? 22px : 20px;
+                height: self.width;
+                x: (parent.width - self.width) / 2;
+                y: (parent.height - self.height) / 2;
+                opacity: root.selected ? 1.0 : (ta.has-hover ? 0.75 : 0.55);
+                animate opacity, width, height { duration: 120ms; easing: ease-out; }
+            }
         }
-        // The tail half, present only for a selected wordmark coin; empty text
-        // takes no width, so every other row lays out exactly as before.
-        Text {
-            text: root.two-tone ? root.tail : "";
-            vertical-alignment: center;
-            font-size: root.selected ? 16px : 14px;
-            font-weight: root.selected ? 700 : 400;
-            color: root.tail-color;
-        }
-        Text {
-            text: root.update ? " \u{2b06}" : "";
-            color: #e0a03a;
-            font-size: 12px;
-            vertical-alignment: center;
+
+        HorizontalBox {
+            padding: 0;
+            // No gap: the two halves are one word ("Redd" + "Coin"), not two.
+            spacing: 0;
+            Text {
+                text: root.two-tone ? root.head : root.label;
+                vertical-alignment: center;
+                // Unselected: the same muted grey as inactive tab headers, normal
+                // size. Selected: brand colour, bold, and a bit bigger so it stands out.
+                font-size: root.selected ? 16px : 14px;
+                font-weight: root.selected ? 700 : 400;
+                color: root.two-tone ? root.head-color : (root.selected ? root.accent : #9a9a9a);
+            }
+            // The tail half, present only for a selected wordmark coin; empty text
+            // takes no width, so every other row lays out exactly as before.
+            Text {
+                text: root.two-tone ? root.tail : "";
+                vertical-alignment: center;
+                font-size: root.selected ? 16px : 14px;
+                font-weight: root.selected ? 700 : 400;
+                color: root.tail-color;
+            }
+            Text {
+                text: root.update ? " \u{2b06}" : "";
+                color: #e0a03a;
+                font-size: 12px;
+                vertical-alignment: center;
+            }
         }
     }
     ta := TouchArea {
@@ -1798,7 +1843,10 @@ export component AppWindow inherits Window {
 
             // ---- left nav (Home pinned, coins scroll) ----
             Rectangle {
-                width: 160px;
+                // Budgeted for the worst row: "SpiderByte" selected (16px bold,
+                // ~100px) plus its update arrow, after the 8px column padding,
+                // the 10px indent, the 24px mark cell and the 10px gap.
+                width: 188px;
                 background: #161616;
                 VerticalBox {
                     padding: 8px;
@@ -1811,6 +1859,12 @@ export component AppWindow inherits Window {
                     NavItem {
                         label: "Home";
                         accent: root.brand-color;
+                        // Home's glyph is a monochrome outline, so it's tinted;
+                        // it rides the same mismatch switch as the coins so the
+                        // column never ends up half-iconed.
+                        logo: @image-url("icons/home.svg");
+                        logo-tint: root.selected == -1 ? root.brand-color : #9a9a9a;
+                        show-logo: root.logo-mismatch == "";
                         selected: root.selected == -1;
                         clicked => {
                             root.selected = -1;
@@ -1830,6 +1884,12 @@ export component AppWindow inherits Window {
                             for c in root.nav-coins: NavItem {
                                 label: c.name;
                                 accent: c.color;
+                                // Same array and same guard as the detail pane:
+                                // a coin wearing another coin's brand is worse
+                                // than a coin wearing none, and worse still in a
+                                // list where they can be compared at a glance.
+                                logo: root.coin-logos[c.index];
+                                show-logo: root.logo-mismatch == "";
                                 head: c.head;
                                 tail: c.tail;
                                 head-color: c.head-color;
