@@ -36,7 +36,35 @@ pub const Divi = struct {
     /// macOS data dir name. Divi Core: `~/Library/Application Support/DIVI`.
     pub const home_dir_mac: ?[]const u8 = "DIVI";
     pub const rpc_default_username = "divirpc";
+    /// Upstream's mainnet RPC port (inherited from PIVX when Divi forked) — what
+    /// divid binds when the conf says nothing. This is the *fallback*
+    /// `conf.readAuth` seeds `CoinAuth.port` with, so it must stay equal to the
+    /// daemon's own default; the port BoxWallet actually *writes* into a data dir
+    /// it created is `rpc_boxwallet_port`.
     pub const rpc_default_port = "51473";
+
+    // --- Ports for a data dir BoxWallet created --------------------------------
+    //
+    // Divi forked from PIVX and kept both of its mainnet ports (P2P 51472, RPC
+    // 51473), so the two daemons can't both bind the defaults — the second to
+    // start dies with "Unable to start HTTP server", then "Failed to listen on
+    // any port". `pivx.zig` moves PIVX off them in a dir BoxWallet created; Divi
+    // does the same here, because otherwise a user with an existing PIVX Desktop
+    // install (which rightly keeps 51472/51473) who then installs Divi through
+    // BoxWallet gets a fresh Divi dir handed exactly those ports.
+    //
+    // As in `pivx.zig`, this only ever applies to a dir BoxWallet made itself. A
+    // dir adopted from Divi Desktop keeps upstream's ports: they're that app's
+    // settings, and a user still switching between the two wallets must find
+    // their node as they left it. See `prepareConf`.
+
+    /// RPC port written into a `divi.conf` BoxWallet owns. `populate` writes it
+    /// explicitly, so `readAuth` reads it straight back out of the conf and never
+    /// falls through to `rpc_default_port`.
+    pub const rpc_boxwallet_port = "51477";
+    /// P2P listen port written into a `divi.conf` BoxWallet owns. Only the daemon
+    /// consumes it, so it's a plain `port=` line that's never read back.
+    pub const p2p_boxwallet_port = "51476";
     pub const core_version = "3.0.0";
 
     // Binary names. Windows appends `.exe`; Linux/macOS use the bare names. The
@@ -361,10 +389,41 @@ pub const Divi = struct {
     /// Ensure `divi.conf` carries the RPC creds (and `server=1`/`daemon=1`/
     /// `rpcport`) BoxWallet needs before the daemon reads it; existing values are
     /// kept. A standard bitcoin-derived `key=value` conf.
+    ///
+    /// A data dir BoxWallet created also gets its ports moved off the pair Divi
+    /// shares with PIVX (see `rpc_boxwallet_port`); a dir adopted from Divi
+    /// Desktop is left on upstream's, ports included. `blocks/` and the conf
+    /// itself are the markers (`conf.dataDirHasEntry`), sampled *before*
+    /// `populate` runs — it creates the conf, so checking afterwards would read
+    /// every dir, including ours, as adopted.
+    ///
+    /// Existing installs don't move: `populate` wrote an explicit `rpcport=51473`
+    /// into every conf BoxWallet has ever managed, and both it and the `port`
+    /// guard below skip a key that's already there.
     pub fn prepareConf(allocator: std.mem.Allocator, io: std.Io, home: []const u8) !void {
         const data_dir = try dataDir(allocator, home);
         defer allocator.free(data_dir);
-        _ = try conf.populate(allocator, io, data_dir, conf_file, rpc_default_username, rpc_default_port);
+
+        const adopted = conf.dataDirHasEntry(allocator, data_dir, conf_file) or
+            conf.dataDirHasEntry(allocator, data_dir, "blocks");
+
+        _ = try conf.populate(
+            allocator,
+            io,
+            data_dir,
+            conf_file,
+            rpc_default_username,
+            if (adopted) rpc_default_port else rpc_boxwallet_port,
+        );
+        if (adopted) return;
+
+        // Ours to place — but still never clobber a `port` a previous run (or the
+        // user) already put there; `setValue` would replace it in place.
+        if (try conf.readValue(allocator, io, data_dir, conf_file, "port")) |existing| {
+            allocator.free(existing);
+        } else {
+            try conf.setValue(allocator, io, data_dir, conf_file, "port", p2p_boxwallet_port);
+        }
     }
 
     /// Divi is a bitcoin-derived daemon: it forks itself into the background with
@@ -1244,4 +1303,127 @@ test "Divi is priced from its own source, and never from the roster" {
     try std.testing.expect(std.mem.indexOf(u8, source.url, "nonkyc.io") != null);
     // The pair matters: a USDT market, whose USD conversion the reply carries.
     try std.testing.expect(std.mem.endsWith(u8, source.url, "DIVI_USDT"));
+}
+
+test "prepareConf moves a BoxWallet-created dir off the ports Divi shares with PIVX" {
+    if (builtin.os.tag == .windows) return error.SkipZigTest;
+    const allocator = std.testing.allocator;
+
+    var threaded: std.Io.Threaded = .init(allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    const home = "test-divi-conf-fresh";
+    std.Io.Dir.cwd().deleteTree(io, home) catch {};
+    defer std.Io.Dir.cwd().deleteTree(io, home) catch {};
+
+    const data_dir = try Divi.dataDir(allocator, home);
+    defer allocator.free(data_dir);
+
+    // Nothing on disk: the dir is ours, so both ports move off 51472/51473 —
+    // which an adopted PIVX Desktop install is entitled to keep.
+    try Divi.prepareConf(allocator, io, home);
+    try expectConfValue(allocator, io, data_dir, "rpcport", "51477");
+    try expectConfValue(allocator, io, data_dir, "port", "51476");
+
+    // Idempotent, and the marker check now sees our own conf: a rerun must not
+    // duplicate the keys or fall back to the upstream ports.
+    try Divi.prepareConf(allocator, io, home);
+    try expectConfValue(allocator, io, data_dir, "rpcport", "51477");
+    try expectConfValue(allocator, io, data_dir, "port", "51476");
+
+    // A listen port the user chose afterwards is theirs — leave it alone.
+    try conf.setValue(allocator, io, data_dir, Divi.conf_file, "port", "51999");
+    try Divi.prepareConf(allocator, io, home);
+    try expectConfValue(allocator, io, data_dir, "port", "51999");
+}
+
+test "prepareConf never retunes a data dir adopted from Divi Desktop" {
+    if (builtin.os.tag == .windows) return error.SkipZigTest;
+    const allocator = std.testing.allocator;
+
+    var threaded: std.Io.Threaded = .init(allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    const home = "test-divi-conf-adopted";
+    std.Io.Dir.cwd().deleteTree(io, home) catch {};
+    defer std.Io.Dir.cwd().deleteTree(io, home) catch {};
+
+    const data_dir = try Divi.dataDir(allocator, home);
+    defer allocator.free(data_dir);
+
+    // A Divi Desktop ~/.divi: a synced chain, and a conf that sets neither port
+    // because both are already upstream's defaults.
+    {
+        var d = try std.Io.Dir.cwd().createDirPathOpen(io, data_dir, .{});
+        defer d.close(io);
+        try d.writeFile(io, .{ .sub_path = Divi.conf_file, .data = "# Divi Desktop\nstaking=1\nmaxconnections=64\n" });
+        try d.createDirPath(io, "blocks");
+    }
+
+    try Divi.prepareConf(allocator, io, home);
+
+    // The P2P port is untouched, so a forwarded 51472 and their peers survive.
+    try std.testing.expect((try conf.readValue(allocator, io, data_dir, Divi.conf_file, "port")) == null);
+    // RPC stays where Divi Desktop and any external tool expect it, and that's
+    // also what `readAuth` resolves — so we talk to the port divid really bound.
+    try expectConfValue(allocator, io, data_dir, "rpcport", "51473");
+    {
+        const auth = try conf.readAuth(allocator, io, data_dir, Divi.conf_file, Divi.rpc_default_username, Divi.rpc_default_port);
+        defer conf.freeAuth(allocator, auth);
+        try std.testing.expectEqualStrings("51473", auth.port);
+    }
+    // Their own settings are still there, verbatim.
+    try expectConfValue(allocator, io, data_dir, "staking", "1");
+    try expectConfValue(allocator, io, data_dir, "maxconnections", "64");
+}
+
+test "an existing BoxWallet Divi install keeps the port it was set up on" {
+    if (builtin.os.tag == .windows) return error.SkipZigTest;
+    const allocator = std.testing.allocator;
+
+    var threaded: std.Io.Threaded = .init(allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    const home = "test-divi-conf-legacy";
+    std.Io.Dir.cwd().deleteTree(io, home) catch {};
+    defer std.Io.Dir.cwd().deleteTree(io, home) catch {};
+
+    const data_dir = try Divi.dataDir(allocator, home);
+    defer allocator.free(data_dir);
+
+    // What every BoxWallet-managed divi.conf looks like today: `populate` wrote
+    // an explicit rpcport=51473. Moving a synced node's RPC port out from under
+    // it on upgrade would be a regression, so this must stay put.
+    {
+        var d = try std.Io.Dir.cwd().createDirPathOpen(io, data_dir, .{});
+        defer d.close(io);
+        try d.writeFile(io, .{
+            .sub_path = Divi.conf_file,
+            .data = "rpcuser=divirpc\nrpcpassword=oldsecret\nserver=1\nrpcport=51473\n",
+        });
+        try d.createDirPath(io, "blocks");
+    }
+
+    try Divi.prepareConf(allocator, io, home);
+    try expectConfValue(allocator, io, data_dir, "rpcport", "51473");
+    try expectConfValue(allocator, io, data_dir, "rpcpassword", "oldsecret");
+}
+
+/// Assert `key` in the Divi conf under `data_dir` reads back as `want`.
+fn expectConfValue(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    data_dir: []const u8,
+    key: []const u8,
+    want: []const u8,
+) !void {
+    const got = (try conf.readValue(allocator, io, data_dir, Divi.conf_file, key)) orelse {
+        std.debug.print("conf has no `{s}` (expected {s})\n", .{ key, want });
+        return error.TestExpectedEqual;
+    };
+    defer allocator.free(got);
+    try std.testing.expectEqualStrings(want, got);
 }
