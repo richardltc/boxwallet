@@ -119,69 +119,60 @@ component NavItem inherits Rectangle {
         width: 4px;
         background: root.selected ? root.accent : transparent;
     }
+    // The mark is placed against the row, not put inside the text layout: a
+    // layout owns its children's geometry, so a fixed-size cell in there is
+    // positioned by the layout and won't sit on the label's centre line. Same
+    // placement idiom as the accent bar above.
+    if root.show-logo: Image {
+        source: root.logo;
+        image-fit: contain;
+        colorize: root.logo-tint;
+        // Tracks the label: unselected marks recede to let the brand colours
+        // pick out the current coin, rather than painting the whole nav. Sized
+        // to match the label's own 14→16px step, and centred in a notional 24px
+        // cell so growing on selection never shifts the label.
+        width: root.selected ? 22px : 20px;
+        height: self.width;
+        x: 10px + (24px - self.width) / 2;
+        y: (parent.height - self.height) / 2;
+        opacity: root.selected ? 1.0 : (ta.has-hover ? 0.75 : 0.55);
+        animate opacity, width, height { duration: 120ms; easing: ease-out; }
+    }
     HorizontalBox {
         alignment: start;
-        // The mark supplies its own left margin, so the text no longer needs the
-        // full indent. Without a mark, the original indent is kept.
-        padding-left: root.show-logo ? 10px : 16px;
+        // Clear of the mark: its 10px indent, its 24px cell, then a 10px gap.
+        // Without a mark, the original indent is kept.
+        padding-left: root.show-logo ? 44px : 16px;
         // Pinned rather than left to the style, so the label's width budget is
         // the one the nav column was sized against.
         padding-right: 8px;
         padding-top: 0;
         padding-bottom: 0;
-        // Gap between the mark and the wordmark. The wordmark's own two halves
-        // keep their zero spacing in the inner box below.
-        spacing: root.show-logo ? 10px : 0;
-
-        // Fixed-size cell: the image grows on selection, the cell doesn't, so
-        // the label never shifts sideways as you move down the nav.
-        if root.show-logo: Rectangle {
-            width: 24px;
-            height: 24px;
-            Image {
-                source: root.logo;
-                image-fit: contain;
-                colorize: root.logo-tint;
-                // Tracks the label: unselected marks recede to let the brand
-                // colours pick out the current coin, rather than painting the
-                // whole nav. Sized to match the label's own 14→16px step.
-                width: root.selected ? 22px : 20px;
-                height: self.width;
-                x: (parent.width - self.width) / 2;
-                y: (parent.height - self.height) / 2;
-                opacity: root.selected ? 1.0 : (ta.has-hover ? 0.75 : 0.55);
-                animate opacity, width, height { duration: 120ms; easing: ease-out; }
-            }
+        // No gap: the two halves are one word ("Redd" + "Coin"), not two.
+        spacing: 0;
+        Text {
+            text: root.two-tone ? root.head : root.label;
+            vertical-alignment: center;
+            // Unselected: the same muted grey as inactive tab headers, normal
+            // size. Selected: brand colour, bold, and a bit bigger so it stands out.
+            font-size: root.selected ? 16px : 14px;
+            font-weight: root.selected ? 700 : 400;
+            color: root.two-tone ? root.head-color : (root.selected ? root.accent : #9a9a9a);
         }
-
-        HorizontalBox {
-            padding: 0;
-            // No gap: the two halves are one word ("Redd" + "Coin"), not two.
-            spacing: 0;
-            Text {
-                text: root.two-tone ? root.head : root.label;
-                vertical-alignment: center;
-                // Unselected: the same muted grey as inactive tab headers, normal
-                // size. Selected: brand colour, bold, and a bit bigger so it stands out.
-                font-size: root.selected ? 16px : 14px;
-                font-weight: root.selected ? 700 : 400;
-                color: root.two-tone ? root.head-color : (root.selected ? root.accent : #9a9a9a);
-            }
-            // The tail half, present only for a selected wordmark coin; empty text
-            // takes no width, so every other row lays out exactly as before.
-            Text {
-                text: root.two-tone ? root.tail : "";
-                vertical-alignment: center;
-                font-size: root.selected ? 16px : 14px;
-                font-weight: root.selected ? 700 : 400;
-                color: root.tail-color;
-            }
-            Text {
-                text: root.update ? " \u{2b06}" : "";
-                color: #e0a03a;
-                font-size: 12px;
-                vertical-alignment: center;
-            }
+        // The tail half, present only for a selected wordmark coin; empty text
+        // takes no width, so every other row lays out exactly as before.
+        Text {
+            text: root.two-tone ? root.tail : "";
+            vertical-alignment: center;
+            font-size: root.selected ? 16px : 14px;
+            font-weight: root.selected ? 700 : 400;
+            color: root.tail-color;
+        }
+        Text {
+            text: root.update ? " \u{2b06}" : "";
+            color: #e0a03a;
+            font-size: 12px;
+            vertical-alignment: center;
         }
     }
     ta := TouchArea {
