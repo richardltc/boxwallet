@@ -1297,6 +1297,26 @@ export component AppWindow inherits Window {
     // asked before starting, so declining it declines the start.
     callback prune-choose(int);
     callback prune-cancel();
+    // The same dialog, reopened from the Settings tab to CHANGE a value that's
+    // already configured. `prune-changing` swaps the wording and the confirm
+    // button; `prune-row-enabled` greys the rows the daemon couldn't carry out
+    // (going back to a full node once blocks are gone), which are shown rather
+    // than hidden so the option someone came looking for isn't just missing;
+    // `prune-warning` is what the change costs, in the coin's own words.
+    in-out property <bool> prune-changing: false;
+    // The last word before something irreversible: shown after a row is chosen,
+    // when that change would make the daemon delete blocks it currently has.
+    // `prune-confirm-line` names the value, `prune-warning` what it costs, and
+    // `prune-data-dir` which directory loses the blocks — the data dir is shared
+    // by design, so they may be another wallet app's too. Declining writes nothing.
+    in-out property <bool> prune-confirming: false;
+    in property <string> prune-confirm-line: "";
+    in property <string> prune-data-dir: "";
+    callback prune-confirm-accept();
+    callback prune-confirm-back();
+    in property <[bool]> prune-row-enabled;
+    in property <string> prune-warning: "";
+    callback prune-change-open();
 
     in-out property <bool> accel-open: false;
     // True while the progress bar belongs to a sync-accelerator run rather than an
@@ -1573,6 +1593,18 @@ export component AppWindow inherits Window {
     in property <string> data-dir-path: "";
     in property <int> prune-mode: -1;
     in property <string> prune-text: "";
+    // Whether that row may be changed: the coin allows it after the first start
+    // AND this data dir is one BoxWallet created. False for a chain adopted from
+    // another wallet app — pruning it would discard blocks that are not ours to
+    // discard. The daemon-stopped half of the gate is `running`, checked here in
+    // the UI because it moves on its own.
+    // Whether this coin's prune setting can be changed after the first start at
+    // all — a property of the coin (Monero's daemon couldn't act on a change).
+    in property <bool> prune-change-supported: false;
+    // Whether the conf carries a prune value at all. Distinguishes "nobody has
+    // chosen yet" (the first-start prompt is still to come) from a value someone
+    // chose — the note below would be untrue in the first case.
+    in property <bool> prune-configured: false;
 
     in property <bool> has-wordmark: false;
     in property <string> wordmark-head: "";
@@ -3323,11 +3355,34 @@ export component AppWindow inherits Window {
                         }
 
                         // Only for the coins that prune at all (Bitcoin, Litecoin,
-                        // Monero). Read-only: the value is chosen once, when the
-                        // daemon first starts.
+                        // Monero). Chosen when the daemon first starts, and — for a
+                        // chain BoxWallet set up itself — changeable here after.
                         if root.prune-mode >= 0: SettingsRow {
                             label: "Pruning";
                             value: root.prune-text;
+                        }
+                        // The daemon reads its conf at launch and never again, so
+                        // this is offered only while it's stopped: a change made
+                        // under a running node would show a setting the node isn't
+                        // honouring. Each state says which it is, rather than the
+                        // row being silently inert.
+                        if root.prune-mode >= 0 && root.prune-change-supported
+                            && root.prune-configured && !root.running: HorizontalLayout {
+                            alignment: start;
+                            padding-left: 98px;
+                            Button {
+                                text: "Change how the chain is stored";
+                                clicked => {
+                                    root.prune-change-open();
+                                }
+                            }
+                        }
+                        if root.prune-mode >= 0 && root.prune-change-supported
+                            && root.prune-configured && root.running: Text {
+                            text: "Stop the daemon to change this.";
+                            color: #8a8a8a;
+                            font-size: 12px;
+                            wrap: word-wrap;
                         }
 
                         // The project's donation address for this coin. Kept here
@@ -5041,7 +5096,12 @@ export component AppWindow inherits Window {
 
             Rectangle {
                 width: 420px;
-                height: 190px + (root.prune-rows.length * 36px);
+                // The change adds a line: the coin's warning runs longer than the
+                // generic one it replaces. The ownership question has no menu at
+                // all — one long paragraph, the directory, and the two buttons.
+                height: root.prune-confirming
+                    ? 300px
+                    : ((root.prune-changing ? 215px : 190px) + (root.prune-rows.length * 36px));
                 x: (parent.width - self.width) / 2;
                 y: (parent.height - self.height) / 2;
                 background: #202020;
@@ -5054,73 +5114,131 @@ export component AppWindow inherits Window {
                     spacing: 10px;
                     alignment: start;
                     Text {
-                        text: "How should " + root.coin-name + " store the blockchain?";
+                        text: root.prune-confirming
+                            ? root.prune-confirm-line
+                            : (root.prune-changing
+                                ? "Change how " + root.coin-name + " stores the blockchain"
+                                : "How should " + root.coin-name + " store the blockchain?");
                         color: #e6e6e6;
                         font-size: 15px;
                         font-weight: 600;
                         wrap: word-wrap;
                     }
                     Text {
-                        text: root.prune-prompt;
+                        text: root.prune-confirming ? root.prune-warning : root.prune-prompt;
                         color: #c8c8c8;
                         font-size: 13px;
                         wrap: word-wrap;
                         horizontal-stretch: 1;
                     }
-                    // Rows come from the coin, in its order. Row 0 is the least
-                    // destructive one and starts selected.
-                    for row[i] in root.prune-rows: Rectangle {
-                        height: 30px;
-                        border-radius: 5px;
-                        background: root.prune-sel == i
-                            ? #2f3a2f
-                            : (rta.has-hover ? #262626 : transparent);
-                        HorizontalLayout {
-                            padding-left: 10px;
-                            spacing: 8px;
-                            Text {
-                                text: root.prune-sel == i ? "●" : "○";
-                                color: root.prune-sel == i ? #7ca071 : #6b6b6b;
-                                font-size: 13px;
-                                vertical-alignment: center;
-                            }
-                            Text {
-                                text: row;
-                                color: root.prune-sel == i ? #e6e6e6 : #c8c8c8;
-                                font-size: 13px;
-                                vertical-alignment: center;
-                                horizontal-stretch: 1;
-                            }
-                        }
-                        rta := TouchArea {
-                            clicked => {
-                                root.prune-sel = i;
-                            }
-                        }
-                    }
-                    // Said plainly, because it is the part that can't be undone.
-                    Text {
-                        text: "Pruning can't be reversed without downloading the chain again.";
+                    // Which directory loses the blocks. Shown because BoxWallet
+                    // shares each daemon's standard data dir on purpose: if another
+                    // wallet app is using this chain, these are its blocks too, and
+                    // the path is the only thing that lets someone spot that.
+                    if root.prune-confirming: Text {
+                        text: root.prune-data-dir;
                         color: #9a9a9a;
+                        font-family: "DejaVu Sans Mono";
                         font-size: 12px;
                         wrap: word-wrap;
+                    }
+                    // Rows come from the coin, in its order. Row 0 is the least
+                    // destructive one and starts selected.
+                    // The menu, and what choosing from it costs. Hidden once a row
+                    // has been chosen and the confirm is up: that is a yes/no about
+                    // one specific value, and leaving a live menu under it would
+                    // invite answering a question about a different row.
+                    if !root.prune-confirming: VerticalLayout {
+                        spacing: 10px;
+                        padding: 0;
+                        for row[i] in root.prune-rows: prow := Rectangle {
+                            // A row the daemon couldn't carry out is greyed and
+                            // inert rather than absent — see `prune-row-enabled`.
+                            // The first-start question fills this with all-true.
+                            property <bool> pickable: root.prune-row-enabled[i];
+                            height: 30px;
+                            border-radius: 5px;
+                            background: root.prune-sel == i
+                                ? #2f3a2f
+                                : ((rta.has-hover && prow.pickable) ? #262626 : transparent);
+                            HorizontalLayout {
+                                padding-left: 10px;
+                                spacing: 8px;
+                                Text {
+                                    text: root.prune-sel == i ? "●" : "○";
+                                    color: !prow.pickable
+                                        ? #4a4a4a
+                                        : (root.prune-sel == i ? #7ca071 : #6b6b6b);
+                                    font-size: 13px;
+                                    vertical-alignment: center;
+                                }
+                                Text {
+                                    text: row;
+                                    color: !prow.pickable
+                                        ? #6b6b6b
+                                        : (root.prune-sel == i ? #e6e6e6 : #c8c8c8);
+                                    font-size: 13px;
+                                    vertical-alignment: center;
+                                    horizontal-stretch: 1;
+                                }
+                            }
+                            rta := TouchArea {
+                                clicked => {
+                                    if (prow.pickable) {
+                                        root.prune-sel = i;
+                                    }
+                                }
+                            }
+                        }
+                        // Said plainly, because it is the part that can't be
+                        // undone. On a change the coin says it in its own terms
+                        // (which blocks go, and when), so use that instead of the
+                        // generic line.
+                        Text {
+                            text: root.prune-changing && root.prune-warning != ""
+                                ? root.prune-warning
+                                : "Pruning can't be reversed without downloading the chain again.";
+                            color: #9a9a9a;
+                            font-size: 12px;
+                            wrap: word-wrap;
+                        }
                     }
                     HorizontalBox {
                         padding: 0;
                         alignment: end;
                         spacing: 8px;
                         Button {
-                            text: "Cancel";
+                            // From the confirm this steps back to the menu; from
+                            // the menu it closes. Neither writes anything.
+                            text: root.prune-confirming ? "Back" : "Cancel";
                             clicked => {
-                                root.prune-open = false;
-                                root.prune-cancel();
+                                if (root.prune-confirming) {
+                                    root.prune-confirm-back();
+                                } else {
+                                    root.prune-open = false;
+                                    root.prune-cancel();
+                                }
                             }
                         }
-                        Button {
-                            text: "Start " + root.coin-name;
+                        if root.prune-confirming: Button {
+                            text: "Yes, delete the blocks";
                             primary: true;
                             clicked => {
                                 root.prune-open = false;
+                                root.prune-confirming = false;
+                                root.prune-confirm-accept();
+                            }
+                        }
+                        if !root.prune-confirming: Button {
+                            text: root.prune-changing ? "Save" : "Start " + root.coin-name;
+                            primary: true;
+                            // A greyed row can't be confirmed either — the dialog
+                            // keeps standing rather than quietly applying nothing.
+                            enabled: root.prune-row-enabled[root.prune-sel];
+                            clicked => {
+                                // NOT closed here: a change that deletes blocks
+                                // comes back as the confirm stage in this same
+                                // dialog. The host closes it when it's really done.
                                 root.prune-choose(root.prune-sel);
                             }
                         }

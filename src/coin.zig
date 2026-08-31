@@ -403,6 +403,66 @@ pub const Coin = struct {
             allocator: std.mem.Allocator,
             home_dir: []const u8,
         ) anyerror!?i64,
+        /// Whether the setting may still be **changed** after the first start —
+        /// the Settings tab's edit, as opposed to the one-shot prompt. False (the
+        /// default) is the right answer for any coin whose daemon can't act on a
+        /// changed value: Monero's `prune-blockchain=1` does nothing to an LMDB
+        /// that is already synced unpruned (that needs the separate
+        /// `monero-blockchain-prune` tool), so offering the edit would promise a
+        /// change the node never makes.
+        ///
+        /// A property of the coin, not of the machine — nothing here asks whose
+        /// data dir it is. BoxWallet deliberately shares the daemon's standard
+        /// directory, and nothing on disk distinguishes one it set up from one it
+        /// adopted: it writes nothing a plain node wouldn't. So rather than guess
+        /// at ownership, the front-ends confirm the *consequence* before applying
+        /// (`change_warning`, `changeDeletesBlocks`) — which is the same fact
+        /// either way, and the fact that actually matters.
+        can_change: bool = false,
+        /// What a change costs, in the coin's own terms — shown in the confirm,
+        /// where the user is about to discard blocks. Required (checked by test)
+        /// of any coin setting `can_change`; the one-shot prompt has `prompt` for
+        /// the same job.
+        change_warning: []const u8 = "",
+
+        /// Whether a change from the currently configured value to `to` is one the
+        /// daemon can actually carry out. Pure — both front-ends and the C ABI ask
+        /// this, so a row the TUI hides can't be a row the GUI offers.
+        ///
+        /// The move that is refused is **pruned → full node**. A daemon can start
+        /// pruning a chain it has (it deletes the old blocks) and it can be told to
+        /// keep more from here on, but it cannot put back blocks it already threw
+        /// away: bitcoin-derived cores require the whole chain to be downloaded
+        /// again for that. Offering it as a menu row would read as "undo", and it
+        /// is the opposite — a silent re-sync of hundreds of GB.
+        ///
+        /// `from` is the configured value (-1 when the conf carries none, 0 for a
+        /// deliberate full node); `to` is the candidate. A negative `to` is never
+        /// allowed — it is the ABI's "not configured" sentinel, not a setting.
+        pub fn changeAllowed(from: i64, to: i64) bool {
+            if (to < 0) return false;
+            return !(from > 0 and to == 0);
+        }
+
+        /// Whether moving from the configured value to `to` makes the daemon
+        /// **delete blocks it currently has**. This is what the change confirm is
+        /// about: not who owns the data dir — that can't be established — but
+        /// whether this particular move destroys something, which can.
+        ///
+        ///  - `to == 0` keeps everything: nothing is deleted.
+        ///  - a full node (`from == 0`) that starts pruning drops most of its
+        ///    chain, and can't get it back short of a full re-sync.
+        ///  - a pruned node given a *smaller* cap prunes further; a *larger* one
+        ///    only keeps more from here on, and deletes nothing.
+        ///  - `from < 0` — no value in the conf, so what the daemon has on disk is
+        ///    unknown. Treated as destructive, because the safe reading of "we
+        ///    don't know" is the cautious one.
+        pub fn changeDeletesBlocks(from: i64, to: i64) bool {
+            if (to == 0) return false;
+            if (from < 0) return true;
+            if (from == 0) return true;
+            return to < from;
+        }
     };
 
     /// One lock tier a stablecoin can be minted at: longer locks demand less
@@ -1614,6 +1674,23 @@ pub const Coin = struct {
     pub fn pruningState(self: Coin, allocator: std.mem.Allocator, home_dir: []const u8) !?i64 {
         const pr = self.vtable.pruning orelse return null;
         return pr.current(allocator, home_dir);
+    }
+
+    /// Whether this coin's prune setting can be changed after the first start —
+    /// a property of the coin, not of the machine (see `Pruning.can_change`).
+    /// Front-ends gate the affordance on this **and** on the daemon being stopped:
+    /// the conf is only read at launch, so a change made while it runs would show
+    /// a value the running node isn't honouring.
+    pub fn offersPruneChange(self: Coin) bool {
+        const pr = self.vtable.pruning orelse return false;
+        return pr.can_change;
+    }
+
+    /// What changing this coin's prune setting costs, for the change confirm.
+    /// Empty for a coin that doesn't offer the change.
+    pub fn pruneChangeWarning(self: Coin) []const u8 {
+        const pr = self.vtable.pruning orelse return "";
+        return pr.change_warning;
     }
 
     /// Whether this coin issues a chain-native stablecoin (drives the

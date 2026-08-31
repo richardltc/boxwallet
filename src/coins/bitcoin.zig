@@ -386,6 +386,9 @@ pub const Bitcoin = struct {
         .should_offer = pruneShouldOffer,
         .apply = pruneApply,
         .current = pruneCurrent,
+        .can_change = true,
+        .change_warning = "bitcoind deletes the blocks it no longer needs the next time it starts. " ++
+            "That can't be undone — going back to a full node means downloading the whole chain again.",
     };
 
     /// The directory `bitcoind` stores block files in. Its presence means a chain
@@ -427,6 +430,7 @@ pub const Bitcoin = struct {
 
         const data_dir = try dataDir(allocator, home);
         defer allocator.free(data_dir);
+
         var buf: [24]u8 = undefined;
         const val = std.fmt.bufPrint(&buf, "{d}", .{prune_mib}) catch unreachable;
         try conf.setValue(allocator, io, data_dir, conf_file, "prune", val);

@@ -1004,7 +1004,11 @@ const formatMicroUsd = money.formatMicroUsd;
 /// just picks pruned or not, and has no custom row. Both are cached at open so the
 /// key handler and the renderer agree on the row count.
 const PruneModal = struct {
-    const Stage = enum { menu, custom };
+    /// `confirm` runs *after* `menu` (or `custom`) on a change that would make the
+    /// daemon delete blocks it currently has: the last word before something
+    /// irreversible, defaulting to No. The first-start prompt never reaches it —
+    /// there are no blocks yet to lose.
+    const Stage = enum { menu, custom, confirm };
 
     stage: Stage = .menu,
     /// The entry the prompt acts on, so a moved left-nav selection doesn't misfire.
@@ -1017,6 +1021,32 @@ const PruneModal = struct {
     allow_custom: bool = false,
     /// Set when a typed custom amount didn't parse, so the field can flag it.
     bad_input: bool = false,
+    /// True when the prompt was opened from the Settings tab to *change* a value
+    /// that's already configured, rather than as the one-shot question before the
+    /// first start. Changes the wording, refuses the rows the daemon can't carry
+    /// out, and — since no start is waiting on the answer — returns to the tab
+    /// instead of launching the daemon.
+    change: bool = false,
+    /// What's configured right now (-1 when nothing is), so the menu can tell which
+    /// rows are still reachable from here. Only meaningful when `change`.
+    from: i64 = -1,
+    /// Cursor over the confirm's two rows, No first and selected: the answer that
+    /// touches nothing must be the one a stray Enter gives.
+    confirm_sel: u8 = 0,
+    /// The value the confirm is about — chosen from the menu or typed, and held
+    /// here so the answer applies exactly what was shown, not what the cursor
+    /// happens to be on by then.
+    pending: i64 = 0,
+
+    /// Whether the highlighted row is one the daemon could actually carry out. The
+    /// first-start prompt is choosing from nothing, so everything is reachable;
+    /// only a change is constrained (`Coin.Pruning.changeAllowed` — pruned can't go
+    /// back to full). The "Custom…" row is always a size, never 0, so it's fine.
+    fn rowAllowed(self: *const PruneModal, row: usize) bool {
+        if (!self.change) return true;
+        if (row >= self.presets.len) return true;
+        return Coin.Pruning.changeAllowed(self.from, self.presets[row].value);
+    }
 
     /// Menu index of the trailing "Custom…" row (only meaningful when
     /// `allow_custom`), and the last selectable row.
@@ -4129,6 +4159,10 @@ pub const App = struct {
                         .send => self.openSendModal(),
                         .mining => self.openMiningModal(),
                         .digidollar => self.openStablecoinModal(),
+                        // The only editable thing on the Settings tab: how the
+                        // chain is stored, for a coin that can change it (the tab
+                        // shows the hint only when the press will do something).
+                        .settings => self.openPruneChangeModal(),
                         else => {},
                     },
                     else => {},
@@ -6546,6 +6580,80 @@ pub const App = struct {
         self.prune_input.setValue("") catch {};
     }
 
+    /// Open the same prompt from the Settings tab to **change** a prune setting
+    /// that's already configured. Unlike the first-start prompt this one isn't
+    /// holding up a daemon start, so cancelling costs nothing and applying returns
+    /// to the tab.
+    ///
+    /// Three gates, all of which must hold: the coin allows the change at all and
+    /// this data dir is one BoxWallet created (`prune_editable`, cached with the
+    /// value), the daemon is stopped (the conf is only read at launch, so changing
+    /// it under a running node would display a setting the node isn't honouring),
+    /// and the coin is installed. Each refusal says which one it was, rather than
+    /// the press doing nothing.
+    fn openPruneChangeModal(self: *App) void {
+        const coin = self.selectedCoin() orelse return;
+        const act = &self.activities[self.selected];
+        if (coin.pruning() == null or !act.installed) return;
+        self.refreshPruneState(coin, act);
+
+        if (!coin.offersPruneChange()) {
+            self.logf("{s}: how the chain is stored is fixed once the daemon has synced it", .{coin.coinName()});
+            return;
+        }
+        if (act.daemonState() != .stopped) {
+            self.logf("{s}: stop the daemon before changing how the chain is stored", .{coin.coinName()});
+            return;
+        }
+
+        const pr = coin.pruning().?;
+        var m: PruneModal = .{
+            .coin_idx = self.selected,
+            .presets = pr.presets,
+            .allow_custom = pr.mode == .size_mib,
+            .change = true,
+            .from = act.prune_mib,
+        };
+        // Start on a row that can actually be chosen. The first-start prompt starts
+        // on row 0 because that's the choice that discards nothing — but from a
+        // pruned node that same row is the one move the daemon can't make, so
+        // landing there would open the menu on a dead row.
+        m.sel = for (pr.presets, 0..) |_, i| {
+            if (m.rowAllowed(i)) break i;
+        } else if (m.allow_custom) m.customRow() else {
+            self.logf("{s}: nothing else can be chosen from here", .{coin.coinName()});
+            return;
+        };
+        self.prune_modal = m;
+        self.prune_input.setValue("") catch {};
+    }
+
+    /// Take a chosen value: apply it outright when nothing is lost, or put the
+    /// consequence to the user first when the daemon would delete blocks it
+    /// currently has.
+    ///
+    /// That second case is the whole reason there's a confirm. BoxWallet shares
+    /// each daemon's standard data directory, so the blocks about to go may be
+    /// another wallet app's too — and nothing on disk says whose they are, since
+    /// BoxWallet writes nothing there a plain node wouldn't. What *can* be stated
+    /// plainly is what this change does, so that's what gets stated.
+    fn takePruneChoice(self: *App, prune_value: i64) void {
+        const m = &self.prune_modal.?;
+        // Choosing what's already configured changes nothing — close rather than
+        // ask about a deletion that isn't going to happen.
+        if (m.change and prune_value == m.from) {
+            self.prune_modal = null;
+            return;
+        }
+        if (m.change and Coin.Pruning.changeDeletesBlocks(m.from, prune_value)) {
+            m.pending = prune_value;
+            m.confirm_sel = 0;
+            m.stage = .confirm;
+            return;
+        }
+        self.applyPruneAndStart(prune_value);
+    }
+
     /// Handle a keypress while the prune prompt is open. `menu` walks the presets +
     /// "Custom…" (enter fires the choice or opens the custom field; esc cancels the
     /// start). `custom` collects a GB number (enter applies; esc returns to the
@@ -6554,6 +6662,22 @@ pub const App = struct {
         if (self.prune_modal == null) return;
         const m = &self.prune_modal.?;
         switch (m.stage) {
+            // Yes/No over the deletion. Esc backs out to the menu; No closes the
+            // whole thing. Neither writes anything.
+            .confirm => switch (k.key) {
+                .escape => m.stage = .menu,
+                .up => m.confirm_sel = 0,
+                .down => m.confirm_sel = 1,
+                .enter => if (m.confirm_sel == 1) self.applyPruneAndStart(m.pending) else {
+                    self.prune_modal = null;
+                },
+                .char => |c| switch (c) {
+                    'k' => m.confirm_sel = 0,
+                    'j' => m.confirm_sel = 1,
+                    else => {},
+                },
+                else => {},
+            },
             .menu => switch (k.key) {
                 .escape => self.prune_modal = null,
                 .up => if (m.sel > 0) {
@@ -6596,6 +6720,10 @@ pub const App = struct {
     /// the trailing "Custom…" row opens the GB entry field.
     fn choosePrune(self: *App) void {
         const m = &self.prune_modal.?;
+        // A row the daemon couldn't carry out (going back to a full node once
+        // blocks have been discarded) is shown, but greyed and inert — the reason
+        // is on screen under the menu, so the press isn't a silent no-op.
+        if (!m.rowAllowed(m.sel)) return;
         if (m.allow_custom and m.sel == m.customRow()) {
             m.stage = .custom;
             m.bad_input = false;
@@ -6603,7 +6731,7 @@ pub const App = struct {
             self.prune_input.focus();
             return;
         }
-        self.applyPruneAndStart(m.presets[m.sel].value);
+        self.takePruneChoice(m.presets[m.sel].value);
     }
 
     /// Parse the custom GB entry and apply it. A blank or unparseable value (or 0,
@@ -6619,7 +6747,7 @@ pub const App = struct {
             m.bad_input = true;
             return;
         }
-        self.applyPruneAndStart(gb * 1000);
+        self.takePruneChoice(gb * 1000);
     }
 
     /// Persist the chosen prune value to the coin's conf, then carry on with the
@@ -6636,6 +6764,7 @@ pub const App = struct {
         };
         const act = &self.activities[idx];
         const mode = if (coin.pruning()) |pr| pr.mode else .size_mib;
+        const change = m.change;
         self.prune_modal = null;
 
         if (coin.applyPrune(self.allocator, self.home_dir, prune_value)) {
@@ -6647,7 +6776,18 @@ pub const App = struct {
                 .size_mib => self.logf("{s}: pruning to {d} MiB", .{ coin.coinName(), prune_value }),
                 .on_off => self.logf("{s}: blockchain pruning enabled", .{coin.coinName()}),
             }
+            // A change from the Settings tab has no start waiting behind it, and
+            // the daemon reads its conf only at launch — so say when it takes
+            // effect rather than leaving the new value looking already live.
+            if (change) {
+                self.logf("{s}: takes effect the next time the daemon starts", .{coin.coinName()});
+                return;
+            }
         } else |err| {
+            if (change) {
+                self.logf("{s}: couldn't write prune setting ({s}) — left unchanged", .{ coin.coinName(), @errorName(err) });
+                return;
+            }
             self.logf("{s}: couldn't write prune setting ({s}) — starting unpruned", .{ coin.coinName(), @errorName(err) });
         }
         self.startAfterPrune(coin, act);
@@ -7736,13 +7876,24 @@ pub const App = struct {
             (zz.Style{}).dim(true).render(a, d) catch d
         else
             (zz.Style{}).fg(.brightBlack).render(a, "—") catch "—";
-        // Pruning row, only for coins with the capability (Litecoin). Read-only —
-        // the value is chosen once at first start. "Pruning" is padded to the
-        // wallet labels' width so the colon lines up.
+        // Pruning row, only for coins with the capability (Bitcoin/Litecoin/Monero):
+        // the value chosen at first start, plus — where the coin allows it and the
+        // chain is one BoxWallet set up — how to change it. "Pruning" is padded to
+        // the wallet labels' width so the colon lines up.
         const prune_row: []const u8 = if (coin.pruning()) |pr| blk: {
             const prune_label = statusLabel(a, brand, "Pruning    ", true);
             const prune_value = formatPruneValue(a, pr.mode, act.prune_mib);
-            break :blk std.fmt.allocPrint(a, "\n{s}: {s}", .{ prune_label, prune_value }) catch "";
+            // Say whether this one can be changed. Two silences are deliberate: a
+            // coin that never offers the change (Monero's row stays as plain as it
+            // was), and a value nobody has chosen yet, where the first-start prompt
+            // is still to come and owns the question.
+            const hint: []const u8 = if (!coin.offersPruneChange() or act.prune_mib < 0)
+                ""
+            else if (act.daemonState() != .stopped)
+                dimNote(a, "Stop the daemon to change this.")
+            else
+                dimNote(a, "enter: change how the chain is stored");
+            break :blk std.fmt.allocPrint(a, "\n{s}: {s}{s}", .{ prune_label, prune_value, hint }) catch "";
         } else "";
         return std.fmt.allocPrint(a,
             \\Settings
@@ -7750,6 +7901,13 @@ pub const App = struct {
             \\{s}: {s}{s}
             \\{s}: {s}{s}
         , .{ wallet_label, wallet_value, keys_row, chain_label, chain_value, prune_row });
+    }
+
+    /// A dimmed note on its own line under a Settings row. Its own helper only so
+    /// the three prune hints can't drift apart in styling.
+    fn dimNote(a: std.mem.Allocator, text: []const u8) []const u8 {
+        const styled = (zz.Style{}).fg(.brightBlack).render(a, text) catch text;
+        return std.fmt.allocPrint(a, "\n             {s}", .{styled}) catch "";
     }
 
     /// Format a cached prune value (0 = full node, <0 = not configured yet) for the
@@ -8849,22 +9007,61 @@ pub const App = struct {
         var out: std.Io.Writer.Allocating = .init(a);
         errdefer out.deinit();
 
-        const title = try std.fmt.allocPrint(a, "{s} — blockchain storage", .{coin.coinName()});
+        const title = try std.fmt.allocPrint(a, "{s} — blockchain storage{s}", .{ coin.coinName(), if (m.change) " (change)" else "" });
         try modalRule(a, &out.writer, brand, inner_w, "┌", "┐", title);
         try modalRow(&out.writer, vbar, inner_w, "", 0);
 
         switch (m.stage) {
+            .confirm => {
+                // What is about to happen, to which directory, then No/Yes. The
+                // path is shown because the data dir is shared by design: if
+                // another wallet app is using this chain, these are its blocks
+                // going too, and the directory is the only thing that lets someone
+                // recognise that.
+                var vbuf: [48]u8 = undefined;
+                const mode = if (coin.pruning()) |pr| pr.mode else .size_mib;
+                const line = try std.fmt.allocPrint(a, "Set pruning to {s}?", .{money.pruneValueText(&vbuf, mode, m.pending)});
+                try wrapIntoRows(a, &out.writer, vbar, inner_w, line, (zz.Style{}).bold(true));
+                try modalRow(&out.writer, vbar, inner_w, "", 0);
+                try wrapIntoRows(a, &out.writer, vbar, inner_w, coin.pruneChangeWarning(), (zz.Style{}));
+                if (coin.dataDir(a, self.home_dir) catch null) |dd| {
+                    try modalRow(&out.writer, vbar, inner_w, "", 0);
+                    try wrapIntoRows(a, &out.writer, vbar, inner_w, dd, (zz.Style{}).dim(true));
+                }
+                try modalRow(&out.writer, vbar, inner_w, "", 0);
+                try pruneMenuRow(a, &out.writer, vbar, inner_w, brand, "No, leave it alone", m.confirm_sel == 0, true);
+                try pruneMenuRow(a, &out.writer, vbar, inner_w, brand, "Yes, delete the blocks", m.confirm_sel == 1, true);
+            },
             .menu => {
-                const prompt = if (coin.pruning()) |pr| pr.prompt else "";
+                // A change speaks to what's configured now; the first-start prompt
+                // asks the coin's own question.
+                const prompt = if (m.change) blk: {
+                    var vbuf: [48]u8 = undefined;
+                    const mode = if (coin.pruning()) |pr| pr.mode else .size_mib;
+                    break :blk try std.fmt.allocPrint(a, "Currently: {s}. Choose how the chain should be stored from here on.", .{money.pruneValueText(&vbuf, mode, m.from)});
+                } else if (coin.pruning()) |pr| pr.prompt else "";
                 try wrapIntoRows(a, &out.writer, vbar, inner_w, prompt, (zz.Style{}));
                 try modalRow(&out.writer, vbar, inner_w, "", 0);
                 // The coin's own presets, then a trailing "Custom…" row where the
-                // coin takes a free-form size (`.size_mib`).
+                // coin takes a free-form size (`.size_mib`). A row the daemon can't
+                // carry out is greyed rather than hidden, so the option the user
+                // came looking for isn't simply missing with no explanation.
                 for (m.presets, 0..) |preset, i| {
-                    try pruneMenuRow(a, &out.writer, vbar, inner_w, brand, preset.label, i == m.sel);
+                    try pruneMenuRow(a, &out.writer, vbar, inner_w, brand, preset.label, i == m.sel, m.rowAllowed(i));
                 }
                 if (m.allow_custom)
-                    try pruneMenuRow(a, &out.writer, vbar, inner_w, brand, "Custom…", m.sel == m.customRow());
+                    try pruneMenuRow(a, &out.writer, vbar, inner_w, brand, "Custom…", m.sel == m.customRow(), true);
+                // Why the greyed row is greyed, and what a change costs. Only on a
+                // change: the first-start prompt has its own footer note and no
+                // unreachable rows.
+                if (m.change) {
+                    try modalRow(&out.writer, vbar, inner_w, "", 0);
+                    const note = if (!m.rowAllowed(m.sel))
+                        "Blocks already discarded can't come back — a full node from here means downloading the whole chain again."
+                    else
+                        coin.pruneChangeWarning();
+                    try wrapIntoRows(a, &out.writer, vbar, inner_w, note, (zz.Style{}).dim(true));
+                }
             },
             .custom => {
                 const field = try self.prune_input.view(a);
@@ -8881,7 +9078,7 @@ pub const App = struct {
         try modalRow(&out.writer, vbar, inner_w, "", 0);
         const hint = switch (m.stage) {
             .menu => "enter: select   esc: cancel",
-            .custom => "enter: confirm   esc: back",
+            .custom, .confirm => "enter: confirm   esc: back",
         };
         const hint_styled = (zz.Style{}).dim(true).render(a, hint) catch hint;
         try modalRow(&out.writer, vbar, inner_w, hint_styled, zz.width(hint));
@@ -8892,9 +9089,14 @@ pub const App = struct {
 
     /// One selectable row of the prune menu: a `❯` marker + brand-bold label when
     /// highlighted, plain otherwise. Mirrors the QuickSync/wallet menu rows.
-    fn pruneMenuRow(a: std.mem.Allocator, w: *std.Io.Writer, vbar: []const u8, inner_w: usize, brand: zz.Color, label: []const u8, sel: bool) !void {
+    ///
+    /// `allowed` false is a row the daemon couldn't carry out — greyed, and still
+    /// highlightable so landing on it is what surfaces the reason underneath.
+    fn pruneMenuRow(a: std.mem.Allocator, w: *std.Io.Writer, vbar: []const u8, inner_w: usize, brand: zz.Color, label: []const u8, sel: bool, allowed: bool) !void {
         const plain = try std.fmt.allocPrint(a, "{s}{s}", .{ if (sel) "❯ " else "  ", label });
-        const text = if (sel)
+        const text = if (!allowed)
+            ((zz.Style{}).fg(.brightBlack).render(a, plain) catch plain)
+        else if (sel)
             ((zz.Style{}).bold(true).fg(brand).render(a, plain) catch plain)
         else
             plain;
@@ -12904,6 +13106,53 @@ test "every prune menu row fits the modal box" {
             };
         }
     }
+}
+
+test "the change menu grays the row a daemon can't carry out, and starts off it" {
+    // The first-start prompt chooses from nothing, so every row is live and the
+    // cursor starts on row 0 — the choice that discards nothing.
+    var fresh: PruneModal = .{ .presets = &Coin.size_prune_presets, .allow_custom = true };
+    for (Coin.size_prune_presets, 0..) |_, i| try std.testing.expect(fresh.rowAllowed(i));
+    try std.testing.expect(fresh.rowAllowed(fresh.customRow()));
+    fresh.sel = 0;
+    try std.testing.expect(fresh.rowAllowed(fresh.sel));
+
+    // Changing a node that is already pruned, though: row 0 is "No pruning (full
+    // node)", and no core can put back blocks it deleted. It has to be inert, or a
+    // menu that reads like an undo silently means "download the chain again".
+    var change: PruneModal = .{
+        .presets = &Coin.size_prune_presets,
+        .allow_custom = true,
+        .change = true,
+        .from = 5000,
+    };
+    try std.testing.expectEqual(@as(i64, 0), Coin.size_prune_presets[0].value);
+    try std.testing.expect(!change.rowAllowed(0));
+    // Every other size is reachable — smaller prunes more, larger keeps more from
+    // here on — as is a typed custom amount, which is never 0.
+    for (Coin.size_prune_presets[1..], 1..) |_, i| try std.testing.expect(change.rowAllowed(i));
+    try std.testing.expect(change.rowAllowed(change.customRow()));
+
+    // A deliberate full node is not "pruned", so it can still choose anything —
+    // including staying exactly as it is.
+    change.from = 0;
+    try std.testing.expect(change.rowAllowed(0));
+    // And neither is a value nobody has set.
+    change.from = -1;
+    try std.testing.expect(change.rowAllowed(0));
+
+    // The confirm that stands between a chosen row and the deletion opens on No,
+    // and the first-start prompt never reaches it — a modal that defaulted to Yes
+    // would put an irreversible change one stray Enter away.
+    try std.testing.expectEqual(@as(u8, 0), change.confirm_sel);
+    try std.testing.expectEqual(PruneModal.Stage.menu, fresh.stage);
+    // Which moves it stands in front of: enabling pruning on a full node, or
+    // tightening an existing cap. Loosening one deletes nothing, so it applies
+    // straight away.
+    try std.testing.expect(Coin.Pruning.changeDeletesBlocks(0, 2000));
+    try std.testing.expect(Coin.Pruning.changeDeletesBlocks(5000, 2000));
+    try std.testing.expect(!Coin.Pruning.changeDeletesBlocks(2000, 5000));
+    try std.testing.expect(!Coin.Pruning.changeDeletesBlocks(0, 0));
 }
 
 test "price display is gated on the toggle, listing, and staleness" {

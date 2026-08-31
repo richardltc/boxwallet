@@ -73,7 +73,15 @@ break it. Concretely:
   asked" and offers to prune it — discarding their blocks with no un-prune short
   of a full re-sync. `pruneShouldOffer` (`bitcoin.zig`/`litecoin.zig`) therefore
   also requires that no chain (`blocks/`) is present. Ask the same question of any
-  new destructive action.
+  new destructive action. Its companion is the Settings tab's *change* of that
+  same setting (`Pruning.can_change`), which can't reuse the check: by then a chain
+  exists either way, and ownership of the dir has no answer on disk at all —
+  BoxWallet writes nothing there a plain node wouldn't. So it confirms the thing
+  that *can* be stated, at the moment it applies: whether this particular change
+  makes the daemon delete blocks it currently has (`Pruning.changeDeletesBlocks`),
+  in a dialog naming the value, the cost, and the shared directory, defaulting to
+  no. Prefer confirming a consequence you can prove over guessing at a permission
+  you can't.
 - **Don't overwrite a conf you didn't write.** It carries settings that matter
   (`prune-blockchain`, `out-peers`, Tor, a moved RPC port). Prefer `conf.populate`
   (merges, preserves every other line) over `conf.writeConf` (clobbers). Where a

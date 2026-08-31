@@ -360,6 +360,9 @@ pub const Litecoin = struct {
         .should_offer = pruneShouldOffer,
         .apply = pruneApply,
         .current = pruneCurrent,
+        .can_change = true,
+        .change_warning = "litecoind deletes the blocks it no longer needs the next time it starts. " ++
+            "That can't be undone — going back to a full node means downloading the whole chain again.",
     };
 
     /// The directory `litecoind` stores block files in. Its presence means a chain
@@ -401,6 +404,7 @@ pub const Litecoin = struct {
 
         const data_dir = try dataDir(allocator, home);
         defer allocator.free(data_dir);
+
         var buf: [24]u8 = undefined;
         const val = std.fmt.bufPrint(&buf, "{d}", .{prune_mib}) catch unreachable;
         try conf.setValue(allocator, io, data_dir, conf_file, "prune", val);
@@ -822,4 +826,41 @@ test "pruning: offered when unset, then applied value is read back and not re-of
     try c.applyPrune(allocator, home, 0);
     try std.testing.expectEqual(@as(?i64, 0), try c.pruningState(allocator, home));
     try std.testing.expect(!c.offersPrunePrompt(allocator, home));
+}
+
+test "a configured prune target can be changed later, and reads back" {
+    if (builtin.os.tag == .windows) return error.SkipZigTest;
+    const allocator = std.testing.allocator;
+    var ltc: Litecoin = .{};
+    const c = ltc.coin();
+
+    // Litecoin offers the change (unlike Monero, whose daemon couldn't act on it),
+    // and says what it costs — the sentence the confirm is built around, so an
+    // empty one would put an irreversible action behind a blank dialog.
+    try std.testing.expect(c.offersPruneChange());
+    try std.testing.expect(c.pruneChangeWarning().len > 0);
+
+    const home = "test-ltc-prune-change-home";
+    var threaded: std.Io.Threaded = .init(allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    std.Io.Dir.cwd().deleteTree(io, home) catch {};
+    defer std.Io.Dir.cwd().deleteTree(io, home) catch {};
+
+    // First start picks a full node…
+    try c.applyPrune(allocator, home, 0);
+    try std.testing.expectEqual(@as(?i64, 0), try c.pruningState(allocator, home));
+
+    // …and the Settings change is a plain re-apply of the same call. Going from a
+    // full node to a cap is exactly the move that deletes blocks, which is why the
+    // front-ends put it behind a confirm rather than treating it as a preference.
+    try std.testing.expect(Coin.Pruning.changeDeletesBlocks(0, 2000));
+    try c.applyPrune(allocator, home, 2000);
+    try std.testing.expectEqual(@as(?i64, 2000), try c.pruningState(allocator, home));
+
+    // Tightening it deletes more; loosening it deletes nothing; and the one move
+    // no core can make stays refused.
+    try std.testing.expect(Coin.Pruning.changeDeletesBlocks(2000, 1000));
+    try std.testing.expect(!Coin.Pruning.changeDeletesBlocks(2000, 5000));
+    try std.testing.expect(!Coin.Pruning.changeAllowed(2000, 0));
 }
