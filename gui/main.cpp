@@ -1027,6 +1027,15 @@ static void apply_coin_metadata(const AppWindow *ui, bw_ctx *ctx, int idx)
 // g_selected: the user can move the nav while a modal is up, and applying a
 // prune choice to the wrong coin would rewrite the wrong conf.
 static int g_prune_coin = -1;
+// True while the open dialog is a Settings *change* rather than the first-start
+// question, and the value configured when it opened (-1 = none). The second is
+// captured at open so the choice can be re-checked against the same "from" the
+// menu was built for, instead of re-reading a conf that may have moved.
+static bool g_prune_changing = false;
+static int64_t g_prune_from = -1;
+// The value the confirm stage is asking about, captured when it opened so the
+// answer applies exactly what was shown rather than wherever the cursor ended up.
+static int64_t g_prune_pending = -1;
 
 // The in-daemon wallet action in flight: which coin, which action ordinal, and
 // the menu we last showed. Like the prune dialog, the action targets the coin it
@@ -1393,6 +1402,9 @@ int main(int argc, char **argv)
             size_t dn = bw_data_dir(ctx, static_cast<size_t>(idx), dd, sizeof dd);
 
             std::string prune;
+            std::string prune_warning;
+            bool prune_change_supported = false;
+            bool prune_configured = false;
             if (bw_prune_mode(static_cast<size_t>(idx)) >= 0) {
                 // -1 is "no key in the conf" — never configured, which reads
                 // differently from a deliberate full node and is what
@@ -1402,13 +1414,19 @@ int main(int argc, char **argv)
                 char pb[64];
                 size_t pn = bw_prune_value_text(static_cast<size_t>(idx), v, pb, sizeof pb);
                 prune.assign(pb, pn);
+                prune_configured = v >= 0;
+                // What a change costs, for the confirm inside the dialog.
+                char wb[512];
+                size_t wn = bw_prune_change_warning(static_cast<size_t>(idx), wb, sizeof wb);
+                prune_warning.assign(wb, wn);
+                prune_change_supported = bw_prune_change_supported(static_cast<size_t>(idx)) != 0;
             }
 
             post_to_ui([weak, idx,
                         file = std::string(wf, wn),
                         keys = std::string(wk, kn),
                         data_dir = std::string(dd, dn),
-                        prune]() {
+                        prune, prune_warning, prune_change_supported, prune_configured]() {
                 auto h = weak.lock();
                 if (!h)
                     return;
@@ -1420,6 +1438,11 @@ int main(int argc, char **argv)
                 (*h)->set_wallet_keys_path(ss(keys));
                 (*h)->set_data_dir_path(ss(data_dir));
                 (*h)->set_prune_text(ss(prune));
+                (*h)->set_prune_warning(ss(prune_warning));
+                // Re-checked when the dialog opens; this only decides whether to
+                // show the affordance at all.
+                (*h)->set_prune_change_supported(prune_change_supported);
+                (*h)->set_prune_configured(prune_configured);
             });
         }).detach();
     });
@@ -1645,20 +1668,31 @@ int main(int argc, char **argv)
             // sizes, so a hard-coded GB list would offer it a value it can't
             // honour.
             std::vector<slint::SharedString> rows;
+            std::vector<bool> enabled;
             size_t nrows = bw_prune_preset_count(static_cast<size_t>(coin));
             for (size_t r = 0; r < nrows; ++r) {
                 char lb[64] = {0};
                 size_t ln = bw_prune_preset_label(static_cast<size_t>(coin), r, lb, sizeof lb);
                 rows.push_back(ss(std::string_view(lb, ln)));
+                // Nothing is configured yet, so every row is still reachable. The
+                // model is filled even so: the dialog's confirm keys off it.
+                enabled.push_back(true);
             }
             if (rows.empty()) { // no menu to show — don't block the start on it
                 offer_accel_or_launch(coin);
                 return;
             }
             g_prune_coin = coin;
+            g_prune_changing = false;
+            g_prune_from = -1;
             if (auto h = weak.lock()) {
                 (*h)->set_prune_prompt(ss(std::string_view(prompt, pn)));
                 (*h)->set_prune_rows(std::make_shared<slint::VectorModel<slint::SharedString>>(rows));
+                (*h)->set_prune_row_enabled(std::make_shared<slint::VectorModel<bool>>(enabled));
+                (*h)->set_prune_changing(false);
+                // Asked before any chain exists, so there is nothing to delete
+                // and nothing to confirm.
+                (*h)->set_prune_confirming(false);
                 // Row 0 is the coin's least destructive choice, so the default
                 // selection can't discard a chain on a stray Enter.
                 (*h)->set_prune_sel(0);
@@ -1993,15 +2027,156 @@ int main(int argc, char **argv)
             (*h)->set_picked_file(ss(""));
     });
 
-    // The prune choice was made: write it, then carry on with the start.
-    ui->on_prune_choose([weak, ctx, offer_accel_or_launch](int row) {
+    // Reopen the same dialog from the Settings tab to CHANGE a value that's
+    // already configured. Everything is checked here, fresh, at the click — the
+    // affordance the tab drew may be a couple of seconds old, and both halves of
+    // the gate move on their own: `bw_prune_editable` reads the disk, and the
+    // daemon can have been started from another pane since.
+    ui->on_prune_change_open([weak, ctx]() {
+        int coin = g_selected.load();
+        if (coin < 0)
+            return;
+        auto h = weak.lock();
+        if (!h)
+            return;
+        // The conf is read at launch and never again: changing it under a running
+        // daemon would show a setting the live node isn't honouring.
+        if ((*h)->get_running())
+            return;
+        if (bw_prune_change_supported(static_cast<size_t>(coin)) == 0)
+            return;
+
+        int64_t from = -1;
+        (void)bw_prune_current(ctx, static_cast<size_t>(coin), &from);
+
+        // Same menu as the first-start question, but each row is checked against
+        // what's configured now: pruned can't go back to a full node, so that row
+        // comes back greyed rather than missing.
+        std::vector<slint::SharedString> rows;
+        std::vector<bool> enabled;
+        size_t nrows = bw_prune_preset_count(static_cast<size_t>(coin));
+        int first_pickable = -1;
+        for (size_t r = 0; r < nrows; ++r) {
+            char lb[64] = {0};
+            size_t ln = bw_prune_preset_label(static_cast<size_t>(coin), r, lb, sizeof lb);
+            rows.push_back(ss(std::string_view(lb, ln)));
+            int64_t v = bw_prune_preset_value(static_cast<size_t>(coin), r);
+            bool ok = v >= 0 &&
+                      bw_prune_change_allowed(static_cast<size_t>(coin), from, v) != 0;
+            enabled.push_back(ok);
+            if (ok && first_pickable < 0)
+                first_pickable = static_cast<int>(r);
+        }
+        if (first_pickable < 0) // nothing reachable from here — nothing to ask
+            return;
+
+        char cur[64];
+        size_t cn = bw_prune_value_text(static_cast<size_t>(coin), from, cur, sizeof cur);
+        char warn[512] = {0};
+        size_t wn = bw_prune_change_warning(static_cast<size_t>(coin), warn, sizeof warn);
+        // The directory the blocks would go from, for the confirm. It is shared by
+        // design, so it may be another wallet app's chain as well as ours — and the
+        // path is the only thing that lets someone recognise that.
+        char dd[512] = {0};
+        size_t ddn = bw_data_dir(ctx, static_cast<size_t>(coin), dd, sizeof dd);
+
+        g_prune_coin = coin;
+        g_prune_changing = true;
+        g_prune_from = from;
+        (*h)->set_prune_prompt(ss("Currently: " + std::string(cur, cn) +
+                                  ". Choose how the chain should be stored from here on."));
+        (*h)->set_prune_warning(ss(std::string_view(warn, wn)));
+        (*h)->set_prune_rows(std::make_shared<slint::VectorModel<slint::SharedString>>(rows));
+        (*h)->set_prune_row_enabled(std::make_shared<slint::VectorModel<bool>>(enabled));
+        // Start on a row that can actually be chosen — row 0 is the full-node one,
+        // which is exactly the row a pruned node can't go back to.
+        (*h)->set_prune_sel(first_pickable);
+        (*h)->set_prune_changing(true);
+        (*h)->set_prune_data_dir(ss(std::string_view(dd, ddn)));
+        (*h)->set_prune_confirming(false);
+        (*h)->set_prune_open(true);
+    });
+
+    // Writing the chosen value and telling the user when it takes effect. Shared
+    // by the confirm and by the changes that skip it (a looser cap deletes
+    // nothing), so both report the same way.
+    auto apply_prune_change = [weak, ctx](int coin, int64_t value) {
+        auto h = weak.lock();
+        if (!h)
+            return;
+        if (bw_prune_apply(ctx, static_cast<size_t>(coin), value) < 0) {
+            (*h)->set_status_text(ss("Couldn't save the pruning choice (" +
+                                     last_error_text(ctx, -1) + ") — left unchanged."));
+            (*h)->set_status_is_error(true);
+            return;
+        }
+        char pb[64];
+        size_t pn = bw_prune_value_text(static_cast<size_t>(coin), value, pb, sizeof pb);
+        if (g_selected.load() == coin)
+            (*h)->set_prune_text(ss(std::string_view(pb, pn)));
+        // The daemon reads its conf at launch, so say when this becomes real rather
+        // than leaving the new value looking already live.
+        (*h)->set_status_text(ss("Pruning set to " + std::string(pb, pn) +
+                                 " — takes effect the next time the daemon starts."));
+        (*h)->set_status_is_error(false);
+    };
+
+    // The prune choice was made: write it, then carry on with the start — or, for
+    // a change from the Settings tab, either write it or, when it would delete
+    // blocks, put that to the user first.
+    ui->on_prune_choose([weak, ctx, offer_accel_or_launch, apply_prune_change](int row) {
         // The coin the dialog was opened FOR, not whatever is selected now — the
         // user can move the selection while a modal is up.
         int coin = g_prune_coin;
         if (coin < 0)
             return;
-        g_prune_coin = -1;
+        bool changing = g_prune_changing;
+        int64_t from = g_prune_from;
         int64_t value = bw_prune_preset_value(static_cast<size_t>(coin), static_cast<size_t>(row));
+
+        if (changing) {
+            auto h = weak.lock();
+            if (!h)
+                return;
+            // Re-checked against the value the menu was built for, so a row that
+            // was greyed cannot be applied by any other path into this callback.
+            if (value < 0 ||
+                bw_prune_change_allowed(static_cast<size_t>(coin), from, value) == 0)
+                return;
+            // Choosing what's already set changes nothing: close, don't ask.
+            if (value == from) {
+                g_prune_coin = -1;
+                g_prune_changing = false;
+                g_prune_from = -1;
+                (*h)->set_prune_open(false);
+                return;
+            }
+            // The one question worth asking, and the only one that can be answered
+            // honestly: not whose data dir this is — BoxWallet writes nothing there
+            // a plain node wouldn't, so nothing on disk says — but whether this
+            // change makes the daemon delete blocks it currently has. If it does,
+            // the dialog stays up on the confirm, defaulting to Back.
+            if (bw_prune_change_destructive(static_cast<size_t>(coin), from, value) != 0) {
+                g_prune_pending = value;
+                char pb[64];
+                size_t pn = bw_prune_value_text(static_cast<size_t>(coin), value, pb, sizeof pb);
+                (*h)->set_prune_confirm_line(ss("Set pruning to " + std::string(pb, pn) + "?"));
+                (*h)->set_prune_confirming(true);
+                return;
+            }
+            g_prune_coin = -1;
+            g_prune_changing = false;
+            g_prune_from = -1;
+            (*h)->set_prune_open(false);
+            apply_prune_change(coin, value);
+            return;
+        }
+
+        g_prune_coin = -1;
+        g_prune_changing = false;
+        g_prune_from = -1;
+        if (auto h = weak.lock())
+            (*h)->set_prune_open(false);
         if (value >= 0 && bw_prune_apply(ctx, static_cast<size_t>(coin), value) < 0) {
             // Not a reason to abort: they asked for a daemon, and an unwritten
             // preference is the smaller problem. Say so and start unpruned —
@@ -2013,13 +2188,48 @@ int main(int argc, char **argv)
                 (*h)->set_status_is_error(true);
             }
         }
+        // A value in the conf is what puts the change affordance on the Settings
+        // tab, so refresh that here rather than leaving the tab's copy — taken when
+        // the coin was selected — stale until the user clicks away and back.
+        if (auto h = weak.lock())
+            (*h)->set_prune_configured(value >= 0);
         offer_accel_or_launch(coin);
     });
 
-    // Declined. The question was asked *before* starting, so declining it
-    // declines the start — this must not fall through to launch.
-    ui->on_prune_cancel([weak]() {
+    // "Yes, delete the blocks". The dialog has already closed itself; all that's
+    // left is to write the value the confirm named — never the current cursor,
+    // which is why the value was captured when the confirm opened.
+    ui->on_prune_confirm_accept([apply_prune_change]() {
+        int coin = g_prune_coin;
+        int64_t value = g_prune_pending;
         g_prune_coin = -1;
+        g_prune_changing = false;
+        g_prune_from = -1;
+        g_prune_pending = -1;
+        if (coin < 0 || value < 0)
+            return;
+        apply_prune_change(coin, value);
+    });
+
+    // "Back": return to the menu with nothing written and the dialog still up.
+    ui->on_prune_confirm_back([weak]() {
+        g_prune_pending = -1;
+        if (auto h = weak.lock())
+            (*h)->set_prune_confirming(false);
+    });
+
+    ui->on_prune_cancel([weak]() {
+        bool changing = g_prune_changing;
+        g_prune_coin = -1;
+        g_prune_changing = false;
+        g_prune_from = -1;
+        g_prune_pending = -1;
+        if (auto h = weak.lock())
+            (*h)->set_prune_confirming(false);
+        // Only the first-start question has a start waiting behind it; cancelling
+        // a Settings change just closes the dialog.
+        if (changing)
+            return;
         if (auto h = weak.lock())
             (*h)->set_daemon_busy(false);
     });

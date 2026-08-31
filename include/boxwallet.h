@@ -681,6 +681,44 @@ size_t  bw_prune_preset_label(size_t idx, size_t row, char *buf, size_t cap);
 int64_t bw_prune_preset_value(size_t idx, size_t row);
 int     bw_prune_apply(bw_ctx *ctx, size_t idx, int64_t prune_value);
 
+/* ---- changing the prune setting later (the Settings row) ----------------------
+ * bw_prune_change_supported: 1 = the Settings tab may offer to change this coin's
+ * prune setting, 0 = it may not (the coin doesn't prune, or its daemon can't act
+ * on a changed value — Monero's prune-blockchain=1 does nothing to an LMDB already
+ * synced in full). A property of the coin: no disk, no ctx, UI-thread safe.
+ *
+ * THE CALLER MUST ALSO REQUIRE THE DAEMON TO BE STOPPED. A coin conf is read at
+ * launch and never again, so a change written under a running daemon shows a
+ * setting the live node isn't honouring. The GUI gates on `running`; the TUI on
+ * its own daemon state.
+ *
+ * Not the same question as bw_prune_should_offer, which is the FIRST-START prompt
+ * and goes false the moment a chain exists. Note what is deliberately NOT asked
+ * here: whose data dir this is. BoxWallet shares each daemon's standard directory
+ * and writes nothing a plain node wouldn't, so nothing on disk can answer it.
+ *
+ * bw_prune_change_warning: what a change costs, for the confirm. 0 for a coin that
+ * doesn't offer the change.
+ *
+ * bw_prune_change_allowed: 1 = a change from the configured value `from` (-1 when
+ * the conf carries none) to `to` is one the daemon can carry out. Filter the
+ * preset menu through this rather than reimplementing the rule: the move it
+ * refuses is pruned -> full node, which no core can do — deleted blocks come back
+ * only by downloading the whole chain again, so that row would read as an undo
+ * and act as a re-sync.
+ *
+ * bw_prune_change_destructive: 1 = that move makes the daemon DELETE BLOCKS IT
+ * CURRENTLY HAS (a full node that starts pruning; a pruned node given a tighter
+ * cap; anything at all when the conf carries no value, since what's on disk is
+ * then unknown). CONFIRM BEFORE APPLYING WHENEVER THIS IS 1, defaulting to cancel:
+ * the data dir may be shared with another wallet app, and the blocks go from under
+ * it too. Then apply through bw_prune_apply and tell the user it takes effect the
+ * next time the daemon starts. */
+int     bw_prune_change_supported(size_t idx);
+size_t  bw_prune_change_warning(size_t idx, char *buf, size_t cap);
+int     bw_prune_change_allowed(size_t idx, int64_t from, int64_t to);
+int     bw_prune_change_destructive(size_t idx, int64_t from, int64_t to);
+
 /* Whether the coin's RPC port accepts a connection right now: 1 reachable, 0 not.
  * A cheap TCP connect and close — no request, no auth. Worker thread only.
  *

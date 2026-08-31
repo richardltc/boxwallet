@@ -460,6 +460,13 @@ pub const Monero = struct {
     // pruning is all-or-nothing — it drops ~7/8 of the ring-signature data,
     // leaving roughly a third of the chain — so the capability runs in `.on_off`
     // mode with a two-row menu and no custom amount.
+    //
+    // And, unlike them, it leaves `can_change` false: the Settings tab never offers
+    // to change this after the first start. `prune-blockchain=1` only tells monerod to
+    // sync *pruned* — it does not prune an LMDB that is already synced in full,
+    // which needs the separate `monero-blockchain-prune` tool BoxWallet doesn't
+    // ship. Offering the edit would write a conf key and change nothing on disk,
+    // which is worse than not offering it.
 
     pub const pruning_caps: Coin.Pruning = .{
         .mode = .on_off,

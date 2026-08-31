@@ -3806,6 +3806,64 @@ export fn bw_prune_apply(ctx: ?*Ctx, idx: usize, prune_value: i64) c_int {
     return 0;
 }
 
+/// Whether the Settings tab may offer to change this coin's prune setting at all:
+/// 1 yes, 0 no. A property of the coin, not of the machine — no disk, no ctx, so
+/// it's fine straight from a UI thread. 0 covers a coin that doesn't prune and a
+/// coin whose daemon can't act on a changed value (Monero: `prune-blockchain=1`
+/// does nothing to an LMDB already synced in full).
+///
+/// **The caller must also require the daemon to be stopped.** A coin conf is read
+/// at launch and never again, so a change written under a running daemon would
+/// show a setting the live node isn't honouring. That half is the front-end's,
+/// because the front-end already knows the daemon state.
+///
+/// Distinct from `bw_prune_should_offer`, which is the *first-start* prompt and
+/// goes false the moment a chain exists. This one asks the opposite question: the
+/// chain is here — may it be changed? Nothing here asks *whose* chain it is,
+/// because nothing on disk can answer that; what the front-ends do instead is
+/// confirm the consequence (`bw_prune_change_destructive`) before applying.
+export fn bw_prune_change_supported(idx: usize) c_int {
+    const coin = coinByIndex(idx) orelse return 0;
+    return if (coin.offersPruneChange()) 1 else 0;
+}
+
+/// Whether moving from the configured value `from` (-1 when the conf carries
+/// none) to `to` makes the daemon **delete blocks it currently has**: 1 yes, 0 no.
+/// Cheap; UI-thread safe.
+///
+/// This is what the change confirm keys off. It is deliberately about the move,
+/// not about the data dir: BoxWallet shares each daemon's standard directory and
+/// writes nothing a plain node wouldn't, so "is this chain ours?" has no answer on
+/// disk — while "does this particular change destroy something?" always does.
+/// Show the confirm whenever this returns 1, defaulting to cancel.
+export fn bw_prune_change_destructive(idx: usize, from: i64, to: i64) c_int {
+    const coin = coinByIndex(idx) orelse return 0;
+    if (coin.pruning() == null) return 0;
+    return if (Coin.Pruning.changeDeletesBlocks(from, to)) 1 else 0;
+}
+
+/// What changing this coin's prune setting costs, for the edit confirm. 0 for a
+/// coin that doesn't offer the edit. Cheap; UI-thread safe.
+export fn bw_prune_change_warning(idx: usize, buf: ?[*]u8, cap: usize) usize {
+    const b = buf orelse return 0;
+    const coin = coinByIndex(idx) orelse return 0;
+    return copyOut(b[0..cap], coin.pruneChangeWarning());
+}
+
+/// Whether a change from the configured value `from` (-1 when the conf carries
+/// none) to `to` is one the daemon can carry out: 1 yes, 0 no. Cheap; UI-thread
+/// safe.
+///
+/// Exported rather than reimplemented per front-end so a row one UI greys out
+/// can't be a row the other offers. The refused move is pruned → full node: no
+/// core can put back blocks it deleted, so that row would promise an undo that is
+/// really a re-download of the entire chain.
+export fn bw_prune_change_allowed(idx: usize, from: i64, to: i64) c_int {
+    const coin = coinByIndex(idx) orelse return 0;
+    if (coin.pruning() == null) return 0;
+    return if (Coin.Pruning.changeAllowed(from, to)) 1 else 0;
+}
+
 /// Whether the coin's RPC port accepts a connection right now: 1 reachable,
 /// 0 not. A cheap TCP connect and close — no request, no auth.
 ///
@@ -5205,6 +5263,71 @@ test "bw_prune_apply refuses the sentinel rather than writing it" {
     try std.testing.expect(non < coin_count);
     try std.testing.expectEqual(@as(c_int, -1), bw_prune_apply(&ctx, non, 2000));
     ctx.clearError();
+}
+
+test "changing a prune setting later is offered by capability, and never un-prunes" {
+    var buf: [512]u8 = undefined;
+    var i: usize = 0;
+    while (i < coin_count) : (i += 1) {
+        const coin = coinByIndex(i) orelse return error.Unexpected;
+        const pr = coin.pruning() orelse {
+            // A coin that doesn't prune has nothing to change, describes no cost,
+            // and permits no target — so no UI can draw the row for it.
+            try std.testing.expectEqual(@as(c_int, 0), bw_prune_change_supported(i));
+            try std.testing.expectEqual(@as(usize, 0), bw_prune_change_warning(i, &buf, buf.len));
+            try std.testing.expectEqual(@as(c_int, 0), bw_prune_change_allowed(i, -1, 2000));
+            try std.testing.expectEqual(@as(c_int, 0), bw_prune_change_destructive(i, 0, 2000));
+            continue;
+        };
+
+        try std.testing.expectEqual(@as(c_int, if (pr.can_change) 1 else 0), bw_prune_change_supported(i));
+
+        // A coin offering the change must say what it costs: the warning is the
+        // only thing standing between the user and blocks they can't get back,
+        // and an empty one would render a confirm dialog with no consequence in
+        // it. A coin NOT offering it stays silent.
+        const n = bw_prune_change_warning(i, &buf, buf.len);
+        if (!pr.can_change) {
+            try std.testing.expectEqual(@as(usize, 0), n);
+        } else {
+            try std.testing.expect(n > 0);
+            try std.testing.expectEqualStrings(pr.change_warning, buf[0..n]);
+        }
+
+        // Nothing configured yet (-1) or a deliberate full node (0): every target
+        // is still reachable, including keeping everything.
+        try std.testing.expectEqual(@as(c_int, 1), bw_prune_change_allowed(i, -1, 0));
+        try std.testing.expectEqual(@as(c_int, 1), bw_prune_change_allowed(i, -1, 2000));
+        try std.testing.expectEqual(@as(c_int, 1), bw_prune_change_allowed(i, 0, 2000));
+        // Already pruned: a smaller or larger cap is fine — the daemon can drop
+        // more blocks, or keep more from here on…
+        try std.testing.expectEqual(@as(c_int, 1), bw_prune_change_allowed(i, 5000, 2000));
+        try std.testing.expectEqual(@as(c_int, 1), bw_prune_change_allowed(i, 5000, 10000));
+        // …but it can never put back what it deleted. Offering row 0 here would
+        // read as an undo and act as a re-download of the entire chain.
+        try std.testing.expectEqual(@as(c_int, 0), bw_prune_change_allowed(i, 5000, 0));
+        // The ABI's "not configured" sentinel is not a target.
+        try std.testing.expectEqual(@as(c_int, 0), bw_prune_change_allowed(i, -1, -1));
+
+        // And which of those moves actually destroys something — the question the
+        // confirm is really asking, since ownership of the data dir can't be
+        // established from disk but this can.
+        try std.testing.expectEqual(@as(c_int, 0), bw_prune_change_destructive(i, -1, 0));
+        try std.testing.expectEqual(@as(c_int, 0), bw_prune_change_destructive(i, 0, 0));
+        // A full node that starts pruning loses most of its chain.
+        try std.testing.expectEqual(@as(c_int, 1), bw_prune_change_destructive(i, 0, 2000));
+        // A tighter cap prunes further; a looser one deletes nothing.
+        try std.testing.expectEqual(@as(c_int, 1), bw_prune_change_destructive(i, 5000, 2000));
+        try std.testing.expectEqual(@as(c_int, 0), bw_prune_change_destructive(i, 5000, 10000));
+        try std.testing.expectEqual(@as(c_int, 0), bw_prune_change_destructive(i, 5000, 5000));
+        // Nothing in the conf: what's on disk is unknown, so assume the worst.
+        try std.testing.expectEqual(@as(c_int, 1), bw_prune_change_destructive(i, -1, 2000));
+    }
+    // Not a coin.
+    try std.testing.expectEqual(@as(c_int, 0), bw_prune_change_supported(coin_count));
+    try std.testing.expectEqual(@as(c_int, 0), bw_prune_change_allowed(coin_count, -1, 2000));
+    try std.testing.expectEqual(@as(c_int, 0), bw_prune_change_destructive(coin_count, 0, 2000));
+    try std.testing.expectEqual(@as(usize, 0), bw_prune_change_warning(coin_count, &buf, buf.len));
 }
 
 test "a coin that doesn't prune is never offered the prompt" {
