@@ -5096,12 +5096,26 @@ export component AppWindow inherits Window {
 
             Rectangle {
                 width: 420px;
-                // The change adds a line: the coin's warning runs longer than the
-                // generic one it replaces. The ownership question has no menu at
-                // all — one long paragraph, the directory, and the two buttons.
+                // Fixed, like every other dialog here: a wrapped Text can't report
+                // the height it will actually take until it knows its width, so the
+                // card can't size itself off its content. The change runs a line
+                // longer than the first-start question (the coin's warning replaces
+                // a shorter generic one); the confirm has no menu at all — a title,
+                // the warning, the directory, and the buttons.
+                //
+                // These are estimates, and the spacer above the button row is what
+                // keeps them from mattering: a card that comes out taller than its
+                // content gets the slack in the middle, not under the buttons.
+                //
+                // Erring high on purpose: slack lands in that gap, whereas a card
+                // that comes out shorter than its content makes a stretching layout
+                // squeeze the text and clip it. The base covers the padding, the
+                // title, a two- or three-line question and the buttons — Monero's
+                // question runs to three lines on two menu rows, which is the
+                // tightest combination here.
                 height: root.prune-confirming
-                    ? 300px
-                    : ((root.prune-changing ? 215px : 190px) + (root.prune-rows.length * 36px));
+                    ? 210px
+                    : ((root.prune-changing ? 225px : 210px) + (root.prune-rows.length * 36px));
                 x: (parent.width - self.width) / 2;
                 y: (parent.height - self.height) / 2;
                 background: #202020;
@@ -5112,7 +5126,10 @@ export component AppWindow inherits Window {
                 VerticalBox {
                     padding: 16px;
                     spacing: 10px;
-                    alignment: start;
+                    // No `alignment: start` — the spacer before the buttons needs a
+                    // stretching layout to absorb the leftover height. Text keeps
+                    // its preferred height either way (stretch factor 0), so the
+                    // only thing that grows is the gap.
                     Text {
                         text: root.prune-confirming
                             ? root.prune-confirm-line
@@ -5151,6 +5168,11 @@ export component AppWindow inherits Window {
                     if !root.prune-confirming: VerticalLayout {
                         spacing: 10px;
                         padding: 0;
+                        // A nested layout stretches by default, which would spread
+                        // the rows down the card instead of leaving the slack to
+                        // the spacer. The rows are a fixed 30px each; this block
+                        // wants exactly the height they add up to.
+                        vertical-stretch: 0;
                         for row[i] in root.prune-rows: prow := Rectangle {
                             // A row the daemon couldn't carry out is greyed and
                             // inert rather than absent — see `prune-row-enabled`.
@@ -5203,10 +5225,14 @@ export component AppWindow inherits Window {
                             wrap: word-wrap;
                         }
                     }
+                    // Takes whatever height is left over, so the buttons sit on
+                    // the bottom edge of the card however the text above wrapped.
+                    Rectangle { }
                     HorizontalBox {
                         padding: 0;
                         alignment: end;
                         spacing: 8px;
+                        vertical-stretch: 0;
                         Button {
                             // From the confirm this steps back to the menu; from
                             // the menu it closes. Neither writes anything.
