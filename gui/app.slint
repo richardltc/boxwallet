@@ -824,16 +824,24 @@ component BusyHalo inherits Rectangle {
     in property <length> card-radius: 10px;
     in property <length> ring: 2px;   // how far the crisp band reaches out
     in property <length> bloom: 7px;  // and the soft one
+    // Which way round the band travels. Anti-clockwise by default — the wallet
+    // actions have used it that way since there was only one — and clockwise for
+    // a send, so money going out doesn't look like a wallet opening.
+    in property <bool> clockwise: false;
 
     // One head per lap, 2.4s a lap, with a tail behind it about a third of the
     // way round. Unhurried on purpose, like the sync spinner: it says "still
     // working", not "nearly there".
     property <float> tail-turns: 0.32;
-    // Decreasing with time is what makes it anti-clockwise: a conic gradient's
-    // angle grows *clockwise* from the top, so a band walking down in angle
-    // walks backwards around the ring.
+    // `p` is the band's *trailing* edge either way round, with the band running
+    // from `p` to `p + tail-turns`; which way it travels is decided by which way
+    // `p` moves. A conic gradient's angle grows clockwise from the top, so
+    // decreasing with time walks the band backwards around the ring and
+    // increasing walks it forwards.
     property <float> p: root.running
-        ? 1.0 - Math.mod(animation-tick() / 1ms, 2400) / 2400
+        ? (root.clockwise
+            ? Math.mod(animation-tick() / 1ms, 2400) / 2400
+            : 1.0 - Math.mod(animation-tick() / 1ms, 2400) / 2400)
         : 0.0;
     property <color> head: root.accent.brighter(0.8);
     property <color> gone: root.accent.transparentize(1.0);
@@ -847,8 +855,17 @@ component BusyHalo inherits Rectangle {
     // opens with a bracket parses as a call on the colour before it.
     property <float> tail-end: root.p + root.tail-turns;
     property <float> over: root.tail-end - 1.0;
-    property <color> seam: root.head.mix(root.gone, (1.0 - root.p) / root.tail-turns);
-    property <brush> sweep: root.over <= 0.0
+    // How far along the band the seam falls, as a fraction of its length. The
+    // two directions fade opposite ways — head→gone going anti-clockwise,
+    // gone→head going clockwise — so the same fraction is read from the other
+    // end of the mix in each case.
+    property <float> seam-f: (1.0 - root.p) / root.tail-turns;
+    property <color> seam: root.clockwise
+        ? root.head.mix(root.gone, 1.0 - root.seam-f)
+        : root.head.mix(root.gone, root.seam-f);
+    // Anti-clockwise: the head is the sharp edge at `p`, and the tail fades out
+    // behind it as the angle grows.
+    property <brush> sweep-acw: root.over <= 0.0
         ? @conic-gradient(
             root.gone 0turn,
             root.gone root.p * 1turn,
@@ -861,6 +878,24 @@ component BusyHalo inherits Rectangle {
             root.gone root.p * 1turn,
             root.head root.p * 1turn,
             root.seam 1turn);
+    // Clockwise: the mirror image — the band fades up from nothing at `p` to the
+    // head at `tail-end`, which is now the sharp edge it is running into.
+    property <brush> sweep-cw: root.over <= 0.0
+        ? @conic-gradient(
+            root.gone 0turn,
+            root.gone root.p * 1turn,
+            root.head root.tail-end * 1turn,
+            root.gone root.tail-end * 1turn,
+            root.gone 1turn)
+        : @conic-gradient(
+            root.seam 0turn,
+            root.head root.over * 1turn,
+            root.gone root.over * 1turn,
+            root.gone root.p * 1turn,
+            root.seam 1turn);
+    // Slint evaluates a property only when something reads it, so the direction
+    // that isn't in use costs nothing per frame.
+    property <brush> sweep: root.clockwise ? root.sweep-cw : root.sweep-acw;
 
     background: transparent;
 
@@ -1663,7 +1698,9 @@ export component AppWindow inherits Window {
             root.browse-open = false;
             return true;
         }
-        if (root.send-confirm-open) {
+        // Not once Send has been pressed: the transaction is already out at the
+        // daemon and closing the dialog wouldn't recall it.
+        if (root.send-confirm-open && !root.send-busy) {
             root.send-confirm-open = false;
             return true;
         }
@@ -3910,11 +3947,29 @@ export component AppWindow inherits Window {
         // A stake has no address to check — it pays the wallet itself — so that
         // half is replaced by the coin's own hint: the term it locks for is what
         // there is to reconsider, and this is the last moment to do it.
+        //
+        // Pressing Send doesn't dismiss it. The modal stays up, ringed in the
+        // coin's colour, until the daemon comes back with a transaction id (or a
+        // refusal) — main.cpp closes it from the same handler that fills in the
+        // result, so what's on screen never claims a send is done before it is.
         if root.send-confirm-open: Rectangle {
             background: #000000bb;
             TouchArea { }
 
-            Rectangle {
+            // The same halo the in-flight wallet actions wear, but running the
+            // other way round: a send is money leaving, and it shouldn't read as
+            // a wallet opening. Declared before the card so it paints behind it.
+            if root.send-busy: BusyHalo {
+                x: send-card.x;
+                y: send-card.y;
+                width: send-card.width;
+                height: send-card.height;
+                accent: root.coin-color;
+                running: true;
+                clockwise: true;
+            }
+
+            send-card := Rectangle {
                 width: 400px;
                 // Hug the content: with no height a panel fills the whole overlay.
                 height: send-body.preferred-height;
@@ -3930,15 +3985,22 @@ export component AppWindow inherits Window {
                     spacing: 10px;
                     alignment: start;
                     Text {
-                        text: (root.send-confirm-is-stake ? "Stake " : "Send ")
-                            + root.send-confirm-amount + " " + root.coin-name + "?";
+                        text: root.send-busy
+                            ? (root.send-confirm-is-stake ? "Staking " : "Sending ")
+                                + root.send-confirm-amount + " " + root.coin-name + "\u{2026}"
+                            : (root.send-confirm-is-stake ? "Stake " : "Send ")
+                                + root.send-confirm-amount + " " + root.coin-name + "?";
                         color: #e6e6e6;
                         font-size: 15px;
                         font-weight: 600;
                         wrap: word-wrap;
                     }
                     if !root.send-confirm-is-stake: Text {
-                        text: "To this address — check every character:";
+                        // Once it's away there is nothing left to check, so the
+                        // instruction goes and the address stays as a receipt.
+                        text: root.send-busy
+                            ? "To this address:"
+                            : "To this address — check every character:";
                         color: #9a9a9a;
                         font-size: 12px;
                         wrap: word-wrap;
@@ -3965,7 +4027,7 @@ export component AppWindow inherits Window {
                         font-size: 12px;
                         wrap: word-wrap;
                     }
-                    Text {
+                    if !root.send-busy: Text {
                         text: root.send-confirm-is-stake
                             ? "A stake cannot be cancelled before its term ends."
                             : "A sent transaction cannot be reversed.";
@@ -3973,7 +4035,21 @@ export component AppWindow inherits Window {
                         font-size: 11px;
                         wrap: word-wrap;
                     }
-                    HorizontalLayout {
+                    // What the halo is waiting for, said in words. The daemon can
+                    // take a while to build and broadcast, and an unexplained
+                    // frozen dialog is what invites a second click.
+                    if root.send-busy: Text {
+                        text: root.send-confirm-is-stake
+                            ? "Waiting for the daemon to build and broadcast the stake…"
+                            : "Waiting for the daemon to build and broadcast the transaction…";
+                        color: #9a9a9a;
+                        font-size: 11px;
+                        wrap: word-wrap;
+                    }
+                    // No footer while it's in flight: there is nothing left to
+                    // cancel — the same reason the in-flight wallet action has no
+                    // Cancel — and no second Send to press by mistake.
+                    if !root.send-busy: HorizontalLayout {
                         alignment: end;
                         spacing: 8px;
                         Button {
@@ -3982,8 +4058,10 @@ export component AppWindow inherits Window {
                         }
                         Button {
                             text: root.send-confirm-is-stake ? "Stake" : "Send";
+                            // Deliberately does NOT close the modal: it stays up,
+                            // now busy, and main.cpp closes it when the result
+                            // (the txid, or the daemon's refusal) comes back.
                             clicked => {
-                                root.send-confirm-open = false;
                                 if (root.send-confirm-is-stake) {
                                     root.stake-funds(root.send-confirm-amount);
                                 } else {
