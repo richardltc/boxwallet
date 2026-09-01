@@ -426,6 +426,13 @@ pub const Litecoin = struct {
 
     // --- vtable plumbing -------------------------------------------------
 
+    /// The block-index rebuild. Markers are the Core-derived defaults, checked
+    /// against the shipped litecoind binary.
+    pub const reindex_caps: Coin.Reindex = .{
+        .warning = "litecoind re-reads the block files already on disk to rebuild the index — hours of CPU on a large chain, and the daemon is unusable until it finishes. Nothing is downloaded a second time unless this node is pruned, in which case the blocks it has already deleted are fetched again.",
+        .pruned_warning = "This node is pruned, so litecoind cannot rebuild from what it has: it discards the block files it can no longer use and downloads the chain again. That is a full re-sync, not a repair of the copy on disk.",
+    };
+
     const vtable: Coin.VTable = .{
         .coin_name = vtCoinName,
         .coin_name_abbrev = vtCoinNameAbbrev,
@@ -460,6 +467,7 @@ pub const Litecoin = struct {
         .wallet_unlock = vtWalletUnlock,
         .wallet_lock = vtWalletLock,
         .warmup_probe_method = vtWarmupProbeMethod,
+        .reindex = &reindex_caps,
         .pruning = &pruning_caps,
     };
 

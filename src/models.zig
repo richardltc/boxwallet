@@ -261,6 +261,16 @@ pub const LoadingPhase = enum {
     /// the daemon logs to `debug.log`. Like the others it carries no percentage —
     /// the legacy code emits none.
     loading_block_index,
+    /// A bitcoin-derived daemon rebuilding its block index from the block files
+    /// on disk (`-reindex`). Unlike every other phase here this one was *asked
+    /// for* — see `Coin.Reindex` — and it runs for hours rather than seconds, so
+    /// it is named separately: reported as a plain `loading` it would be
+    /// indistinguishable from an ordinary start-up, and a user who reads an
+    /// hours-long repair as a stuck sixty-second one kills it halfway.
+    ///
+    /// Detected from the daemon's log, not from `-28`: over RPC a rebuild says
+    /// only the coarse "Loading block index…" it says on every start.
+    reindexing,
 };
 
 /// Normalized wallet security state — the coin-agnostic view a frontend renders

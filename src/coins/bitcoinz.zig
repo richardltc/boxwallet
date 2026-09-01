@@ -640,6 +640,12 @@ pub const BitcoinZ = struct {
 
     // --- vtable plumbing -------------------------------------------------
 
+    /// The block-index rebuild. Markers are the Core-derived defaults, checked
+    /// against the shipped bitcoinzd binary.
+    pub const reindex_caps: Coin.Reindex = .{
+        .warning = "bitcoinzd re-reads the block files already on disk to rebuild the index — hours of CPU on a large chain, and the daemon is unusable until it finishes. Nothing is downloaded a second time unless this node is pruned, in which case the blocks it has already deleted are fetched again.",
+    };
+
     const vtable: Coin.VTable = .{
         .coin_name = vtCoinName,
         .coin_name_abbrev = vtCoinNameAbbrev,
@@ -682,6 +688,7 @@ pub const BitcoinZ = struct {
         // daemon-stopped file swap (this).
         .wallet_restore_file_offline = vtWalletRestoreFileOffline,
         .warmup_probe_method = vtWarmupProbeMethod,
+        .reindex = &reindex_caps,
         // Bitcoin 0.11 lineage — no Core 24+ headers pre-synchronization pass,
         // so the frontend's stalled-header presync inference must never fire.
         .has_header_presync = vtHasHeaderPresync,

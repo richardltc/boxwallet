@@ -143,6 +143,19 @@ pub fn readout(in: Input) Readout {
         else
             .{ .text = "Idle", .tone = .idle, .active = false },
         .running => if (in.loading_phase != .none) blk: {
+            // A block-index rebuild outranks every other warm-up wording. The
+            // daemon's own `-28` message during one is the ordinary "Loading
+            // block index...", so deferring to it (as the fall-through below
+            // does) would hide hours of work behind a phrase that normally means
+            // seconds. Takes the same percentage suffix as the load sub-stages.
+            if (in.loading_phase == .reindexing) {
+                break :blk .{
+                    .text = warmup.phaseText(.reindexing),
+                    .tone = .warning,
+                    .active = true,
+                    .load_progress = true,
+                };
+            }
             // RPC's "-28" warm-up message only ever says the coarse "Loading
             // block index..." for the whole block-loading window; some daemons
             // (DigiByte) additionally log a finer-grained percentage for two
@@ -153,7 +166,9 @@ pub fn readout(in: Input) Readout {
                     .text = switch (in.load_stage) {
                         .loading_blocks => "Loading blocks…",
                         .processing_blocks => "Processing blocks…",
-                        .none => unreachable,
+                        // `.none` fails the condition guarding this branch, and
+                        // a rebuild returned above with its own wording.
+                        .none, .reindexing => unreachable,
                     },
                     .tone = .warning,
                     .active = true,

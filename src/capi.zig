@@ -1053,7 +1053,7 @@ fn probeChild(io: std.Io, child: *std.process.Child) ?std.process.Child.Term {
     return proc.probeChild(io, child);
 }
 
-fn startDaemon(ctx: *Ctx, idx: usize) !void {
+fn startDaemon(ctx: *Ctx, idx: usize, rebuild_index: bool) !void {
     var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
     defer arena.deinit();
     const a = arena.allocator();
@@ -1069,7 +1069,15 @@ fn startDaemon(ctx: *Ctx, idx: usize) !void {
     // Conf must carry RPC creds / API key before the daemon reads it, or it's
     // unmanageable over RPC. Idempotent; keeps existing values.
     try coin.prepareConf(a, io, ctx.install_root, ctx.home_dir);
-    const argv = try coin.daemonArgv(a, ctx.install_root, ctx.home_dir);
+    const base_argv = try coin.daemonArgv(a, ctx.install_root, ctx.home_dir);
+
+    // A requested block-index rebuild rides along as extra argv for this one
+    // launch and is written nowhere — see `Coin.Reindex`. Empty flags for a coin
+    // without the capability, so this needs no per-coin branch.
+    const argv = if (rebuild_index and coin.reindexFlags().len != 0)
+        try std.mem.concat(a, []const u8, &.{ base_argv, coin.reindexFlags() })
+    else
+        base_argv;
 
     // The spawned daemon must inherit our environment (esp. `$HOME`, used to
     // resolve `~/.<coin>`); a null environ_map would hand it an empty one.
@@ -1453,6 +1461,24 @@ export fn bw_sync_accel_pause(ctx: ?*Ctx) void {
 }
 
 export fn bw_start_daemon(ctx: ?*Ctx, idx: usize) c_int {
+    return startDaemonExport(ctx, idx, false);
+}
+
+/// Start the daemon **and rebuild its block index** — the repair for a daemon
+/// that aborts during init on a corrupt index (see `Coin.Reindex`). Identical to
+/// `bw_start_daemon` but for the one-shot flag, which is never written to the
+/// coin's conf: it applies to this launch and no other.
+///
+/// Returns 0 on a start, -1 otherwise (`bw_last_error` carries the reason). A
+/// coin that doesn't support the rebuild starts normally rather than failing —
+/// `bw_coin_supports_reindex` is what the front-ends gate the affordance on.
+///
+/// Blocks like `bw_start_daemon`; worker thread only.
+export fn bw_start_daemon_reindex(ctx: ?*Ctx, idx: usize) c_int {
+    return startDaemonExport(ctx, idx, true);
+}
+
+fn startDaemonExport(ctx: ?*Ctx, idx: usize, rebuild_index: bool) c_int {
     const c = ctx orelse return -1;
     // Let the wallet service be attempted again for this daemon run, exactly as
     // the TUI does on start. Without it, one failed spawn (a missing binary, a
@@ -1467,7 +1493,7 @@ export fn bw_start_daemon(ctx: ?*Ctx, idx: usize) c_int {
     if (idx < coin_count) c.tip_marks[idx].clear();
     const held = holdDaemonAction(c, idx);
     defer releaseDaemonAction(c, idx, held);
-    startDaemon(c, idx) catch |err| {
+    startDaemon(c, idx, rebuild_index) catch |err| {
         if (!c.hasError()) c.setError(@errorName(err));
         return -1;
     };
@@ -3864,6 +3890,42 @@ export fn bw_prune_change_allowed(idx: usize, from: i64, to: i64) c_int {
     return if (Coin.Pruning.changeAllowed(from, to)) 1 else 0;
 }
 
+/// Whether this coin's daemon can rebuild its block index: 1 yes, 0 no. Cheap;
+/// UI-thread safe.
+///
+/// The front-ends gate the affordance on this **and** on the daemon being
+/// stopped — the flag only takes effect at launch, so a rebuild asked for under
+/// a running daemon would simply lose to the datadir lock.
+export fn bw_coin_supports_reindex(idx: usize) c_int {
+    const coin = coinByIndex(idx) orelse return 0;
+    return if (coin.supportsReindex()) 1 else 0;
+}
+
+/// What a block-index rebuild costs this coin, for the confirm. Empty for a coin
+/// without the capability.
+///
+/// Takes `ctx` because the answer depends on the node: on a **pruned** one the
+/// daemon can't rebuild from what it has, so it discards the block files it can
+/// no longer use and downloads the chain again. That is the consequence the
+/// confirm exists to state, and it is readable from the conf — so it is read
+/// here rather than guessed at by each front-end. A coin whose prune setting
+/// BoxWallet can't read (no `pruning` capability) gets the unpruned wording,
+/// which says the same thing conditionally.
+///
+/// One small conf read; safe from the UI thread.
+export fn bw_reindex_warning(ctx: ?*Ctx, idx: usize, buf: ?[*]u8, cap: usize) usize {
+    const c = ctx orelse return 0;
+    const b = buf orelse return 0;
+    const coin = coinByIndex(idx) orelse return 0;
+
+    var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+    defer arena.deinit();
+
+    const current = coin.pruningState(arena.allocator(), c.home_dir) catch null;
+    const pruned = (current orelse 0) > 0;
+    return copyOut(b[0..cap], coin.reindexWarning(pruned));
+}
+
 /// Whether the coin's RPC port accepts a connection right now: 1 reachable,
 /// 0 not. A cheap TCP connect and close — no request, no auth.
 ///
@@ -5263,6 +5325,58 @@ test "bw_prune_apply refuses the sentinel rather than writing it" {
     try std.testing.expect(non < coin_count);
     try std.testing.expectEqual(@as(c_int, -1), bw_prune_apply(&ctx, non, 2000));
     ctx.clearError();
+}
+
+test "the block-index rebuild is offered by capability, and always states its cost" {
+    var i: usize = 0;
+    while (i < coin_count) : (i += 1) {
+        const coin = coinByIndex(i) orelse return error.Unexpected;
+        const rx = coin.reindex() orelse {
+            // No capability, no affordance: a front-end can't draw the row, and
+            // the launch flag it would pass is empty, so `bw_start_daemon_reindex`
+            // degrades to an ordinary start rather than doing something odd.
+            try std.testing.expectEqual(@as(c_int, 0), bw_coin_supports_reindex(i));
+            try std.testing.expectEqual(@as(usize, 0), coin.reindexFlags().len);
+            try std.testing.expectEqualStrings("", coin.reindexWarning(false));
+            try std.testing.expectEqualStrings("", coin.reindexWarning(true));
+            continue;
+        };
+
+        try std.testing.expectEqual(@as(c_int, 1), bw_coin_supports_reindex(i));
+
+        // A rebuild that passes no flag is an ordinary start wearing a repair's
+        // label — it would look like it worked and fix nothing.
+        try std.testing.expect(rx.flags.len > 0);
+        for (rx.flags) |f| try std.testing.expect(f.len > 0);
+
+        // It must say what it costs. This is hours of work at best and a full
+        // re-download at worst, so a confirm with an empty consequence in it is
+        // the one thing the dialog exists to prevent.
+        try std.testing.expect(rx.warning.len > 0);
+        try std.testing.expectEqualStrings(rx.warning, coin.reindexWarning(false));
+
+        // A coin whose prune setting BoxWallet can actually read must also word
+        // the pruned case, because there the rebuild stops being a repair: the
+        // daemon discards the blocks it can't reuse and downloads the chain
+        // again. Where the setting can't be read there is nothing to key off, so
+        // the single conditional wording stands for both.
+        if (coin.pruning() != null) {
+            try std.testing.expect(rx.pruned_warning.len > 0);
+            try std.testing.expectEqualStrings(rx.pruned_warning, coin.reindexWarning(true));
+        } else {
+            try std.testing.expectEqualStrings(rx.warning, coin.reindexWarning(true));
+        }
+
+        // The markers are what the warm-up reader matches on; an empty one would
+        // match every line in the log.
+        try std.testing.expect(rx.progress_marker.len > 0);
+        try std.testing.expect(rx.done_marker.len > 0);
+        try std.testing.expect(rx.blocks_dir.len > 0);
+        try std.testing.expect(rx.block_file_prefix.len > 0);
+    }
+
+    // Out of range answers no, rather than indexing past the registry.
+    try std.testing.expectEqual(@as(c_int, 0), bw_coin_supports_reindex(coin_count));
 }
 
 test "changing a prune setting later is offered by capability, and never un-prunes" {

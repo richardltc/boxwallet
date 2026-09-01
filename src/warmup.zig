@@ -36,7 +36,7 @@ const Coin = @import("coin.zig").Coin;
 
 /// The block-loading sub-stage `debug.log` distinguishes but the `-28` message
 /// does not (it says the coarse "Loading block index..." for both).
-pub const Stage = enum { none, loading_blocks, processing_blocks };
+pub const Stage = enum { none, loading_blocks, processing_blocks, reindexing };
 
 /// A load sub-stage plus its live percentage, in basis points (1000 ==
 /// 10.00%). `.none`/0 when neither line is in the tail.
@@ -150,7 +150,86 @@ pub fn probe(a: std.mem.Allocator, io: std.Io, coin: Coin, home_dir: []const u8)
     if (status.phase == .none) status.phase = coin.warmupPhaseFromLog(tail);
 
     status.progress = parseLoadProgress(tail);
+
+    // A rebuild outranks everything above. Over `-28` it is invisible — the
+    // daemon reports the same "Loading block index…" it reports on every start —
+    // so the log is the only place it shows, and reporting it as an ordinary
+    // load would hide an hours-long operation behind a sixty-second-looking one.
+    // Checked last so it overwrites the coarse phase, and only for coins that
+    // wire the capability.
+    if (reindexProgress(io, coin, data_dir, tail)) |rebuild| {
+        status.phase = .reindexing;
+        status.progress = rebuild;
+        // The daemon's verbatim message belongs to the *stage inside* the
+        // rebuild ("Loading block index..."), which would read as the whole
+        // story. `label` builds the rebuild's own wording from the phase.
+        status.msg_len = 0;
+    }
     return status;
+}
+
+/// How far through a block-index rebuild the daemon is, or null when it isn't in
+/// one. Only ever true for a coin wiring `Coin.Reindex`.
+///
+/// The daemon logs a line per block file (`Reindexing block file blk00042.dat...`)
+/// and one when it's done, so "still rebuilding" is *the last progress line comes
+/// after the last done line* — a log tail spanning two runs would otherwise read
+/// a finished rebuild as a live one for ever.
+///
+/// The percentage is the file number over how many block files are on disk. That
+/// count is a directory read, so it is paid **only** once a rebuild is confirmed
+/// — never on the ordinary start-up path this function shares.
+fn reindexProgress(io: std.Io, coin: Coin, data_dir: []const u8, tail: []const u8) ?Progress {
+    const rx = coin.reindex() orelse return null;
+
+    const at = std.mem.lastIndexOf(u8, tail, rx.progress_marker) orelse return null;
+    if (std.mem.lastIndexOf(u8, tail, rx.done_marker)) |done| {
+        if (done > at) return null;
+    }
+
+    var progress: Progress = .{ .stage = .reindexing };
+    const line = tail[at..];
+    const n = blockFileNumber(line, rx) orelse return progress;
+    const total = countBlockFiles(io, data_dir, rx);
+    // A count of zero means the directory couldn't be read, and a file number
+    // past the count means files arrived after the rebuild began — both leave
+    // the stage with no percentage rather than a made-up one.
+    if (total == 0 or n > total) return progress;
+    progress.pct_bp = @intCast(@min(@as(u64, 10_000), n * 10_000 / total));
+    return progress;
+}
+
+/// The block-file number in a `Reindexing block file blk00042.dat...` line — 42
+/// here, one-based for the percentage (the daemon has *finished* nothing until
+/// it has read file 0). Null when the line doesn't carry one.
+fn blockFileNumber(line: []const u8, rx: *const Coin.Reindex) ?u64 {
+    const start = std.mem.indexOf(u8, line, rx.block_file_prefix) orelse return null;
+    var i = start + rx.block_file_prefix.len;
+    const first = i;
+    while (i < line.len and std.ascii.isDigit(line[i])) : (i += 1) {}
+    if (i == first) return null;
+    const n = std.fmt.parseInt(u64, line[first..i], 10) catch return null;
+    return n + 1;
+}
+
+/// How many block files the coin has on disk, i.e. how many the rebuild has to
+/// get through. Zero when the directory can't be read, which the caller reads as
+/// "no percentage" rather than as an error.
+fn countBlockFiles(io: std.Io, data_dir: []const u8, rx: *const Coin.Reindex) u64 {
+    var dir = std.Io.Dir.cwd().openDir(io, data_dir, .{}) catch return 0;
+    defer dir.close(io);
+    var blocks = dir.openDir(io, rx.blocks_dir, .{ .iterate = true }) catch return 0;
+    defer blocks.close(io);
+
+    var count: u64 = 0;
+    var it = blocks.iterate();
+    while (it.next(io) catch null) |entry| {
+        if (entry.kind != .file) continue;
+        if (!std.mem.startsWith(u8, entry.name, rx.block_file_prefix)) continue;
+        if (!std.mem.endsWith(u8, entry.name, rx.block_file_suffix)) continue;
+        count += 1;
+    }
+    return count;
 }
 
 /// The daemon's own wording for the stage it's at, from its log: the coin's own
@@ -360,6 +439,7 @@ pub fn phaseText(p: models.LoadingPhase) []const u8 {
         .verifying => "Verifying…",
         .calculating => "Calculating money supply…",
         .loading_block_index => "Loading block index…",
+        .reindexing => "Rebuilding block index…",
     };
 }
 
@@ -383,11 +463,26 @@ pub fn phaseText(p: models.LoadingPhase) []const u8 {
 ///  3. the coarse phase text, for a daemon that gave no message (the
 ///     log-detected block-index load of a NovaCoin-era daemon).
 pub fn label(status: *const Status, buf: []u8) []const u8 {
+    // A rebuild first: it is the one phase here the user asked for and the one
+    // that runs for hours, so it says so in its own words whatever the daemon
+    // happens to be logging underneath.
+    if (status.progress.stage == .reindexing) {
+        const text = phaseText(.reindexing);
+        if (status.progress.pct_bp > 0) {
+            const pct = @as(f64, @floatFromInt(status.progress.pct_bp)) / 100.0;
+            // Trim the "…": a percentage already says it is still going.
+            const body = std.mem.trimEnd(u8, text, "…");
+            return std.fmt.bufPrint(buf, "{s} {d:.1}%", .{ body, pct }) catch text;
+        }
+        return text;
+    }
     if (status.phase == .loading and status.progress.stage != .none) {
         const text = switch (status.progress.stage) {
             .loading_blocks => "Loading blocks…",
             .processing_blocks => "Processing blocks…",
-            .none => unreachable,
+            // Both handled above — a rebuild returns before this branch, and
+            // `.none` fails the condition guarding it.
+            .none, .reindexing => unreachable,
         };
         if (status.progress.pct_bp > 0) {
             const pct = @as(f64, @floatFromInt(status.progress.pct_bp)) / 100.0;
@@ -408,6 +503,70 @@ fn tidyMessage(msg: []const u8, buf: []u8) []const u8 {
     const body = std.mem.trimEnd(u8, std.mem.trimEnd(u8, msg, " \t"), ".");
     if (body.len == msg.len) return msg; // no trailing dots to fold
     return std.fmt.bufPrint(buf, "{s}…", .{body}) catch msg;
+}
+
+test "a rebuild's block-file number is read from the line the daemon logs" {
+    const rx: Coin.Reindex = .{ .warning = "x" };
+
+    try std.testing.expectEqual(
+        @as(?u64, 1),
+        blockFileNumber("Reindexing block file blk00000.dat...", &rx),
+    );
+    // One-based: the daemon has finished nothing until it has read file 0, so
+    // file 42 is the 43rd of them and a percentage built on it never reads 0%
+    // while work is actually happening.
+    try std.testing.expectEqual(
+        @as(?u64, 43),
+        blockFileNumber("Reindexing block file blk00042.dat...", &rx),
+    );
+    try std.testing.expectEqual(
+        @as(?u64, null),
+        blockFileNumber("Reindexing block file blk.dat...", &rx),
+    );
+    try std.testing.expectEqual(@as(?u64, null), blockFileNumber("nothing here", &rx));
+}
+
+test "a finished rebuild stops reporting itself as one" {
+    // `reindexProgress` decides "still going" from which marker comes last, so a
+    // tail spanning two runs must not read the older rebuild as a live one. The
+    // ordering logic is exercised here directly on the markers; the surrounding
+    // probe needs a daemon and a data dir, which offline tests have neither of.
+    const rx: Coin.Reindex = .{ .warning = "x" };
+
+    const running =
+        "Reindexing finished\n" ++
+        "Reindexing block file blk00007.dat...\n";
+    const done =
+        "Reindexing block file blk00007.dat...\n" ++
+        "Reindexing finished\n";
+
+    const r_at = std.mem.lastIndexOf(u8, running, rx.progress_marker).?;
+    const r_done = std.mem.lastIndexOf(u8, running, rx.done_marker).?;
+    try std.testing.expect(r_done < r_at);
+
+    const d_at = std.mem.lastIndexOf(u8, done, rx.progress_marker).?;
+    const d_done = std.mem.lastIndexOf(u8, done, rx.done_marker).?;
+    try std.testing.expect(d_done > d_at);
+}
+
+test "a rebuild labels itself, and says so rather than looking like an ordinary load" {
+    var buf: [64]u8 = undefined;
+
+    // With a percentage.
+    var s: Status = .{ .phase = .reindexing, .progress = .{ .stage = .reindexing, .pct_bp = 4250 } };
+    try std.testing.expectEqualStrings("Rebuilding block index 42.5%", label(&s, &buf));
+
+    // Without one (the block-file count couldn't be read) it still names the
+    // operation — the whole point is that an hours-long repair doesn't read as a
+    // sixty-second start.
+    var bare: Status = .{ .phase = .reindexing, .progress = .{ .stage = .reindexing } };
+    try std.testing.expectEqualStrings("Rebuilding block index…", label(&bare, &buf));
+
+    // And the daemon's own verbatim message doesn't get to override it: during a
+    // rebuild that message is the ordinary "Loading block index...".
+    var noisy: Status = .{ .phase = .reindexing, .progress = .{ .stage = .reindexing } };
+    noisy.setMessage("Loading block index...");
+    try std.testing.expectEqualStrings("Rebuilding block index…", label(&noisy, &buf));
 }
 
 test "the load sub-stage and percentage are scraped from a debug.log tail" {

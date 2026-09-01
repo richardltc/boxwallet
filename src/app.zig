@@ -1079,6 +1079,24 @@ const UpdateModal = struct {
     }
 };
 
+/// The block-index rebuild confirm — shown from the Settings tab (`r`) for a coin
+/// whose daemon can rebuild a corrupt index. Confirm-only: on Yes the daemon
+/// starts with the one-shot flag and narrates the rebuild in the main pane, so
+/// there is no multi-stage modal to drive.
+///
+/// `warning` is the coin's own wording, resolved at open against **this** node's
+/// prune setting — on a pruned one a rebuild is a re-download rather than a
+/// repair, and the confirm exists to say which of the two the user is about to
+/// start. Held as a slice because the text is the coin's comptime data.
+const ReindexModal = struct {
+    coin_idx: usize,
+    /// Confirm-menu cursor. 1 = No, and it starts there: this discards nothing
+    /// on an unpruned node but costs hours either way, so it must not be what a
+    /// stray Enter gives.
+    sel: u8 = 1,
+    warning: []const u8 = "",
+};
+
 /// Upper bound on a wallet passphrase, sizing the worker's copy buffer and the
 /// modal input's char limit. Comfortably past any sane passphrase length while
 /// keeping the secret in a small fixed buffer (memory constraint).
@@ -1626,6 +1644,19 @@ const Activity = struct {
     /// the worker's arena is gone by the time the UI reads it.
     daemon_err: []const u8 = "",
     daemon_err_buf: [200]u8 = undefined,
+
+    /// One-shot: the next launch appends this coin's `Coin.Reindex.flags`, so the
+    /// daemon rebuilds its block index from the block files on disk. **Read and
+    /// cleared by `launchDaemon` before it spawns anything**, which is what makes
+    /// it one-shot even when the launch then fails — a rebuild the user asked for
+    /// once must not become one every ordinary Start does.
+    ///
+    /// The flag deliberately never reaches the conf. `reindex=1` there would
+    /// rebuild on every start for ever, in a file BoxWallet shares with whatever
+    /// else owns the data dir. Nothing persists it here either: a bitcoin-derived
+    /// daemon records "still reindexing" in its own block-tree DB and picks the
+    /// job back up by itself, so an interrupted rebuild needs no state from us.
+    reindex_once: bool = false,
     /// Connected peer count. Red at 0, green once any peer is connected.
     /// (Live peer polling lands later — for now this stays 0.)
     peers: u32 = 0,
@@ -3219,7 +3250,19 @@ const Activity = struct {
 
         // The command to spawn — the bare daemon binary for fork coins, or a full
         // command line (e.g. `java -jar … -c <conf>`) for foreground coins.
-        const argv = try self.coin.daemonArgv(a, self.install_root, self.home_dir);
+        const base_argv = try self.coin.daemonArgv(a, self.install_root, self.home_dir);
+
+        // A requested block-index rebuild rides along as extra argv for this one
+        // launch. Taken (not just read) so it can't survive into the next start,
+        // and empty for a coin with no such capability — which is why this needs
+        // no per-coin branch: `reindexFlags` is `&.{}` there and the concat is a
+        // copy. The coin owns the flag's spelling; nothing generic writes it.
+        const rebuild = self.reindex_once;
+        self.reindex_once = false;
+        const argv = if (rebuild and self.coin.reindexFlags().len != 0)
+            try std.mem.concat(a, []const u8, &.{ base_argv, self.coin.reindexFlags() })
+        else
+            base_argv;
 
         // Scratch file capturing the spawned process's stderr, read back for the
         // failure reason when a start goes wrong. Per-daemon name so coins
@@ -3748,6 +3791,7 @@ pub const App = struct {
     /// The open update-confirm prompt, or null. Mutually exclusive with the other
     /// modals; while set it owns keyboard input and is composited over the dashboard.
     update_modal: ?UpdateModal = null,
+    reindex_modal: ?ReindexModal = null,
     /// The open first-start prune prompt, or null. Mutually exclusive with the
     /// other modals; while set it owns keyboard input and is composited over the
     /// dashboard, same as the wallet/QuickSync modals.
@@ -4071,6 +4115,10 @@ pub const App = struct {
                     self.updateModalKey(k);
                     return .none;
                 }
+                if (self.reindex_modal != null) {
+                    self.reindexModalKey(k);
+                    return .none;
+                }
                 if (self.qs_modal != null) {
                     self.qsModalKey(k);
                     return .none;
@@ -4108,6 +4156,11 @@ pub const App = struct {
                         'i' => self.tryInstall(),
                         'u' => self.tryUpdate(),
                         's' => self.tryToggleDaemon(),
+                        // The block-index rebuild — a repair, not routine, so it
+                        // is advertised on the Settings tab where the state that
+                        // makes it possible is shown, rather than in the Home
+                        // key list beside install/start/wallet.
+                        'r' => self.openReindexModal(),
                         'w' => self.openWalletModal(),
                         'k' => self.move(-1),
                         'j' => self.move(1),
@@ -4179,7 +4232,7 @@ pub const App = struct {
     fn modalOpen(self: *const App) bool {
         return self.update_modal != null or self.qs_modal != null or self.prune_modal != null or
             self.modal != null or self.send_modal != null or self.mining_modal != null or
-            self.sc_modal != null;
+            self.sc_modal != null or self.reindex_modal != null;
     }
 
     /// Handle a mouse event: click a left-nav row to select that coin, or wheel
@@ -5682,6 +5735,90 @@ pub const App = struct {
             },
             else => {},
         }
+    }
+
+    /// Open the block-index rebuild confirm for the selected coin — the repair for
+    /// a daemon that aborts during init on a corrupt index (see `Coin.Reindex`).
+    ///
+    /// Three gates, each refusing out loud rather than letting the press do
+    /// nothing: the coin's daemon can do it at all, it's installed, and it is
+    /// **stopped** — the flag only takes effect at launch, so asking for a rebuild
+    /// under a running daemon would just lose to the datadir lock.
+    fn openReindexModal(self: *App) void {
+        const coin = self.selectedCoin() orelse return;
+        const act = &self.activities[self.selected];
+        if (self.modalOpen()) return;
+        if (!coin.supportsReindex()) return;
+        if (!act.installed) {
+            self.logf("{s}: not installed — press i to install", .{coin.coinName()});
+            return;
+        }
+        if (act.daemonState() != .stopped) {
+            self.logf("{s}: stop the daemon before rebuilding the block index", .{coin.coinName()});
+            return;
+        }
+        // Resolved here, against this node: on a pruned one the rebuild is a
+        // re-download rather than a repair, and that is the consequence the
+        // confirm exists to name.
+        const pruned = (self.coinPruneValue(coin) orelse 0) > 0;
+        self.reindex_modal = .{
+            .coin_idx = self.selected,
+            .warning = coin.reindexWarning(pruned),
+        };
+    }
+
+    /// This coin's configured prune value, or null when it has no prune capability
+    /// or the conf carries no value. A small conf read, done once at modal open.
+    fn coinPruneValue(self: *App, coin: Coin) ?i64 {
+        var arena = std.heap.ArenaAllocator.init(self.allocator);
+        defer arena.deinit();
+        return coin.pruningState(arena.allocator(), self.home_dir) catch null;
+    }
+
+    /// Handle a keypress while the rebuild confirm is open: walk Yes/No,
+    /// `enter`/`y` confirms, `esc`/`n` cancels. Keys are swallowed so nothing
+    /// reaches the dashboard.
+    fn reindexModalKey(self: *App, k: zz.KeyEvent) void {
+        if (self.reindex_modal == null) return;
+        const m = &self.reindex_modal.?;
+        switch (k.key) {
+            .escape => self.reindex_modal = null,
+            .up => m.sel = 0,
+            .down => m.sel = 1,
+            .char => |c| switch (c) {
+                'k' => m.sel = 0,
+                'j' => m.sel = 1,
+                'y' => self.confirmReindex(),
+                'n' => self.reindex_modal = null,
+                else => {},
+            },
+            .enter => if (m.sel == 0) self.confirmReindex() else {
+                self.reindex_modal = null;
+            },
+            else => {},
+        }
+    }
+
+    /// User confirmed: close the prompt and start the daemon with the one-shot
+    /// rebuild flag.
+    ///
+    /// Deliberately **not** routed through `tryStart`. That path runs the
+    /// first-start preflight — the prune prompt and the sync-accelerator offer —
+    /// and neither has anything to say here: both are questions about a chain that
+    /// doesn't exist yet, and this is a repair of one that does.
+    fn confirmReindex(self: *App) void {
+        const idx = self.reindex_modal.?.coin_idx;
+        self.reindex_modal = null;
+        const coin = self.coinAt(idx) orelse return;
+        const act = &self.activities[idx];
+        if (act.daemonState() != .stopped) return;
+        if (act.daemon_thread) |t| {
+            t.join();
+            act.daemon_thread = null;
+        }
+        act.reindex_once = true;
+        self.beginDaemonStart(coin, act);
+        self.logf("{s}: rebuilding the block index — this runs for hours", .{coin.coinName()});
     }
 
     /// User confirmed: close the prompt and begin the update sequence.
@@ -7265,6 +7402,10 @@ pub const App = struct {
                 const box = self.renderUpdateModal(a) catch break :blk screen;
                 break :blk overlayBox(a, screen, box, ctx.width, ctx.height) catch screen;
             }
+            if (self.reindex_modal != null) {
+                const box = self.renderReindexModal(a) catch break :blk screen;
+                break :blk overlayBox(a, screen, box, ctx.width, ctx.height) catch screen;
+            }
             if (self.qs_modal != null) {
                 const box = self.renderQuickSyncModal(a) catch break :blk screen;
                 break :blk overlayBox(a, screen, box, ctx.width, ctx.height) catch screen;
@@ -7895,12 +8036,25 @@ pub const App = struct {
                 dimNote(a, "enter: change how the chain is stored");
             break :blk std.fmt.allocPrint(a, "\n{s}: {s}{s}", .{ prune_label, prune_value, hint }) catch "";
         } else "";
+        // Block-index row, for coins whose daemon can rebuild one. This is the
+        // repair for an index gone bad — the daemon aborts part-way through init
+        // and its RPC never answers — so the row says nothing about health it
+        // can't measure: it offers the action, and only when it would work.
+        const index_row: []const u8 = if (coin.supportsReindex()) blk: {
+            const index_label = statusLabel(a, brand, "Block index", true);
+            const state = (zz.Style{}).dim(true).render(a, "built by the daemon") catch "built by the daemon";
+            const hint: []const u8 = if (act.daemonState() != .stopped)
+                dimNote(a, "Stop the daemon to rebuild it.")
+            else
+                dimNote(a, "r: rebuild it (hours — only needed if the daemon won't start)");
+            break :blk std.fmt.allocPrint(a, "\n{s}: {s}{s}", .{ index_label, state, hint }) catch "";
+        } else "";
         return std.fmt.allocPrint(a,
             \\Settings
             \\
             \\{s}: {s}{s}
-            \\{s}: {s}{s}
-        , .{ wallet_label, wallet_value, keys_row, chain_label, chain_value, prune_row });
+            \\{s}: {s}{s}{s}
+        , .{ wallet_label, wallet_value, keys_row, chain_label, chain_value, prune_row, index_row });
     }
 
     /// A dimmed note on its own line under a Settings row. Its own helper only so
@@ -9528,6 +9682,55 @@ pub const App = struct {
             [_][]const u8{ "Yes — reinstall now", "No — cancel" }
         else
             [_][]const u8{ "Yes — update now", "No — not now" };
+        for (labels, 0..) |lbl, i| {
+            const sel = i == m.sel;
+            const plain = try std.fmt.allocPrint(a, "{s}{s}", .{ if (sel) "❯ " else "  ", lbl });
+            const text = if (sel)
+                ((zz.Style{}).bold(true).fg(brand).render(a, plain) catch plain)
+            else
+                plain;
+            try modalRow(&out.writer, vbar, inner_w, text, zz.width(plain));
+        }
+
+        try modalRow(&out.writer, vbar, inner_w, "", 0);
+        const hint_text = "enter: select   esc: cancel";
+        const hint = (zz.Style{}).dim(true).render(a, hint_text) catch hint_text;
+        try modalRow(&out.writer, vbar, inner_w, hint, zz.width(hint_text));
+        try modalRule(a, &out.writer, brand, inner_w, "└", "┘", "");
+
+        return out.toOwnedSlice();
+    }
+
+    /// Render the block-index rebuild confirm. Same chrome as the update prompt,
+    /// and confirm-only for the same reason: once it starts, the daemon's own
+    /// progress shows in the main pane ("Rebuilding block index… 42.0%").
+    fn renderReindexModal(self: *const App, a: std.mem.Allocator) ![]const u8 {
+        const m = self.reindex_modal.?;
+        const coin = self.coinAt(m.coin_idx) orelse return error.NoCoin;
+        const brand = zz.Color.hex(coin.coinColor());
+        const inner_w = modal_inner_w;
+        const vbar = (zz.Style{}).fg(brand).render(a, "│") catch "│";
+
+        var out: std.Io.Writer.Allocating = .init(a);
+        errdefer out.deinit();
+
+        const title = try std.fmt.allocPrint(a, "{s} — Rebuild block index", .{coin.coinName()});
+        try modalRule(a, &out.writer, brand, inner_w, "┌", "┐", title);
+        try modalRow(&out.writer, vbar, inner_w, "", 0);
+
+        try wrapIntoRows(a, &out.writer, vbar, inner_w, m.warning, (zz.Style{}));
+        try modalRow(&out.writer, vbar, inner_w, "", 0);
+
+        // The data dir is named for the same reason the prune confirm names it:
+        // it may be shared with another wallet app, and this runs against their
+        // copy of the chain too.
+        if (coin.dataDir(a, self.home_dir) catch null) |dir| {
+            const where = try std.fmt.allocPrint(a, "Data directory: {s}", .{dir});
+            try wrapIntoRows(a, &out.writer, vbar, inner_w, where, (zz.Style{}).dim(true));
+            try modalRow(&out.writer, vbar, inner_w, "", 0);
+        }
+
+        const labels = [_][]const u8{ "Yes — rebuild the index", "No — cancel" };
         for (labels, 0..) |lbl, i| {
             const sel = i == m.sel;
             const plain = try std.fmt.allocPrint(a, "{s}{s}", .{ if (sel) "❯ " else "  ", lbl });

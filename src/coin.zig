@@ -465,6 +465,59 @@ pub const Coin = struct {
         }
     };
 
+    /// An optional **block-index rebuild** capability — the repair for a daemon
+    /// whose on-disk index has gone bad and which therefore aborts during init,
+    /// before its RPC ever answers. Nexa's `FindMostWorkChain()` assertion on an
+    /// unlinked `CBlockIndex` is the worked example: the daemon forks, gets as far
+    /// as "Activating best chain…", and dies on an `assert` with nothing in its
+    /// own log. Nothing in the conf can avoid it; the index has to be rebuilt.
+    ///
+    /// Coins with no such repair (Monero has no equivalent; Ergo's is unrelated)
+    /// leave `reindex` null and the affordance never appears.
+    ///
+    /// **The flags are one-shot argv, never conf.** A bitcoin-derived daemon takes
+    /// `reindex=1` in its conf just as happily as on the command line, and would
+    /// then rebuild on *every* start for ever — in a conf BoxWallet shares with
+    /// whatever else owns that data dir. Nothing here writes anything down: the
+    /// flag lives for exactly one launch (see `app.LaunchOptions`), and the daemon
+    /// persists its own "still reindexing" state in the block-tree DB, so an
+    /// interrupted rebuild resumes by itself without BoxWallet tracking it.
+    pub const Reindex = struct {
+        /// Appended to `daemon_argv` for one launch. The coin's own spelling —
+        /// generic code never writes the flag text.
+        flags: []const []const u8 = &.{"-reindex"},
+        /// What the rebuild costs on a node holding the **whole** chain: CPU and
+        /// hours, but nothing is re-downloaded. Shown in the confirm.
+        warning: []const u8,
+        /// What it costs on a **pruned** node, where it is destructive: the daemon
+        /// removes the block files it can't reuse and downloads the chain again
+        /// (nexad: "Removing unusable blk?????.dat and rev?????.dat files for
+        /// -reindex with -prune"). Shown instead of `warning` whenever
+        /// `Pruning.current` reports a pruned node, so the confirm names the
+        /// consequence that actually applies. Required (checked by test) of any
+        /// coin that wires both `reindex` and a `pruning` capability.
+        pruned_warning: []const u8 = "",
+        /// The line the daemon logs while rebuilding, matched as a prefix so the
+        /// warm-up stage can say "Rebuilding block index" rather than leaving it
+        /// to look like an ordinary sixty-second start. An hours-long operation
+        /// that reads as a normal one gets killed halfway by a user who assumes
+        /// it has hung.
+        progress_marker: []const u8 = "Reindexing block file",
+        /// The line that says it finished, so the stage stops claiming a rebuild
+        /// is still running once the daemon moves on to an ordinary start-up.
+        done_marker: []const u8 = "Reindexing finished",
+        /// The data-dir subdirectory holding the coin's block files, counted to
+        /// turn "rebuilding file 42" into a percentage. Named here rather than
+        /// assumed by the warm-up reader, which has no business knowing one
+        /// bitcoin-family convention from another.
+        blocks_dir: []const u8 = "blocks",
+        /// Filename bounds of a block file inside `blocks_dir` (`blk00042.dat`),
+        /// so the count doesn't also sweep up the undo files (`rev00042.dat`) or
+        /// the LevelDB directories beside them.
+        block_file_prefix: []const u8 = "blk",
+        block_file_suffix: []const u8 = ".dat",
+    };
+
     /// One lock tier a stablecoin can be minted at: longer locks demand less
     /// collateral. `duration` is the human label ("30 days", "10 years");
     /// `ratio_pct` the required collateral ratio in percent (500 == 500%, i.e.
@@ -1033,6 +1086,10 @@ pub const Coin = struct {
         /// coins with no chain-issued stablecoin. `stablecoin`/`supportsStablecoin`
         /// key off this; non-null lights up the coin's stablecoin tab.
         stablecoin: ?*const Stablecoin = null,
+        /// Optional: the block-index rebuild capability (the repair for a daemon
+        /// that aborts during init on a corrupt index). Null for coins with no
+        /// such repair. `reindex`/`supportsReindex` key off this.
+        reindex: ?*const Reindex = null,
     };
 
     pub fn coinName(self: Coin) []const u8 {
@@ -1704,5 +1761,36 @@ pub const Coin = struct {
     /// (`supportsStablecoin` false). Callers use the fn pointers directly.
     pub fn stablecoin(self: Coin) ?*const Stablecoin {
         return self.vtable.stablecoin;
+    }
+
+    /// Whether this coin's daemon can rebuild its block index (see `Reindex`).
+    /// Front-ends gate the affordance on this **and** on the daemon being
+    /// stopped — the flag only takes effect at launch, and a rebuild started
+    /// under a running daemon would just lose to the datadir lock.
+    pub fn supportsReindex(self: Coin) bool {
+        return self.vtable.reindex != null;
+    }
+
+    /// The block-index rebuild capability, or null when the coin has none.
+    pub fn reindex(self: Coin) ?*const Reindex {
+        return self.vtable.reindex;
+    }
+
+    /// The one-shot argv the launcher appends for a rebuild. Empty for a coin
+    /// without the capability, which is what makes `LaunchOptions.reindex` a
+    /// no-op there rather than an error — the front-ends never offer it.
+    pub fn reindexFlags(self: Coin) []const []const u8 {
+        const rx = self.vtable.reindex orelse return &.{};
+        return rx.flags;
+    }
+
+    /// What a rebuild costs, for the confirm. `pruned` picks the wording for a
+    /// node that has already thrown blocks away, where the rebuild re-downloads
+    /// the chain instead of merely re-reading it. Empty for a coin without the
+    /// capability.
+    pub fn reindexWarning(self: Coin, pruned: bool) []const u8 {
+        const rx = self.vtable.reindex orelse return "";
+        if (pruned and rx.pruned_warning.len != 0) return rx.pruned_warning;
+        return rx.warning;
     }
 };
