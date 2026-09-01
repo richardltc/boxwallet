@@ -1353,6 +1353,16 @@ export component AppWindow inherits Window {
     in property <string> prune-warning: "";
     callback prune-change-open();
 
+    // Block-index rebuild — the repair for a daemon that aborts part-way through
+    // start-up on a corrupt index, so its RPC never answers and no setting avoids
+    // it. `reindex-supported` is the coin's capability; `reindex-warning` is what
+    // it costs *on this node* (a pruned one re-downloads the chain rather than
+    // rebuilding from what it has), resolved by the host when the dialog opens.
+    in property <bool> reindex-supported: false;
+    in property <string> reindex-warning: "";
+    in-out property <bool> reindex-open: false;
+    callback reindex-accept();
+
     in-out property <bool> accel-open: false;
     // True while the progress bar belongs to a sync-accelerator run rather than an
     // ordinary install — an install has nothing to pause, so the Pause button is
@@ -3422,6 +3432,39 @@ export component AppWindow inherits Window {
                             wrap: word-wrap;
                         }
 
+                        // The block index the daemon builds for itself. The row
+                        // claims nothing about its health — nothing here can
+                        // measure that — it just offers the repair, and only while
+                        // the daemon is stopped: the flag takes effect at launch,
+                        // so a rebuild asked for under a running node would lose to
+                        // the datadir lock.
+                        if root.reindex-supported: SettingsRow {
+                            label: "Block index";
+                            value: "built by the daemon";
+                        }
+                        if root.reindex-supported && !root.running: HorizontalLayout {
+                            alignment: start;
+                            padding-left: 98px;
+                            Button {
+                                text: "Rebuild the block index";
+                                clicked => {
+                                    root.reindex-open = true;
+                                }
+                            }
+                        }
+                        if root.reindex-supported && !root.running: Text {
+                            text: "Only needed if the daemon won't start. Takes hours.";
+                            color: #8a8a8a;
+                            font-size: 12px;
+                            wrap: word-wrap;
+                        }
+                        if root.reindex-supported && root.running: Text {
+                            text: "Stop the daemon to rebuild it.";
+                            color: #8a8a8a;
+                            font-size: 12px;
+                            wrap: word-wrap;
+                        }
+
                         // The project's donation address for this coin. Kept here
                         // rather than anywhere it could be mistaken for the user's
                         // own receive address — that confusion would send someone's
@@ -5158,6 +5201,81 @@ export component AppWindow inherits Window {
                             clicked => {
                                 root.wa-stage = 0;
                                 root.wallet-action-cancel();
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // Rebuild the block index? A repair, and an expensive one — hours on an
+        // unpruned node, a full re-download on a pruned one — so it is confirmed
+        // the way the prune change is, with the cost named and No as the default.
+        if root.reindex-open: Rectangle {
+            background: #000000bb;
+            TouchArea { }
+
+            Rectangle {
+                width: 420px;
+                // Fixed for the same reason as the prune card: a wrapped Text
+                // can't report its height before it knows its width. Erring high —
+                // the pruned wording is the longest, and slack lands in the spacer
+                // above the buttons rather than clipping the text.
+                height: 260px;
+                x: (parent.width - self.width) / 2;
+                y: (parent.height - self.height) / 2;
+                background: #202020;
+                border-radius: 10px;
+                border-width: 1px;
+                border-color: #3a3a3a;
+
+                VerticalBox {
+                    padding: 16px;
+                    spacing: 10px;
+                    Text {
+                        text: "Rebuild " + root.coin-name + "'s block index?";
+                        color: #e6e6e6;
+                        font-size: 15px;
+                        font-weight: 600;
+                        wrap: word-wrap;
+                    }
+                    Text {
+                        text: root.reindex-warning;
+                        color: #c8c8c8;
+                        font-size: 13px;
+                        wrap: word-wrap;
+                        horizontal-stretch: 1;
+                    }
+                    // Which directory this runs against, for the same reason the
+                    // prune confirm shows it: BoxWallet shares each daemon's
+                    // standard data dir on purpose, so this may be another wallet
+                    // app's chain too, and the path is the only thing that lets
+                    // someone spot that.
+                    Text {
+                        text: root.data-dir-path;
+                        color: #9a9a9a;
+                        font-family: "DejaVu Sans Mono";
+                        font-size: 12px;
+                        wrap: word-wrap;
+                    }
+                    Rectangle { }
+                    HorizontalBox {
+                        padding: 0;
+                        alignment: end;
+                        spacing: 8px;
+                        vertical-stretch: 0;
+                        Button {
+                            text: "Cancel";
+                            clicked => {
+                                root.reindex-open = false;
+                            }
+                        }
+                        Button {
+                            text: "Rebuild";
+                            primary: true;
+                            clicked => {
+                                root.reindex-open = false;
+                                root.reindex-accept();
                             }
                         }
                     }

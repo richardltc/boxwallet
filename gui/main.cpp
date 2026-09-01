@@ -946,6 +946,11 @@ static void apply_coin_metadata(const AppWindow *ui, bw_ctx *ctx, int idx)
     ui->set_wallet_file_path(ss(""));
     ui->set_wallet_keys_path(ss(""));
     ui->set_data_dir_path(ss(""));
+    // Off until the settings worker says otherwise, so the affordance can never
+    // flash for a coin whose daemon can't do it.
+    ui->set_reindex_supported(false);
+    ui->set_reindex_warning(ss(""));
+    ui->set_reindex_open(false);
     ui->set_prune_mode(bw_prune_mode(idx));
     ui->set_prune_text(ss(""));
     ui->set_balance_total(ss("—"));
@@ -1434,11 +1439,25 @@ int main(int argc, char **argv)
                 prune_change_supported = bw_prune_change_supported(static_cast<size_t>(idx)) != 0;
             }
 
+            // The block-index rebuild. Its wording depends on this node, not just
+            // this coin — a pruned one re-downloads the chain instead of rebuilding
+            // from what it has — so it is read here with the other conf-backed
+            // settings rather than baked into the dialog.
+            const bool reindex_supported =
+                bw_coin_supports_reindex(static_cast<size_t>(idx)) != 0;
+            std::string reindex_warning;
+            if (reindex_supported) {
+                char rb[512];
+                size_t rn = bw_reindex_warning(ctx, static_cast<size_t>(idx), rb, sizeof rb);
+                reindex_warning.assign(rb, rn);
+            }
+
             post_to_ui([weak, idx,
                         file = std::string(wf, wn),
                         keys = std::string(wk, kn),
                         data_dir = std::string(dd, dn),
-                        prune, prune_warning, prune_change_supported, prune_configured]() {
+                        prune, prune_warning, prune_change_supported, prune_configured,
+                        reindex_supported, reindex_warning]() {
                 auto h = weak.lock();
                 if (!h)
                     return;
@@ -1455,6 +1474,8 @@ int main(int argc, char **argv)
                 // show the affordance at all.
                 (*h)->set_prune_change_supported(prune_change_supported);
                 (*h)->set_prune_configured(prune_configured);
+                (*h)->set_reindex_supported(reindex_supported);
+                (*h)->set_reindex_warning(ss(reindex_warning));
             });
         }).detach();
     });
@@ -1619,6 +1640,42 @@ int main(int argc, char **argv)
             wake_poll();
         }).detach();
     };
+
+    // The same start, plus the one-shot block-index rebuild. Deliberately NOT
+    // routed through `offer_accel_or_launch`: that path runs the first-start
+    // preflight (the prune prompt, the sync-accelerator offer), and both are
+    // questions about a chain that doesn't exist yet — this is a repair of one
+    // that does. The flag applies to this launch only and is written nowhere.
+    auto launch_daemon_reindex = [weak, ctx, wake_poll, finish_action, begin_status](int coin) {
+        begin_status(weak, "Rebuilding block index…");
+        std::thread([weak, ctx, coin, wake_poll, finish_action]() {
+            WorkerGuard wg;
+            int rc = bw_start_daemon_reindex(ctx, static_cast<size_t>(coin));
+            // The daemon narrates the rebuild itself from here (the `reindexing`
+            // warm-up phase), so the action message only has to cover the spawn.
+            finish_action(weak, ctx, rc, "Rebuilding block index…");
+            wake_poll();
+        }).detach();
+    };
+
+    // Confirmed in the dialog: start the daemon with the rebuild flag. Re-checked
+    // here rather than trusted from the dialog — it was opened against a state
+    // that may have moved on, and a rebuild asked for under a running daemon would
+    // just lose to the datadir lock.
+    ui->on_reindex_accept([weak, ctx, launch_daemon_reindex]() {
+        int coin = g_selected.load();
+        if (coin < 0)
+            return;
+        if (bw_coin_supports_reindex(static_cast<size_t>(coin)) == 0)
+            return;
+        auto h = weak.lock();
+        if (!h)
+            return;
+        if ((*h)->get_running() || (*h)->get_daemon_busy() || (*h)->get_daemon_loading())
+            return;
+        (*h)->set_daemon_busy(true);
+        launch_daemon_reindex(coin);
+    });
 
     // The sync-accelerator offer, then the start. Shared by the plain Start path
     // and by the prune prompt's continuation, so the two can't drift on ordering:

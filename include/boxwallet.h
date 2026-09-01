@@ -719,6 +719,35 @@ size_t  bw_prune_change_warning(size_t idx, char *buf, size_t cap);
 int     bw_prune_change_allowed(size_t idx, int64_t from, int64_t to);
 int     bw_prune_change_destructive(size_t idx, int64_t from, int64_t to);
 
+/* Block-index rebuild — the repair for a daemon that ABORTS DURING INIT on a
+ * corrupt on-disk index. It forks, gets part-way through start-up and dies on an
+ * assertion, so its RPC never answers and no conf setting avoids it; the index
+ * has to be rebuilt from the block files on disk.
+ *
+ * bw_coin_supports_reindex: 1 for coins whose daemon can do this (the
+ * bitcoin-derived ones), 0 otherwise. Gate the affordance on this AND on the
+ * daemon being stopped — the flag only takes effect at launch.
+ *
+ * bw_reindex_warning: what it costs, for the confirm. Takes ctx because the
+ * answer depends on the node: on an unpruned one it is hours of CPU and nothing
+ * is downloaded again; on a PRUNED one the daemon discards the block files it
+ * can't reuse and re-downloads the chain — a full re-sync, not a repair. CONFIRM
+ * BEFORE STARTING ONE, defaulting to cancel, and show this text: the data dir may
+ * be shared with another wallet app.
+ *
+ * bw_start_daemon_reindex: bw_start_daemon plus the one-shot rebuild flag. The
+ * flag is NEVER written to the coin's conf (there it would rebuild on every start
+ * for ever, in a file BoxWallet shares), and nothing tracks it across restarts —
+ * the daemon records "still reindexing" in its own block-tree DB and resumes by
+ * itself. Blocks like bw_start_daemon; worker thread only.
+ *
+ * While it runs the daemon reports the `reindexing` warm-up phase, so
+ * bw_daemon_stage / bw_status_line say "Rebuilding block index… NN.N%" rather
+ * than the ordinary "Loading block index…" it would otherwise look like. */
+int     bw_coin_supports_reindex(size_t idx);
+size_t  bw_reindex_warning(bw_ctx *ctx, size_t idx, char *buf, size_t cap);
+int     bw_start_daemon_reindex(bw_ctx *ctx, size_t idx);
+
 /* Whether the coin's RPC port accepts a connection right now: 1 reachable, 0 not.
  * A cheap TCP connect and close — no request, no auth. Worker thread only.
  *
