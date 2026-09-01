@@ -140,6 +140,17 @@ static int g_count_roll = 0;
 // goes down. UI thread only.
 static bool g_had_tip = false;
 
+// Whether the last poll saw this coin's daemon up, so the next one can spot the
+// moment it goes away. The status line falls back to the last action message
+// when there's no live readout (app.slint's Status text), and a successful Start
+// leaves "Daemon running" sitting in it — so a daemon that died on its own kept
+// claiming to be running for as long as the coin stayed selected, next to a grey
+// smiley saying otherwise. Only the *edge* is reported: a coin that was already
+// stopped when it was selected has nothing to announce, and the status line stays
+// free for whatever the user does next. Reset on selection, like `g_had_tip`.
+// UI thread only.
+static bool g_daemon_was_up = false;
+
 // The address the Receive QR was last built for, so the poll doesn't re-encode
 // an unchanged one every two seconds. Cleared on selection along with the
 // address cache, so switching to a coin whose address happens to be cached
@@ -911,6 +922,7 @@ static void apply_coin_metadata(const AppWindow *ui, bw_ctx *ctx, int idx)
     ui->set_sync_unknown(false);
     ui->set_sync_stalled(false);
     g_had_tip = false;
+    g_daemon_was_up = false;
     ui->set_wallet_sec(0);
     const int ew_flags = bw_coin_ext_wallet(idx);
     ui->set_ew_flags(ew_flags);
@@ -2634,16 +2646,23 @@ int main(int argc, char **argv)
     // Send. The modal has already shown the user the full, untruncated address
     // and had them confirm it — that is the one typo safety net a machine can't
     // provide, so it is not optional.
+    // The confirm modal stays up for the whole round trip — it is what the
+    // busy halo rings — so every path out of here closes it, including the ones
+    // that never reach the daemon.
     ui->on_send_funds([weak, ctx, wake_poll](slint::SharedString address, slint::SharedString amount) {
         int coin = g_selected.load();
-        if (coin < 0)
+        if (coin < 0) {
+            if (auto h = weak.lock())
+                (*h)->set_send_confirm_open(false);
             return;
+        }
         std::string addr{std::string_view(address)};
         double amt = 0;
         try {
             amt = std::stod(std::string(std::string_view(amount)));
         } catch (...) {
             if (auto h = weak.lock()) {
+                (*h)->set_send_confirm_open(false);
                 (*h)->set_send_result_error(true);
                 (*h)->set_send_result(ss("That isn't an amount."));
             }
@@ -2662,6 +2681,9 @@ int main(int argc, char **argv)
             post_to_ui([weak, rc, reply, err]() {
                 if (auto h = weak.lock()) {
                     (*h)->set_send_busy(false);
+                    // The answer is in: the modal has served its purpose and
+                    // gets out of the way of the result underneath it.
+                    (*h)->set_send_confirm_open(false);
                     (*h)->set_send_result_error(rc != 0);
                     // A daemon rejection (rc == 1) carries its own reason
                     // verbatim — it's an answer the user needs to read, not a
@@ -2683,13 +2705,17 @@ int main(int argc, char **argv)
     // the wallet lock anyway.
     ui->on_stake_funds([weak, ctx, wake_poll](slint::SharedString amount) {
         int coin = g_selected.load();
-        if (coin < 0)
+        if (coin < 0) {
+            if (auto h = weak.lock())
+                (*h)->set_send_confirm_open(false);
             return;
+        }
         double amt = 0;
         try {
             amt = std::stod(std::string(std::string_view(amount)));
         } catch (...) {
             if (auto h = weak.lock()) {
+                (*h)->set_send_confirm_open(false);
                 (*h)->set_send_result_error(true);
                 (*h)->set_send_result(ss("That isn't an amount."));
             }
@@ -2707,6 +2733,7 @@ int main(int argc, char **argv)
             post_to_ui([weak, rc, reply, err]() {
                 if (auto h = weak.lock()) {
                     (*h)->set_send_busy(false);
+                    (*h)->set_send_confirm_open(false);
                     (*h)->set_send_result_error(rc != 0);
                     // rc == 1 is the daemon's own refusal (too little to stake,
                     // funds still locked, …) — its wording, verbatim.
@@ -3289,7 +3316,7 @@ int main(int argc, char **argv)
                         sc_vaults, sc_txs, sc_redeemable, sc_vault_ids, sc_vault_cents,
                         ms, hashrate, ew_flags, wallet_state, bal, have_balance,
                         rp, rescanning, txs, stakes, recv_addr, decimals, wallet_svc_err, can_send,
-                        rpc_ok, busy, coin]() {
+                        rpc_ok, busy, stopping, coin]() {
                 auto h = weak.lock();
                 if (!h)
                     return;
@@ -3380,6 +3407,25 @@ int main(int argc, char **argv)
                 g_last_wallet_svc_err = wallet_svc_err;
                 const bool running = daemon_up;
                 (*h)->set_running(running);
+                // The daemon was up on the last tick and isn't now. Say so, and
+                // say it here rather than leaving the status line to its
+                // fallback: with no live readout the line shows the last action
+                // message, which after a successful Start is "Daemon running" —
+                // so a daemon that died would go on reporting itself as running,
+                // indefinitely, beside a grey smiley and emptied gauges.
+                //
+                // `stopping` and `coming_up` are the two ways down is not a
+                // fault: a stop the user asked for (whose own "Daemon stopped"
+                // lands when it finishes), and a restart's gap between the old
+                // process going and the new one answering. Neither is news.
+                //
+                // Only the edge fires, so the message doesn't rewrite itself over
+                // whatever the user does next while the daemon stays down.
+                if (g_daemon_was_up && !daemon_up && !stopping && !coming_up) {
+                    (*h)->set_status_text(ss("Daemon stopped unexpectedly"));
+                    (*h)->set_status_is_error(true);
+                }
+                g_daemon_was_up = daemon_up;
                 // The poll owns the loading state: it lasts until the daemon
                 // answers RPC, which is long after the Start action returns.
                 // Start stays latched for that whole window, so the daemon
