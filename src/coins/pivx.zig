@@ -39,7 +39,7 @@ pub const Pivx = struct {
     pub const price_id = "pivx";
     /// Donation address for BoxWallet development, in PIVX's own currency.
     /// TODO: replace with a real address before surfacing tips for this coin.
-    pub const tip_address = "TODO-PIVX-TIP-ADDRESS-NOT-SET";
+    pub const tip_address = "D9V4gsahYXM7aRdnyKkab7CqxJjjTr3wkV";
     /// PIVX is proof-of-stake — the wallet can stake.
     pub const proof_of_stake = true;
     pub const conf_file = "pivx.conf";
