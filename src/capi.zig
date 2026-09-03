@@ -53,6 +53,7 @@ const warmup = @import("warmup.zig");
 const tipwatch = @import("tipwatch.zig");
 const mining = @import("mining.zig");
 const extwallet = @import("extwallet.zig");
+const bip39 = @import("bip39.zig");
 
 const Coin = coinmod.Coin;
 
@@ -3371,6 +3372,10 @@ pub const bw_wcap_import: c_int = 1 << 2;
 pub const bw_wcap_restore_offline: c_int = 1 << 3;
 pub const bw_wcap_proof_of_stake: c_int = 1 << 4;
 pub const bw_wcap_stake_action: c_int = 1 << 5;
+pub const bw_wcap_restore_seed: c_int = 1 << 6;
+pub const bw_wcap_backup_seed: c_int = 1 << 7;
+/// The backup is a file copy, so it works on a locked wallet too.
+pub const bw_wcap_backup_locked: c_int = 1 << 8;
 
 export fn bw_coin_wallet_caps(idx: usize) c_int {
     const coin = coinByIndex(idx) orelse return 0;
@@ -3382,6 +3387,9 @@ export fn bw_coin_wallet_caps(idx: usize) c_int {
     if (coin.supportsWalletRestoreOffline()) flags |= bw_wcap_restore_offline;
     if (coin.isProofOfStake()) flags |= bw_wcap_proof_of_stake;
     if (coin.supportsStakeAction()) flags |= bw_wcap_stake_action;
+    if (coin.supportsWalletRestoreSeed()) flags |= bw_wcap_restore_seed;
+    if (coin.supportsSeedBackup()) flags |= bw_wcap_backup_seed;
+    if (coin.supportsWalletBackup() and coin.backupKind() == .file_copy) flags |= bw_wcap_backup_locked;
     return flags;
 }
 
@@ -3408,6 +3416,17 @@ export fn bw_wallet_menu(idx: usize, wallet_sec: c_int, out: ?*u8, cap: usize) u
     return n;
 }
 
+/// Decode an action ordinal coming across the ABI, or null if it names no
+/// action. One place, so adding a variant can't leave four hand-written bounds
+/// checks silently rejecting it (which is exactly what a `> restore_file_offline`
+/// comparison did when the seed restore was added).
+fn actionFromOrdinal(action: u8) ?walletmenu.Action {
+    inline for (@typeInfo(walletmenu.Action).@"enum".fields) |f| {
+        if (action == f.value) return @enumFromInt(f.value);
+    }
+    return null;
+}
+
 /// The menu label for an action ordinal. 0 for an unknown one.
 ///
 /// Taken from here, never written in the UI: "Restore from key dump" and
@@ -3415,8 +3434,7 @@ export fn bw_wallet_menu(idx: usize, wallet_sec: c_int, out: ?*u8, cap: usize) u
 /// both at once — picking the wrong one is what ends in an empty wallet.
 export fn bw_wallet_action_label(action: u8, buf: ?[*]u8, cap: usize) usize {
     const b = buf orelse return 0;
-    if (action > @intFromEnum(walletmenu.Action.restore_file_offline)) return 0;
-    const act: walletmenu.Action = @enumFromInt(action);
+    const act = actionFromOrdinal(action) orelse return 0;
     return copyOut(b[0..cap], act.label());
 }
 
@@ -3427,21 +3445,33 @@ export fn bw_wallet_action_label(action: u8, buf: ?[*]u8, cap: usize) usize {
 /// wallet for the first time makes the funds unrecoverable, where a typo when
 /// merely unlocking just fails and is retried.
 export fn bw_wallet_action_needs_password(action: u8) c_int {
-    if (action > @intFromEnum(walletmenu.Action.restore_file_offline)) return 0;
-    const act: walletmenu.Action = @enumFromInt(action);
+    const act = actionFromOrdinal(action) orelse return 0;
     return if (act.needsPassword()) 1 else 0;
 }
 
 export fn bw_wallet_action_needs_path(action: u8) c_int {
-    if (action > @intFromEnum(walletmenu.Action.restore_file_offline)) return 0;
-    const act: walletmenu.Action = @enumFromInt(action);
+    const act = actionFromOrdinal(action) orelse return 0;
     return if (act.needsPath()) 1 else 0;
 }
 
 export fn bw_wallet_action_sets_new_password(action: u8) c_int {
-    if (action > @intFromEnum(walletmenu.Action.restore_file_offline)) return 0;
-    const act: walletmenu.Action = @enumFromInt(action);
+    const act = actionFromOrdinal(action) orelse return 0;
     return if (act.setsNewPassword()) 1 else 0;
+}
+
+/// Whether the action takes mnemonic **seed words** rather than a password or a
+/// path — the third prompt shape, so the caller asks all three.
+export fn bw_wallet_action_needs_seed(action: u8) c_int {
+    const act = actionFromOrdinal(action) orelse return 0;
+    return if (act.needsSeed()) 1 else 0;
+}
+
+/// Whether the action requires the daemon to be **stopped** first (it replaces
+/// the wallet file, which a running daemon holds open). Both offline restores
+/// do; everything else runs over RPC against a live daemon.
+export fn bw_wallet_action_needs_daemon_stopped(action: u8) c_int {
+    const act = actionFromOrdinal(action) orelse return 0;
+    return if (act.needsDaemonStopped()) 1 else 0;
 }
 
 /// Encrypt the wallet with `passphrase`: 0 ok, -1 (`bw_last_error` has why).
@@ -3601,6 +3631,175 @@ export fn bw_wallet_restore_file_offline(ctx: ?*Ctx, idx: usize, src_path: ?[*:0
         c.setErrorCode(@errorName(err));
         return -1;
     };
+    return 0;
+}
+
+/// Restore the in-daemon wallet from BIP39 seed words **with the daemon
+/// stopped**: 0 ok, -1 (`bw_last_error` has why).
+///
+/// Same precondition and same refusal as `bw_wallet_restore_file_offline` — it
+/// ends in a replaced wallet file, and a live daemon holds that file open. The
+/// caller stops the daemon first and starts it again afterwards, at which point
+/// the wallet rescans and the balance appears.
+///
+/// `seed` takes either a mnemonic or a raw 128-character hex seed — they are
+/// unambiguous, so the core tells them apart and the caller needn't ask which the
+/// user holds. `pp`/`pp_len` is the **BIP39 passphrase** (the "25th word"), empty
+/// for none; it is *not* the wallet encryption password, and it is refused
+/// alongside a hex seed, which already has it folded in.
+///
+/// Both are secrets: copied into bounded buffers, normalized and checksum-checked
+/// before anything is touched, and wiped on every return path. A phrase that fails
+/// the BIP39 check is rejected here, with a message naming which check it failed,
+/// before the daemon is involved at all.
+export fn bw_wallet_restore_seed(
+    ctx: ?*Ctx,
+    idx: usize,
+    seed_ptr: ?[*]const u8,
+    seed_len: usize,
+    pp_ptr: ?[*]const u8,
+    pp_len: usize,
+    newpw_ptr: ?[*]const u8,
+    newpw_len: usize,
+) c_int {
+    const c = ctx orelse return -1;
+    const coin = coinByIndex(idx) orelse return -1;
+    const sp = seed_ptr orelse return -1;
+    if (!coin.supportsWalletRestoreSeed()) {
+        c.setError("This coin can't restore its wallet from seed words.");
+        c.setErrorCode("Unsupported");
+        return -1;
+    }
+
+    // Bounded copy, wiped however we leave — the caller's buffer is not ours to
+    // rely on and the phrase must not linger here.
+    var seed_buf: [bip39.max_mnemonic_len]u8 = undefined;
+    defer @memset(&seed_buf, 0);
+    if (seed_len == 0 or seed_len > seed_buf.len) {
+        c.setError("That isn't a seed phrase.");
+        c.setErrorCode("InvalidSeed");
+        return -1;
+    }
+    @memcpy(seed_buf[0..seed_len], sp[0..seed_len]);
+
+    // The BIP39 passphrase ("25th word"), empty for none. A separate secret from
+    // the seed and from the wallet password — bounded and wiped the same way.
+    var pp_buf: [256]u8 = undefined;
+    defer @memset(&pp_buf, 0);
+    if (pp_len > pp_buf.len) {
+        c.setError("That passphrase is too long.");
+        c.setErrorCode("InvalidSeed");
+        return -1;
+    }
+    if (pp_len > 0) {
+        const pp = pp_ptr orelse return -1;
+        @memcpy(pp_buf[0..pp_len], pp[0..pp_len]);
+    }
+
+    // Password the restored wallet is encrypted with, empty to leave it
+    // unencrypted. A seed restore mints a *fresh* wallet, so without this a
+    // restore over an encrypted wallet silently strips its password.
+    var newpw_buf: [128]u8 = undefined;
+    defer @memset(&newpw_buf, 0);
+    if (newpw_len > newpw_buf.len) {
+        c.setError("That wallet password is too long.");
+        c.setErrorCode("InvalidPassword");
+        return -1;
+    }
+    if (newpw_len > 0) {
+        const np = newpw_ptr orelse return -1;
+        @memcpy(newpw_buf[0..newpw_len], np[0..newpw_len]);
+    }
+
+    var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const io = sharedIo();
+
+    if (proc.aliveMatching(io, coin.daemonFile(), coin.daemonProcessCmdline())) {
+        c.setError("Stop the daemon before restoring from seed — it holds the wallet open.");
+        c.setErrorCode("DaemonRunning");
+        return -1;
+    }
+
+    var detail: Coin.WalletErrSink = .{};
+    coin.walletRestoreSeed(a, c.install_root, c.home_dir, seed_buf[0..seed_len], pp_buf[0..pp_len], newpw_buf[0..newpw_len], &detail) catch |err| {
+        // Thread the real reason up — which BIP39 check the phrase failed, or
+        // divid's own "SetMnemonic: invalid mnemonic" — so a mistyped word can be
+        // told from a broken install.
+        const why = detail.slice();
+        c.setError(if (why.len > 0) why else @errorName(err));
+        c.setErrorCode(@errorName(err));
+        return -1;
+    };
+    return 0;
+}
+
+/// Read the wallet's recovery seed for the user to write down: 0 ok, -1
+/// (`bw_last_error` has why).
+///
+/// Needs an **unlocked** (or unencrypted) wallet — the daemon refuses on a locked
+/// one and its own message ("Please enter the wallet passphrase…") is threaded up
+/// so the caller can say "unlock first" rather than "failed".
+///
+/// Writes into three caller buffers, each NUL-free and returned by length via the
+/// `*_len` out-params: the mnemonic (empty when the wallet has none), the BIP39
+/// passphrase (empty when unset), and the raw hex seed. **All three are secrets.**
+/// The words alone are not a backup when a passphrase is set, and a wallet
+/// restored from a raw seed has no words at all — in which case the hex is the
+/// only thing there is to write down. Show what is present, and wipe your buffers
+/// as soon as the user has finished reading them.
+export fn bw_wallet_seed_backup(
+    ctx: ?*Ctx,
+    idx: usize,
+    words: ?[*]u8,
+    words_cap: usize,
+    words_len: ?*usize,
+    pp: ?[*]u8,
+    pp_cap: usize,
+    pp_len: ?*usize,
+    hex: ?[*]u8,
+    hex_cap: usize,
+    hex_len: ?*usize,
+) c_int {
+    const c = ctx orelse return -1;
+    const coin = coinByIndex(idx) orelse return -1;
+    const wb = words orelse return -1;
+    const wl = words_len orelse return -1;
+    const pb = pp orelse return -1;
+    const pl = pp_len orelse return -1;
+    const hb = hex orelse return -1;
+    const hl = hex_len orelse return -1;
+    if (!coin.supportsSeedBackup()) {
+        c.setError("This coin can't show its wallet's recovery seed.");
+        c.setErrorCode("Unsupported");
+        return -1;
+    }
+
+    var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const io = sharedIo();
+
+    const data_dir = coin.dataDir(a, c.home_dir) catch return -1;
+    const auth = conf.readAuth(a, io, data_dir, coin.confFile(), coin.rpcDefaultUsername(), coin.rpcDefaultPort()) catch |err| {
+        c.setError(@errorName(err));
+        return -1;
+    };
+
+    var detail: Coin.WalletErrSink = .{};
+    var sb = coin.walletSeedBackup(a, auth, &detail) catch |err| {
+        const why = detail.slice();
+        c.setError(if (why.len > 0) why else @errorName(err));
+        c.setErrorCode(@errorName(err));
+        return -1;
+    };
+    // The struct holds the seed; clear it once copied out.
+    defer sb = .{};
+
+    wl.* = copyOut(wb[0..words_cap], sb.words.slice());
+    pl.* = copyOut(pb[0..pp_cap], sb.passphrase.slice());
+    hl.* = copyOut(hb[0..hex_cap], sb.hex.slice());
     return 0;
 }
 
@@ -5147,16 +5346,18 @@ test "bw_wallet_menu returns exactly what the shared policy decides" {
             }
         }
         // An unknown state offers nothing that depends on what the daemon holds —
-        // a menu built before it has said can destroy a wallet. The exception is
-        // the offline wallet-file swap, which needs the daemon *stopped*, and a
-        // stopped daemon is exactly what reads as unknown.
+        // a menu built before it has said can destroy a wallet. The exceptions are
+        // the restores that need the daemon *stopped* (the wallet.dat swap and the
+        // seed rebuild), and a stopped daemon is exactly what reads as unknown.
         const un = bw_wallet_menu(i, @intFromEnum(models.WalletSecurity.unknown), &out[0], out.len);
-        try std.testing.expectEqual(
-            @as(usize, if (coin.supportsWalletRestoreOffline()) 1 else 0),
-            un,
-        );
+        var want_un: usize = 0;
+        if (coin.supportsWalletRestoreOffline()) want_un += 1;
+        if (coin.supportsWalletRestoreSeed()) want_un += 1;
+        try std.testing.expectEqual(want_un, un);
+        // Whatever came back must be an action that genuinely needs the daemon
+        // down — that is the whole reason it survives the unknown state.
         for (out[0..un]) |got| {
-            try std.testing.expectEqual(@intFromEnum(walletmenu.Action.restore_file_offline), got);
+            try std.testing.expectEqual(@as(c_int, 1), bw_wallet_action_needs_daemon_stopped(got));
         }
     }
 
@@ -5170,7 +5371,7 @@ test "every action a menu can return is labelled and answerable" {
     // A row the caller can't label or route is a row it can't render.
     var buf: [64]u8 = undefined;
     var out: [walletmenu.max_options]u8 = undefined;
-    var seen = [_]bool{false} ** 7;
+    var seen = [_]bool{false} ** @typeInfo(walletmenu.Action).@"enum".fields.len;
 
     var i: usize = 0;
     while (i < coin_count) : (i += 1) {
@@ -5180,10 +5381,16 @@ test "every action a menu can return is labelled and answerable" {
                 try std.testing.expect(a < seen.len);
                 seen[a] = true;
                 try std.testing.expect(bw_wallet_action_label(a, &buf, buf.len) > 0);
-                // Exactly one of the two prompts, never both and never neither.
+                // At most one prompt shape: a password, a path, or seed words —
+                // never two at once, or the caller can't tell which to raise.
                 const pw = bw_wallet_action_needs_password(a) != 0;
                 const path = bw_wallet_action_needs_path(a) != 0;
-                try std.testing.expect(!(pw and path));
+                const words = bw_wallet_action_needs_seed(a) != 0;
+                var shapes: usize = 0;
+                if (pw) shapes += 1;
+                if (path) shapes += 1;
+                if (words) shapes += 1;
+                try std.testing.expect(shapes <= 1);
                 // Only a credential-setting action asks for confirmation.
                 if (bw_wallet_action_sets_new_password(a) != 0) try std.testing.expect(pw);
             }
@@ -5212,6 +5419,7 @@ test "wallet caps track the vtable, and unsupported actions are refused" {
         try std.testing.expectEqual(coin.supportsWalletBackup(), caps & bw_wcap_backup != 0);
         try std.testing.expectEqual(coin.supportsWalletImport(), caps & bw_wcap_import != 0);
         try std.testing.expectEqual(coin.supportsWalletRestoreOffline(), caps & bw_wcap_restore_offline != 0);
+        try std.testing.expectEqual(coin.supportsWalletRestoreSeed(), caps & bw_wcap_restore_seed != 0);
 
         // A coin whose daemon can't do a thing must refuse it rather than
         // attempting an RPC that can only fail — BitcoinZ ships encryptwallet

@@ -272,6 +272,14 @@ static void wipe_secret(std::vector<uint8_t> &v)
         p[i] = 0;
 }
 
+// Same, for a plain stack buffer a secret was read into.
+static void wipe_bytes(char *b, size_t n)
+{
+    volatile char *p = b;
+    for (size_t i = 0; i < n; ++i)
+        p[i] = 0;
+}
+
 // The message a failed call left behind, already turned into a sentence for the
 // user by the core (the daemon's own reason wherever it gave one).
 static std::string last_error_text(bw_ctx *ctx, int rc)
@@ -1975,6 +1983,64 @@ int main(int argc, char **argv)
             (*h)->set_wa_stage(3);
             return;
         }
+        if (action == BW_WA_BACKUP_SEED) {
+            // Reads the seed on a worker, then shows it for the user to write
+            // down. Needs an unlocked wallet; the core returns the daemon's own
+            // message if it isn't, so "unlock first" reaches the user.
+            (*h)->set_wa_stage(4);
+            int coin = g_wa_coin;
+            std::thread([weak, ctx, coin, wake_poll]() {
+                WorkerGuard wg;
+                char w[512] = {0}, pp[256] = {0}, hx[256] = {0};
+                size_t wn = 0, pn = 0, hn = 0;
+                int rc = bw_wallet_seed_backup(ctx, static_cast<size_t>(coin),
+                                               w, sizeof w, &wn, pp, sizeof pp, &pn,
+                                               hx, sizeof hx, &hn);
+                std::string words(w, wn), phrase(pp, pn), hex(hx, hn);
+                // Scrub the stack copies now that they're in the strings.
+                wipe_bytes(w, sizeof w);
+                wipe_bytes(pp, sizeof pp);
+                wipe_bytes(hx, sizeof hx);
+                std::string err = (rc < 0) ? last_error_text(ctx, rc) : std::string();
+                post_to_ui([weak, words, phrase, hex, err, rc]() {
+                    if (auto hh = weak.lock()) {
+                        if (rc < 0) {
+                            (*hh)->set_wa_result(ss(err));
+                            (*hh)->set_wa_result_error(true);
+                            (*hh)->set_wa_stage(5);
+                        } else {
+                            (*hh)->set_wa_shown_words(ss(words));
+                            (*hh)->set_wa_shown_pp(ss(phrase));
+                            (*hh)->set_wa_shown_hex(ss(hex));
+                            (*hh)->set_wa_stage(7);
+                        }
+                    }
+                });
+                wake_poll();
+            }).detach();
+            return;
+        }
+        if (bw_wallet_action_needs_seed(action)) {
+            // Rebuilds the wallet from the phrase, so it replaces the wallet file
+            // the same way the offline swap does — same precondition, same
+            // warning. The core keeps the old wallet.dat as a timestamped .bak.
+            (*h)->set_wa_caution(
+                ss("This rebuilds the wallet from your seed words and replaces the current "
+                   "wallet file. Stop the daemon first. The existing wallet is kept as a "
+                   "timestamped .bak, and the balance appears once the wallet has rescanned."));
+            // The accepted lengths come from the core, never counted here.
+            uint32_t sc[8] = {0};
+            size_t scn = bw_coin_seed_word_counts(static_cast<size_t>(g_wa_coin), sc, 8);
+            std::string lens;
+            for (size_t i = 0; i < scn; ++i) {
+                if (i)
+                    lens += (i + 1 == scn) ? " or " : ", ";
+                lens += std::to_string(sc[i]);
+            }
+            (*h)->set_wa_seed_lengths(ss(lens));
+            (*h)->set_wa_stage(6);
+            return;
+        }
         // Neither: Lock and Backup run straight away.
         (*h)->set_wa_stage(4);
         int coin = g_wa_coin;
@@ -2078,6 +2144,54 @@ int main(int argc, char **argv)
                 ? last_error_text(ctx, rc)
                 : std::string("Wallet restored. Rescanning may take a while before "
                               "the balance is right.");
+            post_to_ui([weak, msg, rc]() {
+                if (auto hh = weak.lock()) {
+                    (*hh)->set_wa_result(ss(msg));
+                    (*hh)->set_wa_result_error(rc < 0);
+                    (*hh)->set_wa_stage(5);
+                }
+            });
+            wake_poll();
+        }).detach();
+    });
+
+    // Seed words entered for the in-daemon restore-from-seed. Same shape as the
+    // path handler above: the core refuses while the daemon is alive, so this
+    // does not stop it for you.
+    ui->on_wallet_action_seed([weak, ctx, wake_poll](slint::SharedString seed,
+                                                     slint::SharedString pp,
+                                                     slint::SharedString newpw) {
+        auto h = weak.lock();
+        if (!h)
+            return;
+        int coin = g_wa_coin;
+        if (coin < 0)
+            return;
+        // Copy into wipeable buffers immediately — the phrase is the wallet, and
+        // the BIP39 passphrase is the other half of it.
+        std::vector<uint8_t> seed_bytes = to_secret_bytes(seed);
+        std::vector<uint8_t> pp_bytes = to_secret_bytes(pp);
+        std::vector<uint8_t> newpw_bytes = to_secret_bytes(newpw);
+        const bool encrypted = !newpw_bytes.empty();
+        (*h)->set_wa_stage(4);
+        std::thread([weak, ctx, coin, wake_poll, encrypted,
+                     seed_bytes = std::move(seed_bytes),
+                     pp_bytes = std::move(pp_bytes),
+                     newpw_bytes = std::move(newpw_bytes)]() mutable {
+            WorkerGuard wg;
+            int rc = bw_wallet_restore_seed(ctx, static_cast<size_t>(coin),
+                                            seed_bytes.data(), seed_bytes.size(),
+                                            pp_bytes.data(), pp_bytes.size(),
+                                            newpw_bytes.data(), newpw_bytes.size());
+            wipe_secret(seed_bytes);
+            wipe_secret(pp_bytes);
+            wipe_secret(newpw_bytes);
+            std::string msg = (rc < 0)
+                ? last_error_text(ctx, rc)
+                : std::string("Wallet restored from your seed words. Start the daemon; "
+                              "rescanning may take a while before the balance is right.")
+                      + (encrypted ? "\n\nThe restored wallet is encrypted with the password you set."
+                                   : "\n\nThe restored wallet is NOT encrypted \u2014 use Encrypt wallet to protect it.");
             post_to_ui([weak, msg, rc]() {
                 if (auto hh = weak.lock()) {
                     (*hh)->set_wa_result(ss(msg));

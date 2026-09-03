@@ -42,6 +42,46 @@ pub const Coin = struct {
     /// failure message before returning an error, so the UI/log can show *why* a
     /// create/restore/open failed rather than a bare error name. Pre-sized (no
     /// allocation), reset by the caller before each op.
+    /// What a coin's wallet backup actually produces, which decides when the
+    /// action can be offered.
+    ///
+    /// `key_dump` is bitcoin-core `dumpwallet`: it reads the private keys out, so
+    /// the daemon refuses it on a **locked** wallet. `file_copy` is
+    /// `backupwallet`: it copies the wallet file, keys still encrypted, and works
+    /// in every lock state.
+    ///
+    /// The distinction is load-bearing rather than cosmetic. Withholding backup
+    /// while locked is right for a key dump and exactly wrong for a file copy —
+    /// it means encrypting your wallet takes away your ability to back it up,
+    /// which punishes the safer configuration.
+    pub const BackupKind = enum { key_dump, file_copy };
+
+    /// Everything a user needs written down to rebuild an HD wallet from nothing.
+    ///
+    /// Three fields rather than one string because they are not interchangeable
+    /// and a user who conflates them loses the funds: the words alone are useless
+    /// if a passphrase was set, and a wallet restored from a raw seed has **no
+    /// words at all** (divid's `dumphdinfo` returns an empty mnemonic for one), so
+    /// the hex is the only thing there is to write down in that case.
+    ///
+    /// All three are secrets. Callers hold this in a bounded, wiped buffer and
+    /// never log or persist it.
+    pub const SeedBackup = struct {
+        /// The BIP39 mnemonic, empty when the wallet has none.
+        words: models.Seed = .{},
+        /// The BIP39 passphrase, empty when there is none. Useless to show on its
+        /// own and fatal to omit when set.
+        passphrase: models.Seed = .{},
+        /// The raw hex seed — always present, and the *only* backup available for
+        /// a wallet that was itself restored from one.
+        hex: models.Seed = .{},
+
+        /// Whether there is a mnemonic to write down (and therefore to quiz on).
+        pub fn hasWords(self: *const SeedBackup) bool {
+            return self.words.len > 0;
+        }
+    };
+
     pub const WalletErrSink = struct {
         buf: [256]u8 = undefined,
         len: usize = 0,
@@ -988,6 +1028,74 @@ pub const Coin = struct {
             home_dir: []const u8,
             src_path: []const u8,
         ) anyerror!void = null,
+        /// Optional: restore an **in-daemon** wallet from a BIP39 mnemonic, with
+        /// the daemon stopped. The counterpart of `ExternalWallet.restore_seed`
+        /// for the bitcoin-family shape, where there is no separate wallet
+        /// process to hand the phrase to.
+        ///
+        /// The caller stops the daemon first and restarts it afterwards (the same
+        /// orchestration `wallet_restore_file_offline` uses — it is the identical
+        /// precondition, and both end in a wallet file the daemon must be down to
+        /// replace). `install_root` is provided because the restore may have to
+        /// run the coin's own daemon to mint the wallet; `detail` receives the
+        /// daemon's real failure text so a bad phrase can be told from a bad
+        /// install.
+        ///
+        /// `seed` may be a mnemonic **or** a raw hex seed where the coin accepts
+        /// one (Divi's `-hdseed`); the implementation tells them apart
+        /// (`bip39.looksLikeHexSeed`) rather than the front-end asking which the
+        /// user holds. `passphrase` is the **BIP39 passphrase** (the "25th word"),
+        /// empty for none — *not* the wallet encryption password. It matters more
+        /// than it looks: the same words with and without one derive entirely
+        /// different wallets, so getting it wrong restores an empty wallet instead
+        /// of failing. A coin that can't apply it to the form given should refuse
+        /// rather than drop it silently.
+        ///
+        /// **Both are secrets.** Implementations normalize the seed
+        /// (`models.normalizeSeedWords`), keep both out of any conf the user's
+        /// daemon reads and off any long-lived command line, and wipe every
+        /// working copy. Null = unsupported.
+        /// What `wallet_backup` produces. Defaults to `key_dump`, the
+        /// conservative answer: a coin that hasn't said keeps the old behaviour of
+        /// hiding backup on a locked wallet. Coins whose backup is `backupwallet`
+        /// declare `file_copy` and get it in every state.
+        wallet_backup_kind: BackupKind = .key_dump,
+        /// Optional: read the wallet's HD seed back out for the user to write
+        /// down (the `w` menu's "Show recovery seed"). The counterpart of the
+        /// seed *restore* — without it a coin can restore from a phrase the user
+        /// was never given, which is a backup story with a hole in the middle.
+        ///
+        /// Needs a readable wallet: the daemon refuses on a locked one (divid
+        /// answers -13), so the menu offers it only when unencrypted or unlocked.
+        /// The result is the secret — see `SeedBackup`.
+        wallet_seed_backup: ?*const fn (
+            ptr: *anyopaque,
+            allocator: std.mem.Allocator,
+            auth: models.CoinAuth,
+            detail: *WalletErrSink,
+        ) anyerror!SeedBackup = null,
+        wallet_restore_seed: ?*const fn (
+            ptr: *anyopaque,
+            allocator: std.mem.Allocator,
+            install_root: []const u8,
+            home_dir: []const u8,
+            seed: []const u8,
+            passphrase: []const u8,
+            /// Encrypts the restored wallet. A wallet rebuilt from a seed is a
+            /// *fresh* one and so unencrypted; without this, restoring over an
+            /// encrypted wallet silently strips its password — same funds, no
+            /// longer protected. Empty means "leave it unencrypted", which the
+            /// front-end must state at the confirm rather than quietly assume.
+            wallet_password: []const u8,
+            detail: *WalletErrSink,
+        ) anyerror!void = null,
+        /// Word counts the in-daemon `wallet_restore_seed` accepts, for the seed
+        /// prompt and its live counter. The managed shape reads the same thing
+        /// off `ExternalWallet.seed_word_counts`; this is where a coin with no
+        /// wallet *process* declares it. Empty unless `wallet_restore_seed` is
+        /// wired — `seedWordCounts` falls back to the Monero-style 25 otherwise,
+        /// which is the wrong answer for a BIP39 coin.
+        restore_seed_word_counts: []const usize = &.{},
         /// Optional: the on-disk location of the coin's managed wallet, for the
         /// Settings tab. Returns null for coins BoxWallet manages no discrete
         /// wallet file for (Ergo's node-internal wallet, Epic's node-only build,
@@ -1499,6 +1607,31 @@ pub const Coin = struct {
         return self.vtable.wallet_backup != null;
     }
 
+    /// What `wallet_backup` produces — a key dump or a file copy. Decides whether
+    /// the action survives a locked wallet; see `BackupKind`.
+    pub fn backupKind(self: Coin) BackupKind {
+        return self.vtable.wallet_backup_kind;
+    }
+
+    /// Whether this coin can show the user its wallet's recovery seed (the `w`
+    /// menu's "Show recovery seed"). True iff the coin wires `wallet_seed_backup`.
+    pub fn supportsSeedBackup(self: Coin) bool {
+        return self.vtable.wallet_seed_backup != null;
+    }
+
+    /// Read the wallet's recovery seed for the user to write down. Needs an
+    /// unlocked (or unencrypted) wallet. Errors `error.Unsupported` if the coin
+    /// has no seed backup.
+    pub fn walletSeedBackup(
+        self: Coin,
+        allocator: std.mem.Allocator,
+        auth: models.CoinAuth,
+        detail: *WalletErrSink,
+    ) !SeedBackup {
+        const f = self.vtable.wallet_seed_backup orelse return error.Unsupported;
+        return f(self.ptr, allocator, auth, detail);
+    }
+
     /// Write a wallet backup to `dest_path`. Errors `error.Unsupported` if the
     /// coin has no file-backup wallet.
     pub fn walletBackup(
@@ -1547,6 +1680,32 @@ pub const Coin = struct {
     ) !void {
         const f = self.vtable.wallet_restore_file_offline orelse return error.Unsupported;
         return f(self.ptr, allocator, home_dir, src_path);
+    }
+
+    /// Whether this coin can restore its in-daemon wallet from a mnemonic (the
+    /// `w` menu's "Restore from seed words"). True iff the coin wires
+    /// `wallet_restore_seed`. Distinct from `supportsSeedRestore`, which answers
+    /// the same question for the *managed* wallet shape.
+    pub fn supportsWalletRestoreSeed(self: Coin) bool {
+        return self.vtable.wallet_restore_seed != null;
+    }
+
+    /// Restore the in-daemon wallet from the BIP39 mnemonic `seed` (daemon must
+    /// be stopped by the caller, and restarted after). `detail` receives the real
+    /// failure reason. Errors `error.Unsupported` if the coin has no seed
+    /// restore.
+    pub fn walletRestoreSeed(
+        self: Coin,
+        allocator: std.mem.Allocator,
+        install_root: []const u8,
+        home_dir: []const u8,
+        seed: []const u8,
+        passphrase: []const u8,
+        wallet_password: []const u8,
+        detail: *WalletErrSink,
+    ) !void {
+        const f = self.vtable.wallet_restore_seed orelse return error.Unsupported;
+        return f(self.ptr, allocator, install_root, home_dir, seed, passphrase, wallet_password, detail);
     }
 
     /// The RPC method to probe for a warm-up phase, or null for coins with no
@@ -1658,7 +1817,13 @@ pub const Coin = struct {
     /// Valid restore-seed word counts for the seed-entry UI (canonical length
     /// first). Falls back to `{25}` for coins without an external wallet.
     pub fn seedWordCounts(self: Coin) []const usize {
-        const ew = self.vtable.external_wallet orelse return &.{25};
+        const ew = self.vtable.external_wallet orelse {
+            // No wallet process: an in-daemon seed restore (Divi) declares its
+            // own counts, since the BIP39 lengths aren't the Monero 25 the
+            // managed default assumes.
+            if (self.vtable.restore_seed_word_counts.len > 0) return self.vtable.restore_seed_word_counts;
+            return &.{25};
+        };
         return ew.seed_word_counts;
     }
 

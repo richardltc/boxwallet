@@ -583,6 +583,9 @@ pub const SpiderByte = struct {
         .wallet_unlock = vtWalletUnlock,
         .wallet_lock = vtWalletLock,
         .wallet_backup = vtWalletBackup,
+        // `backupwallet` copies the wallet file with its keys still encrypted, so
+        // it works in every lock state — including locked, where a key dump can't.
+        .wallet_backup_kind = .file_copy,
         .wallet_restore_file_offline = vtWalletRestoreFileOffline,
         .warmup_probe_method = vtWarmupProbeMethod,
         .warmup_phase_from_log = vtWarmupPhaseFromLog,

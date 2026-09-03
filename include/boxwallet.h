@@ -560,8 +560,11 @@ int     bw_status_active(const BwStatusInput *in); /* something is happening */
  * BW_WSEC_UNKNOWN state returns 0 actions — a menu built before the daemon has
  * said what it holds is a menu that can destroy a wallet.
  *
- * Every action takes a passphrase OR a path, never both; ask
- * bw_wallet_action_needs_password / _needs_path to decide which prompt to raise.
+ * Every action takes a passphrase, a path, OR seed words — never more than one;
+ * ask bw_wallet_action_needs_password / _needs_path / _needs_seed to decide
+ * which prompt to raise. bw_wallet_action_needs_daemon_stopped marks the ones
+ * that replace the wallet FILE (both offline restores): stop the daemon first,
+ * because a live one holds that file open.
  * bw_wallet_action_sets_new_password marks the one that SETS a credential
  * (encrypt) — confirm it twice and refuse on mismatch, because there is no
  * recovering a wallet encrypted with a password nobody knows.
@@ -575,6 +578,9 @@ int     bw_status_active(const BwStatusInput *in); /* something is happening */
 #define BW_WCAP_RESTORE_OFFLINE (1 << 3)
 #define BW_WCAP_PROOF_OF_STAKE  (1 << 4)  /* offers unlock-for-staking */
 #define BW_WCAP_STAKE_ACTION    (1 << 5)  /* explicit stake (Salvium) */
+#define BW_WCAP_RESTORE_SEED    (1 << 6)  /* rebuild from BIP39 words, daemon STOPPED */
+#define BW_WCAP_BACKUP_SEED     (1 << 7)  /* can show the wallet's recovery seed */
+#define BW_WCAP_BACKUP_LOCKED   (1 << 8)  /* backup is a file copy: works while LOCKED */
 int     bw_coin_wallet_caps(size_t idx);
 
 #define BW_WA_ENCRYPT              0
@@ -584,11 +590,15 @@ int     bw_coin_wallet_caps(size_t idx);
 #define BW_WA_BACKUP               4
 #define BW_WA_RESTORE              5  /* key dump, daemon running */
 #define BW_WA_RESTORE_FILE_OFFLINE 6  /* wallet.dat swap, daemon STOPPED */
+#define BW_WA_RESTORE_SEED         7  /* BIP39 words, daemon STOPPED */
+#define BW_WA_BACKUP_SEED          8  /* show the recovery seed; needs UNLOCKED */
 size_t  bw_wallet_menu(size_t idx, int wallet_sec, uint8_t *out, size_t cap);
 size_t  bw_wallet_action_label(uint8_t action, char *buf, size_t cap);
 int     bw_wallet_action_needs_password(uint8_t action);
 int     bw_wallet_action_needs_path(uint8_t action);
+int     bw_wallet_action_needs_seed(uint8_t action);
 int     bw_wallet_action_sets_new_password(uint8_t action);
+int     bw_wallet_action_needs_daemon_stopped(uint8_t action);
 
 /* All of these block on RPC or the disk — worker thread.
  *
@@ -602,11 +612,51 @@ int     bw_wallet_action_sets_new_password(uint8_t action);
  *
  * bw_wallet_restore_file_offline REFUSES while the daemon is alive, because a
  * daemon holds its wallet open and would overwrite the file on shutdown. Stop it
- * first: unlike the TUI, this does not stop and restart for you. */
+ * first: unlike the TUI, this does not stop and restart for you.
+ *
+ * bw_wallet_restore_seed rebuilds the wallet from a BIP39 phrase and has the
+ * same rule: daemon STOPPED, and you restart it afterwards (the balance appears
+ * once it rescans). The phrase is normalized and checksum-checked before
+ * anything is touched, so a mistyped word comes back as a message naming the
+ * check it failed, not a wrecked wallet. The existing wallet.dat is kept as a
+ * timestamped .bak either way. Accepted word counts come from
+ * bw_coin_seed_word_counts.
+ *
+ * `seed` also accepts a raw 128-character hex seed (what a wallet reports as its
+ * hdseed) instead of words — they're unambiguous, so don't ask the user which
+ * they hold, just pass it. `pp` is the BIP39 PASSPHRASE (the "25th word"), or
+ * NULL/0 for none. It is NOT the wallet password: the same words with and
+ * without a passphrase are DIFFERENT wallets, so a dropped passphrase restores
+ * an empty wallet rather than failing. It is refused alongside a hex seed, which
+ * already has it folded in.
+ *
+ * `newpw` ENCRYPTS the restored wallet, or NULL/0 to leave it unencrypted. This
+ * is not optional politeness: a wallet rebuilt from a seed is a FRESH one, so
+ * without it a restore over an encrypted wallet hands the same funds back with
+ * the password silently removed. If you pass 0, say so at your confirm step.
+ * Wipe your own copies of all three after the call. */
 int     bw_wallet_encrypt(bw_ctx *ctx, size_t idx, const uint8_t *passphrase, size_t len);
 size_t  bw_wallet_backup(bw_ctx *ctx, size_t idx, char *buf, size_t cap);
 int     bw_wallet_import_file(bw_ctx *ctx, size_t idx, const char *src_path);
 int     bw_wallet_restore_file_offline(bw_ctx *ctx, size_t idx, const char *src_path);
+int     bw_wallet_restore_seed(bw_ctx *ctx, size_t idx, const uint8_t *seed, size_t seed_len,
+                               const uint8_t *pp, size_t pp_len,
+                               const uint8_t *newpw, size_t newpw_len);
+
+/* Read the wallet's recovery seed out for the user to write down. Needs an
+ * UNLOCKED (or unencrypted) wallet; a locked one comes back with the daemon's own
+ * "enter the wallet passphrase" message, so you can say "unlock first".
+ *
+ * Fills three buffers, lengths via the out-params: the mnemonic (EMPTY when the
+ * wallet has none), the BIP39 passphrase (empty when unset), and the raw hex
+ * seed. ALL THREE ARE SECRETS. Show every one that is non-empty: the words are
+ * not a backup on their own when a passphrase is set, and a wallet restored from
+ * a raw seed has NO words — the hex is then the only backup there is. Wipe your
+ * buffers once the user has read them. */
+int     bw_wallet_seed_backup(bw_ctx *ctx, size_t idx,
+                              char *words, size_t words_cap, size_t *words_len,
+                              char *pp, size_t pp_cap, size_t *pp_len,
+                              char *hex, size_t hex_cap, size_t *hex_len);
 
 /* Salvium's explicit stake. Same tri-state as bw_wallet_send: 0 broadcast (out =
  * txid), 1 rejected (out = the daemon's own reason), -1 transport failure.
