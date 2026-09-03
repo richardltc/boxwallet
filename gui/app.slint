@@ -1299,6 +1299,8 @@ export component AppWindow inherits Window {
     // The rows come from bw_wallet_menu, which is the same policy the TUI asks —
     // this file never decides which actions a wallet state permits. `wa-stage`:
     //   0 closed   1 menu   2 password   3 pick a file   4 working   5 result
+    //   6 seed words (the in-daemon restore-from-seed; the daemon must be down)
+    //   7 the recovery seed, shown to write down ("Show recovery seed")
     in property <int> wallet-menu-count: 0;
     in-out property <int> wa-stage: 0;
     in property <[string]> wa-rows;
@@ -1316,7 +1318,19 @@ export component AppWindow inherits Window {
     // The password is a secret: cleared by the caller the instant this fires.
     callback wallet-action-password(string);
     callback wallet-action-path(string);
+    // The seed words and the BIP39 passphrase are secrets, exactly like the
+    // password: both cleared by the caller the instant this fires.
+    callback wallet-action-seed(string, string, string);
     callback wallet-action-cancel();
+    // Accepted BIP39 lengths for the in-daemon seed restore, pre-formatted
+    // ("12, 15, 18, 21 or 24") by the core so this file counts nothing itself.
+    in property <string> wa-seed-lengths: "";
+    // The seed read back for the user to write down. Three parts because they are
+    // not interchangeable: words alone are no backup when a passphrase is set, and
+    // a wallet restored from a raw seed has no words at all, only the hex.
+    in-out property <string> wa-shown-words: "";
+    in-out property <string> wa-shown-pp: "";
+    in-out property <string> wa-shown-hex: "";
 
     // ---- first-start prune prompt ----
     // Asked once, before a prune-capable daemon (Bitcoin, Litecoin, Monero) ever
@@ -5157,6 +5171,179 @@ export component AppWindow inherits Window {
                                     } else {
                                         root.wallet-action-path(root.picked-file);
                                     }
+                                }
+                            }
+                        }
+                    }
+
+                    // --- 6: seed words (in-daemon restore from a BIP39 phrase) ---
+                    if root.wa-stage == 6: VerticalLayout {
+                        spacing: 8px;
+                        if root.wa-caution != "": Text {
+                            text: root.wa-caution;
+                            color: #e0a03a;
+                            font-size: 12px;
+                            wrap: word-wrap;
+                            width: wa-card.text-w;
+                            height: self.preferred-height;
+                        }
+                        Text {
+                            text: "Enter your recovery seed \u{2014} " + root.wa-seed-lengths
+                                + " words, or a 128-character hex seed.";
+                            color: #9a9a9a;
+                            font-size: 13px;
+                            wrap: word-wrap;
+                            width: wa-card.text-w;
+                            height: self.preferred-height;
+                        }
+                        wa-seed := LineEdit {
+                            placeholder-text: "seed words, separated by spaces";
+                        }
+                        // The BIP39 passphrase, and NOT the wallet password. Named
+                        // and warned about because the two are easy to conflate and
+                        // the cost of doing so is a silently empty wallet: the same
+                        // words with a different passphrase are a different wallet.
+                        Text {
+                            text: "BIP39 passphrase (optional \u{2014} leave blank unless your seed has one):";
+                            color: #9a9a9a;
+                            font-size: 12px;
+                            wrap: word-wrap;
+                            width: wa-card.text-w;
+                            height: self.preferred-height;
+                        }
+                        wa-seed-pp := LineEdit {
+                            placeholder-text: "usually blank";
+                            input-type: password;
+                        }
+                        Text {
+                            text: "This is not your wallet password. A wrong passphrase restores an empty wallet rather than failing.";
+                            color: #e0a03a;
+                            font-size: 11px;
+                            wrap: word-wrap;
+                            width: wa-card.text-w;
+                            height: self.preferred-height;
+                        }
+                        // The password the RESTORED wallet gets. A wallet rebuilt
+                        // from a seed is a fresh, unencrypted one, so leaving this
+                        // blank over an encrypted wallet hands the funds back
+                        // unprotected — which the button text spells out.
+                        Text {
+                            text: "Password to encrypt the restored wallet (blank leaves it unencrypted):";
+                            color: #9a9a9a;
+                            font-size: 12px;
+                            wrap: word-wrap;
+                            width: wa-card.text-w;
+                            height: self.preferred-height;
+                        }
+                        wa-seed-newpw := LineEdit {
+                            placeholder-text: "wallet password";
+                            input-type: password;
+                        }
+                        wa-seed-newpw2 := LineEdit {
+                            placeholder-text: "confirm wallet password";
+                            input-type: password;
+                            visible: wa-seed-newpw.text != "";
+                            height: wa-seed-newpw.text != "" ? self.preferred-height : 0px;
+                        }
+                        if wa-seed-newpw.text != "" && wa-seed-newpw2.text != "" && wa-seed-newpw.text != wa-seed-newpw2.text: Text {
+                            text: "Those passwords don't match.";
+                            color: #e05c5c;
+                            font-size: 12px;
+                        }
+                        if wa-seed-newpw.text == "": Text {
+                            text: "The restored wallet will NOT be encrypted \u{2014} anyone with the file can spend from it.";
+                            color: #e0a03a;
+                            font-size: 12px;
+                            wrap: word-wrap;
+                            width: wa-card.text-w;
+                            height: self.preferred-height;
+                        }
+                        HorizontalLayout {
+                            alignment: end;
+                            spacing: 8px;
+                            Button {
+                                text: "Cancel";
+                                clicked => {
+                                    wa-seed.text = "";
+                                    wa-seed-pp.text = "";
+                                    wa-seed-newpw.text = "";
+                                    wa-seed-newpw2.text = "";
+                                    root.wa-stage = 0;
+                                    root.wallet-action-cancel();
+                                }
+                            }
+                            Button {
+                                text: "Restore";
+                                primary: wa-seed.text != ""
+                                    && (wa-seed-newpw.text == "" || wa-seed-newpw.text == wa-seed-newpw2.text);
+                                clicked => {
+                                    if (wa-seed.text != ""
+                                        && (wa-seed-newpw.text == "" || wa-seed-newpw.text == wa-seed-newpw2.text)) {
+                                        root.wallet-action-seed(wa-seed.text, wa-seed-pp.text, wa-seed-newpw.text);
+                                        // Don't leave any of the secrets in a widget.
+                                        wa-seed.text = "";
+                                        wa-seed-pp.text = "";
+                                        wa-seed-newpw.text = "";
+                                        wa-seed-newpw2.text = "";
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    // --- 7: the recovery seed, to write down ---
+                    if root.wa-stage == 7: VerticalLayout {
+                        spacing: 8px;
+                        Text {
+                            text: root.wa-shown-words == ""
+                                ? "This wallet has no recovery words \u{2014} it was restored from a raw seed. Write down this seed instead:"
+                                : "Write these words down, in order, and keep them offline:";
+                            color: #e0a03a;
+                            font-size: 13px;
+                            wrap: word-wrap;
+                            width: wa-card.text-w;
+                            height: self.preferred-height;
+                        }
+                        Text {
+                            text: root.wa-shown-words == "" ? root.wa-shown-hex : root.wa-shown-words;
+                            color: #7ec27e;
+                            font-size: 14px;
+                            wrap: word-wrap;
+                            width: wa-card.text-w;
+                            height: self.preferred-height;
+                        }
+                        // Shown only when set, and never as a footnote: these words
+                        // without this passphrase restore a different, empty wallet.
+                        if root.wa-shown-pp != "": Text {
+                            text: "BIP39 passphrase: " + root.wa-shown-pp
+                                + "\n\nWrite this down too. Without it these words restore a different, empty wallet.";
+                            color: #e0a03a;
+                            font-size: 13px;
+                            wrap: word-wrap;
+                            width: wa-card.text-w;
+                            height: self.preferred-height;
+                        }
+                        Text {
+                            text: "Anyone with this can spend your funds. Lose it and your coins are gone forever.";
+                            color: #e05c5c;
+                            font-size: 12px;
+                            wrap: word-wrap;
+                            width: wa-card.text-w;
+                            height: self.preferred-height;
+                        }
+                        HorizontalLayout {
+                            alignment: end;
+                            Button {
+                                text: "I've written it down";
+                                primary: true;
+                                clicked => {
+                                    // The seed only ever existed to be read off the
+                                    // screen — drop it with the dialog.
+                                    root.wa-shown-words = "";
+                                    root.wa-shown-pp = "";
+                                    root.wa-shown-hex = "";
+                                    root.wa-stage = 0;
+                                    root.wallet-action-cancel();
                                 }
                             }
                         }

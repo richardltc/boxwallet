@@ -5,6 +5,8 @@ const rpc = @import("../rpc.zig");
 const install_mod = @import("../install.zig");
 const conf = @import("../conf.zig");
 const price = @import("../price.zig");
+const walletfile = @import("../walletfile.zig");
+const bip39 = @import("../bip39.zig");
 const Coin = @import("../coin.zig").Coin;
 
 /// Divi backend. Constants lifted from
@@ -653,6 +655,557 @@ pub const Divi = struct {
         return rpc.callExpectOk(allocator, auth, "walletlock", "[]");
     }
 
+    /// Back up the wallet to `dest_path` via `backupwallet` — a binary copy of
+    /// `wallet.dat`, which is what this daemon offers: divid has **no**
+    /// `dumpwallet`/`importwallet` pair (checked against the shipped divi-cli
+    /// 3.0.0), so there is no key-dump text file for it either to write or to
+    /// read back. The counterpart restore is therefore the offline file swap
+    /// below, not `wallet_import_file`.
+    ///
+    /// This is the user's backup, not a temp — don't shred it. Works regardless
+    /// of lock state (it is just a file copy). The path is JSON-escaped before
+    /// splicing.
+    pub fn walletBackup(allocator: std.mem.Allocator, auth: models.CoinAuth, dest_path: []const u8) !void {
+        const qpath = try rpc.jsonQuote(allocator, dest_path);
+        defer allocator.free(qpath);
+        const params = try std.fmt.allocPrint(allocator, "[{s}]", .{qpath});
+        defer allocator.free(params);
+        return rpc.callExpectOk(allocator, auth, "backupwallet", params);
+    }
+
+    /// Restore the wallet by swapping in a user-supplied backup `wallet.dat`.
+    /// The daemon holds the file open while running, so the caller stops it
+    /// before calling this and restarts it after (the offline-restore
+    /// orchestration in `app.zig` / `capi.zig`); this hook only touches files and
+    /// takes no auth.
+    ///
+    /// Divi keeps its wallet at the top of the data dir — it predates Core's
+    /// named-wallet sub-directories, and `divi-cli` exposes no `createwallet` —
+    /// so the destination is `<data_dir>/wallet.dat`. Safety is
+    /// `walletfile.restoreOffline`'s: a text key dump or an empty file is
+    /// refused, and the current wallet is moved aside to a timestamped sibling
+    /// before anything is written.
+    pub fn walletRestoreFileOffline(
+        allocator: std.mem.Allocator,
+        home: []const u8,
+        src_path: []const u8,
+    ) !void {
+        const data_dir = try dataDir(allocator, home);
+        defer allocator.free(data_dir);
+
+        return walletfile.restoreOffline(allocator, data_dir, "wallet.dat", src_path);
+    }
+
+    // --- restore from seed words ------------------------------------------
+    //
+    // divid is HD (BIP39, standard derivation — `dumphdinfo` on a wallet built
+    // from the canonical all-zero-entropy phrase returns exactly the BIP39 test
+    // vector's seed), and it takes the phrase through a `mnemonic=` conf entry or
+    // the matching `-mnemonic` argv. Verified against the shipped divid 3.0.0.
+    //
+    // **Neither of those is safe to point at the user's own data dir**, which is
+    // the whole reason this hook works the way it does:
+    //
+    //   * The help text says `-mnemonic` "only has effect during wallet
+    //     creation/first start". It does not. On *every* start with the entry
+    //     present, divid renames the current wallet to `wallet.dat<unixtime>.moved`
+    //     and builds a fresh one — even when the phrase already matches the wallet
+    //     that is there. Left in a conf, it is a wallet-wipe armed on every launch,
+    //     in a file BoxWallet shares with whatever else owns that dir.
+    //   * It moves the wallet aside *before* validating the phrase, so a mistyped
+    //     seed leaves the user with their wallet renamed and a daemon that won't
+    //     start ("SetMnemonic: invalid mnemonic: please check your words").
+    //   * `divi.conf` is world-readable in the wild (mode 664 as divid leaves it),
+    //     and argv is readable by any local user for the daemon's whole lifetime,
+    //     so both routes publish the seed to every account on the machine.
+    //
+    // So the phrase is never written to the user's conf and never passed on the
+    // real daemon's command line. Instead a throwaway data dir under the install
+    // root — ours, created 0700, deleted on every path — gets a minimal conf
+    // carrying the `mnemonic=`, divid is run against *that* to mint the wallet,
+    // and the resulting `wallet.dat` is swapped into the real data dir through
+    // the same `walletfile.restoreOffline` the file restore uses. The user's
+    // wallet is kept aside timestamped, an invalid phrase fails in the scratch dir
+    // without the real one ever being touched, and the secret's only disk
+    // residence is a private file shredded in a `defer`.
+
+    /// Owner-only modes for the scratch dir and the conf inside it. `Permissions`
+    /// is the portable type: a POSIX mode on Unix, a file-attribute enum on
+    /// Windows (which has no mode bits, so it keeps the default there and relies
+    /// on the profile directory's own ACL).
+    const private_dir_perms: std.Io.File.Permissions =
+        if (builtin.os.tag == .windows) .default_dir else @enumFromInt(0o700);
+    const private_file_perms: std.Io.File.Permissions =
+        if (builtin.os.tag == .windows) .default_file else @enumFromInt(0o600);
+
+    /// Name of the scratch data dir minted under the install root. Keyed off the
+    /// daemon name so a concurrent op on another coin can't collide.
+    const seed_restore_dir = ".boxwallet-" ++ daemon_file ++ ".seedrestore";
+
+    /// Ports the scratch daemon binds. It only has to reach the point of creating
+    /// a wallet, so it runs with no network at all (`connect=0`, `listen=0`,
+    /// `maxconnections=0`) — but it still binds an RPC port to be asked whether
+    /// the restore took, and that must not be a port a real node might hold.
+    const seed_restore_rpc_port = "51479";
+    const seed_restore_p2p_port = "51478";
+
+    /// Read the wallet's HD seed back out so the user can write it down — the
+    /// counterpart of the seed restore, and the reason a Divi wallet created here
+    /// is recoverable at all. Without it the restore only helps someone who got
+    /// their phrase from another wallet.
+    ///
+    /// `dumphdinfo` needs a readable wallet: divid answers -13 ("Please enter the
+    /// wallet passphrase") on a locked one, which is why the menu only offers this
+    /// when the wallet is unencrypted or unlocked. That error is threaded up as-is
+    /// rather than flattened, so "unlock first" is distinguishable from "this
+    /// daemon can't".
+    ///
+    /// A wallet that was itself restored from a raw hex seed has **no mnemonic**
+    /// (verified: `dumphdinfo` returns an empty string for it), so the hex is
+    /// carried too and is the only thing to write down in that case.
+    pub fn walletSeedBackup(
+        allocator: std.mem.Allocator,
+        auth: models.CoinAuth,
+        detail: *Coin.WalletErrSink,
+    ) !Coin.SeedBackup {
+        const body = rpc.call(allocator, auth, "dumphdinfo") catch |err| {
+            detail.set(@errorName(err));
+            return error.SeedBackupFailed;
+        };
+        defer {
+            // The reply *is* the seed — don't leave it in freed memory.
+            @memset(body, 0);
+            allocator.free(body);
+        }
+
+        // A daemon-side refusal (locked wallet, most likely) comes back as a JSON
+        // error rather than the fields, so say what it said.
+        const hex = jsonStringField(body, "hdseed") orelse {
+            // A refusal comes back as {"error":{"code":-13,"message":"..."}} — the
+            // message is the useful half ("Please enter the wallet passphrase
+            // with walletpassphrase first"), so pass it through verbatim.
+            if (jsonStringField(body, "message")) |msg| {
+                detail.set(msg);
+            } else {
+                detail.set("The daemon didn't return this wallet's seed.");
+            }
+            return error.SeedBackupFailed;
+        };
+
+        const out: Coin.SeedBackup = .{
+            .words = .from(jsonStringField(body, "mnemonic") orelse ""),
+            .passphrase = .from(jsonStringField(body, "mnemonicpassphrase") orelse ""),
+            .hex = .from(hex),
+        };
+        return out;
+    }
+
+    /// Restore the wallet from a BIP39 mnemonic **or** a raw 512-bit `hdseed`,
+    /// with the daemon stopped.
+    ///
+    /// `seed` takes either form and they are told apart here rather than by the
+    /// user (`bip39.looksLikeHexSeed` — the two are unambiguous by construction):
+    ///
+    ///   * **Words** go to divid as `mnemonic=`, with `passphrase` as
+    ///     `mnemonicpassphrase=` when non-empty. They are normalized and
+    ///     checksum-checked first, so a mistyped word is a message rather than a
+    ///     minute-long daemon start that fails; divid's own check stays the
+    ///     authority.
+    ///   * **Hex** goes as `hdseed=`. That value is what the mnemonic and the
+    ///     passphrase *derive to*, so a passphrase alongside it is meaningless and
+    ///     is refused rather than silently ignored — quietly dropping it would
+    ///     restore a wallet the user didn't ask for.
+    ///
+    /// `passphrase` is the BIP39 passphrase (the "25th word"), **not** the wallet
+    /// encryption password. It is part of the secret: the same words with and
+    /// without one derive completely different wallets, so an omitted passphrase
+    /// restores an empty wallet rather than failing. Verified against divid 3.0.0,
+    /// which implements the standard derivation (the `TREZOR` test vector matches).
+    ///
+    /// `wallet_password` encrypts the restored wallet before it is swapped in.
+    /// **This matters more than it looks.** A wallet minted from a seed is a fresh,
+    /// *unencrypted* one, so restoring over an encrypted wallet would otherwise
+    /// hand back the same funds with the password silently removed — a security
+    /// downgrade the user never asked for and wouldn't notice. Empty deliberately
+    /// leaves it unencrypted (the front-end says so at the confirm), which is the
+    /// right answer when the wallet being restored never had a password.
+    ///
+    /// The encryption happens **inside the scratch dir**, against the throwaway
+    /// daemon, before anything is swapped: `encryptwallet` needs a running daemon,
+    /// and the alternative — swap first, then encrypt after the real daemon comes
+    /// back — leaves a window where the funds sit unencrypted on disk, and fails
+    /// messily if the restart doesn't happen. Verified on divid 3.0.0 that
+    /// encrypting preserves the HD seed, mnemonic and keys (it answers "Wallet
+    /// reloaded!" and, unlike Bitcoin Core, keeps running).
+    ///
+    /// On success the real `<data_dir>/wallet.dat` has been replaced (previous one
+    /// kept aside, timestamped) and the caller restarts the daemon, which rescans
+    /// and picks up the restored keys.
+    ///
+    /// Both secrets are wiped: the normalized copies, the conf text built around
+    /// them, and the scratch dir holding that conf all go on every path.
+    pub fn walletRestoreSeed(
+        allocator: std.mem.Allocator,
+        install_root: []const u8,
+        home: []const u8,
+        seed: []const u8,
+        passphrase: []const u8,
+        wallet_password: []const u8,
+        detail: *Coin.WalletErrSink,
+    ) !void {
+        // Normalize exactly as every other restore does — a phrase pasted with
+        // stray case or double spaces still restores. For the hex form this just
+        // lowercases and trims it, which is equally what we want.
+        const words = try models.normalizeSeedWords(allocator, seed);
+        defer {
+            @memset(words, 0);
+            allocator.free(words);
+        }
+
+        // The passphrase reaches divid as a `key=value` conf line, so anything it
+        // can't survive that trip has to be refused rather than mangled: a newline
+        // would inject a conf line outright, and leading/trailing spaces are eaten
+        // by the parser — which would silently restore a *different* wallet, the
+        // exact failure this whole hook exists to prevent. (The post-start check
+        // against `dumphdinfo` would catch it, but a minute later and less
+        // clearly.) The seed itself is already safe: normalizing tokenizes it on
+        // whitespace, so no control character survives.
+        for (passphrase) |c| {
+            if (c == '\n' or c == '\r' or c == 0) {
+                detail.set("That passphrase contains a line break, which Divi can't accept.");
+                return error.InvalidSeed;
+            }
+        }
+        if (passphrase.len > 0 and
+            (std.ascii.isWhitespace(passphrase[0]) or std.ascii.isWhitespace(passphrase[passphrase.len - 1])))
+        {
+            detail.set("That passphrase starts or ends with a space, which Divi would drop — restoring a different wallet. Remove it, or the seed isn't the one you think.");
+            return error.InvalidSeed;
+        }
+
+        const is_hex = bip39.looksLikeHexSeed(words);
+        if (is_hex) {
+            // A passphrase only exists on the way from words to a seed. Given the
+            // seed itself there is nothing left for it to do, and honouring the
+            // request as typed is impossible — so say so instead of restoring
+            // something subtly different from what was asked for.
+            if (passphrase.len > 0) {
+                detail.set("A raw hex seed already includes any passphrase — clear the passphrase field, or enter your words instead.");
+                return error.InvalidSeed;
+            }
+        } else {
+            bip39.validate(words) catch |err| {
+                detail.set(switch (err) {
+                    error.BadWordCount => "That isn't a BIP39 seed length — Divi takes 12, 15, 18, 21 or 24 words (or a 128-character hex seed).",
+                    error.UnknownWord => "One of those words isn't in the BIP39 wordlist — check for a typo.",
+                    error.BadChecksum => "Those are all real words, but the phrase's checksum doesn't match — a word is probably mistyped or two are swapped.",
+                });
+                return error.InvalidSeed;
+            };
+        }
+
+        var threaded: std.Io.Threaded = .init(allocator, .{});
+        defer threaded.deinit();
+        const io = threaded.io();
+
+        // --- the scratch data dir -----------------------------------------
+        const scratch = try std.fs.path.join(allocator, &.{ install_root, seed_restore_dir });
+        defer allocator.free(scratch);
+
+        // A leftover from an interrupted run would hand divid a wallet that
+        // already exists (and a stale conf), so start from nothing every time.
+        std.Io.Dir.cwd().deleteTree(io, scratch) catch {};
+        // Remove the whole scratch tree however we leave here: it holds the conf
+        // with the plaintext seed and the minted wallet itself.
+        defer std.Io.Dir.cwd().deleteTree(io, scratch) catch {};
+
+        // Owner-only from the moment it exists — the conf about to land in it
+        // carries the seed in plaintext, and the user's own `divi.conf` is
+        // world-readable in the wild (divid leaves it 0664).
+        var sdir = try std.Io.Dir.cwd().createDirPathOpen(io, scratch, .{ .permissions = private_dir_perms });
+        defer sdir.close(io);
+
+        // Random RPC password: the scratch daemon is localhost-only and lives for
+        // seconds, but it is still a live wallet RPC while it runs.
+        var pw_buf: [32]u8 = undefined;
+        const rpc_pw = conf.randomPassword(io, &pw_buf);
+        defer @memset(&pw_buf, 0);
+
+        // The scratch conf. `daemon=1` so the launcher forks and returns;
+        // everything else keeps it off the network — it never needs a peer, only
+        // to reach wallet creation.
+        // The secret half of the conf: the seed in whichever form it arrived, plus
+        // the passphrase line only when there is one (an empty `mnemonicpassphrase=`
+        // is the same as absent, but writing it needlessly puts an extra copy of a
+        // secret-shaped line on disk).
+        const seed_lines = if (is_hex)
+            try std.fmt.allocPrint(allocator, "hdseed={s}\n", .{words})
+        else if (passphrase.len > 0)
+            try std.fmt.allocPrint(allocator, "mnemonic={s}\nmnemonicpassphrase={s}\n", .{ words, passphrase })
+        else
+            try std.fmt.allocPrint(allocator, "mnemonic={s}\n", .{words});
+        defer {
+            @memset(seed_lines, 0);
+            allocator.free(seed_lines);
+        }
+
+        const conf_text = try std.fmt.allocPrint(allocator,
+            \\server=1
+            \\daemon=1
+            \\listen=0
+            \\connect=0
+            \\maxconnections=0
+            \\rpcuser={s}
+            \\rpcpassword={s}
+            \\rpcport={s}
+            \\port={s}
+            \\{s}
+        , .{ rpc_default_username, rpc_pw, seed_restore_rpc_port, seed_restore_p2p_port, seed_lines });
+        // Shred the in-memory copy of the conf — it carries the seed verbatim.
+        defer {
+            @memset(conf_text, 0);
+            allocator.free(conf_text);
+        }
+        try sdir.writeFile(io, .{
+            .sub_path = conf_file,
+            .data = conf_text,
+            .flags = .{ .permissions = private_file_perms },
+        });
+
+        // --- mint the wallet ----------------------------------------------
+        const daemon_path = try std.fs.path.join(allocator, &.{ install_root, daemon_file });
+        defer allocator.free(daemon_path);
+        const datadir_arg = try std.fmt.allocPrint(allocator, "-datadir={s}", .{scratch});
+        defer allocator.free(datadir_arg);
+
+        // The launcher forks and exits on POSIX; on Windows divid has no -daemon
+        // and stays in the foreground, so it is spawned detached and polled the
+        // same way. Either way the wallet is minted asynchronously and the RPC
+        // below is what says it finished.
+        const argv = [_][]const u8{ daemon_path, datadir_arg };
+        var child = std.process.spawn(io, .{
+            .argv = &argv,
+            .stdin = .ignore,
+            .stdout = .ignore,
+            .stderr = .ignore,
+        }) catch |err| {
+            detail.set(@errorName(err));
+            return error.WalletRestoreFailed;
+        };
+
+        const scratch_auth: models.CoinAuth = .{
+            .rpc_user = rpc_default_username,
+            .rpc_password = rpc_pw,
+            .ip_address = "127.0.0.1",
+            .port = seed_restore_rpc_port,
+            .data_dir = scratch,
+        };
+
+        // However we leave, the scratch daemon must not outlive us — it holds the
+        // wallet file open and would keep binding its port. The success path stops
+        // it early (the swap can't read a file the daemon still owns) and clears
+        // this, so the child is reaped exactly once: `Child.wait` asserts on a
+        // second call rather than tolerating it.
+        var stopped = false;
+        defer if (!stopped) stopScratchDaemon(allocator, io, scratch_auth, &child);
+
+        // Poll `dumphdinfo` until the wallet exists. It is both the readiness
+        // signal and the verification: it returns the phrase the wallet was
+        // actually built from, so a mismatch is caught before anything is swapped
+        // into the real data dir. ~90s covers a cold start on a slow disk; a
+        // daemon that died on a bad phrase never answers and we fall out.
+        var ok = false;
+        var waited: usize = 0;
+        while (waited < 90) : (waited += 1) {
+            io.sleep(.fromSeconds(1), .awake) catch {};
+            const body = rpc.call(allocator, scratch_auth, "dumphdinfo") catch continue;
+            defer allocator.free(body);
+
+            // Compare against what we asked for rather than merely trusting a 200:
+            // this is the one moment we can prove the restore took. A hex restore
+            // is checked against `hdseed` (its `mnemonic` comes back empty — the
+            // words aren't recoverable from a seed); a word restore against
+            // `mnemonic`, *and* against `mnemonicpassphrase`, since the same words
+            // with and without a passphrase are different wallets and a dropped
+            // passphrase would otherwise pass silently as a success.
+            const field = if (is_hex) "hdseed" else "mnemonic";
+            const got = jsonStringField(body, field) orelse {
+                // Answered, but with no such field — not a wallet we can vouch for.
+                if (std.mem.indexOf(u8, body, "\"hdseed\"") != null) {
+                    detail.set("divid answered with a wallet this restore can't verify.");
+                    return error.WalletRestoreFailed;
+                }
+                continue;
+            };
+            if (!std.mem.eql(u8, got, words)) {
+                detail.set(if (is_hex)
+                    "divid built a wallet from a different seed than the one given."
+                else
+                    "divid built a wallet from a different phrase than the one given.");
+                return error.WalletRestoreFailed;
+            }
+            if (!is_hex) {
+                const got_pp = jsonStringField(body, "mnemonicpassphrase") orelse "";
+                if (!std.mem.eql(u8, got_pp, passphrase)) {
+                    detail.set("divid didn't apply the passphrase — the restored wallet would be the wrong one.");
+                    return error.WalletRestoreFailed;
+                }
+            }
+            ok = true;
+            break;
+        }
+        if (!ok) {
+            // The daemon never got to a wallet. Its own log carries the reason —
+            // a bad phrase reads "SetMnemonic: invalid mnemonic: please check
+            // your words".
+            setScratchFailureReason(allocator, io, scratch, detail);
+            return error.WalletRestoreFailed;
+        }
+
+        // Encrypt the freshly-minted wallet *before* it leaves the sandbox, so the
+        // file that lands in the user's data dir is already protected and there is
+        // never a moment where the restored funds sit unencrypted in place.
+        if (wallet_password.len > 0) {
+            walletEncrypt(allocator, scratch_auth, wallet_password) catch |err| {
+                detail.set(@errorName(err));
+                return error.WalletEncryptFailed;
+            };
+
+            // divid reloads the wallet in place ("Wallet reloaded!") rather than
+            // shutting down as Core does, so wait for it to answer again and then
+            // confirm it really is encrypted — shipping a wallet the user believes
+            // is protected but isn't would be worse than failing here.
+            var enc_ok = false;
+            var enc_wait: usize = 0;
+            while (enc_wait < 60) : (enc_wait += 1) {
+                io.sleep(.fromSeconds(1), .awake) catch {};
+                const info = rpc.call(allocator, scratch_auth, "getwalletinfo") catch continue;
+                defer allocator.free(info);
+                const status = jsonStringField(info, "encryption_status") orelse continue;
+                if (!std.mem.eql(u8, status, "unencrypted")) {
+                    enc_ok = true;
+                    break;
+                }
+            }
+            if (!enc_ok) {
+                detail.set("The restored wallet couldn't be encrypted, so it was not installed.");
+                return error.WalletEncryptFailed;
+            }
+        }
+
+        // Stop it before touching the file it has open, then swap.
+        stopScratchDaemon(allocator, io, scratch_auth, &child);
+        stopped = true;
+
+        const src_wallet = try std.fs.path.join(allocator, &.{ scratch, "wallet.dat" });
+        defer allocator.free(src_wallet);
+        const data_dir = try dataDir(allocator, home);
+        defer allocator.free(data_dir);
+
+        // The same swap the file restore uses — so the user's existing wallet is
+        // kept aside under a timestamped name rather than destroyed.
+        walletfile.restoreOffline(allocator, data_dir, "wallet.dat", src_wallet) catch |err| {
+            detail.set(@errorName(err));
+            return err;
+        };
+    }
+
+    /// The value of top-level string field `name` in `body`, or null if it isn't
+    /// there. A deliberately small reader for the one reply this restore checks:
+    /// `dumphdinfo` returns three flat string fields, and the values compared
+    /// against it (a mnemonic, a hex seed, a passphrase) are the whole point of
+    /// the verification — so it reads the field rather than substring-matching the
+    /// body, where a passphrase that happened to occur inside the mnemonic would
+    /// have matched the wrong thing.
+    ///
+    /// Returns a slice *into* `body`, so it lives as long as the caller's buffer.
+    /// Escapes are not decoded: divid emits none for these fields, and a value
+    /// containing one simply fails to compare equal, which fails the restore
+    /// closed rather than open.
+    fn jsonStringField(body: []const u8, name: []const u8) ?[]const u8 {
+        // Match the quoted key, so "mnemonic" can't match "mnemonicpassphrase".
+        var key_buf: [64]u8 = undefined;
+        const key = std.fmt.bufPrint(&key_buf, "\"{s}\"", .{name}) catch return null;
+
+        var from: usize = 0;
+        while (std.mem.indexOfPos(u8, body, from, key)) |at| {
+            from = at + key.len;
+            // Only a `"key" : "value"` pair counts; skip whitespace then the colon.
+            var i = from;
+            while (i < body.len and (body[i] == ' ' or body[i] == '\t')) i += 1;
+            if (i >= body.len or body[i] != ':') continue;
+            i += 1;
+            while (i < body.len and (body[i] == ' ' or body[i] == '\t')) i += 1;
+            if (i >= body.len or body[i] != '"') continue;
+            i += 1;
+            const end = std.mem.indexOfScalarPos(u8, body, i, '"') orelse return null;
+            return body[i..end];
+        }
+        return null;
+    }
+
+    /// Ask the scratch daemon to stop over RPC, then make sure it is gone and reap
+    /// the child. **Call exactly once** — `Child.wait` asserts if the process has
+    /// already been reaped, so the caller tracks whether it has run.
+    fn stopScratchDaemon(
+        allocator: std.mem.Allocator,
+        io: std.Io,
+        auth: models.CoinAuth,
+        child: *std.process.Child,
+    ) void {
+        if (rpc.call(allocator, auth, "stop")) |body| {
+            allocator.free(body);
+            // Give it a moment to flush the wallet and unlink its lock.
+            var waited: usize = 0;
+            while (waited < 30) : (waited += 1) {
+                io.sleep(.fromSeconds(1), .awake) catch {};
+                if (!rpc.daemonReachable(allocator, auth)) break;
+            }
+        } else |_| {}
+        // On POSIX the launcher has already exited (it forked); on Windows this is
+        // the daemon itself. Either way, reap what we spawned so no zombie is left.
+        _ = child.wait(io) catch {};
+    }
+
+    /// Put the reason the scratch daemon never produced a wallet into `detail`,
+    /// read from the last failure-looking line of its own `debug.log`. The point
+    /// is to thread divid's words up ("SetMnemonic: invalid mnemonic: please
+    /// check your words") rather than swallow them into a bare "restore failed".
+    ///
+    /// Writes through the sink rather than returning a slice: the log tail lives
+    /// in a stack buffer here, and `WalletErrSink.set` copies.
+    fn setScratchFailureReason(
+        allocator: std.mem.Allocator,
+        io: std.Io,
+        scratch: []const u8,
+        detail: *Coin.WalletErrSink,
+    ) void {
+        detail.set("divid didn't finish creating the wallet — see the action log.");
+
+        const log_path = std.fs.path.join(allocator, &.{ scratch, "debug.log" }) catch return;
+        defer allocator.free(log_path);
+
+        var f = std.Io.Dir.openFileAbsolute(io, log_path, .{}) catch return;
+        defer f.close(io);
+        const stat = f.stat(io) catch return;
+
+        // Bounded tail — the log is small here (a chainless start), but the rule
+        // holds regardless of size.
+        var buf: [4096]u8 = undefined;
+        const start = if (stat.size > buf.len) stat.size - buf.len else 0;
+        const n = f.readPositionalAll(io, &buf, start) catch return;
+
+        var it = std.mem.splitScalar(u8, buf[0..n], '\n');
+        while (it.next()) |line| {
+            const t = std.mem.trim(u8, line, " \t\r");
+            if (std.mem.indexOf(u8, t, "SetMnemonic") != null or
+                std.mem.startsWith(u8, t, "Error:"))
+            {
+                detail.set(t);
+            }
+        }
+    }
+
     /// Divi retains `getinfo`, so probe it for the daemon's warm-up phase.
     pub fn warmupProbeMethod() []const u8 {
         return "getinfo";
@@ -698,6 +1251,16 @@ pub const Divi = struct {
         .wallet_encrypt = vtWalletEncrypt,
         .wallet_unlock = vtWalletUnlock,
         .wallet_lock = vtWalletLock,
+        .wallet_backup = vtWalletBackup,
+        // `backupwallet` copies the wallet file with its keys still encrypted, so
+        // it works in every lock state — including locked, where a key dump can't.
+        .wallet_backup_kind = .file_copy,
+        .wallet_seed_backup = vtWalletSeedBackup,
+        .wallet_restore_file_offline = vtWalletRestoreFileOffline,
+        .wallet_restore_seed = vtWalletRestoreSeed,
+        // divid takes any standard BIP39 length (verified: 12 and 24 both mint a
+        // wallet whose `dumphdinfo` seed matches the canonical test vector).
+        .restore_seed_word_counts = &.{ 12, 15, 18, 21, 24 },
         .warmup_probe_method = vtWarmupProbeMethod,
         .reindex = &reindex_caps,
         .sync_accelerator = &sync_accelerator,
@@ -872,6 +1435,42 @@ pub const Divi = struct {
         auth: models.CoinAuth,
     ) anyerror!void {
         return walletLock(allocator, auth);
+    }
+    fn vtWalletBackup(
+        _: *anyopaque,
+        allocator: std.mem.Allocator,
+        auth: models.CoinAuth,
+        dest_path: []const u8,
+    ) anyerror!void {
+        return walletBackup(allocator, auth, dest_path);
+    }
+    fn vtWalletRestoreFileOffline(
+        _: *anyopaque,
+        allocator: std.mem.Allocator,
+        home: []const u8,
+        src_path: []const u8,
+    ) anyerror!void {
+        return walletRestoreFileOffline(allocator, home, src_path);
+    }
+    fn vtWalletSeedBackup(
+        _: *anyopaque,
+        allocator: std.mem.Allocator,
+        auth: models.CoinAuth,
+        detail: *Coin.WalletErrSink,
+    ) anyerror!Coin.SeedBackup {
+        return walletSeedBackup(allocator, auth, detail);
+    }
+    fn vtWalletRestoreSeed(
+        _: *anyopaque,
+        allocator: std.mem.Allocator,
+        install_root: []const u8,
+        home: []const u8,
+        seed: []const u8,
+        passphrase: []const u8,
+        wallet_password: []const u8,
+        detail: *Coin.WalletErrSink,
+    ) anyerror!void {
+        return walletRestoreSeed(allocator, install_root, home, seed, passphrase, wallet_password, detail);
     }
     fn vtWarmupProbeMethod(_: *anyopaque) []const u8 {
         return warmupProbeMethod();
@@ -1433,4 +2032,320 @@ fn expectConfValue(
     };
     defer allocator.free(got);
     try std.testing.expectEqualStrings(want, got);
+}
+
+test "walletRestoreFileOffline swaps a backup in and keeps the old wallet aside" {
+    if (builtin.os.tag == .windows) return error.SkipZigTest;
+    const allocator = std.testing.allocator;
+
+    var threaded: std.Io.Threaded = .init(allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    const cwd = std.Io.Dir.cwd();
+
+    const home = "test-divi-restore-home";
+    cwd.deleteTree(io, home) catch {};
+    defer cwd.deleteTree(io, home) catch {};
+
+    const data_dir = try Divi.dataDir(allocator, home);
+    defer allocator.free(data_dir);
+    var dd = try cwd.createDirPathOpen(io, data_dir, .{});
+    defer dd.close(io);
+
+    // Divi keeps its wallet at the top of the data dir — no `wallets/` subdir.
+    try dd.writeFile(io, .{ .sub_path = "wallet.dat", .data = "OLD-DIVI-WALLET" });
+    var hd = try cwd.createDirPathOpen(io, home, .{});
+    defer hd.close(io);
+    try hd.writeFile(io, .{ .sub_path = "backup.dat", .data = "NEW-DIVI-WALLET" });
+    const src = try std.fs.path.join(allocator, &.{ home, "backup.dat" });
+    defer allocator.free(src);
+
+    try Divi.walletRestoreFileOffline(allocator, home, src);
+
+    const got = try dd.readFileAlloc(io, "wallet.dat", allocator, .limited(64));
+    defer allocator.free(got);
+    try std.testing.expectEqualStrings("NEW-DIVI-WALLET", got);
+
+    // The wallet that was there is recoverable, not destroyed.
+    var idir = try cwd.openDir(io, data_dir, .{ .iterate = true });
+    defer idir.close(io);
+    var it = idir.iterate();
+    var found_bak = false;
+    while (try it.next(io)) |entry| {
+        if (std.mem.startsWith(u8, entry.name, "wallet.dat.bak-")) {
+            const old = try dd.readFileAlloc(io, entry.name, allocator, .limited(64));
+            defer allocator.free(old);
+            try std.testing.expectEqualStrings("OLD-DIVI-WALLET", old);
+            found_bak = true;
+        }
+    }
+    try std.testing.expect(found_bak);
+}
+
+test "walletRestoreFileOffline refuses a key dump before touching the wallet" {
+    // divid has no importwallet, so a key dump is never the right file here —
+    // and copied over wallet.dat it leaves a daemon that can't open its wallet.
+    if (builtin.os.tag == .windows) return error.SkipZigTest;
+    const allocator = std.testing.allocator;
+
+    var threaded: std.Io.Threaded = .init(allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    const cwd = std.Io.Dir.cwd();
+
+    const home = "test-divi-restore-dump";
+    cwd.deleteTree(io, home) catch {};
+    defer cwd.deleteTree(io, home) catch {};
+
+    const data_dir = try Divi.dataDir(allocator, home);
+    defer allocator.free(data_dir);
+    var dd = try cwd.createDirPathOpen(io, data_dir, .{});
+    defer dd.close(io);
+    try dd.writeFile(io, .{ .sub_path = "wallet.dat", .data = "OLD-DIVI-WALLET" });
+
+    var hd = try cwd.createDirPathOpen(io, home, .{});
+    defer hd.close(io);
+    try hd.writeFile(io, .{
+        .sub_path = "dump.txt",
+        .data = "# Wallet dump created by Divi v3.0.0\n# * Created on 2026-09-03T00:00:00Z\n",
+    });
+    const src = try std.fs.path.join(allocator, &.{ home, "dump.txt" });
+    defer allocator.free(src);
+
+    try std.testing.expectError(error.IsAWalletKeyDump, Divi.walletRestoreFileOffline(allocator, home, src));
+
+    // The wallet that was there is untouched — the refusal came first.
+    const got = try dd.readFileAlloc(io, "wallet.dat", allocator, .limited(64));
+    defer allocator.free(got);
+    try std.testing.expectEqualStrings("OLD-DIVI-WALLET", got);
+}
+
+test "a bad seed is refused before the daemon or the wallet is touched" {
+    // The phrase is checked here, so a typo costs a message rather than a
+    // minute-long daemon start — and, critically, divid never runs, so the real
+    // wallet is never moved aside. (divid moves wallet.dat *before* it validates
+    // the mnemonic, which is why this check has to come first.)
+    if (builtin.os.tag == .windows) return error.SkipZigTest;
+    const allocator = std.testing.allocator;
+
+    var threaded: std.Io.Threaded = .init(allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    const cwd = std.Io.Dir.cwd();
+
+    const home = "test-divi-seed-bad";
+    cwd.deleteTree(io, home) catch {};
+    defer cwd.deleteTree(io, home) catch {};
+
+    const data_dir = try Divi.dataDir(allocator, home);
+    defer allocator.free(data_dir);
+    var dd = try cwd.createDirPathOpen(io, data_dir, .{});
+    defer dd.close(io);
+    try dd.writeFile(io, .{ .sub_path = "wallet.dat", .data = "OLD-DIVI-WALLET" });
+
+    // An install root with no divid in it: if any of these got as far as
+    // spawning, the failure would be a spawn error rather than the seed reason.
+    const root = "test-divi-seed-bad-root";
+    cwd.deleteTree(io, root) catch {};
+    defer cwd.deleteTree(io, root) catch {};
+
+    const cases = [_]struct { seed: []const u8, expect: []const u8 }{
+        // Right words, wrong length.
+        .{
+            .seed = "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about",
+            .expect = "BIP39 seed length",
+        },
+        // A word that isn't in the list.
+        .{
+            .seed = "abandonn abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about",
+            .expect = "BIP39 wordlist",
+        },
+        // Real words, right length, broken checksum — the transposition case.
+        .{
+            .seed = "legal winner thank year wave sausage worth useful legal winner yellow thank",
+            .expect = "checksum",
+        },
+    };
+    for (cases) |c| {
+        var detail: Coin.WalletErrSink = .{};
+        try std.testing.expectError(
+            error.InvalidSeed,
+            Divi.walletRestoreSeed(allocator, root, home, c.seed, "", "", &detail),
+        );
+        // The message names the mistake rather than saying "failed".
+        try std.testing.expect(std.mem.indexOf(u8, detail.slice(), c.expect) != null);
+    }
+
+    // The wallet is exactly as it was — nothing was moved, renamed or replaced.
+    const got = try dd.readFileAlloc(io, "wallet.dat", allocator, .limited(64));
+    defer allocator.free(got);
+    try std.testing.expectEqualStrings("OLD-DIVI-WALLET", got);
+}
+
+test "the seed restore normalizes case and spacing before judging the phrase" {
+    // A phrase pasted out of a password manager arrives with capitals and double
+    // spaces; it must still be recognised as valid (this one is), not rejected as
+    // an unknown word. It gets as far as needing divid, which isn't there — so
+    // the telling part is that it does NOT come back as InvalidSeed.
+    if (builtin.os.tag == .windows) return error.SkipZigTest;
+    const allocator = std.testing.allocator;
+
+    var threaded: std.Io.Threaded = .init(allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    const cwd = std.Io.Dir.cwd();
+
+    const home = "test-divi-seed-norm";
+    const root = "test-divi-seed-norm-root";
+    cwd.deleteTree(io, home) catch {};
+    cwd.deleteTree(io, root) catch {};
+    defer cwd.deleteTree(io, home) catch {};
+    defer cwd.deleteTree(io, root) catch {};
+
+    var detail: Coin.WalletErrSink = .{};
+    const messy = "  Legal   WINNER thank year wave sausage\tworth useful legal winner thank Yellow  ";
+    const err = Divi.walletRestoreSeed(allocator, root, home, messy, "", "", &detail);
+    try std.testing.expectError(error.WalletRestoreFailed, err);
+    // Specifically not the seed-validation rejection.
+    try std.testing.expect(std.mem.indexOf(u8, detail.slice(), "wordlist") == null);
+    try std.testing.expect(std.mem.indexOf(u8, detail.slice(), "checksum") == null);
+}
+
+test "a hex seed is taken as a seed, and refuses a passphrase it cannot apply" {
+    // The hex form is the value a mnemonic *derives to*, so a passphrase
+    // alongside it can't be honoured. Dropping it silently would restore a
+    // different wallet than the user asked for, so it's refused instead.
+    if (builtin.os.tag == .windows) return error.SkipZigTest;
+    const allocator = std.testing.allocator;
+
+    var threaded: std.Io.Threaded = .init(allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    const cwd = std.Io.Dir.cwd();
+
+    const home = "test-divi-hex-home";
+    const root = "test-divi-hex-root";
+    cwd.deleteTree(io, home) catch {};
+    cwd.deleteTree(io, root) catch {};
+    defer cwd.deleteTree(io, home) catch {};
+    defer cwd.deleteTree(io, root) catch {};
+
+    // The real hdseed for "legal winner…yellow", as dumphdinfo reports it.
+    const hex = "878386efb78845b3355bd15ea4d39ef97d179cb712b77d5c12b6be415fffeffe5f377ba02bf3f8544ab800b955e51fbff09828f682052a20faa6addbbddfb096";
+
+    var detail: Coin.WalletErrSink = .{};
+    try std.testing.expectError(
+        error.InvalidSeed,
+        Divi.walletRestoreSeed(allocator, root, home, hex, "TREZOR", "", &detail),
+    );
+    try std.testing.expect(std.mem.indexOf(u8, detail.slice(), "passphrase") != null);
+
+    // Without a passphrase the same hex is accepted as a seed — it gets past
+    // validation and fails only for want of a divid to run, which is the point:
+    // it must NOT come back as InvalidSeed the way a bad phrase does.
+    detail = .{};
+    try std.testing.expectError(
+        error.WalletRestoreFailed,
+        Divi.walletRestoreSeed(allocator, root, home, hex, "", "", &detail),
+    );
+
+    // And it is never put through the word checks — those would reject it.
+    try std.testing.expect(std.mem.indexOf(u8, detail.slice(), "wordlist") == null);
+    try std.testing.expect(std.mem.indexOf(u8, detail.slice(), "checksum") == null);
+    try std.testing.expect(std.mem.indexOf(u8, detail.slice(), "seed length") == null);
+}
+
+test "a passphrase is accepted alongside words" {
+    // The passphrase is not validated here (only the user knows it); what matters
+    // is that supplying one doesn't make a good phrase look bad.
+    if (builtin.os.tag == .windows) return error.SkipZigTest;
+    const allocator = std.testing.allocator;
+
+    var threaded: std.Io.Threaded = .init(allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    const cwd = std.Io.Dir.cwd();
+
+    const home = "test-divi-pp-home";
+    const root = "test-divi-pp-root";
+    cwd.deleteTree(io, home) catch {};
+    cwd.deleteTree(io, root) catch {};
+    defer cwd.deleteTree(io, home) catch {};
+    defer cwd.deleteTree(io, root) catch {};
+
+    var detail: Coin.WalletErrSink = .{};
+    const words = "legal winner thank year wave sausage worth useful legal winner thank yellow";
+    try std.testing.expectError(
+        error.WalletRestoreFailed,
+        Divi.walletRestoreSeed(allocator, root, home, words, "TREZOR", "", &detail),
+    );
+    try std.testing.expect(std.mem.indexOf(u8, detail.slice(), "checksum") == null);
+    try std.testing.expect(std.mem.indexOf(u8, detail.slice(), "wordlist") == null);
+}
+
+test "jsonStringField reads the field asked for, not one that merely contains it" {
+    // The reason this exists: substring-matching a dumphdinfo body would let
+    // "mnemonic" match inside "mnemonicpassphrase", and would let a passphrase
+    // that happens to occur inside the mnemonic pass a comparison it should fail.
+    const body =
+        \\{
+        \\    "hdseed" : "abcd1234",
+        \\    "mnemonic" : "legal winner thank",
+        \\    "mnemonicpassphrase" : "TREZOR"
+        \\}
+    ;
+    try std.testing.expectEqualStrings("abcd1234", Divi.jsonStringField(body, "hdseed").?);
+    try std.testing.expectEqualStrings("legal winner thank", Divi.jsonStringField(body, "mnemonic").?);
+    try std.testing.expectEqualStrings("TREZOR", Divi.jsonStringField(body, "mnemonicpassphrase").?);
+    try std.testing.expect(Divi.jsonStringField(body, "nosuch") == null);
+
+    // An empty passphrase (the common case) reads as empty, not as absent.
+    const empty =
+        \\{"mnemonic" : "a b c", "mnemonicpassphrase" : ""}
+    ;
+    try std.testing.expectEqualStrings("", Divi.jsonStringField(empty, "mnemonicpassphrase").?);
+}
+
+test "a passphrase a conf line can't carry is refused, not mangled" {
+    // divid reads the passphrase from a `key=value` conf line. A newline injects a
+    // line; surrounding spaces are eaten by the parser. Either would restore a
+    // different wallet than asked for, so both are refused up front — quietly
+    // restoring the wrong wallet is the failure mode with no recovery.
+    if (builtin.os.tag == .windows) return error.SkipZigTest;
+    const allocator = std.testing.allocator;
+
+    var threaded: std.Io.Threaded = .init(allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    const cwd = std.Io.Dir.cwd();
+
+    const home = "test-divi-ppbad-home";
+    const root = "test-divi-ppbad-root";
+    cwd.deleteTree(io, home) catch {};
+    cwd.deleteTree(io, root) catch {};
+    defer cwd.deleteTree(io, home) catch {};
+    defer cwd.deleteTree(io, root) catch {};
+
+    const words = "legal winner thank year wave sausage worth useful legal winner thank yellow";
+    const cases = [_]struct { pp: []const u8, expect: []const u8 }{
+        .{ .pp = "bad\nrpcpassword=hunter2", .expect = "line break" },
+        .{ .pp = "trailing ", .expect = "space" },
+        .{ .pp = " leading", .expect = "space" },
+    };
+    for (cases) |c| {
+        var detail: Coin.WalletErrSink = .{};
+        try std.testing.expectError(
+            error.InvalidSeed,
+            Divi.walletRestoreSeed(allocator, root, home, words, c.pp, "", &detail),
+        );
+        try std.testing.expect(std.mem.indexOf(u8, detail.slice(), c.expect) != null);
+    }
+
+    // An ordinary passphrase with an interior space is fine — only the edges and
+    // line breaks are a problem.
+    var ok_detail: Coin.WalletErrSink = .{};
+    try std.testing.expectError(
+        error.WalletRestoreFailed, // gets past validation; no divid to run
+        Divi.walletRestoreSeed(allocator, root, home, words, "correct horse battery", "", &ok_detail),
+    );
 }

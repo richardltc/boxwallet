@@ -74,6 +74,111 @@ fn assemble(data: []const u8, word_count: usize, out: []u8) ![]const u8 {
     return out[0..n];
 }
 
+/// A BIP39 seed is 512 bits, so its hex spelling is 128 characters. This is what
+/// a wallet reports as its raw `hdseed` — the value derived *from* the mnemonic
+/// (plus any passphrase), and the thing a coin's `-hdseed` option takes instead
+/// of words.
+pub const hex_seed_len = 128;
+
+/// Whether `s` is a 512-bit seed written as hex, rather than a mnemonic.
+///
+/// The two inputs are unambiguous by construction: every BIP39 word is at least
+/// three letters and none is a bare hex run of this length, and a 128-character
+/// hex string is never a word list. So one input field can take either and the
+/// caller can tell them apart without asking the user which they hold — which is
+/// the point, since people generally have one or the other and don't necessarily
+/// know the difference in name.
+pub fn looksLikeHexSeed(s: []const u8) bool {
+    if (s.len != hex_seed_len) return false;
+    for (s) |c| {
+        if (!std.ascii.isHex(c)) return false;
+    }
+    return true;
+}
+
+/// The index of `word` in the English wordlist, or null if it isn't in it.
+/// Linear scan — the list is 2048 entries and this runs once per word of a
+/// phrase a human just typed, so a lookup table would cost more than it saves.
+pub fn wordIndex(word: []const u8) ?u11 {
+    for (wordlist, 0..) |w, i| {
+        if (std.mem.eql(u8, w, word)) return @intCast(i);
+    }
+    return null;
+}
+
+/// Why a mnemonic failed `validate`, so a front-end can say which of the three
+/// mistakes the user actually made rather than a flat "invalid seed".
+pub const Invalid = error{
+    /// Not one of the BIP39 lengths (12/15/18/21/24 words).
+    BadWordCount,
+    /// Some word isn't in the English BIP39 wordlist — a typo or a phrase from a
+    /// different wordlist.
+    UnknownWord,
+    /// Every word is real and the length is right, but the trailing checksum
+    /// doesn't match: a word was mistyped into a *different* valid word, or two
+    /// words were transposed. This is the one a wordlist check alone can't catch.
+    BadChecksum,
+};
+
+/// Validate an English BIP39 mnemonic: length, wordlist membership, and the
+/// trailing checksum. `seed` must already be normalized (lowercase, single
+/// spaces — `models.normalizeSeedWords`).
+///
+/// Worth doing client-side even where the coin's daemon validates too: it turns a
+/// mistyped word into an instant, specific message instead of a daemon start that
+/// fails a minute later, and `BadChecksum` is exactly the transposition a user
+/// stares straight past. Nothing here is secret-bearing beyond `seed` itself,
+/// which the caller owns and wipes.
+pub fn validate(seed: []const u8) Invalid!void {
+    // Collect the 11-bit indices, counting words as we go.
+    var idx: [24]u11 = undefined;
+    var count: usize = 0;
+    var it = std.mem.tokenizeScalar(u8, seed, ' ');
+    while (it.next()) |word| {
+        if (count == idx.len) return error.BadWordCount;
+        idx[count] = wordIndex(word) orelse return error.UnknownWord;
+        count += 1;
+    }
+    switch (count) {
+        12, 15, 18, 21, 24 => {},
+        else => return error.BadWordCount,
+    }
+
+    // Unpack the indices back into entropy ++ checksum bits (11 bits per word,
+    // MSB-first) — the exact inverse of `assemble`.
+    const ent_bits = count * 11 * 32 / 33; // 128,160,192,224,256
+    const ent_bytes = ent_bits / 8;
+    var data: [33]u8 = undefined;
+    defer @memset(&data, 0);
+    var acc: u32 = 0;
+    var nbits: usize = 0;
+    var n: usize = 0;
+    for (idx[0..count]) |w| {
+        acc = (acc << 11) | w;
+        nbits += 11;
+        while (nbits >= 8) : (nbits -= 8) {
+            const shift: u5 = @intCast(nbits - 8);
+            data[n] = @truncate(acc >> shift);
+            n += 1;
+        }
+    }
+    // `nbits` leftover bits are the low end of the final checksum byte; the
+    // checksum we compare is the top `ent_bytes/4` bits of SHA-256(entropy).
+    const tail_bits: u3 = @intCast(nbits);
+    const got_tail: u8 = if (tail_bits == 0) 0 else @truncate(acc << @as(u5, 8 - @as(u5, tail_bits)));
+
+    var digest: [32]u8 = undefined;
+    defer @memset(&digest, 0);
+    std.crypto.hash.sha2.Sha256.hash(data[0..ent_bytes], &digest, .{});
+
+    const cs_bits = ent_bits / 32; // 4,5,6,7,8
+    // The checksum sits in `data[ent_bytes]` when it was byte-aligned (24 words,
+    // 8 bits), otherwise in the leftover `tail_bits`.
+    const got: u8 = if (tail_bits == 0) data[ent_bytes] else got_tail;
+    const mask: u8 = @truncate(@as(u16, 0xFF) << @as(u4, @intCast(8 - cs_bits)));
+    if ((got & mask) != (digest[0] & mask)) return error.BadChecksum;
+}
+
 // BIP39 English wordlist (the canonical 2048-word list from bitcoin/bips,
 // bip-0039/english.txt, sha256 2f5eed53a4727b4bf8880d8f3f199efc90e58503646d9ff8eff3a2ed3b24dbda).
 // Epic/Grin wallets use standard BIP39 mnemonics, so a phrase built from this
@@ -367,4 +472,76 @@ test "generate: rejects unsupported word counts" {
     defer threaded.deinit();
     var out: [max_mnemonic_len]u8 = undefined;
     try std.testing.expectError(error.UnsupportedWordCount, generate(threaded.io(), 18, &out));
+}
+
+test "validate: accepts the canonical BIP39 vectors at every supported length" {
+    // From bitcoin/bips bip-0039 test vectors (English). These are the phrases a
+    // real restore is handed, so the packing has to agree with them exactly.
+    const good = [_][]const u8{
+        "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about",
+        "legal winner thank year wave sausage worth useful legal winner thank yellow",
+        "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon address",
+        "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon agent",
+        "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon admit",
+        "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon art",
+        "letter advice cage absurd amount doctor acoustic avoid letter advice cage above",
+        "zoo zoo zoo zoo zoo zoo zoo zoo zoo zoo zoo zoo zoo zoo zoo zoo zoo zoo zoo zoo zoo zoo zoo vote",
+    };
+    for (good) |m| try validate(m);
+}
+
+test "validate: names the three ways a typed phrase goes wrong" {
+    // Wrong length — 11 words.
+    try std.testing.expectError(error.BadWordCount, validate(
+        "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about",
+    ));
+    // A word that isn't in the list at all (the plain typo).
+    try std.testing.expectError(error.UnknownWord, validate(
+        "abandonn abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about",
+    ));
+    // Every word real and the length right, but the checksum fails — the last
+    // word swapped for another valid one. This is the case a wordlist check
+    // alone can't catch, and divid only reports it a daemon-start later.
+    try std.testing.expectError(error.BadChecksum, validate(
+        "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon",
+    ));
+    // Two words transposed — also a checksum failure.
+    try std.testing.expectError(error.BadChecksum, validate(
+        "legal winner thank year wave sausage worth useful legal winner yellow thank",
+    ));
+    // Too many words.
+    try std.testing.expectError(error.BadWordCount, validate(
+        "zoo zoo zoo zoo zoo zoo zoo zoo zoo zoo zoo zoo zoo zoo zoo zoo zoo zoo zoo zoo zoo zoo zoo zoo vote",
+    ));
+}
+
+test "validate: round-trips whatever generate produces" {
+    var threaded: std.Io.Threaded = .init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    var out: [max_mnemonic_len]u8 = undefined;
+    for (0..16) |_| {
+        try validate(try generate(io, 24, &out));
+        try validate(try generate(io, 12, &out));
+    }
+}
+
+test "looksLikeHexSeed separates a raw seed from a mnemonic" {
+    // The canonical seed for "abandon…about", as dumphdinfo reports it.
+    const hex = "5eb00bbddcf069084889a8ab9155568165f5c453ccb85e70811aaed6f6da5fc19a5ac40b389cd370d086206dec8aa6c43daea6690f20ad3d8d48b2d2ce9e38e4";
+    try std.testing.expect(looksLikeHexSeed(hex));
+    // Upper case is still hex.
+    var upper: [hex_seed_len]u8 = undefined;
+    for (hex, 0..) |c, i| upper[i] = std.ascii.toUpper(c);
+    try std.testing.expect(looksLikeHexSeed(&upper));
+
+    // A mnemonic is never mistaken for one, whatever its length.
+    try std.testing.expect(!looksLikeHexSeed(
+        "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about",
+    ));
+    // Right length, but not hex ('z').
+    try std.testing.expect(!looksLikeHexSeed("z" ** hex_seed_len));
+    // Hex, but the wrong length — a truncated paste must not read as a seed.
+    try std.testing.expect(!looksLikeHexSeed(hex[0 .. hex_seed_len - 1]));
+    try std.testing.expect(!looksLikeHexSeed(""));
 }

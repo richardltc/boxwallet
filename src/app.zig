@@ -22,6 +22,7 @@ const tipwatch = @import("tipwatch.zig");
 const extwallet = @import("extwallet.zig");
 const mining = @import("mining.zig");
 const Coin = @import("coin.zig").Coin;
+const bip39 = @import("bip39.zig");
 const Nexa = @import("coins/nexa.zig").Nexa;
 const Divi = @import("coins/divi.zig").Divi;
 const Ergo = @import("coins/ergo.zig").Ergo;
@@ -651,6 +652,19 @@ const Modal = struct {
         /// backup. The old wallet.dat is kept as a `.bak`, so this is a plain
         /// enter-to-proceed confirm, not a typed-word gate.
         restore_file_confirm,
+        /// In-daemon seed restore: the optional BIP39 passphrase (the "25th
+        /// word") that goes with the words just entered. Its own step rather than
+        /// a second field because the words stage is already a full-width wrapped
+        /// editor — and because most people have no passphrase, so it must be
+        /// skippable with a bare Enter.
+        restore_seed_passphrase,
+        /// In-daemon seed restore: the password to encrypt the restored wallet
+        /// with, then its confirmation. A wallet rebuilt from a seed is a fresh,
+        /// unencrypted one, so without this a restore over an encrypted wallet
+        /// hands the funds back unprotected. Blank is allowed and means exactly
+        /// that — the confirm then says so.
+        restore_seed_newpw,
+        restore_seed_newpw_confirm,
         /// External-wallet: show the freshly-created seed to write down.
         setup_seed_show,
         /// External-wallet: quiz the user on a few seed words to confirm the backup.
@@ -695,6 +709,14 @@ const Modal = struct {
     /// The mnemonic to display at `setup_seed_show`, copied from the worker's
     /// result when a create succeeds.
     seed: models.Seed = .{},
+    /// The BIP39 passphrase shown beside a backed-up seed, empty when there is
+    /// none. Displayed with the words because the words alone are useless without
+    /// it — someone who writes down only half has no backup.
+    seed_extra: models.Seed = .{},
+    /// Whether `seed` holds a raw hex seed rather than words (a wallet that was
+    /// itself restored from one has no mnemonic). There is nothing to quiz on in
+    /// that case, so the backup flow ends at the display.
+    seed_is_hex: bool = false,
     /// Backup-verification quiz (`setup_seed_verify`): the three 1-based seed-word
     /// positions the user must re-enter to prove they wrote the mnemonic down, the
     /// current step into them, and whether the last answer was wrong (for the note).
@@ -1566,6 +1588,36 @@ const Activity = struct {
     /// it's the state the whole action wants) didn't ask for it back up, so it's
     /// left as they had it.
     wallet_restore_restart: bool = false,
+    /// Whether that daemon-stopped restore is the **seed** one rather than the
+    /// file swap. Both share the stop→act→restart sequence above (identical
+    /// precondition, and both end in a replaced wallet file), so this is what the
+    /// reap step branches on: the seed comes from `wallet_seed_buf`, the backup
+    /// path from `wallet_file_buf`.
+    wallet_restore_is_seed: bool = false,
+    /// The BIP39 passphrase for that seed restore (the "25th word"), empty for
+    /// none. Held beside the seed and wiped with it — it is half the secret: the
+    /// same words with and without one restore completely different wallets.
+    wallet_seed_pp_buf: [128]u8 = undefined,
+    wallet_seed_pp_len: usize = 0,
+    /// Password to encrypt the restored wallet with, empty to leave it
+    /// unencrypted. Wiped with the other two: a seed restore mints a *fresh*
+    /// wallet, so without this a restore over an encrypted wallet would hand the
+    /// funds back unprotected.
+    wallet_seed_newpw_buf: [128]u8 = undefined,
+    wallet_seed_newpw_len: usize = 0,
+    /// The seed read back for the user to write down ("Show recovery seed"), and
+    /// the worker's outcome. The seed itself is the secret — cleared as soon as
+    /// the modal that displays it closes.
+    wallet_seed_backup: Coin.SeedBackup = .{},
+    wallet_seed_backup_done: std.atomic.Value(bool) = .init(false),
+    wallet_seed_backup_ok: bool = false,
+    wallet_seed_backup_sink: Coin.WalletErrSink = .{},
+    wallet_seed_backup_thread: ?std.Thread = null,
+    /// Why a seed restore failed, in the coin's own words (divid's "SetMnemonic:
+    /// invalid mnemonic…", or which BIP39 check the phrase flunked) — so the log
+    /// can say what was wrong with the phrase instead of a bare error name.
+    /// Program-lifetime fixed buffer, no allocation.
+    wallet_restore_detail: Coin.WalletErrSink = .{},
     /// The running daemon's self-reported version (empty when down/unknown), for
     /// the "Running" line. Folded from `poll_version_*` after a poll; cleared on
     /// stop. Program-lifetime fixed buffer.
@@ -2160,10 +2212,49 @@ const Activity = struct {
             .lock => try self.coin.walletLock(a, auth),
             .backup => try self.coin.walletBackup(a, auth, path),
             .restore => try self.coin.walletImportFile(a, auth, path),
-            // The offline file restore never runs through this RPC worker — it's a
-            // daemon-stopped file swap driven by the tick reap loop.
-            .restore_file_offline => unreachable,
+            // The daemon-stopped restores never run through this RPC worker —
+            // they replace the wallet file with the daemon down, driven by the
+            // tick reap loop. The seed backup has its own worker (it returns a
+            // secret, which this one has nowhere to put).
+            .restore_file_offline, .restore_seed, .backup_seed => unreachable,
         }
+    }
+
+    /// Seed-backup worker: reads the wallet's recovery seed for display. Its own
+    /// worker rather than `runWalletAction`'s because it returns a *secret*, which
+    /// that one has nowhere to put — the result lands in `wallet_seed_backup` and
+    /// is wiped when the modal showing it closes.
+    fn runSeedBackup(self: *Activity) void {
+        var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+        defer arena.deinit();
+        const a = arena.allocator();
+
+        self.wallet_seed_backup_sink.len = 0;
+        if (self.doSeedBackup(a)) |sb| {
+            self.wallet_seed_backup = sb;
+            self.wallet_seed_backup_ok = true;
+        } else |err| {
+            if (self.wallet_seed_backup_sink.len == 0) self.wallet_seed_backup_sink.set(@errorName(err));
+            self.wallet_seed_backup_ok = false;
+        }
+        self.wallet_seed_backup_done.store(true, .release);
+    }
+
+    fn doSeedBackup(self: *Activity, a: std.mem.Allocator) !Coin.SeedBackup {
+        var threaded: std.Io.Threaded = .init(a, .{});
+        defer threaded.deinit();
+        const io = threaded.io();
+
+        const data_dir = try self.coin.dataDir(a, self.home_dir);
+        const auth = try conf.readAuth(
+            a,
+            io,
+            data_dir,
+            self.coin.confFile(),
+            self.coin.rpcDefaultUsername(),
+            self.coin.rpcDefaultPort(),
+        );
+        return self.coin.walletSeedBackup(a, auth, &self.wallet_seed_backup_sink);
     }
 
     /// Send worker. Runs one `sendtoaddress`-style RPC on a private arena
@@ -4090,6 +4181,9 @@ pub const App = struct {
             // clear them rather than leave them in freed memory.
             @memset(&act.wallet_pw_buf, 0);
             @memset(&act.wallet_seed_buf, 0);
+            @memset(&act.wallet_seed_pp_buf, 0);
+            @memset(&act.wallet_seed_newpw_buf, 0);
+            act.wallet_seed_backup = .{};
             act.wallet_setup_seed = .{};
         }
         self.pw_input.deinit();
@@ -4306,7 +4400,18 @@ pub const App = struct {
                 .enter => {
                     if (m.option_count == 0) return;
                     m.action = m.options[m.sel];
-                    if (m.action == .restore or m.action == .restore_file_offline) {
+                    if (m.action == .backup_seed) {
+                        // Reads the seed off the daemon on a worker, then shows it
+                        // and quizzes on it — the same display and quiz the managed
+                        // wallets use, which is the one place that logic lives.
+                        self.beginSeedBackup();
+                    } else if (m.action == .restore_seed) {
+                        // Takes words, not a password or a path — reuse the seed
+                        // entry the managed-wallet flow already has.
+                        m.stage = .setup_seed_input;
+                        self.seed_input.setValue("") catch {};
+                        self.seed_input.focus();
+                    } else if (m.action == .restore or m.action == .restore_file_offline) {
                         // Restore needs a backup file — browse for it, then submit
                         // (no password: the RPC import runs on the unlocked wallet,
                         // and the offline swap runs with the daemon stopped).
@@ -4442,13 +4547,39 @@ pub const App = struct {
                 },
                 else => self.pw_input.handleKey(k),
             },
-            // Seed words entered → on to the password step.
+            // Seed words entered. The managed-wallet flow goes on to the password
+            // step; the in-daemon seed restore (bitcoin coins — Divi) has no
+            // password to set, so it stashes the phrase and confirms instead,
+            // since it is about to replace the wallet file.
             .setup_seed_input => switch (k.key) {
                 .escape => self.closeWalletModal(),
                 .enter => if (self.seed_input.getValue().len > 0) {
-                    m.stage = .setup_password;
-                    self.pw_input.setValue("") catch {};
-                    self.pw_input.focus();
+                    if (m.action == .restore_seed) {
+                        const act = &self.activities[m.coin_idx];
+                        const entered = std.mem.trim(u8, self.seed_input.getValue(), " \t\r\n");
+                        const n = @min(entered.len, act.wallet_seed_buf.len);
+                        @memcpy(act.wallet_seed_buf[0..n], entered[0..n]);
+                        act.wallet_seed_len = n;
+                        // The phrase is a secret — don't leave it in the widget
+                        // while the later stages are on screen.
+                        self.seed_input.setValue("") catch {};
+                        // A raw hex seed already has any passphrase folded into it,
+                        // so asking for one would be asking for something that
+                        // cannot be applied. Words go on to the passphrase step.
+                        act.wallet_seed_pp_len = 0;
+                        if (bip39.looksLikeHexSeed(act.wallet_seed_buf[0..n])) {
+                            self.seed_input.blur();
+                            m.stage = .restore_file_confirm;
+                        } else {
+                            m.stage = .restore_seed_passphrase;
+                            self.pw_input.setValue("") catch {};
+                            self.pw_input.focus();
+                        }
+                    } else {
+                        m.stage = .setup_password;
+                        self.pw_input.setValue("") catch {};
+                        self.pw_input.focus();
+                    }
                 },
                 else => self.seed_input.handleKey(k),
             },
@@ -4489,6 +4620,13 @@ pub const App = struct {
             .setup_seed_show => switch (k.key) {
                 .escape => self.closeWalletModal(),
                 else => {
+                    // Nothing to quiz on when there are no words — a raw hex seed
+                    // is one long string, not a list to check positions in.
+                    if (m.seed_is_hex) {
+                        m.setMsg(true, "Seed shown. Keep it somewhere safe and offline.");
+                        m.stage = .result;
+                        return;
+                    }
                     m.verify_step = 0;
                     m.verify_bad = false;
                     _ = pickVerifyPositions(self.io, countWords(m.seed.slice()), &m.verify_pos);
@@ -4536,6 +4674,76 @@ pub const App = struct {
             },
             // Confirm the offline file restore: enter bounces the daemon to swap in
             // the picked backup; esc cancels. The old wallet.dat is kept as a .bak.
+            // The BIP39 passphrase. Empty is a valid, deliberate answer — most
+            // seeds have none — so a bare Enter goes straight on, unlike the
+            // wallet-password prompts which refuse an empty entry.
+            .restore_seed_passphrase => switch (k.key) {
+                .escape => self.closeWalletModal(),
+                .enter => {
+                    const act = &self.activities[m.coin_idx];
+                    const entered = self.pw_input.getValue();
+                    const n = @min(entered.len, act.wallet_seed_pp_buf.len);
+                    @memcpy(act.wallet_seed_pp_buf[0..n], entered[0..n]);
+                    act.wallet_seed_pp_len = n;
+                    self.pw_input.setValue("") catch {};
+                    m.stage = .restore_seed_newpw;
+                    m.pw_mismatch = false;
+                    self.pw_input.focus();
+                },
+                else => self.pw_input.handleKey(k),
+            },
+            // The password to encrypt the restored wallet with. Blank is a valid,
+            // deliberate answer (the wallet being restored may never have had
+            // one), so an empty enter goes straight to the confirm, which then
+            // states the wallet will be unencrypted. A non-empty one is confirmed
+            // — it sets a new credential, and a typo would lock the funds away.
+            .restore_seed_newpw => switch (k.key) {
+                .escape => self.closeWalletModal(),
+                .enter => {
+                    const entered = self.pw_input.getValue();
+                    if (entered.len == 0) {
+                        const act = &self.activities[m.coin_idx];
+                        act.wallet_seed_newpw_len = 0;
+                        self.pw_input.blur();
+                        self.seed_input.blur();
+                        m.stage = .restore_file_confirm;
+                    } else {
+                        const n = @min(entered.len, m.pw_first_buf.len);
+                        @memcpy(m.pw_first_buf[0..n], entered[0..n]);
+                        m.pw_first_len = n;
+                        m.pw_mismatch = false;
+                        m.stage = .restore_seed_newpw_confirm;
+                        self.pw_input.setValue("") catch {};
+                        self.pw_input.focus();
+                    }
+                },
+                else => self.pw_input.handleKey(k),
+            },
+            .restore_seed_newpw_confirm => switch (k.key) {
+                .escape => self.closeWalletModal(),
+                .enter => if (self.pw_input.getValue().len > 0) {
+                    const act = &self.activities[m.coin_idx];
+                    if (std.mem.eql(u8, self.pw_input.getValue(), m.pw_first_buf[0..m.pw_first_len])) {
+                        const n = @min(m.pw_first_len, act.wallet_seed_newpw_buf.len);
+                        @memcpy(act.wallet_seed_newpw_buf[0..n], m.pw_first_buf[0..n]);
+                        act.wallet_seed_newpw_len = n;
+                        @memset(&m.pw_first_buf, 0);
+                        m.pw_first_len = 0;
+                        self.pw_input.setValue("") catch {};
+                        self.pw_input.blur();
+                        self.seed_input.blur();
+                        m.stage = .restore_file_confirm;
+                    } else {
+                        @memset(&m.pw_first_buf, 0);
+                        m.pw_first_len = 0;
+                        m.pw_mismatch = true;
+                        m.stage = .restore_seed_newpw;
+                        self.pw_input.setValue("") catch {};
+                        self.pw_input.focus();
+                    }
+                },
+                else => self.pw_input.handleKey(k),
+            },
             .restore_file_confirm => switch (k.key) {
                 .escape => self.closeWalletModal(),
                 .enter => self.beginWalletFileRestore(),
@@ -4796,35 +5004,104 @@ pub const App = struct {
                 }
             }
 
-            // Offline wallet-file restore, step 2: the daemon was asked to stop.
-            // Once it's down, swap the picked backup over wallet.dat and restart so
-            // the daemon loads it. If it wouldn't stop, abort rather than overwrite a
+            // Reap a finished seed backup: show the words (and the passphrase, if
+            // there is one) for the user to write down, then quiz. A wallet with
+            // no mnemonic — one restored from a raw seed — has only its hex to
+            // show, and nothing to quiz on.
+            if (act.wallet_seed_backup_done.load(.acquire)) {
+                act.wallet_seed_backup_done.store(false, .release);
+                if (act.wallet_seed_backup_thread) |sb_thread| {
+                    sb_thread.join();
+                    act.wallet_seed_backup_thread = null;
+                }
+                if (self.modal) |*m| {
+                    if (m.coin_idx == i and m.stage == .working and m.action == .backup_seed) {
+                        if (act.wallet_seed_backup_ok) {
+                            const sb = &act.wallet_seed_backup;
+                            m.seed_is_hex = !sb.hasWords();
+                            m.seed = if (sb.hasWords()) sb.words else sb.hex;
+                            m.seed_extra = sb.passphrase;
+                            m.stage = .setup_seed_show;
+                        } else {
+                            const why = act.wallet_seed_backup_sink.slice();
+                            var buf: [200]u8 = undefined;
+                            const text = std.fmt.bufPrint(&buf, "Couldn't read the seed: {s}", .{why}) catch "Couldn't read the seed.";
+                            m.setMsg(false, text);
+                            m.stage = .result;
+                        }
+                    }
+                }
+                // The worker's copy has been handed to the modal (or failed);
+                // either way it must not linger on the activity.
+                if (self.modal == null or self.modal.?.action != .backup_seed) act.wallet_seed_backup = .{};
+            }
+
+            // Daemon-stopped wallet restore, step 2: the daemon was asked to stop.
+            // Once it's down, replace the wallet — either with the picked backup
+            // file or with one rebuilt from the seed words — and restart so the
+            // daemon loads it. If it wouldn't stop, abort rather than overwrite a
             // wallet.dat a live daemon still holds open.
             if (act.wallet_restore_await_stop and act.daemon_thread == null and act.daemonState() != .stopping) {
                 act.wallet_restore_await_stop = false;
                 if (act.daemonState() == .stopped) {
                     if (self.coinAt(i)) |c| {
-                        const src = act.wallet_file_buf[0..act.wallet_file_len];
                         const restart = act.wallet_restore_restart;
-                        if (c.walletRestoreFileOffline(self.allocator, self.home_dir, src)) {
+                        const seed = act.wallet_seed_buf[0..act.wallet_seed_len];
+                        const src = act.wallet_file_buf[0..act.wallet_file_len];
+                        const seed_pp = act.wallet_seed_pp_buf[0..act.wallet_seed_pp_len];
+                        const seed_newpw = act.wallet_seed_newpw_buf[0..act.wallet_seed_newpw_len];
+                        const res = if (act.wallet_restore_is_seed)
+                            c.walletRestoreSeed(self.allocator, self.install_root, self.home_dir, seed, seed_pp, seed_newpw, &act.wallet_restore_detail)
+                        else
+                            c.walletRestoreFileOffline(self.allocator, self.home_dir, src);
+
+                        if (res) {
                             if (restart) {
                                 self.logf("{s}: wallet restored — restarting daemon", .{c.coinName()});
                             } else {
                                 self.logf("{s}: wallet restored — start the daemon to load it", .{c.coinName()});
                             }
+                            if (act.wallet_restore_is_seed) {
+                                self.logf("{s}: restored from seed — the balance appears once the wallet rescans", .{c.coinName()});
+                            }
                         } else |err| {
-                            self.logf("{s}: wallet restore failed ({s})", .{ c.coinName(), @errorName(err) });
+                            // Prefer the coin's own reason (which BIP39 check the
+                            // phrase failed, or divid's SetMnemonic message) over a
+                            // bare error name — that's the difference between "fix
+                            // word 7" and "it didn't work".
+                            const why = act.wallet_restore_detail.slice();
+                            if (why.len > 0) {
+                                self.logf("{s}: wallet restore failed — {s}", .{ c.coinName(), why });
+                            } else {
+                                self.logf("{s}: wallet restore failed ({s})", .{ c.coinName(), @errorName(err) });
+                            }
                         }
+                        // The seed and its passphrase are secrets and the restore
+                        // is over either way.
+                        @memset(&act.wallet_seed_buf, 0);
+                        act.wallet_seed_len = 0;
+                        @memset(&act.wallet_seed_pp_buf, 0);
+                        act.wallet_seed_pp_len = 0;
+                        @memset(&act.wallet_seed_newpw_buf, 0);
+                        act.wallet_seed_newpw_len = 0;
                         act.wallet_file_len = 0;
+                        act.wallet_restore_is_seed = false;
                         act.wallet_restore_restart = false;
                         // Restart regardless of the outcome, but only if we were the
                         // ones who stopped it: the user expects their node back the
-                        // way it was. On a failed swap the previous wallet.dat (or
+                        // way it was. On a failed restore the previous wallet.dat (or
                         // its .bak) is intact either way.
                         if (restart) self.beginDaemonStart(c, act);
                     }
                 } else {
+                    @memset(&act.wallet_seed_buf, 0);
+                    act.wallet_seed_len = 0;
+                    @memset(&act.wallet_seed_pp_buf, 0);
+                    act.wallet_seed_pp_len = 0;
+                    @memset(&act.wallet_seed_newpw_buf, 0);
+                    act.wallet_seed_newpw_len = 0;
                     act.wallet_file_len = 0;
+                    act.wallet_restore_is_seed = false;
                     act.wallet_restore_restart = false;
                     if (self.coinAt(i)) |c| self.logf("{s}: restore aborted (daemon wouldn't stop)", .{c.coinName()});
                 }
@@ -5096,8 +5373,9 @@ pub const App = struct {
                                 .lock => "Wallet locked.",
                                 .restore => "Wallet restored — your balance will appear after it rescans.",
                                 // Not RPC-worker actions: backup is handled above;
-                                // the offline restore is driven by the tick loop.
-                                .backup, .restore_file_offline => unreachable,
+                                // the daemon-stopped restores are driven by the
+                                // tick loop; the seed backup has its own worker.
+                                .backup, .restore_file_offline, .restore_seed, .backup_seed => unreachable,
                             });
                         } else {
                             var buf: [200]u8 = undefined;
@@ -7134,11 +7412,37 @@ pub const App = struct {
     /// open while running, so we stop it, and once it's down the tick reap loop
     /// swaps the file in and restarts (mirrors `beginWalletReplace`'s stop→act→
     /// restart, but replacing the wallet file rather than deleting it).
+    /// Start the seed-backup worker for the modal's coin and park on `working`.
+    /// The seed is read on a worker because it is an RPC round-trip; the reap in
+    /// `onTick` moves the modal on to the display.
+    fn beginSeedBackup(self: *App) void {
+        const m = &(self.modal orelse return);
+        const act = &self.activities[m.coin_idx];
+        const coin = self.coinAt(m.coin_idx) orelse return;
+        act.coin = coin;
+        act.home_dir = self.home_dir;
+        act.install_root = self.install_root;
+        act.wallet_seed_backup = .{};
+        act.wallet_seed_backup_sink.len = 0;
+        act.wallet_seed_backup_done.store(false, .release);
+        m.stage = .working;
+        act.wallet_seed_backup_thread = std.Thread.spawn(.{}, Activity.runSeedBackup, .{act}) catch {
+            m.setMsg(false, "couldn't start the seed-backup worker");
+            m.stage = .result;
+            return;
+        };
+    }
+
     fn beginWalletFileRestore(self: *App) void {
         const m = self.modal orelse return;
         const act = &self.activities[m.coin_idx];
         const coin = self.coinAt(m.coin_idx) orelse return;
+        // Which of the two daemon-stopped restores this is. Read before
+        // `closeWalletModal`, which drops the modal (and with it `m.action`).
+        const is_seed = m.action == .restore_seed;
         self.closeWalletModal();
+        act.wallet_restore_is_seed = is_seed;
+        act.wallet_restore_detail.len = 0;
         act.coin = coin;
         act.home_dir = self.home_dir;
         act.install_root = self.install_root;
@@ -7235,6 +7539,15 @@ pub const App = struct {
             @memset(&m.pw_first_buf, 0);
             m.pw_first_len = 0;
             m.pw_mismatch = false;
+            // The displayed seed and its passphrase are secrets that only existed
+            // to be read off the screen — they go with the modal, along with the
+            // worker's copy on the activity.
+            @memset(&m.seed.buf, 0);
+            m.seed.len = 0;
+            @memset(&m.seed_extra.buf, 0);
+            m.seed_extra.len = 0;
+            m.seed_is_hex = false;
+            self.activities[m.coin_idx].wallet_seed_backup = .{};
         }
         self.file_picker.blur();
         self.modal = null;
@@ -8939,6 +9252,14 @@ pub const App = struct {
                         break :blk try std.fmt.allocPrint(a, "Enter your recovery seed — {s} words (type or paste):", .{seed_mod.joinCounts(&cbuf, counts)});
                     };
                 try wrapIntoRows(a, &out.writer, vbar, inner_w, prompt, (zz.Style{}));
+                // The in-daemon restore also takes the raw seed the wallet reports
+                // as `hdseed`, told apart from words automatically — worth saying,
+                // since someone holding one otherwise has no reason to think this
+                // field would accept it.
+                if (m.action == .restore_seed) {
+                    const alt = "A 128-character hex seed works here too.";
+                    try wrapIntoRows(a, &out.writer, vbar, inner_w, alt, (zz.Style{}).dim(true));
+                }
                 try modalRow(&out.writer, vbar, inner_w, "", 0);
 
                 const val = self.seed_input.getValue();
@@ -8965,7 +9286,20 @@ pub const App = struct {
                 try modalRow(&out.writer, vbar, inner_w, counter_styled, zz.width(counter));
             },
             // Show the freshly-created mnemonic for the user to write down.
-            .setup_seed_show => {
+            .setup_seed_show => blk_show: {
+                // A wallet restored from a raw hex seed has no words at all, so
+                // the hex is the only thing there is to write down. Showing an
+                // empty numbered list would read as "you have no backup".
+                if (m.seed_is_hex) {
+                    const hdr = "This wallet has no recovery words — it was restored from a raw seed. Write down this seed instead:";
+                    try wrapIntoRows(a, &out.writer, vbar, inner_w, hdr, (zz.Style{}).bold(true).fg(.yellow));
+                    try modalRow(&out.writer, vbar, inner_w, "", 0);
+                    try wrapIntoRows(a, &out.writer, vbar, inner_w, m.seed.slice(), (zz.Style{}).fg(brand));
+                    try modalRow(&out.writer, vbar, inner_w, "", 0);
+                    const warn = "Anyone with this seed can spend your funds. Lose it and your coins are gone forever — store it offline and never share it.";
+                    try wrapIntoRows(a, &out.writer, vbar, inner_w, warn, (zz.Style{}).bold(true).fg(.red));
+                    break :blk_show;
+                }
                 const wc = countWords(m.seed.slice());
                 var hdrbuf: [64]u8 = undefined;
                 const hdr = std.fmt.bufPrint(&hdrbuf, "Write down all {d} words, in order:", .{wc}) catch "Write down your recovery words, in order:";
@@ -8978,6 +9312,18 @@ pub const App = struct {
                     const row = std.fmt.allocPrint(a, "{d:>2}. {s}", .{ i, nthWord(m.seed.slice(), i) }) catch continue;
                     const styled = (zz.Style{}).fg(brand).render(a, row) catch row;
                     try modalRow(&out.writer, vbar, inner_w, styled, zz.width(row));
+                }
+                try modalRow(&out.writer, vbar, inner_w, "", 0);
+                // The passphrase is part of the backup, not a footnote: these words
+                // without it restore a different (empty) wallet, so someone who
+                // writes down only the words has no backup at all.
+                if (m.seed_extra.len > 0) {
+                    try modalRow(&out.writer, vbar, inner_w, "", 0);
+                    const pp = std.fmt.allocPrint(a, "BIP39 passphrase: {s}", .{m.seed_extra.slice()}) catch "BIP39 passphrase set";
+                    const pp_styled = (zz.Style{}).bold(true).fg(brand).render(a, pp) catch pp;
+                    try modalRow(&out.writer, vbar, inner_w, pp_styled, zz.width(pp));
+                    const note = "Write this down too. Without it these words restore a different, empty wallet.";
+                    try wrapIntoRows(a, &out.writer, vbar, inner_w, note, (zz.Style{}).fg(.yellow));
                 }
                 try modalRow(&out.writer, vbar, inner_w, "", 0);
                 const warn = "Anyone with these words can spend your funds. Lose them and your coins are gone forever — store them offline and never share them.";
@@ -9014,13 +9360,70 @@ pub const App = struct {
             // down). It only bounces a daemon that's actually running — started
             // from a stopped one, the node is left stopped, so don't promise a
             // restart that isn't coming.
+            // The BIP39 passphrase for a seed restore. Named for what it is, and
+            // explicitly separated from the wallet password — they are different
+            // secrets and conflating them restores the wrong wallet.
+            .restore_seed_passphrase => {
+                const prompt = "If your seed has a BIP39 passphrase (sometimes called a 25th word), enter it now. Leave it blank if it doesn't.";
+                try wrapIntoRows(a, &out.writer, vbar, inner_w, prompt, (zz.Style{}));
+                try modalRow(&out.writer, vbar, inner_w, "", 0);
+                const warn = "This is NOT your wallet password. The same words with a different passphrase are a different wallet, so a wrong entry here restores an empty one.";
+                try wrapIntoRows(a, &out.writer, vbar, inner_w, warn, (zz.Style{}).fg(.yellow));
+                try modalRow(&out.writer, vbar, inner_w, "", 0);
+                const masked = try self.pw_input.view(a);
+                const pp_label = "BIP39 passphrase: ";
+                const text = try std.fmt.allocPrint(a, "{s}{s}", .{ pp_label, masked });
+                try modalRow(&out.writer, vbar, inner_w, text, zz.width(pp_label) + zz.width(masked));
+            },
+            // The password the restored wallet will be encrypted with. Named apart
+            // from the BIP39 passphrase on purpose: they are different secrets and
+            // the previous screen asked for the other one.
+            .restore_seed_newpw, .restore_seed_newpw_confirm => {
+                const first = m.stage == .restore_seed_newpw;
+                const prompt = if (first)
+                    "Choose a password to encrypt the restored wallet. Leave it blank to leave the wallet unencrypted."
+                else
+                    "Type that password again to confirm it.";
+                try wrapIntoRows(a, &out.writer, vbar, inner_w, prompt, (zz.Style{}));
+                if (first and m.pw_mismatch) {
+                    const bad = "Those didn't match — enter it again.";
+                    try wrapIntoRows(a, &out.writer, vbar, inner_w, bad, (zz.Style{}).fg(.red));
+                }
+                try modalRow(&out.writer, vbar, inner_w, "", 0);
+                const masked = try self.pw_input.view(a);
+                const lbl = if (first) "Wallet password: " else "Confirm password: ";
+                const text = try std.fmt.allocPrint(a, "{s}{s}", .{ lbl, masked });
+                try modalRow(&out.writer, vbar, inner_w, text, zz.width(lbl) + zz.width(masked));
+            },
             .restore_file_confirm => {
                 const running = self.activities[m.coin_idx].daemonState() == .running;
-                const warn = if (running)
+                const enc = self.activities[m.coin_idx].wallet_seed_newpw_len > 0;
+                const warn = if (m.action == .restore_seed)
+                    // The seed restore reaches the same place by a different
+                    // route, so it must not claim a backup file was selected.
+                    (if (running)
+                        "This rebuilds the wallet from the seed words you entered and restarts the daemon. The existing wallet.dat is kept as a timestamped .bak. Your balance appears once the wallet has rescanned the chain."
+                    else
+                        "This rebuilds the wallet from the seed words you entered. The existing wallet.dat is kept as a timestamped .bak. Start the daemon afterwards to load it and rescan.")
+                else if (running)
                     "This replaces the current wallet.dat with the selected backup and restarts the daemon. The existing wallet.dat is kept as a timestamped .bak."
                 else
                     "This replaces the current wallet.dat with the selected backup. The existing wallet.dat is kept as a timestamped .bak. Start the daemon afterwards to load it.";
                 try wrapIntoRows(a, &out.writer, vbar, inner_w, warn, (zz.Style{}).bold(true).fg(brand));
+                // Say which way the encryption went. A seed restore mints a fresh
+                // wallet, so "unencrypted" is the default outcome and the user has
+                // to see it — silently handing back unprotected funds is the bug
+                // this step exists to close.
+                if (m.action == .restore_seed) {
+                    try modalRow(&out.writer, vbar, inner_w, "", 0);
+                    if (enc) {
+                        const line = "The restored wallet will be encrypted with the password you set.";
+                        try wrapIntoRows(a, &out.writer, vbar, inner_w, line, (zz.Style{}).fg(.green));
+                    } else {
+                        const line = "The restored wallet will NOT be encrypted — anyone with the file can spend from it. Go back if you meant to set a password.";
+                        try wrapIntoRows(a, &out.writer, vbar, inner_w, line, (zz.Style{}).fg(.yellow));
+                    }
+                }
             },
             .setup_file => unreachable, // handled by the early return above
             .working => try modalRow(&out.writer, vbar, inner_w, "Working…", zz.width("Working…")),
@@ -9040,6 +9443,9 @@ pub const App = struct {
             .setup_seed_show => "press any key once you've written them down",
             .setup_seed_verify => "enter: check   esc: cancel",
             .setup_replace_confirm => "enter: confirm   esc: cancel",
+            .restore_seed_passphrase => "enter: continue (blank = no passphrase)   esc: cancel",
+            .restore_seed_newpw => "enter: continue (blank = leave unencrypted)   esc: cancel",
+            .restore_seed_newpw_confirm => "enter: confirm   esc: cancel",
             .restore_file_confirm => "enter: restore   esc: cancel",
             .setup_file => unreachable,
             .working => "please wait…",
