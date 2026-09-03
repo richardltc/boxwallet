@@ -19,10 +19,15 @@ const Coin = @import("../coin.zig").Coin;
 ///   * **No `getinfo`** — removed upstream in Bitcoin 0.16. Like DigiByte, the
 ///     status is assembled from `getblockchaininfo` (chain/height/sync) and
 ///     `getnetworkinfo` (peer count).
-///   * **Staking** — PoSV staking state comes from ReddCoin's own `staking` RPC
-///     (called with no args it reports status); its `staking` bool drives the
-///     normalized `staking_active`. Best-effort: a wallet that can't answer it
-///     just reads as not staking rather than failing the whole poll.
+///   * **Staking** — PoSV staking state comes from ReddCoin's own
+///     `getstakinginfo`, whose `staking` bool ("has the staking thread searched
+///     recently *and* does the wallet have stakeable weight") drives the
+///     normalized `staking_active`. Not the `staking` RPC: that one only reports
+///     the daemon-wide `-staking` switch and the per-wallet enable flags — it has
+///     no `staking` key at all, so reading it always said "not staking".
+///     Best-effort: a wallet that can't answer (locked, none loaded) just reads
+///     as not staking rather than failing the whole poll. Arming staking takes
+///     *two* switches, not one — see `enableStaking`.
 pub const ReddCoin = struct {
     /// Whether the coin is exposed in the nav. False keeps it out of the left
     /// bar entirely (registered but hidden) until it's ready for users.
@@ -96,12 +101,26 @@ pub const ReddCoin = struct {
     // don't collide on it).
     pub const scratch_file = ".boxwallet-" ++ daemon_file ++ ".part";
 
-    /// Raw `staking` result (subset). Called with no args, ReddCoin's `staking`
-    /// RPC reports the current state; `staking` is true while the wallet is
-    /// actively minting. Defaults keep the parse resilient.
+    /// Raw `getstakinginfo` result (subset). `enabled` is the daemon-wide
+    /// `-staking` switch; `staking` is true only while this wallet is actually
+    /// minting — the daemon derives it from its last coinstake search interval
+    /// and the wallet's average stake weight, so a wallet that is enabled but
+    /// locked, empty, or holding only immature coins reads false. Defaults keep
+    /// the parse resilient.
     const RddStakingInfo = struct {
         enabled: bool = false,
         staking: bool = false,
+    };
+
+    /// Raw node-level `staking` result (subset). Not a status report on any
+    /// wallet — `enabled` is the daemon-wide `-staking` switch and `thread_count`
+    /// is how many staking threads `CStakeman` currently has running. Read only
+    /// to decide whether the threads still need starting; the wallet's actual
+    /// state comes from `RddStakingInfo`.
+    const RddStakingSwitch = struct {
+        enabled: bool = false,
+        running: bool = false,
+        thread_count: i64 = 0,
     };
 
     /// Build the type-erased `Coin` handle for this instance.
@@ -138,7 +157,7 @@ pub const ReddCoin = struct {
 
     /// Live status, normalized for a frontend. ReddCoin 4.x has no `getinfo`, so
     /// the block height comes from `getblockchaininfo`, the peer count from
-    /// `getnetworkinfo`, and staking from the `staking` RPC.
+    /// `getnetworkinfo`, and staking from `getstakinginfo`.
     pub fn daemonInfo(
         allocator: std.mem.Allocator,
         auth: models.CoinAuth,
@@ -151,11 +170,11 @@ pub const ReddCoin = struct {
         defer net.deinit();
         const n = net.value.result orelse return error.EmptyRpcResult;
 
-        // Staking is best-effort: a wallet that can't answer `staking` (locked, no
-        // wallet loaded, RPC quirk) reads as "not staking" rather than failing the
-        // whole poll and flipping the daemon to "down".
+        // Staking is best-effort: a wallet that can't answer `getstakinginfo`
+        // (locked, no wallet loaded, RPC quirk) reads as "not staking" rather than
+        // failing the whole poll and flipping the daemon to "down".
         const staking = blk: {
-            var st = rpc.callParsed(RddStakingInfo, allocator, auth, "staking") catch break :blk false;
+            var st = rpc.callParsed(RddStakingInfo, allocator, auth, "getstakinginfo") catch break :blk false;
             defer st.deinit();
             break :blk if (st.value.result) |s| s.staking else false;
         };
@@ -391,7 +410,49 @@ pub const ReddCoin = struct {
         else
             try std.fmt.allocPrint(allocator, "[{s},9999999]", .{pw});
         defer allocator.free(params);
-        return rpc.callExpectOk(allocator, auth, "walletpassphrase", params);
+        try rpc.callExpectOk(allocator, auth, "walletpassphrase", params);
+        if (staking) try enableStaking(allocator, auth);
+    }
+
+    /// Put the wallet on the staking list and start the daemon's staking threads.
+    ///
+    /// **The unlock-for-staking flag is necessary but not sufficient on ReddCoin
+    /// 4.x.** `walletpassphrase …, true` only says "these keys may be used to
+    /// mint"; whether the wallet mints at all is a *second*, per-wallet switch,
+    /// and a fresh node has it off. `CStakeman::Start` launches a thread only for
+    /// wallets whose `GetEnableStaking()` is set — set either by `setstaking` or
+    /// by `-stake=<wallet>` at startup — so with the switch off there is no
+    /// staking thread, `getstakinginfo` reports `search-interval: 0`, and
+    /// `staking` stays false however much stake weight and unlocked time the
+    /// wallet has (verified against reddcoind 4.22.9.4 on a synced node with a
+    /// balance: unlocked-for-staking, `thread_count: 0`, not staking).
+    ///
+    /// So: `setstaking` sets the switch, then the node-level `staking` starts the
+    /// threads so it takes effect now rather than at the next daemon start.
+    ///
+    /// **`staking true` is only sent when no thread is running.** It doesn't
+    /// resume a staking session, it *starts* one: `CStakeman::StakeWalletAdd`
+    /// pushes a fresh thread for every enabled wallet with no check for one it
+    /// already has, so sending it twice leaves two threads minting the same
+    /// wallet (reproduced live: a second unlock took `thread_count` 1 → 2). Worse,
+    /// the thread map keeps only the newest id per wallet, so the older duplicate
+    /// can't be stopped again short of a daemon restart. `setstaking` is safely
+    /// idempotent and always sent; the thread start is guarded on the count.
+    ///
+    /// `setstaking`'s second argument would persist the wallet into the data
+    /// dir's `settings.json` — deliberately not passed. It's a shared dir we
+    /// don't own (see the data-dir rule), and it would buy nothing: the wallet
+    /// relocks on every daemon restart, so staking has to be re-armed with the
+    /// passphrase anyway, which is this call.
+    fn enableStaking(allocator: std.mem.Allocator, auth: models.CoinAuth) !void {
+        try rpc.callExpectOk(allocator, auth, "setstaking", "[true]");
+
+        var sw = try rpc.callParsed(RddStakingSwitch, allocator, auth, "staking");
+        defer sw.deinit();
+        const running = if (sw.value.result) |r| r.thread_count > 0 else false;
+        if (running) return;
+
+        try rpc.callExpectOk(allocator, auth, "staking", "[true]");
     }
 
     /// Re-lock the wallet via `walletlock`.
@@ -761,18 +822,21 @@ test "parses getblockchaininfo into normalized BlockchainState" {
     try std.testing.expect(state.synced);
 }
 
-test "combines getnetworkinfo + staking into DaemonInfo (no getinfo, PoSV)" {
+test "combines getnetworkinfo + getstakinginfo into DaemonInfo (no getinfo, PoSV)" {
     const allocator = std.testing.allocator;
 
     // ReddCoin 4.x has no `getinfo`: peers come from getnetworkinfo and staking
-    // from the `staking` RPC. Prove each parses, then the staking decode.
+    // from `getstakinginfo`. Prove each parses, then the staking decode.
     const net_raw =
         \\{"result":{"version":4220904,"subversion":"/ReddCoin:4.22.9.4/",
         \\"connections":16,"networkactive":true},"error":null,"id":"boxwallet"}
     ;
+    // Verbatim getstakinginfo shape (4.22.9.4).
     const staking_raw =
-        \\{"result":{"enabled":true,"staking":true,"errors":"","weight":12345,
-        \\"netstakeweight":67890,"expectedtime":120},"error":null,"id":"boxwallet"}
+        \\{"result":{"enabled":true,"staking":true,"chain":"main","blocks":4567890,
+        \\"difficulty":123.45,"networkhashps":0,"pooledtx":3,"search-interval":16,
+        \\"averageweight":12345,"totalweight":67890,"netstakeweight":112233,
+        \\"expectedtime":120,"warnings":""},"error":null,"id":"boxwallet"}
     ;
 
     var net = try std.json.parseFromSlice(
@@ -798,6 +862,42 @@ test "combines getnetworkinfo + staking into DaemonInfo (no getinfo, PoSV)" {
 
     try std.testing.expectEqual(@as(i64, 16), info.connections);
     try std.testing.expect(info.staking_active);
+}
+
+test "the `staking` RPC carries no staking flag — hence getstakinginfo" {
+    const allocator = std.testing.allocator;
+
+    // Verbatim `staking` reply (4.22.9.4): the daemon-wide switch, the staking
+    // thread count, and a per-wallet enable list — and no `staking` key. Reading
+    // it left `staking_active` on its `false` default no matter what the wallet
+    // was doing, which is why the status glyph never pulsed. Kept as a guard
+    // against anyone pointing the poll back at it.
+    const staking_raw =
+        \\{"result":{"enabled":true,"running":true,"thread_count":1,
+        \\"enabled_wallet":[{"BoxWallet":true}]},"error":null,"id":"boxwallet"}
+    ;
+
+    var st = try std.json.parseFromSlice(
+        models.JsonRpcResponse(ReddCoin.RddStakingInfo),
+        allocator,
+        staking_raw,
+        .{ .ignore_unknown_fields = true },
+    );
+    defer st.deinit();
+
+    try std.testing.expect(!st.value.result.?.staking);
+
+    // What it does carry: the thread count enableStaking guards on, so a second
+    // unlock-for-staking doesn't pile a duplicate thread onto the same wallet.
+    var sw = try std.json.parseFromSlice(
+        models.JsonRpcResponse(ReddCoin.RddStakingSwitch),
+        allocator,
+        staking_raw,
+        .{ .ignore_unknown_fields = true },
+    );
+    defer sw.deinit();
+
+    try std.testing.expectEqual(@as(i64, 1), sw.value.result.?.thread_count);
 }
 
 test "daemon CLIENT_VERSION drops ReddCoin's legacy leading-0 major" {
