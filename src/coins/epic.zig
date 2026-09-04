@@ -14,7 +14,7 @@ const Coin = @import("../coin.zig").Coin;
 /// restore from seed, unlock with a password, read balance) over the wallet's
 /// encrypted Owner API v3 (see the `SecureChannel`/`external_wallet` section below).
 /// Built against the Epic 4.x line — the standalone `epic` node 4.0.3 and the
-/// `epic-wallet` CLI 4.0.0; the old Go reference targeted 3.x with a different
+/// `epic-wallet` CLI 4.0.1; the old Go reference targeted 3.x with a different
 /// distribution and a (stale, bitcoin-style) RPC, so it isn't a line-by-line port.
 ///
 /// Epic is a MimbleWimble chain (a Grin fork), so it is unlike the bitcoin-core
@@ -205,7 +205,7 @@ pub const Epic = struct {
     // --- Wallet (separate `epic-wallet` binary + Owner API) --------------
     //
     // Epic's wallet is its own process, not part of the node — the `epic-wallet`
-    // CLI from the standalone `EpicCash/epic-wallet` **v4.0.0** release (matching the
+    // CLI from the standalone `EpicCash/epic-wallet` **v4.0.1** release (matching the
     // node's 4.x line). BoxWallet installs it next to the node, runs
     // `epic-wallet owner_api` bound to localhost:3420, and drives
     // create/restore/open/balance over the **encrypted** Owner API v3 (see
@@ -237,18 +237,27 @@ pub const Epic = struct {
     // reports balances as integer base units, so divide by this for whole EPIC.
     const epic_base: f64 = 100_000_000;
 
-    // epic-wallet's own release (versioned independently of the node). The v4.0.0
-    // Linux asset is a flat `.zip` named with a two-component "4.0" (not "4.0.0"),
-    // containing just `epic-wallet` at the archive root — so it's extracted straight
-    // into the install root (no wrapper dir to promote) and then marked executable.
-    const wallet_tag = "v4.0.0";
+    // epic-wallet's own release (versioned independently of the node). The v4.0.1
+    // Linux asset is a `.tar.gz` nesting `epic-wallet` under a single versioned
+    // wrapper dir (`./epic-wallet-v4.0.1-linux-amd64/`), so it's extracted with
+    // `strip_components = 1` — the binary lands straight in the install root with
+    // no wrapper left behind to promote away. (v4.0.0 was a flat `.zip`; the shape
+    // changed with the release, hence the strip.) It's marked executable after
+    // extraction regardless, so a bundle without the exec bit still runs.
+    const wallet_version = "4.0.1";
+    const wallet_tag = "v" ++ wallet_version;
     const wallet_release_base = "https://github.com/EpicCash/epic-wallet/releases/download/" ++ wallet_tag;
     pub const wallet_scratch_file = ".boxwallet-epic-wallet.part";
+    // Levels of the wallet archive's wrapper dir to drop while untarring.
+    const wallet_strip: u32 = 1;
 
     /// The wallet download for the build target, or null off linux/amd64.
     const wallet_download: ?install_mod.Download = switch (builtin.os.tag) {
         .linux => switch (builtin.cpu.arch) {
-            .x86_64 => .{ .url = wallet_release_base ++ "/epic-wallet-4.0.zip", .format = .zip },
+            .x86_64 => .{
+                .url = wallet_release_base ++ "/epic-wallet-" ++ wallet_tag ++ "-linux-amd64-ubuntu24.04.tar.gz",
+                .format = .tar_gz,
+            },
             else => null,
         },
         else => null,
@@ -562,7 +571,7 @@ pub const Epic = struct {
         return install_mod.fileExists(allocator, install_root, daemon_file);
     }
 
-    /// Mark `install_root/<name>` executable. The wallet's `.zip` doesn't carry the
+    /// Mark `install_root/<name>` executable. The wallet bundle doesn't carry the
     /// Unix exec bit reliably, so set it explicitly after extraction.
     fn markExecutable(allocator: std.mem.Allocator, install_root: []const u8, name: []const u8) !void {
         var threaded: std.Io.Threaded = .init(allocator, .{});
@@ -577,9 +586,9 @@ pub const Epic = struct {
 
     /// Install the Epic node + wallet. The node (`epic` 4.0.3) is a `.tar.gz` nested
     /// in a versioned wrapper dir, extracted then promoted to the install root. The
-    /// wallet (`epic-wallet` 4.0.0) is a flat `.zip` holding just the binary at the
-    /// archive root, so it extracts straight into the install root and is then
-    /// marked executable. Both stream to disk — flat memory.
+    /// wallet (`epic-wallet` 4.0.1) is a `.tar.gz` whose own wrapper dir is stripped
+    /// during extraction, so the binary lands in the install root directly and is
+    /// then marked executable. Both stream to disk — flat memory.
     pub fn install(
         allocator: std.mem.Allocator,
         install_root: []const u8,
@@ -590,7 +599,7 @@ pub const Epic = struct {
         try install_mod.promoteAndTidy(allocator, install_root, extracted_dir, bin_subdir, &promote_files);
 
         const wdl = wallet_download orelse return error.UnsupportedPlatform;
-        try install_mod.downloadAndExtract(allocator, wdl.url, wdl.format, install_root, wallet_scratch_file, 0, progress);
+        try install_mod.downloadAndExtract(allocator, wdl.url, wdl.format, install_root, wallet_scratch_file, wallet_strip, progress);
         try markExecutable(allocator, install_root, wallet_file);
     }
 
@@ -1384,7 +1393,7 @@ pub const Epic = struct {
     }
 
     /// argv to (re)launch `epic-wallet owner_api` against the managed wallet, opened
-    /// with `wallet_password`. epic-wallet 4.0.0 only starts the Owner-API listener
+    /// with `wallet_password`. epic-wallet 4.0.1 only starts the Owner-API listener
     /// when (a) a wallet already exists on disk — so create/restore materialize one
     /// via `init -r` first (see `runInitRecover`) — and (b) the wallet password is
     /// supplied at launch; that's why Epic is a launch-with-password wallet rather
@@ -2091,7 +2100,7 @@ pub const Epic = struct {
         return n;
     }
 
-    /// Epic's external (process-backed) wallet capability. epic-wallet 4.0.0 only
+    /// Epic's external (process-backed) wallet capability. epic-wallet 4.0.1 only
     /// starts its Owner-API listener against an existing wallet and with the password
     /// at launch, so it's a **launch-with-password** wallet (like Zano): the process
     /// is (re)launched per-open via `launch_server_argv`, and a wallet is first
@@ -2740,11 +2749,18 @@ test "wordCount counts whitespace-separated seed words" {
     try std.testing.expectEqual(@as(usize, 24), Epic.wordCount("a b c d e f g h i j k l m n o p q r s t u v w x"));
 }
 
-test "wallet download resolves to the 4.0.0 zip only on linux/amd64" {
+test "wallet download resolves to the 4.0.1 tarball only on linux/amd64" {
     if (builtin.os.tag == .linux and builtin.cpu.arch == .x86_64) {
         const dl = Epic.wallet_download orelse return error.TestUnexpectedResult;
-        try std.testing.expectEqual(install_mod.Format.zip, dl.format);
-        try std.testing.expect(std.mem.indexOf(u8, dl.url, "/" ++ Epic.wallet_tag ++ "/epic-wallet-4.0.zip") != null);
+        try std.testing.expectEqual(install_mod.Format.tar_gz, dl.format);
+        try std.testing.expect(std.mem.indexOf(
+            u8,
+            dl.url,
+            "/" ++ Epic.wallet_tag ++ "/epic-wallet-v4.0.1-linux-amd64-ubuntu24.04.tar.gz",
+        ) != null);
+        // The wrapper dir is dropped while untarring, so `epic-wallet` lands in the
+        // install root — nothing to promote afterwards.
+        try std.testing.expectEqual(@as(u32, 1), Epic.wallet_strip);
     } else {
         try std.testing.expect(Epic.wallet_download == null);
     }
