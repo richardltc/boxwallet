@@ -4,6 +4,7 @@ const models = @import("../models.zig");
 const rpc = @import("../rpc.zig");
 const install_mod = @import("../install.zig");
 const conf = @import("../conf.zig");
+const walletfile = @import("../walletfile.zig");
 const Coin = @import("../coin.zig").Coin;
 
 /// Nexa backend. Constants lifted from
@@ -327,6 +328,64 @@ pub const Nexa = struct {
         return rpc.callExpectOk(allocator, auth, "walletlock", "[]");
     }
 
+    /// Back up the wallet to `dest_path` via `dumpwallet` — the human-readable
+    /// key dump that `walletImportFile` reads back. nexad refuses it on a locked
+    /// wallet (and won't overwrite an existing file), so the menu only offers it
+    /// while the wallet is unlocked/unencrypted. The path is JSON-escaped before
+    /// splicing. This file *is* the user's backup, not a temp — don't shred it.
+    pub fn walletBackup(allocator: std.mem.Allocator, auth: models.CoinAuth, dest_path: []const u8) !void {
+        const qpath = try rpc.jsonQuote(allocator, dest_path);
+        defer allocator.free(qpath);
+        const params = try std.fmt.allocPrint(allocator, "[{s}]", .{qpath});
+        defer allocator.free(params);
+        return rpc.callExpectOk(allocator, auth, "dumpwallet", params);
+    }
+
+    /// Restore wallet keys from a `dumpwallet` file via `importwallet`, which
+    /// imports the keys and rescans the chain. The rescan blocks the RPC until it
+    /// finishes, so on a large chain it can outlast the client timeout and read as
+    /// a failure while nexad keeps rescanning. Like backup, needs the wallet
+    /// unlocked/unencrypted. Path JSON-escaped.
+    ///
+    /// A binary `wallet.dat` picked by mistake is refused up front: that's the
+    /// *other* restore's input, and `importwallet` reports success on it having
+    /// imported nothing. Nexa offers both restores at once, so the mix-up is the
+    /// likely one.
+    pub fn walletImportFile(allocator: std.mem.Allocator, auth: models.CoinAuth, src_path: []const u8) !void {
+        if (!walletfile.looksLikeKeyDump(allocator, src_path)) return error.NotAWalletKeyDump;
+
+        const qpath = try rpc.jsonQuote(allocator, src_path);
+        defer allocator.free(qpath);
+        const params = try std.fmt.allocPrint(allocator, "[{s}]", .{qpath});
+        defer allocator.free(params);
+        return rpc.callExpectOk(allocator, auth, "importwallet", params);
+    }
+
+    /// Restore the wallet by swapping in a user-supplied binary `wallet.dat` —
+    /// the file-level counterpart to `walletImportFile`'s key-dump import, for a
+    /// wallet carried over from another Nexa install (whose own backup is a
+    /// `backupwallet` copy, which `importwallet` cannot read). The daemon holds
+    /// `wallet.dat` open while running, so the caller stops it before calling this
+    /// and restarts it after; this hook only touches files and takes no auth.
+    ///
+    /// nexad keeps its wallet at the top of the data dir — it has no named-wallet
+    /// sub-directories — so the swap targets `<data_dir>/wallet.dat`, which is
+    /// also the wallet every other Nexa app on this machine uses. That's why the
+    /// guards in `walletfile.restoreOffline` matter here: a text key dump or an
+    /// empty file is refused before anything is touched, and the wallet already
+    /// in place is moved aside to a timestamped sibling rather than overwritten,
+    /// so a wrong-file restore stays recoverable.
+    pub fn walletRestoreFileOffline(
+        allocator: std.mem.Allocator,
+        home: []const u8,
+        src_path: []const u8,
+    ) !void {
+        const data_dir = try dataDir(allocator, home);
+        defer allocator.free(data_dir);
+
+        return walletfile.restoreOffline(allocator, data_dir, "wallet.dat", src_path);
+    }
+
     /// Nexa retains `getinfo`, so probe it for the daemon's warm-up phase.
     pub fn warmupProbeMethod() []const u8 {
         return "getinfo";
@@ -373,6 +432,9 @@ pub const Nexa = struct {
         .wallet_encrypt = vtWalletEncrypt,
         .wallet_unlock = vtWalletUnlock,
         .wallet_lock = vtWalletLock,
+        .wallet_backup = vtWalletBackup,
+        .wallet_import_file = vtWalletImportFile,
+        .wallet_restore_file_offline = vtWalletRestoreFileOffline,
         .warmup_probe_method = vtWarmupProbeMethod,
         .reindex = &reindex_caps,
     };
@@ -551,6 +613,30 @@ pub const Nexa = struct {
     ) anyerror!void {
         return walletLock(allocator, auth);
     }
+    fn vtWalletBackup(
+        _: *anyopaque,
+        allocator: std.mem.Allocator,
+        auth: models.CoinAuth,
+        dest_path: []const u8,
+    ) anyerror!void {
+        return walletBackup(allocator, auth, dest_path);
+    }
+    fn vtWalletImportFile(
+        _: *anyopaque,
+        allocator: std.mem.Allocator,
+        auth: models.CoinAuth,
+        src_path: []const u8,
+    ) anyerror!void {
+        return walletImportFile(allocator, auth, src_path);
+    }
+    fn vtWalletRestoreFileOffline(
+        _: *anyopaque,
+        allocator: std.mem.Allocator,
+        home: []const u8,
+        src_path: []const u8,
+    ) anyerror!void {
+        return walletRestoreFileOffline(allocator, home, src_path);
+    }
     fn vtWarmupProbeMethod(_: *anyopaque) []const u8 {
         return warmupProbeMethod();
     }
@@ -684,6 +770,124 @@ test "walletPath points at the daemon's default wallet.dat" {
     defer allocator.free(wf.path);
     try std.testing.expectEqualStrings("/home/alice/.nexa/wallet.dat", wf.path);
     try std.testing.expect(wf.keys == null);
+}
+
+test "coin vtable offers both restore shapes for Nexa" {
+    var nexa: Nexa = .{};
+    const c = nexa.coin();
+    // The key-dump pair against a live daemon (dumpwallet / importwallet)…
+    try std.testing.expect(c.supportsWalletBackup());
+    try std.testing.expect(c.supportsWalletImport());
+    // …and the daemon-stopped wallet.dat swap, which is what moves a wallet
+    // brought from another Nexa install (its `backupwallet` copy is binary —
+    // importwallet can't read it).
+    try std.testing.expect(c.supportsWalletRestoreOffline());
+    // nexad exposes no mnemonic RPC (the wallet is HD but reports only an
+    // `hdmasterkeyid`), so there is no seed to show or restore from — verified
+    // against nexad 2.2.0.0's `help`.
+    try std.testing.expect(!c.supportsWalletRestoreSeed());
+    try std.testing.expect(!c.supportsSeedBackup());
+}
+
+test "offline restore swaps the data dir's wallet.dat and keeps the old one aside" {
+    if (builtin.os.tag == .windows) return error.SkipZigTest;
+    const allocator = std.testing.allocator;
+
+    var threaded: std.Io.Threaded = .init(allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    const home = "test-nexa-offline-restore";
+    std.Io.Dir.cwd().deleteTree(io, home) catch {};
+    defer std.Io.Dir.cwd().deleteTree(io, home) catch {};
+
+    // nexad has no named-wallet sub-directories: the wallet it acts on sits at
+    // the top of the data dir.
+    const data_dir = try Nexa.dataDir(allocator, home);
+    defer allocator.free(data_dir);
+    var dd = try std.Io.Dir.cwd().createDirPathOpen(io, data_dir, .{});
+    defer dd.close(io);
+    try dd.writeFile(io, .{ .sub_path = "wallet.dat", .data = "OLD-WALLET" });
+
+    var src = try std.Io.Dir.cwd().createDirPathOpen(io, home ++ "/backups", .{});
+    defer src.close(io);
+    try src.writeFile(io, .{ .sub_path = "wallet.dat", .data = "NEW-WALLET" });
+
+    try Nexa.walletRestoreFileOffline(allocator, home, home ++ "/backups/wallet.dat");
+
+    const restored = try dd.readFileAlloc(io, "wallet.dat", allocator, .limited(64));
+    defer allocator.free(restored);
+    try std.testing.expectEqualStrings("NEW-WALLET", restored);
+
+    // The wallet that was there is kept, not destroyed — a wrong-file restore
+    // stays recoverable.
+    // Iterate on a freshly opened handle — the restore reopens the same
+    // directory itself, and a Dir listing seeks the descriptor.
+    var listing = try std.Io.Dir.cwd().openDir(io, data_dir, .{ .iterate = true });
+    defer listing.close(io);
+    var kept = false;
+    var it = listing.iterate();
+    while (try it.next(io)) |entry| {
+        if (std.mem.startsWith(u8, entry.name, "wallet.dat.bak-")) kept = true;
+    }
+    try std.testing.expect(kept);
+}
+
+test "walletImportFile refuses a binary wallet.dat, which importwallet would 'succeed' on" {
+    if (builtin.os.tag == .windows) return error.SkipZigTest;
+    const allocator = std.testing.allocator;
+
+    var threaded: std.Io.Threaded = .init(allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    const root = "test-nexa-import-guard";
+    std.Io.Dir.cwd().deleteTree(io, root) catch {};
+    defer std.Io.Dir.cwd().deleteTree(io, root) catch {};
+    var dir = try std.Io.Dir.cwd().createDirPathOpen(io, root, .{});
+    defer dir.close(io);
+    try dir.writeFile(io, .{ .sub_path = "wallet.dat", .data = "\x00\x00\x00\x00\x62\x31\x05\x00binary" });
+
+    // Refused before any RPC — the auth here is never reached, so this needs no
+    // daemon.
+    const auth: models.CoinAuth = .{
+        .rpc_user = "u",
+        .rpc_password = "p",
+        .ip_address = "127.0.0.1",
+        .port = "1",
+    };
+    try std.testing.expectError(
+        error.NotAWalletKeyDump,
+        Nexa.walletImportFile(allocator, auth, root ++ "/wallet.dat"),
+    );
+}
+
+test "the offline restore refuses a key dump — nexad's own dumpwallet header" {
+    if (builtin.os.tag == .windows) return error.SkipZigTest;
+    const allocator = std.testing.allocator;
+
+    var threaded: std.Io.Threaded = .init(allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    const home = "test-nexa-restore-guard";
+    std.Io.Dir.cwd().deleteTree(io, home) catch {};
+    defer std.Io.Dir.cwd().deleteTree(io, home) catch {};
+    var dir = try std.Io.Dir.cwd().createDirPathOpen(io, home, .{});
+    defer dir.close(io);
+
+    // The real first line nexad 2.2.0.0 writes — the shared sniff in
+    // `walletfile` keys off the "# Wallet dump created by" prefix, so the
+    // mix-up is caught before the wallet in place is touched.
+    try dir.writeFile(io, .{
+        .sub_path = "dump.txt",
+        .data = "# Wallet dump created by Nexa v2.2.0.0-6651a9470 (2026-08-26 12:38:25 +0000)\n",
+    });
+
+    try std.testing.expectError(
+        error.IsAWalletKeyDump,
+        Nexa.walletRestoreFileOffline(allocator, home, home ++ "/dump.txt"),
+    );
 }
 
 test "maps getwalletinfo balances to available + total (mempool reflected immediately)" {
