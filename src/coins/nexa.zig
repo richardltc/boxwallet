@@ -2,6 +2,7 @@ const std = @import("std");
 const builtin = @import("builtin");
 const models = @import("../models.zig");
 const rpc = @import("../rpc.zig");
+const nft = @import("../nft.zig");
 const install_mod = @import("../install.zig");
 const conf = @import("../conf.zig");
 const walletfile = @import("../walletfile.zig");
@@ -396,12 +397,241 @@ pub const Nexa = struct {
         return "getinfo";
     }
 
+    // --- group tokens and NFTs ------------------------------------------
+
+    /// The base32 alphabet Nexa's addresses and group identifiers are written
+    /// in (the CashAddr alphabet, inherited from the Bitcoin Cash lineage).
+    const cashaddr_charset = "qpzry9x8gf2tvdw0s3jn54khce6mua7l";
+
+    /// The 8 trailing base32 symbols of every CashAddr string are its checksum,
+    /// not payload.
+    const cashaddr_checksum_symbols = 8;
+
+    /// A decoded group identifier: the version byte the address type is carried
+    /// in, plus the body it prefixes.
+    ///
+    /// For a group the body is the 32-byte group hash. For a **subgroup** it is
+    /// 64 bytes: the 32-byte parent group followed by 32 bytes of subgroup
+    /// data. The NFT specification requires that subgroup data to be the
+    /// double-SHA256 of the NFT's data file, which is what lets BoxWallet prove
+    /// a downloaded bundle really is the NFT the chain committed to.
+    const GroupId = struct {
+        version: u8,
+        body: [64]u8,
+        body_len: usize,
+
+        /// The subgroup half, or null when this is a plain group. Only the
+        /// 32-byte form is returned: `token subgroup` accepts shorter data, but
+        /// an NFT's commitment is a full double-SHA256 by definition, and a
+        /// short subgroup is some other use of the mechanism.
+        fn subgroup(self: *const GroupId) ?[]const u8 {
+            if (self.body_len != 64) return null;
+            return self.body[32..64];
+        }
+    };
+
+    /// Decode a `<prefix>:<base32>` group identifier into its version byte and
+    /// body.
+    ///
+    /// The checksum is deliberately not verified: every identifier that reaches
+    /// this function came out of our own daemon's RPC reply in the same process
+    /// that asked for it, so there is no untrusted party to guard against, and
+    /// a wrong body would fail the far stronger check that follows it — the
+    /// bundle's double-SHA256 against these very bytes.
+    fn decodeGroupId(id: []const u8) ?GroupId {
+        const colon = std.mem.indexOfScalar(u8, id, ':') orelse return null;
+        const payload = id[colon + 1 ..];
+        if (payload.len <= cashaddr_checksum_symbols) return null;
+
+        const symbols = payload[0 .. payload.len - cashaddr_checksum_symbols];
+
+        // 5 bits per symbol, repacked to 8. The trailing partial byte is
+        // padding the encoder added and is dropped, exactly as the CashAddr
+        // conversion specifies.
+        var out: [65]u8 = undefined;
+        var out_len: usize = 0;
+        var acc: u32 = 0;
+        var bits: u5 = 0;
+        for (symbols) |c| {
+            const v = std.mem.indexOfScalar(u8, cashaddr_charset, c) orelse return null;
+            acc = (acc << 5) | @as(u32, @intCast(v));
+            bits += 5;
+            while (bits >= 8) {
+                bits -= 8;
+                if (out_len == out.len) return null;
+                out[out_len] = @truncate(acc >> bits);
+                out_len += 1;
+            }
+        }
+        if (out_len == 0) return null;
+
+        var g: GroupId = .{ .version = out[0], .body = undefined, .body_len = out_len - 1 };
+        if (g.body_len > g.body.len) return null;
+        @memcpy(g.body[0..g.body_len], out[1..out_len]);
+        return g;
+    }
+
+    /// The wallet's group-token holdings, from `token info`.
+    ///
+    /// The daemon keys its reply by group identifier — one dynamic key per
+    /// token — so this parses a `std.json.Value` rather than a fixed struct.
+    /// Everything lands in bounded, scalar-only `TokenHolding`s, so the parse
+    /// tree is freed before this returns and nothing points back into it.
+    pub fn tokenList(
+        allocator: std.mem.Allocator,
+        auth: models.CoinAuth,
+        limit: usize,
+    ) ![]models.TokenHolding {
+        const reply = try rpc.callParams(allocator, auth, "token", "[\"info\"]");
+        defer allocator.free(reply);
+
+        var parsed = std.json.parseFromSlice(std.json.Value, allocator, reply, .{}) catch {
+            return error.RpcCallFailed;
+        };
+        defer parsed.deinit();
+
+        const root = switch (parsed.value) {
+            .object => |o| o,
+            else => return error.RpcCallFailed,
+        };
+        // A wallet holding nothing answers `{}`, which is a result, not a fault.
+        const result = switch (root.get("result") orelse return error.EmptyRpcResult) {
+            .object => |o| o,
+            else => return error.EmptyRpcResult,
+        };
+
+        var list: std.ArrayList(models.TokenHolding) = .empty;
+        errdefer list.deinit(allocator);
+
+        var it = result.iterator();
+        while (it.next()) |entry| {
+            if (list.items.len >= limit) break;
+            const fields = switch (entry.value_ptr.*) {
+                .object => |o| o,
+                else => continue,
+            };
+            try list.append(allocator, holdingFrom(entry.key_ptr.*, fields));
+        }
+
+        return list.toOwnedSlice(allocator);
+    }
+
+    /// Fold one `token info` entry into a normalized holding.
+    fn holdingFrom(group: []const u8, fields: std.json.ObjectMap) models.TokenHolding {
+        var h: models.TokenHolding = .{};
+        h.setGroup(group);
+        h.setTicker(jsonString(fields, "ticker"));
+        h.setName(jsonString(fields, "name"));
+        h.setUrl(jsonString(fields, "url"));
+        h.balance = jsonInt(fields, "balance_satoshis");
+        h.mintage = jsonInt(fields, "mintage_satoshis");
+        // The daemon writes `decimals` as a *string*, empty for a genesis that
+        // omitted it — which displays the same as 0.
+        h.decimals = std.fmt.parseInt(u8, jsonString(fields, "decimals"), 10) catch 0;
+
+        // A subgroup identifier carrying a full 32-byte commitment is what
+        // makes this an NFT rather than a currency-like group.
+        if (decodeGroupId(group)) |gid| {
+            if (gid.subgroup()) |sub| {
+                var hex: [64]u8 = undefined;
+                nft.toHex(&hex, sub);
+                h.setDataHash(&hex);
+                h.kind = .nft;
+            }
+        }
+        return h;
+    }
+
+    /// One string field, or empty when absent or of another type.
+    fn jsonString(obj: std.json.ObjectMap, key: []const u8) []const u8 {
+        const v = obj.get(key) orelse return "";
+        return switch (v) {
+            .string => |s| s,
+            else => "",
+        };
+    }
+
+    /// One integer field, or 0 when absent or of another type. Token amounts
+    /// arrive as JSON integers; a daemon that ever wrote one as a float would
+    /// still read sensibly rather than zeroing the row.
+    fn jsonInt(obj: std.json.ObjectMap, key: []const u8) i64 {
+        const v = obj.get(key) orelse return 0;
+        return switch (v) {
+            .integer => |i| i,
+            .float => |f| @intFromFloat(f),
+            else => 0,
+        };
+    }
+
+    /// Where an NFT's data bundle lives: the standardized public route on the
+    /// host that serves the token's description document.
+    ///
+    /// The chain commits to the *hash* of an NFT's data file, not to a location
+    /// for it, so the location has to come from somewhere else. The NFT
+    /// specification's answer is a route on the issuer's own host — `/public/`
+    /// serves the bundle with owner-only content omitted and needs no proof of
+    /// ownership — and the issuer's host is the one in the token description
+    /// document URL that the group's genesis transaction *does* commit to.
+    ///
+    /// Because the bundle is then checked against the chain's hash, a wrong or
+    /// hostile host cannot substitute a different NFT; it can only fail to
+    /// produce this one. Caller owns the returned slice.
+    pub fn nftBundleUrl(
+        allocator: std.mem.Allocator,
+        holding: models.TokenHolding,
+    ) ![]const u8 {
+        const doc_url = holding.url();
+        if (doc_url.len == 0) return error.NoTokenDescriptionUrl;
+
+        const uri = std.Uri.parse(doc_url) catch return error.NoTokenDescriptionUrl;
+        const host = switch (uri.host orelse return error.NoTokenDescriptionUrl) {
+            .raw, .percent_encoded => |h| h,
+        };
+        if (host.len == 0) return error.NoTokenDescriptionUrl;
+
+        return std.fmt.allocPrint(
+            allocator,
+            "{s}://{s}/public/{s}",
+            .{ uri.scheme, host, holding.group() },
+        );
+    }
+
+    /// Fetch, verify and unpack one NFT's data bundle. The hash the bundle must
+    /// match is the subgroup identifier already decoded into the holding, so a
+    /// bundle served by the issuer's host is still only accepted if it is the
+    /// file the chain committed to.
+    pub fn fetchNft(
+        allocator: std.mem.Allocator,
+        holding: models.TokenHolding,
+        cache_root: []const u8,
+    ) !models.NftMeta {
+        if (holding.kind != .nft) return error.NotAnNft;
+
+        var expected: [32]u8 = undefined;
+        const hash_hex = holding.dataHash();
+        if (hash_hex.len != 64) return error.NotAnNft;
+        _ = std.fmt.hexToBytes(&expected, hash_hex) catch return error.NotAnNft;
+
+        const url = try nftBundleUrl(allocator, holding);
+        defer allocator.free(url);
+
+        return nft.fetchBundle(allocator, url, cache_root, expected);
+    }
+
     // --- vtable plumbing -------------------------------------------------
 
     /// The block-index rebuild. Markers are the Core-derived defaults, checked
     /// against the shipped nexad binary.
     pub const reindex_caps: Coin.Reindex = .{
         .warning = "nexad re-reads the block files already on disk to rebuild the index — hours of CPU on a large chain, and the daemon is unusable until it finishes. Nothing is downloaded a second time unless this node is pruned, in which case the blocks it has already deleted are fetched again.",
+    };
+
+    /// Nexa's group tokens: fungible tokens and NFTs held in the same wallet
+    /// as the coin itself.
+    pub const token_caps: Coin.Tokens = .{
+        .name = "Tokens",
+        .list = vtTokenList,
+        .fetch_nft = vtFetchNft,
     };
 
     const vtable: Coin.VTable = .{
@@ -442,6 +672,7 @@ pub const Nexa = struct {
         .wallet_restore_file_offline = vtWalletRestoreFileOffline,
         .warmup_probe_method = vtWarmupProbeMethod,
         .reindex = &reindex_caps,
+        .tokens = &token_caps,
     };
 
     fn vtCoinName(_: *anyopaque) []const u8 {
@@ -644,6 +875,20 @@ pub const Nexa = struct {
     }
     fn vtWarmupProbeMethod(_: *anyopaque) []const u8 {
         return warmupProbeMethod();
+    }
+    fn vtTokenList(
+        allocator: std.mem.Allocator,
+        auth: models.CoinAuth,
+        limit: usize,
+    ) anyerror![]models.TokenHolding {
+        return tokenList(allocator, auth, limit);
+    }
+    fn vtFetchNft(
+        allocator: std.mem.Allocator,
+        holding: models.TokenHolding,
+        cache_root: []const u8,
+    ) anyerror!models.NftMeta {
+        return fetchNft(allocator, holding, cache_root);
     }
 };
 
@@ -965,4 +1210,128 @@ test "maps getwalletinfo unlocked_until to the wallet security state" {
         defer parsed.deinit();
         try std.testing.expectEqual(models.WalletSecurity.locked, Nexa.securityFromUnlockedUntil(parsed.value.result.?.unlocked_until));
     }
+}
+
+test "decodeGroupId splits a subgroup identifier into parent and NFT commitment" {
+    // A live NiftyArt NFT. Its subgroup half is the double-SHA256 of the NFT's
+    // data file — the value `fetchNft` proves a downloaded bundle against.
+    const id = "nexa:tr9v70v4s9s6jfwz32ts60zqmmkp50lqv7t0ux620d50xa7dhyqqpqvwsk6yxyy6tq08lklz546z6vu8lqkkygg6wnyuzcs76vx73he65rqejcdy";
+    const gid = Nexa.decodeGroupId(id) orelse return error.TestUnexpectedResult;
+
+    try std.testing.expectEqual(@as(usize, 64), gid.body_len);
+    const sub = gid.subgroup() orelse return error.TestUnexpectedResult;
+
+    var hex: [64]u8 = undefined;
+    nft.toHex(&hex, sub);
+    try std.testing.expectEqualStrings(
+        "818e85b443109a581e7fdbe2a5742d3387f82d62211a74c9c1621ed30de8df3a",
+        &hex,
+    );
+}
+
+test "decodeGroupId reports a plain group as having no subgroup" {
+    // A fungible group: 32 body bytes, so nothing an NFT bundle could hash to.
+    const gid = Nexa.decodeGroupId(
+        "nexa:tp0an8aj7e635vfrfzldut8ne2wwxn5jcxtgs9a5nzqmkq49rcqqqcsq60666",
+    ) orelse return error.TestUnexpectedResult;
+    try std.testing.expectEqual(@as(usize, 32), gid.body_len);
+    try std.testing.expectEqual(@as(?[]const u8, null), gid.subgroup());
+}
+
+test "decodeGroupId rejects malformed identifiers instead of guessing" {
+    // No prefix separator, nothing but a checksum, and a symbol outside the
+    // CashAddr alphabet ('b' is deliberately not in it).
+    try std.testing.expectEqual(@as(?Nexa.GroupId, null), Nexa.decodeGroupId("tp0an8aj"));
+    try std.testing.expectEqual(@as(?Nexa.GroupId, null), Nexa.decodeGroupId("nexa:qqqqqqqq"));
+    try std.testing.expectEqual(@as(?Nexa.GroupId, null), Nexa.decodeGroupId("nexa:bbbbbbbbbbbbbbbb"));
+}
+
+test "token info maps a subgroup row to a verifiable NFT holding" {
+    const allocator = std.testing.allocator;
+
+    // The daemon's own reply shape, keyed by group identifier, with `decimals`
+    // as a string and the amounts as integers — confirmed against nexad 2.2.0.0.
+    const raw =
+        \\{"nexa:tr9v70v4s9s6jfwz32ts60zqmmkp50lqv7t0ux620d50xa7dhyqqpqvwsk6yxyy6tq08lklz546z6vu8lqkkygg6wnyuzcs76vx73he65rqejcdy":
+        \\{"ticker":"NIFTY","name":"NiftyArt","url":"https://niftyart.cash/td/nifty.json",
+        \\"hash":"b0fa910a48c81cd09b414850ebec6ba040bf3f8b9e0cc39cfd13e03a02be4a0b",
+        \\"decimals":"0","genesis_address":"nexa:nqtsq5g5xhwe2955fwx0ja2jzu20jurzsh2562lz2juyvln7",
+        \\"balance_satoshis":1,"mintage_satoshis":1}}
+    ;
+    var parsed = try std.json.parseFromSlice(std.json.Value, allocator, raw, .{});
+    defer parsed.deinit();
+
+    var it = parsed.value.object.iterator();
+    const entry = it.next() orelse return error.TestUnexpectedResult;
+    const h = Nexa.holdingFrom(entry.key_ptr.*, entry.value_ptr.object);
+
+    try std.testing.expectEqual(models.TokenKind.nft, h.kind);
+    try std.testing.expectEqualStrings("NIFTY", h.ticker());
+    try std.testing.expectEqualStrings("NiftyArt", h.name());
+    try std.testing.expectEqual(@as(i64, 1), h.balance);
+    try std.testing.expectEqual(@as(i64, 1), h.mintage);
+    try std.testing.expectEqual(@as(u8, 0), h.decimals);
+    try std.testing.expectEqualStrings(
+        "818e85b443109a581e7fdbe2a5742d3387f82d62211a74c9c1621ed30de8df3a",
+        h.dataHash(),
+    );
+}
+
+test "token info maps a plain group to a fungible holding with no commitment" {
+    const allocator = std.testing.allocator;
+
+    // An empty `decimals` is what a genesis that omitted it reports; it must
+    // read as 0 rather than failing the row.
+    const raw =
+        \\{"nexa:tp0an8aj7e635vfrfzldut8ne2wwxn5jcxtgs9a5nzqmkq49rcqqqcsq60666":
+        \\{"ticker":"BONG","name":"Beer Bong","url":"","hash":"","decimals":"",
+        \\"genesis_address":"nexa:nqtsq5g54vc9vcv4acrf5nn7xg3xvaxcf7nmkusvj7yw646a",
+        \\"balance_satoshis":5,"mintage_satoshis":12}}
+    ;
+    var parsed = try std.json.parseFromSlice(std.json.Value, allocator, raw, .{});
+    defer parsed.deinit();
+
+    var it = parsed.value.object.iterator();
+    const entry = it.next() orelse return error.TestUnexpectedResult;
+    const h = Nexa.holdingFrom(entry.key_ptr.*, entry.value_ptr.object);
+
+    try std.testing.expectEqual(models.TokenKind.fungible, h.kind);
+    try std.testing.expectEqual(@as(u8, 0), h.decimals);
+    try std.testing.expectEqual(@as(i64, 5), h.balance);
+    try std.testing.expectEqualStrings("", h.dataHash());
+}
+
+test "nftBundleUrl puts the public route on the issuer's own host" {
+    const allocator = std.testing.allocator;
+
+    var h: models.TokenHolding = .{};
+    h.setGroup("nexa:trabc");
+    h.setUrl("https://niftyart.cash/td/nifty.json");
+
+    const url = try Nexa.nftBundleUrl(allocator, h);
+    defer allocator.free(url);
+    try std.testing.expectEqualStrings("https://niftyart.cash/public/nexa:trabc", url);
+}
+
+test "nftBundleUrl fails when the genesis committed to no description document" {
+    var h: models.TokenHolding = .{};
+    h.setGroup("nexa:trabc");
+    // A token whose issuer named no document gives us no host to ask, and
+    // there is nowhere else the location could legitimately come from.
+    try std.testing.expectError(
+        error.NoTokenDescriptionUrl,
+        Nexa.nftBundleUrl(std.testing.allocator, h),
+    );
+}
+
+test "fetchNft refuses a holding that carries no chain commitment" {
+    var h: models.TokenHolding = .{};
+    h.setGroup("nexa:tp0an8aj");
+    h.setUrl("https://example.org/td/x.json");
+    // Fungible: nothing to verify a downloaded bundle against, so there is no
+    // safe way to show one.
+    try std.testing.expectError(
+        error.NotAnNft,
+        Nexa.fetchNft(std.testing.allocator, h, "/tmp"),
+    );
 }

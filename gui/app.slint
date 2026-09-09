@@ -64,6 +64,17 @@ struct StakeRow {
     locked: bool,        // still inside its term — colours the status
 }
 
+// One row in the Tokens list, pre-formatted by the host like WalletTxRow. The
+// held figure already has the token's own decimals applied — each token
+// declares its own, so the host puts the point in rather than this side.
+struct TokenRow {
+    name: string,     // the issuer's name, else the ticker, else the group id
+    ticker: string,
+    held: string,     // the wallet's holding, formatted
+    is-nft: bool,     // its group id carries the chain's commitment to a data file
+    group: string,    // the chain-wide group id — the handle open-nft takes
+}
+
 // One digit column of an odometer count, pre-split by the host, most-significant
 // first. Slint evaluates arithmetic in f32 (the generated C++ casts every
 // division to `(float)`), which is exact only to 16,777,216 — below DigiByte's
@@ -1466,6 +1477,32 @@ export component AppWindow inherits Window {
     // The wallet's stakes, newest first (Staking tab). Empty for every coin
     // without a stake action, and while nothing has been staked.
     in property <[StakeRow]> stake-rows;
+
+    // ---- Tokens (Nexa's group tokens and NFTs) ----
+    in property <bool> has-tokens: false;
+    in property <[TokenRow]> token-rows;
+    // Which row's artwork is on show. -1 while nothing is open.
+    in-out property <int> nft-selected: -1;
+    // The opened NFT, filled in by the host once its bundle has been fetched
+    // AND proved against the hash the chain commits to.
+    in property <string> nft-title;
+    in property <string> nft-author;
+    in property <string> nft-series;
+    in property <string> nft-category;
+    in property <string> nft-info;
+    in property <string> nft-license;
+    // The unpacked card art. An empty image is the "nothing to show" state —
+    // a bundle may legitimately carry no card.
+    in property <image> nft-card;
+    // Only ever set once the bundle's double-SHA256 matched the chain's value.
+    // The badge this drives is a claim about provenance, so it must never be
+    // shown on anything the host hasn't actually verified.
+    in property <bool> nft-verified: false;
+    in property <bool> nft-busy: false;
+    // Why a fetch failed, in the host's own words — an unreachable host and a
+    // file that isn't this NFT are different problems.
+    in property <string> nft-error;
+    callback open-nft(string);
     // Whether this coin can *enumerate* stakes, as opposed to merely making
     // them. Separate from `has-stake` because the tab is earned by the action:
     // a coin that can stake but can't list them gets the form with no table,
@@ -2658,6 +2695,15 @@ export component AppWindow inherits Window {
                             selected: root.tab == 6;
                             clicked => {
                                 root.tab = 6;
+                            }
+                        }
+                        if root.has-tokens: TabButton {
+                            label: "Tokens";
+                            icon: @image-url("icons/tokens.svg");
+                            accent: root.coin-color;
+                            selected: root.tab == 8;
+                            clicked => {
+                                root.tab = 8;
                             }
                         }
                         // The same bolt the header's staking status icon wears,
@@ -3857,6 +3903,187 @@ export component AppWindow inherits Window {
                     // payment, and sharing a pane with the send form put a
                     // "lock this up for 30 days" button one slip away from the
                     // balance someone meant to spend.
+                    // Tokens and NFTs (only for coins with group tokenization).
+                    if root.tab == 8 && root.has-tokens: VerticalLayout {
+                        spacing: 10px;
+                        vertical-stretch: 1;
+                        Text {
+                            text: "Tokens";
+                            color: #e6e6e6;
+                            font-size: 17px;
+                            font-weight: 600;
+                        }
+                        if !root.running: Text {
+                            text: "Start the daemon to see this wallet's tokens.";
+                            color: #8a8a8a;
+                            font-size: 13px;
+                        }
+                        if root.running && root.token-rows.length == 0: Text {
+                            text: "No tokens or NFTs in this wallet. Group tokens sent to its addresses show up here automatically.";
+                            color: #8a8a8a;
+                            font-size: 13px;
+                            wrap: word-wrap;
+                        }
+                        if root.token-rows.length > 0: HorizontalLayout {
+                            spacing: 14px;
+                            vertical-stretch: 1;
+
+                            // Left: the holdings. Clicking an NFT row asks the
+                            // host to fetch and verify its bundle; a fungible
+                            // row has no artwork behind it, so it doesn't.
+                            ListView {
+                                horizontal-stretch: 1;
+                                vertical-stretch: 1;
+                                for row[i] in root.token-rows: Rectangle {
+                                    // Fixed height for the same reason as a
+                                    // transaction row: sizing a row from a child
+                                    // that is sized by the row is a binding loop.
+                                    height: 40px;
+                                    background: i == root.nft-selected ? #2a2a2a : transparent;
+                                    border-radius: 4px;
+                                    TouchArea {
+                                        enabled: row.is-nft;
+                                        mouse-cursor: row.is-nft ? MouseCursor.pointer : MouseCursor.default;
+                                        clicked => {
+                                            root.nft-selected = i;
+                                            root.open-nft(row.group);
+                                        }
+                                    }
+                                    HorizontalLayout {
+                                        spacing: 10px;
+                                        padding-left: 8px;
+                                        padding-right: 14px;
+                                        // NFTs are why this tab exists, so a
+                                        // wallet holding both kinds reads at a
+                                        // glance.
+                                        Text {
+                                            text: row.is-nft ? "\u{25c6}" : "\u{2022}";
+                                            color: row.is-nft ? root.coin-color : #8a8a8a;
+                                            font-size: 13px;
+                                            vertical-alignment: center;
+                                            width: 14px;
+                                        }
+                                        VerticalLayout {
+                                            horizontal-stretch: 1;
+                                            alignment: center;
+                                            Text {
+                                                text: row.name;
+                                                color: #e6e6e6;
+                                                font-size: 13px;
+                                                overflow: elide;
+                                            }
+                                            if row.ticker != "": Text {
+                                                text: row.ticker;
+                                                color: #8a8a8a;
+                                                font-size: 11px;
+                                            }
+                                        }
+                                        Text {
+                                            // Masked with the balances: a token
+                                            // holding says as much about the
+                                            // wallet as the header figure.
+                                            text: root.hide-balances ? root.balance-mask : row.held;
+                                            color: #e6e6e6;
+                                            font-family: "monospace";
+                                            font-size: 13px;
+                                            vertical-alignment: center;
+                                            horizontal-alignment: right;
+                                            width: 110px;
+                                        }
+                                    }
+                                }
+                            }
+
+                            // Right: the opened NFT.
+                            Rectangle {
+                                width: 300px;
+                                background: #1e1e1e;
+                                border-radius: 6px;
+                                VerticalLayout {
+                                    padding: 12px;
+                                    spacing: 8px;
+                                    alignment: start;
+
+                                    if root.nft-selected < 0: Text {
+                                        text: "Select an NFT to see its artwork.";
+                                        color: #8a8a8a;
+                                        font-size: 12px;
+                                        wrap: word-wrap;
+                                    }
+                                    if root.nft-busy: Text {
+                                        text: "Fetching and verifying\u{2026}";
+                                        color: #8a8a8a;
+                                        font-size: 12px;
+                                    }
+                                    if !root.nft-busy && root.nft-error != "": Text {
+                                        text: root.nft-error;
+                                        color: #e05c5c;
+                                        font-size: 12px;
+                                        wrap: word-wrap;
+                                    }
+
+                                    // Everything below is only ever shown for a
+                                    // bundle that matched the chain's hash — the
+                                    // host clears these the moment a fetch fails,
+                                    // so unverified bytes can't linger on screen
+                                    // under a verified badge.
+                                    if !root.nft-busy && root.nft-verified: Image {
+                                        source: root.nft-card;
+                                        image-fit: contain;
+                                        height: 240px;
+                                        horizontal-alignment: center;
+                                    }
+                                    if !root.nft-busy && root.nft-verified && root.nft-title != "": Text {
+                                        text: root.nft-title;
+                                        color: #e6e6e6;
+                                        font-size: 14px;
+                                        font-weight: 600;
+                                        wrap: word-wrap;
+                                    }
+                                    if !root.nft-busy && root.nft-verified && root.nft-author != "": Text {
+                                        text: "by " + root.nft-author;
+                                        color: #b0b0b0;
+                                        font-size: 12px;
+                                        wrap: word-wrap;
+                                    }
+                                    if !root.nft-busy && root.nft-verified && root.nft-series != "": Text {
+                                        text: "Series: " + root.nft-series;
+                                        color: #8a8a8a;
+                                        font-size: 12px;
+                                        wrap: word-wrap;
+                                    }
+                                    if !root.nft-busy && root.nft-verified && root.nft-category != "": Text {
+                                        text: "Category: " + root.nft-category;
+                                        color: #8a8a8a;
+                                        font-size: 12px;
+                                        wrap: word-wrap;
+                                    }
+                                    if !root.nft-busy && root.nft-verified && root.nft-info != "": Text {
+                                        text: root.nft-info;
+                                        color: #b0b0b0;
+                                        font-size: 12px;
+                                        wrap: word-wrap;
+                                    }
+                                    if !root.nft-busy && root.nft-verified && root.nft-license != "": Text {
+                                        text: "License: " + root.nft-license;
+                                        color: #8a8a8a;
+                                        font-size: 11px;
+                                        wrap: word-wrap;
+                                    }
+                                    // The claim this whole tab rests on: these
+                                    // bytes hash to the value the chain commits
+                                    // to, so this really is that NFT.
+                                    if !root.nft-busy && root.nft-verified: Text {
+                                        text: "\u{2713} Verified against the chain's hash";
+                                        color: #7ec27e;
+                                        font-size: 11px;
+                                        wrap: word-wrap;
+                                    }
+                                }
+                            }
+                        }
+                    }
+
                     if root.tab == 7 && root.has-stake: VerticalLayout {
                         spacing: 10px;
                         vertical-stretch: 1;

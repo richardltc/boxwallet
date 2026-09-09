@@ -688,6 +688,224 @@ pub const StablecoinInfo = struct {
     }
 };
 
+/// The widest group identifier BoxWallet stores. A Nexa group address is
+/// `<prefix>:<base32 payload>`; a *subgroup* (an NFT) carries 64 payload bytes
+/// (32 parent + 32 subgroup) rather than 32, which encodes to 104 base32
+/// characters plus an 8-character checksum. With the longest network prefix
+/// (`nexareg:`) that lands just under 128, which is the bound used here.
+pub const token_group_max = 128;
+
+/// What shape of group token a holding is.
+///
+/// `fungible` is a plain group: a currency-like token with a supply. `nft` is a
+/// *subgroup* — the group identifier carries an extra 32 bytes that are, by the
+/// NFT specification, the double-SHA256 of the token's data file. That hash is
+/// what makes an NFT verifiable: the artwork can be fetched from anywhere and
+/// still be proven to be the one the chain committed to.
+pub const TokenKind = enum { fungible, nft };
+
+/// One group-token holding in the wallet, normalized for display. Scalar-only
+/// with bounded buffers, like `WalletTx` — so a fixed-capacity cache of these
+/// can be memcpy'd across the poll-worker/UI-thread boundary with no per-entry
+/// allocation or `deinit`.
+///
+/// Amounts are in the token's *finest* unit (the daemon reports and accepts
+/// nothing else); `decimals` says where to put the point for display and is
+/// deliberately not applied here.
+pub const TokenHolding = struct {
+    /// The group identifier — the token's chain-wide handle, and the argument
+    /// every per-token RPC takes.
+    group_buf: [token_group_max]u8 = undefined,
+    group_len: usize = 0,
+    /// The token's ticker symbol (the daemon caps these at 8 characters).
+    ticker_buf: [16]u8 = undefined,
+    ticker_len: usize = 0,
+    /// The token's human name.
+    name_buf: [64]u8 = undefined,
+    name_len: usize = 0,
+    /// URL of the token description document, from the genesis transaction.
+    /// Empty when the issuer defined none.
+    url_buf: [256]u8 = undefined,
+    url_len: usize = 0,
+    /// The wallet's holding, in the token's finest unit.
+    balance: i64 = 0,
+    /// The token's total minted supply, in the same unit. A `1` here alongside
+    /// `decimals == 0` is the classic single-edition NFT.
+    mintage: i64 = 0,
+    /// Suggested display decimals. The daemon reports this as a string that is
+    /// empty for tokens whose genesis omitted it — that reads as 0.
+    decimals: u8 = 0,
+    kind: TokenKind = .fungible,
+    /// For `kind == .nft`, the subgroup bytes as lowercase hex: the
+    /// double-SHA256 the data file must hash to. Empty for a fungible group.
+    data_hash_buf: [64]u8 = undefined,
+    data_hash_len: usize = 0,
+
+    pub fn group(self: *const TokenHolding) []const u8 {
+        return self.group_buf[0..self.group_len];
+    }
+
+    pub fn setGroup(self: *TokenHolding, s: []const u8) void {
+        self.group_len = copyBounded(&self.group_buf, s);
+    }
+
+    pub fn ticker(self: *const TokenHolding) []const u8 {
+        return self.ticker_buf[0..self.ticker_len];
+    }
+
+    pub fn setTicker(self: *TokenHolding, s: []const u8) void {
+        self.ticker_len = copyBounded(&self.ticker_buf, s);
+    }
+
+    pub fn name(self: *const TokenHolding) []const u8 {
+        return self.name_buf[0..self.name_len];
+    }
+
+    pub fn setName(self: *TokenHolding, s: []const u8) void {
+        self.name_len = copyBounded(&self.name_buf, s);
+    }
+
+    pub fn url(self: *const TokenHolding) []const u8 {
+        return self.url_buf[0..self.url_len];
+    }
+
+    pub fn setUrl(self: *TokenHolding, s: []const u8) void {
+        self.url_len = copyBounded(&self.url_buf, s);
+    }
+
+    pub fn dataHash(self: *const TokenHolding) []const u8 {
+        return self.data_hash_buf[0..self.data_hash_len];
+    }
+
+    pub fn setDataHash(self: *TokenHolding, s: []const u8) void {
+        self.data_hash_len = copyBounded(&self.data_hash_buf, s);
+    }
+
+    /// The label to head the row with: the name when the issuer gave one, else
+    /// the ticker, else the bare group identifier — always something.
+    pub fn displayName(self: *const TokenHolding) []const u8 {
+        if (self.name_len > 0) return self.name();
+        if (self.ticker_len > 0) return self.ticker();
+        return self.group();
+    }
+};
+
+/// The metadata inside an NFT's data file (`info.json`), plus where its card
+/// art was unpacked to. Scalar-only with bounded buffers for the same reason as
+/// `TokenHolding`; the strings are truncated rather than allocated, since every
+/// one of them is shown in a fixed-width row or panel.
+///
+/// `verified` is the field that matters: it says the bytes this was read from
+/// hashed to the value the group identifier commits to. A front-end must not
+/// present an unverified bundle as the chain's NFT.
+pub const NftMeta = struct {
+    title_buf: [96]u8 = undefined,
+    title_len: usize = 0,
+    author_buf: [64]u8 = undefined,
+    author_len: usize = 0,
+    series_buf: [64]u8 = undefined,
+    series_len: usize = 0,
+    category_buf: [48]u8 = undefined,
+    category_len: usize = 0,
+    /// The work's description. May be HTML in the source document; front-ends
+    /// show it as text.
+    info_buf: [512]u8 = undefined,
+    info_len: usize = 0,
+    license_buf: [192]u8 = undefined,
+    license_len: usize = 0,
+    /// Absolute path to the unpacked card image, or empty when the bundle
+    /// carried none. The file is a plain image on disk, so either front-end can
+    /// load it (the GUI renders it; the TUI shows the path).
+    card_path_buf: [512]u8 = undefined,
+    card_path_len: usize = 0,
+    /// True iff the downloaded bundle's double-SHA256 matched the subgroup
+    /// identifier. Never fabricate this — see the type comment.
+    verified: bool = false,
+
+    pub fn title(self: *const NftMeta) []const u8 {
+        return self.title_buf[0..self.title_len];
+    }
+
+    pub fn setTitle(self: *NftMeta, s: []const u8) void {
+        self.title_len = copyBounded(&self.title_buf, s);
+    }
+
+    pub fn author(self: *const NftMeta) []const u8 {
+        return self.author_buf[0..self.author_len];
+    }
+
+    pub fn setAuthor(self: *NftMeta, s: []const u8) void {
+        self.author_len = copyBounded(&self.author_buf, s);
+    }
+
+    pub fn series(self: *const NftMeta) []const u8 {
+        return self.series_buf[0..self.series_len];
+    }
+
+    pub fn setSeries(self: *NftMeta, s: []const u8) void {
+        self.series_len = copyBounded(&self.series_buf, s);
+    }
+
+    pub fn category(self: *const NftMeta) []const u8 {
+        return self.category_buf[0..self.category_len];
+    }
+
+    pub fn setCategory(self: *NftMeta, s: []const u8) void {
+        self.category_len = copyBounded(&self.category_buf, s);
+    }
+
+    pub fn info(self: *const NftMeta) []const u8 {
+        return self.info_buf[0..self.info_len];
+    }
+
+    pub fn setInfo(self: *NftMeta, s: []const u8) void {
+        self.info_len = copyBounded(&self.info_buf, s);
+    }
+
+    pub fn license(self: *const NftMeta) []const u8 {
+        return self.license_buf[0..self.license_len];
+    }
+
+    pub fn setLicense(self: *NftMeta, s: []const u8) void {
+        self.license_len = copyBounded(&self.license_buf, s);
+    }
+
+    pub fn cardPath(self: *const NftMeta) []const u8 {
+        return self.card_path_buf[0..self.card_path_len];
+    }
+
+    pub fn setCardPath(self: *NftMeta, s: []const u8) void {
+        self.card_path_len = copyBounded(&self.card_path_buf, s);
+    }
+};
+
+/// Copy `s` into `buf`, truncating at its capacity, and report how much landed.
+/// Every bounded setter above funnels through this so truncation behaves the
+/// same everywhere instead of being re-derived per field.
+fn copyBounded(buf: []u8, s: []const u8) usize {
+    const n = @min(s.len, buf.len);
+    @memcpy(buf[0..n], s[0..n]);
+    return n;
+}
+
+test "TokenHolding setters truncate at the buffer instead of overflowing" {
+    var h: TokenHolding = .{};
+    h.setTicker("A" ** 40);
+    try std.testing.expectEqual(@as(usize, 16), h.ticker().len);
+    h.setName("NiftyArt");
+    try std.testing.expectEqualStrings("NiftyArt", h.name());
+}
+
+test "displayName prefers the name, then the ticker, then the group id" {
+    var h: TokenHolding = .{};
+    h.setGroup("nexa:tzabc");
+    try std.testing.expectEqualStrings("nexa:tzabc", h.displayName());
+    h.setTicker("NIFTY");
+    try std.testing.expectEqualStrings("NIFTY", h.displayName());
+    h.setName("NiftyArt");
+    try std.testing.expectEqualStrings("NiftyArt", h.displayName());
+}
+
 /// How far a wallet rescan has progressed — `scanned` blocks of `target`. Reported
 /// by an in-daemon wallet that re-scans the chain after a restore (Ergo, whose node
 /// only scans forward, so a restored seed's history is found by an explicit

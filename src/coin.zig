@@ -558,6 +558,47 @@ pub const Coin = struct {
         block_file_suffix: []const u8 = ".dat",
     };
 
+    /// An optional **group-token** capability — tokens and NFTs issued on the
+    /// coin's own chain and held in the same wallet as the coin (Nexa's group
+    /// tokenization). Coins with one get a dedicated detail-pane tab (named
+    /// `name`) listing what the wallet holds and, for an NFT, the artwork and
+    /// metadata behind it.
+    ///
+    /// Amounts are in each token's own finest unit — `models.TokenHolding`
+    /// carries the `decimals` needed to place the point, and deliberately does
+    /// not apply it, because the daemon accepts and reports nothing else.
+    ///
+    /// The split between the two hooks is deliberate. `list` is cheap and local
+    /// (one RPC to the coin's own daemon) and drives the tab's list. `fetch_nft`
+    /// reaches out to the issuer's host over the network for a bundle that can
+    /// run to tens of megabytes, so it is only ever called for the one NFT a
+    /// user opened, never for the list.
+    pub const Tokens = struct {
+        /// Display name — the tab label ("Tokens").
+        name: []const u8,
+        /// Everything the wallet holds, newest-first where the daemon orders
+        /// them, capped at `limit`. Caller owns the returned slice.
+        list: *const fn (
+            allocator: std.mem.Allocator,
+            auth: models.CoinAuth,
+            limit: usize,
+        ) anyerror![]models.TokenHolding,
+        /// Fetch, verify and unpack one NFT's data bundle, returning its
+        /// metadata and the on-disk path of its card art. `cache_root` is a
+        /// BoxWallet-owned directory the bundle is unpacked under, so a second
+        /// view costs no network.
+        ///
+        /// The returned `models.NftMeta.verified` is the load-bearing field: it
+        /// says the downloaded bytes hashed to the value the chain commits to.
+        /// A bundle that fails that check is an **error**, never a result with
+        /// the flag cleared — see `src/nft.zig`.
+        fetch_nft: *const fn (
+            allocator: std.mem.Allocator,
+            holding: models.TokenHolding,
+            cache_root: []const u8,
+        ) anyerror!models.NftMeta,
+    };
+
     /// One lock tier a stablecoin can be minted at: longer locks demand less
     /// collateral. `duration` is the human label ("30 days", "10 years");
     /// `ratio_pct` the required collateral ratio in percent (500 == 500%, i.e.
@@ -1194,6 +1235,10 @@ pub const Coin = struct {
         /// coins with no chain-issued stablecoin. `stablecoin`/`supportsStablecoin`
         /// key off this; non-null lights up the coin's stablecoin tab.
         stablecoin: ?*const Stablecoin = null,
+        /// Optional: the group-token capability (Nexa's tokens and NFTs). Null
+        /// for coins with no chain-issued tokens. `tokens`/`supportsTokens` key
+        /// off this; non-null lights up the coin's Tokens tab.
+        tokens: ?*const Tokens = null,
         /// Optional: the block-index rebuild capability (the repair for a daemon
         /// that aborts during init on a corrupt index). Null for coins with no
         /// such repair. `reindex`/`supportsReindex` key off this.
@@ -1926,6 +1971,18 @@ pub const Coin = struct {
     /// (`supportsStablecoin` false). Callers use the fn pointers directly.
     pub fn stablecoin(self: Coin) ?*const Stablecoin {
         return self.vtable.stablecoin;
+    }
+
+    /// Whether this coin issues chain-native group tokens and NFTs (drives the
+    /// Tokens tab — Nexa). True iff the coin wires `tokens`.
+    pub fn supportsTokens(self: Coin) bool {
+        return self.vtable.tokens != null;
+    }
+
+    /// The group-token capability, or null when the coin has none
+    /// (`supportsTokens` false). Callers use the fn pointers directly.
+    pub fn tokens(self: Coin) ?*const Tokens {
+        return self.vtable.tokens;
     }
 
     /// Whether this coin's daemon can rebuild its block index (see `Reindex`).
