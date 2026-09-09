@@ -21,7 +21,12 @@ pub const Nexa = struct {
     pub const coin_color = "#FEE043";
     /// This coin's id on the price host, for the USD quote beside its
     /// balance (see `src/price.zig`).
-    pub const price_id = "nexa";
+    ///
+    /// **`nexacoin`, not `nexa`.** The host also carries a stale `nexa` entry —
+    /// market cap 0, no 24h change — that prices the coin some 865x too high;
+    /// `nexacoin` is the one whose homepage is nexa.org. "The host lists it"
+    /// and "the host's number is right" are different claims: see `price.Source`.
+    pub const price_id = "nexacoin";
     /// Donation address for BoxWallet development, in Nexa's own
     /// currency.
     pub const tip_address = "nexa:nqtsq5g57va7z3jh78vk606nj90m629w9uwrrtkwnejj3lk6";
