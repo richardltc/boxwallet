@@ -2407,6 +2407,150 @@ export fn bw_mining_failure_text(err_name: ?[*:0]const u8, buf: ?[*]u8, cap: usi
 
 // ---- disk usage (for the coin's "disk used" gauge) --------------------------
 
+// ---- group tokens and NFTs (Nexa) -------------------------------------------
+//
+// Amounts here are in each token's own **finest unit**, never scaled — a token
+// declares its own `decimals`, and applying them is the front-end's job at the
+// moment of display. Scaling on this side would bake one token's precision into
+// the ABI.
+//
+// Nexa's wallet lives in its daemon, so these take the *daemon's* auth
+// (`ctxAuth`) exactly like the stablecoin surface, not `walletAuth`.
+
+/// One group-token holding. Strings are NUL-terminated fixed fields so the
+/// whole row crosses the boundary by value, with no ownership and nothing for
+/// the caller to free.
+pub const BwToken = extern struct {
+    /// The chain-wide group identifier — also the handle `bw_nft_fetch` takes.
+    group: [129]u8,
+    ticker: [17]u8,
+    name: [65]u8,
+    /// The wallet's holding and the token's total supply, both in the token's
+    /// finest unit.
+    balance: i64,
+    mintage: i64,
+    /// Where the decimal point goes for display. 0 for an NFT.
+    decimals: u8,
+    /// Non-zero when this holding is a non-fungible token: its group identifier
+    /// carries the chain's commitment to a specific data file.
+    is_nft: c_int,
+};
+
+/// An NFT's metadata, plus where its card art was unpacked on disk.
+///
+/// `verified` is the field that matters. It is non-zero only when the fetched
+/// bundle's double-SHA256 matched the value the chain commits to. A front-end
+/// must not present an unverified bundle as the chain's artwork — and it never
+/// has to decide that itself, because a bundle that fails the check is an error
+/// from `bw_nft_fetch`, not a row with the flag cleared.
+pub const BwNftMeta = extern struct {
+    title: [97]u8,
+    author: [65]u8,
+    series: [65]u8,
+    category: [49]u8,
+    info: [513]u8,
+    license: [193]u8,
+    /// Absolute path to the card image on disk, empty when the bundle had none.
+    /// A plain image file: load it directly.
+    card_path: [513]u8,
+    verified: c_int,
+};
+
+/// Whether this coin lights up the Tokens tab (chain-native group tokens and
+/// NFTs). Cheap; UI-thread safe.
+export fn bw_coin_supports_tokens(idx: usize) c_int {
+    const coin = coinByIndex(idx) orelse return 0;
+    return if (coin.supportsTokens()) 1 else 0;
+}
+
+/// The tokens tab's display name ("Tokens"). 0 for a coin without the feature.
+export fn bw_tokens_name(idx: usize, buf: ?[*]u8, cap: usize) usize {
+    const b = buf orelse return 0;
+    const coin = coinByIndex(idx) orelse return 0;
+    const tk = coin.tokens() orelse return 0;
+    return copyOut(b[0..cap], tk.name);
+}
+
+/// The wallet's group-token holdings; returns how many were written. 0 on any
+/// failure — an unreadable list is an empty one, not worth interrupting for.
+///
+/// One local RPC against the coin's own daemon. Cheap enough to poll: the
+/// artwork behind an NFT row is *not* fetched here.
+export fn bw_tokens_list(ctx: ?*Ctx, idx: usize, out: ?*BwToken, cap: usize) usize {
+    const c = ctx orelse return 0;
+    const o = out orelse return 0;
+    if (cap == 0) return 0;
+    const coin = coinByIndex(idx) orelse return 0;
+    const tk = coin.tokens() orelse return 0;
+
+    var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const io = sharedIo();
+
+    const auth = ctxAuth(a, io, coin, c) catch return 0;
+    const holdings = tk.list(a, auth, cap) catch return 0;
+    const n = @min(holdings.len, cap);
+    const dst = @as([*]BwToken, @ptrCast(o))[0..n];
+    for (dst, holdings[0..n]) |*d, *h| {
+        d.* = std.mem.zeroes(BwToken);
+        setField(&d.group, h.group());
+        setField(&d.ticker, h.ticker());
+        setField(&d.name, h.name());
+        d.balance = h.balance;
+        d.mintage = h.mintage;
+        d.decimals = h.decimals;
+        d.is_nft = if (h.kind == .nft) 1 else 0;
+    }
+    return n;
+}
+
+/// Fetch, verify and unpack the NFT identified by `group_id`, filling `out`.
+/// 0 on success, -1 on any failure — including the one that matters most, a
+/// bundle whose bytes are not the file the chain committed to.
+///
+/// **Blocking and slow**: this crosses the network for a bundle that can run to
+/// tens of megabytes. Call it from a worker thread, never the UI thread, and
+/// only for an NFT the user actually opened. The unpacked result is cached on
+/// disk under BoxWallet's own install root, so a second call for the same NFT
+/// costs no network at all.
+export fn bw_nft_fetch(ctx: ?*Ctx, idx: usize, group_id: ?[*:0]const u8, out: ?*BwNftMeta) c_int {
+    const c = ctx orelse return -1;
+    const o = out orelse return -1;
+    const gid_z = group_id orelse return -1;
+    const coin = coinByIndex(idx) orelse return -1;
+    const tk = coin.tokens() orelse return -1;
+    const gid = std.mem.span(gid_z);
+
+    var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const io = sharedIo();
+
+    // Re-read the holding rather than taking the caller's word for its
+    // commitment hash: the value a downloaded bundle is checked against has to
+    // come from the chain, not from across the ABI.
+    const auth = ctxAuth(a, io, coin, c) catch return -1;
+    const holdings = tk.list(a, auth, 256) catch return -1;
+    const holding = for (holdings) |*h| {
+        if (std.mem.eql(u8, h.group(), gid)) break h;
+    } else return -1;
+
+    const cache_root = std.fs.path.join(a, &.{ c.install_root, "nft-cache" }) catch return -1;
+    const meta = tk.fetch_nft(a, holding.*, cache_root) catch return -1;
+
+    o.* = std.mem.zeroes(BwNftMeta);
+    setField(&o.title, meta.title());
+    setField(&o.author, meta.author());
+    setField(&o.series, meta.series());
+    setField(&o.category, meta.category());
+    setField(&o.info, meta.info());
+    setField(&o.license, meta.license());
+    setField(&o.card_path, meta.cardPath());
+    o.verified = if (meta.verified) 1 else 0;
+    return 0;
+}
+
 // ---- the chain-native stablecoin (DigiByte's DigiDollar) --------------------
 //
 // Money here is integer **cents** throughout, never a float — these figures are

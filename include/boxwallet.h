@@ -168,6 +168,7 @@ int     bw_coin_wordmark(size_t idx, BwWordmark *out);
 
 int     bw_coin_supports_mining(size_t idx);      /* 0/1 — shows the Mining tab */
 int     bw_coin_supports_stablecoin(size_t idx);  /* 0/1 — shows the DigiDollar tab */
+int     bw_coin_supports_tokens(size_t idx);      /* 0/1 — shows the Tokens tab (Nexa) */
 
 /* What this coin's managed wallet can do, as a bitfield — 0 means it has no
  * external wallet at all. One call rather than six so a coin added later can't
@@ -367,6 +368,52 @@ size_t  bw_sc_positions(bw_ctx *ctx, size_t idx, BwScPosition *out, size_t cap);
 /* Show the collateral estimate BEFORE the confirm step: minting commits it for
  * the tier's whole term, and the amount isn't obvious from the figure minted. */
 int     bw_sc_estimate_collateral(bw_ctx *ctx, size_t idx, int64_t cents, uint8_t tier, double *out);
+
+/* ---- group tokens and NFTs (Nexa) ------------------------------------------
+ *
+ * Only meaningful where bw_coin_supports_tokens is 1.
+ *
+ * Amounts are in each token's own FINEST unit and are never scaled here — a
+ * token declares its own `decimals`, and putting the point in is the caller's
+ * job at the moment of display.
+ */
+
+typedef struct {
+    char    group[129];   /* the chain-wide group id — the handle bw_nft_fetch takes */
+    char    ticker[17];
+    char    name[65];
+    int64_t balance;      /* the wallet's holding, in the token's finest unit */
+    int64_t mintage;      /* the token's total supply, same unit */
+    uint8_t decimals;     /* where the point goes for display; 0 for an NFT */
+    int     is_nft;       /* 0/1 — its group id carries the chain's data commitment */
+} BwToken;
+
+/* An NFT's metadata and where its card art was unpacked.
+ *
+ * `verified` is non-zero only when the fetched bundle's double-SHA256 matched
+ * the value the chain commits to. Never present an unverified bundle as the
+ * chain's artwork — though you never have to decide that yourself, because a
+ * bundle failing the check is a -1 from bw_nft_fetch, not a row with the flag
+ * cleared. */
+typedef struct {
+    char title[97];
+    char author[65];
+    char series[65];
+    char category[49];
+    char info[513];
+    char license[193];
+    char card_path[513];  /* absolute path to a plain image file; empty if none */
+    int  verified;
+} BwNftMeta;
+
+size_t  bw_tokens_name(size_t idx, char *buf, size_t cap);
+/* One local RPC — cheap enough to poll. Does NOT touch the network. */
+size_t  bw_tokens_list(bw_ctx *ctx, size_t idx, BwToken *out, size_t cap);
+/* BLOCKING AND SLOW: crosses the network for a bundle that can run to tens of
+ * megabytes. Call from a worker thread, never the UI thread, and only for an
+ * NFT the user opened. The result is cached on disk, so a repeat call for the
+ * same NFT costs no network. Returns 0 on success, -1 on any failure. */
+int     bw_nft_fetch(bw_ctx *ctx, size_t idx, const char *group_id, BwNftMeta *out);
 
 /* Same tri-state as bw_wallet_send: 0 broadcast (out = txid), 1 the daemon
  * rejected it (out = its own reason, verbatim), -1 transport failure. A

@@ -113,6 +113,10 @@ static constexpr size_t TX_CAP = 20;
 // one per term, and a term is 30 days — so this is a deep history, not a page.
 static constexpr size_t STAKE_CAP = 20;
 
+// How many token holdings the Tokens list holds. Bounded like the transaction
+// cache, and matching the TUI's own cap so both front-ends show the same list.
+static constexpr size_t TOKEN_CAP = 24;
+
 // The receive address, cached per coin. This cache — not the poll timer — is
 // what decides when bw_wallet_receive_address is called, because the underlying
 // RPC rotates the address once it has been paid. `g_want_new_addr` is the user
@@ -634,6 +638,61 @@ make_stake_rows(const std::vector<BwStake> &stakes, int decimals, const std::str
     return std::make_shared<slint::VectorModel<StakeRow>>(std::move(rows));
 }
 
+// Blank the NFT panel: no artwork, no metadata, no verified badge.
+//
+// Called whenever what the panel claims could stop being true — a coin change,
+// a new row opened, a failed fetch. The badge asserts that the bytes on screen
+// hash to the value the chain commits to, so it must never outlive the one
+// fetch that proved it.
+static void clear_nft_panel(const AppWindow *ui)
+{
+    ui->set_nft_selected(-1);
+    ui->set_nft_busy(false);
+    ui->set_nft_verified(false);
+    ui->set_nft_error(ss(""));
+    ui->set_nft_title(ss(""));
+    ui->set_nft_author(ss(""));
+    ui->set_nft_series(ss(""));
+    ui->set_nft_category(ss(""));
+    ui->set_nft_info(ss(""));
+    ui->set_nft_license(ss(""));
+    ui->set_nft_card(slint::Image());
+}
+
+// Turn the core's token holdings into display rows.
+//
+// The core reports every amount in the token's own finest unit, because that is
+// the only unit the daemon speaks. Putting the decimal point in is a display
+// decision, so it happens here — with each token's own `decimals`, never the
+// coin's.
+static std::shared_ptr<slint::VectorModel<TokenRow>>
+make_token_rows(const std::vector<BwToken> &tokens)
+{
+    std::vector<TokenRow> rows;
+    rows.reserve(tokens.size());
+    for (const BwToken &t : tokens) {
+        TokenRow r{}; // value-initialised — see the note on NavCoin
+        // The issuer's name, else its ticker, else the bare group id: always
+        // something to read, mirroring TokenHolding::displayName in the core.
+        const char *label = t.name[0] ? t.name : (t.ticker[0] ? t.ticker : t.group);
+        r.name = ss(label);
+        r.ticker = ss(t.ticker);
+        r.is_nft = (t.is_nft != 0);
+        r.group = ss(t.group);
+
+        if (t.decimals == 0) {
+            r.held = ss(std::to_string(t.balance));
+        } else {
+            double scale = 1.0;
+            for (uint8_t i = 0; i < t.decimals; ++i)
+                scale *= 10.0;
+            r.held = ss(format_amount_trimmed(static_cast<double>(t.balance) / scale, t.decimals));
+        }
+        rows.push_back(std::move(r));
+    }
+    return std::make_shared<slint::VectorModel<TokenRow>>(std::move(rows));
+}
+
 // Turn the core's scalar transactions into display rows.
 // Turn an address into a scannable QR image.
 //
@@ -875,6 +934,7 @@ static void apply_coin_metadata(const AppWindow *ui, bw_ctx *ctx, int idx)
 
     ui->set_has_mining(bw_coin_supports_mining(idx) != 0);
     ui->set_has_stablecoin(bw_coin_supports_stablecoin(idx) != 0);
+    ui->set_has_tokens(bw_coin_supports_tokens(idx) != 0);
     // Which wallet tabs this coin earns. Pure metadata, so it's settled here at
     // selection time rather than waiting up to two seconds for the first poll —
     // the tab strip must not flicker its way into shape.
@@ -965,6 +1025,11 @@ static void apply_coin_metadata(const AppWindow *ui, bw_ctx *ctx, int idx)
     ui->set_balance_avail(ss("—"));
     ui->set_has_pending(false);
     ui->set_stake_rows(std::make_shared<slint::VectorModel<StakeRow>>(std::vector<StakeRow>{}));
+    // Clear the whole Tokens tab on a coin change. The NFT panel in particular
+    // must not survive: its verified badge is a claim about one specific token,
+    // and leaving it up under another coin's list would make that claim falsely.
+    ui->set_token_rows(std::make_shared<slint::VectorModel<TokenRow>>(std::vector<TokenRow>{}));
+    clear_nft_panel(ui);
     ui->set_rescan_frac(0);
     ui->set_receive_address(ss(""));
     ui->set_receive_qr(slint::Image());
@@ -1803,6 +1868,67 @@ int main(int argc, char **argv)
     // Live collateral estimate as the amount or tier changes. Debounced only by
     // the user's typing — it's one RPC and the answer is what makes a mint's
     // real cost visible before committing.
+    // Open one NFT: fetch its data bundle, prove it against the hash the chain
+    // commits to, and show what came out.
+    //
+    // On a worker because the bundle comes from the issuer's own host and can
+    // run to tens of megabytes. Only ever fired by a click on an NFT row, never
+    // on a timer — and `bw_nft_fetch` caches the unpacked result on disk, so
+    // re-opening the same NFT costs no network.
+    ui->on_open_nft([weak, ctx](slint::SharedString group) {
+        int coin = g_selected.load();
+        if (coin < 0)
+            return;
+        // Nothing from a previous NFT may stay on screen while this one loads:
+        // the panel's verified badge is a claim about one specific token.
+        if (auto h = weak.lock()) {
+            const int keep = (*h)->get_nft_selected();
+            clear_nft_panel(&**h);
+            (*h)->set_nft_selected(keep);
+            (*h)->set_nft_busy(true);
+        }
+        std::string gid(group);
+        std::thread([weak, ctx, coin, gid]() {
+            WorkerGuard wg;
+            BwNftMeta meta;
+            std::memset(&meta, 0, sizeof meta);
+            const bool ok = bw_nft_fetch(ctx, static_cast<size_t>(coin), gid.c_str(), &meta) == 0;
+
+            // Decode the card off the UI thread too: it is a real image file,
+            // and a 2 MB PNG decoded on the event loop is a visible stall.
+            slint::Image card;
+            if (ok && meta.card_path[0]) {
+                card = slint::Image::load_from_path(ss(meta.card_path));
+            }
+            post_to_ui([weak, meta, card, ok]() {
+                auto h = weak.lock();
+                if (!h)
+                    return;
+                (*h)->set_nft_busy(false);
+                if (!ok) {
+                    // The core refuses a bundle that isn't the chain's file, so
+                    // a failure here covers both "couldn't fetch" and "fetched
+                    // something that isn't this NFT". Either way there is
+                    // nothing safe to show.
+                    (*h)->set_nft_verified(false);
+                    (*h)->set_nft_error(ss("Could not fetch and verify this NFT's data."));
+                    return;
+                }
+                (*h)->set_nft_error(ss(""));
+                (*h)->set_nft_title(ss(meta.title));
+                (*h)->set_nft_author(ss(meta.author));
+                (*h)->set_nft_series(ss(meta.series));
+                (*h)->set_nft_category(ss(meta.category));
+                (*h)->set_nft_info(ss(meta.info));
+                (*h)->set_nft_license(ss(meta.license));
+                (*h)->set_nft_card(card);
+                // Last, and only from the core's own verdict — never inferred
+                // from having got this far.
+                (*h)->set_nft_verified(meta.verified != 0);
+            });
+        }).detach();
+    });
+
     ui->on_sc_estimate_request([weak, ctx](slint::SharedString amount, int tier) {
         int coin = g_selected.load();
         if (coin < 0)
@@ -3130,6 +3256,7 @@ int main(int argc, char **argv)
             const bool has_tx_cap      = bw_coin_supports_transactions(coin) != 0;
             const bool has_recv_cap    = bw_coin_supports_receive_address(coin) != 0;
             const bool has_stake_cap   = bw_coin_supports_stake_list(coin) != 0;
+            const bool has_tokens_cap  = bw_coin_supports_tokens(coin) != 0;
             const bool has_send_cap    = bw_coin_supports_send(coin) != 0;
 
             // When the wallet reads are answerable. The two wallet shapes differ,
@@ -3165,6 +3292,7 @@ int main(int argc, char **argv)
             bool rescanning = false;
             std::vector<BwWalletTx> txs;
             std::vector<BwStake> stakes;
+            std::vector<BwToken> tokens;
             std::string recv_addr;
             if (reads_ok) {
                 if (has_balance_cap)
@@ -3191,6 +3319,16 @@ int main(int argc, char **argv)
                     BwStake stake_buf[STAKE_CAP];
                     size_t ns = bw_wallet_stakes(ctx, coin, stake_buf, STAKE_CAP);
                     stakes.assign(stake_buf, stake_buf + ns);
+                }
+
+                // The wallet's group tokens and NFTs. One local RPC, same
+                // shape as the reads above — the artwork behind an NFT row is
+                // NOT fetched here; that crosses the network for megabytes and
+                // only happens when the user opens a row.
+                if (has_tokens_cap) {
+                    BwToken tok_buf[TOKEN_CAP];
+                    size_t nt = bw_tokens_list(ctx, coin, tok_buf, TOKEN_CAP);
+                    tokens.assign(tok_buf, tok_buf + nt);
                 }
 
                 // The address is fetched ONCE and then cached, never on this
@@ -3487,7 +3625,7 @@ int main(int argc, char **argv)
                         sc_vaults, sc_txs, sc_redeemable, sc_vault_ids, sc_vault_cents,
                         ms, hashrate, ew_flags, wallet_state, bal, have_balance,
                         rp, rescanning, txs, stakes, recv_addr, decimals, wallet_svc_err, can_send,
-                        rpc_ok, busy, stopping, coin]() {
+                        rpc_ok, busy, stopping, coin, tokens]() {
                 auto h = weak.lock();
                 if (!h)
                     return;
@@ -3562,6 +3700,8 @@ int main(int argc, char **argv)
                     }
                     (*h)->set_tx_rows(
                         make_tx_rows(txs, decimals, bw_coin_supports_stake(coin) != 0));
+                    if (bw_coin_supports_tokens(coin) != 0)
+                        (*h)->set_token_rows(make_token_rows(tokens));
                     if (bw_coin_supports_stake_list(coin) != 0) {
                         char ab[16];
                         size_t an = bw_coin_abbrev(coin, ab, sizeof ab);

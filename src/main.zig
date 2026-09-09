@@ -82,6 +82,7 @@ test {
     _ = @import("extwallet.zig");
     _ = @import("mining.zig");
     _ = @import("price.zig");
+    _ = @import("nft.zig");
     _ = @import("coins/nexa.zig");
     _ = @import("coins/divi.zig");
     _ = @import("coins/pivx.zig");

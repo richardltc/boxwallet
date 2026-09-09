@@ -344,6 +344,7 @@ const DetailTab = enum {
     mining,
     digidollar,
     staking,
+    tokens,
 
     fn label(self: DetailTab) []const u8 {
         return switch (self) {
@@ -355,6 +356,7 @@ const DetailTab = enum {
             .mining => "Mining",
             .digidollar => "DigiDollar",
             .staking => "Staking",
+            .tokens => "Tokens",
         };
     }
 };
@@ -366,6 +368,7 @@ const TabCaps = struct {
     mining: bool = false,
     stablecoin: bool = false,
     staking: bool = false,
+    tokens: bool = false,
 
     fn of(coin: Coin) TabCaps {
         return .{
@@ -376,6 +379,7 @@ const TabCaps = struct {
             // there. The list is the tab's body, and its absence is a shorter
             // page, not a missing tab.
             .staking = coin.supportsStakeAction(),
+            .tokens = coin.supportsTokens(),
         };
     }
 };
@@ -387,6 +391,7 @@ fn tabVisible(t: DetailTab, caps: TabCaps) bool {
         .mining => caps.mining,
         .digidollar => caps.stablecoin,
         .staking => caps.staking,
+        .tokens => caps.tokens,
         else => true,
     };
 }
@@ -898,6 +903,17 @@ const StablecoinOp = enum { estimate, mint, send, redeem };
 /// per coin for the stablecoin tab. Bounded like `tx_cache_cap`, per the
 /// memory rule.
 const sc_tx_cache_cap: usize = 10;
+
+/// How many group-token holdings are cached per coin for the Tokens tab.
+/// Bounded like `tx_cache_cap` so a wallet holding hundreds of tokens still
+/// costs a fixed slice of the Activity rather than growing it.
+const token_cache_cap: usize = 24;
+
+/// How far the Tokens tab has got with the NFT the user opened. Only one NFT's
+/// metadata is ever resident: bundles are fetched on demand and unpacked to
+/// disk, so a slot per row would cost kilobytes per coin to hold something
+/// nobody is looking at.
+const NftView = enum { idle, loading, ready, failed };
 const sc_pos_cache_cap: usize = 8;
 
 /// The stablecoin (DigiDollar) prompt — opened by `enter` on the stablecoin
@@ -1401,6 +1417,39 @@ const Activity = struct {
     // UI loads it with acquire, and that pairing publishes
     // `sc_ok`/`sc_estimate`/`sc_result_buf`.
     sc_thread: ?std.Thread = null,
+
+    // --- Tokens tab ----------------------------------------------------------
+    // The wallet's group-token holdings, staged by the poll worker exactly like
+    // the transaction cache, plus the one NFT the user opened. Fetching an NFT
+    // bundle crosses the network for tens of megabytes, so it is never part of
+    // the poll — a separate short-lived worker runs it on the user's key and
+    // publishes through the `nft_done` release/acquire edge.
+    token_buf: [token_cache_cap]models.TokenHolding = undefined,
+    token_count: usize = 0,
+    poll_token_buf: [token_cache_cap]models.TokenHolding = undefined,
+    poll_token_count: usize = 0,
+    /// Which row the tab's cursor is on (indexes `token_buf`).
+    token_sel: usize = 0,
+    nft_thread: ?std.Thread = null,
+    nft_done: std.atomic.Value(bool) = .init(false),
+    nft_view: NftView = .idle,
+    /// The opened NFT's metadata. Only meaningful once `nft_view` is `.ready`.
+    nft_meta: models.NftMeta = .{},
+    /// The group identifier `nft_meta` belongs to, so moving the cursor off the
+    /// opened row can't leave one token's artwork sitting under another's.
+    nft_group_buf: [models.token_group_max]u8 = undefined,
+    nft_group_len: usize = 0,
+    /// Why a fetch failed, shown verbatim rather than as a generic "failed" —
+    /// an unreachable host and a bundle that isn't this NFT are very different
+    /// things, and only one of them is worth retrying.
+    nft_err_buf: [128]u8 = undefined,
+    nft_err_len: usize = 0,
+    /// The holding the in-flight fetch is for, copied in before the worker
+    /// spawns — the poll rewrites `token_buf` wholesale, so the worker must not
+    /// read the row out from under itself.
+    nft_target: models.TokenHolding = .{},
+    /// Whether the finished fetch succeeded. Published by the `nft_done` edge.
+    nft_ok: bool = false,
     /// Which op is in flight (routes the worker).
     sc_op: StablecoinOp = .estimate,
     /// The amount for the in-flight op, in integer cents, copied in before spawn.
@@ -2332,6 +2381,53 @@ const Activity = struct {
     /// Stablecoin worker. Runs one DigiDollar RPC (estimate / mint / send /
     /// redeem) on a private arena and publishes the outcome, reaped by the UI
     /// once `sc_done` is observed. Same shape as `runSend`.
+    /// Worker: fetch, verify and unpack the opened NFT's bundle. Runs on a
+    /// private arena so its working set is released the moment it finishes,
+    /// and publishes through the `nft_done` release edge.
+    fn runNft(self: *Activity) void {
+        var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+        defer arena.deinit();
+        const a = arena.allocator();
+
+        if (self.doNft(a)) |meta| {
+            self.nft_meta = meta;
+            self.nft_ok = true;
+        } else |err| {
+            self.nft_ok = false;
+            self.stashNftError(nftErrorText(err));
+        }
+        self.nft_done.store(true, .release);
+    }
+
+    /// The fetch itself. The cache lives under BoxWallet's own install root —
+    /// never the coin's data directory, which belongs to the daemon (and
+    /// possibly to another app) and must not grow files BoxWallet invented.
+    fn doNft(self: *Activity, a: std.mem.Allocator) !models.NftMeta {
+        const tk = self.coin.tokens() orelse return error.Unsupported;
+        const cache_root = try std.fs.path.join(a, &.{ self.install_root, "nft-cache" });
+        return tk.fetch_nft(a, self.nft_target, cache_root);
+    }
+
+    /// A reason the user can act on. A hash mismatch means the host served
+    /// something that is not this NFT — worth saying plainly, because it is the
+    /// one failure that retrying will not fix.
+    fn nftErrorText(err: anyerror) []const u8 {
+        return switch (err) {
+            error.HashMismatch => "the downloaded file is not this NFT (its hash doesn't match the chain)",
+            error.NotAnNftBundle => "the downloaded file isn't in the NFT data format",
+            error.NoTokenDescriptionUrl => "this token's issuer published no location for its data",
+            error.NotAnNft => "this token carries no NFT data",
+            else => @errorName(err),
+        };
+    }
+
+    /// Stash a fetch failure for the Tokens tab, truncated to the buffer.
+    fn stashNftError(self: *Activity, msg: []const u8) void {
+        const n = @min(msg.len, self.nft_err_buf.len);
+        @memcpy(self.nft_err_buf[0..n], msg[0..n]);
+        self.nft_err_len = n;
+    }
+
     fn runStablecoin(self: *Activity) void {
         var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
         defer arena.deinit();
@@ -2708,6 +2804,13 @@ const Activity = struct {
         const scp = @min(self.poll_sc_pos_count, self.sc_pos_buf.len);
         @memcpy(self.sc_pos_buf[0..scp], self.poll_sc_pos_buf[0..scp]);
         self.sc_pos_count = scp;
+        // Group-token holdings (staged by the poll worker before `poll_done`),
+        // same ordering rationale as the transaction buffer.
+        const tk = @min(self.poll_token_count, self.token_buf.len);
+        @memcpy(self.token_buf[0..tk], self.poll_token_buf[0..tk]);
+        self.token_count = tk;
+        if (self.token_sel >= tk) self.token_sel = 0;
+
         const sca = @min(self.poll_sc_addr_len, self.sc_addr_buf.len);
         @memcpy(self.sc_addr_buf[0..sca], self.poll_sc_addr_buf[0..sca]);
         self.sc_addr_len = sca;
@@ -3210,6 +3313,18 @@ const Activity = struct {
                     self.want_new_sc_address = false; // consumed either way
                 }
             }
+        }
+
+        // The wallet's group tokens and NFTs (Nexa). One local RPC against the
+        // coin's own daemon — the artwork behind an NFT row is *not* fetched
+        // here; that crosses the network for megabytes and only ever happens on
+        // the user's explicit key.
+        if (self.coin.tokens()) |tk| {
+            if (tk.list(a, auth, token_cache_cap)) |holdings| {
+                const n = @min(holdings.len, token_cache_cap);
+                @memcpy(self.poll_token_buf[0..n], holdings[0..n]);
+                self.poll_token_count = n;
+            } else |_| {}
         }
 
         // Re-adopt a still-unlocked in-daemon wallet after an app restart. The Ergo
@@ -4175,6 +4290,10 @@ pub const App = struct {
                 t.join();
                 act.sc_thread = null;
             }
+            if (act.nft_thread) |t| {
+                t.join();
+                act.nft_thread = null;
+            }
             // Tear down the external wallet process so it doesn't outlive the app.
             self.killWalletRpc(act);
             // Secrets may still be resident if a worker was in flight at shutdown —
@@ -4280,7 +4399,9 @@ pub const App = struct {
                         'n' => if (on_coin and self.active_tab == .receive)
                             self.requestNewReceiveAddress()
                         else if (on_coin and self.active_tab == .digidollar)
-                            self.requestNewStablecoinAddress(),
+                            self.requestNewStablecoinAddress()
+                        else if (on_coin and self.active_tab == .tokens)
+                            self.selectNextToken(),
                         // Capital S — lowercase 's' toggles the daemon. Opens the
                         // Stake prompt on the Send tab for coins with a stake
                         // action (openStakeModal checks the capability itself).
@@ -4289,7 +4410,7 @@ pub const App = struct {
                         // Jump straight to a tab by number, positional over the
                         // *visible* strip (1 = Home … 5 = Settings, 6 = the
                         // coin's capability tab when it has one).
-                        '1'...'7' => if (on_coin) {
+                        '1'...'8' => if (on_coin) {
                             if (visibleTabAt(c - '1', caps)) |t| self.active_tab = t;
                         },
                         else => {},
@@ -4306,6 +4427,7 @@ pub const App = struct {
                         .send => self.openSendModal(),
                         .mining => self.openMiningModal(),
                         .digidollar => self.openStablecoinModal(),
+                        .tokens => self.requestNftFetch(),
                         // The only editable thing on the Settings tab: how the
                         // chain is stored, for a coin that can change it (the tab
                         // shows the hint only when the press will do something).
@@ -5191,6 +5313,16 @@ pub const App = struct {
             // collateral at mint time regardless). A real op shows the txid or
             // the daemon's own failure reason, and re-polls promptly so the DD
             // balance/positions reflect it immediately.
+            if (act.nft_thread != null and act.nft_done.load(.acquire)) {
+                act.nft_thread.?.join();
+                act.nft_thread = null;
+                act.nft_view = if (act.nft_ok) .ready else .failed;
+                if (act.nft_ok) {
+                    self.logf("{s}: NFT data verified against the chain", .{act.coin.coinName()});
+                } else {
+                    self.logf("{s}: {s}", .{ act.coin.coinName(), act.nft_err_buf[0..act.nft_err_len] });
+                }
+            }
             if (act.sc_thread != null and act.sc_done.load(.acquire)) {
                 act.sc_thread.?.join();
                 act.sc_thread = null;
@@ -6206,6 +6338,50 @@ pub const App = struct {
     /// ACTIVE on-chain (the tab explains each of those states in place, so a
     /// dead Enter isn't mysterious). Reachable only via `enter` on the
     /// stablecoin tab, behind the same modal-priority chain as the others.
+    /// Move the Tokens tab's cursor to the next holding, wrapping at the end.
+    /// The opened NFT's metadata is deliberately *not* cleared: moving back to
+    /// that row shows it again with no second fetch, and `renderNftDetail`
+    /// keys off the group identifier so it can never be shown under a
+    /// different token.
+    fn selectNextToken(self: *App) void {
+        const act = &self.activities[self.selected];
+        if (act.token_count == 0) return;
+        act.token_sel = (act.token_sel + 1) % act.token_count;
+    }
+
+    /// Fetch, verify and unpack the selected NFT's data bundle on a worker.
+    ///
+    /// Off the UI thread because the bundle comes from the issuer's host and
+    /// can run to tens of megabytes; a no-op for a fungible row (nothing to
+    /// fetch) and while a fetch is already in flight.
+    fn requestNftFetch(self: *App) void {
+        const act = &self.activities[self.selected];
+        if (act.nft_thread != null) return;
+        if (act.token_sel >= act.token_count) return;
+
+        const h = &act.token_buf[act.token_sel];
+        if (h.kind != .nft) return;
+
+        // Copy the row in before spawning: the poll worker rewrites
+        // `token_buf` wholesale, and the fetch must stay pinned to the token
+        // the user actually opened.
+        act.nft_target = h.*;
+        const g = h.group();
+        const n = @min(g.len, act.nft_group_buf.len);
+        @memcpy(act.nft_group_buf[0..n], g[0..n]);
+        act.nft_group_len = n;
+        act.nft_view = .loading;
+        act.nft_err_len = 0;
+        act.nft_done.store(false, .release);
+
+        act.nft_thread = std.Thread.spawn(.{}, Activity.runNft, .{act}) catch {
+            act.nft_view = .failed;
+            act.stashNftError("could not start the fetch");
+            return;
+        };
+        self.logf("{s}: fetching NFT data…", .{act.coin.coinName()});
+    }
+
     fn openStablecoinModal(self: *App) void {
         const coin = self.selectedCoin() orelse return;
         if (!coin.supportsStablecoin()) return;
@@ -8254,6 +8430,10 @@ pub const App = struct {
                 try renderStakingTab(a, coin, act, self.hide_balances)
             else
                 try renderPlaceholderTab(a, self.active_tab),
+            .tokens => if (coin.supportsTokens())
+                try renderTokensTab(a, act)
+            else
+                try renderPlaceholderTab(a, self.active_tab),
         };
 
         // TIP line: persists across every tab (mirrors description/tab_strip),
@@ -8454,6 +8634,140 @@ pub const App = struct {
             body = try std.fmt.allocPrint(a, "{s}\n{s}", .{ body, line });
         }
         return std.fmt.allocPrint(a, "Transactions\n\n{s}", .{body});
+    }
+
+    /// The Tokens tab body: the wallet's group-token holdings, and — once the
+    /// user opens one — the metadata and card art behind an NFT.
+    ///
+    /// Reads only cached `act` fields; no RPC and no network in render. The
+    /// artwork itself is a file on disk (`nft.zig` unpacks it there), so this
+    /// shows its path — a terminal can't draw it, but the GUI front-end loads
+    /// the very same file.
+    fn renderTokensTab(a: std.mem.Allocator, act: *const Activity) ![]const u8 {
+        if (act.token_count == 0) {
+            return "Tokens\n\nNo tokens or NFTs in this wallet.\n\nGroup tokens sent to this wallet's addresses show up here automatically.";
+        }
+
+        // Widths measured over the plain text before any colour is applied —
+        // padding a pre-styled string would count the ANSI escape bytes and
+        // misalign the grid (same rule as the Transactions tab).
+        var name_w: usize = "Token".len;
+        var qty_w: usize = "Held".len;
+        for (act.token_buf[0..act.token_count]) |*h| {
+            name_w = @max(name_w, h.displayName().len);
+            var buf: [48]u8 = undefined;
+            qty_w = @max(qty_w, tokenQuantityText(&buf, h).len);
+        }
+        // Long token names are the norm, so cap the column rather than letting
+        // one token push the quantities off the pane.
+        name_w = @min(name_w, 32);
+
+        const header_plain = try std.fmt.allocPrint(a, "     {s}   {s}   {s}", .{
+            try padCell(a, "Token", name_w, false),
+            try padCell(a, "Held", qty_w, true),
+            "Ticker",
+        });
+        var body: []const u8 = (zz.Style{}).dim(true).render(a, header_plain) catch header_plain;
+
+        for (act.token_buf[0..act.token_count], 0..) |*h, i| {
+            const cursor = if (i == act.token_sel) ">" else " ";
+            // NFTs are the reason this tab exists; mark them so a wallet holding
+            // both kinds reads at a glance.
+            const glyph = switch (h.kind) {
+                .nft => "◆",
+                .fungible => "•",
+            };
+            var qbuf: [48]u8 = undefined;
+            const line = try std.fmt.allocPrint(a, "{s} {s}  {s}   {s}   {s}", .{
+                cursor,
+                glyph,
+                try padCell(a, truncateCell(h.displayName(), name_w), name_w, false),
+                try padCell(a, tokenQuantityText(&qbuf, h), qty_w, true),
+                h.ticker(),
+            });
+            body = try std.fmt.allocPrint(a, "{s}\n{s}", .{ body, line });
+        }
+
+        const detail = try renderNftDetail(a, act);
+        const hint = (zz.Style{}).dim(true).render(a, "  (n: next token   enter: open NFT)") catch "";
+        return std.fmt.allocPrint(a, "Tokens\n\n{s}\n{s}\n{s}", .{ body, detail, hint });
+    }
+
+    /// The panel under the token table: what is known about the selected row.
+    /// For a fungible token there is nothing to fetch, so it says so rather
+    /// than inviting a keypress that would do nothing.
+    fn renderNftDetail(a: std.mem.Allocator, act: *const Activity) ![]const u8 {
+        if (act.token_sel >= act.token_count) return "";
+        const h = &act.token_buf[act.token_sel];
+
+        if (h.kind != .nft) {
+            return std.fmt.allocPrint(
+                a,
+                "\n{s} is a fungible token — no artwork to open.",
+                .{h.displayName()},
+            );
+        }
+
+        // The metadata on hand belongs to whichever row was opened; a cursor
+        // that has since moved must not read as though this row were loaded.
+        const opened_this_row = std.mem.eql(u8, act.nft_group_buf[0..act.nft_group_len], h.group());
+
+        return switch (act.nft_view) {
+            .idle => std.fmt.allocPrint(a, "\nPress enter to fetch and verify this NFT's artwork.", .{}),
+            .loading => std.fmt.allocPrint(a, "\nFetching NFT data…", .{}),
+            .failed => if (opened_this_row) std.fmt.allocPrint(
+                a,
+                "\nCould not show this NFT: {s}",
+                .{act.nft_err_buf[0..act.nft_err_len]},
+            ) else std.fmt.allocPrint(a, "\nPress enter to fetch and verify this NFT's artwork.", .{}),
+            .ready => if (opened_this_row) blk: {
+                const m = &act.nft_meta;
+                var out = try std.fmt.allocPrint(a, "\n{s}", .{
+                    (zz.Style{}).bold(true).render(a, if (m.title().len > 0) m.title() else h.displayName()) catch m.title(),
+                });
+                if (m.author().len > 0) out = try std.fmt.allocPrint(a, "{s}\n  by {s}", .{ out, m.author() });
+                if (m.series().len > 0) out = try std.fmt.allocPrint(a, "{s}\n  Series: {s}", .{ out, m.series() });
+                if (m.category().len > 0) out = try std.fmt.allocPrint(a, "{s}\n  Category: {s}", .{ out, m.category() });
+                if (m.info().len > 0) out = try std.fmt.allocPrint(a, "{s}\n  {s}", .{ out, m.info() });
+                if (m.license().len > 0) out = try std.fmt.allocPrint(a, "{s}\n  License: {s}", .{ out, m.license() });
+                // The whole point of the fetch: these bytes hash to the value
+                // the chain commits to, so this really is that NFT.
+                if (m.verified) {
+                    const ok = (zz.Style{}).fg(.green).render(a, "  ✓ Verified against the chain's hash") catch "  ✓ Verified against the chain's hash";
+                    out = try std.fmt.allocPrint(a, "{s}\n{s}", .{ out, ok });
+                }
+                if (m.cardPath().len > 0) {
+                    out = try std.fmt.allocPrint(a, "{s}\n  Artwork: {s}", .{ out, m.cardPath() });
+                }
+                break :blk out;
+            } else std.fmt.allocPrint(a, "\nPress enter to fetch and verify this NFT's artwork.", .{}),
+        };
+    }
+
+    /// A holding's quantity with its own decimal point put in. The daemon deals
+    /// only in the token's finest unit, so the point is a display concern and
+    /// `decimals` is where it goes.
+    fn tokenQuantityText(buf: []u8, h: *const models.TokenHolding) []const u8 {
+        if (h.decimals == 0) {
+            return std.fmt.bufPrint(buf, "{d}", .{h.balance}) catch "?";
+        }
+        const scale = std.math.pow(f64, 10, @floatFromInt(h.decimals));
+        const amount = @as(f64, @floatFromInt(h.balance)) / scale;
+        var tmp: [64]u8 = undefined;
+        const text = money.trimTrailingZeros(money.formatAmount(&tmp, amount, h.decimals));
+        const n = @min(text.len, buf.len);
+        @memcpy(buf[0..n], text[0..n]);
+        return buf[0..n];
+    }
+
+    /// Clip a cell to `w` display columns. ASCII-safe by construction here: the
+    /// only callers pass token names, which are truncated on a byte boundary
+    /// that a multi-byte name could split — so back off to the last boundary.
+    fn truncateCell(s: []const u8, w: usize) []const u8 {
+        if (s.len <= w) return s;
+        var end = w;
+        while (end > 0 and (s[end] & 0xC0) == 0x80) end -= 1;
+        return s[0..end];
     }
 
     /// The Staking tab body: what staking does on this coin, the key that starts
@@ -10534,6 +10848,23 @@ test "cycleTab includes the Mining tab only for coins that mine" {
     try std.testing.expectEqual(DetailTab.home, cycleTab(.mining, 1, .{ .mining = true }));
     try std.testing.expectEqual(DetailTab.mining, cycleTab(.home, -1, .{ .mining = true }));
     try std.testing.expectEqual(DetailTab.settings, cycleTab(.mining, -1, .{ .mining = true }));
+}
+
+test "cycleTab includes the Tokens tab only for coins with group tokens" {
+    // Nexa's tokens/NFTs tab: present only where the coin wires the capability,
+    // and stepped straight over everywhere else.
+    try std.testing.expectEqual(DetailTab.home, cycleTab(.settings, 1, .{}));
+    try std.testing.expectEqual(DetailTab.tokens, cycleTab(.settings, 1, .{ .tokens = true }));
+    try std.testing.expectEqual(DetailTab.home, cycleTab(.tokens, 1, .{ .tokens = true }));
+    try std.testing.expectEqual(DetailTab.tokens, cycleTab(.home, -1, .{ .tokens = true }));
+}
+
+test "the Tokens tab takes the sixth slot on a coin with no other capability tab" {
+    // Numbered jumps are positional over the *visible* strip, so a Nexa user
+    // presses 6 for Tokens exactly where a mining coin has Mining.
+    try std.testing.expectEqual(DetailTab.tokens, visibleTabAt(5, .{ .tokens = true }).?);
+    try std.testing.expectEqual(@as(usize, 6), visibleTabCount(.{ .tokens = true }));
+    try std.testing.expectEqual(@as(?DetailTab, null), visibleTabAt(6, .{ .tokens = true }));
 }
 
 test "cycleTab includes the DigiDollar tab only for stablecoin coins" {
