@@ -335,7 +335,7 @@ test "direction and formatChange carry the sign in the arrow, not the number" {
     try std.testing.expectEqual(Direction.up, direction(0.3059));
     try std.testing.expectEqual(Direction.down, direction(-5.5228));
     try std.testing.expectEqual(Direction.flat, direction(0));
-    // A coin the host lists without a change figure (Nexa) draws no arrow.
+    // A coin the host lists without a 24h change figure draws no arrow.
     try std.testing.expectEqual(Direction.flat, direction(null));
 
     try std.testing.expectEqualStrings("▲ 0.31%", formatChange(&buf, 0.3059));
@@ -367,11 +367,15 @@ test "buildUrl joins the roster into one query" {
 
 test "parsing fills quotes by id and leaves unlisted coins absent" {
     const a = std.testing.allocator;
-    // A real-shaped reply: one healthy coin, one with a null change (Nexa's
-    // actual behaviour), and one id the host simply doesn't return.
+    // A real-shaped reply: one healthy coin, one priced but with a null change,
+    // and one id the host simply doesn't return. A null change is a real thing
+    // the host does for thinly-covered coins — but note it is NOT evidence the
+    // id is right: a wrong id can answer with a stale entry that has a price,
+    // no change and a zero market cap, which is exactly how Nexa was mispriced
+    // 865x before its id was corrected to `nexacoin`.
     const body =
         \\{"bitcoin":{"usd":64435,"usd_24h_change":0.3059086391112687},
-        \\"nexa":{"usd":0.00120172,"usd_24h_change":null}}
+        \\"reddcoin":{"usd":0.00012,"usd_24h_change":null}}
     ;
     var parsed = try std.json.parseFromSlice(
         std.json.ArrayHashMap(RawQuote),
@@ -381,7 +385,7 @@ test "parsing fills quotes by id and leaves unlisted coins absent" {
     );
     defer parsed.deinit();
 
-    const ids = [_][]const u8{ "bitcoin", "nexa", "spiderbyte" };
+    const ids = [_][]const u8{ "bitcoin", "reddcoin", "spiderbyte" };
     var out: [3]Quote = undefined;
     for (&out) |*q| q.* = .{};
     for (ids, &out) |id, *q| {
