@@ -4224,7 +4224,12 @@ export component AppWindow inherits Window {
                                     }
 
                                     if root.nft-selected >= 0 && !root.token-rows[root.nft-selected].described: Text {
-                                        text: "Your node has no genesis description for this token, so its name, ticker and decimal places are unknown — the figure shown is a raw count of its smallest units. Rebuilding the block index (Settings) repopulates the node's token-description database.";
+                                        // Not a stale index: the description is
+                                        // on-chain and well-formed, but written
+                                        // with the newer 88888890 prefix that
+                                        // nexad 2.2.0.0 does not implement. A
+                                        // reindex will never bring it back.
+                                        text: "Your node can't read this token's description. It is published on-chain, but in a newer format that this version of the Nexa node doesn't parse — so its name, ticker and decimal places are unknown here, and the figure shown is a raw count of its smallest units. Rebuilding the block index will not help; it needs a newer node.";
                                         color: #e0a03a;
                                         font-size: 11px;
                                         wrap: word-wrap;
