@@ -600,16 +600,46 @@ component CircleGauge inherits VerticalBox {
     // Arc and readout inks, animated so the fade to grey (and back) — and the
     // step up through amber to red — is a motion rather than a snap: the same
     // 600ms the ring itself sweeps in.
+    // The unfilled remainder of the ring. Named rather than repeated, because
+    // the alarm pulse fades the filled arc down to exactly this — so the two
+    // have to be the same grey by construction, not by coincidence.
+    property <color> track: #3a3a3a;
     property <color> arc-base: root.dimmed ? #4a4a4a : (root.danger ? #d64545 : (root.warn ? #d99e2b : root.fill));
-    property <color> readout-ink: root.dimmed ? #6e6e6e : #e6e6e6;
+    // Past `danger` the readouts go red too. A 4px arc changing hue is easy to
+    // miss; the figure in the middle and the free-space line beneath it are
+    // what someone actually reads, so they carry the alarm as well.
+    property <color> readout-ink: root.dimmed ? #6e6e6e : (root.danger ? #ff8a80 : #e6e6e6);
     property <color> value-ink: root.dimmed ? #6e6e6e : #c8c8c8;
+    // The ring thickens when it turns red — a cue that stays put through every
+    // phase of the pulse, so the gauge still reads as urgent in a screenshot.
+    property <length> ring-gap: root.danger ? 12px : 8px;
+    animate ring-gap { duration: 600ms; easing: ease-in-out; }
     animate arc-base, readout-ink, value-ink { duration: 600ms; easing: ease-in-out; }
-    // Past `critical` the red breathes, so the gauge catches the eye from
-    // across the room. Frame-clock timed, and only depended on while critical,
-    // so a gauge that isn't in trouble costs no repaints.
-    property <float> pt: Math.mod(animation-tick() / 1ms, 1400) / 1400;
+    // Once the ring is red it breathes, so the gauge catches the eye from
+    // across the room rather than sitting there as one more coloured dial. Red
+    // *is* the alarm, so the motion starts with it — a still red ring reads as
+    // a status, a moving one reads as something to act on.
+    //
+    // Two intensities, so `critical` still means something past `danger`: a
+    // slow, shallow breath while it is merely nearly full, and a faster, fuller
+    // one once it is about to bite. Frame-clock timed, and only depended on
+    // while red, so a gauge that isn't in trouble still costs no repaints.
+    property <duration> pulse-period: root.critical ? 700ms : 1100ms;
+    property <float> pt: Math.mod(animation-tick() / 1ms, root.pulse-period / 1ms) / (root.pulse-period / 1ms);
+    // 0 at the bottom of the breath, 1 at the top.
     property <float> pulse-k: 0.5 + 0.5 * Math.sin(root.pt * 360deg);
-    property <color> arc: root.critical ? root.arc-base.mix(#ff9d94, root.pulse-k) : root.arc-base;
+    // The ring itself is the alarm: the filled arc drains to the same grey as
+    // the empty remainder — so at the bottom of the beat the ring reads as one
+    // uniform circle — then swells back to red. `mix` applies the factor to the
+    // receiver, so k = 1 is full red and k = 0 is the bare track.
+    property <color> arc: root.danger ? root.arc-base.mix(root.track, root.pulse-k) : root.arc-base;
+    // …and it grows as it reddens, so the gauge lifts off the panel at the top
+    // of each beat instead of merely changing colour. Squared, so the swell is
+    // a punch at the peak rather than an even wallow. It overflows its holder
+    // rather than resizing it, so nothing around it moves.
+    property <length> bump: root.danger
+        ? (root.critical ? 14px : 9px) * (root.pulse-k * root.pulse-k)
+        : 0px;
     // The readout below the ring, animated the same 600ms as the ring itself so
     // the two never disagree about where the measurement got to.
     property <float> nv: root.num-value < 0 ? 0 : root.num-value;
@@ -633,18 +663,33 @@ component CircleGauge inherits VerticalBox {
     HorizontalBox {
         padding: 0;
         alignment: center;
+        // Holder at exactly the ring's resting size. The ring swells past it
+        // when the disk is in trouble, and a plain Rectangle neither clips its
+        // children nor resizes to them — so the beat never shifts this gauge or
+        // the ones beside it. (It also positions its own children, unlike a
+        // layout, which would own their geometry.)
         Rectangle {
             width: root.dia;
             height: root.dia;
-            border-radius: root.dia / 2;
-            background: @conic-gradient(root.arc 0turn, root.arc root.f * 1turn, #3a3a3a root.f * 1turn, #3a3a3a 1turn);
+            background: transparent;
 
-            // Centre hole → makes the ring a donut, and holds the readout. The gap
-            // (8px vs the outer circle) sets the ring thickness — ~4px.
+        Rectangle {
+            // Centred on the holder and grown by `bump`, so the swell happens
+            // about the middle and spills past the holder rather than pushing
+            // anything aside.
+            x: -root.bump / 2;
+            y: -root.bump / 2;
+            width: root.dia + root.bump;
+            height: root.dia + root.bump;
+            border-radius: (root.dia + root.bump) / 2;
+            background: @conic-gradient(root.arc 0turn, root.arc root.f * 1turn, root.track root.f * 1turn, root.track 1turn);
+
+            // Centre hole → makes the ring a donut, and holds the readout. The
+            // gap sets the ring thickness — ~4px normally, ~6px once red.
             Rectangle {
-                width: parent.width - 8px;
-                height: parent.height - 8px;
-                border-radius: (parent.width - 8px) / 2;
+                width: parent.width - root.ring-gap;
+                height: parent.height - root.ring-gap;
+                border-radius: (parent.width - root.ring-gap) / 2;
                 background: #1e1e1e;
                 // Three mutually-exclusive readouts (Slint has no `else`): no
                 // measurement, a full ring that would rather say "Synced", or
@@ -696,6 +741,7 @@ component CircleGauge inherits VerticalBox {
                 }
             }
         }
+        }
     }
     // Value below the ring — a rolled count (Headers, Blocks) or a rolled
     // magnitude with its unit held still beside it (Disk, Memory). Nothing at
@@ -714,7 +760,7 @@ component CircleGauge inherits VerticalBox {
         // "1.2 GB free" is the figure the warning is *about*, so it takes the
         // alert colour with the ring — but never the pulse, which would make
         // the digits hard to read.
-        ink: root.warn ? root.arc-base : #c8c8c8;
+        ink: root.danger ? #ff8a80 : (root.warn ? root.arc-base : #c8c8c8);
         fs: 12px;
     }
 }
@@ -2763,7 +2809,10 @@ export component AppWindow inherits Window {
                                 frac: root.disk-frac;
                                 fill: root.coin-color;
                                 // The one gauge here where a full ring is bad:
-                                // amber at 75%, red at 90%, pulsing red at 95%.
+                                // amber at 75%, then red — and red pulses, so a
+                                // volume running out asks for attention instead
+                                // of just reporting itself. The pulse quickens
+                                // at 95%.
                                 warn-when-high: true;
                                 num-value: root.disk-free-value;
                                 num-suffix: root.disk-free-suffix;
