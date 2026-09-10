@@ -8862,12 +8862,20 @@ pub const App = struct {
             // Say what's actually wrong, and where the fix is. The node
             // resolves other tokens fine, so this is a gap in its own index
             // rather than anything about the token.
+            // Why this is not a "reindex and it'll come back" problem, which is
+            // what it looks like: the description IS on-chain and well-formed,
+            // but it is written with the newer token-description prefix
+            // 88888890, and nexad 2.2.0.0 only implements 88888888 (the
+            // constant for the newer one appears nowhere in the binary). So the
+            // node's index is not stale — it will never hold these. Confirmed
+            // by reading both genesis transactions straight out of the chain.
             return std.fmt.allocPrint(
                 a,
-                "\nYour node has no genesis description for this token, so its " ++
-                    "name, ticker and decimal places are unknown — the figure above is a " ++
-                    "raw count of its smallest units. Rebuilding the block index " ++
-                    "(Settings) repopulates the node's token-description database.",
+                "\nYour node can't read this token's description. It is published " ++
+                    "on-chain, but in a newer format that this version of the Nexa node " ++
+                    "doesn't parse — so its name, ticker and decimal places are unknown " ++
+                    "here, and the figure above is a raw count of its smallest units. " ++
+                    "Rebuilding the block index will not help; it needs a newer node.",
                 .{},
             );
         }
