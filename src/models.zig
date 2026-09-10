@@ -736,6 +736,20 @@ pub const TokenHolding = struct {
     /// empty for tokens whose genesis omitted it — that reads as 0.
     decimals: u8 = 0,
     kind: TokenKind = .fungible,
+    /// Whether the daemon actually resolved this token's genesis description.
+    ///
+    /// **This gates how far the rest of the row can be trusted.** When it is
+    /// false the daemon returned an empty record — no ticker, no name, no
+    /// document URL, no genesis address — and `decimals` is then a *default of
+    /// zero, not a fact*. Verified live: a wallet holding ChiwachuCoin, which
+    /// really has 4 decimals, reads back as 0 here, so treating that 0 as real
+    /// would misstate the holding by 10,000x and send the wrong amount.
+    ///
+    /// A missing description is a gap in the node's own `tokendesc` index, not
+    /// a property of the token — the same node resolves other tokens fine.
+    /// Front-ends must say the description is unavailable rather than dressing
+    /// the defaults up as the token's identity.
+    described: bool = false,
     /// For `kind == .nft`, the subgroup bytes as lowercase hex: the
     /// double-SHA256 the data file must hash to. Empty for a fungible group.
     data_hash_buf: [64]u8 = undefined,
@@ -781,12 +795,59 @@ pub const TokenHolding = struct {
         self.data_hash_len = copyBounded(&self.data_hash_buf, s);
     }
 
+    /// The only quantity a send of this holding could possibly have, or null
+    /// when the user genuinely has a choice to make.
+    ///
+    /// A single-edition NFT is one indivisible unit — 0 decimals, and exactly
+    /// one of them held — so "how many?" has one answer and asking is noise. A
+    /// front-end skips the amount step entirely in that case.
+    ///
+    /// Deliberately keyed on the *holding*, not on `kind`. Nexa's specification
+    /// also allows semi-fungible tokens: a subgroup minted with a supply above
+    /// one. Those are `kind == .nft` too, and if the wallet holds several, how
+    /// many to send is a real question — so they keep the amount step.
+    pub fn fixedQuantity(self: *const TokenHolding) ?i64 {
+        // With no description resolved, `decimals` is a default rather than a
+        // fact, so "0 decimals, holding 1" might not mean one whole token at
+        // all. Never take the shortcut on a token the node couldn't describe.
+        if (!self.described) return null;
+        if (self.decimals != 0) return null;
+        if (self.balance != 1) return null;
+        return 1;
+    }
+
     /// The label to head the row with: the name when the issuer gave one, else
-    /// the ticker, else the bare group identifier — always something.
+    /// the ticker, else an honest placeholder.
+    ///
+    /// Deliberately **not** the group identifier. A 60-odd character
+    /// `nexa:tq…` string in a name column reads as an address, which is
+    /// precisely how it was misread in practice — it is an identifier, not a
+    /// name, and presenting it as one tells the user nothing while looking like
+    /// it does. `shortGroup` puts the identifier somewhere it reads as one.
     pub fn displayName(self: *const TokenHolding) []const u8 {
         if (self.name_len > 0) return self.name();
         if (self.ticker_len > 0) return self.ticker();
-        return self.group();
+        return "Unnamed token";
+    }
+
+    /// The group identifier abbreviated for a table cell: the first and last
+    /// few characters of the payload with an ellipsis between, which is enough
+    /// to tell two holdings apart and to match one against an explorer.
+    pub fn shortGroup(self: *const TokenHolding, buf: []u8) []const u8 {
+        const g = self.group();
+        // Past the `nexa:` prefix, so the distinguishing part is what shows.
+        const body = if (std.mem.indexOfScalar(u8, g, ':')) |c| g[c + 1 ..] else g;
+        if (body.len <= 20) return body;
+        return std.fmt.bufPrint(buf, "{s}…{s}", .{ body[0..10], body[body.len - 6 ..] }) catch body[0..@min(body.len, buf.len)];
+    }
+
+    /// Whether this holding's amount can be shown as a decimal figure at all.
+    ///
+    /// False when the node resolved no description: `decimals` is then a
+    /// default rather than the token's own, so the only honest thing to show is
+    /// the raw count of base units, labelled as such.
+    pub fn decimalsKnown(self: *const TokenHolding) bool {
+        return self.described;
     }
 };
 
@@ -896,10 +957,11 @@ test "TokenHolding setters truncate at the buffer instead of overflowing" {
     try std.testing.expectEqualStrings("NiftyArt", h.name());
 }
 
-test "displayName prefers the name, then the ticker, then the group id" {
+test "displayName prefers the name, then the ticker, then an honest placeholder" {
     var h: TokenHolding = .{};
     h.setGroup("nexa:tzabc");
-    try std.testing.expectEqualStrings("nexa:tzabc", h.displayName());
+    // Never the group id: it reads as an address and tells the user nothing.
+    try std.testing.expectEqualStrings("Unnamed token", h.displayName());
     h.setTicker("NIFTY");
     try std.testing.expectEqualStrings("NIFTY", h.displayName());
     h.setName("NiftyArt");
@@ -1281,4 +1343,55 @@ test "sync state derives from the local height against the peer tip" {
     const blind = syncFromNetworkHeight(500_000, 0);
     try std.testing.expect(!blind.synced);
     try std.testing.expectApproxEqAbs(@as(f64, 0), blind.progress, 0.0001);
+}
+
+test "fixedQuantity removes the amount step only when there is no choice" {
+    // A single-edition NFT: one indivisible unit, so "how many?" has one answer.
+    var nft_one: TokenHolding = .{ .kind = .nft, .decimals = 0, .balance = 1, .described = true };
+    try std.testing.expectEqual(@as(?i64, 1), nft_one.fixedQuantity());
+
+    // A semi-fungible token the wallet holds several of is still `kind == .nft`,
+    // but how many to send is a real question — keep asking.
+    var sft: TokenHolding = .{ .kind = .nft, .decimals = 0, .balance = 5, .described = true };
+    try std.testing.expectEqual(@as(?i64, null), sft.fixedQuantity());
+
+    // A divisible token always asks, even at a balance of exactly one unit —
+    // "1" there means 0.00000001 of it, not the whole holding.
+    var divisible: TokenHolding = .{ .kind = .fungible, .decimals = 8, .balance = 1, .described = true };
+    try std.testing.expectEqual(@as(?i64, null), divisible.fixedQuantity());
+
+    // Nothing held: no send to shape.
+    var empty: TokenHolding = .{ .kind = .nft, .decimals = 0, .balance = 0, .described = true };
+    try std.testing.expectEqual(@as(?i64, null), empty.fixedQuantity());
+
+    // And never on a token the node couldn't describe: its "0 decimals" is a
+    // default, so a holding of 1 might not be one whole token at all.
+    var undescribed: TokenHolding = .{ .kind = .nft, .decimals = 0, .balance = 1, .described = false };
+    try std.testing.expectEqual(@as(?i64, null), undescribed.fixedQuantity());
+}
+
+test "an undescribed token never passes its defaults off as facts" {
+    // What nexad returns for a token whose genesis description its index has no
+    // entry for — every field blank, and `decimals` defaulting to 0. Confirmed
+    // live against a wallet holding ChiwachuCoin, which really has 4 decimals.
+    var undescribed: TokenHolding = .{ .described = false, .decimals = 0, .balance = 1_000_000 };
+    undescribed.setGroup("nexa:tqwlrq9uanxssd0qu7akrvty2p0jjdas745wmdgt0ntvsmhgjyqqq5krx4p96");
+    try std.testing.expect(!undescribed.decimalsKnown());
+    // Not the group id: that reads as an address and says nothing.
+    try std.testing.expectEqualStrings("Unnamed token", undescribed.displayName());
+
+    var buf: [64]u8 = undefined;
+    const short = undescribed.shortGroup(&buf);
+    try std.testing.expectEqualStrings("tqwlrq9uan…rx4p96", short);
+    // Short enough for a cell, long enough to tell two holdings apart.
+    try std.testing.expect(short.len < 20);
+}
+
+test "a described token keeps its own identity and decimals" {
+    var described: TokenHolding = .{ .described = true, .decimals = 15 };
+    described.setGroup("nexa:trlf23c29e02qm0s6q3erqkez3nm0j5g6hymwpsgtpl6e5ytugqqq55zxwcc4");
+    described.setTicker("NIFTY");
+    described.setName("NiftyArt");
+    try std.testing.expect(described.decimalsKnown());
+    try std.testing.expectEqualStrings("NiftyArt", described.displayName());
 }

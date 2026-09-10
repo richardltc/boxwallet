@@ -55,6 +55,82 @@ pub fn parseDollarsToCents(text: []const u8) ?i64 {
     return cents;
 }
 
+/// Parse a typed amount into whole units of a token's **finest** denomination,
+/// given how many decimal places that token declares.
+///
+/// Integer in, integer out — never via an `f64`. A token amount is a count of
+/// indivisible units the way fiat is a count of cents (see
+/// `parseDollarsToCents`, which is this with `decimals` fixed at 2), and
+/// routing it through a float would let a rounding artifact decide how much
+/// somebody actually sent.
+///
+/// Returns null for anything not cleanly convertible: non-numeric text, a
+/// negative, more fractional digits than the token has decimals (which would
+/// mean silently discarding precision the user typed), or a value that
+/// overflows `i64`. `decimals == 0` accepts a bare integer only — an NFT has no
+/// fractional part to give.
+pub fn parseUnits(text: []const u8, decimals: u8) ?i64 {
+    const t = std.mem.trim(u8, text, " \t");
+    if (t.len == 0) return null;
+
+    var whole: []const u8 = t;
+    var frac: []const u8 = "";
+    if (std.mem.indexOfScalar(u8, t, '.')) |dot| {
+        whole = t[0..dot];
+        frac = t[dot + 1 ..];
+        // More places than the token has is a real loss of intent, not a
+        // rounding opportunity: say no rather than quietly truncating.
+        if (frac.len > decimals) return null;
+        if (whole.len == 0 and frac.len == 0) return null;
+    }
+
+    // 10^decimals, built by repeated multiply so an absurd `decimals` overflows
+    // here rather than producing a nonsense scale.
+    var scale: i64 = 1;
+    for (0..decimals) |_| scale = std.math.mul(i64, scale, 10) catch return null;
+
+    var units: i64 = 0;
+    if (whole.len > 0) {
+        const w = std.fmt.parseInt(i64, whole, 10) catch return null;
+        if (w < 0) return null;
+        units = std.math.mul(i64, w, scale) catch return null;
+    }
+    if (frac.len > 0) {
+        var f = std.fmt.parseInt(i64, frac, 10) catch return null;
+        if (f < 0) return null;
+        // "1.5" at 2dp is 150 units, not 15 — pad the fraction out to width.
+        for (0..decimals - frac.len) |_| f = std.math.mul(i64, f, 10) catch return null;
+        units = std.math.add(i64, units, f) catch return null;
+    }
+    return units;
+}
+
+/// Format whole units of a token's finest denomination back into a readable
+/// figure at that token's decimals, trailing zeros trimmed ("150" at 2dp →
+/// "1.5"; "1" at 0dp → "1"). The inverse of `parseUnits`, and integer-only for
+/// the same reason.
+pub fn formatUnits(buf: []u8, units: i64, decimals: u8) []const u8 {
+    if (decimals == 0) return std.fmt.bufPrint(buf, "{d}", .{units}) catch "?";
+
+    var scale: i64 = 1;
+    for (0..decimals) |_| scale = std.math.mul(i64, scale, 10) catch return "?";
+
+    const abs: u64 = @abs(units);
+    const uscale: u64 = @intCast(scale);
+    var tmp: [64]u8 = undefined;
+    const text = std.fmt.bufPrint(&tmp, "{s}{d}.{d:0>[3]}", .{
+        if (units < 0) "-" else "",
+        abs / uscale,
+        abs % uscale,
+        @as(usize, decimals),
+    }) catch return "?";
+
+    const trimmed = trimTrailingZeros(text);
+    const n = @min(trimmed.len, buf.len);
+    @memcpy(buf[0..n], trimmed[0..n]);
+    return buf[0..n];
+}
+
 /// Format integer cents as a dollars figure ("$1234.56", "-$0.05") into `buf`.
 /// Callers pass a `[32]u8`.
 pub fn formatCents(buf: []u8, cents: i64) []const u8 {
@@ -226,4 +302,49 @@ test "pruneValueText speaks each coin's own units" {
     try std.testing.expectEqualStrings("1500 MiB", pruneValueText(&buf, .size_mib, 1500));
     // An on/off coin has no size to report.
     try std.testing.expectEqualStrings("enabled (~1/3 the chain)", pruneValueText(&buf, .on_off, 1));
+}
+
+test "parseUnits converts a typed figure to a token's finest units" {
+    // 2 decimals: the regtest token used to verify `token send`.
+    try std.testing.expectEqual(@as(?i64, 12345), parseUnits("123.45", 2));
+    try std.testing.expectEqual(@as(?i64, 150), parseUnits("1.5", 2));
+    try std.testing.expectEqual(@as(?i64, 100), parseUnits("1", 2));
+    try std.testing.expectEqual(@as(?i64, 5), parseUnits("0.05", 2));
+    try std.testing.expectEqual(@as(?i64, 0), parseUnits("0", 2));
+    try std.testing.expectEqual(@as(?i64, 12345), parseUnits("  123.45  ", 2));
+}
+
+test "parseUnits refuses precision the token cannot hold" {
+    // Truncating here would send a different amount than the one typed.
+    try std.testing.expectEqual(@as(?i64, null), parseUnits("1.234", 2));
+    // An NFT has no fractional part at all.
+    try std.testing.expectEqual(@as(?i64, null), parseUnits("1.5", 0));
+    try std.testing.expectEqual(@as(?i64, 1), parseUnits("1", 0));
+}
+
+test "parseUnits rejects junk, negatives and overflow rather than guessing" {
+    try std.testing.expectEqual(@as(?i64, null), parseUnits("", 2));
+    try std.testing.expectEqual(@as(?i64, null), parseUnits("abc", 2));
+    try std.testing.expectEqual(@as(?i64, null), parseUnits("-1", 2));
+    try std.testing.expectEqual(@as(?i64, null), parseUnits(".", 2));
+    // Would overflow i64 once scaled to the finest unit.
+    try std.testing.expectEqual(@as(?i64, null), parseUnits("9223372036854775807", 8));
+}
+
+test "parseUnits and formatUnits round-trip" {
+    var buf: [64]u8 = undefined;
+    try std.testing.expectEqualStrings("1.5", formatUnits(&buf, 150, 2));
+    try std.testing.expectEqualStrings("123.45", formatUnits(&buf, 12345, 2));
+    try std.testing.expectEqualStrings("1", formatUnits(&buf, 1, 0));
+    try std.testing.expectEqualStrings("0", formatUnits(&buf, 0, 2));
+
+    const cases = [_]struct { text: []const u8, dp: u8 }{
+        .{ .text = "123.45", .dp = 2 },
+        .{ .text = "0.00000001", .dp = 8 },
+        .{ .text = "7", .dp = 0 },
+    };
+    for (cases) |c| {
+        const units = parseUnits(c.text, c.dp) orelse return error.TestUnexpectedResult;
+        try std.testing.expectEqualStrings(c.text, formatUnits(&buf, units, c.dp));
+    }
 }

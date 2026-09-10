@@ -382,10 +382,29 @@ typedef struct {
     char    group[129];   /* the chain-wide group id — the handle bw_nft_fetch takes */
     char    ticker[17];
     char    name[65];
+    /* What to put in a name column: the issuer's name, else the ticker, else
+     * "Unnamed token". USE THIS, don't build your own fallback — falling back
+     * to `group` puts a 60-character identifier where a name goes, and it reads
+     * as an address. */
+    char    display_name[65];
     int64_t balance;      /* the wallet's holding, in the token's finest unit */
     int64_t mintage;      /* the token's total supply, same unit */
     uint8_t decimals;     /* where the point goes for display; 0 for an NFT */
     int     is_nft;       /* 0/1 — its group id carries the chain's data commitment */
+    /* 0 when sending needs no amount from the user: a single-edition NFT is one
+     * indivisible unit, so "how many?" has exactly one answer. Derived from the
+     * holding, not from is_nft — a semi-fungible token held several times over
+     * is an NFT that DOES need an amount. Send fixed_quantity when this is 0. */
+    int     needs_amount;
+    int64_t fixed_quantity;
+    /* 0 means the node resolved NO genesis description for this token, so
+     * `decimals` above is a DEFAULT, not a fact, and `balance` can only be
+     * shown honestly as a raw count of smallest units. Verified live: a wallet
+     * holding a 4-decimal token reports decimals 0 here. */
+    int     described;
+    /* The group id abbreviated for a table cell. Show this where a token has no
+     * name — the full id in `group` reads as an address. */
+    char    short_group[24];
 } BwToken;
 
 /* An NFT's metadata and where its card art was unpacked.
@@ -407,13 +426,35 @@ typedef struct {
 } BwNftMeta;
 
 size_t  bw_tokens_name(size_t idx, char *buf, size_t cap);
-/* One local RPC — cheap enough to poll. Does NOT touch the network. */
-size_t  bw_tokens_list(bw_ctx *ctx, size_t idx, BwToken *out, size_t cap);
+/* Copy for the empty tab: how tokens reach this wallet, and where to start.
+ * Names no marketplace by design — see Coin.Tokens.empty_hint. */
+size_t  bw_tokens_empty_hint(size_t idx, char *buf, size_t cap);
+/* One local RPC — cheap enough to poll. Does NOT touch the network.
+ * `locked` (may be NULL) is set to 1 when the daemon refused because the wallet
+ * is encrypted and locked. A 0 return with *locked set is NOT an empty wallet:
+ * it means "unlock to see them". Showing "no tokens" there reads as the user's
+ * holdings having vanished, which is what a daemon restart made it look like. */
+size_t  bw_tokens_list(bw_ctx *ctx, size_t idx, BwToken *out, size_t cap, int *locked);
 /* BLOCKING AND SLOW: crosses the network for a bundle that can run to tens of
  * megabytes. Call from a worker thread, never the UI thread, and only for an
  * NFT the user opened. The result is cached on disk, so a repeat call for the
  * same NFT costs no network. Returns 0 on success, -1 on any failure. */
 int     bw_nft_fetch(bw_ctx *ctx, size_t idx, const char *group_id, BwNftMeta *out);
+/* Send tokens. Same tri-state as bw_wallet_send: 0 broadcast (out = txid),
+ * 1 the daemon refused (out = its own reason), -1 transport/setup failure.
+ * `quantity` is in the token's FINEST unit — convert what the user typed using
+ * that token's own `decimals`, in integers, never through a double. */
+/* Convert between a typed amount and a token's finest unit, using that token's
+ * own `decimals`. Integer-only on purpose: a token amount is a count of
+ * indivisible units, and a double round-trip would let rounding change how much
+ * gets sent. Never re-derive this in a front-end.
+ * bw_parse_units returns 0 on success, -1 for anything not cleanly convertible
+ * (junk, negative, too many decimal places, overflow). */
+int     bw_parse_units(const char *text, uint8_t decimals, int64_t *out);
+size_t  bw_format_units(int64_t units, uint8_t decimals, char *buf, size_t cap);
+
+int     bw_token_send(bw_ctx *ctx, size_t idx, const char *group_id,
+                      const char *address, int64_t quantity, char *out, size_t cap);
 
 /* Same tri-state as bw_wallet_send: 0 broadcast (out = txid), 1 the daemon
  * rejected it (out = its own reason, verbatim), -1 transport failure. A

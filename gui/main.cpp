@@ -25,6 +25,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <functional>
+#include <map>
 #include <memory>
 #include <ctime>
 #include <random>
@@ -105,6 +106,18 @@ template <typename F> static void post_to_ui(F &&fn)
 // One managed-wallet op at a time. The core serialises them anyway; this stops
 // the UI from firing a second while the first is still in flight.
 static std::atomic<bool> g_wallet_busy{false};
+
+// What the token-send confirm step described, held between the request and the
+// commit so the commit can only ever send exactly that. Touched on the UI
+// thread only.
+static std::string g_pending_token_group;
+static std::string g_pending_token_addr;
+static int64_t g_pending_token_units = 0;
+// Each listed token's declared decimals, by group id — refreshed with the rows,
+// so an amount is always converted with the right scale rather than a guess.
+static std::map<std::string, uint8_t> g_token_decimals;
+// The one quantity a token can be sent in, or 0 when the user must choose.
+static std::map<std::string, int64_t> g_token_fixed_qty;
 
 // How many transactions the list holds. Fixed, like the TUI's cache: bounded
 // working set beats an unbounded history nobody scrolls through.
@@ -672,15 +685,28 @@ make_token_rows(const std::vector<BwToken> &tokens)
     rows.reserve(tokens.size());
     for (const BwToken &t : tokens) {
         TokenRow r{}; // value-initialised — see the note on NavCoin
-        // The issuer's name, else its ticker, else the bare group id: always
-        // something to read, mirroring TokenHolding::displayName in the core.
-        const char *label = t.name[0] ? t.name : (t.ticker[0] ? t.ticker : t.group);
-        r.name = ss(label);
+        // The core decides this — see BwToken.display_name. Re-deriving it here
+        // is what put a 60-character group identifier in the name column,
+        // where it read as an address.
+        r.name = ss(t.display_name);
         r.ticker = ss(t.ticker);
         r.is_nft = (t.is_nft != 0);
         r.group = ss(t.group);
+        r.needs_amount = (t.needs_amount != 0);
+        r.described = (t.described != 0);
+        r.short_group = ss(t.short_group);
+        g_token_decimals[std::string(t.group)] = t.decimals;
+        // Zero means "no amount to ask for" — the core's fixed_quantity is what
+        // the send uses instead. Kept beside the decimals so the request step
+        // never has to re-derive either.
+        g_token_fixed_qty[std::string(t.group)] = (t.needs_amount != 0) ? 0 : t.fixed_quantity;
 
-        if (t.decimals == 0) {
+        if (t.described == 0) {
+            // `decimals` is a default here, not the token's own, so the only
+            // honest figure is the raw count — labelled so it can't be misread
+            // as a scaled amount.
+            r.held = ss(std::to_string(t.balance) + " units");
+        } else if (t.decimals == 0) {
             r.held = ss(std::to_string(t.balance));
         } else {
             double scale = 1.0;
@@ -935,6 +961,11 @@ static void apply_coin_metadata(const AppWindow *ui, bw_ctx *ctx, int idx)
     ui->set_has_mining(bw_coin_supports_mining(idx) != 0);
     ui->set_has_stablecoin(bw_coin_supports_stablecoin(idx) != 0);
     ui->set_has_tokens(bw_coin_supports_tokens(idx) != 0);
+    // The empty tab's copy is the coin's, not this front-end's, and it is
+    // metadata — settled here at selection time rather than after a poll.
+    char thint[512] = {0};
+    size_t thn = bw_tokens_empty_hint(idx, thint, sizeof thint);
+    ui->set_tokens_empty_hint(ss(std::string_view(thint, thn)));
     // Which wallet tabs this coin earns. Pure metadata, so it's settled here at
     // selection time rather than waiting up to two seconds for the first poll —
     // the tab strip must not flicker its way into shape.
@@ -1868,6 +1899,118 @@ int main(int argc, char **argv)
     // Live collateral estimate as the amount or tier changes. Debounced only by
     // the user's typing — it's one RPC and the answer is what makes a mint's
     // real cost visible before committing.
+    // Sending a token, in two steps.
+    //
+    // `token-send-request` only validates and describes; `token-send-commit` is
+    // the only path that spends. The amount is converted to the token's finest
+    // unit here, with that token's own decimals and in integers — a double
+    // would let a rounding artifact decide how much actually moved — and the
+    // converted value is what both the confirm text and the send use, so the
+    // figure shown is provably the figure sent.
+    ui->on_token_send_request([weak](slint::SharedString group, slint::SharedString address,
+                                     slint::SharedString amount) {
+        auto h = weak.lock();
+        if (!h)
+            return;
+        int coin = g_selected.load();
+        if (coin < 0)
+            return;
+
+        std::string gid(group), addr(address), amt(amount);
+        // The token's decimals come from the row itself, never assumed.
+        uint8_t decimals = 0;
+        std::string label = gid;
+        bool found = false;
+        if (auto rows = (*h)->get_token_rows()) {
+            for (size_t i = 0; i < rows->row_count(); ++i) {
+                auto r = rows->row_data(i);
+                if (r && std::string((*r).group) == gid) {
+                    label = std::string((*r).name);
+                    found = true;
+                    break;
+                }
+            }
+        }
+        if (!found) {
+            (*h)->set_token_send_result(ss("That token is no longer in this wallet."));
+            (*h)->set_token_send_ok(false);
+            return;
+        }
+        decimals = g_token_decimals[gid];
+
+        // A single-edition NFT has one indivisible unit: the core already said
+        // what the quantity must be, so nothing was typed and nothing is parsed.
+        const int64_t fixed = g_token_fixed_qty[gid];
+        int64_t units = fixed;
+        if (fixed == 0) {
+            if (bw_parse_units(amt.c_str(), decimals, &units) != 0 || units <= 0) {
+                (*h)->set_token_send_result(ss(decimals == 0
+                    ? std::string("Enter a whole number of units (this token has no decimals).")
+                    : "Enter a positive amount, at most " + std::to_string(decimals) +
+                          " decimal places."));
+                (*h)->set_token_send_ok(false);
+                return;
+            }
+        }
+
+        g_pending_token_group = gid;
+        g_pending_token_addr = addr;
+        g_pending_token_units = units;
+
+        // The full, untruncated address, and the token named. A single-edition
+        // NFT has no quantity worth stating — the thing being sent IS the token.
+        std::string what = label;
+        if (fixed == 0) {
+            char qb[64];
+            size_t qn = bw_format_units(units, decimals, qb, sizeof qb);
+            what = std::string(qb, qn) + " " + label;
+        }
+        (*h)->set_token_send_result(ss(""));
+        (*h)->set_token_send_confirm(
+            ss("Send " + what + " to " + addr + "? This cannot be undone."));
+    });
+
+    ui->on_token_send_commit([weak, ctx, wake_poll]() {
+        auto h = weak.lock();
+        if (!h)
+            return;
+        int coin = g_selected.load();
+        if (coin < 0 || g_pending_token_group.empty())
+            return;
+        (*h)->set_token_send_busy(true);
+
+        std::string gid = g_pending_token_group;
+        std::string addr = g_pending_token_addr;
+        int64_t units = g_pending_token_units;
+        std::thread([weak, ctx, coin, gid, addr, units, wake_poll]() {
+            WorkerGuard wg;
+            char out[512] = {0};
+            const int rc = bw_token_send(ctx, static_cast<size_t>(coin), gid.c_str(),
+                                         addr.c_str(), units, out, sizeof out);
+            std::string msg(out);
+            post_to_ui([weak, rc, msg]() {
+                auto h2 = weak.lock();
+                if (!h2)
+                    return;
+                (*h2)->set_token_send_busy(false);
+                (*h2)->set_token_send_confirm(ss(""));
+                (*h2)->set_token_send_ok(rc == 0);
+                // rc 1 carries the daemon's own words (locked wallet,
+                // insufficient token balance, bad address) — shown verbatim,
+                // because which of those it is, is the whole answer.
+                (*h2)->set_token_send_result(ss(
+                    rc == 0 ? "Sent. Transaction " + msg
+                            : (msg.empty() ? std::string("The send could not be completed.") : msg)));
+            });
+            // Re-poll promptly so the holding reflects the send.
+            if (rc == 0)
+                wake_poll();
+        }).detach();
+        g_pending_token_group.clear();
+        g_pending_token_addr.clear();
+        g_pending_token_units = 0;
+    });
+
     // Open one NFT: fetch its data bundle, prove it against the hash the chain
     // commits to, and show what came out.
     //
@@ -3293,6 +3436,7 @@ int main(int argc, char **argv)
             std::vector<BwWalletTx> txs;
             std::vector<BwStake> stakes;
             std::vector<BwToken> tokens;
+            bool tokens_locked = false;
             std::string recv_addr;
             if (reads_ok) {
                 if (has_balance_cap)
@@ -3327,8 +3471,11 @@ int main(int argc, char **argv)
                 // only happens when the user opens a row.
                 if (has_tokens_cap) {
                     BwToken tok_buf[TOKEN_CAP];
-                    size_t nt = bw_tokens_list(ctx, coin, tok_buf, TOKEN_CAP);
+                    int locked = 0;
+                    size_t nt = bw_tokens_list(ctx, coin, tok_buf, TOKEN_CAP, &locked);
                     tokens.assign(tok_buf, tok_buf + nt);
+                    // Not the same as an empty list — see the header note.
+                    tokens_locked = (locked != 0);
                 }
 
                 // The address is fetched ONCE and then cached, never on this
@@ -3625,7 +3772,7 @@ int main(int argc, char **argv)
                         sc_vaults, sc_txs, sc_redeemable, sc_vault_ids, sc_vault_cents,
                         ms, hashrate, ew_flags, wallet_state, bal, have_balance,
                         rp, rescanning, txs, stakes, recv_addr, decimals, wallet_svc_err, can_send,
-                        rpc_ok, busy, stopping, coin, tokens]() {
+                        rpc_ok, busy, stopping, coin, tokens, tokens_locked]() {
                 auto h = weak.lock();
                 if (!h)
                     return;
@@ -3700,8 +3847,10 @@ int main(int argc, char **argv)
                     }
                     (*h)->set_tx_rows(
                         make_tx_rows(txs, decimals, bw_coin_supports_stake(coin) != 0));
-                    if (bw_coin_supports_tokens(coin) != 0)
+                    if (bw_coin_supports_tokens(coin) != 0) {
                         (*h)->set_token_rows(make_token_rows(tokens));
+                        (*h)->set_tokens_locked(tokens_locked);
+                    }
                     if (bw_coin_supports_stake_list(coin) != 0) {
                         char ab[16];
                         size_t an = bw_coin_abbrev(coin, ab, sizeof ab);
