@@ -73,6 +73,16 @@ struct TokenRow {
     held: string,     // the wallet's holding, formatted
     is-nft: bool,     // its group id carries the chain's commitment to a data file
     group: string,    // the chain-wide group id — the handle open-nft takes
+    // False for a single-edition NFT: one indivisible unit, so there is no
+    // amount to ask for. The send form hides the field entirely rather than
+    // offering one with a single valid answer.
+    needs-amount: bool,
+    // False when the node resolved no genesis description: name, ticker and
+    // decimal places are unknown, and `held` is a raw count of smallest units.
+    described: bool,
+    // The group id abbreviated for the cell. Shown in its own line, because the
+    // full id in a name column reads as an address.
+    short-group: string,
 }
 
 // One digit column of an odometer count, pre-split by the host, most-significant
@@ -1526,7 +1536,14 @@ export component AppWindow inherits Window {
 
     // ---- Tokens (Nexa's group tokens and NFTs) ----
     in property <bool> has-tokens: false;
+    // The coin's own words for an empty tab (Coin.Tokens.empty_hint), rather
+    // than copy baked into this front-end.
+    in property <string> tokens-empty-hint;
     in property <[TokenRow]> token-rows;
+    // The daemon refused to list them because the wallet is locked. Distinct
+    // from an empty list: one says "unlock to see them", the other "you have
+    // none", and confusing the two reads as holdings having disappeared.
+    in property <bool> tokens-locked: false;
     // Which row's artwork is on show. -1 while nothing is open.
     in-out property <int> nft-selected: -1;
     // The opened NFT, filled in by the host once its bundle has been fetched
@@ -1549,6 +1566,18 @@ export component AppWindow inherits Window {
     // file that isn't this NFT are different problems.
     in property <string> nft-error;
     callback open-nft(string);
+    // Sending a token. `token-send-confirm` is set to a plain-English summary
+    // to raise the confirm step; the send only fires from there, because it
+    // cannot be undone.
+    in-out property <string> token-send-confirm: "";
+    in-out property <string> token-send-result: "";
+    in-out property <bool> token-send-ok: false;
+    in-out property <bool> token-send-busy: false;
+    // Two steps, deliberately. `token-send-request` validates and raises the
+    // confirm; `token-send-commit` is the only thing that actually spends, and
+    // takes no arguments so it can only ever send what the confirm described.
+    callback token-send-request(string, string, string); // group, address, amount as typed
+    callback token-send-commit();
     // Whether this coin can *enumerate* stakes, as opposed to merely making
     // them. Separate from `has-stake` because the tab is earned by the action:
     // a coin that can stake but can't list them gets the form with no table,
@@ -3967,11 +3996,26 @@ export component AppWindow inherits Window {
                             color: #8a8a8a;
                             font-size: 13px;
                         }
-                        if root.running && root.token-rows.length == 0: Text {
-                            text: "No tokens or NFTs in this wallet. Group tokens sent to its addresses show up here automatically.";
+                        if root.running && root.tokens-locked: Text {
+                            text: "Unlock your wallet to see its tokens and NFTs.";
                             color: #8a8a8a;
                             font-size: 13px;
                             wrap: word-wrap;
+                        }
+                        if root.running && !root.tokens-locked && root.token-rows.length == 0: VerticalLayout {
+                            spacing: 8px;
+                            Text {
+                                text: "No tokens or NFTs in this wallet yet.";
+                                color: #b0b0b0;
+                                font-size: 13px;
+                                wrap: word-wrap;
+                            }
+                            Text {
+                                text: root.tokens-empty-hint;
+                                color: #8a8a8a;
+                                font-size: 12px;
+                                wrap: word-wrap;
+                            }
                         }
                         if root.token-rows.length > 0: HorizontalLayout {
                             spacing: 14px;
@@ -3990,12 +4034,18 @@ export component AppWindow inherits Window {
                                     height: 40px;
                                     background: i == root.nft-selected ? #2a2a2a : transparent;
                                     border-radius: 4px;
+                                    // Every row is selectable — selection is what
+                                    // the send panel targets. Only an NFT has a
+                                    // bundle to fetch.
                                     TouchArea {
-                                        enabled: row.is-nft;
-                                        mouse-cursor: row.is-nft ? MouseCursor.pointer : MouseCursor.default;
+                                        mouse-cursor: MouseCursor.pointer;
                                         clicked => {
                                             root.nft-selected = i;
-                                            root.open-nft(row.group);
+                                            root.token-send-confirm = "";
+                                            root.token-send-result = "";
+                                            if (row.is-nft) {
+                                                root.open-nft(row.group);
+                                            }
                                         }
                                     }
                                     HorizontalLayout {
@@ -4017,14 +4067,21 @@ export component AppWindow inherits Window {
                                             alignment: center;
                                             Text {
                                                 text: row.name;
-                                                color: #e6e6e6;
+                                                // Dimmer when it's a placeholder
+                                                // rather than the issuer's name.
+                                                color: row.described ? #e6e6e6 : #9a9a9a;
                                                 font-size: 13px;
                                                 overflow: elide;
                                             }
-                                            if row.ticker != "": Text {
-                                                text: row.ticker;
+                                            Text {
+                                                // The ticker when there is one,
+                                                // else the abbreviated id — which
+                                                // reads as an id here, not as a
+                                                // destination address.
+                                                text: row.ticker != "" ? row.ticker : row.short-group;
                                                 color: #8a8a8a;
                                                 font-size: 11px;
+                                                overflow: elide;
                                             }
                                         }
                                         Text {
@@ -4037,13 +4094,26 @@ export component AppWindow inherits Window {
                                             font-size: 13px;
                                             vertical-alignment: center;
                                             horizontal-alignment: right;
-                                            width: 110px;
+                                            // A real column: it never stretches
+                                            // and never shrinks, so the boundary
+                                            // sits at the same x on every row.
+                                            // The old fixed 110px was narrower
+                                            // than a ten-digit unit count, so a
+                                            // long figure grew the cell and ate
+                                            // into the name beside it — which is
+                                            // what made the rows look ragged.
+                                            // Sized with min/max, since a layout
+                                            // owns its children's geometry.
+                                            horizontal-stretch: 0;
+                                            min-width: 170px;
+                                            max-width: 170px;
+                                            overflow: elide;
                                         }
                                     }
                                 }
                             }
 
-                            // Right: the opened NFT.
+                            // Right: send, then the opened NFT.
                             Rectangle {
                                 width: 300px;
                                 background: #1e1e1e;
@@ -4053,8 +4123,115 @@ export component AppWindow inherits Window {
                                     spacing: 8px;
                                     alignment: start;
 
+                                    // Send the selected token. Gated on the
+                                    // same permission as the coin's own Send
+                                    // tab: reading a wallet and spending from
+                                    // one are different things.
+                                    if root.nft-selected >= 0 && root.token-send-confirm == "": VerticalLayout {
+                                        spacing: 6px;
+                                        if !root.can-send: Text {
+                                            text: !root.running
+                                                ? "Start the daemon to send tokens."
+                                                : "Unlock your wallet to send tokens.";
+                                            color: #8a8a8a;
+                                            font-size: 12px;
+                                            wrap: word-wrap;
+                                        }
+                                        // Both fields sit in one scope so the
+                                        // button can read them; the whole form
+                                        // is hidden together when a send isn't
+                                        // permitted.
+                                        if root.can-send: VerticalLayout {
+                                            spacing: 6px;
+                                            // Both fields span the panel, so
+                                            // their edges line up with each other
+                                            // and with the rows above; the button
+                                            // sits on its own line rather than
+                                            // stealing width from the amount.
+                                            tok-addr := LineEdit {
+                                                placeholder-text: "Destination address";
+                                            }
+                                            // Stays in the tree so the button can
+                                            // read it, but collapses to nothing
+                                            // when unused (a single-edition NFT
+                                            // has one indivisible unit, so there
+                                            // is nothing to type). A layout owns
+                                            // its children's geometry, so this
+                                            // constrains rather than sets.
+                                            tok-amt := LineEdit {
+                                                placeholder-text: root.token-rows[root.nft-selected].described
+                                                    ? "Amount"
+                                                    : "Amount (smallest units)";
+                                                visible: root.token-rows[root.nft-selected].needs-amount;
+                                                max-height: root.token-rows[root.nft-selected].needs-amount ? 100000px : 0px;
+                                            }
+                                            if !root.token-rows[root.nft-selected].needs-amount: Text {
+                                                text: "Sends the whole NFT.";
+                                                color: #8a8a8a;
+                                                font-size: 11px;
+                                            }
+                                            Button {
+                                                text: "Send\u{2026}";
+                                                enabled: !root.token-send-busy;
+                                                clicked => {
+                                                    if (tok-addr.text != "") {
+                                                        root.token-send-result = "";
+                                                        root.token-send-request(
+                                                            root.token-rows[root.nft-selected].group,
+                                                            tok-addr.text,
+                                                            root.token-rows[root.nft-selected].needs-amount
+                                                                ? tok-amt.text : "");
+                                                    }
+                                                }
+                                            }
+                                        }
+                                        if root.token-send-result != "": Text {
+                                            text: root.token-send-result;
+                                            color: root.token-send-ok ? #7ec27e : #e05c5c;
+                                            font-size: 11px;
+                                            wrap: word-wrap;
+                                        }
+                                    }
+
+                                    // Confirm. Shows the full untruncated
+                                    // address and names the token — the one
+                                    // typo safety net a machine can't provide.
+                                    if root.token-send-confirm != "": VerticalLayout {
+                                        spacing: 8px;
+                                        Text {
+                                            text: root.token-send-confirm;
+                                            color: #e6e6e6;
+                                            font-size: 12px;
+                                            wrap: word-wrap;
+                                        }
+                                        HorizontalLayout {
+                                            spacing: 8px;
+                                            Button {
+                                                text: "Cancel";
+                                                clicked => {
+                                                    root.token-send-confirm = "";
+                                                }
+                                            }
+                                            Button {
+                                                text: "Send it";
+                                                primary: true;
+                                                enabled: !root.token-send-busy;
+                                                clicked => {
+                                                    root.token-send-commit();
+                                                }
+                                            }
+                                        }
+                                    }
+
+                                    if root.nft-selected >= 0 && !root.token-rows[root.nft-selected].described: Text {
+                                        text: "Your node has no genesis description for this token, so its name, ticker and decimal places are unknown — the figure shown is a raw count of its smallest units. Rebuilding the block index (Settings) repopulates the node's token-description database.";
+                                        color: #e0a03a;
+                                        font-size: 11px;
+                                        wrap: word-wrap;
+                                    }
+
                                     if root.nft-selected < 0: Text {
-                                        text: "Select an NFT to see its artwork.";
+                                        text: "Select a token to send it, or an NFT to see its artwork.";
                                         color: #8a8a8a;
                                         font-size: 12px;
                                         wrap: word-wrap;

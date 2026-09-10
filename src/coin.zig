@@ -576,6 +576,16 @@ pub const Coin = struct {
     pub const Tokens = struct {
         /// Display name — the tab label ("Tokens").
         name: []const u8,
+        /// What to tell someone whose wallet holds none yet: how tokens reach
+        /// this wallet, and where to start. Coin-specific by nature, so it
+        /// lives with the coin rather than baked into either front-end.
+        ///
+        /// Deliberately names **no marketplace**. A wallet naming a site
+        /// endorses it, trains people to trust destinations the wallet
+        /// suggests — the habit phishing exploits — and can't be corrected
+        /// without a release if that domain later dies or changes hands.
+        /// Explain the mechanism; let the user choose the venue.
+        empty_hint: []const u8 = "",
         /// Everything the wallet holds, newest-first where the daemon orders
         /// them, capped at `limit`. Caller owns the returned slice.
         list: *const fn (
@@ -583,6 +593,25 @@ pub const Coin = struct {
             auth: models.CoinAuth,
             limit: usize,
         ) anyerror![]models.TokenHolding,
+        /// Send `quantity` of the token identified by `group` to `address`.
+        ///
+        /// `quantity` is in the token's **finest unit** — the only unit the
+        /// daemon accepts, and an integer for the same reason money is: a
+        /// float here would let a rounding artifact decide how much actually
+        /// moved. Front-ends convert what the user typed with
+        /// `money.parseUnits` and that coin's own `decimals`.
+        ///
+        /// Returns `SendResult`, so a daemon-side rejection (locked wallet,
+        /// insufficient token balance, bad address) comes back as a `.failed`
+        /// carrying the daemon's own words rather than an opaque error — the
+        /// difference between those three is exactly what the user needs.
+        send: *const fn (
+            allocator: std.mem.Allocator,
+            auth: models.CoinAuth,
+            group: []const u8,
+            address: []const u8,
+            quantity: i64,
+        ) anyerror!models.SendResult,
         /// Fetch, verify and unpack one NFT's data bundle, returning its
         /// metadata and the on-disk path of its card art. `cache_root` is a
         /// BoxWallet-owned directory the bundle is unpacked under, so a second

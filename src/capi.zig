@@ -465,6 +465,31 @@ export fn bw_parse_dollars_to_cents(text: ?[*:0]const u8) i64 {
     return money.parseDollarsToCents(std.mem.span(t)) orelse -1;
 }
 
+/// Parse a typed amount into whole units of a token's finest denomination,
+/// writing the result to `out`. Returns 0 on success, -1 for anything not
+/// cleanly convertible (junk, a negative, more decimal places than the token
+/// has, or an overflow).
+///
+/// Exported so a front-end never re-derives this conversion. It is integer-only
+/// by design — a token amount is a count of indivisible units, and a float
+/// round-trip would let a rounding artifact change how much is sent. The GUI
+/// having grown its own amount formatter once is exactly why this lives here.
+export fn bw_parse_units(text: ?[*:0]const u8, decimals: u8, out: ?*i64) c_int {
+    const t = text orelse return -1;
+    const o = out orelse return -1;
+    o.* = money.parseUnits(std.mem.span(t), decimals) orelse return -1;
+    return 0;
+}
+
+/// Format whole units of a token's finest denomination at that token's
+/// decimals, trailing zeros trimmed. The inverse of `bw_parse_units`, so the
+/// figure a confirm step shows is the figure the send makes.
+export fn bw_format_units(units: i64, decimals: u8, buf: ?[*]u8, cap: usize) usize {
+    const b = buf orelse return 0;
+    var tmp: [64]u8 = undefined;
+    return copyOut(b[0..cap], money.formatUnits(&tmp, units, decimals));
+}
+
 /// Format integer cents as dollars ("$1,234.56"). The stablecoin figures are all
 /// cents, and this is the one place they become text — so both front-ends round
 /// and punctuate them identically. Cheap; UI-thread safe.
@@ -2425,6 +2450,14 @@ pub const BwToken = extern struct {
     group: [129]u8,
     ticker: [17]u8,
     name: [65]u8,
+    /// What to actually put in a name column: the issuer's name, else the
+    /// ticker, else "Unnamed token".
+    ///
+    /// Exported rather than left to the caller because a front-end deriving its
+    /// own fallback chain is how the group identifier ended up displayed as a
+    /// token's name — it reads as an address and says nothing. One rule, in the
+    /// core (`models.TokenHolding.displayName`), for both front-ends.
+    display_name: [65]u8,
     /// The wallet's holding and the token's total supply, both in the token's
     /// finest unit.
     balance: i64,
@@ -2434,6 +2467,28 @@ pub const BwToken = extern struct {
     /// Non-zero when this holding is a non-fungible token: its group identifier
     /// carries the chain's commitment to a specific data file.
     is_nft: c_int,
+    /// Non-zero when sending this holding needs an amount from the user.
+    ///
+    /// Zero for a single-edition NFT — one indivisible unit, so "how many?" has
+    /// exactly one answer and the field is noise. Computed from the holding
+    /// rather than from `is_nft`, because a semi-fungible token held several
+    /// times over is an NFT that *does* need an amount. Send `fixed_quantity`
+    /// when this is zero.
+    needs_amount: c_int,
+    /// The only quantity a send could have when `needs_amount` is zero;
+    /// meaningless otherwise.
+    fixed_quantity: i64,
+    /// Non-zero when the daemon resolved this token's genesis description.
+    ///
+    /// **Zero means `decimals` is a default, not a fact** — the node's index
+    /// has no entry for this token, so its real decimal places are unknown and
+    /// `balance` can only honestly be shown as a raw count of smallest units.
+    /// Verified live: a wallet holding a 4-decimal token reads back as 0 here.
+    described: c_int,
+    /// The group identifier abbreviated for a table cell, NUL-terminated. The
+    /// full id is in `group`; this is what a name column should show for a
+    /// token with no name, because the full id reads as an address.
+    short_group: [24]u8,
 };
 
 /// An NFT's metadata, plus where its card art was unpacked on disk.
@@ -2471,12 +2526,27 @@ export fn bw_tokens_name(idx: usize, buf: ?[*]u8, cap: usize) usize {
     return copyOut(b[0..cap], tk.name);
 }
 
-/// The wallet's group-token holdings; returns how many were written. 0 on any
-/// failure — an unreadable list is an empty one, not worth interrupting for.
+/// What to tell someone whose wallet holds no tokens yet — how they arrive and
+/// where to start. 0 for a coin without the feature. Cheap; UI-thread safe.
+export fn bw_tokens_empty_hint(idx: usize, buf: ?[*]u8, cap: usize) usize {
+    const b = buf orelse return 0;
+    const coin = coinByIndex(idx) orelse return 0;
+    const tk = coin.tokens() orelse return 0;
+    return copyOut(b[0..cap], tk.empty_hint);
+}
+
+/// The wallet's group-token holdings; returns how many were written.
+///
+/// `locked` (optional) is set to 1 when the daemon refused because the wallet
+/// is encrypted and locked. **A 0 return with `locked` set is not an empty
+/// wallet** — it means "unlock to see them", and telling the user otherwise
+/// reads as their holdings having disappeared. Any other failure returns 0 with
+/// `locked` clear.
 ///
 /// One local RPC against the coin's own daemon. Cheap enough to poll: the
 /// artwork behind an NFT row is *not* fetched here.
-export fn bw_tokens_list(ctx: ?*Ctx, idx: usize, out: ?*BwToken, cap: usize) usize {
+export fn bw_tokens_list(ctx: ?*Ctx, idx: usize, out: ?*BwToken, cap: usize, locked: ?*c_int) usize {
+    if (locked) |l| l.* = 0;
     const c = ctx orelse return 0;
     const o = out orelse return 0;
     if (cap == 0) return 0;
@@ -2489,7 +2559,15 @@ export fn bw_tokens_list(ctx: ?*Ctx, idx: usize, out: ?*BwToken, cap: usize) usi
     const io = sharedIo();
 
     const auth = ctxAuth(a, io, coin, c) catch return 0;
-    const holdings = tk.list(a, auth, cap) catch return 0;
+    const holdings = tk.list(a, auth, cap) catch |err| {
+        // A locked wallet is not an empty one. Without this the caller cannot
+        // tell "unlock to see them" from "you have none" — and showing the
+        // latter after a daemon restart reads as lost holdings.
+        if (err == error.WalletLocked) {
+            if (locked) |l| l.* = 1;
+        }
+        return 0;
+    };
     const n = @min(holdings.len, cap);
     const dst = @as([*]BwToken, @ptrCast(o))[0..n];
     for (dst, holdings[0..n]) |*d, *h| {
@@ -2497,12 +2575,72 @@ export fn bw_tokens_list(ctx: ?*Ctx, idx: usize, out: ?*BwToken, cap: usize) usi
         setField(&d.group, h.group());
         setField(&d.ticker, h.ticker());
         setField(&d.name, h.name());
+        setField(&d.display_name, h.displayName());
         d.balance = h.balance;
         d.mintage = h.mintage;
         d.decimals = h.decimals;
         d.is_nft = if (h.kind == .nft) 1 else 0;
+        const fixed = h.fixedQuantity();
+        d.needs_amount = if (fixed == null) 1 else 0;
+        d.fixed_quantity = fixed orelse 0;
+        d.described = if (h.described) 1 else 0;
+        var sgbuf: [64]u8 = undefined;
+        setField(&d.short_group, h.shortGroup(&sgbuf));
     }
     return n;
+}
+
+/// Send `quantity` of the token `group_id` to `address`.
+///
+/// Same tri-state as `bw_wallet_send`: 0 broadcast (`out` = txid), 1 the daemon
+/// refused and `out` carries its own reason (a locked wallet, an insufficient
+/// token balance, a bad address — three different problems the user needs told
+/// apart), -1 a transport or setup failure.
+///
+/// `quantity` is in the token's **finest unit** — the unit `bw_tokens_list`
+/// reports and the only one the daemon accepts. Convert what the user typed
+/// with that token's own `decimals` before calling, and do it in integers: a
+/// float here would let rounding decide how much actually moved.
+export fn bw_token_send(
+    ctx: ?*Ctx,
+    idx: usize,
+    group_id: ?[*:0]const u8,
+    address: ?[*:0]const u8,
+    quantity: i64,
+    out: ?[*]u8,
+    cap: usize,
+) c_int {
+    const c = ctx orelse return -1;
+    const gid_z = group_id orelse return -1;
+    const addr_z = address orelse return -1;
+    const o = out orelse return -1;
+    const coin = coinByIndex(idx) orelse return -1;
+    const tk = coin.tokens() orelse return -1;
+
+    var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const io = sharedIo();
+
+    const auth = ctxAuth(a, io, coin, c) catch |err| {
+        c.setError(@errorName(err));
+        return -1;
+    };
+    const res = tk.send(a, auth, std.mem.span(gid_z), std.mem.span(addr_z), quantity) catch |err| {
+        c.setError(@errorName(err));
+        c.setErrorCode(@errorName(err));
+        return -1;
+    };
+    return switch (res) {
+        .ok => |txid| blk: {
+            _ = copyOut(o[0..cap], txid);
+            break :blk 0;
+        },
+        .failed => |reason| blk: {
+            _ = copyOut(o[0..cap], reason);
+            break :blk 1;
+        },
+    };
 }
 
 /// Fetch, verify and unpack the NFT identified by `group_id`, filling `out`.

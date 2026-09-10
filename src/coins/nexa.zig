@@ -494,6 +494,23 @@ pub const Nexa = struct {
             .object => |o| o,
             else => return error.RpcCallFailed,
         };
+
+        // `token info` reads the wallet's own coins, so an *encrypted* wallet
+        // must be unlocked first — a locked one answers -13, not an empty list.
+        // Distinguishing the two matters more than it looks: swallowing this
+        // into "no tokens" tells someone their holdings have vanished, which is
+        // exactly what it looked like after a daemon restart re-locked the
+        // wallet. Confirmed against nexad 2.2.0.0 on an encrypted regtest node.
+        if (root.get("error")) |e| {
+            if (e == .object) {
+                const msg = jsonString(e.object, "message");
+                if (std.mem.indexOf(u8, msg, "walletpassphrase") != null) {
+                    return error.WalletLocked;
+                }
+                if (msg.len > 0) return error.RpcCallFailed;
+            }
+        }
+
         // A wallet holding nothing answers `{}`, which is a result, not a fault.
         const result = switch (root.get("result") orelse return error.EmptyRpcResult) {
             .object => |o| o,
@@ -528,6 +545,17 @@ pub const Nexa = struct {
         // The daemon writes `decimals` as a *string*, empty for a genesis that
         // omitted it — which displays the same as 0.
         h.decimals = std.fmt.parseInt(u8, jsonString(fields, "decimals"), 10) catch 0;
+
+        // Did the daemon actually find this token's genesis description?
+        //
+        // `genesis_address` is the tell: every resolved description carries one
+        // (confirmed against NIFTY, BONG and a freshly minted regtest token),
+        // while a token its `tokendesc` index has no entry for comes back with
+        // every field blank and `decimals` defaulted to "0". Without this the
+        // defaults would read as facts — a live wallet holding ChiwachuCoin,
+        // which really has 4 decimals, reports 0 here, so its holding would be
+        // shown and sent 10,000x wrong.
+        h.described = jsonString(fields, "genesis_address").len > 0;
 
         // A subgroup identifier carrying a full 32-byte commitment is what
         // makes this an NFT rather than a currency-like group.
@@ -596,6 +624,62 @@ pub const Nexa = struct {
         );
     }
 
+    /// Send `quantity` of `group` to `address`, via `token send`.
+    ///
+    /// `quantity` is in the token's finest unit, matching what the daemon takes
+    /// and reports; the caller has already converted it from what the user
+    /// typed. The daemon's rejections here are specific and worth showing
+    /// verbatim — "Insufficient funds for this token. Need N more.", "Invalid
+    /// parameter: destination address", and the wallet-locked "ACTION
+    /// REQUIRED..." are three very different problems (all confirmed against
+    /// nexad 2.2.0.0), so they come back as `.failed` rather than an error.
+    pub fn tokenSend(
+        allocator: std.mem.Allocator,
+        auth: models.CoinAuth,
+        group: []const u8,
+        address: []const u8,
+        quantity: i64,
+    ) !models.SendResult {
+        if (quantity <= 0) return .{ .failed = "amount must be greater than zero" };
+
+        const group_q = try rpc.jsonQuote(allocator, group);
+        defer allocator.free(group_q);
+        const addr_q = try rpc.jsonQuote(allocator, address);
+        defer allocator.free(addr_q);
+
+        const params = try std.fmt.allocPrint(
+            allocator,
+            "[\"send\",{s},{s},{d}]",
+            .{ group_q, addr_q, quantity },
+        );
+        defer allocator.free(params);
+
+        // The daemon answers a successful send with the bare txid string.
+        var parsed = try rpc.callParsedParams([]const u8, allocator, auth, "token", params);
+        defer parsed.deinit();
+        if (parsed.value.result) |txid| return .{ .ok = try allocator.dupe(u8, txid) };
+        if (parsed.value.@"error") |e| {
+            return .{ .failed = try allocator.dupe(u8, friendlySendError(e.message)) };
+        }
+        return .{ .failed = "no response from daemon" };
+    }
+
+    /// Pass the daemon's rejection through, with one substitution.
+    ///
+    /// A locked wallet is reported as `ACTION REQUIRED: You must first unlock
+    /// the wallet by running the rpc: "walletpassphrase ..."` — accurate, but
+    /// it instructs someone in a GUI to type an RPC they have no prompt for.
+    /// This is the one message worth restating, and the restatement keeps the
+    /// same specific meaning rather than flattening it into "failed": which of
+    /// locked / insufficient / bad-address it was, is the whole answer.
+    /// Everything else is the daemon's own words, verbatim.
+    fn friendlySendError(message: []const u8) []const u8 {
+        if (std.mem.indexOf(u8, message, "walletpassphrase") != null) {
+            return "Unlock your wallet before sending tokens.";
+        }
+        return message;
+    }
+
     /// Fetch, verify and unpack one NFT's data bundle. The hash the bundle must
     /// match is the subgroup identifier already decoded into the holding, so a
     /// bundle served by the issuer's host is still only accepted if it is the
@@ -630,7 +714,13 @@ pub const Nexa = struct {
     /// as the coin itself.
     pub const token_caps: Coin.Tokens = .{
         .name = "Tokens",
+        .empty_hint =
+            "Tokens and NFTs arrive like any other payment. Share an address " ++
+            "from the Receive tab, and anything sent to it appears here once " ++
+            "confirmed.\n\nNexa NFTs are minted and traded on third-party " ++
+            "platforms; BoxWallet isn't affiliated with any of them.",
         .list = vtTokenList,
+        .send = vtTokenSend,
         .fetch_nft = vtFetchNft,
     };
 
@@ -882,6 +972,15 @@ pub const Nexa = struct {
         limit: usize,
     ) anyerror![]models.TokenHolding {
         return tokenList(allocator, auth, limit);
+    }
+    fn vtTokenSend(
+        allocator: std.mem.Allocator,
+        auth: models.CoinAuth,
+        group: []const u8,
+        address: []const u8,
+        quantity: i64,
+    ) anyerror!models.SendResult {
+        return tokenSend(allocator, auth, group, address, quantity);
     }
     fn vtFetchNft(
         allocator: std.mem.Allocator,
@@ -1334,4 +1433,136 @@ test "fetchNft refuses a holding that carries no chain commitment" {
         error.NotAnNft,
         Nexa.fetchNft(std.testing.allocator, h, "/tmp"),
     );
+}
+
+test "the empty Tokens tab explains the mechanism and names no marketplace" {
+    const hint = Nexa.token_caps.empty_hint;
+    // It has to be actionable: the Receive tab is where a token's journey to
+    // this wallet actually starts.
+    try std.testing.expect(std.mem.indexOf(u8, hint, "Receive") != null);
+    // And it must not send anyone to a third-party site. A wallet naming a
+    // venue endorses it and trains people to trust what the wallet suggests;
+    // this text also can't be corrected without a release. If a link ever does
+    // belong here, that's a deliberate product decision — not a slip past this
+    // test.
+    try std.testing.expect(std.mem.indexOf(u8, hint, "http") == null);
+    try std.testing.expect(std.mem.indexOf(u8, hint, ".cash") == null);
+    try std.testing.expect(std.mem.indexOf(u8, hint, ".com") == null);
+    try std.testing.expect(std.mem.indexOf(u8, hint, ".org") == null);
+}
+
+test "token send builds the params array the daemon expects" {
+    const a = std.testing.allocator;
+    // Confirmed against nexad 2.2.0.0: method `token`, subcommand first, and
+    // the quantity as a bare integer in the token's finest unit.
+    const group_q = try rpc.jsonQuote(a, "nexa:tzabc");
+    defer a.free(group_q);
+    const addr_q = try rpc.jsonQuote(a, "nexa:nqtsq5g5xyz");
+    defer a.free(addr_q);
+    const params = try std.fmt.allocPrint(a, "[\"send\",{s},{s},{d}]", .{ group_q, addr_q, @as(i64, 1234) });
+    defer a.free(params);
+    try std.testing.expectEqualStrings(
+        "[\"send\",\"nexa:tzabc\",\"nexa:nqtsq5g5xyz\",1234]",
+        params,
+    );
+}
+
+test "token send refuses a non-positive quantity before touching the daemon" {
+    // No RPC is made, so this needs no daemon: the guard is in front of it.
+    const zero = try Nexa.tokenSend(std.testing.allocator, .{
+        .ip_address = "127.0.0.1", .port = "1", .rpc_user = "x", .rpc_password = "y",
+    }, "nexa:tzabc", "nexa:nqtsq5g5xyz", 0);
+    try std.testing.expectEqualStrings("amount must be greater than zero", zero.failed);
+}
+
+test "a locked wallet is restated without losing which failure it was" {
+    // The daemon's own words tell a GUI user to type an RPC they have no
+    // prompt for — the one message worth restating.
+    try std.testing.expectEqualStrings(
+        "Unlock your wallet before sending tokens.",
+        Nexa.friendlySendError(
+            "ACTION REQUIRED: You must first unlock the wallet by running the rpc: \"walletpassphrase <your passphrase> <timeout in seconds>\"",
+        ),
+    );
+    // Everything else passes through untouched: which failure it was is the
+    // whole answer, and these are already in plain words.
+    try std.testing.expectEqualStrings(
+        "Insufficient funds for this token.  Need 500 more.",
+        Nexa.friendlySendError("Insufficient funds for this token.  Need 500 more."),
+    );
+    try std.testing.expectEqualStrings(
+        "Invalid parameter: destination address",
+        Nexa.friendlySendError("Invalid parameter: destination address"),
+    );
+}
+
+test "a token the node's index can't describe is marked undescribed" {
+    const a = std.testing.allocator;
+    // ChiwachuCoin exactly as nexad 2.2.0.0 reports it on a live wallet: every
+    // descriptive field blank and `decimals` defaulted to "0", though the token
+    // really has 4 decimals. Trusting that 0 would misstate the holding by
+    // 10,000x, so the row has to know it wasn't told.
+    const raw =
+        \\{"nexa:tqwlrq9uanxssd0qu7akrvty2p0jjdas745wmdgt0ntvsmhgjyqqq5krx4p96":
+        \\{"ticker":"","name":"","url":"","hash":"","decimals":"0","genesis_address":"",
+        \\"balance_satoshis":1000000,"mintage_satoshis":210000000000}}
+    ;
+    var parsed = try std.json.parseFromSlice(std.json.Value, a, raw, .{});
+    defer parsed.deinit();
+    var it = parsed.value.object.iterator();
+    const entry = it.next() orelse return error.TestUnexpectedResult;
+    const h = Nexa.holdingFrom(entry.key_ptr.*, entry.value_ptr.object);
+
+    try std.testing.expect(!h.described);
+    try std.testing.expect(!h.decimalsKnown());
+    try std.testing.expectEqualStrings("Unnamed token", h.displayName());
+    // Still a fungible group — no subgroup, so nothing to fetch artwork for.
+    try std.testing.expectEqual(models.TokenKind.fungible, h.kind);
+}
+
+test "a resolved description marks the token described" {
+    const a = std.testing.allocator;
+    // NIFTY as the same live node reports it — a genesis_address is present,
+    // so decimals (15) is the token's own and can be trusted.
+    const raw =
+        \\{"nexa:trlf23c29e02qm0s6q3erqkez3nm0j5g6hymwpsgtpl6e5ytugqqq55zxwcc4":
+        \\{"ticker":"NIFTY","name":"NiftyArt","url":"https://niftyart.cash/td/nifty.json",
+        \\"hash":"b0fa910a48c81cd09b414850ebec6ba040bf3f8b9e0cc39cfd13e03a02be4a0b",
+        \\"decimals":"15","genesis_address":"nexa:nqtsq5g5pz3nw52dp4gaxgsnrmneas35u2rh2mlurs75sx72",
+        \\"balance_satoshis":0,"mintage_satoshis":0}}
+    ;
+    var parsed = try std.json.parseFromSlice(std.json.Value, a, raw, .{});
+    defer parsed.deinit();
+    var it = parsed.value.object.iterator();
+    const entry = it.next() orelse return error.TestUnexpectedResult;
+    const h = Nexa.holdingFrom(entry.key_ptr.*, entry.value_ptr.object);
+
+    try std.testing.expect(h.described);
+    try std.testing.expectEqual(@as(u8, 15), h.decimals);
+    try std.testing.expectEqualStrings("NiftyArt", h.displayName());
+}
+
+test "a locked wallet is reported as locked, never as an empty token list" {
+    // The exact reply nexad 2.2.0.0 gives for `token info` on a locked
+    // encrypted wallet. Reading this as "no tokens" is how a daemon restart
+    // came to look like the holdings had disappeared.
+    const raw =
+        \\{"result":null,"error":{"code":-13,"message":"ACTION REQUIRED: You must first unlock the wallet by running the rpc: \"walletpassphrase <your passphrase> <timeout in seconds>\""},"id":"boxwallet"}
+    ;
+    var parsed = try std.json.parseFromSlice(std.json.Value, std.testing.allocator, raw, .{});
+    defer parsed.deinit();
+
+    const err = parsed.value.object.get("error").?;
+    const msg = Nexa.jsonString(err.object, "message");
+    try std.testing.expect(std.mem.indexOf(u8, msg, "walletpassphrase") != null);
+}
+
+test "an empty result really is an empty wallet, not a fault" {
+    // `{}` with a null error is what an unlocked wallet holding no tokens
+    // answers — that one *is* "you have no tokens".
+    const raw = "{\"result\":{},\"error\":null,\"id\":\"boxwallet\"}";
+    var parsed = try std.json.parseFromSlice(std.json.Value, std.testing.allocator, raw, .{});
+    defer parsed.deinit();
+    try std.testing.expectEqual(std.json.Value.null, parsed.value.object.get("error").?);
+    try std.testing.expectEqual(@as(usize, 0), parsed.value.object.get("result").?.object.count());
 }

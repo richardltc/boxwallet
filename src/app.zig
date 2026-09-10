@@ -821,7 +821,10 @@ const SendModal = struct {
     /// `wallet_stake` — Salvium) reuses the same machinery minus the address
     /// stage: a stake pays the wallet's own address, so the flow starts at
     /// `amount` and the coin supplies the destination itself.
-    const Mode = enum { send, stake };
+    /// `token` (Nexa's group tokens and NFTs) reuses the whole address →
+    /// amount → confirm flow, but the amount is a count of the *token's* finest
+    /// units, not the coin's, and the destination is a group the modal carries.
+    const Mode = enum { send, stake, token };
 
     mode: Mode = .send,
     stage: Stage = .address,
@@ -830,6 +833,23 @@ const SendModal = struct {
     coin_idx: usize = 0,
     /// Confirm-menu cursor (0 = Yes, 1 = No).
     sel: u8 = 0,
+    /// `token` mode: which token is being sent, and how to read the amount the
+    /// user types. Copied in when the prompt opens so a cursor move on the
+    /// Tokens tab can't retarget a send that's already in flight.
+    group_buf: [models.token_group_max]u8 = undefined,
+    group_len: usize = 0,
+    token_label_buf: [64]u8 = undefined,
+    token_label_len: usize = 0,
+    token_decimals: u8 = 0,
+    /// Set when this token can only be sent in one quantity (a single-edition
+    /// NFT — see `models.TokenHolding.fixedQuantity`). The amount step is then
+    /// skipped entirely: a field with exactly one valid answer is noise, and
+    /// asking "how many?" about a picture invites the wrong mental model.
+    token_fixed_qty: ?i64 = null,
+    /// False when the node resolved no description for this token, so the
+    /// amount is entered and confirmed in the token's smallest units — its real
+    /// decimal places are unknown and must not be guessed at.
+    token_decimals_known: bool = true,
     /// Set when the amount field failed to parse (non-numeric, zero, or
     /// negative) — never for "exceeds balance", since the cached balance can
     /// be stale; the daemon's own live check is the real gate.
@@ -840,6 +860,14 @@ const SendModal = struct {
     /// failure reason (fixed buffer — no allocation).
     msg_buf: [256]u8 = undefined,
     msg_len: usize = 0,
+
+    fn group(self: *const SendModal) []const u8 {
+        return self.group_buf[0..self.group_len];
+    }
+
+    fn tokenLabel(self: *const SendModal) []const u8 {
+        return self.token_label_buf[0..self.token_label_len];
+    }
 
     fn setMsg(self: *SendModal, ok: bool, text: []const u8) void {
         self.ok = ok;
@@ -1376,6 +1404,13 @@ const Activity = struct {
     /// True when the in-flight "send" is a stake (the Stake prompt) — routes
     /// the worker to `walletStake`, which needs no destination address.
     send_is_stake: bool = false,
+    /// Routes the send worker to the coin's token capability instead of its own
+    /// currency. The group and the quantity (in the token's finest unit) are
+    /// copied in beside it, like the address.
+    send_is_token: bool = false,
+    send_token_group_buf: [models.token_group_max]u8 = undefined,
+    send_token_group_len: usize = 0,
+    send_token_qty: i64 = 0,
     /// Set true (release) by the worker when the send finishes.
     send_done: std.atomic.Value(bool) = .init(false),
     /// Whether the finished send succeeded. Published by the `send_done` edge.
@@ -1430,6 +1465,12 @@ const Activity = struct {
     poll_token_count: usize = 0,
     /// Which row the tab's cursor is on (indexes `token_buf`).
     token_sel: usize = 0,
+    /// The wallet is encrypted and locked, so the daemon refused to list its
+    /// tokens. Tracked separately from an empty list because the two mean
+    /// opposite things: one says "unlock to see them", the other "you have
+    /// none". Conflating them reads as "your tokens are gone".
+    tokens_locked: bool = false,
+    poll_tokens_locked: bool = false,
     nft_thread: ?std.Thread = null,
     nft_done: std.atomic.Value(bool) = .init(false),
     nft_view: NftView = .idle,
@@ -2363,6 +2404,19 @@ const Activity = struct {
             self.coin.rpcDefaultPort(),
         );
 
+        // Group tokens live in the coin's own in-daemon wallet, so they use
+        // the daemon's auth exactly like an ordinary send.
+        if (self.send_is_token) {
+            const tk = self.coin.tokens() orelse return error.Unsupported;
+            return tk.send(
+                a,
+                auth,
+                self.send_token_group_buf[0..self.send_token_group_len],
+                address,
+                self.send_token_qty,
+            );
+        }
+
         return if (self.send_is_stake)
             self.coin.walletStake(a, auth, self.send_amount)
         else
@@ -2809,6 +2863,7 @@ const Activity = struct {
         const tk = @min(self.poll_token_count, self.token_buf.len);
         @memcpy(self.token_buf[0..tk], self.poll_token_buf[0..tk]);
         self.token_count = tk;
+        self.tokens_locked = self.poll_tokens_locked;
         if (self.token_sel >= tk) self.token_sel = 0;
 
         const sca = @min(self.poll_sc_addr_len, self.sc_addr_buf.len);
@@ -3324,7 +3379,12 @@ const Activity = struct {
                 const n = @min(holdings.len, token_cache_cap);
                 @memcpy(self.poll_token_buf[0..n], holdings[0..n]);
                 self.poll_token_count = n;
-            } else |_| {}
+                self.poll_tokens_locked = false;
+            } else |err| {
+                // A locked wallet is not an empty one — say which it is.
+                self.poll_tokens_locked = (err == error.WalletLocked);
+                if (self.poll_tokens_locked) self.poll_token_count = 0;
+            }
         }
 
         // Re-adopt a still-unlocked in-daemon wallet after an app restart. The Ergo
@@ -4405,7 +4465,10 @@ pub const App = struct {
                         // Capital S — lowercase 's' toggles the daemon. Opens the
                         // Stake prompt on the Send tab for coins with a stake
                         // action (openStakeModal checks the capability itself).
-                        'S' => if (on_coin and self.active_tab == .staking) self.openStakeModal(),
+                        'S' => if (on_coin and self.active_tab == .staking)
+                            self.openStakeModal()
+                        else if (on_coin and self.active_tab == .tokens)
+                            self.openTokenSendModal(),
                         't' => if (on_coin) self.copyTipAddress(ctx),
                         // Jump straight to a tab by number, positional over the
                         // *visible* strip (1 = Home … 5 = Settings, 6 = the
@@ -6908,6 +6971,39 @@ pub const App = struct {
         self.send_amount_input.focus();
     }
 
+    /// Open the token Send prompt — the Send modal in `token` mode, targeting
+    /// the row the Tokens tab's cursor is on. No-op for a coin without the
+    /// capability, or with nothing selected.
+    ///
+    /// The token's identity and decimals are copied into the modal here rather
+    /// than read at submit time: the cursor can move (and the poll rewrites the
+    /// holdings) while the prompt is open, and a send must go to the token the
+    /// user was looking at when they started.
+    fn openTokenSendModal(self: *App) void {
+        const coin = self.selectedCoin() orelse return;
+        if (!coin.supportsTokens()) return;
+        const act = &self.activities[self.selected];
+        if (act.token_sel >= act.token_count) return;
+        const h = &act.token_buf[act.token_sel];
+
+        var m: SendModal = .{ .coin_idx = self.selected, .mode = .token };
+        const g = h.group();
+        m.group_len = @min(g.len, m.group_buf.len);
+        @memcpy(m.group_buf[0..m.group_len], g[0..m.group_len]);
+        const label = h.displayName();
+        m.token_label_len = @min(label.len, m.token_label_buf.len);
+        @memcpy(m.token_label_buf[0..m.token_label_len], label[0..m.token_label_len]);
+        m.token_decimals = if (h.decimalsKnown()) h.decimals else 0;
+        m.token_decimals_known = h.decimalsKnown();
+        m.token_fixed_qty = h.fixedQuantity();
+
+        self.send_modal = m;
+        self.send_addr_input.setValue("") catch {};
+        self.send_amount_input.setValue("") catch {};
+        self.send_addr_input.focus();
+        self.send_amount_input.blur();
+    }
+
     fn closeSendModal(self: *App) void {
         self.send_modal = null;
     }
@@ -6927,8 +7023,15 @@ pub const App = struct {
                 .escape => self.closeSendModal(),
                 .enter => if (self.send_addr_input.getValue().len > 0) {
                     self.send_addr_input.blur();
-                    self.send_amount_input.focus();
-                    m.stage = .amount;
+                    // Nothing to choose (a single-edition NFT): the amount step
+                    // would be a field with one valid answer, so go to confirm.
+                    if (m.token_fixed_qty != null) {
+                        m.sel = 0;
+                        m.stage = .confirm;
+                    } else {
+                        self.send_amount_input.focus();
+                        m.stage = .amount;
+                    }
                 },
                 else => self.send_addr_input.handleKey(k),
             },
@@ -6977,6 +7080,26 @@ pub const App = struct {
     fn trySendAmount(self: *App) void {
         const m = &self.send_modal.?;
         const text = std.mem.trim(u8, self.send_amount_input.getValue(), " \t");
+
+        // A token amount is a count of the token's own finest units, checked as
+        // an integer here so the confirm step can't show a figure the send
+        // wouldn't actually make. `parseUnits` refuses more decimal places than
+        // the token has rather than truncating them away.
+        if (m.mode == .token) {
+            const units = money.parseUnits(text, m.token_decimals) orelse {
+                m.bad_input = true;
+                return;
+            };
+            if (units <= 0) {
+                m.bad_input = true;
+                return;
+            }
+            m.bad_input = false;
+            m.sel = 0;
+            m.stage = .confirm;
+            return;
+        }
+
         const amount = std.fmt.parseFloat(f64, text) catch {
             m.bad_input = true;
             return;
@@ -7020,6 +7143,18 @@ pub const App = struct {
         // Stake mode: no destination was collected (the coin pays the wallet's
         // own address itself) — the flag routes the worker to `walletStake`.
         act.send_is_stake = m.mode == .stake;
+        act.send_is_token = m.mode == .token;
+        if (act.send_is_token) {
+            const g = m.group();
+            const gn = @min(g.len, act.send_token_group_buf.len);
+            @memcpy(act.send_token_group_buf[0..gn], g[0..gn]);
+            act.send_token_group_len = gn;
+            // Integer units, never via the f64 above: a token amount is a count
+            // of indivisible units, and a float would let rounding decide how
+            // much moved. Already validated at the amount stage.
+            act.send_token_qty = m.token_fixed_qty orelse
+                (money.parseUnits(amount_text, m.token_decimals) orelse 0);
+        }
 
         act.coin = coin;
         act.home_dir = self.home_dir;
@@ -7031,7 +7166,11 @@ pub const App = struct {
             return;
         };
         m.stage = .working;
-        self.logf("{s}: {s}…", .{ coin.coinName(), if (m.mode == .stake) "staking" else "sending" });
+        self.logf("{s}: {s}…", .{ coin.coinName(), switch (m.mode) {
+            .stake => "staking",
+            .token => "sending token",
+            .send => "sending",
+        } });
     }
 
     /// Open the Mining prompt for the selected coin — thread-count entry when
@@ -8644,8 +8783,20 @@ pub const App = struct {
     /// shows its path — a terminal can't draw it, but the GUI front-end loads
     /// the very same file.
     fn renderTokensTab(a: std.mem.Allocator, act: *const Activity) ![]const u8 {
+        if (act.tokens_locked) {
+            // Not "no tokens" — the daemon refused to look. Saying otherwise is
+            // how a routine daemon restart came to read as lost holdings.
+            return "Tokens\n\nUnlock your wallet to see its tokens and NFTs.";
+        }
         if (act.token_count == 0) {
-            return "Tokens\n\nNo tokens or NFTs in this wallet.\n\nGroup tokens sent to this wallet's addresses show up here automatically.";
+            // The "what now?" copy is the coin's, not this front-end's — see
+            // `Coin.Tokens.empty_hint`.
+            const hint = if (act.coin.tokens()) |tk| tk.empty_hint else "";
+            return std.fmt.allocPrint(
+                a,
+                "Tokens\n\nNo tokens or NFTs in this wallet yet.\n\n{s}",
+                .{hint},
+            );
         }
 
         // Widths measured over the plain text before any colour is applied —
@@ -8653,10 +8804,13 @@ pub const App = struct {
         // misalign the grid (same rule as the Transactions tab).
         var name_w: usize = "Token".len;
         var qty_w: usize = "Held".len;
+        var id_w: usize = "Identifier".len;
         for (act.token_buf[0..act.token_count]) |*h| {
             name_w = @max(name_w, h.displayName().len);
             var buf: [48]u8 = undefined;
             qty_w = @max(qty_w, tokenQuantityText(&buf, h).len);
+            var idbuf: [64]u8 = undefined;
+            id_w = @max(id_w, h.shortGroup(&idbuf).len);
         }
         // Long token names are the norm, so cap the column rather than letting
         // one token push the quantities off the pane.
@@ -8665,7 +8819,7 @@ pub const App = struct {
         const header_plain = try std.fmt.allocPrint(a, "     {s}   {s}   {s}", .{
             try padCell(a, "Token", name_w, false),
             try padCell(a, "Held", qty_w, true),
-            "Ticker",
+            try padCell(a, "Identifier", id_w, false),
         });
         var body: []const u8 = (zz.Style{}).dim(true).render(a, header_plain) catch header_plain;
 
@@ -8678,18 +8832,22 @@ pub const App = struct {
                 .fungible => "•",
             };
             var qbuf: [48]u8 = undefined;
+            var idbuf: [64]u8 = undefined;
+            // The identifier goes in its own column, abbreviated, where it
+            // reads as an identifier — not in the name column, where a bare
+            // `nexa:tq…` string reads as an address.
             const line = try std.fmt.allocPrint(a, "{s} {s}  {s}   {s}   {s}", .{
                 cursor,
                 glyph,
                 try padCell(a, truncateCell(h.displayName(), name_w), name_w, false),
                 try padCell(a, tokenQuantityText(&qbuf, h), qty_w, true),
-                h.ticker(),
+                try padCell(a, h.shortGroup(&idbuf), id_w, false),
             });
             body = try std.fmt.allocPrint(a, "{s}\n{s}", .{ body, line });
         }
 
         const detail = try renderNftDetail(a, act);
-        const hint = (zz.Style{}).dim(true).render(a, "  (n: next token   enter: open NFT)") catch "";
+        const hint = (zz.Style{}).dim(true).render(a, "  (n: next token   enter: open NFT   S: send)") catch "";
         return std.fmt.allocPrint(a, "Tokens\n\n{s}\n{s}\n{s}", .{ body, detail, hint });
     }
 
@@ -8699,6 +8857,20 @@ pub const App = struct {
     fn renderNftDetail(a: std.mem.Allocator, act: *const Activity) ![]const u8 {
         if (act.token_sel >= act.token_count) return "";
         const h = &act.token_buf[act.token_sel];
+
+        if (!h.described) {
+            // Say what's actually wrong, and where the fix is. The node
+            // resolves other tokens fine, so this is a gap in its own index
+            // rather than anything about the token.
+            return std.fmt.allocPrint(
+                a,
+                "\nYour node has no genesis description for this token, so its " ++
+                    "name, ticker and decimal places are unknown — the figure above is a " ++
+                    "raw count of its smallest units. Rebuilding the block index " ++
+                    "(Settings) repopulates the node's token-description database.",
+                .{},
+            );
+        }
 
         if (h.kind != .nft) {
             return std.fmt.allocPrint(
@@ -8748,13 +8920,14 @@ pub const App = struct {
     /// only in the token's finest unit, so the point is a display concern and
     /// `decimals` is where it goes.
     fn tokenQuantityText(buf: []u8, h: *const models.TokenHolding) []const u8 {
-        if (h.decimals == 0) {
-            return std.fmt.bufPrint(buf, "{d}", .{h.balance}) catch "?";
+        // With no description resolved, `decimals` is a default rather than the
+        // token's own — so the only honest figure is the raw base-unit count,
+        // and it is labelled so nobody reads it as a scaled amount.
+        if (!h.decimalsKnown()) {
+            return std.fmt.bufPrint(buf, "{d} units", .{h.balance}) catch "?";
         }
-        const scale = std.math.pow(f64, 10, @floatFromInt(h.decimals));
-        const amount = @as(f64, @floatFromInt(h.balance)) / scale;
         var tmp: [64]u8 = undefined;
-        const text = money.trimTrailingZeros(money.formatAmount(&tmp, amount, h.decimals));
+        const text = money.formatUnits(&tmp, h.balance, h.decimals);
         const n = @min(text.len, buf.len);
         @memcpy(buf[0..n], text[0..n]);
         return buf[0..n];
@@ -9994,7 +10167,12 @@ pub const App = struct {
         errdefer out.deinit();
 
         const staking = m.mode == .stake;
-        const title = try std.fmt.allocPrint(a, "{s} — {s}", .{ coin.coinName(), if (staking) "stake" else "send" });
+        const sending_token = m.mode == .token;
+        const title = try std.fmt.allocPrint(a, "{s} — {s}", .{ coin.coinName(), switch (m.mode) {
+            .stake => "stake",
+            .token => "send token",
+            .send => "send",
+        } });
         try modalRule(a, &out.writer, brand, inner_w, "┌", "┐", title);
         try modalRow(&out.writer, vbar, inner_w, "", 0);
 
@@ -10006,13 +10184,33 @@ pub const App = struct {
             },
             .amount => {
                 const field = try self.send_amount_input.view(a);
-                const text = try std.fmt.allocPrint(a, "Amount: {s}", .{field});
-                try modalRow(&out.writer, vbar, inner_w, text, zz.width("Amount: ") + zz.width(field));
-                try modalRow(&out.writer, vbar, inner_w, "", 0);
-                const balance = if (self.hide_balances)
-                    try std.fmt.allocPrint(a, "{s} {s}", .{ balance_mask, coin.coinNameAbbrev() })
+                // An undescribed token has no known decimal places, so the
+                // figure is a count of its smallest units — say so, rather than
+                // letting it read as a scaled amount.
+                const amount_label: []const u8 = if (sending_token and !m.token_decimals_known)
+                    "Amount (smallest units): "
                 else
-                    formatBalance(a, act.balance_avail, coin.coinNameAbbrev(), coin.balanceDecimals());
+                    "Amount: ";
+                const text = try std.fmt.allocPrint(a, "{s}{s}", .{ amount_label, field });
+                try modalRow(&out.writer, vbar, inner_w, text, zz.width(amount_label) + zz.width(field));
+                try modalRow(&out.writer, vbar, inner_w, "", 0);
+                // In token mode the coin's own balance is the wrong figure
+                // entirely — what's spendable here is the holding of this one
+                // token, in its own units.
+                const balance = if (self.hide_balances)
+                    try std.fmt.allocPrint(a, "{s} {s}", .{
+                        balance_mask,
+                        if (sending_token) m.tokenLabel() else coin.coinNameAbbrev(),
+                    })
+                else if (sending_token) blk: {
+                    var hbuf: [64]u8 = undefined;
+                    const held = for (act.token_buf[0..act.token_count]) |*h| {
+                        if (std.mem.eql(u8, h.group(), m.group())) break h.balance;
+                    } else 0;
+                    break :blk try std.fmt.allocPrint(a, "{s} {s}", .{
+                        money.formatUnits(&hbuf, held, m.token_decimals), m.tokenLabel(),
+                    });
+                } else formatBalance(a, act.balance_avail, coin.coinNameAbbrev(), coin.balanceDecimals());
                 const avail = try std.fmt.allocPrint(a, "Available: {s}", .{balance});
                 const avail_styled = (zz.Style{}).dim(true).render(a, avail) catch avail;
                 try modalRow(&out.writer, vbar, inner_w, avail_styled, zz.width(avail));
@@ -10023,7 +10221,13 @@ pub const App = struct {
                     try wrapIntoRows(a, &out.writer, vbar, inner_w, coin.stakeHint(), (zz.Style{}).dim(true));
                 }
                 if (m.bad_input) {
-                    const warn = "Enter a positive amount.";
+                    var wbuf: [96]u8 = undefined;
+                    const warn = if (sending_token and m.token_decimals == 0)
+                        "Enter a whole number of units (this token has no decimals)."
+                    else if (sending_token)
+                        (std.fmt.bufPrint(&wbuf, "Enter a positive amount, at most {d} decimal places.", .{m.token_decimals}) catch "Enter a positive amount.")
+                    else
+                        "Enter a positive amount.";
                     const styled = (zz.Style{}).fg(.red).render(a, warn) catch warn;
                     try modalRow(&out.writer, vbar, inner_w, styled, zz.width(warn));
                 }
@@ -10032,7 +10236,28 @@ pub const App = struct {
                 const amount_text = std.mem.trim(u8, self.send_amount_input.getValue(), " \t");
                 const amount = std.fmt.parseFloat(f64, amount_text) catch 0;
                 var buf: [64]u8 = undefined;
-                const detail = if (staking)
+                const detail = if (sending_token) blk: {
+                    // The full, untruncated address, and the token named — the
+                    // one typo safety net a machine can't provide.
+                    const addr = self.send_addr_input.getValue();
+                    // A single-edition NFT has no quantity worth stating: the
+                    // thing being sent *is* the whole token.
+                    if (m.token_fixed_qty != null) {
+                        break :blk try std.fmt.allocPrint(a, "Send {s} to {s}? This cannot be undone.", .{
+                            m.tokenLabel(), addr,
+                        });
+                    }
+                    var qbuf: [64]u8 = undefined;
+                    const units = money.parseUnits(amount_text, m.token_decimals) orelse 0;
+                    if (!m.token_decimals_known) {
+                        break :blk try std.fmt.allocPrint(a, "Send {d} smallest units of {s} to {s}? This token's decimal places are unknown to your node. This cannot be undone.", .{
+                            units, m.tokenLabel(), addr,
+                        });
+                    }
+                    break :blk try std.fmt.allocPrint(a, "Send {s} {s} to {s}? This cannot be undone.", .{
+                        money.formatUnits(&qbuf, units, m.token_decimals), m.tokenLabel(), addr,
+                    });
+                } else if (staking)
                     try std.fmt.allocPrint(a, "Stake {s} {s}? {s}", .{
                         formatAmount(&buf, amount, coin.balanceDecimals()), coin.coinNameAbbrev(), coin.stakeHint(),
                     })
