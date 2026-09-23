@@ -3851,10 +3851,33 @@ int main(int argc, char **argv)
             static std::atomic<bool> storage_busy{false};
             static std::atomic<int> storage_coin{-1};
             static std::atomic<int64_t> storage_ms{0};
+            // Set while the selected coin is on a remote node, so the first tick
+            // back on the local daemon walks at once instead of waiting out the
+            // 30s interval behind a line that's been blank all along.
+            static std::atomic<bool> storage_remote{false};
             const int64_t now_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
                 std::chrono::steady_clock::now().time_since_epoch()).count();
-            if (!storage_busy.load() &&
-                (storage_coin.load() != sel || now_ms - storage_ms.load() > 30000)) {
+            if (remote_node) {
+                // The line is hidden on a remote node: the chain is on someone
+                // else's machine and its API doesn't say how big it is, and the
+                // walk would only measure our own (near-empty, or left over from
+                // a local node) data dir. Next to "Using a remote node", that
+                // figure reads as the remote chain's size, which it isn't.
+                // Cleared every tick, so a walk still in flight when the node
+                // choice changed can't leave its figure standing.
+                storage_remote.store(true);
+                post_to_ui([weak, sel]() {
+                    auto h = weak.lock();
+                    if (!h)
+                        return;
+                    if (g_selected.load() != sel)
+                        return;
+                    (*h)->set_storage_size(ss(""));
+                });
+            } else if (!storage_busy.load() &&
+                (storage_remote.load() || storage_coin.load() != sel ||
+                 now_ms - storage_ms.load() > 30000)) {
+                storage_remote.store(false);
                 storage_busy.store(true);
                 // The guard is taken HERE, on the poller, not inside the thread:
                 // `detach` returns before the new thread runs its first line, so
