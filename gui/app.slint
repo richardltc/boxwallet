@@ -1646,6 +1646,14 @@ export component AppWindow inherits Window {
     // Which of the two the open confirm modal is for. Mirrors the TUI's send
     // modal Mode: same chrome, same last-chance read, no address stage.
     in-out property <bool> send-confirm-is-stake: false;
+    // A coin that can quote a send's fee (Epic) has it worked out as the
+    // confirm opens, so the fee is stated before anyone agrees to it. Send
+    // waits for the quote; a quote the wallet refuses closes the confirm with
+    // the reason, the same way a refused send would.
+    in property <bool> has-send-fee: false;
+    in-out property <bool> send-fee-pending: false;
+    in-out property <string> send-fee-text: "";
+    callback estimate-send(string, string); // address, amount as typed
 
     // ---- wallet setup modal ----
     // One overlay, one stage machine — the GUI's mirror of the TUI's wallet
@@ -3564,7 +3572,12 @@ export component AppWindow inherits Window {
                                             root.send-confirm-amount = send-amt.text;
                                             root.send-result = "";
                                             root.send-confirm-is-stake = false;
+                                            root.send-fee-text = "";
+                                            root.send-fee-pending = root.has-send-fee;
                                             root.send-confirm-open = true;
+                                            if (root.has-send-fee) {
+                                                root.estimate-send(send-addr.text, send-amt.text);
+                                            }
                                         }
                                     }
                                 }
@@ -4469,6 +4482,8 @@ export component AppWindow inherits Window {
                                         root.send-confirm-amount = stake-amt.text;
                                         root.send-result = "";
                                         root.send-confirm-is-stake = true;
+                                        root.send-fee-pending = false;
+                                        root.send-fee-text = "";
                                         root.send-confirm-open = true;
                                     }
                                 }
@@ -4648,6 +4663,12 @@ export component AppWindow inherits Window {
                             }
                         }
                     }
+                    if !root.send-confirm-is-stake && root.has-send-fee && !root.send-busy: Text {
+                        text: root.send-fee-pending ? "Working out the fee\u{2026}" : root.send-fee-text;
+                        color: #9a9a9a;
+                        font-size: 12px;
+                        wrap: word-wrap;
+                    }
                     if root.send-confirm-is-stake && root.stake-hint != "": Text {
                         text: root.stake-hint;
                         color: #9a9a9a;
@@ -4685,6 +4706,8 @@ export component AppWindow inherits Window {
                         }
                         Button {
                             text: root.send-confirm-is-stake ? "Stake" : "Send";
+                            // Not before the fee is known, for a coin that states it.
+                            enabled: root.send-confirm-is-stake || !root.send-fee-pending;
                             // Deliberately does NOT close the modal: it stays up,
                             // now busy, and main.cpp closes it when the result
                             // (the txid, or the daemon's refusal) comes back.
