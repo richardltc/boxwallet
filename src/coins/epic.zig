@@ -1880,6 +1880,7 @@ pub const Epic = struct {
         errdefer allocator.free(bin);
         const top = try dataDir(allocator, home);
         errdefer allocator.free(top);
+        cacheEpicboxIndex(allocator, io, top);
         const pass = try allocator.dupe(u8, wallet_password);
         errdefer allocator.free(pass);
 
@@ -1892,6 +1893,43 @@ pub const Epic = struct {
         argv[4] = try allocator.dupe(u8, "-c");
         argv[5] = top;
         argv[6] = try allocator.dupe(u8, "owner_api");
+        return argv;
+    }
+
+    /// argv for the Epicbox listener: `epic-wallet --offline_mode -p <pw> -c <top>
+    /// listen -m epicbox`, the process that signs incoming payments and finalizes
+    /// outgoing ones while the wallet is unlocked. It runs beside `owner_api` on
+    /// the same wallet (both hold it open without trouble) and reads the same
+    /// managed config, which `launchServerArgv` has just ensured. It connects out
+    /// to the relay (wss, port 443), so it binds no port of its own.
+    ///
+    /// `--offline_mode` for the same reason as the server: without it the listener
+    /// exits at once when the node is unreachable or still syncing — which is
+    /// every unlock before our own node has caught up. The password rides argv
+    /// only, as for the server. Caller owns the returned slice.
+    fn listenerArgv(
+        allocator: std.mem.Allocator,
+        install_root: []const u8,
+        home: []const u8,
+        wallet_password: []const u8,
+    ) anyerror![]const []const u8 {
+        const bin = try std.fs.path.join(allocator, &.{ install_root, wallet_file });
+        errdefer allocator.free(bin);
+        const top = try dataDir(allocator, home);
+        errdefer allocator.free(top);
+        const pass = try allocator.dupe(u8, wallet_password);
+        errdefer allocator.free(pass);
+
+        const tail = [_][]const u8{ "listen", "-m", "epicbox" };
+        const argv = try allocator.alloc([]const u8, 6 + tail.len);
+        errdefer allocator.free(argv);
+        argv[0] = bin;
+        argv[1] = try allocator.dupe(u8, "--offline_mode");
+        argv[2] = try allocator.dupe(u8, "-p");
+        argv[3] = pass;
+        argv[4] = try allocator.dupe(u8, "-c");
+        argv[5] = top;
+        for (tail, 0..) |s, i| argv[6 + i] = try allocator.dupe(u8, s);
         return argv;
     }
 
@@ -2407,14 +2445,154 @@ pub const Epic = struct {
         };
     }
 
+    // --- Receive address (Owner API `get_public_address`) -----------------
+    //
+    // MimbleWimble has no on-chain addresses; what a sender needs instead is the
+    // wallet's **Epicbox address**, `<pubkey>@<relay domain>`: the relay mailbox
+    // they post their slate to, for this wallet to pick up, sign and send back.
+    // The key is derived from the seed at `[epicbox] epicbox_address_index`, so
+    // it's fixed per wallet — there is no "new address" to mint, and `force_new`
+    // returns the same one (as with Zano's single address).
+    //
+    // A payment only completes while an Epicbox listener runs for this wallet.
+    // Until one does, the relay holds the slate (seen delivered after minutes
+    // offline) and the sender's coins stay locked — not lost.
+
+    /// The `epicbox_address_index` the wallet was launched with, read from
+    /// `epic-wallet.toml` by `launchServerArgv` — the only wallet hook that knows
+    /// the home dir. The listener derives its address from the same key, so
+    /// asking for index 0 regardless would show a user who changed it an address
+    /// nobody is listening on.
+    var epicbox_index: std.atomic.Value(u32) = .init(0);
+
+    /// The longest address this coin hands back. Both front-ends cache it in a
+    /// fixed buffer (the TUI's is 128 bytes and truncates to fit) and an address
+    /// cut short is someone else's address, so a longer one is refused instead.
+    const epicbox_address_max = 128;
+
+    /// `[epicbox] epicbox_address_index` from a wallet config, or 0 — epic-wallet's
+    /// own default — when it's absent or unreadable. Only a live `key = value`
+    /// line inside `[epicbox]` counts: a commented-out one, or the same key in
+    /// another section, isn't what the wallet will use.
+    fn epicboxIndexFromToml(input: []const u8) u32 {
+        var section: []const u8 = "";
+        var lines = std.mem.splitScalar(u8, input, '\n');
+        while (lines.next()) |line| {
+            const trimmed = std.mem.trim(u8, line, " \t\r");
+            if (trimmed.len >= 2 and trimmed[0] == '[' and trimmed[trimmed.len - 1] == ']') {
+                section = trimmed[1 .. trimmed.len - 1];
+                continue;
+            }
+            if (trimmed.len == 0 or trimmed[0] == '#') continue;
+            if (!std.mem.eql(u8, section, "epicbox")) continue;
+            const eq = std.mem.indexOfScalar(u8, trimmed, '=') orelse continue;
+            if (!std.mem.eql(u8, std.mem.trim(u8, trimmed[0..eq], " \t"), "epicbox_address_index")) continue;
+            var value = trimmed[eq + 1 ..];
+            if (std.mem.indexOfScalar(u8, value, '#')) |h| value = value[0..h];
+            return std.fmt.parseInt(u32, std.mem.trim(u8, value, " \t"), 10) catch 0;
+        }
+        return 0;
+    }
+
+    /// Read the configured Epicbox index from `<top>/epic-wallet.toml` into
+    /// `epicbox_index`. A config that can't be read leaves the default (0) — the
+    /// launch that follows would fail on it anyway, and say why.
+    fn cacheEpicboxIndex(allocator: std.mem.Allocator, io: std.Io, top: []const u8) void {
+        var dir = std.Io.Dir.cwd().openDir(io, top, .{}) catch return;
+        defer dir.close(io);
+        var file = dir.openFile(io, wallet_conf_file, .{}) catch return;
+        defer file.close(io);
+        const stat = file.stat(io) catch return;
+        const size: usize = @intCast(@min(stat.size, 256 * 1024));
+        const input = allocator.alloc(u8, size) catch return;
+        defer allocator.free(input);
+        const n = file.readPositionalAll(io, input, 0) catch return;
+        epicbox_index.store(epicboxIndexFromToml(input[0..n]), .release);
+    }
+
+    /// The wallet's Epicbox address via the Owner API's `get_public_address`
+    /// (needs the cached token — `error.WalletLocked` when no wallet is open).
+    /// `force_new` is ignored: see the section note. Caller owns the slice.
+    fn epicReceiveAddress(
+        allocator: std.mem.Allocator,
+        auth: models.CoinAuth,
+        force_new: bool,
+    ) anyerror![]const u8 {
+        _ = force_new;
+        var token_buf: [128]u8 = undefined;
+        const tn = Session.get(&token_buf) orelse return error.WalletLocked;
+
+        var threaded: std.Io.Threaded = .init(allocator, .{});
+        defer threaded.deinit();
+
+        const params = try std.fmt.allocPrint(
+            allocator,
+            "{{\"token\":\"{s}\",\"derivation_index\":{d}}}",
+            .{ token_buf[0..tn], epicbox_index.load(.acquire) },
+        );
+        defer allocator.free(params);
+
+        const r = try secureRpc(allocator, threaded.io(), auth, "get_public_address", params);
+        defer {
+            @memset(r, 0);
+            allocator.free(r);
+        }
+        if (!innerSucceeded(r)) return error.WalletReceiveAddressFailed;
+        return parsePublicAddress(allocator, r);
+    }
+
+    /// Map a decrypted `get_public_address` reply — `{"result":{"Ok":{"domain",
+    /// "port","public_key"}}}` — to the address a sender types:
+    /// `<public_key>@<domain>`, plus `:<port>` unless it's the default 443
+    /// (epic-wallet's own spelling). Each part is held to the character set
+    /// epic-wallet's address parser accepts, so what BoxWallet shows is always
+    /// something a sender's wallet will take — anything else is refused, not
+    /// passed along. Pure, so it's testable without a wallet.
+    fn parsePublicAddress(allocator: std.mem.Allocator, inner: []const u8) ![]const u8 {
+        const Addr = struct {
+            domain: []const u8 = "",
+            port: ?u16 = null,
+            public_key: []const u8 = "",
+        };
+        const Env = struct { result: ?struct { Ok: ?Addr = null } = null };
+        var parsed = try std.json.parseFromSlice(Env, allocator, inner, .{
+            .ignore_unknown_fields = true,
+            .allocate = .alloc_always,
+        });
+        defer parsed.deinit();
+        const addr = (parsed.value.result orelse return error.WalletReceiveAddressFailed).Ok orelse
+            return error.WalletReceiveAddressFailed;
+
+        // A base58 public key of exactly 52 characters; a domain of letters,
+        // digits and dots — the two groups of epic-wallet's address regex.
+        const base58 = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
+        if (addr.public_key.len != 52) return error.BadEpicboxAddress;
+        for (addr.public_key) |ch| {
+            if (std.mem.indexOfScalar(u8, base58, ch) == null) return error.BadEpicboxAddress;
+        }
+        if (addr.domain.len == 0) return error.BadEpicboxAddress;
+        for (addr.domain) |ch| {
+            if (!std.ascii.isAlphanumeric(ch) and ch != '.') return error.BadEpicboxAddress;
+        }
+
+        const out = if (addr.port == null or addr.port.? == 443)
+            try std.fmt.allocPrint(allocator, "{s}@{s}", .{ addr.public_key, addr.domain })
+        else
+            try std.fmt.allocPrint(allocator, "{s}@{s}:{d}", .{ addr.public_key, addr.domain, addr.port.? });
+        if (out.len > epicbox_address_max) {
+            allocator.free(out);
+            return error.BadEpicboxAddress;
+        }
+        return out;
+    }
+
     // --- Transactions (Owner API `retrieve_txs`) --------------------------
     //
-    // MimbleWimble has no on-chain addresses and its transactions are built
-    // *interactively* (a slate exchanged between sender and receiver — over a
-    // listener or an epicbox relay), so BoxWallet can't offer a fire-and-forget
-    // Send or a Receive address for Epic; those tabs keep their placeholder.
-    // The wallet's own transaction log, however, is honest data the Owner API
-    // reports directly — so the Transactions tab is live.
+    // MimbleWimble transactions are built *interactively* (a slate exchanged
+    // between sender and receiver — over a listener or an epicbox relay), so
+    // there's no fire-and-forget Send for Epic yet; that tab keeps its
+    // placeholder. The wallet's own transaction log, however, is honest data the
+    // Owner API reports directly — so the Transactions tab is live.
 
     /// One `retrieve_txs` TxLogEntry (the subset BoxWallet uses). Amounts are
     /// integer-base-unit strings; `creation_ts` is an RFC-3339 timestamp;
@@ -2568,6 +2746,8 @@ pub const Epic = struct {
     pub const external_wallet: Coin.ExternalWallet = .{
         .rpc_port = walletRpcPort,
         .launch_server_argv = launchServerArgv,
+        .listener_argv = listenerArgv,
+        .listener_name = "Epicbox listener",
         .cli_create = epicCliCreate,
         .exists = walletExists,
         .create = epicCreate,
@@ -2607,11 +2787,11 @@ pub const Epic = struct {
         .daemon_argv = vtDaemonArgv,
         .request_stop = vtRequestStop,
         .wallet_path = vtWalletPath,
-        // Only transactions: MimbleWimble transactions are interactive slate
-        // exchanges, so there is no fire-and-forget Send or on-chain Receive
-        // address to offer (see the `retrieve_txs` section above) — those tabs
-        // keep their placeholder.
+        // Transactions, and the Epicbox address as the Receive tab's address (see
+        // the `get_public_address` section above). No Send yet: MimbleWimble
+        // transactions are interactive slate exchanges, not a fire-and-forget RPC.
         .wallet_transactions = vtWalletTransactions,
+        .wallet_receive_address = vtWalletReceiveAddress,
         .external_wallet = &external_wallet,
         // Epic's wallet reaches its node over plain HTTP and doesn't care whose
         // node it is, so the user gets the choice — ours, or one that already
@@ -2650,6 +2830,16 @@ pub const Epic = struct {
         limit: usize,
     ) anyerror![]models.WalletTx {
         return epicTransactions(allocator, wallet_auth, limit);
+    }
+
+    // Same wallet-process auth as the transactions hook.
+    fn vtWalletReceiveAddress(
+        _: *anyopaque,
+        allocator: std.mem.Allocator,
+        wallet_auth: models.CoinAuth,
+        force_new: bool,
+    ) anyerror![]const u8 {
+        return epicReceiveAddress(allocator, wallet_auth, force_new);
     }
 
     fn vtCoinName(_: *anyopaque) []const u8 {
@@ -3345,6 +3535,64 @@ test "launchServerArgv prepares the config + per-session secret and builds owner
     try std.testing.expect(std.mem.indexOf(u8, cbuf[0..cn], "api_listen_interface = \"127.0.0.1\"") != null);
 }
 
+test "listenerArgv builds `epic-wallet --offline_mode -p <pw> -c <top> listen -m epicbox`" {
+    const a = std.testing.allocator;
+    const argv = try Epic.listenerArgv(a, "/opt/bw", "/home/u", "walletpw9");
+    defer {
+        for (argv) |s| a.free(s);
+        a.free(argv);
+    }
+    try std.testing.expectEqual(@as(usize, 9), argv.len);
+    try std.testing.expect(std.mem.endsWith(u8, argv[0], Epic.wallet_file));
+    // Offline mode, or it exits the moment the node is unreachable or syncing.
+    try std.testing.expectEqualStrings("--offline_mode", argv[1]);
+    try std.testing.expectEqualStrings("-p", argv[2]);
+    try std.testing.expectEqualStrings("walletpw9", argv[3]);
+    try std.testing.expectEqualStrings("-c", argv[4]);
+    // The same managed config dir the Owner-API server is pinned to.
+    const top = try Epic.dataDir(a, "/home/u");
+    defer a.free(top);
+    try std.testing.expectEqualStrings(top, argv[5]);
+    try std.testing.expectEqualStrings("listen", argv[6]);
+    try std.testing.expectEqualStrings("-m", argv[7]);
+    try std.testing.expectEqualStrings("epicbox", argv[8]);
+}
+
+test "Epic runs its Epicbox listener while unlocked" {
+    var e: Epic = .{};
+    const c = e.coin();
+    try std.testing.expect(c.walletHasListener());
+    try std.testing.expectEqualStrings("Epicbox listener", c.externalWallet().?.listener_name);
+}
+
+test "launchServerArgv caches the Epicbox index an existing config already sets" {
+    if (builtin.os.tag == .windows) return error.SkipZigTest;
+    const a = std.testing.allocator;
+    var threaded: std.Io.Threaded = .init(a, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    const home = "test-epic-wallet-epicbox-index-home";
+    std.Io.Dir.cwd().deleteTree(io, home) catch {};
+    defer std.Io.Dir.cwd().deleteTree(io, home) catch {};
+    defer Epic.epicbox_index.store(0, .release);
+
+    // A config the user (or another app) already set up with index 2: the heal
+    // leaves `[epicbox]` alone, and the address asked for must match it.
+    const top = try Epic.dataDir(a, home);
+    defer a.free(top);
+    var dir = try std.Io.Dir.cwd().createDirPathOpen(io, top, .{});
+    defer dir.close(io);
+    try dir.writeFile(io, .{ .sub_path = Epic.wallet_conf_file, .data = "[wallet]\n[epicbox]\nepicbox_address_index = 2\n" });
+
+    const argv = try Epic.launchServerArgv(a, "/opt/bw", home, Epic.wallet_rpc_port, "walletpw9");
+    defer {
+        for (argv) |s| a.free(s);
+        a.free(argv);
+    }
+    try std.testing.expectEqual(@as(u32, 2), Epic.epicbox_index.load(.acquire));
+}
+
 test "scanArgv builds `epic-wallet -t <top> -p <pw> scan` for the recovery scan" {
     const a = std.testing.allocator;
     const argv = try Epic.scanArgv(a, "/opt/bw", "/home/alice", "walletpw9");
@@ -3440,14 +3688,78 @@ test "parseRfc3339 converts the wallet's creation_ts to unix seconds" {
     try std.testing.expect(Epic.parseRfc3339("garbage-not-a-date!!") == null);
 }
 
-test "coin vtable exposes transactions but no send/receive for Epic (interactive MimbleWimble)" {
+test "coin vtable exposes transactions and the Epicbox receive address, but no send" {
     var e: Epic = .{};
     const c = e.coin();
     try std.testing.expect(c.supportsTransactions());
-    // Slate-exchange transactions can't be a fire-and-forget RPC, and there is
-    // no on-chain receive address — both tabs keep their placeholder.
+    try std.testing.expect(c.supportsReceiveAddress());
+    // Slate-exchange transactions can't be a fire-and-forget RPC — the Send tab
+    // keeps its placeholder.
     try std.testing.expect(!c.supportsSend());
-    try std.testing.expect(!c.supportsReceiveAddress());
+}
+
+test "parsePublicAddress spells the Epicbox address the way a sender types it" {
+    const a = std.testing.allocator;
+    const key = "esXBF4QgPnTk64M1ky2DeBTCvKXNBwKp3mfnHTbzAKU2wagigz6J";
+
+    // The default port is left off, exactly as epic-wallet prints it.
+    const plain = try Epic.parsePublicAddress(a,
+        \\{"id":1,"jsonrpc":"2.0","result":{"Ok":{"domain":"epicbox.epiccash.com","port":443,"public_key":"esXBF4QgPnTk64M1ky2DeBTCvKXNBwKp3mfnHTbzAKU2wagigz6J"}}}
+    );
+    defer a.free(plain);
+    try std.testing.expectEqualStrings(key ++ "@epicbox.epiccash.com", plain);
+
+    // Any other port has to travel with the address, or the sender posts to the
+    // wrong relay port.
+    const custom = try Epic.parsePublicAddress(a,
+        \\{"result":{"Ok":{"domain":"relay.example","port":8443,"public_key":"esXBF4QgPnTk64M1ky2DeBTCvKXNBwKp3mfnHTbzAKU2wagigz6J"}}}
+    );
+    defer a.free(custom);
+    try std.testing.expectEqualStrings(key ++ "@relay.example:8443", custom);
+}
+
+test "parsePublicAddress refuses anything a sender's wallet wouldn't parse" {
+    const a = std.testing.allocator;
+    // An Err reply.
+    try std.testing.expectError(error.WalletReceiveAddressFailed, Epic.parsePublicAddress(a,
+        \\{"result":{"Err":{"GenericError":"no wallet"}}}
+    ));
+    // A key that isn't 52 base58 characters ('0' isn't base58).
+    try std.testing.expectError(error.BadEpicboxAddress, Epic.parsePublicAddress(a,
+        \\{"result":{"Ok":{"domain":"epicbox.epiccash.com","port":443,"public_key":"es0BF4QgPnTk64M1ky2DeBTCvKXNBwKp3mfnHTbzAKU2wagigz6J"}}}
+    ));
+    try std.testing.expectError(error.BadEpicboxAddress, Epic.parsePublicAddress(a,
+        \\{"result":{"Ok":{"domain":"epicbox.epiccash.com","port":443,"public_key":"esXBF4"}}}
+    ));
+    // A domain with characters outside the parser's set, or none at all.
+    try std.testing.expectError(error.BadEpicboxAddress, Epic.parsePublicAddress(a,
+        \\{"result":{"Ok":{"domain":"evil.example/x","port":443,"public_key":"esXBF4QgPnTk64M1ky2DeBTCvKXNBwKp3mfnHTbzAKU2wagigz6J"}}}
+    ));
+    try std.testing.expectError(error.BadEpicboxAddress, Epic.parsePublicAddress(a,
+        \\{"result":{"Ok":{"domain":"","port":443,"public_key":"esXBF4QgPnTk64M1ky2DeBTCvKXNBwKp3mfnHTbzAKU2wagigz6J"}}}
+    ));
+    // Longer than a front-end can hold without truncating it.
+    const long_domain = "a" ** 80;
+    try std.testing.expectError(error.BadEpicboxAddress, Epic.parsePublicAddress(a, "{\"result\":{\"Ok\":{\"domain\":\"" ++ long_domain ++
+        "\",\"port\":443,\"public_key\":\"esXBF4QgPnTk64M1ky2DeBTCvKXNBwKp3mfnHTbzAKU2wagigz6J\"}}}"));
+}
+
+test "epicboxIndexFromToml reads only a live key inside [epicbox]" {
+    // Absent: epic-wallet's default.
+    try std.testing.expectEqual(@as(u32, 0), Epic.epicboxIndexFromToml("[wallet]\nchain_type = \"Mainnet\"\n"));
+    // Set, with a trailing comment and CRLF endings.
+    try std.testing.expectEqual(@as(u32, 3), Epic.epicboxIndexFromToml(
+        "[wallet]\r\nx = 1\r\n[epicbox]\r\nepicbox_domain = \"epicbox.epiccash.com\"\r\nepicbox_address_index = 3 # mine\r\n",
+    ));
+    // Commented out, or in another section: not what the wallet uses.
+    try std.testing.expectEqual(@as(u32, 0), Epic.epicboxIndexFromToml("[epicbox]\n# epicbox_address_index = 7\n"));
+    try std.testing.expectEqual(@as(u32, 0), Epic.epicboxIndexFromToml("[tor]\nepicbox_address_index = 7\n[epicbox]\n"));
+    // Garbage reads as the default rather than a wrong index.
+    try std.testing.expectEqual(@as(u32, 0), Epic.epicboxIndexFromToml("[epicbox]\nepicbox_address_index = -1\n"));
+    // The template BoxWallet writes.
+    const tmpl = try Epic.defaultWalletToml(std.testing.allocator, "/top", "http://127.0.0.1:3413", "");
+    defer std.testing.allocator.free(tmpl);
+    try std.testing.expectEqual(@as(u32, 0), Epic.epicboxIndexFromToml(tmpl));
 }
 
 test "normalizeNodeUrl fills in the scheme and the API port" {

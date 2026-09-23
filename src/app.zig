@@ -1600,6 +1600,11 @@ const Activity = struct {
     /// open succeeded). Gates balance polling; read on the poll worker, written on
     /// the UI thread, so it's atomic. Reset when the wallet-rpc is killed.
     ext_wallet_open: std.atomic.Value(u8) = .init(0),
+    /// The payment listener's last probed state (`extwallet.probeListener`), for
+    /// a coin that runs one while unlocked (Epic's Epicbox listener). Probed on
+    /// the UI tick, never while the setup worker holds `wallet_rpc`. UI-thread
+    /// only.
+    listener_state: extwallet.ListenerState = .none,
     /// Whether a wallet file exists on disk (`externalWallet.exists`), refreshed
     /// on the UI thread. Drives the "no wallet / locked / open" pane hint and which
     /// setup flow `w` opens. UI-thread only.
@@ -5410,6 +5415,15 @@ pub const App = struct {
                                 self.ensureWalletRpc(act, xcoin);
                         } else if (act.wallet_rpc.child != null and act.wallet_setup_thread == null) {
                             self.killWalletRpc(act);
+                        }
+                        // The payment listener, for a coin that runs one: a dead
+                        // one is said once, in the log, as well as on the Receive
+                        // tab — a payment waits at the relay until it's back.
+                        if (xcoin.walletHasListener() and act.wallet_setup_thread == null) {
+                            const was = act.listener_state;
+                            act.listener_state = extwallet.probeListener(&act.wallet_rpc);
+                            if (act.listener_state == .stopped and was != .stopped)
+                                self.logf("{s}: {s} stopped — payments wait until you lock and unlock the wallet (w)", .{ xcoin.coinName(), xcoin.externalWallet().?.listener_name });
                         }
                     } else if (act.daemonState() != .running and act.ext_wallet_open.load(.monotonic) != 0) {
                         // In-daemon wallet (Ergo): no process to manage, but the
@@ -9382,14 +9396,35 @@ pub const App = struct {
         if (act.receive_addr_len == 0) return "Receive\n\nNo address yet.";
         const addr = act.receive_addr_buf[0..act.receive_addr_len];
         const hint = (zz.Style{}).dim(true).render(a, "  (c: copy   n: new address)") catch "";
+        const listener = try renderListenerLine(a, act);
         const qr = qrcode.encodeText(a, addr, .medium) catch return std.fmt.allocPrint(
             a,
-            "Receive\n\nAddress: {s}{s}\n\n(QR code unavailable)",
-            .{ addr, hint },
+            "Receive\n\nAddress: {s}{s}{s}\n\n(QR code unavailable)",
+            .{ addr, hint, listener },
         );
         defer qr.deinit();
         const qr_block = try renderQrHalfBlock(a, qr);
-        return std.fmt.allocPrint(a, "Receive\n\nAddress: {s}{s}\n\n{s}", .{ addr, hint, qr_block });
+        return std.fmt.allocPrint(a, "Receive\n\nAddress: {s}{s}{s}\n\n{s}", .{ addr, hint, listener, qr_block });
+    }
+
+    /// The payment-listener line under the receive address — `\n<name>: running`
+    /// or a stopped warning — for a coin that runs one; empty otherwise, and while
+    /// the wallet is locked (there's nothing listening to report on).
+    fn renderListenerLine(a: std.mem.Allocator, act: *const Activity) ![]const u8 {
+        // Only ever set off `.none` for a coin that has a listener.
+        if (act.listener_state == .none) return "";
+        const ew = act.coin.externalWallet() orelse return "";
+        return switch (act.listener_state) {
+            .none => unreachable,
+            .running => std.fmt.allocPrint(a, "\n{s}: {s}", .{
+                ew.listener_name,
+                (zz.Style{}).bold(true).fg(.green).render(a, "running") catch "running",
+            }),
+            .stopped => std.fmt.allocPrint(a, "\n{s}: {s}", .{
+                ew.listener_name,
+                (zz.Style{}).bold(true).fg(.red).render(a, "stopped — payments wait until you lock and unlock the wallet (w)") catch "stopped",
+            }),
+        };
     }
 
     /// The Send tab body: the coin's cached available balance and a hint to
@@ -12301,6 +12336,33 @@ test "renderReceiveTab shows the cached address, the key hint, and a QR block" {
     // fallback.
     try std.testing.expect(std.mem.indexOf(u8, body, "▀") != null);
     try std.testing.expect(std.mem.indexOf(u8, body, "QR code unavailable") == null);
+}
+
+test "renderReceiveTab says whether the payment listener is up, only while there is one" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    var epic: Epic = .{};
+    var act: Activity = .{ .coin = epic.coin() };
+    const addr = "esXBF4QgPnTk64M1ky2DeBTCvKXNBwKp3mfnHTbzAKU2wagigz6J@epicbox.epiccash.com";
+    @memcpy(act.receive_addr_buf[0..addr.len], addr);
+    act.receive_addr_len = addr.len;
+
+    // Locked (nothing started yet): no line at all.
+    var body = try App.renderReceiveTab(a, &act);
+    try std.testing.expect(std.mem.indexOf(u8, body, "Epicbox listener") == null);
+
+    act.listener_state = .running;
+    body = try App.renderReceiveTab(a, &act);
+    try std.testing.expect(std.mem.indexOf(u8, body, "Epicbox listener") != null);
+    try std.testing.expect(std.mem.indexOf(u8, body, "running") != null);
+
+    // A dead listener says what it costs and how to get it back.
+    act.listener_state = .stopped;
+    body = try App.renderReceiveTab(a, &act);
+    try std.testing.expect(std.mem.indexOf(u8, body, "stopped") != null);
+    try std.testing.expect(std.mem.indexOf(u8, body, "lock and unlock") != null);
 }
 
 test "renderQrHalfBlock pads with the mandatory quiet zone on every side" {

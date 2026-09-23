@@ -137,6 +137,11 @@ static constexpr size_t TOKEN_CAP = 24;
 static std::vector<std::string> g_recv_addr;
 static std::atomic<bool> g_want_new_addr{false};
 
+// The payment listener's last known state per coin (BW_LISTENER_*), kept so a
+// poll that can't check it (-1: a wallet op holds the session) shows the last
+// answer rather than blanking the line. Poll thread only.
+static std::vector<int> g_listener_state;
+
 // Last wallet-service failure shown, so a persistent one is reported once
 // rather than rewritten over the status line on every poll. UI thread only.
 static std::string g_last_wallet_svc_err;
@@ -1088,6 +1093,7 @@ static void apply_coin_metadata(const AppWindow *ui, bw_ctx *ctx, int idx)
     clear_nft_panel(ui);
     ui->set_rescan_frac(0);
     ui->set_receive_address(ss(""));
+    ui->set_listener_text(ss(""));
     ui->set_receive_qr(slint::Image());
     g_qr_addr.clear();
     ui->set_tx_rows(std::make_shared<slint::VectorModel<WalletTxRow>>(std::vector<WalletTxRow>{}));
@@ -1420,6 +1426,7 @@ int main(int argc, char **argv)
     static std::vector<NavCoin> coins;
     size_t count = bw_coin_count();
     g_recv_addr.assign(count, std::string()); // one address cache slot per coin
+    g_listener_state.assign(count, BW_LISTENER_NONE);
     for (size_t i = 0; i < count; ++i) {
         char nm[64];
         size_t nn = bw_coin_name(i, nm, sizeof nm);
@@ -3692,6 +3699,25 @@ int main(int argc, char **argv)
                 recv_addr = g_recv_addr[coin];
             }
 
+            // The payment listener (Epic's Epicbox listener): whether payments to
+            // the address above can actually complete right now. Shown under it.
+            std::string listener_text;
+            bool listener_ok = false;
+            if (ew_flags & BW_EW_HAS_LISTENER) {
+                int ls = bw_wallet_listener_state(ctx, coin);
+                if (ls >= 0)
+                    g_listener_state[coin] = ls;
+                ls = g_listener_state[coin];
+                if (ls != BW_LISTENER_NONE) {
+                    char nm[64];
+                    size_t nn = bw_coin_listener_name(coin, nm, sizeof nm);
+                    listener_ok = (ls == BW_LISTENER_RUNNING);
+                    listener_text = std::string(nm, nn) + (listener_ok
+                        ? ": running"
+                        : ": stopped \u2014 payments wait until you lock and unlock the wallet");
+                }
+            }
+
             // Mining rides the *daemon's* RPC (the miner runs inside nervad), so
             // it's readable as soon as the daemon answers — no wallet needed.
             BwMiningStatus ms;
@@ -3993,7 +4019,8 @@ int main(int argc, char **argv)
                         sc_health, sc_countdown, sc_addr, sc_price_stale, sc_minting_blocked,
                         sc_vaults, sc_txs, sc_redeemable, sc_vault_ids, sc_vault_cents,
                         ms, hashrate, ew_flags, wallet_state, bal, have_balance,
-                        rp, rescanning, txs, stakes, recv_addr, decimals, wallet_svc_err, can_send,
+                        rp, rescanning, txs, stakes, recv_addr, listener_text, listener_ok,
+                        decimals, wallet_svc_err, can_send,
                         rpc_ok, busy, stopping, remote_node, coin, tokens, tokens_locked]() {
                 auto h = weak.lock();
                 if (!h)
@@ -4061,6 +4088,8 @@ int main(int argc, char **argv)
                                              static_cast<double>(rp.target))
                         : 0.0f);
                     (*h)->set_receive_address(ss(recv_addr));
+                    (*h)->set_listener_text(ss(listener_text));
+                    (*h)->set_listener_ok(listener_ok);
                     // Re-encode only when the address actually changes — this
                     // runs every poll and the encoder allocates.
                     if (recv_addr != g_qr_addr) {

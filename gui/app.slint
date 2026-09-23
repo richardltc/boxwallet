@@ -1566,6 +1566,11 @@ export component AppWindow inherits Window {
     in property <bool> has-pending: false;
     in property <float> rescan-frac: 0;
     in property <string> receive-address: "";
+    // The payment listener's line under the address ("Epicbox listener:
+    // running"), empty for a coin without one or a locked wallet. listener-ok
+    // picks its colour: a stopped listener means payments can't complete.
+    in property <string> listener-text: "";
+    in property <bool> listener-ok: false;
     // The address as a scannable QR, built by the host from bw_qr_encode. Drawn
     // on its own white card: the pane is dark, and a dark-on-dark QR is
     // unreadable to a phone camera.
@@ -3479,6 +3484,12 @@ export component AppWindow inherits Window {
                                     root.receive-copied = true;
                                 }
                             }
+                        }
+                        if root.receive-address != "" && root.listener-text != "": Text {
+                            text: root.listener-text;
+                            color: root.listener-ok ? #7ec27e : #e05c5c;
+                            font-size: 13px;
+                            wrap: word-wrap;
                         }
                         // The QR sits on a white card of its own, with a margin
                         // standing in for the quiet zone the encoder already
