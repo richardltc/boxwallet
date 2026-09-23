@@ -567,6 +567,127 @@ pub fn daemonReachable(allocator: std.mem.Allocator, auth: models.CoinAuth) bool
     return true;
 }
 
+/// Whether a TCP connection to `host`:`port` completes within `timeout_ms`.
+///
+/// `daemonReachable` above deliberately has no timeout, and says why: it dials
+/// 127.0.0.1, where a closed port answers instantly with `ConnectionRefused`. A
+/// host out on the internet has a **third** answer — silence — and against a
+/// filtered port `connect()` keeps retrying SYNs for the kernel's full timeout,
+/// around two minutes on Linux.
+///
+/// That is not a slow poll, it is a wedged one. BoxWallet's status worker sat
+/// inside exactly this for two minutes per tick against a wrong node address:
+/// the UI never got a frame, so nothing animated and the coin looked inert, and
+/// quitting hung too because shutdown joins that thread before freeing the
+/// context it is holding.
+///
+/// std's own connect timeout is declared but unimplemented — `Threaded` panics
+/// with "TODO implement netConnectIpPosix with timeout" — so the bound is here:
+/// a non-blocking connect plus `poll`. Resolution still goes through std's
+/// resolver, which needs no libc (the TUI doesn't link it).
+///
+/// Best-effort in both directions: anything that isn't a completed connection
+/// reads as unreachable, and a `true` says only that the port accepted a
+/// connection just now — not that what's behind it answers RPC.
+pub fn endpointReachable(
+    allocator: std.mem.Allocator,
+    host: []const u8,
+    port: u16,
+    timeout_ms: u32,
+) bool {
+    var threaded: std.Io.Threaded = .init(allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    const name = std.Io.net.HostName.init(host) catch return false;
+
+    // 16 entries is the capacity `lookup` documents as "guaranteed not to
+    // block", so the resolve stays a plain call rather than needing a reader.
+    var slots: [16]std.Io.net.HostName.LookupResult = undefined;
+    var resolved: std.Io.Queue(std.Io.net.HostName.LookupResult) = .init(&slots);
+    name.lookup(io, &resolved, .{ .port = port }) catch return false;
+
+    // Every address the name resolved to gets its own bounded attempt: a host
+    // with a dead AAAA and a live A record is common, and giving up on the
+    // first would call it unreachable when it isn't.
+    while (resolved.getOneUncancelable(io)) |result| switch (result) {
+        .address => |addr| if (connectWithin(addr, timeout_ms)) return true,
+        .canonical_name => {},
+    } else |_| {}
+    return false;
+}
+
+/// One bounded TCP connect. POSIX: non-blocking connect, `poll` for writability,
+/// then `SO_ERROR` for the verdict — the standard dance, because a non-blocking
+/// connect reports failure through the socket rather than through its own return.
+///
+/// Windows falls back to a plain blocking connect: its own connect timeout is
+/// around 20 seconds rather than two minutes, which is survivable, and no coin
+/// that offers a remote node installs there yet.
+fn connectWithin(addr: std.Io.net.IpAddress, timeout_ms: u32) bool {
+    if (builtin.os.tag == .windows) {
+        var threaded: std.Io.Threaded = .init(std.heap.page_allocator, .{});
+        defer threaded.deinit();
+        const io = threaded.io();
+        const stream = addr.connect(io, .{ .mode = .stream }) catch return false;
+        stream.close(io);
+        return true;
+    }
+
+    const posix = std.posix;
+    const family: u32 = switch (addr) {
+        .ip4 => posix.AF.INET,
+        .ip6 => posix.AF.INET6,
+    };
+    const sock_rc = posix.system.socket(family, posix.SOCK.STREAM | posix.SOCK.NONBLOCK, 0);
+    if (posix.errno(sock_rc) != .SUCCESS) return false;
+    const sock: posix.socket_t = @intCast(sock_rc);
+    defer _ = posix.system.close(sock);
+
+    var v4: posix.sockaddr.in = undefined;
+    var v6: posix.sockaddr.in6 = undefined;
+    const sa: *const posix.sockaddr, const sa_len: posix.socklen_t = switch (addr) {
+        .ip4 => |a| blk: {
+            v4 = .{ .port = std.mem.nativeToBig(u16, a.port), .addr = @bitCast(a.bytes) };
+            break :blk .{ @ptrCast(&v4), @sizeOf(posix.sockaddr.in) };
+        },
+        .ip6 => |a| blk: {
+            v6 = .{
+                .port = std.mem.nativeToBig(u16, a.port),
+                .flowinfo = 0,
+                .addr = a.bytes,
+                .scope_id = a.interface.index,
+            };
+            break :blk .{ @ptrCast(&v6), @sizeOf(posix.sockaddr.in6) };
+        },
+    };
+
+    // A non-blocking connect almost always returns EINPROGRESS; a loopback one
+    // can complete outright, which is success, not an error to poll on.
+    switch (posix.errno(posix.system.connect(sock, sa, sa_len))) {
+        .SUCCESS => return true,
+        .INPROGRESS, .INTR => {},
+        else => return false,
+    }
+
+    var fds = [_]posix.pollfd{.{ .fd = sock, .events = posix.POLL.OUT, .revents = 0 }};
+    const ready = posix.poll(&fds, @intCast(timeout_ms)) catch return false;
+    if (ready == 0) return false; // the timeout — the port is filtered, or the host is gone
+
+    // Writable does not mean connected: a refusal arrives the same way, and the
+    // verdict is in SO_ERROR.
+    var err: i32 = 0;
+    var len: posix.socklen_t = @sizeOf(i32);
+    if (posix.errno(posix.system.getsockopt(
+        sock,
+        posix.SOL.SOCKET,
+        posix.SO.ERROR,
+        @ptrCast(&err),
+        &len,
+    )) != .SUCCESS) return false;
+    return err == 0;
+}
+
 /// Build an `Authorization: Basic <base64(user:password)>` header value.
 fn basicAuthHeader(allocator: std.mem.Allocator, user: []const u8, password: []const u8) ![]u8 {
     const creds = try std.fmt.allocPrint(allocator, "{s}:{s}", .{ user, password });
@@ -1417,3 +1538,29 @@ test "basic auth header is correctly base64-encoded" {
     // base64("nexarpc:secret") == "bmV4YXJwYzpzZWNyZXQ="
     try std.testing.expectEqualStrings("Basic bmV4YXJwYzpzZWNyZXQ=", header);
 }
+
+/// Wall-clock milliseconds, for the deadline assertions below.
+fn testNowMs() i64 {
+    var threaded: std.Io.Threaded = .init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    return @intCast(std.Io.Clock.real.now(threaded.io()).toMilliseconds());
+}
+
+test "an unreachable endpoint gives up on a deadline instead of the kernel's" {
+    if (builtin.os.tag == .windows) return error.SkipZigTest;
+    // A port nothing is listening on, on loopback: refused instantly, which is
+    // the fast path the probe must not turn into a wait.
+    const start = testNowMs();
+    try std.testing.expect(!endpointReachable(std.testing.allocator, "127.0.0.1", 1, 4000));
+    try std.testing.expect(testNowMs() - start < 2000);
+}
+
+test "a name that resolves to nothing is unreachable, not a hang" {
+    if (builtin.os.tag == .windows) return error.SkipZigTest;
+    // `.invalid` is reserved never to resolve (RFC 2606), so this exercises the
+    // lookup failure path without depending on the network being up.
+    const start = testNowMs();
+    try std.testing.expect(!endpointReachable(std.testing.allocator, "invalid.invalid", 3413, 4000));
+    try std.testing.expect(testNowMs() - start < 10_000);
+}
+

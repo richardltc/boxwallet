@@ -195,6 +195,42 @@ pub fn managedWalletDir(
     return current;
 }
 
+/// The `CoinAuth` a coin gets before any conf is read: the caller's defaults on
+/// localhost, with the data dir carried through. Every field is owned by
+/// `allocator`, so the result is released with `freeAuth` exactly like a
+/// `readAuth` one.
+///
+/// Split out of `readAuth` because a conf is not always there to read. A coin
+/// BoxWallet isn't running a daemon for (Epic pointed at someone else's node —
+/// see `Coin.node_source`) may have no `epic-server.toml` at all, and the poll
+/// still needs an auth to carry the data dir. Callers in that position use this
+/// rather than treating a missing conf as a failed poll.
+pub fn defaultAuth(
+    allocator: std.mem.Allocator,
+    data_dir: []const u8,
+    default_user: []const u8,
+    default_port: []const u8,
+) !models.CoinAuth {
+    var auth: models.CoinAuth = .{
+        .rpc_user = try allocator.dupe(u8, default_user),
+        .rpc_password = undefined,
+        .ip_address = undefined,
+        .port = undefined,
+        .data_dir = undefined,
+    };
+    errdefer allocator.free(auth.rpc_user);
+    auth.rpc_password = try allocator.dupe(u8, "");
+    errdefer allocator.free(auth.rpc_password);
+    auth.ip_address = try allocator.dupe(u8, "127.0.0.1");
+    errdefer allocator.free(auth.ip_address);
+    auth.port = try allocator.dupe(u8, default_port);
+    errdefer allocator.free(auth.port);
+    // Carry the data dir so a coin can locate an out-of-band credential file
+    // (e.g. Epic's `.api_secret`) that isn't part of the `key=value` conf.
+    auth.data_dir = try allocator.dupe(u8, data_dir);
+    return auth;
+}
+
 /// Build RPC connection details for a coin daemon by reading its `conf_file`
 /// from `data_dir` (e.g. `~/.divi/divi.conf`). The conf is a small `key=value`
 /// file; we pull `rpcuser`/`rpcpassword`/`rpcport` and fall back to the supplied
@@ -214,15 +250,7 @@ pub fn readAuth(
 ) !models.CoinAuth {
     // Seed every field with an owned default so `freeAuth` can release them
     // uniformly and a conf that omits a key still yields a usable value.
-    var auth: models.CoinAuth = .{
-        .rpc_user = try allocator.dupe(u8, default_user),
-        .rpc_password = try allocator.dupe(u8, ""),
-        .ip_address = try allocator.dupe(u8, "127.0.0.1"),
-        .port = try allocator.dupe(u8, default_port),
-        // Carry the data dir so a coin can locate an out-of-band credential file
-        // (e.g. Epic's `.api_secret`) that isn't part of the `key=value` conf.
-        .data_dir = try allocator.dupe(u8, data_dir),
-    };
+    var auth = try defaultAuth(allocator, data_dir, default_user, default_port);
     errdefer freeAuth(allocator, auth);
 
     var dir = try std.Io.Dir.cwd().openDir(io, data_dir, .{});

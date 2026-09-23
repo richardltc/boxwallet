@@ -269,6 +269,22 @@ static slint::SharedString ss(std::string_view s)
     return slint::SharedString(std::string_view(s.data(), n));
 }
 
+/// Render the seed lengths a wallet accepts as prose — "25", or "24 or 12" for
+/// a coin that takes more than one. The values come from the core
+/// (`bw_coin_seed_word_counts`) and are never counted here; only the joining is
+/// presentation, which is why it's one helper both seed prompts share rather
+/// than a loop copied into each.
+static std::string join_word_counts(const uint32_t *counts, size_t n)
+{
+    std::string out;
+    for (size_t i = 0; i < n; ++i) {
+        if (i)
+            out += (i + 1 == n) ? " or " : ", ";
+        out += std::to_string(counts[i]);
+    }
+    return out;
+}
+
 // ---- secrets ----------------------------------------------------------------
 // Passwords and seeds cross the C ABI as raw bytes, never as a SharedString —
 // see the secrets contract in include/boxwallet.h. These two are the only way
@@ -1009,6 +1025,9 @@ static void apply_coin_metadata(const AppWindow *ui, bw_ctx *ctx, int idx)
 
     // Reset live status so the new coin doesn't briefly show the old one's.
     ui->set_running(false);
+    // Cleared with `running` on a coin switch: the incoming coin's first poll
+    // decides it, and until then the glyphs must not describe the last coin's.
+    ui->set_remote_node(false);
     ui->set_synced(false);
     ui->set_staking(false);
     ui->set_blocks(0);
@@ -1025,15 +1044,20 @@ static void apply_coin_metadata(const AppWindow *ui, bw_ctx *ctx, int idx)
     ui->set_wallet_sec(0);
     const int ew_flags = bw_coin_ext_wallet(idx);
     ui->set_ew_flags(ew_flags);
-    // Decoded here rather than in Slint (no bitwise operators there) because it
-    // gates the whole wallet menu, not one button: the core has no per-open
-    // launch-with-password lifecycle for this front-end yet, so offering the
-    // actions would only ever produce "Unsupported".
+    // Decoded here rather than in Slint (no bitwise operators there). This shape
+    // — Epic, Zano — relaunches its wallet server for every op with the password
+    // on its command line, so each one waits on a process start rather than a
+    // single RPC. It no longer gates the menu (the core runs the same
+    // extwallet.setupWithPassword path for both front-ends); it only tells the
+    // "working" step to explain the longer wait.
     ui->set_wallet_launch_with_pw((ew_flags & BW_EW_LAUNCH_WITH_PW) != 0);
     ui->set_wallet_state(BW_WALLET_NONE);
     uint32_t counts[4] = {25, 0, 0, 0};
-    if (bw_coin_seed_word_counts(idx, counts, 4) > 0)
+    const size_t ncounts = bw_coin_seed_word_counts(idx, counts, 4);
+    if (ncounts > 0) {
         ui->set_seed_word_count(static_cast<int>(counts[0]));
+        ui->set_seed_word_lengths(ss(join_word_counts(counts, ncounts)));
+    }
     // A modal left open over the coin we're leaving would ask its question about
     // the wrong wallet; and any seed still pending was never shown.
     ui->set_wallet_stage(0);
@@ -1152,6 +1176,11 @@ static int g_prune_coin = -1;
 // question, and the value configured when it opened (-1 = none). The second is
 // captured at open so the choice can be re-checked against the same "from" the
 // menu was built for, instead of re-reading a conf that may have moved.
+// Which coin the node dialog was opened for. Same rule as the prune dialog: the
+// change targets THIS coin, not whatever the selection has moved to since, or a
+// slow click would repoint the wrong wallet at the wrong node.
+static int g_node_coin = -1;
+
 static bool g_prune_changing = false;
 static int64_t g_prune_from = -1;
 // The value the confirm stage is asking about, captured when it opened so the
@@ -1543,6 +1572,19 @@ int main(int argc, char **argv)
                 prune_change_supported = bw_prune_change_supported(static_cast<size_t>(idx)) != 0;
             }
 
+            // Where this coin reads its chain from. Only Epic offers a choice;
+            // for everyone else `supported` is false and the row is absent.
+            // `node_url` empty means BoxWallet's own daemon, which is also what
+            // decides whether Start/Stop exist at all.
+            const bool node_choice =
+                bw_coin_offers_node_choice(static_cast<size_t>(idx)) != 0;
+            std::string node_url;
+            if (node_choice) {
+                char nb[256];
+                size_t nn = bw_coin_node_source(ctx, static_cast<size_t>(idx), nb, sizeof nb);
+                node_url.assign(nb, nn);
+            }
+
             // The block-index rebuild. Its wording depends on this node, not just
             // this coin — a pruned one re-downloads the chain instead of rebuilding
             // from what it has — so it is read here with the other conf-backed
@@ -1561,6 +1603,7 @@ int main(int argc, char **argv)
                         keys = std::string(wk, kn),
                         data_dir = std::string(dd, dn),
                         prune, prune_warning, prune_change_supported, prune_configured,
+                        node_choice, node_url,
                         reindex_supported, reindex_warning]() {
                 auto h = weak.lock();
                 if (!h)
@@ -1578,6 +1621,12 @@ int main(int argc, char **argv)
                 // show the affordance at all.
                 (*h)->set_prune_change_supported(prune_change_supported);
                 (*h)->set_prune_configured(prune_configured);
+                (*h)->set_node_choice_supported(node_choice);
+                (*h)->set_node_url(ss(node_url));
+                // Drives the Start/Stop buttons, so it's set from the same read
+                // that fills the row — the two can't disagree about which node
+                // this coin is on.
+                (*h)->set_uses_local_daemon(node_url.empty());
                 (*h)->set_reindex_supported(reindex_supported);
                 (*h)->set_reindex_warning(ss(reindex_warning));
             });
@@ -2300,13 +2349,7 @@ int main(int argc, char **argv)
             // The accepted lengths come from the core, never counted here.
             uint32_t sc[8] = {0};
             size_t scn = bw_coin_seed_word_counts(static_cast<size_t>(g_wa_coin), sc, 8);
-            std::string lens;
-            for (size_t i = 0; i < scn; ++i) {
-                if (i)
-                    lens += (i + 1 == scn) ? " or " : ", ";
-                lens += std::to_string(sc[i]);
-            }
-            (*h)->set_wa_seed_lengths(ss(lens));
+            (*h)->set_wa_seed_lengths(ss(join_word_counts(sc, scn)));
             (*h)->set_wa_stage(6);
             return;
         }
@@ -2484,6 +2527,113 @@ int main(int argc, char **argv)
     // affordance the tab drew may be a couple of seconds old, and both halves of
     // the gate move on their own: `bw_prune_editable` reads the disk, and the
     // daemon can have been started from another pane since.
+    // ---- where the chain comes from ----
+    // The dialog is pure UI state until "Use this": nothing is read or written
+    // when it opens, because the row it's opened from was filled from the same
+    // read on selection.
+    ui->on_node_open_dialog([weak]() {
+        int coin = g_selected.load();
+        if (coin < 0)
+            return;
+        auto h = weak.lock();
+        if (!h)
+            return;
+        if (bw_coin_offers_node_choice(static_cast<size_t>(coin)) == 0)
+            return;
+
+        g_node_coin = coin;
+        const std::string cur((*h)->get_node_url());
+        // Prefill with the current address, or — with none set — the coin's
+        // suggested node, so the common case is confirming an address rather
+        // than having to know one. Only a prefill: the dialog still opens on the
+        // "my own node" row, and nothing is applied until it's chosen.
+        std::string prefill = cur;
+        if (prefill.empty()) {
+            char db[256];
+            size_t dn = bw_coin_default_remote_node(static_cast<size_t>(coin), db, sizeof db);
+            prefill.assign(db, dn);
+        }
+        (*h)->set_node_sel(cur.empty() ? 0 : 1);
+        (*h)->set_node_input(ss(prefill));
+        (*h)->set_node_error(ss(""));
+        (*h)->set_node_open(true);
+    });
+
+    ui->on_node_cancel([]() { g_node_coin = -1; });
+
+    // Writes the settings file and the coin's wallet config, so it goes on a
+    // worker. A refused address comes back on the field with the dialog still
+    // standing; anything else closes it.
+    ui->on_node_apply([weak, ctx](slint::SharedString url) {
+        const int coin = g_node_coin;
+        if (coin < 0)
+            return;
+        std::thread([weak, ctx, coin, text = std::string(url)]() {
+            WorkerGuard wg;
+            const int rc =
+                bw_coin_set_node_source(ctx, static_cast<size_t>(coin), text.c_str());
+            std::string err;
+            std::string code;
+            if (rc < 0) {
+                err = last_error_text(ctx, -1);
+                char cb[64] = {0};
+                size_t cn = bw_last_error_code(ctx, cb, sizeof cb);
+                code.assign(cb, cn);
+            }
+
+            // Re-read rather than echo what was typed: what gets stored is the
+            // normalized form, and the row should show what was actually saved.
+            std::string saved;
+            if (rc == 0) {
+                char nb[256];
+                size_t nn = bw_coin_node_source(ctx, static_cast<size_t>(coin), nb, sizeof nb);
+                saved.assign(nb, nn);
+                // The wallet service read the old node's address once, at launch,
+                // and would go on talking to it. Drop it; the next wallet action
+                // brings it back up against the new node — asking for the password
+                // again, as unlocking a wallet always does.
+                bw_ext_wallet_service_stop(ctx, static_cast<size_t>(coin));
+            }
+
+            post_to_ui([weak, coin, rc, err, code, saved]() {
+                auto h = weak.lock();
+                if (!h)
+                    return;
+                if (rc < 0) {
+                    // An address the coin can't use belongs on the field — it's
+                    // the thing that needs fixing, and it's still on screen.
+                    if (code == "InvalidNodeUrl") {
+                        (*h)->set_node_error(ss("Not an address this wallet can use. "
+                                                "A host, or host:port — e.g. node.example "
+                                                "or node.example:3413."));
+                        return;
+                    }
+                    (*h)->set_node_open(false);
+                    g_node_coin = -1;
+                    (*h)->set_status_text(ss("Couldn't save the node setting (" + err +
+                                             ") — left unchanged."));
+                    (*h)->set_status_is_error(true);
+                    return;
+                }
+                (*h)->set_node_open(false);
+                g_node_coin = -1;
+                if (g_selected.load() == coin) {
+                    (*h)->set_node_url(ss(saved));
+                    (*h)->set_uses_local_daemon(saved.empty());
+                }
+                if (saved.empty()) {
+                    (*h)->set_status_text(ss("Using this machine's own node — press Start."));
+                } else {
+                    // Said plainly, once, at the moment the choice is made.
+                    (*h)->set_status_text(ss("Using the node at " + saved +
+                                             ". It can see your wallet's queries and "
+                                             "misreport the chain."));
+                }
+                (*h)->set_status_is_error(false);
+            });
+        }).detach();
+    });
+
     ui->on_prune_change_open([weak, ctx]() {
         int coin = g_selected.load();
         if (coin < 0)
@@ -3286,6 +3436,10 @@ int main(int argc, char **argv)
     // Poll the *selected* coin's daemon every ~2s off the UI thread. Home (-1)
     // polls nothing.
     std::thread poller([ctx, weak, &stop]() {
+        // The selection generation whose remote node answered on the last tick
+        // (kNoGen: none did) — see the early "trying to reach" publish below.
+        constexpr uint64_t kNoGen = UINT64_MAX;
+        uint64_t remote_ok_gen = kNoGen;
         while (!stop.load()) {
             int sel = g_selected.load();
             uint64_t gen = g_sel_gen.load();
@@ -3304,6 +3458,34 @@ int main(int argc, char **argv)
             // coming up and grey out both Start and Stop.
             bw_reap_daemon(ctx, coin);
 
+            // Is there a daemon of ours here at all? A coin pointed at someone
+            // else's node has none, and most of what follows — the liveness
+            // probe, the warm-up stage, the peer count — describes one. Read
+            // every tick rather than cached: the Settings dialog can change it
+            // between two polls.
+            const bool remote_node = bw_coin_uses_local_daemon(ctx, coin) == 0;
+
+            // The reads below are a network round-trip for a remote node, and the
+            // first one after selecting the coin can take seconds (or a whole
+            // timeout for one that's down). The tick's own publish comes after
+            // them, so the smiley sat grey and still for that entire first
+            // attempt and then lit up at once — the "trying to reach" pulse never
+            // showed on exactly the attempt it exists for. So say it up front
+            // whenever the last answer for this selection wasn't a connection.
+            // Once connected, later ticks skip this: pulsing again during every
+            // routine read would make a healthy node flicker.
+            if (remote_node && remote_ok_gen != gen) {
+                post_to_ui([weak, sel, gen]() {
+                    auto h = weak.lock();
+                    if (!h)
+                        return;
+                    if (g_selected.load() != sel || g_sel_gen.load() != gen)
+                        return;
+                    (*h)->set_remote_node(true);
+                    (*h)->set_daemon_loading(true);
+                });
+            }
+
             BwDaemonInfo di;
             BwBlockchainState bs;
             std::memset(&di, 0, sizeof di);
@@ -3313,6 +3495,7 @@ int main(int argc, char **argv)
             int bs_rc = bw_blockchain_state(ctx, coin, &bs);
             // Whether we got fresh figures this tick.
             const bool rpc_ok = (di_rc == 0 && bs_rc == 0);
+            remote_ok_gen = (remote_node && rpc_ok) ? gen : kNoGen;
 
             // A failed read is NOT the same as a stopped daemon. One under load
             // accepts the connection instantly while stalling its RPC reply for
@@ -3322,7 +3505,11 @@ int main(int argc, char **argv)
             // busy apart from down, which is the rule the TUI already follows.
             //
             // Only probed when the read failed, so a healthy tick costs nothing.
-            const bool busy = !rpc_ok && bw_daemon_reachable(ctx, coin) == 1;
+            //
+            // Skipped entirely for a remote node: the probe dials 127.0.0.1, so
+            // on a coin whose chain lives elsewhere it answers about a daemon
+            // that isn't the one being asked after.
+            const bool busy = !remote_node && !rpc_ok && bw_daemon_reachable(ctx, coin) == 1;
             const bool daemon_up = rpc_ok || busy;
             // A stop asked for and not yet finished. The daemon answers, and
             // reports itself peerless, right through its shutdown.
@@ -3363,7 +3550,10 @@ int main(int argc, char **argv)
             // line is history. Reporting that as a stage reads as "starting".
             std::string stage;
             bool coming_up = false;
-            if (!rpc_ok && !stopping) {
+            // Nothing to narrate for a node we don't run: `bw_daemon_stage`
+            // reads *our* daemon's log, which for a remote coin is either absent
+            // or a stale record of the last time its own node ran.
+            if (!rpc_ok && !stopping && !remote_node) {
                 char sb[128] = {0};
                 size_t sn = bw_daemon_stage(ctx, coin, sb, sizeof sb);
                 stage.assign(sb, sn);
@@ -3720,6 +3910,10 @@ int main(int argc, char **argv)
             // for the whole shutdown — waiting on the wrong thing entirely. This
             // is the state the TUI already publishes (`DaemonState.stopping`).
             si.daemon = stopping ? 3 : (daemon_up ? 2 : 0);
+            // For a remote coin that 2/0 means "the node answered" / "it didn't",
+            // and the readout branches on this rather than narrating the zeroed
+            // peer and sync figures below as if they were facts.
+            si.remote_node = remote_node ? 1 : 0;
             si.peers = static_cast<uint32_t>(di.connections < 0 ? 0 : di.connections);
             si.sync = daemon_up ? (bs.synced ? 2 : 1) : 0;
             si.headers_cur = static_cast<uint64_t>(bs.headers < 0 ? 0 : bs.headers);
@@ -3738,8 +3932,12 @@ int main(int argc, char **argv)
             }
             // One phrase, painted in the coin's brand colour — the height lives
             // in the Blocks gauge below, not in the sentence.
+            // A remote coin always gets a line, including when the node didn't
+            // answer: "Remote node unreachable" is the thing to say there, and
+            // the local path's silence-when-down would leave the last action
+            // message standing in its place.
             std::string live_status;
-            if (rpc_ok || stopping) {
+            if (rpc_ok || stopping || remote_node) {
                 char lb[160] = {0};
                 size_t ln = bw_status_line(&si, lb, sizeof lb);
                 live_status.assign(lb, ln);
@@ -3772,7 +3970,7 @@ int main(int argc, char **argv)
                         sc_vaults, sc_txs, sc_redeemable, sc_vault_ids, sc_vault_cents,
                         ms, hashrate, ew_flags, wallet_state, bal, have_balance,
                         rp, rescanning, txs, stakes, recv_addr, decimals, wallet_svc_err, can_send,
-                        rpc_ok, busy, stopping, coin, tokens, tokens_locked]() {
+                        rpc_ok, busy, stopping, remote_node, coin, tokens, tokens_locked]() {
                 auto h = weak.lock();
                 if (!h)
                     return;
@@ -3867,6 +4065,10 @@ int main(int argc, char **argv)
                 g_last_wallet_svc_err = wallet_svc_err;
                 const bool running = daemon_up;
                 (*h)->set_running(running);
+                // Publishes with `running`, from the same tick: the status glyphs
+                // read the pair together, and a stale one would pulse a start-up
+                // that isn't happening (or pretend one that is).
+                (*h)->set_remote_node(remote_node);
                 // The daemon was up on the last tick and isn't now. Say so, and
                 // say it here rather than leaving the status line to its
                 // fallback: with no live readout the line shows the last action
@@ -3897,7 +4099,7 @@ int main(int argc, char **argv)
                 // line back to the last action message — so a node that stalled
                 // one RPC mid-sync (routine: they all do it under load) read as
                 // "Daemon running" instead of the sync progress it was making.
-                if (rpc_ok || !daemon_up) {
+                if (rpc_ok || !daemon_up || remote_node) {
                     (*h)->set_live_status(ss(live_status));
                 }
                 (*h)->set_daemon_stage(ss(stage));
@@ -3914,7 +4116,13 @@ int main(int argc, char **argv)
                 // line named the stage. `running` itself is left alone — it is what
                 // keeps Start latched, and a second Start here just hits the
                 // datadir lock.
-                (*h)->set_daemon_loading(!rpc_ok && coming_up);
+                //
+                // A remote coin has no start-up of ours to wait on, but it does
+                // have a connection attempt — one every poll — and that is worth
+                // showing: without it an unreachable node looked exactly like a
+                // coin doing nothing at all. So it pulses whenever the node
+                // hasn't answered, and settles the moment it does.
+                (*h)->set_daemon_loading(remote_node ? !rpc_ok : (!rpc_ok && coming_up));
                 // Three states, not two. `rpc_ok` publishes fresh figures;
                 // `busy` holds the last ones (the daemon is up, we just couldn't
                 // read it this tick, and zeroing would make the gauges stutter);

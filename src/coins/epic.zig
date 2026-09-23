@@ -268,6 +268,360 @@ pub const Epic = struct {
         return .{ .ptr = self, .vtable = &vtable };
     }
 
+    // --- Node source: our daemon, or someone else's node -----------------
+    //
+    // Epic's wallet is a separate process that reaches a node over HTTP, and it
+    // does not care whose node that is: `check_node_api_http_addr` in
+    // `epic-wallet.toml` is the whole of the coupling. So the user gets the
+    // choice — download and validate the chain here, or point the wallet at a
+    // node that already has it.
+    //
+    // The choice is stored in **BoxWallet's own** `boxwallet.conf` under the
+    // install root, not in `~/.epic/main`: that directory is the node's, shared
+    // with whatever else the machine runs, and BoxWallet deliberately writes
+    // nothing there a plain node wouldn't.
+    //
+    // What a remote node costs is not hidden from the user — see
+    // `Coin.remote_node_caution`, which both front-ends show beside the choice.
+    // It lives on the capability rather than here because it is a fact about
+    // using someone else's node, not a fact about Epic.
+
+    /// BoxWallet's own setting key. Empty/absent = our managed daemon.
+    pub const node_setting_key = "epic_node";
+
+    /// The port a bare host falls back to — the same one the node serves its APIs
+    /// on locally, so `my-node.example` and `http://my-node.example:3413` mean the
+    /// same thing and the user needn't know the number.
+    const node_default_port = rpc_default_port;
+
+    /// The node suggested when someone picks "a node someone else runs" without
+    /// one in mind: Epic's own community node. It **prefills the field** and
+    /// nothing more — Epic still starts out on its own daemon, and the user
+    /// confirms this address (or replaces it) before a single query leaves the
+    /// machine. Making it the out-of-the-box destination instead would be
+    /// choosing, on the user's behalf, who gets to watch their wallet.
+    ///
+    /// Spelled out in full rather than as a bare host, because **both** halves
+    /// are load-bearing and neither is what `normalizeNodeUrl` would assume:
+    ///
+    ///   * `node.epiccash.com`, not `epiccash.com` — the apex is the website and
+    ///     has 3413 closed. A bare-host default pointed at it connects to
+    ///     nothing.
+    ///   * `https`, not the `http` a bare host defaults to — this node sits
+    ///     behind nginx, which answers a plain HTTP request on 3413 with
+    ///     `400 The plain HTTP request was sent to HTTPS port`.
+    ///
+    /// Verified against the live node: `get_tip` over HTTPS returns a height.
+    /// The default stays explicit so neither assumption has to hold for it.
+    pub const default_remote_node = "https://node.epiccash.com:3413";
+
+    /// The node source for this session, cached so the poll workers — which are
+    /// handed a `CoinAuth` and no install root — can ask without touching disk
+    /// every couple of seconds. Mirrors `OwnerSecret`'s shape.
+    ///
+    /// Primed by `refreshNodeSource`, which the front-ends call through
+    /// `Coin.node_source` (the TUI from its poll worker, the GUI from the C ABI).
+    /// Until something has primed it the answer is "our own daemon" — the
+    /// conservative default: BoxWallet talks to localhost, which is either right
+    /// or simply unreachable, and never silently ships a wallet's queries to a
+    /// stranger.
+    const NodeSource = struct {
+        var mutex: std.atomic.Mutex = .unlocked;
+        var buf: [Coin.node_url_max]u8 = undefined;
+        var len: usize = 0;
+
+        fn lock() void {
+            while (!mutex.tryLock()) std.atomic.spinLoopHint();
+        }
+
+        fn set(url: []const u8) void {
+            lock();
+            defer mutex.unlock();
+            const n = @min(url.len, buf.len);
+            @memcpy(buf[0..n], url[0..n]);
+            len = n;
+        }
+
+        /// Copy the cached URL into `out`, returning its length — 0 for our own
+        /// daemon. `out` shorter than the stored URL also reads as 0 rather than
+        /// handing back a truncated host to connect to.
+        fn get(out: []u8) usize {
+            lock();
+            defer mutex.unlock();
+            if (len == 0 or len > out.len) return 0;
+            @memcpy(out[0..len], buf[0..len]);
+            return len;
+        }
+    };
+
+    /// Normalize a user-supplied node address into the base URL epic-wallet takes,
+    /// written into `out`. Pure, so the whole grammar is unit-testable.
+    ///
+    /// Accepts `host`, `host:port`, or either with an `http://`/`https://` scheme,
+    /// and fills in the scheme (`http://`) and port (`3413`) when they're left off.
+    /// Rejects anything with a path, query or fragment, an empty host, a port
+    /// that isn't a number, whitespace or control bytes, and anything that won't
+    /// fit `out` — a URL this code can't state exactly is one it won't connect to.
+    ///
+    /// The scheme is *not* upgraded to https on the caller's behalf: Epic node
+    /// APIs are plain HTTP unless someone has put a proxy in front, and silently
+    /// rewriting it would fail every ordinary node with a confusing error.
+    pub fn normalizeNodeUrl(raw: []const u8, out: []u8) ![]const u8 {
+        const trimmed = std.mem.trim(u8, raw, " \t\r\n");
+        if (trimmed.len == 0) return error.InvalidNodeUrl;
+        for (trimmed) |c| {
+            if (c <= ' ' or c == 0x7f) return error.InvalidNodeUrl;
+        }
+
+        // Split off the scheme, defaulting to http.
+        var rest = trimmed;
+        var scheme: []const u8 = "http://";
+        if (std.ascii.startsWithIgnoreCase(trimmed, "http://")) {
+            scheme = "http://";
+            rest = trimmed["http://".len..];
+        } else if (std.ascii.startsWithIgnoreCase(trimmed, "https://")) {
+            scheme = "https://";
+            rest = trimmed["https://".len..];
+        } else if (std.mem.indexOf(u8, trimmed, "://") != null) {
+            return error.InvalidNodeUrl; // some other protocol entirely
+        }
+
+        // A single trailing slash is a courtesy; anything more is a path we'd be
+        // guessing at, and the API endpoint is appended by `foreignCall`.
+        if (rest.len > 0 and rest[rest.len - 1] == '/') rest = rest[0 .. rest.len - 1];
+        if (std.mem.indexOfAny(u8, rest, "/?#") != null) return error.InvalidNodeUrl;
+        if (rest.len == 0) return error.InvalidNodeUrl;
+
+        // Host and optional port. A bracketed IPv6 literal keeps its brackets and
+        // only the colon *after* them counts as the port separator.
+        var host = rest;
+        var port: []const u8 = node_default_port;
+        if (rest[0] == '[') {
+            const close = std.mem.indexOfScalar(u8, rest, ']') orelse return error.InvalidNodeUrl;
+            host = rest[0 .. close + 1];
+            const after = rest[close + 1 ..];
+            if (after.len > 0) {
+                if (after[0] != ':') return error.InvalidNodeUrl;
+                port = after[1..];
+            }
+        } else if (std.mem.lastIndexOfScalar(u8, rest, ':')) |i| {
+            host = rest[0..i];
+            port = rest[i + 1 ..];
+        }
+        if (host.len == 0 or std.mem.eql(u8, host, "[]")) return error.InvalidNodeUrl;
+        if (port.len == 0) return error.InvalidNodeUrl;
+        for (port) |c| {
+            if (!std.ascii.isDigit(c)) return error.InvalidNodeUrl;
+        }
+        _ = std.fmt.parseInt(u16, port, 10) catch return error.InvalidNodeUrl;
+
+        return std.fmt.bufPrint(out, "{s}{s}:{s}", .{ scheme, host, port }) catch
+            error.InvalidNodeUrl;
+    }
+
+    /// Read the stored node source from `boxwallet.conf` into `out`, refresh the
+    /// session cache, and return it — empty for our own daemon.
+    ///
+    /// A stored value that no longer normalizes (hand-edited, or truncated) reads
+    /// as **local** rather than as an error: the fallback is the node BoxWallet
+    /// controls, which is the safe end of a setting it can't make sense of.
+    pub fn refreshNodeSource(
+        allocator: std.mem.Allocator,
+        install_root: []const u8,
+        out: []u8,
+    ) []const u8 {
+        var threaded: std.Io.Threaded = .init(allocator, .{});
+        defer threaded.deinit();
+
+        const stored = conf.readValue(
+            allocator,
+            threaded.io(),
+            install_root,
+            conf.settings_file,
+            node_setting_key,
+        ) catch null;
+        defer if (stored) |v| allocator.free(v);
+
+        const url = if (stored) |v| normalizeNodeUrl(v, out) catch "" else "";
+        NodeSource.set(url);
+        return url;
+    }
+
+    /// Persist the node source. An empty `url` restores our managed daemon;
+    /// anything else must normalize (`error.InvalidNodeUrl` if it doesn't) and is
+    /// stored in its normalized form, so what the Settings tab reads back is
+    /// exactly what the wallet will be pointed at.
+    ///
+    /// The wallet config is re-pointed here rather than at the next launch: the
+    /// running `epic-wallet` reads it at start-up, so the caller restarts the
+    /// wallet process for the change to take effect — but the file must already
+    /// be right when it does.
+    pub fn setNodeSource(
+        allocator: std.mem.Allocator,
+        install_root: []const u8,
+        home: []const u8,
+        url: []const u8,
+    ) !void {
+        var buf: [Coin.node_url_max]u8 = undefined;
+        const value = if (std.mem.trim(u8, url, " \t\r\n").len == 0)
+            ""
+        else
+            try normalizeNodeUrl(url, &buf);
+
+        var threaded: std.Io.Threaded = .init(allocator, .{});
+        defer threaded.deinit();
+        const io = threaded.io();
+
+        try conf.setValue(allocator, io, install_root, conf.settings_file, node_setting_key, value);
+        NodeSource.set(value);
+
+        // Point the wallet at the newly-chosen node now, so a wallet process
+        // started later this session picks it up. Best-effort: the wallet config
+        // is also healed on every launch (`ensureWalletConfig`), which is the
+        // path that matters if this one can't run.
+        ensureWalletConfig(allocator, io, home) catch {};
+    }
+
+    /// The node this coin is currently pointed at, from the session cache —
+    /// empty for our own daemon. Allocation-free, so the poll path can ask it.
+    fn nodeUrl(out: []u8) []const u8 {
+        return out[0..NodeSource.get(out)];
+    }
+
+    /// Whether BoxWallet runs the node for this coin. The daemon lifecycle — the
+    /// launch, the Start/Stop affordance, the warm-up narration, the conf we
+    /// manage — hangs off this being true.
+    pub fn usesLocalDaemon() bool {
+        var buf: [Coin.node_url_max]u8 = undefined;
+        return nodeUrl(&buf).len == 0;
+    }
+
+    // --- Foreign API (a node we don't run) --------------------------------
+    //
+    // The Owner API `get_status` the local path uses is, by design, not exposed
+    // by a node run for other people: it is the *operator's* view (peers, sync
+    // phase, shutdown). What a public node serves is the Foreign API, and the
+    // only thing there that describes the chain is `get_tip` — a height. So that
+    // is all the remote path claims, and `status.zig` has a branch that says so
+    // rather than padding the missing figures with zeros.
+
+    /// A Foreign-API `get_tip` reply. Same Grin `{"Ok": …}` nesting as the Owner
+    /// API's; every field but the height is ignored (`total_difficulty` doesn't
+    /// fit an i64 on every chain, and nothing here needs it).
+    const TipEnvelope = struct {
+        result: ?TipResult = null,
+    };
+    const TipResult = struct {
+        Ok: ?Tip = null,
+    };
+
+    /// How long a remote node gets to accept a TCP connection before it counts
+    /// as unreachable. Generous for an internet round trip and short enough that
+    /// a poll tick can't wedge: the kernel's own SYN timeout is around two
+    /// minutes, and a status worker stuck in one stops the UI dead and hangs the
+    /// app's shutdown behind it.
+    const node_connect_timeout_ms: u32 = 4000;
+
+    /// Split a normalized base URL (`scheme://host:port`) into its host and
+    /// port for the reachability probe. Pure; only ever fed `normalizeNodeUrl`
+    /// output, so the shape is guaranteed — but it refuses anything else rather
+    /// than guessing.
+    fn splitHostPort(base_url: []const u8) !struct { host: []const u8, port: u16 } {
+        const sep = std.mem.indexOf(u8, base_url, "://") orelse return error.InvalidNodeUrl;
+        const rest = base_url[sep + 3 ..];
+        const colon = std.mem.lastIndexOfScalar(u8, rest, ':') orelse return error.InvalidNodeUrl;
+        const host = rest[0..colon];
+        if (host.len == 0) return error.InvalidNodeUrl;
+        return .{
+            .host = host,
+            .port = std.fmt.parseInt(u16, rest[colon + 1 ..], 10) catch return error.InvalidNodeUrl,
+        };
+    }
+
+    /// POST `get_tip` at a node's Foreign API and return its height.
+    ///
+    /// Unauthenticated: a node published for other people's wallets doesn't gate
+    /// its Foreign API, and we have no secret for one that does — a 401 is
+    /// surfaced as `error.AuthFailed` so the user is told that, rather than the
+    /// node simply appearing dead.
+    fn foreignTip(allocator: std.mem.Allocator, base_url: []const u8) !i64 {
+        // Bounded connect first, because the fetch below has none. A node on the
+        // internet can answer a connection with silence rather than a refusal,
+        // and `std.http.Client` would then sit in the kernel's ~2-minute SYN
+        // retry — long enough that the status worker never returns a frame (so
+        // the UI shows nothing happening) and the app's shutdown, which joins
+        // that worker, hangs behind it. Ask a question with a deadline first.
+        const ep = try splitHostPort(base_url);
+        if (!rpc.endpointReachable(allocator, ep.host, ep.port, node_connect_timeout_ms))
+            return error.NodeUnreachable;
+
+        var threaded: std.Io.Threaded = .init(allocator, .{});
+        defer threaded.deinit();
+
+        var client: std.http.Client = .{ .allocator = allocator, .io = threaded.io() };
+        defer client.deinit();
+
+        const url = try std.fmt.allocPrint(allocator, "{s}/v2/foreign", .{base_url});
+        defer allocator.free(url);
+
+        var body: std.Io.Writer.Allocating = .init(allocator);
+        defer body.deinit();
+
+        const result = try client.fetch(.{
+            .location = .{ .url = url },
+            .method = .POST,
+            .payload = "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"get_tip\",\"params\":[]}",
+            .response_writer = &body.writer,
+            .extra_headers = &.{.{ .name = "content-type", .value = "application/json" }},
+        });
+        if (result.status == .unauthorized) return error.AuthFailed;
+        if (result.status != .ok) return error.DaemonNotReady;
+
+        return parseTipHeight(allocator, body.written());
+    }
+
+    /// Pull the height out of a `get_tip` body. Split from the transport so the
+    /// parse is unit-testable against a recorded reply.
+    fn parseTipHeight(allocator: std.mem.Allocator, raw: []const u8) !i64 {
+        var parsed = try std.json.parseFromSlice(TipEnvelope, allocator, raw, .{
+            .ignore_unknown_fields = true,
+            .allocate = .alloc_always,
+        });
+        defer parsed.deinit();
+
+        const tip = (parsed.value.result orelse return error.DaemonNotReady).Ok orelse
+            return error.DaemonNotReady;
+        if (tip.height <= 0) return error.DaemonNotReady;
+        return tip.height;
+    }
+
+    /// The remote node's chain, as much of it as the Foreign API will say.
+    ///
+    /// `blocks`/`headers`/`network_height` are all the one height it reports:
+    /// there is no local chain being caught up, so the wallet's view of the tip
+    /// *is* the tip, and the sync bars have nothing to fill toward. `synced` is
+    /// true on that basis — it means "no download of ours is outstanding", which
+    /// is the truth — and the status line reads "Using a remote node" rather than
+    /// "Synced" so the word is never taken for a claim about the remote itself.
+    ///
+    /// `tip_time`/`seconds_behind` are deliberately left at their "unavailable"
+    /// values: `get_tip` carries no timestamp, and inventing one from a block
+    /// target would put a made-up figure where the UI shows a fact.
+    fn remoteBlockchainState(
+        allocator: std.mem.Allocator,
+        base_url: []const u8,
+    ) !models.BlockchainState {
+        const height = try foreignTip(allocator, base_url);
+        return .{
+            .chain = try allocator.dupe(u8, "mainnet"),
+            .blocks = height,
+            .headers = height,
+            .verification_progress = 1,
+            .synced = true,
+            .network_height = height,
+        };
+    }
+
     // --- Owner API transport ---------------------------------------------
 
     /// JSON-RPC 2.0 envelope for an Owner API reply. Grin/Epic wraps the method's
@@ -468,10 +822,18 @@ pub const Epic = struct {
     /// and the network tip directly, so "synced" comes from the daemon rather than
     /// a peer-height comparison. Only `auth.data_dir` is used — to locate the
     /// Owner-API secret; the host/port are fixed at 127.0.0.1:3413.
+    ///
+    /// Pointed at someone else's node there is no Owner API to ask, and the
+    /// Foreign API reports a height and nothing else — see
+    /// `remoteBlockchainState`, which says only that.
     pub fn blockchainState(
         allocator: std.mem.Allocator,
         auth: models.CoinAuth,
     ) !models.BlockchainState {
+        var url_buf: [Coin.node_url_max]u8 = undefined;
+        const remote = nodeUrl(&url_buf);
+        if (remote.len != 0) return remoteBlockchainState(allocator, remote);
+
         const d = try fetchStatus(allocator, auth.data_dir);
         return .{
             // BoxWallet runs mainnet only; the Owner API doesn't echo the chain.
@@ -493,10 +855,25 @@ pub const Epic = struct {
     /// Live `get_status`, normalized for the frontend. Epic is proof-of-work, so
     /// `staking_active` is always false. Only `auth.data_dir` is used — to locate
     /// the Owner-API secret.
+    ///
+    /// Pointed at someone else's node, only the height is knowable: peer count
+    /// and the running version are the operator's view, which the Foreign API
+    /// doesn't serve. Both are left at their "unknown" values (0 and empty)
+    /// rather than guessed, and `status.zig`'s remote branch keeps the front-ends
+    /// from narrating the zero as "waiting for peers".
     pub fn daemonInfo(
         allocator: std.mem.Allocator,
         auth: models.CoinAuth,
     ) !models.DaemonInfo {
+        var url_buf: [Coin.node_url_max]u8 = undefined;
+        const remote = nodeUrl(&url_buf);
+        if (remote.len != 0) return .{
+            .blocks = try foreignTip(allocator, remote),
+            .connections = 0,
+            .staking_active = false,
+            .version = try allocator.dupe(u8, ""),
+        };
+
         const d = try fetchStatus(allocator, auth.data_dir);
         return .{
             .blocks = d.blocks,
@@ -621,6 +998,16 @@ pub const Epic = struct {
         install_root: []const u8,
         home: []const u8,
     ) !void {
+        // Nothing of ours to configure when the node belongs to someone else:
+        // `epic-server.toml` and `.api_secret` describe a daemon BoxWallet runs,
+        // and writing either into the shared `~/.epic/main` for a node that will
+        // never start would be leaving settings behind for somebody else's.
+        // (The *wallet* config still gets pointed at the remote — that happens on
+        // the wallet's own launch path, `ensureWalletConfig`.)
+        var url_buf: [Coin.node_url_max]u8 = undefined;
+        _ = refreshNodeSource(allocator, install_root, &url_buf);
+        if (!usesLocalDaemon()) return;
+
         const data_dir = try dataDir(allocator, home);
         defer allocator.free(data_dir);
 
@@ -1275,15 +1662,23 @@ pub const Epic = struct {
     // --- Wallet runtime prep (config + per-session secret) ----------------
 
     /// A full default `epic-wallet.toml` with BoxWallet's values baked in: localhost
-    /// Owner API on 3420, the node's local API as the sync target, and the secret
+    /// Owner API on 3420, the chosen node as the sync target, and the secret
     /// paths wired to the files BoxWallet manages. Emits all four sections the
     /// wallet config deserializes — `[wallet]`, `[epicbox]`, `[tor]`, `[logging]` —
     /// so the binary loads it cleanly. Written only when no config is there yet; an
     /// existing (possibly user-edited) config is healed by `patchWalletConf`
-    /// instead. Caller owns the slice. (`node_api_secret_path` points at the node's
-    /// own `.foreign_api_secret`, the secret the wallet authenticates to the node
-    /// with — distinct from the wallet's own `.owner_api_secret`.)
-    fn defaultWalletToml(allocator: std.mem.Allocator, top_dir: []const u8) ![]u8 {
+    /// instead. Caller owns the slice.
+    ///
+    /// `node_addr`/`node_secret_path` come from `walletNodeKeys`: our own node
+    /// plus its `.foreign_api_secret` (the secret the wallet authenticates to the
+    /// node with — distinct from the wallet's own `.owner_api_secret`), or a
+    /// remote node and no secret at all.
+    fn defaultWalletToml(
+        allocator: std.mem.Allocator,
+        top_dir: []const u8,
+        node_addr: []const u8,
+        node_secret_path: []const u8,
+    ) ![]u8 {
         return std.fmt.allocPrint(allocator,
             \\[wallet]
             \\chain_type = "Mainnet"
@@ -1292,8 +1687,8 @@ pub const Epic = struct {
             \\owner_api_listen_port = {s}
             \\owner_api_include_foreign = false
             \\api_secret_path = "{s}/{s}"
-            \\node_api_secret_path = "{s}/{s}"
-            \\check_node_api_http_addr = "http://127.0.0.1:{s}"
+            \\node_api_secret_path = "{s}"
+            \\check_node_api_http_addr = "{s}"
             \\data_file_dir = "{s}/wallet_data"
             \\no_commit_cache = false
             \\dark_background_color_scheme = true
@@ -1318,24 +1713,79 @@ pub const Epic = struct {
             \\log_file_append = true
             \\log_max_size = 16777216
             \\
-        , .{ wallet_rpc_port, top_dir, owner_secret_file, top_dir, node_foreign_secret_file, rpc_default_port, top_dir, top_dir });
+        , .{ wallet_rpc_port, top_dir, owner_secret_file, node_secret_path, node_addr, top_dir, top_dir });
+    }
+
+    /// Where the wallet should look for a node, and which secret (if any) it
+    /// should authenticate with — the two `epic-wallet.toml` keys that differ
+    /// between running our own node and using someone else's.
+    ///
+    /// Our own node: its loopback address, and the `.foreign_api_secret` it
+    /// generates on first run. Someone else's: their base URL, and **no** secret
+    /// — we have none for a node we don't run, and a node published for other
+    /// people's wallets doesn't ask for one. The empty path is how the wallet
+    /// spells "no secret": it reads the first line of the named file and treats
+    /// one it can't open as absent, which is what an empty path always is.
+    ///
+    /// Both strings come back already TOML-quoted, ready to be a `ManagedKey`
+    /// value, and owned by `allocator` — a home directory can be arbitrarily
+    /// deep, and a fixed buffer that overflowed would fail the whole config heal
+    /// over a long path.
+    const WalletNodeKeys = struct {
+        addr: []const u8,
+        secret_path: []const u8,
+
+        fn deinit(self: WalletNodeKeys, allocator: std.mem.Allocator) void {
+            allocator.free(self.addr);
+            allocator.free(self.secret_path);
+        }
+    };
+
+    fn walletNodeKeys(allocator: std.mem.Allocator, top_dir: []const u8) !WalletNodeKeys {
+        // One read of the cache: `remote` and the address it implies have to come
+        // from the same answer, or a change landing between two reads could pair a
+        // remote address with the local secret.
+        var url_buf: [Coin.node_url_max]u8 = undefined;
+        const remote = nodeUrl(&url_buf);
+
+        const addr = if (remote.len != 0)
+            try std.fmt.allocPrint(allocator, "\"{s}\"", .{remote})
+        else
+            try std.fmt.allocPrint(allocator, "\"http://127.0.0.1:{s}\"", .{rpc_default_port});
+        errdefer allocator.free(addr);
+
+        const secret_path = if (remote.len != 0)
+            try allocator.dupe(u8, "\"\"")
+        else
+            try std.fmt.allocPrint(allocator, "\"{s}/{s}\"", .{ top_dir, node_foreign_secret_file });
+
+        return .{ .addr = addr, .secret_path = secret_path };
     }
 
     /// Heal the keys BoxWallet manages in `epic-wallet.toml` (localhost Owner API on
-    /// the expected port, the local node as sync target, the managed secret path),
+    /// the expected port, the chosen node as sync target, the managed secret paths),
     /// rewriting only if something changed. Same section-aware patch the node conf
     /// uses; the values are runtime (they embed absolute paths).
+    ///
+    /// `check_node_api_http_addr` and `node_api_secret_path` are managed **as a
+    /// pair**, and both in both directions: switching to a remote node has to
+    /// clear the local secret, and switching back has to put it there again.
+    /// Leaving either behind would point the wallet at one node while handing it
+    /// the other's credential.
     fn patchWalletConf(allocator: std.mem.Allocator, io: std.Io, dir: std.Io.Dir, top_dir: []const u8) !void {
         const secret_path = try std.fmt.allocPrint(allocator, "\"{s}/{s}\"", .{ top_dir, owner_secret_file });
         defer allocator.free(secret_path);
-        const node_addr = "\"http://127.0.0.1:" ++ rpc_default_port ++ "\"";
         const data_dir_val = try std.fmt.allocPrint(allocator, "\"{s}/wallet_data\"", .{top_dir});
         defer allocator.free(data_dir_val);
+
+        const node = try walletNodeKeys(allocator, top_dir);
+        defer node.deinit(allocator);
 
         const keys = [_]ManagedKey{
             .{ .section = "wallet", .key = "api_listen_interface", .value = "\"127.0.0.1\"" },
             .{ .section = "wallet", .key = "owner_api_listen_port", .value = wallet_rpc_port },
-            .{ .section = "wallet", .key = "check_node_api_http_addr", .value = node_addr },
+            .{ .section = "wallet", .key = "check_node_api_http_addr", .value = node.addr },
+            .{ .section = "wallet", .key = "node_api_secret_path", .value = node.secret_path },
             .{ .section = "wallet", .key = "api_secret_path", .value = secret_path },
             .{ .section = "wallet", .key = "data_file_dir", .value = data_dir_val },
         };
@@ -1366,7 +1816,15 @@ pub const Epic = struct {
         defer dir.close(io);
 
         if (dir.access(io, wallet_conf_file, .{})) |_| {} else |_| {
-            const tmpl = try defaultWalletToml(allocator, top);
+            // Unquoted here: the template puts its own quotes around each value.
+            const node = try walletNodeKeys(allocator, top);
+            defer node.deinit(allocator);
+            const tmpl = try defaultWalletToml(
+                allocator,
+                top,
+                std.mem.trim(u8, node.addr, "\""),
+                std.mem.trim(u8, node.secret_path, "\""),
+            );
             defer allocator.free(tmpl);
             try dir.writeFile(io, .{ .sub_path = wallet_conf_file, .data = tmpl });
         }
@@ -2155,7 +2613,33 @@ pub const Epic = struct {
         // keep their placeholder.
         .wallet_transactions = vtWalletTransactions,
         .external_wallet = &external_wallet,
+        // Epic's wallet reaches its node over plain HTTP and doesn't care whose
+        // node it is, so the user gets the choice — ours, or one that already
+        // has the chain. The only coin wired for this; see `Coin.node_source`
+        // for why it's two flat hooks rather than a capability struct.
+        .node_source = vtNodeSource,
+        .set_node_source = vtSetNodeSource,
+        .node_default_remote = default_remote_node,
     };
+
+    fn vtNodeSource(
+        _: *anyopaque,
+        allocator: std.mem.Allocator,
+        install_root: []const u8,
+        buf: []u8,
+    ) []const u8 {
+        return refreshNodeSource(allocator, install_root, buf);
+    }
+
+    fn vtSetNodeSource(
+        _: *anyopaque,
+        allocator: std.mem.Allocator,
+        install_root: []const u8,
+        home_dir: []const u8,
+        url: []const u8,
+    ) anyerror!void {
+        return setNodeSource(allocator, install_root, home_dir, url);
+    }
 
     // Rides the wallet process's encrypted Owner API: `app.zig` passes
     // `extWalletAuth()` and calls it only once the wallet is open.
@@ -2768,7 +3252,12 @@ test "wallet download resolves to the 4.0.1 tarball only on linux/amd64" {
 
 test "defaultWalletToml bakes in all four sections + managed Owner-API/node values" {
     const a = std.testing.allocator;
-    const toml = try Epic.defaultWalletToml(a, "/home/alice/.epic/main");
+    const toml = try Epic.defaultWalletToml(
+        a,
+        "/home/alice/.epic/main",
+        "http://127.0.0.1:3413",
+        "/home/alice/.epic/main/.foreign_api_secret",
+    );
     defer a.free(toml);
     // All four config sections present, so the wallet binary deserializes it.
     try std.testing.expect(std.mem.indexOf(u8, toml, "[wallet]") != null);
@@ -2959,4 +3448,274 @@ test "coin vtable exposes transactions but no send/receive for Epic (interactive
     // no on-chain receive address — both tabs keep their placeholder.
     try std.testing.expect(!c.supportsSend());
     try std.testing.expect(!c.supportsReceiveAddress());
+}
+
+test "normalizeNodeUrl fills in the scheme and the API port" {
+    var buf: [Coin.node_url_max]u8 = undefined;
+    // A bare host is the likeliest thing a user pastes.
+    try std.testing.expectEqualStrings("http://node.example:3413", try Epic.normalizeNodeUrl("node.example", &buf));
+    // Either half may already be there.
+    try std.testing.expectEqualStrings("http://node.example:3413", try Epic.normalizeNodeUrl("http://node.example", &buf));
+    try std.testing.expectEqualStrings("http://node.example:3500", try Epic.normalizeNodeUrl("node.example:3500", &buf));
+    try std.testing.expectEqualStrings("https://node.example:443", try Epic.normalizeNodeUrl("https://node.example:443", &buf));
+    // https is kept, never invented: Epic node APIs are plain HTTP unless the
+    // operator put a proxy in front, and an upgrade would fail every plain node.
+    try std.testing.expectEqualStrings("http://1.2.3.4:3413", try Epic.normalizeNodeUrl("1.2.3.4", &buf));
+    // Surrounding whitespace and one trailing slash are a paste, not a mistake.
+    try std.testing.expectEqualStrings("http://node.example:3413", try Epic.normalizeNodeUrl("  node.example/ \n", &buf));
+    // IPv6 keeps its brackets; only the colon after them is the port separator.
+    try std.testing.expectEqualStrings("http://[::1]:3413", try Epic.normalizeNodeUrl("[::1]", &buf));
+    try std.testing.expectEqualStrings("http://[::1]:3500", try Epic.normalizeNodeUrl("[::1]:3500", &buf));
+}
+
+test "normalizeNodeUrl refuses anything it can't state exactly" {
+    var buf: [Coin.node_url_max]u8 = undefined;
+    const bad = [_][]const u8{
+        "", "   ", // nothing to connect to
+        "/", "://", ":3413", // no host
+        "node.example/v2/foreign", // a path we'd be guessing at
+        "node.example?x=1", "node.example#f",
+        "ftp://node.example", // not a protocol the wallet speaks
+        "node.example:", "node.example:abc", "node.example:99999", // not a port
+        "node example", "node.example\t3413", // whitespace inside
+        "[::1", // unterminated literal
+    };
+    for (bad) |raw| {
+        try std.testing.expectError(error.InvalidNodeUrl, Epic.normalizeNodeUrl(raw, &buf));
+    }
+
+    // Longer than the shared bound: refused outright rather than clipped to a
+    // host that resolves somewhere else entirely.
+    var long: [Coin.node_url_max + 32]u8 = undefined;
+    @memset(&long, 'a');
+    try std.testing.expectError(error.InvalidNodeUrl, Epic.normalizeNodeUrl(&long, &buf));
+}
+
+test "parseTipHeight reads the height out of a Foreign-API get_tip" {
+    const a = std.testing.allocator;
+    // Recorded verbatim from `node.epiccash.com:3413`, trimmed only in height.
+    // Note `total_difficulty`: an *object*, one entry per proof-of-work, not the
+    // single number a Grin node returns. Parsing only `height` (with unknown
+    // fields ignored) is what makes that a non-event — a struct that tried to
+    // read it as an integer would fail on every reply this node sends.
+    const body =
+        \\{"id":1,"jsonrpc":"2.0","result":{"Ok":{
+        \\"height":3721651,
+        \\"last_block_pushed":"6bb3e8dbebbe525f01acc1220f4c613af027a85a222bc7dc2b3c45944fccf2cd",
+        \\"prev_block_to_last":"7927d2fda6b636b6efc98bcab7599311cf946c333f8684f6e40e2f73e25118bc",
+        \\"total_difficulty":{"cuckaroo":29197286864,"cuckatoo":123914158912427,
+        \\"progpow":8122885763517649584,"randomx":4574035486086225}}}}
+    ;
+    try std.testing.expectEqual(@as(i64, 3721651), try Epic.parseTipHeight(a, body));
+
+    // An `Err`, a height of zero, and a body that isn't a reply at all are all
+    // "this node has no chain to tell us about" rather than a parse crash.
+    try std.testing.expectError(error.DaemonNotReady, Epic.parseTipHeight(a, "{\"result\":{\"Err\":\"boom\"}}"));
+    try std.testing.expectError(error.DaemonNotReady, Epic.parseTipHeight(a, "{\"result\":{\"Ok\":{\"height\":0}}}"));
+    try std.testing.expectError(error.DaemonNotReady, Epic.parseTipHeight(a, "{}"));
+}
+
+test "walletNodeKeys pairs each node with its own credential, never the other's" {
+    const a = std.testing.allocator;
+    const top = "/home/alice/.epic/main";
+    defer Epic.NodeSource.set("");
+
+    // Our own node: loopback, authenticated with the foreign secret it generates.
+    Epic.NodeSource.set("");
+    const local = try Epic.walletNodeKeys(a, top);
+    defer local.deinit(a);
+    try std.testing.expectEqualStrings("\"http://127.0.0.1:3413\"", local.addr);
+    try std.testing.expectEqualStrings("\"/home/alice/.epic/main/.foreign_api_secret\"", local.secret_path);
+
+    // Someone else's: their URL, and no secret — we have none for a node we
+    // don't run, and handing over the local one would be both useless and wrong.
+    Epic.NodeSource.set("http://node.example:3413");
+    const remote = try Epic.walletNodeKeys(a, top);
+    defer remote.deinit(a);
+    try std.testing.expectEqualStrings("\"http://node.example:3413\"", remote.addr);
+    try std.testing.expectEqualStrings("\"\"", remote.secret_path);
+}
+
+test "the wallet config is re-pointed in both directions, secret and all" {
+    if (builtin.os.tag == .windows) return error.SkipZigTest;
+    const a = std.testing.allocator;
+    var threaded: std.Io.Threaded = .init(a, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    const home = "test-epic-node-source-home";
+    std.Io.Dir.cwd().deleteTree(io, home) catch {};
+    defer {
+        std.Io.Dir.cwd().deleteTree(io, home) catch {};
+        Epic.NodeSource.set("");
+    }
+
+    const top = try Epic.dataDir(a, home);
+    defer a.free(top);
+
+    const read = struct {
+        fn conf(alloc: std.mem.Allocator, i: std.Io, dir_path: []const u8) ![]u8 {
+            var dir = try std.Io.Dir.cwd().openDir(i, dir_path, .{});
+            defer dir.close(i);
+            var f = try dir.openFile(i, Epic.wallet_conf_file, .{});
+            defer f.close(i);
+            const buf = try alloc.alloc(u8, 8 * 1024);
+            errdefer alloc.free(buf);
+            const n = try f.readPositionalAll(i, buf, 0);
+            return alloc.realloc(buf, n);
+        }
+    }.conf;
+
+    // Born pointing at our own node.
+    Epic.NodeSource.set("");
+    try Epic.ensureWalletConfig(a, io, home);
+    {
+        const text = try read(a, io, top);
+        defer a.free(text);
+        try std.testing.expect(std.mem.indexOf(u8, text, "check_node_api_http_addr = \"http://127.0.0.1:3413\"") != null);
+        try std.testing.expect(std.mem.indexOf(u8, text, ".foreign_api_secret\"") != null);
+    }
+
+    // Switched to a remote: the address moves *and* the local secret goes, so
+    // the wallet can't be left presenting one node's credential to another.
+    Epic.NodeSource.set("http://node.example:3413");
+    try Epic.ensureWalletConfig(a, io, home);
+    {
+        const text = try read(a, io, top);
+        defer a.free(text);
+        try std.testing.expect(std.mem.indexOf(u8, text, "check_node_api_http_addr = \"http://node.example:3413\"") != null);
+        try std.testing.expect(std.mem.indexOf(u8, text, "node_api_secret_path = \"\"") != null);
+        try std.testing.expect(std.mem.indexOf(u8, text, ".foreign_api_secret") == null);
+        // Everything else BoxWallet manages is untouched by the switch.
+        try std.testing.expect(std.mem.indexOf(u8, text, "owner_api_listen_port = 3420") != null);
+        try std.testing.expect(std.mem.indexOf(u8, text, "api_listen_interface = \"127.0.0.1\"") != null);
+    }
+
+    // And back again — the healing has to work in both directions, or a user who
+    // changes their mind is left with a wallet that can't authenticate locally.
+    Epic.NodeSource.set("");
+    try Epic.ensureWalletConfig(a, io, home);
+    {
+        const text = try read(a, io, top);
+        defer a.free(text);
+        try std.testing.expect(std.mem.indexOf(u8, text, "check_node_api_http_addr = \"http://127.0.0.1:3413\"") != null);
+        try std.testing.expect(std.mem.indexOf(u8, text, ".foreign_api_secret\"") != null);
+        try std.testing.expect(std.mem.indexOf(u8, text, "node_api_secret_path = \"\"") == null);
+    }
+}
+
+test "the node choice round-trips through boxwallet.conf, normalized" {
+    if (builtin.os.tag == .windows) return error.SkipZigTest;
+    const a = std.testing.allocator;
+    var threaded: std.Io.Threaded = .init(a, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    const root = "test-epic-node-choice-root";
+    const home = "test-epic-node-choice-home";
+    std.Io.Dir.cwd().deleteTree(io, root) catch {};
+    std.Io.Dir.cwd().deleteTree(io, home) catch {};
+    defer {
+        std.Io.Dir.cwd().deleteTree(io, root) catch {};
+        std.Io.Dir.cwd().deleteTree(io, home) catch {};
+        Epic.NodeSource.set("");
+    }
+
+    var buf: [Coin.node_url_max]u8 = undefined;
+    // Nothing stored yet: our own daemon.
+    try std.testing.expectEqualStrings("", Epic.refreshNodeSource(a, root, &buf));
+    try std.testing.expect(Epic.usesLocalDaemon());
+
+    // What's stored is the *normalized* form, so the Settings tab reads back
+    // exactly what the wallet was pointed at.
+    try Epic.setNodeSource(a, root, home, "  node.example  ");
+    try std.testing.expectEqualStrings("http://node.example:3413", Epic.refreshNodeSource(a, root, &buf));
+    try std.testing.expect(!Epic.usesLocalDaemon());
+
+    // A URL the coin can't use is refused, and leaves the stored one alone —
+    // a typo must not silently strand the wallet on no node at all.
+    try std.testing.expectError(error.InvalidNodeUrl, Epic.setNodeSource(a, root, home, "ftp://nope"));
+    try std.testing.expectEqualStrings("http://node.example:3413", Epic.refreshNodeSource(a, root, &buf));
+
+    // Empty restores our own daemon.
+    try Epic.setNodeSource(a, root, home, "");
+    try std.testing.expectEqualStrings("", Epic.refreshNodeSource(a, root, &buf));
+    try std.testing.expect(Epic.usesLocalDaemon());
+}
+
+test "a stored value that no longer parses falls back to our own node" {
+    if (builtin.os.tag == .windows) return error.SkipZigTest;
+    const a = std.testing.allocator;
+    var threaded: std.Io.Threaded = .init(a, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    const root = "test-epic-node-garbage-root";
+    std.Io.Dir.cwd().deleteTree(io, root) catch {};
+    defer {
+        std.Io.Dir.cwd().deleteTree(io, root) catch {};
+        Epic.NodeSource.set("");
+    }
+
+    // Hand-edited into something meaningless. The safe end of a setting we can't
+    // read is the node BoxWallet controls — never a half-parsed host.
+    try conf.setValue(a, io, root, conf.settings_file, Epic.node_setting_key, "not a url/at all");
+
+    var buf: [Coin.node_url_max]u8 = undefined;
+    try std.testing.expectEqualStrings("", Epic.refreshNodeSource(a, root, &buf));
+    try std.testing.expect(Epic.usesLocalDaemon());
+}
+
+test "the suggested node normalizes to a usable address" {
+    // Whatever is suggested has to survive the same grammar a typed one does —
+    // a default the coin would then refuse is worse than no default.
+    var buf: [Coin.node_url_max]u8 = undefined;
+    try std.testing.expectEqualStrings(
+        "https://node.epiccash.com:3413",
+        try Epic.normalizeNodeUrl(Epic.default_remote_node, &buf),
+    );
+
+    // Both halves survive normalization unchanged. If either were dropped the
+    // default would reach nothing: the apex has 3413 closed, and the node's
+    // nginx rejects plain HTTP on it with a 400.
+    try std.testing.expect(std.mem.startsWith(u8, Epic.default_remote_node, "https://"));
+    try std.testing.expect(std.mem.indexOf(u8, Epic.default_remote_node, "node.epiccash.com") != null);
+}
+
+test "the suggested node is not the configured one" {
+    if (builtin.os.tag == .windows) return error.SkipZigTest;
+    const a = std.testing.allocator;
+    var threaded: std.Io.Threaded = .init(a, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    const root = "test-epic-node-default-root";
+    std.Io.Dir.cwd().deleteTree(io, root) catch {};
+    defer {
+        std.Io.Dir.cwd().deleteTree(io, root) catch {};
+        Epic.NodeSource.set("");
+    }
+
+    // The whole point of it being a prefill: a fresh install is on its own
+    // daemon, and nothing reaches the suggested node until someone picks it. If
+    // this ever fails, BoxWallet has started shipping wallet queries to a third
+    // party that nobody chose.
+    var buf: [Coin.node_url_max]u8 = undefined;
+    try std.testing.expectEqualStrings("", Epic.refreshNodeSource(a, root, &buf));
+    try std.testing.expect(Epic.usesLocalDaemon());
+}
+
+test "splitHostPort takes a normalized URL apart for the reachability probe" {
+    const ep = try Epic.splitHostPort("https://node.epiccash.com:3413");
+    try std.testing.expectEqualStrings("node.epiccash.com", ep.host);
+    try std.testing.expectEqual(@as(u16, 3413), ep.port);
+
+    const plain = try Epic.splitHostPort("http://127.0.0.1:3413");
+    try std.testing.expectEqualStrings("127.0.0.1", plain.host);
+
+    // Anything that isn't the normalized shape is refused rather than guessed
+    // at — the probe would otherwise dial whatever a bad split produced.
+    try std.testing.expectError(error.InvalidNodeUrl, Epic.splitHostPort("node.epiccash.com"));
+    try std.testing.expectError(error.InvalidNodeUrl, Epic.splitHostPort("https://:3413"));
+    try std.testing.expectError(error.InvalidNodeUrl, Epic.splitHostPort(""));
 }

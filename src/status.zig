@@ -54,6 +54,13 @@ pub const Input = struct {
     installing: Phase = .idle,
     installed: bool = false,
     daemon: Daemon = .stopped,
+    /// This coin is pointed at a node someone else runs, so there is no local
+    /// daemon behind `daemon` — it carries only whether that node answered the
+    /// last poll (`.running`) or didn't (`.stopped`). The warm-up, peer and sync
+    /// rungs below all describe a node BoxWallet is running and watching; none of
+    /// them has an answer here, so the ladder takes its own short branch instead
+    /// of dressing up figures the remote API never reports.
+    remote_node: bool = false,
     /// A start has been asked for but no poll has come back yet, so the daemon's
     /// state genuinely isn't known — distinct from "stopped".
     awaiting_status: bool = false,
@@ -134,6 +141,16 @@ pub fn readout(in: Input) Readout {
     }
 
     if (!in.installed) return .{ .text = "Not installed", .tone = .idle, .active = false };
+
+    // A node someone else runs: the only thing that can honestly be said is
+    // whether it answered. Its Foreign API reports a chain height and nothing
+    // else — no peer count, no sync phase, no "caught up" — so the rungs below
+    // are skipped rather than filled with zeros that would read as facts.
+    if (in.remote_node) {
+        if (in.daemon == .running) return .{ .text = "Using a remote node", .tone = .ok, .active = true };
+        if (in.awaiting_status) return .{ .text = "Checking…", .tone = .working, .active = true };
+        return .{ .text = "Remote node unreachable", .tone = .warning, .active = false };
+    }
 
     return switch (in.daemon) {
         .starting => .{ .text = "Starting…", .tone = .working, .active = true },
@@ -544,4 +561,51 @@ test "presync can't fire outside the headers phase" {
     try std.testing.expect(!t.update(caught_up, true, true));
     try std.testing.expect(!t.update(caught_up, true, true));
     try std.testing.expect(!t.update(caught_up, true, true));
+}
+
+test "a remote node reports reachability, and claims nothing else" {
+    // Answering: the wallet has a chain to read. Not "Synced" — nothing in the
+    // Foreign API can back that word.
+    const up: Input = .{ .installed = true, .remote_node = true, .daemon = .running };
+    try std.testing.expectEqualStrings("Using a remote node", readout(up).text);
+    try std.testing.expectEqual(Tone.ok, readout(up).tone);
+
+    // Not answering, and we've stopped waiting on it.
+    const down: Input = .{ .installed = true, .remote_node = true, .daemon = .stopped };
+    try std.testing.expectEqualStrings("Remote node unreachable", readout(down).text);
+    try std.testing.expectEqual(Tone.warning, readout(down).tone);
+
+    // Between the two: a poll is out and hasn't come back.
+    const checking: Input = .{
+        .installed = true,
+        .remote_node = true,
+        .daemon = .stopped,
+        .awaiting_status = true,
+    };
+    try std.testing.expectEqualStrings("Checking…", readout(checking).text);
+}
+
+test "a remote node's zero peers never reads as waiting for peers" {
+    // The local ladder's next rung after `.running` is the peer check, and a
+    // remote node reports no peer count at all — so the figure is 0 and must not
+    // be narrated. This is the regression the branch exists for.
+    const in: Input = .{
+        .installed = true,
+        .remote_node = true,
+        .daemon = .running,
+        .peers = 0,
+        .sync = .syncing,
+        .headers_cur = 10,
+        .headers_total = 900_000,
+    };
+    try std.testing.expectEqualStrings("Using a remote node", readout(in).text);
+}
+
+test "a remote coin still reports installing and not-installed" {
+    // Both outrank the node question: the wallet binary is needed either way.
+    const downloading: Input = .{ .remote_node = true, .installing = .downloading };
+    try std.testing.expectEqualStrings("Downloading…", readout(downloading).text);
+
+    const missing: Input = .{ .remote_node = true, .installed = false };
+    try std.testing.expectEqualStrings("Not installed", readout(missing).text);
 }

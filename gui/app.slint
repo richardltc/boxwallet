@@ -1434,6 +1434,41 @@ export component AppWindow inherits Window {
     in property <string> prune-warning: "";
     callback prune-change-open();
 
+    // ---- where the chain comes from: our node, or someone else's ----
+    // Only Epic offers this (`node-choice-supported`); for every other coin the
+    // Settings row is absent, because a row reporting a choice that doesn't
+    // exist is noise.
+    //
+    // `node-url` empty means BoxWallet's own managed daemon. That is also what
+    // `uses-local-daemon` reports, and the Start/Stop buttons hang off it: with
+    // no daemon of ours there is nothing to start, and a button that silently
+    // does nothing is worse than no button.
+    //
+    // The two notes come from the core (`bw_remote_node_caution` /
+    // `bw_local_node_note`), not from this file — it's the one place the user is
+    // told what a remote node costs, and the TUI must say the same words.
+    in property <bool> node-choice-supported: false;
+    in property <bool> uses-local-daemon: true;
+    // The status glyphs below branch on this. `running` for a remote coin means
+    // "the node answered", so the smiley is lit and STILL — there is no start-up
+    // of ours to pulse through. The peer and sync glyphs describe a node
+    // BoxWallet runs and watches; a remote one reports neither, so they must not
+    // animate over figures that are never coming.
+    in property <bool> remote-node: false;
+    in property <string> node-url: "";
+    in property <string> node-remote-caution: "";
+    in property <string> node-local-note: "";
+    in-out property <bool> node-open: false;
+    in-out property <int> node-sel: 0;
+    // The address being typed, and the core's reason for refusing it. The error
+    // belongs on the field rather than in a dialog of its own: the address is
+    // what needs fixing, and it's still on screen.
+    in-out property <string> node-input: "";
+    in-out property <string> node-error: "";
+    callback node-open-dialog();
+    callback node-apply(string);
+    callback node-cancel();
+
     // Block-index rebuild — the repair for a daemon that aborts part-way through
     // start-up on a corrupt index, so its RPC never answers and no setting avoids
     // it. `reindex-supported` is the coin's capability; `reindex-warning` is what
@@ -1512,8 +1547,12 @@ export component AppWindow inherits Window {
     in property <bool> has-stake: false;
     in property <string> stake-hint: "";
     // Canonical restore-seed length for this wallet (bw_coin_seed_word_counts'
-    // first entry), for the seed-entry prompt and its live word counter.
+    // first entry), for the seed-entry prompt's live word counter.
     in property <int> seed-word-count: 25;
+    // Every length this wallet accepts, already prose ("25", or "24 or 12" for
+    // Epic). The prompt names all of them: telling a 12-word Epic holder they
+    // need 24 reads as "your seed is wrong".
+    in property <string> seed-word-lengths: "25";
     // Live wallet readouts, all pre-formatted by the host. "—" while unknown.
     in property <string> balance-total: "—";
     in property <string> balance-avail: "—";
@@ -1817,7 +1856,7 @@ export component AppWindow inherits Window {
     out property <bool> modal-open:
         root.browse-open || root.send-confirm-open || root.mining-stop-open
         || root.wallet-stage != 0 || root.unlock-open || root.update-open
-        || root.accel-open || root.prune-open || root.wa-stage != 0
+        || root.accel-open || root.prune-open || root.node-open || root.wa-stage != 0
         || root.sc-stage != 0;
 
     // Escape closes the topmost modal, in the same order they paint. Each arm
@@ -1851,6 +1890,11 @@ export component AppWindow inherits Window {
         // Escape declines, which declines the start — same as Cancel. It must go
         // through the callback so the pending coin is cleared and the Start
         // button unlatches; silently hiding the dialog would strand both.
+        if (root.node-open) {
+            root.node-open = false;
+            root.node-cancel();
+            return true;
+        }
         if (root.prune-open) {
             root.prune-open = false;
             root.prune-cancel();
@@ -2575,7 +2619,10 @@ export component AppWindow inherits Window {
                             motion: root.installing ? "pulse" : "hop";
                             moving: !root.installed || root.installing;
                         }
-                        // Daemon — grey when stopped, pulses while loading, lit when running.
+                        // Daemon — grey when stopped, pulses while loading, lit when
+                        // running. On a remote coin there is no loading phase of ours
+                        // to pulse through: it is lit and static the moment the node
+                        // answers, and grey when it doesn't.
                         StatusIcon {
                             icon: @image-url("icons/smile.svg");
                             accent: root.coin-color;
@@ -2584,10 +2631,21 @@ export component AppWindow inherits Window {
                             // rather than a bare "loading" — a block-index load or a
                             // rewind can run for minutes, and the difference is the
                             // only sign of progress there is.
-                            hint: root.daemon-loading
-                                ? (root.daemon-stage != "" ? root.daemon-stage : "Daemon loading…")
-                                : (root.running ? "Daemon running" : "Daemon not running");
+                            //
+                            // "Daemon running" is the wrong subject for a node we
+                            // don't run, so a remote coin names the node instead.
+                            hint: root.remote-node
+                                ? (root.running
+                                    ? "Connected to " + root.node-url
+                                    : "Trying to reach " + root.node-url + "\u{2026}")
+                                : (root.daemon-loading
+                                    ? (root.daemon-stage != "" ? root.daemon-stage : "Daemon loading…")
+                                    : (root.running ? "Daemon running" : "Daemon not running"));
                             motion: "pulse";
+                            // Pulsing means "an attempt is in flight" in both
+                            // worlds: our daemon coming up, or a remote node we
+                            // are still trying to reach. Lit and still is the
+                            // answer having arrived.
                             moving: root.daemon-loading;
                         }
                         // Peers — lit when connected; hint shows the count. Once the
@@ -2605,7 +2663,11 @@ export component AppWindow inherits Window {
                         // so `running` on its own had this pulsing "Looking for
                         // peers…" through the entire load — hunting for peers it
                         // cannot yet look for. The smiley carries that window.
-                        StatusIcon {
+                        // Hidden outright for a remote node rather than shown grey:
+                        // a dark wifi glyph reads as "no peers", which is a claim.
+                        // The truth is that the node doesn't report them, and an
+                        // absent glyph says that better than a lit or unlit one.
+                        if !root.remote-node: StatusIcon {
                             icon: @image-url("icons/wifi.svg");
                             accent: root.coin-color;
                             active: root.running && root.peers > 0;
@@ -2628,19 +2690,25 @@ export component AppWindow inherits Window {
                             // node isn't syncing and can't even tell whether it's
                             // behind, so a lit glyph would be reporting a state we
                             // haven't observed.
-                            active: root.running && root.peers > 0;
+                            // A remote node has given us a tip or it hasn't; there
+                            // is no peer count standing between the two, and no
+                            // download of ours still to finish — so it is lit and
+                            // static from the moment the node answers.
+                            active: root.running && (root.remote-node || root.peers > 0);
                             // Loading is checked before the peer count for the same
                             // reason as the peers glyph above: a daemon still
                             // opening its block index has no peers *yet to look
                             // for*, so "Waiting for peers…" named the wrong thing
                             // to be waiting on for the whole load.
-                            hint: !root.running ? "Not running"
+                            hint: root.remote-node
+                                ? (root.running ? "Reading the chain from " + root.node-url : "No chain until the node answers")
+                                : (!root.running ? "Not running"
                                 : root.daemon-loading ? (root.daemon-stage != "" ? root.daemon-stage : "Daemon loading…")
                                 : root.synced ? "Synced"
                                 : root.peers == 0 ? "Waiting for peers…"
-                                : "Syncing…";
+                                : "Syncing…");
                             motion: "spin";
-                            moving: root.running && !root.synced && root.peers > 0;
+                            moving: root.running && !root.synced && root.peers > 0 && !root.remote-node;
                         }
                         // Wallet lock — open/closed padlock, lit once we know the
                         // wallet's state. A coin with a *managed* wallet (Nerva) has
@@ -3116,7 +3184,11 @@ export component AppWindow inherits Window {
                                     root.update-open = true;
                                 }
                             }
-                            Button {
+            // Both are absent, not merely disabled, when the chain is read from
+            // a node someone else runs: there is no daemon of ours for either to
+            // act on. The status line already says what's going on ("Using a
+            // remote node"), and the Settings tab is where the choice changes.
+                            if root.uses-local-daemon: Button {
                                 text: "Start";
                                 // Nothing to start until it's installed — and nothing
                                 // to start *again* while one is coming up: a daemon
@@ -3129,7 +3201,7 @@ export component AppWindow inherits Window {
                                     root.start-daemon();
                                 }
                             }
-                            Button {
+                            if root.uses-local-daemon: Button {
                                 text: "Stop";
                                 enabled: root.running && !root.daemon-busy;
                                 clicked => {
@@ -3534,9 +3606,36 @@ export component AppWindow inherits Window {
                         // a backup or a bigger disk at — and, since BoxWallet
                         // adopts the daemon's standard data dir, it also shows
                         // *which* copy of the chain this coin is sharing.
-                        if root.data-dir-path != "": SettingsRow {
+                        if root.data-dir-path != "" && root.uses-local-daemon: SettingsRow {
                             label: "Blockchain";
                             value: root.data-dir-path;
+                        }
+                        // Read from someone else's node: this directory holds no
+                        // chain, and naming it would send someone to back up or
+                        // resize a path the blocks aren't on.
+                        if !root.uses-local-daemon: SettingsRow {
+                            label: "Blockchain";
+                            value: "—  (stored by the node you're using)";
+                            muted: true;
+                        }
+
+                        // Which node this coin reads from — only for the coins
+                        // that let the user pick (Epic).
+                        if root.node-choice-supported: SettingsRow {
+                            label: "Node";
+                            value: root.node-url != ""
+                                ? root.node-url
+                                : "this machine's own node";
+                        }
+                        if root.node-choice-supported: HorizontalLayout {
+                            alignment: start;
+                            padding-left: 98px;
+                            Button {
+                                text: "Choose where the chain comes from";
+                                clicked => {
+                                    root.node-open-dialog();
+                                }
+                            }
                         }
 
                         // Only for the coins that prune at all (Bitcoin, Litecoin,
@@ -4687,51 +4786,41 @@ export component AppWindow inherits Window {
                     // --- 1: what would you like to do? ---
                     // The action buttons are gated on the coin's BW_EW_* capability
                     // bits, tested with integer maths since Slint has no bitwise
-                    // operators. `wallet-launch-with-pw` is BW_EW_LAUNCH_WITH_PW,
-                    // decoded in C++ — see below for why it hides all of them.
+                    // operators. `wallet-launch-with-pw` (BW_EW_LAUNCH_WITH_PW,
+                    // decoded in C++) no longer hides them: that wallet shape —
+                    // a server relaunched per op with the password, Epic and Zano —
+                    // runs through the same core path the terminal app drives, so
+                    // the bit only changes what the wait is described as.
                     if root.wallet-stage == 1: VerticalLayout {
                         spacing: 8px;
                         Text {
-                            text: root.wallet-launch-with-pw
-                                ? "This coin's wallet isn't supported in the desktop app yet."
-                                : (root.wallet-state == 0
-                                    ? "There's no wallet for this coin yet."
-                                    : "This wallet is locked.");
+                            text: root.wallet-state == 0
+                                ? "There's no wallet for this coin yet."
+                                : "This wallet is locked.";
                             color: #9a9a9a;
                             font-size: 13px;
                             wrap: word-wrap;
                         }
-                        // A wallet that is launched per-open, with the password on its
-                        // command line (Zano, Epic), needs a lifecycle the core hasn't
-                        // wired for this front-end yet — every op would return
-                        // "Unsupported". Say so, rather than offering buttons that can
-                        // only fail and leave the user wondering if they mistyped.
-                        if root.wallet-launch-with-pw: Text {
-                            text: "Use the terminal app (boxwallet-tui) for this coin's wallet for now. Everything else here — status, sync, mining — works as usual.";
-                            color: #8a8a8a;
-                            font-size: 12px;
-                            wrap: word-wrap;
-                        }
-                        if !root.wallet-launch-with-pw && root.wallet-state != 0: Button {
+                        if root.wallet-state != 0: Button {
                             text: "Unlock this wallet";
                             clicked => { root.wallet-op = 3; root.wallet-stage = 2; }
                         }
-                        if !root.wallet-launch-with-pw && root.wallet-state == 0: Button {
+                        if root.wallet-state == 0: Button {
                             text: "Create a new wallet";
                             clicked => { root.wallet-op = 0; root.wallet-stage = 3; }
                         }
                         // BW_EW_SEED_RESTORE.
-                        if !root.wallet-launch-with-pw && root.wallet-state == 0 && Math.mod(Math.floor(root.ew-flags / 2), 2) == 1: Button {
+                        if root.wallet-state == 0 && Math.mod(Math.floor(root.ew-flags / 2), 2) == 1: Button {
                             text: "Restore from seed words";
                             clicked => { root.wallet-op = 1; root.wallet-stage = 4; }
                         }
                         // BW_EW_FILE_RESTORE.
-                        if !root.wallet-launch-with-pw && root.wallet-state == 0 && Math.mod(Math.floor(root.ew-flags / 4), 2) == 1: Button {
+                        if root.wallet-state == 0 && Math.mod(Math.floor(root.ew-flags / 4), 2) == 1: Button {
                             text: "Restore from a wallet file";
                             clicked => { root.wallet-op = 2; root.wallet-stage = 5; root.browse-open = true; }
                         }
                         // BW_EW_REPLACE — destructive, so it's behind a typed confirm.
-                        if !root.wallet-launch-with-pw && root.wallet-state != 0 && Math.mod(Math.floor(root.ew-flags / 8), 2) == 1: Button {
+                        if root.wallet-state != 0 && Math.mod(Math.floor(root.ew-flags / 8), 2) == 1: Button {
                             text: "Replace this wallet\u{2026}";
                             clicked => { root.wallet-replace-bad = false; root.wallet-stage = 9; }
                         }
@@ -4820,7 +4909,7 @@ export component AppWindow inherits Window {
                         spacing: 8px;
                         property <bool> mismatch: false;
                         Text {
-                            text: "Enter your " + root.seed-word-count + " seed words, then choose a password for the restored wallet.";
+                            text: "Enter your " + root.seed-word-lengths + " seed words, then choose a password for the restored wallet.";
                             color: #9a9a9a;
                             font-size: 13px;
                             wrap: word-wrap;
@@ -4886,14 +4975,29 @@ export component AppWindow inherits Window {
                     }
 
                     // --- 6: working ---
-                    if root.wallet-stage == 6: Text {
-                        text: root.wallet-op == 0 ? "Creating the wallet\u{2026}"
-                            : root.wallet-op == 1 ? "Restoring from your seed words\u{2026}"
-                            : root.wallet-op == 2 ? "Importing the wallet file\u{2026}"
-                            : "Opening the wallet\u{2026}";
-                        color: #9a9a9a;
-                        font-size: 13px;
-                        wrap: word-wrap;
+                    if root.wallet-stage == 6: VerticalLayout {
+                        spacing: 6px;
+                        Text {
+                            text: root.wallet-op == 0 ? "Creating the wallet\u{2026}"
+                                : root.wallet-op == 1 ? "Restoring from your seed words\u{2026}"
+                                : root.wallet-op == 2 ? "Importing the wallet file\u{2026}"
+                                : "Opening the wallet\u{2026}";
+                            color: #9a9a9a;
+                            font-size: 13px;
+                            wrap: word-wrap;
+                        }
+                        // A launch-with-password wallet starts its own server for
+                        // every op, and a restore scans the chain for the seed's
+                        // outputs before it answers. That is minutes, not seconds —
+                        // an unexplained spinner reads as a hang.
+                        if root.wallet-launch-with-pw: Text {
+                            text: root.wallet-op == 1
+                                ? "This scans the chain for your existing funds and can take several minutes. Leave it running."
+                                : "The wallet service is starting — this can take a moment.";
+                            color: #8a8a8a;
+                            font-size: 12px;
+                            wrap: word-wrap;
+                        }
                     }
 
                     // --- 7: write the seed down ---
@@ -5931,6 +6035,172 @@ export component AppWindow inherits Window {
         // How should this chain be stored? Asked once, before a prune-capable
         // daemon first runs, because the answer can't be changed afterwards
         // without a full re-sync.
+        // ---- where the chain comes from ----
+        // Deliberately not a confirm: nothing here is destructive — no chain is
+        // deleted, no wallet is touched, and the choice can be made again at any
+        // time — so the caution sits beside the rows, informing the choice,
+        // rather than behind a Yes/No that would imply a point of no return.
+        if root.node-open: Rectangle {
+            background: #000000bb;
+            TouchArea { }
+
+            Rectangle {
+                width: 460px;
+                // Fixed, like every other dialog here — a wrapped Text can't
+                // report its height before it knows its width. The remote row
+                // adds the address field and the caution, which is the taller of
+                // the two states; the slack lands in the spacer above the
+                // buttons, so erring high is the safe direction.
+                height: root.node-sel == 1 ? 330px : 270px;
+                x: (parent.width - self.width) / 2;
+                y: (parent.height - self.height) / 2;
+                background: #202020;
+                border-radius: 10px;
+                border-width: 1px;
+                border-color: #3a3a3a;
+
+                VerticalBox {
+                    padding: 16px;
+                    spacing: 10px;
+                    Text {
+                        text: "Where should " + root.coin-name + " get the blockchain?";
+                        color: #e6e6e6;
+                        font-size: 15px;
+                        font-weight: 600;
+                        wrap: word-wrap;
+                    }
+                    Text {
+                        text: root.node-url != ""
+                            ? "Currently: " + root.node-url
+                            : "Currently: this machine's own node.";
+                        color: #9a9a9a;
+                        font-size: 12px;
+                        wrap: word-wrap;
+                    }
+
+                    VerticalLayout {
+                        spacing: 10px;
+                        padding: 0;
+                        vertical-stretch: 0;
+                        nrow0 := Rectangle {
+                            height: 30px;
+                            border-radius: 5px;
+                            background: root.node-sel == 0
+                                ? #2f3a2f
+                                : (nta0.has-hover ? #262626 : transparent);
+                            HorizontalLayout {
+                                padding-left: 10px;
+                                spacing: 8px;
+                                Text {
+                                    text: root.node-sel == 0 ? "●" : "○";
+                                    color: root.node-sel == 0 ? #7ca071 : #6b6b6b;
+                                    font-size: 13px;
+                                    vertical-alignment: center;
+                                }
+                                Text {
+                                    text: "Run my own node (downloads the chain)";
+                                    color: root.node-sel == 0 ? #e6e6e6 : #c8c8c8;
+                                    font-size: 13px;
+                                    vertical-alignment: center;
+                                    horizontal-stretch: 1;
+                                }
+                            }
+                            nta0 := TouchArea {
+                                clicked => {
+                                    root.node-sel = 0;
+                                    root.node-error = "";
+                                }
+                            }
+                        }
+                        nrow1 := Rectangle {
+                            height: 30px;
+                            border-radius: 5px;
+                            background: root.node-sel == 1
+                                ? #2f3a2f
+                                : (nta1.has-hover ? #262626 : transparent);
+                            HorizontalLayout {
+                                padding-left: 10px;
+                                spacing: 8px;
+                                Text {
+                                    text: root.node-sel == 1 ? "●" : "○";
+                                    color: root.node-sel == 1 ? #7ca071 : #6b6b6b;
+                                    font-size: 13px;
+                                    vertical-alignment: center;
+                                }
+                                Text {
+                                    text: "Use a node someone else runs\u{2026}";
+                                    color: root.node-sel == 1 ? #e6e6e6 : #c8c8c8;
+                                    font-size: 13px;
+                                    vertical-alignment: center;
+                                    horizontal-stretch: 1;
+                                }
+                            }
+                            nta1 := TouchArea {
+                                clicked => {
+                                    root.node-sel = 1;
+                                    root.node-error = "";
+                                }
+                            }
+                        }
+                    }
+
+                    if root.node-sel == 1: node-addr := LineEdit {
+                        placeholder-text: "node.example or node.example:3413";
+                        text: root.node-input;
+                        edited => {
+                            root.node-input = self.text;
+                            root.node-error = "";
+                        }
+                    }
+                    if root.node-sel == 1 && root.node-error != "": Text {
+                        text: root.node-error;
+                        color: #d98b8b;
+                        font-size: 12px;
+                        wrap: word-wrap;
+                    }
+
+                    // The core's words for what each choice costs. Never reworded
+                    // here — the TUI shows the same two strings.
+                    Text {
+                        text: root.node-sel == 1
+                            ? root.node-remote-caution
+                            : root.node-local-note;
+                        color: #9a9a9a;
+                        font-size: 12px;
+                        wrap: word-wrap;
+                        horizontal-stretch: 1;
+                    }
+
+                    // Takes the leftover height so the buttons sit on the bottom
+                    // edge however the text above wrapped.
+                    Rectangle { }
+                    HorizontalBox {
+                        padding: 0;
+                        alignment: end;
+                        spacing: 8px;
+                        vertical-stretch: 0;
+                        Button {
+                            text: "Cancel";
+                            clicked => {
+                                root.node-open = false;
+                                root.node-cancel();
+                            }
+                        }
+                        Button {
+                            text: "Use this";
+                            primary: true;
+                            // NOT closed here: a refused address comes back as
+                            // `node-error` with the dialog still standing, so the
+                            // host closes it only once the change really landed.
+                            clicked => {
+                                root.node-apply(root.node-sel == 1 ? root.node-input : "");
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
         if root.prune-open: Rectangle {
             background: #000000bb;
             TouchArea { }

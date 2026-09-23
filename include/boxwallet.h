@@ -180,9 +180,18 @@ int     bw_coin_supports_tokens(size_t idx);      /* 0/1 — shows the Tokens ta
 #define BW_EW_REPLACE        (1 << 3)  /* in-app "replace wallet" (destructive) */
 #define BW_EW_EXPLICIT_LOCK  (1 << 4)  /* in-daemon wallet needing a Lock action */
 /* Wallet process is launched per-open with the password on its command line
- * (Zano, Epic). NOT YET WIRED for this front-end: every bw_ext_wallet_* op on
- * such a coin returns -1 with "Unsupported". Check this bit and tell the user
- * plainly rather than offering actions that can only fail. */
+ * (Zano, Epic): its RPC server only ever serves the wallet it was handed at
+ * startup, so the core (re)launches it inside each bw_ext_wallet_* op instead
+ * of spawning it alongside the daemon. bw_ext_wallet_service_ensure therefore
+ * answers 0 ("nothing to do") for these coins — that is not a failure.
+ *
+ * Every op is supported; they just take longer, because each one waits on a
+ * process start (and a seed restore additionally scans the chain for the
+ * seed's outputs). Use this bit to say so, not to hide the actions.
+ *
+ * bw_ext_wallet_lock is the one exception: locking this shape means ending the
+ * process, which happens when the daemon stops, so the op returns
+ * "Unsupported". */
 #define BW_EW_LAUNCH_WITH_PW (1 << 5)
 int     bw_coin_ext_wallet(size_t idx);
 
@@ -628,6 +637,13 @@ typedef struct {
     uint32_t presync_bp;
     uint64_t headers_cur, headers_total;
     uint64_t blocks_cur, blocks_total;
+    /* This coin reads its chain from a node someone else runs. `daemon` then
+     * carries only whether that node ANSWERED (2) or didn't (0) — there is no
+     * daemon of ours behind it. Set this and the readout skips the warm-up, peer
+     * and sync rungs, which describe a node BoxWallet runs and watches; a remote
+     * one reports a chain height and nothing else, so those figures are zero and
+     * must not be narrated. Leave it 0 for every other coin. */
+    int      remote_node;
 } BwStatusInput;
 
 /* The status line is the wording alone — "Syncing blocks…", then "Synced", plus
@@ -856,6 +872,57 @@ int     bw_prune_change_supported(size_t idx);
 size_t  bw_prune_change_warning(size_t idx, char *buf, size_t cap);
 int     bw_prune_change_allowed(size_t idx, int64_t from, int64_t to);
 int     bw_prune_change_destructive(size_t idx, int64_t from, int64_t to);
+
+/* ---- where the chain comes from: our node, or someone else's -----------------
+ * Only Epic offers this today; every other coin answers "no choice" and the row
+ * should not be shown.
+ *
+ * bw_coin_offers_node_choice: 1 = show the Settings row. A property of the coin —
+ * no disk, no ctx, UI-thread safe.
+ *
+ * bw_coin_node_source writes the base URL this coin reads its chain from, or
+ * NOTHING (returns 0) when it uses BoxWallet's own managed daemon. Reads the
+ * settings file: worker thread.
+ *
+ * bw_coin_uses_local_daemon is that same answer as a predicate, and 1 for every
+ * coin that doesn't offer the choice. WHEN IT IS 0 THERE IS NO DAEMON HERE: do
+ * not offer Start/Stop, do not narrate a warm-up, do not read a daemon log for a
+ * failure reason. None of those has a subject, and a Start button that silently
+ * does nothing is worse than no button. The status line already has the wording
+ * for this state ("Using a remote node" / "Remote node unreachable"), so take it
+ * from bw_status_text rather than writing your own.
+ *
+ * Nor does a remote node report the figures a local one does: its API serves a
+ * chain height and nothing else. Peer count and daemon version come back 0 and
+ * empty — show neither as a fact.
+ *
+ * bw_coin_set_node_source points the coin at a node. An empty or NULL url
+ * restores the managed daemon. Returns 0, or -1 with bw_last_error set —
+ * "InvalidNodeUrl" means the address itself was refused, which belongs on the
+ * field rather than in an error dialog. Writes the settings file and the coin's
+ * wallet config: worker thread.
+ *
+ * AFTER A SUCCESSFUL SET, do two things: re-read bw_coin_node_source (what is
+ * stored is the normalized form, not what was typed), and tear down any wallet
+ * service running for this coin — it read the old node's address once, at launch,
+ * and will go on talking to it otherwise.
+ *
+ * bw_coin_default_remote_node: the node to PREFILL the address field with when
+ * the user picks "someone else's node" without one in mind (Epic's community
+ * node). 0 when the coin suggests none. It is a suggestion only — the coin still
+ * starts on its own daemon, and this must never be applied without the user
+ * choosing it.
+ *
+ * bw_remote_node_caution / bw_local_node_note: the text to show beside each
+ * choice. Take them from here rather than writing your own — this is the one
+ * place the user is told what a remote node costs them. Cheap; UI-thread safe. */
+int     bw_coin_offers_node_choice(size_t idx);
+size_t  bw_coin_node_source(bw_ctx *ctx, size_t idx, char *buf, size_t cap);
+int     bw_coin_uses_local_daemon(bw_ctx *ctx, size_t idx);
+int     bw_coin_set_node_source(bw_ctx *ctx, size_t idx, const char *url);
+size_t  bw_coin_default_remote_node(size_t idx, char *buf, size_t cap);
+size_t  bw_remote_node_caution(char *buf, size_t cap);
+size_t  bw_local_node_note(char *buf, size_t cap);
 
 /* Block-index rebuild — the repair for a daemon that ABORTS DURING INIT on a
  * corrupt on-disk index. It forks, gets part-way through start-up and dies on an
