@@ -975,6 +975,7 @@ static void apply_coin_metadata(const AppWindow *ui, bw_ctx *ctx, int idx)
     }
 
     ui->set_has_mining(bw_coin_supports_mining(idx) != 0);
+    ui->set_is_pos((bw_coin_wallet_caps(idx) & BW_WCAP_PROOF_OF_STAKE) != 0);
     ui->set_has_stablecoin(bw_coin_supports_stablecoin(idx) != 0);
     ui->set_has_tokens(bw_coin_supports_tokens(idx) != 0);
     // The empty tab's copy is the coin's, not this front-end's, and it is

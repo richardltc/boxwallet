@@ -1339,6 +1339,8 @@ export component AppWindow inherits Window {
     in property <string> coin-name: "";
     in property <string> coin-desc: "";
     in property <bool> has-mining: false;
+    // Proof-of-stake coin (BW_WCAP_PROOF_OF_STAKE) — earns the header's staking bolt.
+    in property <bool> is-pos: false;
     in property <bool> has-stablecoin: false;
 
     // Live status for the selected coin's Home tab.
@@ -2746,8 +2748,8 @@ export component AppWindow inherits Window {
                                 : root.wallet-state == 3 ? "Wallet rescanning"
                                 : "Wallet unlocked";
                         }
-                        // Staking (PoS) or Mining (mining coins) — pulses while active.
-                        if !root.has-mining: StatusIcon {
+                        // Staking (PoS coins only) or Mining (mining coins) — pulses while active.
+                        if root.is-pos && !root.has-mining: StatusIcon {
                             icon: @image-url("icons/zap.svg");
                             accent: root.coin-color;
                             active: root.staking;
