@@ -189,11 +189,20 @@ int     bw_coin_supports_tokens(size_t idx);      /* 0/1 — shows the Tokens ta
  * process start (and a seed restore additionally scans the chain for the
  * seed's outputs). Use this bit to say so, not to hide the actions.
  *
- * bw_ext_wallet_lock is the one exception: locking this shape means ending the
- * process, which happens when the daemon stops, so the op returns
- * "Unsupported". */
+ * bw_ext_wallet_lock (where BW_EW_EXPLICIT_LOCK is set — Epic) locks this
+ * shape by ending the wallet's processes; the daemon stopping does the same. */
 #define BW_EW_LAUNCH_WITH_PW (1 << 5)
+/* Runs a payment listener while the wallet is unlocked (Epic's Epicbox
+ * listener): a second wallet process that signs incoming payments and
+ * finalizes outgoing ones. Started with each successful open, ended with the
+ * wallet. Show its state beside the receive address — see
+ * bw_wallet_listener_state. */
+#define BW_EW_HAS_LISTENER   (1 << 6)
 int     bw_coin_ext_wallet(size_t idx);
+
+/* What a BW_EW_HAS_LISTENER coin calls its listener on screen ("Epicbox
+ * listener"). Returns its length; 0 for a coin without one. */
+size_t  bw_coin_listener_name(size_t idx, char *buf, size_t cap);
 
 /* Word counts this wallet's restore seed may have (25 for the CryptoNote coins,
  * {15,12,24} for Ergo, {26,25,24} for Zano). Writes up to cap and returns how
@@ -1225,6 +1234,18 @@ size_t  bw_wallet_transactions(bw_ctx *ctx, size_t idx, BwWalletTx *out, size_t 
  * sending to it. Call it once when nothing is cached, and again only when the
  * user explicitly asks for a new one — your cache decides, not the clock. */
 size_t  bw_wallet_receive_address(bw_ctx *ctx, size_t idx, int force_new, char *buf, size_t cap);
+
+/* The payment listener of a BW_EW_HAS_LISTENER coin:
+ *   0 none    — no listener, or the wallet isn't unlocked
+ *   1 running
+ *   2 stopped — it exited; payments wait at the relay until the wallet is
+ *               unlocked again (the password isn't kept to restart it)
+ *  -1 can't check right now (a wallet op is running) — keep the last answer.
+ * A cheap non-blocking probe: fine to call on the poll timer. */
+#define BW_LISTENER_NONE    0
+#define BW_LISTENER_RUNNING 1
+#define BW_LISTENER_STOPPED 2
+int     bw_wallet_listener_state(bw_ctx *ctx, size_t idx);
 
 /* 0 = broadcast (out = txid), 1 = the daemon rejected it (out = its own reason,
  * verbatim), -1 = transport failure (bw_last_error has why). A rejection is an

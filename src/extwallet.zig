@@ -52,10 +52,30 @@ pub const Session = struct {
     /// the failure is surfaced once. Reset when the daemon is (re)started or the
     /// process killed.
     attempted: bool = false,
+    /// The coin's payment listener (`Coin.ExternalWallet.listener_argv`), when
+    /// it has one and the wallet is unlocked. Started after a successful open,
+    /// killed with `child`.
+    listener: ?std.process.Child = null,
+    /// The listener was started this unlock and has since exited (or never
+    /// came up). Nothing restarts it — that would need the password, which
+    /// isn't kept — so it reads as stopped until the next unlock. Cleared by
+    /// `kill`.
+    listener_down: bool = false,
 
     pub fn isRunning(self: *const Session) bool {
         return self.child != null;
     }
+};
+
+/// Whether a coin's payment listener is doing its job, for the front-ends to
+/// show beside the receive address.
+pub const ListenerState = enum(u8) {
+    /// The coin has no listener, or its wallet isn't unlocked.
+    none = 0,
+    running = 1,
+    /// Started for this unlock but exited since: payments wait at the relay
+    /// until the wallet is unlocked again.
+    stopped = 2,
 };
 
 /// Why an `ensure` call did or didn't leave a wallet process running. The caller
@@ -167,27 +187,103 @@ pub fn kill(sess: *Session) void {
     @memset(&sess.user_buf, 0);
     @memset(&sess.pass_buf, 0);
     sess.creds_set = false;
+    // The listener holds the same wallet open; it goes with it.
+    killListener(sess);
+    sess.listener_down = false;
     if (sess.child) |*child| {
-        var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
-        defer arena.deinit();
-        var threaded: std.Io.Threaded = .init(arena.allocator(), .{});
-        defer threaded.deinit();
-        const io = threaded.io();
-
-        // nerva-wallet-rpc has no shutdown RPC, so we signal it. std's
-        // `child.kill()` sends SIGTERM then *blocks* until the process exits, and
-        // a Monero wallet-rpc saves the wallet on SIGTERM, which can take a
-        // moment. So on POSIX we drive it ourselves: SIGTERM, reap over a short
-        // grace, then SIGKILL if it overstays — so a clean shutdown returns the
-        // instant it finishes and a stuck one is bounded. Windows' `child.kill`
-        // is an immediate TerminateProcess, so it keeps using that.
-        if (builtin.os.tag == .windows) {
-            child.kill(io);
-        } else if (child.id) |pid| {
-            proc.terminateAndReap(io, pid, 1500);
-        }
+        stopChild(child);
         sess.child = null;
     }
+}
+
+/// Stop a wallet-side child and reap it. Uses a fresh `Io` (the `Child` holds
+/// only the pid/handle, independent of the io it was spawned under).
+fn stopChild(child: *std.process.Child) void {
+    var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+    defer arena.deinit();
+    var threaded: std.Io.Threaded = .init(arena.allocator(), .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    // nerva-wallet-rpc has no shutdown RPC, so we signal it. std's
+    // `child.kill()` sends SIGTERM then *blocks* until the process exits, and
+    // a Monero wallet-rpc saves the wallet on SIGTERM, which can take a
+    // moment. So on POSIX we drive it ourselves: SIGTERM, reap over a short
+    // grace, then SIGKILL if it overstays — so a clean shutdown returns the
+    // instant it finishes and a stuck one is bounded. Windows' `child.kill`
+    // is an immediate TerminateProcess, so it keeps using that.
+    if (builtin.os.tag == .windows) {
+        child.kill(io);
+    } else if (child.id) |pid| {
+        proc.terminateAndReap(io, pid, 1500);
+    }
+}
+
+/// Stop the payment listener, if one is running. Leaves `listener_down` alone:
+/// a caller replacing it or tearing the whole session down decides that.
+fn killListener(sess: *Session) void {
+    if (sess.listener) |*l| {
+        stopChild(l);
+        sess.listener = null;
+    }
+}
+
+/// Launch the coin's payment listener for a wallet that `password` has just
+/// been confirmed to open. Best-effort: the wallet is open either way, so a
+/// listener that can't be built or spawned is recorded as down (and shown as
+/// stopped) rather than failing the open. No-op for coins without one.
+fn startListener(
+    sess: *Session,
+    coin: Coin,
+    install_root: []const u8,
+    home_dir: []const u8,
+    password: []const u8,
+) void {
+    const ew = coin.externalWallet() orelse return;
+    const argv_fn = ew.listener_argv orelse return;
+    killListener(sess);
+    sess.listener_down = false;
+
+    var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var threaded: std.Io.Threaded = .init(a, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    // argv (password included) is copied by the spawn and freed with the arena
+    // — the password rides argv only, as it does for the wallet server.
+    const argv = argv_fn(a, install_root, home_dir, password) catch {
+        sess.listener_down = true;
+        return;
+    };
+    // The listener writes to the wallet's own log file, so its console output
+    // has nothing to add.
+    sess.listener = std.process.spawn(io, .{
+        .argv = argv,
+        .stdin = .ignore,
+        .stdout = .ignore,
+        .stderr = .ignore,
+        .create_no_window = builtin.os.tag == .windows,
+    }) catch {
+        sess.listener_down = true;
+        return;
+    };
+}
+
+/// Check on the payment listener: reaps it if it has exited, so a dead one
+/// reads as `stopped` from then on. Cheap (a non-blocking wait); the caller
+/// must hold the session the way it does for `kill` — not while a setup op is
+/// mid-flight on it.
+pub fn probeListener(sess: *Session) ListenerState {
+    if (sess.listener) |*l| {
+        var threaded: std.Io.Threaded = .init(std.heap.page_allocator, .{});
+        defer threaded.deinit();
+        if (proc.probeChild(threaded.io(), l) == null) return .running;
+        sess.listener = null;
+        sess.listener_down = true;
+    }
+    return if (sess.listener_down) .stopped else .none;
 }
 
 /// The wallet *process*'s own RPC endpoint (127.0.0.1 + the capability's bound
@@ -338,7 +434,10 @@ pub fn launchWithPassword(
     defer threaded.deinit();
     const io = threaded.io();
 
-    // Tear down any wallet process still serving a previous wallet.
+    // Tear down any wallet process still serving a previous wallet, and the
+    // listener that was receiving for it.
+    killListener(sess);
+    sess.listener_down = false;
     if (sess.child) |*child| {
         child.kill(io);
         sess.child = null;
@@ -433,7 +532,9 @@ pub fn setupWithPassword(
             try (ew.cli_create orelse return error.Unsupported)(a, install_root, home_dir, password, detail);
             try launchWithPassword(sess, coin, install_root, home_dir, password, detail);
             // The seed is read back over the now-running server's RPC.
-            return try ew.create(a, authFor(coin, sess), password, detail);
+            const seed = try ew.create(a, authFor(coin, sess), password, detail);
+            startListener(sess, coin, install_root, home_dir, password);
+            return seed;
         },
         .restore_seed => {
             // The coin's CLI materializes the wallet from the phrase (Epic's
@@ -453,10 +554,19 @@ pub fn setupWithPassword(
             try launchWithPassword(sess, coin, install_root, home_dir, password, detail);
             try ew.open(a, authFor(coin, sess), password, detail);
         },
-        // Locking is killing the process for this shape, which is the caller's
-        // teardown path (`kill`), not a wallet op.
-        .lock => return error.Unsupported,
+        // Locking this shape means ending the processes that hold the wallet
+        // open: the server was launched with the password and keeps the wallet
+        // open for as long as it runs, and the listener likewise. Ask the server
+        // to close it first so it lets go cleanly, but the kill is what makes it
+        // locked — so it happens whether or not that ask succeeded.
+        .lock => {
+            if (ew.lock) |close| close(a, authFor(coin, sess), detail) catch {};
+            detail.len = 0; // a refused close isn't the outcome — the kill is
+            kill(sess);
+            return null;
+        },
     }
+    startListener(sess, coin, install_root, home_dir, password);
     return null;
 }
 
@@ -685,12 +795,34 @@ test "setupWithPassword: every launch-with-password coin wires what the flow nee
     }
 }
 
-test "setupWithPassword: locking this shape is ending the process, not an op" {
-    // Returns before touching a process or the filesystem, so this is offline.
+/// Spawn a stand-in for a wallet-side process: `sleep` for a long-lived one, or
+/// `true` for one that exits at once. POSIX only — the callers skip Windows.
+fn spawnStandIn(io: std.Io, long_lived: bool) !std.process.Child {
+    const argv: []const []const u8 = if (long_lived) &.{ "sleep", "30" } else &.{"true"};
+    return std.process.spawn(io, .{
+        .argv = argv,
+        .stdin = .ignore,
+        .stdout = .ignore,
+        .stderr = .ignore,
+    });
+}
+
+test "setupWithPassword: locking this shape ends the server and the listener" {
+    if (builtin.os.tag == .windows) return error.SkipZigTest;
+    var threaded: std.Io.Threaded = .init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    // The server keeps the wallet open for as long as it runs, so a lock that
+    // left it (or the listener) alive would only look locked. Epic's close ask
+    // fails here — no per-session secret, so it never reaches the network — and
+    // the lock must happen anyway.
     var e: epic.Epic = .{};
     var sess: Session = .{};
+    sess.child = try spawnStandIn(io, true);
+    sess.listener = try spawnStandIn(io, true);
     var detail: Coin.WalletErrSink = .{};
-    try std.testing.expectError(error.Unsupported, setupWithPassword(
+    const made = try setupWithPassword(
         &sess,
         e.coin(),
         std.testing.allocator,
@@ -701,8 +833,63 @@ test "setupWithPassword: locking this shape is ending the process, not an op" {
         "",
         "",
         &detail,
-    ));
+    );
+    try std.testing.expect(made == null);
     try std.testing.expect(sess.child == null);
+    try std.testing.expect(sess.listener == null);
+    try std.testing.expectEqual(ListenerState.none, probeListener(&sess));
+    // The refused close isn't reported as the outcome.
+    try std.testing.expectEqual(@as(usize, 0), detail.len);
+}
+
+test "probeListener: none without one, running while up, stopped once it exits" {
+    if (builtin.os.tag == .windows) return error.SkipZigTest;
+    var threaded: std.Io.Threaded = .init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    var sess: Session = .{};
+    try std.testing.expectEqual(ListenerState.none, probeListener(&sess));
+
+    sess.listener = try spawnStandIn(io, true);
+    try std.testing.expectEqual(ListenerState.running, probeListener(&sess));
+    kill(&sess);
+    try std.testing.expectEqual(ListenerState.none, probeListener(&sess));
+
+    // One that exits on its own reads as stopped — and stays stopped: nothing
+    // restarts it without the password.
+    sess.listener = try spawnStandIn(io, false);
+    var state = probeListener(&sess);
+    var tries: usize = 0;
+    while (state == .running and tries < 200) : (tries += 1) {
+        io.sleep(.fromMilliseconds(10), .awake) catch {};
+        state = probeListener(&sess);
+    }
+    try std.testing.expectEqual(ListenerState.stopped, state);
+    try std.testing.expect(sess.listener == null);
+    try std.testing.expectEqual(ListenerState.stopped, probeListener(&sess));
+
+    // Tearing the wallet down (lock, daemon stop) clears it.
+    kill(&sess);
+    try std.testing.expectEqual(ListenerState.none, probeListener(&sess));
+}
+
+test "startListener: a coin without a listener starts nothing" {
+    var z: zano.Zano = .{};
+    var sess: Session = .{};
+    startListener(&sess, z.coin(), "/nonexistent", "/nonexistent", "pw");
+    try std.testing.expect(sess.listener == null);
+    try std.testing.expectEqual(ListenerState.none, probeListener(&sess));
+}
+
+test "startListener: a listener that can't spawn reads as stopped, not running" {
+    // Epic's listener binary isn't under a nonexistent install root, so the
+    // spawn fails; the wallet is open regardless, and the state says so.
+    var e: epic.Epic = .{};
+    var sess: Session = .{};
+    startListener(&sess, e.coin(), "/nonexistent-bw-install", "test-epic-listener-home", "pw");
+    try std.testing.expect(sess.listener == null);
+    try std.testing.expectEqual(ListenerState.stopped, probeListener(&sess));
 }
 
 test "friendlyWalletError: mapped reasons win, then the daemon's own message" {

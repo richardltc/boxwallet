@@ -252,6 +252,24 @@ pub const Coin = struct {
             port: []const u8,
             wallet_password: []const u8,
         ) anyerror![]const []const u8 = null,
+        /// Optional: argv for a **payment listener** — a second, long-running
+        /// wallet process that must be up for payments to complete, for a coin
+        /// whose transactions are exchanged through a relay rather than broadcast
+        /// (Epic's `epic-wallet listen -m epicbox`: it signs incoming payments and
+        /// finalizes outgoing ones). `extwallet` launches it right after a
+        /// successful open, with the same password, and kills it with the wallet
+        /// process — so it runs exactly while the wallet is unlocked. The password
+        /// is not kept to restart it: a listener that dies stays down until the
+        /// next unlock. Only meaningful alongside `launch_server_argv`.
+        listener_argv: ?*const fn (
+            allocator: std.mem.Allocator,
+            install_root: []const u8,
+            home_dir: []const u8,
+            wallet_password: []const u8,
+        ) anyerror![]const []const u8 = null,
+        /// What the payment listener is called on screen ("Epicbox listener").
+        /// Paired with `listener_argv`.
+        listener_name: []const u8 = "Payment listener",
         /// Optional: one-shot CLI that materializes the managed wallet file under
         /// `password` *before* the RPC server is launched (Zano
         /// `simplewallet --generate-new-wallet`). Paired with `launch_server_argv`:
@@ -1938,6 +1956,14 @@ pub const Coin = struct {
     pub fn walletLaunchesWithPassword(self: Coin) bool {
         const ew = self.vtable.external_wallet orelse return false;
         return ew.launch_server_argv != null;
+    }
+
+    /// Whether the wallet runs a payment listener alongside its RPC process while
+    /// unlocked (Epic's Epicbox listener). True iff the capability wires
+    /// `listener_argv`.
+    pub fn walletHasListener(self: Coin) bool {
+        const ew = self.vtable.external_wallet orelse return false;
+        return ew.listener_argv != null;
     }
 
     /// Whether the external-wallet setup menu offers restore-from-seed (false where

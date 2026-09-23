@@ -689,6 +689,7 @@ pub const bw_ew_file_restore: c_int = 1 << 2; // import an existing wallet file
 pub const bw_ew_replace: c_int = 1 << 3; // in-app "replace wallet" (destructive)
 pub const bw_ew_explicit_lock: c_int = 1 << 4; // an in-daemon wallet needing a Lock action
 pub const bw_ew_launch_with_pw: c_int = 1 << 5; // wallet process is launched per-open, with the password
+pub const bw_ew_has_listener: c_int = 1 << 6; // runs a payment listener while unlocked
 
 /// 0 for a coin with no external wallet at all; otherwise the `bw_ew_*` bits.
 export fn bw_coin_ext_wallet(idx: usize) c_int {
@@ -701,7 +702,17 @@ export fn bw_coin_ext_wallet(idx: usize) c_int {
     if (coin.supportsWalletReplace()) flags |= bw_ew_replace;
     if (ew.lock != null) flags |= bw_ew_explicit_lock;
     if (coin.walletLaunchesWithPassword()) flags |= bw_ew_launch_with_pw;
+    if (coin.walletHasListener()) flags |= bw_ew_has_listener;
     return flags;
+}
+
+/// What a `bw_ew_has_listener` coin calls its payment listener on screen
+/// ("Epicbox listener"). 0 for a coin without one.
+export fn bw_coin_listener_name(idx: usize, buf: ?[*]u8, cap: usize) usize {
+    const coin = coinByIndex(idx) orelse return 0;
+    const b = buf orelse return 0;
+    if (!coin.walletHasListener()) return 0;
+    return copyOut(b[0..cap], coin.externalWallet().?.listener_name);
 }
 
 /// The word counts this wallet's restore seed may have, written into `out` (up
@@ -1827,7 +1838,8 @@ fn walletOp(
             ctx.seed = s;
             ctx.seed_coin = @intCast(idx);
         }
-        ctx.wallet_open[idx].store(1, .monotonic);
+        // A lock ends the wallet's processes; everything else leaves it open.
+        ctx.wallet_open[idx].store(if (op == .lock) 0 else 1, .monotonic);
         return;
     }
 
@@ -1933,8 +1945,10 @@ export fn bw_ext_wallet_open(ctx: ?*Ctx, idx: usize, pw: ?[*]const u8, pw_len: u
     return walletOpCall(ctx, idx, .open, pw, pw_len, null, 0, null);
 }
 
-/// Re-lock an in-daemon wallet that stays open while the daemon runs. Not
-/// offered for the process-backed wallets, which lock when their process dies.
+/// Re-lock an in-daemon wallet that stays open while the daemon runs. For a
+/// launch-with-password wallet (Epic) this ends its processes, which is what
+/// locks it. Not needed for the eager-spawn process wallets (Nerva), which lock
+/// when their process dies with the daemon.
 export fn bw_ext_wallet_lock(ctx: ?*Ctx, idx: usize) c_int {
     return walletOpCall(ctx, idx, .lock, null, 0, null, 0, null);
 }
@@ -2309,6 +2323,22 @@ export fn bw_wallet_receive_address(ctx: ?*Ctx, idx: usize, force_new: c_int, bu
     const auth = walletAuth(a, io, coin, c, idx) catch return 0;
     const addr = coin.walletReceiveAddress(a, auth, force_new != 0) catch return 0;
     return copyOut(b[0..cap], addr);
+}
+
+/// The payment listener's state for a `bw_ew_has_listener` coin: 0 none (no
+/// listener, or the wallet isn't unlocked), 1 running, 2 stopped (it exited;
+/// payments wait until the wallet is unlocked again). -1 when it can't be
+/// checked right now because a wallet op holds the session — keep showing the
+/// last answer. A cheap non-blocking probe, fine on the poll timer.
+export fn bw_wallet_listener_state(ctx: ?*Ctx, idx: usize) c_int {
+    const c = ctx orelse return -1;
+    if (idx >= coin_count) return -1;
+    const coin = coinByIndex(idx) orelse return -1;
+    if (!coin.walletHasListener()) return 0;
+
+    if (!c.wallet_mtx.tryLock()) return -1;
+    defer c.wallet_mtx.unlock(sharedIo());
+    return @intFromEnum(extwallet.probeListener(&c.wallet[idx]));
 }
 
 /// Send `amount` to `address`. Returns 0 on broadcast (`out` = the txid), 1 when
@@ -5190,6 +5220,10 @@ test "bw_coin_ext_wallet's flags agree with the vtable for every coin" {
         try std.testing.expectEqual(coin.supportsWalletReplace(), flags & bw_ew_replace != 0);
         try std.testing.expectEqual(ew.lock != null, flags & bw_ew_explicit_lock != 0);
         try std.testing.expectEqual(coin.walletLaunchesWithPassword(), flags & bw_ew_launch_with_pw != 0);
+        try std.testing.expectEqual(coin.walletHasListener(), flags & bw_ew_has_listener != 0);
+        // A listener coin names it; no other coin does.
+        var nm: [64]u8 = undefined;
+        try std.testing.expectEqual(coin.walletHasListener(), bw_coin_listener_name(i, &nm, nm.len) != 0);
     }
     // A coin with no external wallet at all reports a bare 0, and so does an
     // index that isn't a coin.
