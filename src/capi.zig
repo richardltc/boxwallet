@@ -832,8 +832,7 @@ fn fetchDaemonInfo(ctx: *Ctx, idx: usize, out: *BwDaemonInfo) !void {
     const io = sharedIo();
 
     const coin = coinByIndex(idx) orelse return error.NoSuchCoin;
-    const data_dir = try coin.dataDir(a, ctx.home_dir);
-    const auth = try conf.readAuth(a, io, data_dir, coin.confFile(), coin.rpcDefaultUsername(), coin.rpcDefaultPort());
+    const auth = try ctxAuth(a, io, coin, ctx);
 
     // Load-or-create the named wallet before the status read, so the same tick's
     // `staking`/`bw_wallet_security` calls already see it (the TUI does this in
@@ -873,8 +872,7 @@ fn fetchBlockchainState(ctx: *Ctx, idx: usize, out: *BwBlockchainState) !void {
     const io = sharedIo();
 
     const coin = coinByIndex(idx) orelse return error.NoSuchCoin;
-    const data_dir = try coin.dataDir(a, ctx.home_dir);
-    const auth = try conf.readAuth(a, io, data_dir, coin.confFile(), coin.rpcDefaultUsername(), coin.rpcDefaultPort());
+    const auth = try ctxAuth(a, io, coin, ctx);
 
     // `bs` owns its `chain` string on the arena; the arena frees it on return,
     // so we copy the name into the fixed field before that happens.
@@ -972,9 +970,20 @@ export fn bw_daemon_alive(ctx: ?*Ctx, idx: usize) c_int {
 // vtable (prepareConf/daemonArgv/launchMode, requestStop, walletLock/Unlock).
 // They block (spawn / RPC), so the C++ side runs them off the UI thread.
 
+/// The coin's RPC credentials, from its own conf.
+///
+/// A coin BoxWallet isn't running a daemon for (Epic pointed at someone else's
+/// node) may have no conf at all — nothing ever wrote one — and treating that as
+/// a failure would leave a perfectly reachable node reading as down. There the
+/// defaults stand in: the coin doesn't authenticate to a stranger's node anyway,
+/// and what it needs off this struct is the data dir. Mirrors `Activity.coinAuth`
+/// in the TUI.
 fn ctxAuth(a: std.mem.Allocator, io: std.Io, coin: Coin, ctx: *Ctx) !models.CoinAuth {
     const data_dir = try coin.dataDir(a, ctx.home_dir);
-    return conf.readAuth(a, io, data_dir, coin.confFile(), coin.rpcDefaultUsername(), coin.rpcDefaultPort());
+    return conf.readAuth(a, io, data_dir, coin.confFile(), coin.rpcDefaultUsername(), coin.rpcDefaultPort()) catch |err| {
+        if (coin.usesLocalDaemon(a, ctx.install_root)) return err;
+        return conf.defaultAuth(a, data_dir, coin.rpcDefaultUsername(), coin.rpcDefaultPort());
+    };
 }
 
 /// After the launcher daemonizes, confirm the daemon process actually stuck
@@ -1780,7 +1789,6 @@ fn walletOp(
 ) !void {
     const coin = coinByIndex(idx) orelse return error.NoSuchCoin;
     const ew = coin.externalWallet() orelse return error.Unsupported;
-    if (coin.walletLaunchesWithPassword()) return error.Unsupported; // Zano's per-open launch isn't wired here yet
 
     var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
     defer arena.deinit();
@@ -1792,6 +1800,36 @@ fn walletOp(
 
     var detail: Coin.WalletErrSink = .{};
     errdefer if (detail.len > 0) ctx.setError(detail.slice());
+
+    // Launch-with-password wallets (Epic, Zano): their RPC server only ever
+    // serves the wallet it was handed at startup, so the whole op — materialize,
+    // launch the server, confirm the password opens it — runs through the shared
+    // `extwallet.setupWithPassword` the TUI drives too, rather than the plain
+    // vtable calls below.
+    if (coin.walletLaunchesWithPassword()) {
+        // The process is about to be replaced, so whatever it served is no longer
+        // open; a failed relaunch must not leave the flag set.
+        ctx.wallet_open[idx].store(0, .monotonic);
+        const made = try extwallet.setupWithPassword(
+            &ctx.wallet[idx],
+            coin,
+            a,
+            ctx.install_root,
+            ctx.home_dir,
+            op,
+            password,
+            seed,
+            src_path,
+            &detail,
+        );
+        if (made) |s| {
+            // Park the mnemonic for the one take, as the create path below does.
+            ctx.seed = s;
+            ctx.seed_coin = @intCast(idx);
+        }
+        ctx.wallet_open[idx].store(1, .monotonic);
+        return;
+    }
 
     const auth = extwallet.authFor(coin, &ctx.wallet[idx]);
     switch (op) {
@@ -3570,6 +3608,11 @@ pub const BwStatusInput = extern struct {
     headers_total: u64,
     blocks_cur: u64,
     blocks_total: u64,
+    /// This coin reads its chain from a node someone else runs, so there is no
+    /// local daemon behind `daemon` — it carries only whether that node answered
+    /// (2 = running) or didn't. Set it and the readout takes its own short
+    /// branch; leave it 0 and nothing changes for every other coin.
+    remote_node: c_int,
 };
 
 fn statusInputFrom(in: *const BwStatusInput) status_mod.Input {
@@ -3597,6 +3640,7 @@ fn statusInputFrom(in: *const BwStatusInput) status_mod.Input {
         .headers_total = in.headers_total,
         .blocks_cur = in.blocks_cur,
         .blocks_total = in.blocks_total,
+        .remote_node = in.remote_node != 0,
     };
 }
 
@@ -4369,6 +4413,113 @@ export fn bw_prune_change_allowed(idx: usize, from: i64, to: i64) c_int {
     const coin = coinByIndex(idx) orelse return 0;
     if (coin.pruning() == null) return 0;
     return if (Coin.Pruning.changeAllowed(from, to)) 1 else 0;
+}
+
+// --- Node source: our daemon, or someone else's node ---------------------
+//
+// Only Epic offers this today; every other coin answers "no choice, our own
+// node" and the GUI hides the row. The C ABI mirrors the TUI exactly rather
+// than growing its own idea of the setting — the Settings row, the caution
+// text and the normalization all come from the same place, which is the whole
+// point of the calls being here instead of in `main.cpp`.
+
+/// Whether this coin lets the user choose where its chain comes from: 1 yes,
+/// 0 no. A property of the coin — no disk, no ctx — so it's UI-thread safe.
+export fn bw_coin_offers_node_choice(idx: usize) c_int {
+    const coin = coinByIndex(idx) orelse return 0;
+    return if (coin.offersNodeChoice()) 1 else 0;
+}
+
+/// The node this coin currently reads its chain from, into `buf`: the base URL,
+/// or **empty** for BoxWallet's own managed daemon. Returns the length written.
+/// Reads the settings file: worker thread.
+///
+/// An empty answer is the one to branch on: it is what tells the front-end there
+/// is a daemon lifecycle here at all — a Start/Stop button, a warm-up, a
+/// startup-failure reason. See `bw_coin_uses_local_daemon`, which is the same
+/// question already answered.
+export fn bw_coin_node_source(ctx: ?*Ctx, idx: usize, buf: ?[*]u8, cap: usize) usize {
+    const c = ctx orelse return 0;
+    const b = buf orelse return 0;
+    const coin = coinByIndex(idx) orelse return 0;
+
+    var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+    defer arena.deinit();
+    var url_buf: [Coin.node_url_max]u8 = undefined;
+    const url = coin.nodeSource(arena.allocator(), c.install_root, &url_buf);
+    return copyOut(b[0..cap], url);
+}
+
+/// Whether BoxWallet runs the daemon for this coin right now: 1 yes, 0 no.
+/// Reads the settings file: worker thread.
+///
+/// 1 for every coin that doesn't offer the choice. When this is 0 the front-end
+/// must not offer Start/Stop, must not narrate a warm-up, and must not read a
+/// daemon log for a failure reason — none of it has a subject.
+export fn bw_coin_uses_local_daemon(ctx: ?*Ctx, idx: usize) c_int {
+    const c = ctx orelse return 1;
+    const coin = coinByIndex(idx) orelse return 1;
+
+    var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+    defer arena.deinit();
+    return if (coin.usesLocalDaemon(arena.allocator(), c.install_root)) 1 else 0;
+}
+
+/// Point this coin at a node. An empty (or null) `url` restores BoxWallet's own
+/// managed daemon; anything else is normalized and stored in that form. Returns
+/// 0 on success, -1 with `bw_last_error` set — `InvalidNodeUrl` for an address
+/// the coin can't use, which the caller should surface on the field rather than
+/// as a failure. Writes the settings file and the coin's wallet config: worker
+/// thread.
+///
+/// The caller should then re-read `bw_coin_node_source` (the stored value is the
+/// normalized one, not the typed one) and tear down any wallet service it had
+/// running for this coin: that process read the old node's address once, at
+/// launch, and will keep talking to it otherwise.
+export fn bw_coin_set_node_source(ctx: ?*Ctx, idx: usize, url: ?[*:0]const u8) c_int {
+    const c = ctx orelse return -1;
+    const coin = coinByIndex(idx) orelse return -1;
+    const text: []const u8 = if (url) |u| std.mem.span(u) else "";
+
+    var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+    defer arena.deinit();
+    coin.setNodeSource(arena.allocator(), c.install_root, c.home_dir, text) catch |err| {
+        c.setError(@errorName(err));
+        c.setErrorCode(@errorName(err));
+        return -1;
+    };
+    return 0;
+}
+
+/// The node to suggest when the user picks "someone else's node" and hasn't
+/// named one — prefill the address field with it. 0 when the coin suggests
+/// none. Cheap; UI-thread safe.
+///
+/// A SUGGESTION, NOT A DEFAULT. The coin still starts on its own daemon; this
+/// only saves the user finding an address. Do not apply it without the user
+/// choosing it — that would point a wallet at a third party nobody asked for.
+export fn bw_coin_default_remote_node(idx: usize, buf: ?[*]u8, cap: usize) usize {
+    const b = buf orelse return 0;
+    const coin = coinByIndex(idx) orelse return 0;
+    return copyOut(b[0..cap], coin.defaultRemoteNode());
+}
+
+/// What using someone else's node costs, for the text beside that choice.
+/// Cheap; UI-thread safe.
+///
+/// Exported rather than written into the GUI so both front-ends say the same
+/// thing — this is the one place the user is told what they're taking on, and
+/// two front-ends wording it differently is how one of them ends up saying less.
+export fn bw_remote_node_caution(buf: ?[*]u8, cap: usize) usize {
+    const b = buf orelse return 0;
+    return copyOut(b[0..cap], Coin.remote_node_caution);
+}
+
+/// The other side of the same choice, for the row that runs its own node.
+/// Cheap; UI-thread safe.
+export fn bw_local_node_note(buf: ?[*]u8, cap: usize) usize {
+    const b = buf orelse return 0;
+    return copyOut(b[0..cap], Coin.local_node_note);
 }
 
 /// Whether this coin's daemon can rebuild its block index: 1 yes, 0 no. Cheap;
@@ -6266,4 +6417,106 @@ test "bw_sync_* hands back the TUI's distance wording" {
     // Null in, null out — no crash, like every other formatter here.
     try std.testing.expectEqual(@as(usize, 0), bw_sync_behind(null, &buf, buf.len));
     try std.testing.expectEqual(@as(usize, 0), bw_sync_tip_date(&st, null, 0));
+}
+
+/// The registry index of the coin with this abbreviation, for the tests below —
+/// which need a coin that *does* offer the node choice and one that doesn't, and
+/// must not hard-code either position (the registry order is the GUI's ABI, and
+/// appending a coin would silently move a literal index onto the wrong one).
+fn testCoinIndex(abbrev: []const u8) ?usize {
+    var i: usize = 0;
+    while (i < coin_count) : (i += 1) {
+        const coin = coinByIndex(i) orelse continue;
+        if (std.mem.eql(u8, coin.coinNameAbbrev(), abbrev)) return i;
+    }
+    return null;
+}
+
+test "the node choice round-trips over the C ABI, normalized" {
+    if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
+    const io = sharedIo();
+    const idx = testCoinIndex("EPIC") orelse return error.SkipZigTest;
+
+    const root = "test-capi-node-source";
+    std.Io.Dir.cwd().deleteTree(io, root) catch {};
+    defer std.Io.Dir.cwd().deleteTree(io, root) catch {};
+
+    var ctx = testCtx(root);
+    var buf: [256]u8 = undefined;
+
+    // Nothing set: our own daemon, and there is one to start.
+    try std.testing.expectEqual(@as(c_int, 1), bw_coin_offers_node_choice(idx));
+    try std.testing.expectEqual(@as(usize, 0), bw_coin_node_source(&ctx, idx, &buf, buf.len));
+    try std.testing.expectEqual(@as(c_int, 1), bw_coin_uses_local_daemon(&ctx, idx));
+
+    // Set: stored normalized, and the daemon lifecycle goes away with it.
+    try std.testing.expectEqual(@as(c_int, 0), bw_coin_set_node_source(&ctx, idx, "node.example"));
+    const n = bw_coin_node_source(&ctx, idx, &buf, buf.len);
+    try std.testing.expectEqualStrings("http://node.example:3413", buf[0..n]);
+    try std.testing.expectEqual(@as(c_int, 0), bw_coin_uses_local_daemon(&ctx, idx));
+
+    // Refused: the error names the reason so the caller can put it on the field
+    // rather than in a dialog, and the stored value is untouched.
+    try std.testing.expectEqual(@as(c_int, -1), bw_coin_set_node_source(&ctx, idx, "ftp://nope"));
+    var code: [64]u8 = undefined;
+    const cn = bw_last_error_code(&ctx, &code, code.len);
+    try std.testing.expectEqualStrings("InvalidNodeUrl", code[0..cn]);
+    const still = bw_coin_node_source(&ctx, idx, &buf, buf.len);
+    try std.testing.expectEqualStrings("http://node.example:3413", buf[0..still]);
+
+    // Null and empty both mean "back to our own node".
+    try std.testing.expectEqual(@as(c_int, 0), bw_coin_set_node_source(&ctx, idx, null));
+    try std.testing.expectEqual(@as(usize, 0), bw_coin_node_source(&ctx, idx, &buf, buf.len));
+    try std.testing.expectEqual(@as(c_int, 1), bw_coin_uses_local_daemon(&ctx, idx));
+}
+
+test "a coin that only runs its own node says so, and still answers the predicate" {
+    const idx = testCoinIndex("NEXA") orelse return error.SkipZigTest;
+    var ctx = testCtx("test-capi-node-none");
+
+    // No row for it in the GUI — and, importantly, `uses_local_daemon` is 1 so
+    // the Start/Stop buttons the predicate gates stay put for every other coin.
+    try std.testing.expectEqual(@as(c_int, 0), bw_coin_offers_node_choice(idx));
+    try std.testing.expectEqual(@as(c_int, 1), bw_coin_uses_local_daemon(&ctx, idx));
+    try std.testing.expectEqual(@as(c_int, -1), bw_coin_set_node_source(&ctx, idx, "node.example"));
+}
+
+test "both front-ends get the same words for what a remote node costs" {
+    var buf: [512]u8 = undefined;
+    const n = bw_remote_node_caution(&buf, buf.len);
+    try std.testing.expectEqualStrings(Coin.remote_node_caution, buf[0..n]);
+    const m = bw_local_node_note(&buf, buf.len);
+    try std.testing.expectEqualStrings(Coin.local_node_note, buf[0..m]);
+}
+
+test "the status line for a remote node crosses the ABI intact" {
+    var in: BwStatusInput = std.mem.zeroes(BwStatusInput);
+    in.installed = 1;
+    in.remote_node = 1;
+    in.daemon = 2; // the node answered
+    // Every figure the local ladder would have read, all zero because a remote
+    // node reports none of them. None may be narrated.
+    in.peers = 0;
+    in.sync = 1;
+    in.headers_cur = 10;
+    in.headers_total = 900_000;
+
+    var buf: [160]u8 = undefined;
+    const n = bw_status_line(&in, &buf, buf.len);
+    try std.testing.expectEqualStrings("Using a remote node", buf[0..n]);
+
+    in.daemon = 0;
+    const m = bw_status_line(&in, &buf, buf.len);
+    try std.testing.expectEqualStrings("Remote node unreachable", buf[0..m]);
+}
+
+test "the suggested node crosses the ABI, and stays a suggestion" {
+    const idx = testCoinIndex("EPIC") orelse return error.SkipZigTest;
+    var buf: [256]u8 = undefined;
+    const n = bw_coin_default_remote_node(idx, &buf, buf.len);
+    try std.testing.expectEqualStrings("https://node.epiccash.com:3413", buf[0..n]);
+
+    // A coin with no suggestion says so rather than borrowing someone's.
+    const nexa = testCoinIndex("NEXA") orelse return error.SkipZigTest;
+    try std.testing.expectEqual(@as(usize, 0), bw_coin_default_remote_node(nexa, &buf, buf.len));
 }

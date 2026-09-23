@@ -1124,6 +1124,38 @@ const PruneModal = struct {
     }
 };
 
+/// The node-source prompt — shown from the Settings tab (`n`) for a coin that
+/// lets the user pick where its chain comes from (Epic; see `Coin.node_source`).
+///
+/// Two rows, then a text field for the remote's address. It is deliberately not
+/// a confirm: nothing here is destructive — no chain is deleted, no wallet is
+/// touched, and the choice can be made again at any time — so the caution about
+/// what a remote node costs belongs *beside* the rows, where it informs the
+/// choice, rather than behind a Yes/No that would imply a point of no return.
+///
+/// The coin's own daemon comes first, and the cursor starts there: it is the
+/// choice that hands nothing to a stranger.
+const NodeModal = struct {
+    const Stage = enum { menu, address };
+
+    stage: Stage = .menu,
+    /// The entry the prompt acts on, so a moved left-nav selection doesn't misfire.
+    coin_idx: usize = 0,
+    /// Cursor over the two rows: 0 = our own node, 1 = a remote one.
+    sel: u8 = 0,
+    /// Set when the typed address didn't normalize, so the field can flag it.
+    bad_input: bool = false,
+    /// What's configured right now — empty for our own daemon — so the menu can
+    /// show which row is live and prefill the field with the current address
+    /// rather than making the user retype it to change a port.
+    current_buf: [Coin.node_url_max]u8 = undefined,
+    current_len: usize = 0,
+
+    fn current(self: *const NodeModal) []const u8 {
+        return self.current_buf[0..self.current_len];
+    }
+};
+
 /// The update-confirm prompt — shown when the user presses `u` on a coin with an
 /// available update. Confirm-only: on Yes the stop → reinstall → restart sequence
 /// runs and its progress is shown in the main pane (Stopping… → Downloading… →
@@ -1582,6 +1614,21 @@ const Activity = struct {
     /// read happens once per selection rather than every tick. Re-armed nowhere: the
     /// value only changes via the prune prompt, which sets `prune_mib` directly.
     prune_read: bool = false,
+
+    /// Where this coin reads its chain from: empty for BoxWallet's own daemon,
+    /// else the base URL of the node it's pointed at (`Coin.node_source` — only
+    /// Epic offers the choice). Cached because the render path asks every frame
+    /// and the answer lives in `boxwallet.conf`; refreshed off the UI thread by
+    /// the poll worker, which is also what primes the coin's own session cache
+    /// before `blockchainState` needs it.
+    node_url_buf: [Coin.node_url_max]u8 = undefined,
+    node_url_len: usize = 0,
+    /// Whether the node choice has been read from disk yet this session — a
+    /// one-shot latch so the UI-thread read happens once per selection rather
+    /// than every tick. The poll worker refreshes the value regardless; this only
+    /// covers the window *before* the first poll, where the pane would otherwise
+    /// offer to start a daemon for a coin that isn't using one.
+    node_read: bool = false,
 
     // --- external-wallet setup worker --------------------------------------
     // Mirrors the wallet-action worker: one create/restore/open RPC on a private
@@ -2637,40 +2684,27 @@ const Activity = struct {
         const pw = self.wallet_pw_buf[0..self.wallet_pw_len];
         const detail = &self.wallet_setup_sink;
 
-        // Launch-with-password wallets (Zano `simplewallet`): the RPC server serves
-        // only the wallet handed to it at startup, so the *app* launches it per-op
-        // with the password. Create materializes the file via a one-shot CLI first,
-        // then the running server's RPC is used to read the seed; open just relaunches
-        // against the existing file (a wrong password makes the server exit, which
-        // `launchWalletServer` surfaces as a failed open).
+        // Launch-with-password wallets (Zano `simplewallet`, Epic's
+        // `epic-wallet owner_api`): the RPC server serves only the wallet handed
+        // to it at startup, so the whole op — materialize, launch, open — runs
+        // through `extwallet.setupWithPassword`, which the GUI drives too.
         if (self.coin.walletLaunchesWithPassword()) {
-            switch (self.wallet_setup_op) {
-                .create => {
-                    try (ew.cli_create orelse return error.Unsupported)(a, self.install_root, self.home_dir, pw, detail);
-                    try self.launchWalletServer(pw);
-                    self.wallet_setup_seed = try ew.create(a, self.extWalletAuth(), pw, detail);
-                },
-                .restore_file => {
-                    // Import the wallet file onto disk, then launch the server against
-                    // it and confirm the password opens it.
-                    try (ew.restore_file orelse return error.Unsupported)(a, self.extWalletAuth(), self.home_dir, self.wallet_file_buf[0..self.wallet_file_len], pw, detail);
-                    try self.launchWalletServer(pw);
-                    try ew.open(a, self.extWalletAuth(), pw, detail);
-                },
-                .restore_seed => {
-                    // Materialize the wallet from the seed via the coin's CLI
-                    // (Epic's `init -r`), then launch the server against it and
-                    // confirm the password opens it — same shape as restore_file.
-                    try ew.restore_seed(a, self.extWalletAuth(), self.install_root, self.home_dir, pw, self.wallet_seed_buf[0..self.wallet_seed_len], detail);
-                    try self.launchWalletServer(pw);
-                    try ew.open(a, self.extWalletAuth(), pw, detail);
-                },
-                .open => {
-                    try self.launchWalletServer(pw);
-                    try ew.open(a, self.extWalletAuth(), pw, detail);
-                },
-                .lock => return error.Unsupported,
-            }
+            // The process is about to be replaced, so whatever it was serving is
+            // no longer open; a failed relaunch must not leave the flag set.
+            self.ext_wallet_open.store(0, .monotonic);
+            const made = try extwallet.setupWithPassword(
+                &self.wallet_rpc,
+                self.coin,
+                a,
+                self.install_root,
+                self.home_dir,
+                self.wallet_setup_op,
+                pw,
+                self.wallet_seed_buf[0..self.wallet_seed_len],
+                self.wallet_file_buf[0..self.wallet_file_len],
+                detail,
+            );
+            if (made) |seed| self.wallet_setup_seed = seed;
             return;
         }
 
@@ -2682,106 +2716,6 @@ const Activity = struct {
             .open => try ew.open(a, auth, pw, detail),
             .lock => try (ew.lock orelse return error.Unsupported)(a, auth, detail),
         }
-    }
-
-    /// Launch the coin's wallet RPC server against the managed wallet file, opened
-    /// with `wallet_password`, and wait until it answers — the open path for
-    /// launch-with-password external wallets (Zano `simplewallet`), whose RPC can
-    /// only serve the wallet it was started on. Any wallet process still serving a
-    /// previous wallet is torn down first. On a wrong password the server exits
-    /// without ever binding its port, so a bounded reachability wait that elapses is
-    /// reported as a failed open. Runs on the setup worker (which owns the child
-    /// handle for the duration; the tick loop won't reap it while the worker runs).
-    fn launchWalletServer(self: *Activity, wallet_password: []const u8) !void {
-        const ew = self.coin.externalWallet().?;
-        const argv_fn = ew.launch_server_argv.?;
-        const port = ew.rpc_port.?();
-
-        var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
-        defer arena.deinit();
-        const a = arena.allocator();
-        var threaded: std.Io.Threaded = .init(a, .{});
-        defer threaded.deinit();
-        const io = threaded.io();
-
-        // Tear down any wallet process still serving a previous wallet.
-        if (self.wallet_rpc.child) |*child| {
-            child.kill(io);
-            self.wallet_rpc.child = null;
-        }
-        self.ext_wallet_open.store(0, .monotonic);
-
-        // Capture the wallet process's stdout+stderr to a scratch file so a failed
-        // open surfaces the real reason (a wrong password, an unreadable / corrupt
-        // or version-incompatible wallet file, a missing daemon connection) instead
-        // of a bare "WalletOpenFailed". The epee family (Zano/…) prints fatal load
-        // errors to the console, not only stderr, so both streams are captured to
-        // the one file. Per-port name so two coins launching at once don't clash;
-        // unlinked once read (an anonymous inode the live process can keep writing
-        // to is harmless) — on Windows the delete fails while the process holds it
-        // open (caught), and the next launch truncates it instead.
-        const cap_name = try std.fmt.allocPrint(a, ".wallet-{s}.startup", .{port});
-        const cap_path = try std.fs.path.join(a, &.{ self.install_root, cap_name });
-        var cap_file: ?std.Io.File = std.Io.Dir.createFileAbsolute(io, cap_path, .{ .read = true }) catch null;
-        defer if (cap_file) |*f| {
-            f.close(io);
-            std.Io.Dir.deleteFileAbsolute(io, cap_path) catch {};
-        };
-        const capture: std.process.SpawnOptions.StdIo = if (cap_file) |f| .{ .file = f } else .ignore;
-
-        // argv is consumed by spawn (fork/exec copies it), so the local arena can be
-        // freed right after. The wallet password rides argv only — never disk.
-        const argv = try argv_fn(a, self.install_root, self.home_dir, port, wallet_password);
-        const child = std.process.spawn(io, .{
-            .argv = argv,
-            .stdin = .ignore,
-            .stdout = capture,
-            .stderr = capture,
-            .create_no_window = @import("builtin").os.tag == .windows,
-        }) catch return error.WalletServiceFailed;
-        self.wallet_rpc.child = child;
-
-        // Wait for the wallet RPC to bind its port (or the process to die on a bad
-        // password / unreadable wallet). Bounded so a never-answering server can't
-        // wedge the worker.
-        const auth = self.extWalletAuth();
-        var waited: u32 = 0;
-        const step: u32 = 250;
-        const limit: u32 = 25_000;
-        while (waited < limit) : (waited += step) {
-            if (rpc.daemonReachable(a, auth)) return;
-            // Fast failure path: simplewallet refuses a bad password / can't read the
-            // wallet and exits before ever binding its port, so reap-on-exit lets us
-            // fail at once — with the reason it printed — rather than waiting out the
-            // whole timeout. (POSIX; Windows times out then reads the same capture.)
-            if (@import("builtin").os.tag != .windows) {
-                if (self.wallet_rpc.child) |ch| if (ch.id) |pid| {
-                    if (proc_mod.reapNoHang(pid)) {
-                        self.wallet_rpc.child = null;
-                        if (cap_file) |*f| self.setWalletErrFromCapture(io, f);
-                        return error.WalletOpenFailed;
-                    }
-                };
-            }
-            io.sleep(.fromMilliseconds(step), .awake) catch {};
-        }
-        if (cap_file) |*f| self.setWalletErrFromCapture(io, f);
-        return error.WalletOpenFailed;
-    }
-
-    /// Read the wallet process's captured stdout/stderr and stash the most
-    /// error-like line in `wallet_setup_sink`, so a failed launch reports why
-    /// (surfaced by `extwallet.friendlyWalletError` and the action log).
-    /// Best-effort: leaves the sink untouched on any IO hiccup or when nothing was
-    /// printed, so the caller falls back to the generic message.
-    fn setWalletErrFromCapture(self: *Activity, io: std.Io, file: *std.Io.File) void {
-        const stat = file.stat(io) catch return;
-        var buf: [8 * 1024]u8 = undefined;
-        // Bias to the tail: the fatal line lands last, just before the process exits.
-        const off = if (stat.size > buf.len) stat.size - buf.len else 0;
-        const n = file.readPositionalAll(io, &buf, off) catch return;
-        const pick = pickWalletError(buf[0..n]);
-        if (pick.len != 0) self.wallet_setup_sink.set(pick);
     }
 
     /// Whether the coin's live status is still being resolved: it's installed and
@@ -2970,6 +2904,10 @@ const Activity = struct {
                 else => .idle,
             },
             .installed = self.installed,
+            // No local daemon means the rungs below `.running` describe nothing:
+            // `status.zig` takes its own branch rather than narrating a peer
+            // count and a sync phase the remote API never reports.
+            .remote_node = !self.usesLocalDaemon(),
             .daemon = switch (self.daemonState()) {
                 .stopped => .stopped,
                 .starting => .starting,
@@ -3015,6 +2953,11 @@ const Activity = struct {
         var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
         defer arena.deinit();
         const a = arena.allocator();
+
+        // Which node this coin is pointed at, before anything asks it for a
+        // chain: the fetch below dispatches on the answer, and the UI reads the
+        // cache this fills to decide whether a daemon lifecycle exists at all.
+        self.refreshNodeSource(a);
 
         if (self.fetchStatus(a)) {
             self.poll_ok = true;
@@ -3184,20 +3127,64 @@ const Activity = struct {
     /// shared atomics. Everything allocates on the caller's arena. Returns an
     /// error (and publishes nothing) if any step fails — the daemon is treated as
     /// unreachable for this round, leaving the last good values in place.
-    fn fetchStatus(self: *Activity, a: std.mem.Allocator) !void {
-        var threaded: std.Io.Threaded = .init(a, .{});
-        defer threaded.deinit();
-        const io = threaded.io();
+    /// The node this coin is pointed at, or empty for our own daemon.
+    fn nodeUrl(self: *const Activity) []const u8 {
+        return self.node_url_buf[0..self.node_url_len];
+    }
 
+    /// Whether BoxWallet runs the daemon for this coin. False only while a
+    /// node-choosing coin is pointed elsewhere; the whole daemon lifecycle —
+    /// Start/Stop, the launch, the warm-up narration — hangs off it.
+    fn usesLocalDaemon(self: *const Activity) bool {
+        return self.node_url_len == 0;
+    }
+
+    /// Re-read the coin's node choice into the cache. Runs on the poll worker (it
+    /// reads a file, and the render path must not), which also leaves the coin's
+    /// own session cache primed for the `blockchainState` call right behind it.
+    fn refreshNodeSource(self: *Activity, a: std.mem.Allocator) void {
+        if (!self.coin.offersNodeChoice()) {
+            self.node_url_len = 0;
+            return;
+        }
+        const url = self.coin.nodeSource(a, self.install_root, &self.node_url_buf);
+        self.node_url_len = url.len;
+    }
+
+    /// The coin's RPC credentials for this poll.
+    ///
+    /// Normally a read of the daemon's own conf. A coin pointed at someone else's
+    /// node may have no such conf at all — BoxWallet never started a daemon for
+    /// it, so nothing wrote one — and treating that as a failed poll would leave
+    /// a perfectly reachable node reading as down. There, the defaults stand in:
+    /// the coin doesn't authenticate to a stranger's node anyway, and what it
+    /// actually needs off this struct is the data dir.
+    fn coinAuth(self: *Activity, a: std.mem.Allocator, io: std.Io) !models.CoinAuth {
         const data_dir = try self.coin.dataDir(a, self.home_dir);
-        const auth = try conf.readAuth(
+        return conf.readAuth(
             a,
             io,
             data_dir,
             self.coin.confFile(),
             self.coin.rpcDefaultUsername(),
             self.coin.rpcDefaultPort(),
-        );
+        ) catch |err| {
+            if (self.usesLocalDaemon()) return err;
+            return conf.defaultAuth(
+                a,
+                data_dir,
+                self.coin.rpcDefaultUsername(),
+                self.coin.rpcDefaultPort(),
+            );
+        };
+    }
+
+    fn fetchStatus(self: *Activity, a: std.mem.Allocator) !void {
+        var threaded: std.Io.Threaded = .init(a, .{});
+        defer threaded.deinit();
+        const io = threaded.io();
+
+        const auth = try self.coinAuth(a, io);
 
         // Bitcoin-Core 0.21+ forks (DigiByte, ReddCoin) don't auto-create a
         // wallet, so wallet RPCs (staking, addresses) have none until one exists.
@@ -3468,7 +3455,10 @@ const Activity = struct {
         // so the scrape comes back null. Store found-ness separately from the
         // percentage so `applyPoll` can tell "log confirms presync at 0.00%" apart
         // from "no presync line at all" — both would otherwise read back as 0.
-        const presync_scrape = if (!state.synced) presyncPercentBp(io, data_dir) else null;
+        const presync_scrape = if (!state.synced) blk: {
+            const dd = self.coin.dataDir(a, self.home_dir) catch break :blk null;
+            break :blk presyncPercentBp(io, dd);
+        } else null;
         self.poll_presync_bp.store(presync_scrape orelse 0, .monotonic);
         self.poll_presync_found.store(@intFromBool(presync_scrape != null), .monotonic);
 
@@ -3714,40 +3704,9 @@ const stripLogTimestamp = proc_mod.stripLogTimestamp;
 const pickDebugLogError = proc_mod.pickLogError;
 
 /// Choose the most informative line from a wallet process's captured
-/// stdout/stderr tail. `simplewallet` (and the epee family generally) prints a
-/// clear reason on a failed open — a wrong password, an unreadable / corrupt or
-/// version-incompatible wallet file, a refused daemon connection — usually right
-/// before it exits, so the *last* error-like line wins, falling back to the last
-/// non-empty line. Leading log timestamps are stripped. Returns a slice into
-/// `tail` (empty only if `tail` has no content).
-fn pickWalletError(tail: []const u8) []const u8 {
-    const markers = [_][]const u8{
-        "error",    "invalid", "wrong",  "failed", "exception",
-        "unable",   "corrupt", "cannot", "denied", "not found",
-        "password",
-    };
-    // Help/usage text a daemon or wallet dumps on an *argument* error is not the
-    // failure reason, but reads like one. The worst offender is Zano
-    // `simplewallet`'s `--seed-doctor` option description ("…doing back up(typo,
-    // wrong words order, missing word)…"), which matches "wrong" and, printed
-    // last in the options dump, wins over the real "failed to load wallet: <why>"
-    // line above it — so a wrong password on a Zano *file* import surfaces as a
-    // bogus seed complaint. Skip such lines so the true reason wins.
-    const noise = [_][]const u8{
-        "seed-doctor", "doing back up", "wrong words order",
-    };
-    var hit: []const u8 = "";
-    var fallback: []const u8 = "";
-    var it = std.mem.splitScalar(u8, tail, '\n');
-    while (it.next()) |raw| {
-        const line = stripLogTimestamp(std.mem.trim(u8, raw, " \t\r"));
-        if (line.len == 0) continue;
-        if (matchesAny(line, &noise)) continue;
-        fallback = line;
-        if (matchesAny(line, &markers)) hit = line;
-    }
-    return if (hit.len != 0) hit else fallback;
-}
+/// stdout/stderr tail — shared with the GUI front-end, which surfaces the same
+/// launch failures (see `extwallet.zig`).
+const pickWalletError = extwallet.pickWalletError;
 
 /// Consecutive stalled polls (~2s apart) required before `applyPoll` infers
 /// presync from a non-advancing header height, when `debug.log` doesn't
@@ -3825,12 +3784,6 @@ const LoadStage = warmup.Stage;
 const LoadProgress = warmup.Progress;
 const readDaemonLogTail = warmup.readDaemonLogTail;
 const parseLoadProgress = warmup.parseLoadProgress;
-
-/// True if `line` contains any of `needles` (case-insensitive).
-fn matchesAny(line: []const u8, needles: []const []const u8) bool {
-    for (needles) |needle| if (containsIgnoreCase(line, needle)) return true;
-    return false;
-}
 
 /// Case-insensitive substring test (ASCII).
 fn containsIgnoreCase(haystack: []const u8, needle: []const u8) bool {
@@ -4062,6 +4015,9 @@ pub const App = struct {
     /// other modals; while set it owns keyboard input and is composited over the
     /// dashboard, same as the wallet/QuickSync modals.
     prune_modal: ?PruneModal = null,
+    /// The node-source prompt (Settings tab, `n`) — only ever open for a coin
+    /// that offers the choice.
+    node_modal: ?NodeModal = null,
     /// The open Send prompt, or null. Mutually exclusive with the other
     /// modals; while set it owns keyboard input and is composited over the
     /// dashboard, same as the others.
@@ -4088,6 +4044,8 @@ pub const App = struct {
     /// Visible entry for a custom prune amount in GB (prune prompt). Persistent
     /// like the others; digits only, cleared whenever the prompt opens.
     prune_input: zz.TextInput,
+    /// Address field for the node prompt's `address` stage.
+    node_input: zz.TextInput,
     /// Visible entry for a send destination address. Persistent like the
     /// others; unrestricted characters (base58/bech32), cleared whenever the
     /// Send modal opens.
@@ -4218,6 +4176,7 @@ pub const App = struct {
             .pw_input = zz.TextInput.init(ctx.persistent_allocator),
             .seed_input = zz.TextInput.init(ctx.persistent_allocator),
             .prune_input = zz.TextInput.init(ctx.persistent_allocator),
+            .node_input = zz.TextInput.init(ctx.persistent_allocator),
             .send_addr_input = zz.TextInput.init(ctx.persistent_allocator),
             .send_amount_input = zz.TextInput.init(ctx.persistent_allocator),
             .mining_input = zz.TextInput.init(ctx.persistent_allocator),
@@ -4235,6 +4194,10 @@ pub const App = struct {
         // capped at a handful of digits.
         self.prune_input.setWidth(10);
         self.prune_input.setCharLimit(6);
+        // Wide enough for a host and port without scrolling, and capped at the
+        // same bound the coin will refuse to exceed.
+        self.node_input.setWidth(44);
+        self.node_input.setCharLimit(Coin.node_url_max);
         // The send-address field is wide enough for any realistic coin address
         // and generous on length (unrestricted characters — base58/bech32).
         self.send_addr_input.setWidth(modal_inner_w - 6);
@@ -4368,6 +4331,7 @@ pub const App = struct {
         self.pw_input.deinit();
         self.seed_input.deinit();
         self.prune_input.deinit();
+        self.node_input.deinit();
         self.send_addr_input.deinit();
         self.send_amount_input.deinit();
         self.mining_input.deinit();
@@ -4398,6 +4362,10 @@ pub const App = struct {
                 }
                 if (self.prune_modal != null) {
                     self.pruneModalKey(k);
+                    return .none;
+                }
+                if (self.node_modal != null) {
+                    self.nodeModalKey(k);
                     return .none;
                 }
                 if (self.modal != null) {
@@ -4461,7 +4429,9 @@ pub const App = struct {
                         else if (on_coin and self.active_tab == .digidollar)
                             self.requestNewStablecoinAddress()
                         else if (on_coin and self.active_tab == .tokens)
-                            self.selectNextToken(),
+                            self.selectNextToken()
+                        else if (on_coin and self.active_tab == .settings)
+                            self.openNodeModal(),
                         // Capital S — lowercase 's' toggles the daemon. Opens the
                         // Stake prompt on the Send tab for coins with a stake
                         // action (openStakeModal checks the capability itself).
@@ -4511,7 +4481,7 @@ pub const App = struct {
     fn modalOpen(self: *const App) bool {
         return self.update_modal != null or self.qs_modal != null or self.prune_modal != null or
             self.modal != null or self.send_modal != null or self.mining_modal != null or
-            self.sc_modal != null or self.reindex_modal != null;
+            self.sc_modal != null or self.reindex_modal != null or self.node_modal != null;
     }
 
     /// Handle a mouse event: click a left-nav row to select that coin, or wheel
@@ -5447,6 +5417,9 @@ pub const App = struct {
                 // one-shot, cheap conf read, independent of daemon state so it
                 // shows even while the daemon is stopped.
                 if (i == self.selected) self.refreshPruneState(xcoin, act);
+                // Same for which node it reads from — before the first poll, so
+                // the daemon controls are right from the first frame.
+                if (i == self.selected) self.refreshNodeState(xcoin, act);
             }
 
             if (act.sync == .syncing) {
@@ -6740,6 +6713,13 @@ pub const App = struct {
 
     fn tryToggleDaemon(self: *App) void {
         const act = &self.activities[self.selected];
+        if (!act.usesLocalDaemon()) {
+            if (self.selectedCoin()) |coin| self.logf(
+                "{s}: using a remote node — there's no local daemon to start or stop",
+                .{coin.coinName()},
+            );
+            return;
+        }
         switch (act.daemonState()) {
             .stopped => self.tryStart(),
             .running => self.tryStop(),
@@ -6754,6 +6734,7 @@ pub const App = struct {
             self.logf("{s}: not installed — press i to install", .{coin.coinName()});
             return;
         }
+        if (!act.usesLocalDaemon()) return;
         if (act.daemonState() != .stopped) return;
 
         // Reap a previously finished daemon worker before reusing the slot.
@@ -7296,6 +7277,206 @@ pub const App = struct {
         self.logf("{s}: {s}…", .{ coin.coinName(), if (m.starting) "starting miner" else "stopping miner" });
     }
 
+    /// Open the node-source prompt from the Settings tab (`n`). A no-op for a
+    /// coin that doesn't offer the choice — the tab shows no row for it there, so
+    /// there's nothing to explain — and for one that isn't installed yet, where
+    /// the answer would be about a wallet that doesn't exist.
+    fn openNodeModal(self: *App) void {
+        const coin = self.selectedCoin() orelse return;
+        const act = &self.activities[self.selected];
+        if (!coin.offersNodeChoice()) return;
+        if (!act.installed) {
+            self.logf("{s}: not installed — press i to install", .{coin.coinName()});
+            return;
+        }
+
+        var m: NodeModal = .{ .coin_idx = self.selected };
+        const cur = act.nodeUrl();
+        m.current_len = @min(cur.len, m.current_buf.len);
+        @memcpy(m.current_buf[0..m.current_len], cur[0..m.current_len]);
+        // Open on the row that's live, so the prompt shows the state before it
+        // offers to change it.
+        m.sel = if (m.current_len == 0) 0 else 1;
+        self.node_modal = m;
+        // Prefill with the current address, or — with none set — the coin's
+        // suggested node, so the common case is confirming an address rather
+        // than having to know one. Only a prefill: the cursor still opens on the
+        // "my own node" row, and nothing is sent anywhere until it's chosen.
+        const prefill = if (m.current_len != 0) m.current() else coin.defaultRemoteNode();
+        self.node_input.setValue(prefill) catch {};
+    }
+
+    /// Handle a keypress while the node prompt is open. `menu` picks between our
+    /// own daemon and a remote one (enter fires; esc closes). `address` collects
+    /// the remote's host (enter applies; esc returns to the menu).
+    fn nodeModalKey(self: *App, k: zz.KeyEvent) void {
+        if (self.node_modal == null) return;
+        const m = &self.node_modal.?;
+        switch (m.stage) {
+            .menu => switch (k.key) {
+                .escape => self.node_modal = null,
+                .up => m.sel = 0,
+                .down => m.sel = 1,
+                .enter => self.chooseNode(),
+                .char => |c| switch (c) {
+                    'k' => m.sel = 0,
+                    'j' => m.sel = 1,
+                    else => {},
+                },
+                else => {},
+            },
+            .address => switch (k.key) {
+                // esc backs out to the menu rather than closing the whole prompt.
+                .escape => {
+                    m.stage = .menu;
+                    m.bad_input = false;
+                },
+                .enter => self.applyRemoteNode(),
+                // Typing clears a prior parse error: the field is being fixed.
+                .char => {
+                    m.bad_input = false;
+                    self.node_input.handleKey(k);
+                },
+                else => self.node_input.handleKey(k),
+            },
+        }
+    }
+
+    /// Act on the highlighted row: our own daemon applies straight away; the
+    /// remote row opens the address field.
+    fn chooseNode(self: *App) void {
+        const m = &self.node_modal.?;
+        if (m.sel == 0) {
+            self.applyNodeSource("");
+            return;
+        }
+        m.stage = .address;
+        m.bad_input = false;
+        self.node_input.focus();
+    }
+
+    /// Take the typed address. A blank field is the local choice spelled another
+    /// way; anything else goes to the coin, which is the only thing that knows
+    /// what it can actually connect to.
+    fn applyRemoteNode(self: *App) void {
+        const text = std.mem.trim(u8, self.node_input.getValue(), " \t");
+        if (text.len == 0) {
+            self.applyNodeSource("");
+            return;
+        }
+        self.applyNodeSource(text);
+    }
+
+    /// Persist the choice and close. A wallet process started for the old node is
+    /// killed: it read `check_node_api_http_addr` once at launch, so leaving it up
+    /// would have the pane describing one node while the wallet talked to
+    /// another. It is relaunched on the next wallet action — which asks for the
+    /// password again, as unlocking a wallet always does.
+    ///
+    /// A rejected address (`error.InvalidNodeUrl`) leaves the prompt open with the
+    /// field flagged rather than closing on a change that didn't happen.
+    fn applyNodeSource(self: *App, url: []const u8) void {
+        const m = &self.node_modal.?;
+        const idx = m.coin_idx;
+        const coin = self.coinAt(idx) orelse {
+            self.node_modal = null;
+            return;
+        };
+        const act = &self.activities[idx];
+
+        coin.setNodeSource(self.allocator, self.install_root, self.home_dir, url) catch |err| {
+            if (err == error.InvalidNodeUrl and m.stage == .address) {
+                m.bad_input = true;
+                return;
+            }
+            self.node_modal = null;
+            self.logf("{s}: couldn't save the node setting ({s}) — left unchanged", .{ coin.coinName(), @errorName(err) });
+            return;
+        };
+        self.node_modal = null;
+
+        // Re-read rather than assume: the coin stores the *normalized* form, and
+        // the pane should show what was actually saved.
+        act.node_url_len = coin.nodeSource(self.allocator, self.install_root, &act.node_url_buf).len;
+        self.killWalletRpc(act);
+
+        if (act.node_url_len == 0) {
+            self.logf("{s}: using its own node — press s to start it", .{coin.coinName()});
+        } else {
+            self.logf("{s}: using the node at {s}", .{ coin.coinName(), act.nodeUrl() });
+            // Said plainly, once, at the moment the choice is made: a node
+            // BoxWallet doesn't run is one it can't vouch for.
+            self.logf("{s}: that node can see your wallet's queries and misreport the chain", .{coin.coinName()});
+        }
+        // Whichever way it went, the next poll asks a different node — don't
+        // leave the last one's heights on screen as if they were this one's.
+        act.tip_marks.clear();
+        self.last_poll_ns = 0;
+    }
+
+    /// Render the node-source prompt. Mirrors `renderPruneModal`'s chrome: a
+    /// brand-coloured rule, the rows, then the caution — which sits under the
+    /// menu rather than behind a confirm, because it should inform the choice
+    /// rather than gate it.
+    fn renderNodeModal(self: *const App, a: std.mem.Allocator) ![]const u8 {
+        const m = self.node_modal.?;
+        const coin = self.coinAt(m.coin_idx) orelse return error.NoCoin;
+        const brand = zz.Color.hex(coin.coinColor());
+        const inner_w = modal_inner_w;
+        const vbar = (zz.Style{}).fg(brand).render(a, "│") catch "│";
+
+        var out: std.Io.Writer.Allocating = .init(a);
+        errdefer out.deinit();
+
+        const title = try std.fmt.allocPrint(a, "{s} — where the chain comes from", .{coin.coinName()});
+        try modalRule(a, &out.writer, brand, inner_w, "┌", "┐", title);
+        try modalRow(&out.writer, vbar, inner_w, "", 0);
+
+        switch (m.stage) {
+            .menu => {
+                const now = if (m.current_len == 0)
+                    "Currently: this machine's own node."
+                else
+                    try std.fmt.allocPrint(a, "Currently: {s}", .{m.current()});
+                try wrapIntoRows(a, &out.writer, vbar, inner_w, now, (zz.Style{}).dim(true));
+                try modalRow(&out.writer, vbar, inner_w, "", 0);
+
+                try pruneMenuRow(a, &out.writer, vbar, inner_w, brand, "Run my own node (downloads the chain)", m.sel == 0, true);
+                try pruneMenuRow(a, &out.writer, vbar, inner_w, brand, "Use a node someone else runs…", m.sel == 1, true);
+
+                try modalRow(&out.writer, vbar, inner_w, "", 0);
+                // The coin's own words for what the remote choice costs, shown
+                // against that row only — there's nothing to caution about a node
+                // you run yourself.
+                const note = if (m.sel == 1) Coin.remote_node_caution else Coin.local_node_note;
+                try wrapIntoRows(a, &out.writer, vbar, inner_w, note, (zz.Style{}).dim(true));
+            },
+            .address => {
+                const field = try self.node_input.view(a);
+                const text = try std.fmt.allocPrint(a, "Node address: {s}", .{field});
+                try modalRow(&out.writer, vbar, inner_w, text, zz.width("Node address: ") + zz.width(field));
+                try modalRow(&out.writer, vbar, inner_w, "", 0);
+                if (m.bad_input) {
+                    const warn = "Not an address this wallet can use. A host, or host:port — e.g. node.example or node.example:3413.";
+                    try wrapIntoRows(a, &out.writer, vbar, inner_w, warn, (zz.Style{}).fg(.red));
+                } else {
+                    try wrapIntoRows(a, &out.writer, vbar, inner_w, "A host, or host:port. Leave it blank to go back to your own node.", (zz.Style{}).dim(true));
+                }
+            },
+        }
+
+        try modalRow(&out.writer, vbar, inner_w, "", 0);
+        const hint = switch (m.stage) {
+            .menu => "enter: select   esc: cancel",
+            .address => "enter: use it   esc: back",
+        };
+        const hint_styled = (zz.Style{}).dim(true).render(a, hint) catch hint;
+        try modalRow(&out.writer, vbar, inner_w, hint_styled, zz.width(hint));
+        try modalRule(a, &out.writer, brand, inner_w, "└", "┘", "");
+
+        return out.toOwnedSlice();
+    }
+
     /// Open the first-start prune prompt for `coin`, with that coin's own menu.
     /// Resets the cursor to row 0 — by convention the choice that discards nothing
     /// (full node) — and clears the custom field.
@@ -7531,6 +7712,9 @@ pub const App = struct {
         const coin = self.selectedCoin() orelse return;
         const act = &self.activities[self.selected];
         if (!act.installed) return;
+        // `.running` on a remote coin means the remote answered, not that a
+        // daemon of ours is up — there is nothing here to send a shutdown to.
+        if (!act.usesLocalDaemon()) return;
         if (act.daemonState() != .running) return;
 
         act.coin = coin;
@@ -7616,6 +7800,16 @@ pub const App = struct {
         act.prune_read = true;
     }
 
+    /// Cache the selected coin's node choice, once. Its twin above: a cheap
+    /// settings read, done on the UI thread before the first poll so the pane
+    /// never briefly offers to start a daemon for a coin pointed elsewhere. The
+    /// poll worker owns it from then on, and the prompt writes it directly.
+    fn refreshNodeState(self: *App, coin: Coin, act: *Activity) void {
+        if (act.node_read or !coin.offersNodeChoice()) return;
+        act.node_url_len = coin.nodeSource(self.allocator, self.install_root, &act.node_url_buf).len;
+        act.node_read = true;
+    }
+
     /// `w` for an external-wallet coin (Monero-style process or Ergo-style
     /// in-daemon): open the setup menu when no wallet exists yet, the unlock prompt
     /// when one exists but isn't open this session, or (for a coin that supports it)
@@ -7623,7 +7817,14 @@ pub const App = struct {
     /// process-backed coin, the wallet service to be up.
     fn openExternalWalletModal(self: *App, coin: Coin, act: *Activity) void {
         if (!act.installed or act.daemonState() != .running) {
-            self.logf("{s}: start the daemon first to set up the wallet", .{coin.coinName()});
+            // Same gate either way — the wallet needs a node answering — but not
+            // the same instruction: there is no daemon here to start when the
+            // node is someone else's, and telling the user to start one would
+            // send them looking for a button that isn't there.
+            if (!act.usesLocalDaemon())
+                self.logf("{s}: the node at {s} isn't answering — the wallet needs it", .{ coin.coinName(), act.nodeUrl() })
+            else
+                self.logf("{s}: start the daemon first to set up the wallet", .{coin.coinName()});
             return;
         }
         // Process-backed coins also need their wallet service up; in-daemon coins
@@ -8042,6 +8243,10 @@ pub const App = struct {
                 const box = self.renderPruneModal(a) catch break :blk screen;
                 break :blk overlayBox(a, screen, box, ctx.width, ctx.height) catch screen;
             }
+            if (self.node_modal != null) {
+                const box = self.renderNodeModal(a) catch break :blk screen;
+                break :blk overlayBox(a, screen, box, ctx.width, ctx.height) catch screen;
+            }
             if (self.send_modal != null) {
                 const box = self.renderSendModal(a) catch break :blk screen;
                 break :blk overlayBox(a, screen, box, ctx.width, ctx.height) catch screen;
@@ -8274,6 +8479,15 @@ pub const App = struct {
             // "2.0.0.0") doesn't raise a false alarm.
             .running => blk: {
                 const tick = statusMark(a, true);
+                // A node someone else runs: `.running` means it answered, and it
+                // is settled — a tick, not a spinner. What it is NOT is a version
+                // of ours: `effectiveVersion` would fall back to the marker for
+                // the binary sitting on disk unused, which is a claim about a
+                // process that isn't running. Name the node instead.
+                if (!act.usesLocalDaemon()) {
+                    const where = (zz.Style{}).dim(true).render(a, act.nodeUrl()) catch act.nodeUrl();
+                    break :blk std.fmt.allocPrint(a, "{s} {s}", .{ tick, where }) catch tick;
+                }
                 const rv = act.effectiveVersion();
                 if (rv.len == 0) break :blk tick;
                 const pinned = coin.coreVersion();
@@ -8289,7 +8503,14 @@ pub const App = struct {
                 const ver = (zz.Style{}).dim(true).render(a, std.fmt.allocPrint(a, "v{s}", .{rv}) catch rv) catch rv;
                 break :blk std.fmt.allocPrint(a, "{s} {s}", .{ tick, ver }) catch tick;
             },
-            .stopped => if (awaiting) act.daemon_spinner.view(a) catch "…" else statusMark(a, false),
+            // A remote coin is retried every poll, so the attempt never really
+            // stops — the spinner says so, rather than a cross that reads as
+            // "given up". Our own daemon only animates before the first poll;
+            // after that a stopped daemon is genuinely just stopped.
+            .stopped => if (awaiting or !act.usesLocalDaemon())
+                act.daemon_spinner.view(a) catch "…"
+            else
+                statusMark(a, false),
             .starting, .stopping => act.daemon_spinner.view(a) catch "…",
         };
 
@@ -8297,8 +8518,15 @@ pub const App = struct {
         // while it's up but no peer has connected yet, and the green count once
         // peers arrive. The label is live whenever the daemon is up (spinner or
         // count), grey only for the dash.
-        const peers_label = statusLabel(a, brand, "Peers", act.daemonState() == .running);
-        const peers_value: []const u8 = if (act.daemonState() != .running)
+        // A remote node reports no peer count at all, so the label stays grey and
+        // the value is an em-dash: not "0 peers", and above all not the spinner,
+        // which would animate "looking for peers" for ever over a figure that is
+        // never coming.
+        const peers_known = act.daemonState() == .running and act.usesLocalDaemon();
+        const peers_label = statusLabel(a, brand, "Peers", peers_known);
+        const peers_value: []const u8 = if (!act.usesLocalDaemon())
+            (zz.Style{}).fg(.brightBlack).render(a, "—") catch "—"
+        else if (act.daemonState() != .running)
             (zz.Style{}).dim(true).render(a, "-") catch "-"
         else if (act.peers == 0)
             act.daemon_spinner.view(a) catch "…"
@@ -8645,10 +8873,31 @@ pub const App = struct {
         // computation — no disk IO in the render path.
         const chain_label = statusLabel(a, brand, "Blockchain ", true);
         const chain_dir = coin.dataDir(a, home_dir) catch null;
-        const chain_value: []const u8 = if (chain_dir) |d|
+        // Pointed at someone else's node, this directory holds no chain — naming
+        // it would send someone to back up or resize a path that isn't the one
+        // the blocks are on.
+        const chain_value: []const u8 = if (!act.usesLocalDaemon())
+            (zz.Style{}).fg(.brightBlack).render(a, "—  (stored by the node you're using)") catch "—"
+        else if (chain_dir) |d|
             (zz.Style{}).dim(true).render(a, d) catch d
         else
             (zz.Style{}).fg(.brightBlack).render(a, "—") catch "—";
+        // Which node this coin reads from, for the coins that let the user pick
+        // (Epic). Absent for every other coin — there is no choice to report, and
+        // a row saying "your own node" where no alternative exists is noise.
+        const node_row: []const u8 = if (coin.offersNodeChoice()) blk: {
+            const node_label = statusLabel(a, brand, "Node       ", true);
+            const url = act.nodeUrl();
+            const node_value = if (url.len == 0)
+                (zz.Style{}).dim(true).render(a, "this machine's own node") catch "this machine's own node"
+            else
+                (zz.Style{}).dim(true).render(a, url) catch url;
+            break :blk std.fmt.allocPrint(a, "\n{s}: {s}{s}", .{
+                node_label,
+                node_value,
+                dimNote(a, "n: choose where the chain comes from"),
+            }) catch "";
+        } else "";
         // Pruning row, only for coins with the capability (Bitcoin/Litecoin/Monero):
         // the value chosen at first start, plus — where the coin allows it and the
         // chain is one BoxWallet set up — how to change it. "Pruning" is padded to
@@ -8685,8 +8934,8 @@ pub const App = struct {
             \\Settings
             \\
             \\{s}: {s}{s}
-            \\{s}: {s}{s}{s}
-        , .{ wallet_label, wallet_value, keys_row, chain_label, chain_value, prune_row, index_row });
+            \\{s}: {s}{s}{s}{s}
+        , .{ wallet_label, wallet_value, keys_row, chain_label, chain_value, node_row, prune_row, index_row });
     }
 
     /// A dimmed note on its own line under a Settings row. Its own helper only so
@@ -9529,6 +9778,13 @@ pub const App = struct {
         if (!act.installed) {
             const b = (zz.Style{}).dim(true).render(a, "[ Start ]") catch "[ Start ]";
             return std.fmt.allocPrint(a, "{s}   (install first)", .{b}) catch "[ Start ]";
+        }
+        // Pointed at someone else's node: there is no daemon of ours to start or
+        // stop, so the button says what's going on instead of offering an action
+        // that would do nothing. The Settings tab is where the choice is changed.
+        if (!act.usesLocalDaemon()) {
+            const b = (zz.Style{}).dim(true).render(a, "[ Start ]") catch "[ Start ]";
+            return std.fmt.allocPrint(a, "{s}   (using a remote node — see Settings)", .{b}) catch "[ Start ]";
         }
         return switch (act.daemonState()) {
             .stopped => "[ Start ]   (press s)",
@@ -11368,46 +11624,6 @@ test "setDaemonErr keeps the first non-empty stderr line, trimmed and bounded" {
     const huge = "x" ** (long.daemon_err_buf.len + 50);
     long.setDaemonErr(huge);
     try std.testing.expectEqual(long.daemon_err_buf.len, long.daemon_err.len);
-}
-
-test "pickWalletError surfaces the wallet process's failure line" {
-    // A wrong password: the error-like line wins over routine startup chatter, with
-    // any leading epee timestamp stripped.
-    try std.testing.expectEqualStrings(
-        "Error: invalid password",
-        pickWalletError("Loading wallet...\n2026-07-21 09:10:11.512 Error: invalid password\n"),
-    );
-
-    // A corrupt / unreadable wallet file: the last error-like line is chosen even
-    // when it lands after other output.
-    try std.testing.expectEqualStrings(
-        "failed to load wallet: file I/O error",
-        pickWalletError("opening wallet\nsome note\nfailed to load wallet: file I/O error\n"),
-    );
-
-    // No obvious marker: fall back to the last non-empty line rather than nothing.
-    try std.testing.expectEqualStrings(
-        "wallet closed",
-        pickWalletError("starting\nwallet closed\n\n"),
-    );
-
-    // Empty capture yields an empty pick, so the caller keeps the generic message.
-    try std.testing.expectEqual(@as(usize, 0), pickWalletError("   \n\t\n").len);
-
-    // Zano simplewallet dumps its options help after the real failure on a bad
-    // open; the `--seed-doctor` description ("…doing back up(typo, wrong words
-    // order, missing word)…") matches "wrong" and lands last, but must not mask
-    // the actual "failed to load wallet" reason above it.
-    try std.testing.expectEqualStrings(
-        "failed to load wallet: invalid password",
-        pickWalletError(
-            "loading wallet\n" ++
-                "failed to load wallet: invalid password\n" ++
-                "  --seed-doctor            Experimental: if your seed is not working for recovery this is\n" ++
-                "                           likely because you've made a mistake whene you were doing back\n" ++
-                "                           up(typo, wrong words order, missing word).\n",
-        ),
-    );
 }
 
 test "debug.log helpers strip the timestamp and pick the root-cause line" {
@@ -14444,3 +14660,293 @@ test "the price roster covers every listed coin and omits unlisted ones" {
     try std.testing.expectEqual(expected, n);
 }
 
+
+test "a coin pointed at a remote node offers no daemon to start or stop" {
+    const allocator = std.testing.allocator;
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    var act: Activity = .{};
+    act.installed = true;
+
+    // Our own node: the ordinary Start button, bound to `s`.
+    try std.testing.expect(act.usesLocalDaemon());
+    try std.testing.expect(std.mem.indexOf(u8, App.renderDaemonButton(a, &act), "press s") != null);
+
+    // Pointed elsewhere: the button says so instead of offering a press that
+    // would do nothing. `s` itself is refused in `tryToggleDaemon`.
+    const url = "http://node.example:3413";
+    @memcpy(act.node_url_buf[0..url.len], url);
+    act.node_url_len = url.len;
+    try std.testing.expect(!act.usesLocalDaemon());
+    {
+        const b = App.renderDaemonButton(a, &act);
+        try std.testing.expect(std.mem.indexOf(u8, b, "press s") == null);
+        try std.testing.expect(std.mem.indexOf(u8, b, "remote node") != null);
+    }
+
+    // Even while the remote is answering — `.running` there means "the node
+    // replied", not "a daemon of ours is up", so there is still nothing to stop.
+    act.daemon.store(@intFromEnum(DaemonState.running), .release);
+    try std.testing.expect(std.mem.indexOf(u8, App.renderDaemonButton(a, &act), "press s") == null);
+}
+
+test "the status line for a remote coin never narrates local sync figures" {
+    var act: Activity = .{};
+    act.installed = true;
+    const url = "http://node.example:3413";
+    @memcpy(act.node_url_buf[0..url.len], url);
+    act.node_url_len = url.len;
+
+    // Answering, with every figure the local ladder would have read — no peers,
+    // mid-"sync", a warm-up phase. None of them is this node's to report.
+    act.daemon.store(@intFromEnum(DaemonState.running), .release);
+    act.peers = 0;
+    act.sync = .syncing;
+    act.headers_cur = 10;
+    act.headers_total = 900_000;
+    act.loading_phase = .loading;
+    try std.testing.expectEqualStrings("Using a remote node", statusReadout(&act).text);
+
+    // Before the first poll comes back, nothing is known either way.
+    act.daemon.store(@intFromEnum(DaemonState.stopped), .release);
+    try std.testing.expectEqualStrings("Checking…", statusReadout(&act).text);
+
+    // Once one has: said plainly, and not as "Idle" — which would read as a
+    // daemon of ours sitting switched off.
+    act.poll_completed = true;
+    try std.testing.expectEqualStrings("Remote node unreachable", statusReadout(&act).text);
+}
+
+test "the Settings tab names the node, and stops naming a chain dir that holds no chain" {
+    const allocator = std.testing.allocator;
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    var epic: Epic = .{};
+    const coin = epic.coin();
+    var act: Activity = .{};
+    act.installed = true;
+
+    // Our own node: the row says so, and the data dir is the real one.
+    {
+        const body = try App.renderSettingsTab(a, coin, zz.Color.hex("#deac55"), "/home/alice", &act);
+        try std.testing.expect(std.mem.indexOf(u8, body, "this machine's own node") != null);
+        try std.testing.expect(std.mem.indexOf(u8, body, ".epic") != null);
+        try std.testing.expect(std.mem.indexOf(u8, body, "n: choose where the chain comes from") != null);
+    }
+
+    // Someone else's: the address is shown, and the "Blockchain" row stops
+    // pointing at a directory the blocks aren't in — that path is what someone
+    // would back up or move to a bigger disk.
+    const url = "http://node.example:3413";
+    @memcpy(act.node_url_buf[0..url.len], url);
+    act.node_url_len = url.len;
+    {
+        const body = try App.renderSettingsTab(a, coin, zz.Color.hex("#deac55"), "/home/alice", &act);
+        try std.testing.expect(std.mem.indexOf(u8, body, url) != null);
+        try std.testing.expect(std.mem.indexOf(u8, body, "stored by the node you're using") != null);
+        // The *wallet* is still local — only the chain moved — so its path stays.
+        // What must go is the data dir presented as where the blockchain is.
+        try std.testing.expect(std.mem.indexOf(u8, body, "wallet.seed") != null);
+        try std.testing.expect(std.mem.indexOf(u8, body, "Blockchain  : /home/alice") == null);
+    }
+}
+
+test "coins that run only their own node grow no node row" {
+    const allocator = std.testing.allocator;
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    // A row reporting a choice that doesn't exist is noise, so there isn't one.
+    var nexa: Nexa = .{};
+    const coin = nexa.coin();
+    var act: Activity = .{};
+    act.installed = true;
+    const body = try App.renderSettingsTab(a, coin, zz.Color.hex("#111111"), "/home/alice", &act);
+    try std.testing.expect(std.mem.indexOf(u8, body, "n: choose where the chain comes from") == null);
+    try std.testing.expect(!coin.offersNodeChoice());
+}
+
+test "the node prompt draws both stages, and says what each choice costs" {
+    const allocator = std.testing.allocator;
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    // `entries` is the comptime-sorted nav order, so find Epic's row rather than
+    // writing an index that a newly registered coin would silently shift.
+    const epic_idx = comptime for (entries, 0..) |e, i| {
+        if (e == .epic) break i;
+    } else unreachable;
+
+    var app: App = undefined;
+    app.epic = .{};
+    app.selected = epic_idx;
+    app.node_modal = .{ .coin_idx = epic_idx, .sel = 0 };
+    app.node_input = zz.TextInput.init(allocator);
+    defer app.node_input.deinit();
+
+    // The local row carries the counter-note, not the caution — there is nothing
+    // to caution about a node you run yourself.
+    {
+        const box = try app.renderNodeModal(a);
+        try std.testing.expect(std.mem.indexOf(u8, box, "Run my own node") != null);
+        try std.testing.expect(std.mem.indexOf(u8, box, "this machine's own node") != null);
+        try std.testing.expect(std.mem.indexOf(u8, box, "proves every block for itself") != null);
+    }
+
+    // Moving to the remote row swaps in the core's caution — the one place the
+    // user is told what they're taking on, and the same words the GUI shows.
+    app.node_modal.?.sel = 1;
+    {
+        const box = try app.renderNodeModal(a);
+        try std.testing.expect(std.mem.indexOf(u8, box, "sees every output") != null);
+    }
+
+    // The address stage, with a refused entry flagged on the field.
+    app.node_modal.?.stage = .address;
+    // Opened with nothing configured, the field carries the coin's suggestion —
+    // so the common case is confirming an address, not knowing one.
+    try std.testing.expectEqualStrings("https://node.epiccash.com:3413", app.coinAt(epic_idx).?.defaultRemoteNode());
+    app.node_modal.?.bad_input = true;
+    {
+        const box = try app.renderNodeModal(a);
+        try std.testing.expect(std.mem.indexOf(u8, box, "Node address:") != null);
+        try std.testing.expect(std.mem.indexOf(u8, box, "host:port") != null);
+    }
+}
+
+test "a connected remote node reads as settled, not perpetually starting" {
+    const allocator = std.testing.allocator;
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    var epic: Epic = .{};
+    const coin = epic.coin();
+    var app: App = undefined;
+    app.epic = .{};
+    app.selected = comptime for (entries, 0..) |e, i| {
+        if (e == .epic) break i;
+    } else unreachable;
+    app.home_dir = "/home/alice";
+    app.install_root = "/home/alice/.boxwallet";
+    app.active_tab = .home;
+    app.hide_balances = false;
+    app.show_prices = false;
+
+    var act: Activity = .{};
+    act.installed = true;
+    act.poll_completed = true;
+    const url = "https://node.epiccash.com:3413";
+    @memcpy(act.node_url_buf[0..url.len], url);
+    act.node_url_len = url.len;
+    act.daemon.store(@intFromEnum(DaemonState.running), .release);
+    act.sync = .synced;
+    act.peers = 0;
+    // A version marker for the unused local binary — the trap the Running line
+    // has to avoid, since nothing of ours is running to have that version.
+    act.version_len = 5;
+    @memcpy(act.version_buf[0..5], "4.0.3");
+
+    const pane = try app.renderCoin(a, coin, &act);
+
+    // The node is named where a version would be, and the version of the binary
+    // sitting unused on disk is nowhere in sight.
+    try std.testing.expect(std.mem.indexOf(u8, pane, url) != null);
+    // Exactly once — in the header, where the *installed binary's* version
+    // belongs. A second occurrence would be the Running line claiming it as the
+    // version of a process that isn't running.
+    try std.testing.expectEqual(@as(usize, 1), std.mem.count(u8, pane, "4.0.3"));
+    // Peers: an em-dash, never the spinner — that would animate a search for a
+    // figure the node is never going to report.
+    try std.testing.expect(std.mem.indexOf(u8, pane, "—") != null);
+    try std.testing.expectEqualStrings("Using a remote node", statusReadout(&act).text);
+}
+
+test "an unreachable remote node keeps trying, visibly" {
+    const allocator = std.testing.allocator;
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    var epic: Epic = .{};
+    const coin = epic.coin();
+    var app: App = undefined;
+    app.epic = .{};
+    app.selected = comptime for (entries, 0..) |e, i| {
+        if (e == .epic) break i;
+    } else unreachable;
+    app.home_dir = "/home/alice";
+    app.install_root = "/home/alice/.boxwallet";
+    app.active_tab = .home;
+    app.hide_balances = false;
+    app.show_prices = false;
+
+    // `App.init` gives every Activity its spinners; a bare `.{}` leaves them
+    // undefined, and the marks below animate.
+    var act: Activity = .{ .daemon_spinner = App.makeSpinner(), .sync_spinner = zz.Spinner.init() };
+    act.installed = true;
+    // The first poll has been and gone without an answer — the window where a
+    // local daemon would settle to a cross.
+    act.poll_completed = true;
+    const url = "https://node.epiccash.com:3413";
+    @memcpy(act.node_url_buf[0..url.len], url);
+    act.node_url_len = url.len;
+
+    // Just the Running segment: the Sync mark beside it is legitimately a cross
+    // while there's no chain, so a whole-pane search would prove nothing.
+    const runningMark = struct {
+        fn of(alloc: std.mem.Allocator, pane: []const u8) ![]const u8 {
+            const plain = try stripAnsiAlloc(alloc, pane);
+            const start = std.mem.indexOf(u8, plain, "Running: ") orelse return error.NoRunningLine;
+            const rest = plain[start + "Running: ".len ..];
+            const end = std.mem.indexOf(u8, rest, "    ") orelse rest.len;
+            return rest[0..end];
+        }
+    }.of;
+
+    // The Running mark animates rather than showing the ✘ a stopped daemon gets:
+    // the node is retried every poll, so the attempt hasn't stopped and "gave
+    // up" would be the wrong thing to say. Without this an unreachable node
+    // looked identical to a coin doing nothing at all.
+    {
+        const pane = try app.renderCoin(a, coin, &act);
+        try std.testing.expect(std.mem.indexOf(u8, try runningMark(a, pane), "✘") == null);
+        try std.testing.expectEqualStrings("Remote node unreachable", statusReadout(&act).text);
+    }
+
+    // And our own daemon in the same spot still settles to the cross — after the
+    // first poll, a stopped daemon is genuinely just stopped.
+    {
+        var local: Activity = .{ .daemon_spinner = App.makeSpinner(), .sync_spinner = zz.Spinner.init() };
+        local.installed = true;
+        local.poll_completed = true;
+        const pane = try app.renderCoin(a, coin, &local);
+        try std.testing.expect(std.mem.indexOf(u8, try runningMark(a, pane), "✘") != null);
+    }
+}
+
+/// Drop ANSI SGR sequences so a test can assert on the text a pane renders
+/// rather than on how it's painted. Test-only; the styling is asserted
+/// elsewhere, by the tests that care about it.
+fn stripAnsiAlloc(allocator: std.mem.Allocator, in: []const u8) ![]u8 {
+    var out: std.Io.Writer.Allocating = .init(allocator);
+    errdefer out.deinit();
+    var i: usize = 0;
+    while (i < in.len) {
+        if (in[i] == 0x1b and i + 1 < in.len and in[i + 1] == '[') {
+            i += 2;
+            while (i < in.len and in[i] != 'm') i += 1;
+            if (i < in.len) i += 1; // the 'm' itself
+            continue;
+        }
+        try out.writer.writeByte(in[i]);
+        i += 1;
+    }
+    return out.toOwnedSlice();
+}

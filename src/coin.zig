@@ -1272,7 +1272,81 @@ pub const Coin = struct {
         /// that aborts during init on a corrupt index). Null for coins with no
         /// such repair. `reindex`/`supportsReindex` key off this.
         reindex: ?*const Reindex = null,
+        /// Optional: read where this coin's chain data is being read from, into
+        /// `buf`. An empty answer means BoxWallet's own managed daemon on
+        /// localhost; anything else is the base URL of a node someone else runs.
+        /// Null — the default, and every coin but Epic — means the question
+        /// doesn't arise: there is only the local daemon.
+        ///
+        /// Deliberately **two flat hooks rather than a capability struct**. One
+        /// coin offers this, so there is nothing yet to generalize from; a
+        /// `Pruning`-shaped struct would be a guess at a shape a second coin has
+        /// never asked for. The coin owns everything else — how the setting is
+        /// stored, what a valid URL is, what it does with the answer.
+        ///
+        /// `buf` is the caller's fixed buffer (`node_url_max`), so the read
+        /// allocates nothing; `allocator` is for the coin's own working set. A
+        /// URL longer than `buf` is truncated to empty rather than clipped — a
+        /// half URL is worse than falling back to the local daemon.
+        node_source: ?*const fn (
+            ptr: *anyopaque,
+            allocator: std.mem.Allocator,
+            install_root: []const u8,
+            buf: []u8,
+        ) []const u8 = null,
+        /// Optional: persist where this coin reads its chain data from. `url`
+        /// empty restores BoxWallet's own managed daemon; otherwise it is a base
+        /// URL the coin validates and rejects (`error.InvalidNodeUrl`) if it
+        /// isn't one it can use. Paired with `node_source` — a coin wires both or
+        /// neither, which `offersNodeChoice` checks.
+        set_node_source: ?*const fn (
+            ptr: *anyopaque,
+            allocator: std.mem.Allocator,
+            install_root: []const u8,
+            home_dir: []const u8,
+            url: []const u8,
+        ) anyerror!void = null,
+        /// Optional: the node to suggest when the user picks "someone else's
+        /// node" and hasn't named one yet — the coin's community node, so the
+        /// common case is confirming an address rather than knowing one.
+        ///
+        /// A **suggestion, not a default mode.** It only ever prefills the
+        /// address field; a coin still starts out on its own daemon, and nothing
+        /// here changes that. Shipping a third party as the out-of-the-box
+        /// destination for a wallet's queries is a choice for the user to make,
+        /// not one to inherit.
+        ///
+        /// Plain data rather than a hook because it is a constant per coin, like
+        /// the conf filename. Empty (the default) means the coin suggests
+        /// nothing and the field opens blank.
+        node_default_remote: []const u8 = "",
     };
+
+    /// Bound on a node URL, shared by every caller's buffer so the front-ends,
+    /// the C ABI and the coin agree on one size. Generous for a host:port and
+    /// short enough to sit on a stack frame.
+    pub const node_url_max = 128;
+
+    /// What using someone else's node costs, shown beside that choice in both
+    /// front-ends. Held here for the same reason as `accel_trust_note`: the
+    /// tradeoff is a property of pointing a wallet at a node you don't run, not
+    /// of whichever coin happens to offer it, so it isn't copy for a coin file to
+    /// own or for a UI to reword.
+    ///
+    /// All three claims are things that are simply true of the arrangement, not
+    /// worst cases: the node answers the wallet's queries, so it learns them; the
+    /// wallet believes what it's told about the tip and about confirmations,
+    /// because there's no local chain to check against; and when the node is down
+    /// the wallet has no chain at all.
+    pub const remote_node_caution =
+        "A remote node sees every output your wallet asks about, can misreport " ++
+        "the chain tip and your confirmation counts, and takes your wallet " ++
+        "offline whenever it's down. Your own node answers to nobody — it just " ++
+        "has to download and verify the chain first.";
+
+    /// The other side of the same choice, for the row that runs its own node.
+    pub const local_node_note =
+        "Nothing leaves this machine, and your node proves every block for itself.";
 
     pub fn coinName(self: Coin) []const u8 {
         return self.vtable.coin_name(self.ptr);
@@ -1987,6 +2061,58 @@ pub const Coin = struct {
     pub fn pruneChangeWarning(self: Coin) []const u8 {
         const pr = self.vtable.pruning orelse return "";
         return pr.change_warning;
+    }
+
+    /// Whether this coin lets the user choose between BoxWallet's own daemon and
+    /// someone else's node. False for every coin that only ever runs its own.
+    pub fn offersNodeChoice(self: Coin) bool {
+        return self.vtable.node_source != null and self.vtable.set_node_source != null;
+    }
+
+    /// Where this coin reads its chain data from: empty for BoxWallet's own
+    /// managed daemon, else the base URL of the node it's pointed at. The answer
+    /// is written into `buf` (see `node_url_max`) and borrowed from it, so it
+    /// lives exactly as long as the caller's buffer.
+    pub fn nodeSource(
+        self: Coin,
+        allocator: std.mem.Allocator,
+        install_root: []const u8,
+        buf: []u8,
+    ) []const u8 {
+        const f = self.vtable.node_source orelse return "";
+        return f(self.ptr, allocator, install_root, buf);
+    }
+
+    /// Whether BoxWallet runs a daemon for this coin at all. True for every coin
+    /// that doesn't offer the choice, and for one that does while it's pointed at
+    /// its own daemon. Front-ends gate the whole daemon lifecycle on this — the
+    /// Start/Stop affordance, the launch, the warm-up narration, the
+    /// startup-failure reason — because none of it has a subject when the node
+    /// belongs to someone else.
+    pub fn usesLocalDaemon(self: Coin, allocator: std.mem.Allocator, install_root: []const u8) bool {
+        var buf: [node_url_max]u8 = undefined;
+        return self.nodeSource(allocator, install_root, &buf).len == 0;
+    }
+
+    /// The node to offer when the user asks for someone else's and hasn't named
+    /// one. Empty when the coin suggests none — the field simply opens blank.
+    /// A suggestion only: it never changes which node a coin actually uses.
+    pub fn defaultRemoteNode(self: Coin) []const u8 {
+        return self.vtable.node_default_remote;
+    }
+
+    /// Persist where this coin reads its chain data from; empty `url` restores
+    /// the managed daemon. Errors for a coin without the capability, and with
+    /// `error.InvalidNodeUrl` for a URL the coin can't use.
+    pub fn setNodeSource(
+        self: Coin,
+        allocator: std.mem.Allocator,
+        install_root: []const u8,
+        home_dir: []const u8,
+        url: []const u8,
+    ) !void {
+        const f = self.vtable.set_node_source orelse return error.Unsupported;
+        return f(self.ptr, allocator, install_root, home_dir, url);
     }
 
     /// Whether this coin issues a chain-native stablecoin (drives the

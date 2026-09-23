@@ -19,6 +19,7 @@ const models = @import("models.zig");
 const conf = @import("conf.zig");
 const proc = @import("proc.zig");
 const rpc = @import("rpc.zig");
+const walletmenu = @import("walletmenu.zig");
 
 const Coin = coinmod.Coin;
 
@@ -242,12 +243,231 @@ pub fn friendlyWalletError(name: []const u8, detail: []const u8) []const u8 {
     return name;
 }
 
+// ---- the launch-with-password wallet shape ----------------------------------
+//
+// Nerva's wallet-rpc is spawned once, password-less, and told which wallet to
+// open over RPC. Zano's `simplewallet` and Epic's `epic-wallet owner_api` can't
+// do that: the server serves only the wallet file it was handed on its command
+// line, with the password, so BoxWallet (re)launches it per operation instead of
+// eagerly alongside the daemon (`ensure` answers `.not_applicable` for them).
+//
+// That sequence — materialize the wallet if the op creates one, launch the
+// server against it, confirm the password opens it — is process mechanics, not
+// presentation, so it lives here and both front-ends call `setupWithPassword`.
+// It used to live in `app.zig` alone, which is why the GUI could only tell the
+// user to go and use the TUI.
+
+/// Choose the most informative line from a wallet process's captured
+/// stdout/stderr tail. `simplewallet` (and the epee family generally) prints a
+/// clear reason on a failed open — a wrong password, an unreadable / corrupt or
+/// version-incompatible wallet file, a refused daemon connection — usually right
+/// before it exits, so the *last* error-like line wins, falling back to the last
+/// non-empty line. Leading log timestamps are stripped. Returns a slice into
+/// `tail` (empty only if `tail` has no content).
+pub fn pickWalletError(tail: []const u8) []const u8 {
+    const markers = [_][]const u8{
+        "error",    "invalid", "wrong",  "failed", "exception",
+        "unable",   "corrupt", "cannot", "denied", "not found",
+        "password",
+    };
+    // Help/usage text a daemon or wallet dumps on an *argument* error is not the
+    // failure reason, but reads like one. The worst offender is Zano
+    // `simplewallet`'s `--seed-doctor` option description ("…doing back up(typo,
+    // wrong words order, missing word)…"), which matches "wrong" and, printed
+    // last in the options dump, wins over the real "failed to load wallet: <why>"
+    // line above it — so a wrong password on a Zano *file* import surfaces as a
+    // bogus seed complaint. Skip such lines so the true reason wins.
+    const noise = [_][]const u8{
+        "seed-doctor", "doing back up", "wrong words order",
+    };
+    var hit: []const u8 = "";
+    var fallback: []const u8 = "";
+    var it = std.mem.splitScalar(u8, tail, '\n');
+    while (it.next()) |raw| {
+        const line = proc.stripLogTimestamp(std.mem.trim(u8, raw, " \t\r"));
+        if (line.len == 0) continue;
+        if (proc.matchesAny(line, &noise)) continue;
+        fallback = line;
+        if (proc.matchesAny(line, &markers)) hit = line;
+    }
+    return if (hit.len != 0) hit else fallback;
+}
+
+/// Read the wallet process's captured stdout/stderr and stash the most
+/// error-like line in `detail`, so a failed launch reports why (surfaced by
+/// `friendlyWalletError`). Best-effort: leaves the sink untouched on any IO
+/// hiccup or when nothing was printed, so the caller falls back to the generic
+/// message.
+fn setErrFromCapture(detail: *Coin.WalletErrSink, io: std.Io, file: *std.Io.File) void {
+    const stat = file.stat(io) catch return;
+    var buf: [8 * 1024]u8 = undefined;
+    // Bias to the tail: the fatal line lands last, just before the process exits.
+    const off = if (stat.size > buf.len) stat.size - buf.len else 0;
+    const n = file.readPositionalAll(io, &buf, off) catch return;
+    const pick = pickWalletError(buf[0..n]);
+    if (pick.len != 0) detail.set(pick);
+}
+
+/// Launch the coin's wallet RPC server against the managed wallet file, opened
+/// with `wallet_password`, and wait until it answers — the open path for
+/// launch-with-password external wallets, whose RPC can only serve the wallet it
+/// was started on. Any wallet process still serving a previous wallet is torn
+/// down first. On a wrong password the server exits without ever binding its
+/// port, so a bounded reachability wait that elapses is reported as a failed
+/// open.
+///
+/// The caller owns the session for the duration (its own poll loop must not reap
+/// the child meanwhile) and is responsible for its own "wallet is open" flag —
+/// that stays front-end state, as it does for `ensure`.
+pub fn launchWithPassword(
+    sess: *Session,
+    coin: Coin,
+    install_root: []const u8,
+    home_dir: []const u8,
+    wallet_password: []const u8,
+    detail: *Coin.WalletErrSink,
+) !void {
+    const ew = coin.externalWallet() orelse return error.NoExternalWallet;
+    const argv_fn = ew.launch_server_argv orelse return error.Unsupported;
+    const port = ew.rpc_port.?();
+
+    var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var threaded: std.Io.Threaded = .init(a, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    // Tear down any wallet process still serving a previous wallet.
+    if (sess.child) |*child| {
+        child.kill(io);
+        sess.child = null;
+    }
+
+    // Capture the wallet process's stdout+stderr to a scratch file so a failed
+    // open surfaces the real reason (a wrong password, an unreadable / corrupt
+    // or version-incompatible wallet file, a missing daemon connection) instead
+    // of a bare "WalletOpenFailed". The epee family (Zano/…) prints fatal load
+    // errors to the console, not only stderr, so both streams are captured to
+    // the one file. Per-port name so two coins launching at once don't clash;
+    // unlinked once read (an anonymous inode the live process can keep writing
+    // to is harmless) — on Windows the delete fails while the process holds it
+    // open (caught), and the next launch truncates it instead.
+    const cap_name = try std.fmt.allocPrint(a, ".wallet-{s}.startup", .{port});
+    const cap_path = try std.fs.path.join(a, &.{ install_root, cap_name });
+    var cap_file: ?std.Io.File = std.Io.Dir.createFileAbsolute(io, cap_path, .{ .read = true }) catch null;
+    defer if (cap_file) |*f| {
+        f.close(io);
+        std.Io.Dir.deleteFileAbsolute(io, cap_path) catch {};
+    };
+    const capture: std.process.SpawnOptions.StdIo = if (cap_file) |f| .{ .file = f } else .ignore;
+
+    // argv is consumed by spawn (fork/exec copies it), so the local arena can be
+    // freed right after. The wallet password rides argv only — never disk.
+    const argv = try argv_fn(a, install_root, home_dir, port, wallet_password);
+    const child = std.process.spawn(io, .{
+        .argv = argv,
+        .stdin = .ignore,
+        .stdout = capture,
+        .stderr = capture,
+        .create_no_window = builtin.os.tag == .windows,
+    }) catch return error.WalletServiceFailed;
+    sess.child = child;
+
+    // Wait for the wallet RPC to bind its port (or the process to die on a bad
+    // password / unreadable wallet). Bounded so a never-answering server can't
+    // wedge the caller.
+    const auth = authFor(coin, sess);
+    var waited: u32 = 0;
+    const step: u32 = 250;
+    const limit: u32 = 25_000;
+    while (waited < limit) : (waited += step) {
+        if (rpc.daemonReachable(a, auth)) return;
+        // Fast failure path: simplewallet refuses a bad password / can't read the
+        // wallet and exits before ever binding its port, so reap-on-exit lets us
+        // fail at once — with the reason it printed — rather than waiting out the
+        // whole timeout. (POSIX; Windows times out then reads the same capture.)
+        if (builtin.os.tag != .windows) {
+            if (sess.child) |ch| if (ch.id) |pid| {
+                if (proc.reapNoHang(pid)) {
+                    sess.child = null;
+                    if (cap_file) |*f| setErrFromCapture(detail, io, f);
+                    return error.WalletOpenFailed;
+                }
+            };
+        }
+        io.sleep(.fromMilliseconds(step), .awake) catch {};
+    }
+    if (cap_file) |*f| setErrFromCapture(detail, io, f);
+    return error.WalletOpenFailed;
+}
+
+/// Run one managed-wallet operation for the launch-with-password shape, on
+/// behalf of either front-end. Returns the generated mnemonic for `.create` (the
+/// caller shows it to be written down) and null for every other op.
+///
+/// The order is the whole point and is the same for all three "there is no
+/// wallet yet" ops: put the wallet on disk first (a one-shot CLI run — Zano's
+/// `--generate-new-wallet`, Epic's `init -r`, or a copied-in wallet file),
+/// *then* launch the server against it, *then* confirm the password opens it. A
+/// wrong password makes the server exit instead of binding, which
+/// `launchWithPassword` reports with the reason the process printed.
+///
+/// `password`, `seed_words` and `file_path` are the caller's inputs, used here
+/// and never stored; the secrets stay in the caller's bounded buffers.
+pub fn setupWithPassword(
+    sess: *Session,
+    coin: Coin,
+    a: std.mem.Allocator,
+    install_root: []const u8,
+    home_dir: []const u8,
+    op: walletmenu.SetupOp,
+    password: []const u8,
+    seed_words: []const u8,
+    file_path: []const u8,
+    detail: *Coin.WalletErrSink,
+) !?models.Seed {
+    const ew = coin.externalWallet() orelse return error.NoExternalWallet;
+    switch (op) {
+        .create => {
+            try (ew.cli_create orelse return error.Unsupported)(a, install_root, home_dir, password, detail);
+            try launchWithPassword(sess, coin, install_root, home_dir, password, detail);
+            // The seed is read back over the now-running server's RPC.
+            return try ew.create(a, authFor(coin, sess), password, detail);
+        },
+        .restore_seed => {
+            // The coin's CLI materializes the wallet from the phrase (Epic's
+            // `init -r`); the server then opens what it wrote.
+            try ew.restore_seed(a, authFor(coin, sess), install_root, home_dir, password, seed_words, detail);
+            try launchWithPassword(sess, coin, install_root, home_dir, password, detail);
+            try ew.open(a, authFor(coin, sess), password, detail);
+        },
+        .restore_file => {
+            // Import the wallet file onto disk, then launch the server against it
+            // and confirm the password opens it — same shape as the seed restore.
+            try (ew.restore_file orelse return error.Unsupported)(a, authFor(coin, sess), home_dir, file_path, password, detail);
+            try launchWithPassword(sess, coin, install_root, home_dir, password, detail);
+            try ew.open(a, authFor(coin, sess), password, detail);
+        },
+        .open => {
+            try launchWithPassword(sess, coin, install_root, home_dir, password, detail);
+            try ew.open(a, authFor(coin, sess), password, detail);
+        },
+        // Locking is killing the process for this shape, which is the caller's
+        // teardown path (`kill`), not a wallet op.
+        .lock => return error.Unsupported,
+    }
+    return null;
+}
+
 // ---- tests ------------------------------------------------------------------
 
 const nerva = @import("coins/nerva.zig");
 const ergo = @import("coins/ergo.zig");
 const bitcoin = @import("coins/bitcoin.zig");
 const zano = @import("coins/zano.zig");
+const epic = @import("coins/epic.zig");
+const registry = @import("registry.zig");
 
 test "authFor: before the wallet-rpc is spawned the creds are empty" {
     var c: nerva.Nerva = .{};
@@ -398,6 +618,90 @@ test "kill: wipes the credentials and is idempotent" {
     for (sess.pass_buf) |b| try std.testing.expectEqual(@as(u8, 0), b);
 
     kill(&sess); // no child, no creds — must still be safe
+    try std.testing.expect(sess.child == null);
+}
+
+test "pickWalletError surfaces the wallet process's failure line" {
+    // A wrong password: the error-like line wins over routine startup chatter, with
+    // any leading epee timestamp stripped.
+    try std.testing.expectEqualStrings(
+        "Error: invalid password",
+        pickWalletError("Loading wallet...\n2026-07-21 09:10:11.512 Error: invalid password\n"),
+    );
+
+    // A corrupt / unreadable wallet file: the last error-like line is chosen even
+    // when it lands after other output.
+    try std.testing.expectEqualStrings(
+        "failed to load wallet: file I/O error",
+        pickWalletError("opening wallet\nsome note\nfailed to load wallet: file I/O error\n"),
+    );
+
+    // No obvious marker: fall back to the last non-empty line rather than nothing.
+    try std.testing.expectEqualStrings(
+        "wallet closed",
+        pickWalletError("starting\nwallet closed\n\n"),
+    );
+
+    // Empty capture yields an empty pick, so the caller keeps the generic message.
+    try std.testing.expectEqual(@as(usize, 0), pickWalletError("   \n\t\n").len);
+
+    // Zano simplewallet dumps its options help after the real failure on a bad
+    // open; the `--seed-doctor` description ("…doing back up(typo, wrong words
+    // order, missing word)…") matches "wrong" and lands last, but must not mask
+    // the actual "failed to load wallet" reason above it.
+    try std.testing.expectEqualStrings(
+        "failed to load wallet: invalid password",
+        pickWalletError(
+            "loading wallet\n" ++
+                "failed to load wallet: invalid password\n" ++
+                "  --seed-doctor            Experimental: if your seed is not working for recovery this is\n" ++
+                "                           likely because you've made a mistake whene you were doing back\n" ++
+                "                           up(typo, wrong words order, missing word).\n",
+        ),
+    );
+}
+
+test "setupWithPassword: every launch-with-password coin wires what the flow needs" {
+    // The flow is fixed — materialize on disk, launch the server, open it — and
+    // each step is a different optional hook. A coin that sets
+    // `launch_server_argv` but forgets one of the others would compile and then
+    // fail at the user's password prompt, on the front-end that happened to try
+    // it first. Assert the shape instead, for every registered coin.
+    inline for (registry.coin_types) |T| {
+        var impl: T = .{};
+        const coin = impl.coin();
+        if (coin.walletLaunchesWithPassword()) {
+            const ew = coin.externalWallet().?;
+            // The server itself, and the port `launchWithPassword` waits on.
+            try std.testing.expect(ew.launch_server_argv != null);
+            try std.testing.expect(ew.rpc_port != null);
+            // Create is a CLI bootstrap first: the server can't make the wallet
+            // it would have to be launched against.
+            try std.testing.expect(ew.cli_create != null);
+            // ...and a wallet that can be made must be removable again, or the
+            // front-ends' "replace" offers a dead end.
+            try std.testing.expect(ew.remove != null);
+        }
+    }
+}
+
+test "setupWithPassword: locking this shape is ending the process, not an op" {
+    // Returns before touching a process or the filesystem, so this is offline.
+    var e: epic.Epic = .{};
+    var sess: Session = .{};
+    var detail: Coin.WalletErrSink = .{};
+    try std.testing.expectError(error.Unsupported, setupWithPassword(
+        &sess,
+        e.coin(),
+        std.testing.allocator,
+        "/nonexistent",
+        "/nonexistent",
+        .lock,
+        "",
+        "",
+        "",
+        &detail,
+    ));
     try std.testing.expect(sess.child == null);
 }
 
