@@ -2997,6 +2997,12 @@ const Activity = struct {
     /// data dir or IO hiccup leaves the last figure in place — the atomics persist
     /// across polls — so the line doesn't flicker to "—" on a transient miss.
     fn sampleStorage(self: *Activity, a: std.mem.Allocator) void {
+        // Nothing to measure on a remote node — the Storage line is hidden there.
+        // Re-arm so the first poll back on the local daemon samples at once.
+        if (!self.usesLocalDaemon()) {
+            self.storage_next_ns = 0;
+            return;
+        }
         var threaded: std.Io.Threaded = .init(a, .{});
         defer threaded.deinit();
         const io = threaded.io();
@@ -8693,6 +8699,14 @@ pub const App = struct {
             formatStorageGB(a, act.storage_bytes)
         else
             (zz.Style{}).dim(true).render(a, "—") catch "—";
+        // Hidden on a remote node: the chain lives on someone else's machine and
+        // its API doesn't report a size, while the figure above would measure our
+        // own (near-empty, or left over from a local node) data dir — which, next
+        // to "Using a remote node", reads as the remote chain's size.
+        const storage_line: []const u8 = if (act.usesLocalDaemon())
+            try std.fmt.allocPrint(a, "\n{s}  {s}", .{ storage_label, storage_value })
+        else
+            "";
 
         // Disk-usage bar: how full the volume holding the blockchains is. Sits
         // apart from the sync bars (separated by a blank line) because it's a
@@ -8738,8 +8752,7 @@ pub const App = struct {
                 \\{s}: {s}{s}
                 \\
                 \\{s}  {s}
-                \\{s}  {s}{s}
-                \\{s}  {s}
+                \\{s}  {s}{s}{s}
                 \\
                 \\{s}  {s}
                 \\{s}  {s}
@@ -8764,8 +8777,7 @@ pub const App = struct {
                 blocks_label,
                 blocks_bar,
                 behind_text,
-                storage_label,
-                storage_value,
+                storage_line,
                 disk_label,
                 disk_bar,
                 mem_label,
