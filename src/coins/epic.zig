@@ -2846,12 +2846,15 @@ pub const Epic = struct {
     /// One `retrieve_txs` TxLogEntry (the subset BoxWallet uses). Amounts are
     /// integer-base-unit strings; `creation_ts` is an RFC-3339 timestamp;
     /// `confirmed` is the only settlement state the wallet reports (no count).
+    /// `tx_slate_id` is the handle the transaction is known by on both sides —
+    /// and what `cancel_tx` takes.
     const TxLogEntry = struct {
         tx_type: []const u8 = "",
         creation_ts: []const u8 = "",
         confirmed: bool = false,
         amount_credited: []const u8 = "0",
         amount_debited: []const u8 = "0",
+        tx_slate_id: ?[]const u8 = null,
     };
 
     /// Stand-in confirmation count for a `confirmed` entry — the wallet reports
@@ -2859,11 +2862,23 @@ pub const Epic = struct {
     /// safely past any frontend's "settled" threshold and an unsettled one 0.
     const confirmed_sentinel: i64 = 9999;
 
+    /// How old an unfinished send must be before it's offered for cancelling.
+    ///
+    /// A send the wallet has *posted* still reads `TxSentCreated` until the
+    /// listener sees it in the mempool — up to ~4 minutes — and cancelling one
+    /// then would free inputs the network is about to spend and forget the
+    /// change output until a rescan. Nothing is lost, but the balance is wrong
+    /// until then. Past this age a posted send has long since been marked (or
+    /// mined), so what's still `TxSentCreated` is one the receiver never
+    /// answered: exactly the send there is to cancel.
+    const cancel_min_age_s: i64 = 10 * 60;
+
     /// The open wallet's most recent transactions, newest-first, via the Owner
     /// API's `retrieve_txs` (needs the cached token — `error.WalletLocked` when
-    /// no wallet is open, same as the balance read). The reply spans the whole
-    /// tx log, but only the `limit` newest normalized rows survive; the
-    /// decrypted reply is wiped before free like every Owner-API buffer.
+    /// no wallet is open, same as the balance read). The wallet pages the log
+    /// itself — 4.x *requires* `limit`/`offset`/`sort_order` — so only the
+    /// `limit` newest entries ever cross the wire. The decrypted reply is wiped
+    /// before free like every Owner-API buffer.
     fn epicTransactions(
         allocator: std.mem.Allocator,
         auth: models.CoinAuth,
@@ -2874,56 +2889,69 @@ pub const Epic = struct {
 
         var threaded: std.Io.Threaded = .init(allocator, .{});
         defer threaded.deinit();
+        const io = threaded.io();
 
         const params = try std.fmt.allocPrint(
             allocator,
-            "{{\"token\":\"{s}\",\"refresh_from_node\":true,\"tx_id\":null,\"tx_slate_id\":null}}",
-            .{token_buf[0..tn]},
+            "{{\"token\":\"{s}\",\"refresh_from_node\":true,\"tx_id\":null,\"tx_slate_id\":null," ++
+                "\"limit\":{d},\"offset\":0,\"sort_order\":\"desc\"}}",
+            .{ token_buf[0..tn], limit },
         );
         defer allocator.free(params);
 
-        const r = try secureRpc(allocator, threaded.io(), auth, "retrieve_txs", params);
+        const r = try secureRpc(allocator, io, auth, "retrieve_txs", params);
         defer {
             @memset(r, 0);
             allocator.free(r);
         }
         if (!innerSucceeded(r)) return error.WalletTransactionsFailed;
-        return parseTxLog(allocator, r, limit);
+        return parseTxLog(allocator, r, limit, std.Io.Clock.real.now(io).toSeconds());
     }
 
-    /// Map a decrypted `retrieve_txs` reply — `{"result":{"Ok":[<bool>,
-    /// [entries…]]}}` — into normalized `WalletTx`es, newest-first, capped at
-    /// `limit`. Cancelled entries are dropped. Pulled out as a pure function so
-    /// the parse is unit-testable without a wallet.
-    fn parseTxLog(allocator: std.mem.Allocator, inner: []const u8, limit: usize) ![]models.WalletTx {
-        const Env = struct {
-            result: ?struct { Ok: ?struct { bool, []TxLogEntry } = null } = null,
+    /// Map a decrypted `retrieve_txs` reply into normalized `WalletTx`es,
+    /// newest-first, capped at `limit`. Takes both shapes the wallet has used:
+    /// 4.x's `{"Ok":{"pager":…,"txs":[…]}}` and the older `{"Ok":[<bool>,
+    /// [entries…]]}`. Cancelled entries are dropped. `now` (unix seconds) decides
+    /// which unfinished sends are old enough to cancel. Pure, so the parse is
+    /// unit-testable without a wallet.
+    fn parseTxLog(allocator: std.mem.Allocator, inner: []const u8, limit: usize, now: i64) ![]models.WalletTx {
+        const opts: std.json.ParseOptions = .{ .ignore_unknown_fields = true, .allocate = .alloc_always };
+        const Paged = struct { result: ?struct { Ok: ?struct { txs: []const TxLogEntry = &.{} } = null } = null };
+        const Tuple = struct { result: ?struct { Ok: ?struct { bool, []TxLogEntry } = null } = null };
+
+        var arena = std.heap.ArenaAllocator.init(allocator);
+        defer arena.deinit();
+        const entries: []const TxLogEntry = if (std.json.parseFromSliceLeaky(Paged, arena.allocator(), inner, opts)) |v|
+            ((v.result orelse return error.WalletTransactionsFailed).Ok orelse return error.WalletTransactionsFailed).txs
+        else |_| blk: {
+            const v = try std.json.parseFromSliceLeaky(Tuple, arena.allocator(), inner, opts);
+            const ok = (v.result orelse return error.WalletTransactionsFailed).Ok orelse
+                return error.WalletTransactionsFailed;
+            break :blk ok[1];
         };
-        var parsed = try std.json.parseFromSlice(Env, allocator, inner, .{
-            .ignore_unknown_fields = true,
-            .allocate = .alloc_always,
-        });
-        defer parsed.deinit();
-        const ok = (parsed.value.result orelse return error.WalletTransactionsFailed).Ok orelse
-            return error.WalletTransactionsFailed;
-        const entries = ok[1];
 
         const all = try allocator.alloc(models.WalletTx, entries.len);
         defer allocator.free(all);
         var n: usize = 0;
         for (entries) |e| {
-            const direction = directionFromTxType(e.tx_type) orelse continue;
+            const kind = txKind(e.tx_type) orelse continue;
             const credited = std.fmt.parseInt(u64, e.amount_credited, 10) catch 0;
             const debited = std.fmt.parseInt(u64, e.amount_debited, 10) catch 0;
             // The wallet's net movement: a receive credits more than it debits, a
             // send the reverse (the difference includes the fee).
             const net = if (credited >= debited) credited - debited else debited - credited;
+            const time = parseRfc3339(e.creation_ts) orelse 0;
             all[n] = .{
-                .direction = direction,
+                .direction = kind.direction,
                 .amount = @as(f64, @floatFromInt(net)) / epic_base,
-                .time = parseRfc3339(e.creation_ts) orelse 0,
+                .time = time,
                 .confirmations = if (e.confirmed) confirmed_sentinel else 0,
+                .stage = if (e.confirmed) .none else kind.stage,
             };
+            if (e.tx_slate_id) |id| all[n].setTxid(id);
+            all[n].cancellable = !e.confirmed and kind.stage == .awaiting_counterparty and
+                kind.direction == .sent and all[n].txid_len > 0 and
+                time > 0 and now - time >= cancel_min_age_s;
             n += 1;
         }
         std.mem.sort(models.WalletTx, all[0..n], {}, newerFirst);
@@ -2933,13 +2961,83 @@ pub const Epic = struct {
         return out;
     }
 
-    /// Map a TxLogEntry's `tx_type` (grin's TxLogEntryType names) to the
-    /// normalized direction. A `ConfirmedCoinbase` was mined by the wallet
-    /// itself; cancelled entries have no direction (null — dropped).
-    fn directionFromTxType(tx_type: []const u8) ?models.TxDirection {
-        if (std.mem.eql(u8, tx_type, "TxReceived")) return .received;
-        if (std.mem.eql(u8, tx_type, "TxSent")) return .sent;
-        if (std.mem.eql(u8, tx_type, "ConfirmedCoinbase")) return .stake;
+    /// Cancel the unfinished send whose slate id is `slate_id` via the Owner
+    /// API's `cancel_tx`: the wallet drops it and unlocks the inputs it had
+    /// reserved, so they're spendable again. Only offered for rows
+    /// `parseTxLog` marked `cancellable` (see `cancel_min_age_s`). If the
+    /// receiver answers later, the reply finds nothing to finalize, so the
+    /// payment can't complete behind the user's back. A refusal comes back as
+    /// `.failed` with the wallet's reason.
+    fn epicCancelTx(
+        allocator: std.mem.Allocator,
+        auth: models.CoinAuth,
+        slate_id: []const u8,
+    ) anyerror!models.SendResult {
+        if (!isUuid(slate_id)) return .{ .failed = "That isn't a transaction this wallet can cancel." };
+
+        var token_buf: [128]u8 = undefined;
+        const tn = Session.get(&token_buf) orelse return error.WalletLocked;
+
+        var threaded: std.Io.Threaded = .init(allocator, .{});
+        defer threaded.deinit();
+
+        const params = try std.fmt.allocPrint(
+            allocator,
+            "{{\"token\":\"{s}\",\"tx_id\":null,\"tx_slate_id\":\"{s}\"}}",
+            .{ token_buf[0..tn], slate_id },
+        );
+        defer allocator.free(params);
+
+        const r = try secureRpc(allocator, threaded.io(), auth, "cancel_tx", params);
+        defer {
+            @memset(r, 0);
+            allocator.free(r);
+        }
+        return parseCancelReply(allocator, r);
+    }
+
+    /// Map a decrypted `cancel_tx` reply: `{"result":{"Ok":null}}` is success;
+    /// anything else carries the wallet's own message. Pure, for testing.
+    fn parseCancelReply(allocator: std.mem.Allocator, inner: []const u8) !models.SendResult {
+        if (innerSucceeded(inner))
+            return .{ .ok = "The coins it had set aside are spendable again." };
+        const Env = struct { @"error": ?struct { message: []const u8 = "" } = null };
+        var parsed = std.json.parseFromSlice(Env, allocator, inner, .{
+            .ignore_unknown_fields = true,
+            .allocate = .alloc_always,
+        }) catch return .{ .failed = unreadable_reply };
+        defer parsed.deinit();
+        const msg = if (parsed.value.@"error") |e| e.message else "";
+        if (msg.len == 0) return .{ .failed = "The wallet refused to cancel it without saying why." };
+        return .{ .failed = try allocator.dupe(u8, msg[0..@min(msg.len, 240)]) };
+    }
+
+    /// A slate id as the wallet writes it: 36 characters, lowercase or
+    /// uppercase hex in 8-4-4-4-12 groups. Checked before it's spliced into a
+    /// request.
+    fn isUuid(s: []const u8) bool {
+        if (s.len != 36) return false;
+        for (s, 0..) |ch, i| {
+            if (i == 8 or i == 13 or i == 18 or i == 23) {
+                if (ch != '-') return false;
+            } else if (!std.ascii.isHex(ch)) return false;
+        }
+        return true;
+    }
+
+    /// A `tx_type` (epic-wallet's TxLogEntryType names), normalized: which way
+    /// the money moved, and — while unconfirmed — where it is. Cancelled entries
+    /// (and any type this doesn't know) are null, and dropped.
+    fn txKind(tx_type: []const u8) ?struct { direction: models.TxDirection, stage: models.TxStage } {
+        const eql = std.mem.eql;
+        if (eql(u8, tx_type, "TxReceived")) return .{ .direction = .received, .stage = .none };
+        if (eql(u8, tx_type, "TxSent")) return .{ .direction = .sent, .stage = .none };
+        if (eql(u8, tx_type, "ConfirmedCoinbase")) return .{ .direction = .stake, .stage = .none };
+        // Made, not yet seen by the network: the receiver hasn't answered, or it
+        // was only just posted.
+        if (eql(u8, tx_type, "TxSentCreated")) return .{ .direction = .sent, .stage = .awaiting_counterparty };
+        if (eql(u8, tx_type, "TxSentMempool")) return .{ .direction = .sent, .stage = .in_mempool };
+        if (eql(u8, tx_type, "TxReceivedMempool")) return .{ .direction = .received, .stage = .in_mempool };
         return null;
     }
 
@@ -3043,6 +3141,7 @@ pub const Epic = struct {
         .wallet_receive_address = vtWalletReceiveAddress,
         .wallet_send = vtWalletSend,
         .wallet_send_fee = vtWalletSendFee,
+        .wallet_cancel_tx = vtWalletCancelTx,
         // A send here is on its way, not done — the listener completes it — and
         // what comes back is the slate id.
         .send_ok_label = "Sent — waiting for the receiver. Slate:",
@@ -3105,6 +3204,15 @@ pub const Epic = struct {
         amount: f64,
     ) anyerror!models.SendResult {
         return epicSend(allocator, wallet_auth, address, amount);
+    }
+
+    fn vtWalletCancelTx(
+        _: *anyopaque,
+        allocator: std.mem.Allocator,
+        wallet_auth: models.CoinAuth,
+        txid: []const u8,
+    ) anyerror!models.SendResult {
+        return epicCancelTx(allocator, wallet_auth, txid);
     }
 
     fn vtWalletSendFee(
@@ -3904,7 +4012,7 @@ test "scanErrLine lifts the last ERROR line (sans timestamp) from scan output" {
     try std.testing.expectEqualStrings("", Epic.scanErrLine("INFO all good\nWARN minor\n"));
 }
 
-test "parseTxLog maps a retrieve_txs reply newest-first, dropping cancelled entries" {
+test "parseTxLog reads the older tuple reply newest-first, dropping cancelled entries" {
     const allocator = std.testing.allocator;
 
     // A decrypted retrieve_txs inner reply (subset): a mined coinbase, a
@@ -3919,7 +4027,7 @@ test "parseTxLog maps a retrieve_txs reply newest-first, dropping cancelled entr
         \\]]}}
     ;
 
-    const txs = try Epic.parseTxLog(allocator, inner, 32);
+    const txs = try Epic.parseTxLog(allocator, inner, 32, 0);
     defer allocator.free(txs);
 
     // Cancelled entry dropped, the rest newest-first.
@@ -3934,21 +4042,84 @@ test "parseTxLog maps a retrieve_txs reply newest-first, dropping cancelled entr
     try std.testing.expectApproxEqAbs(@as(f64, 16.0), txs[2].amount, 1e-9);
 
     // The cap keeps only the newest rows.
-    const capped = try Epic.parseTxLog(allocator, inner, 1);
+    const capped = try Epic.parseTxLog(allocator, inner, 1, 0);
     defer allocator.free(capped);
     try std.testing.expectEqual(@as(usize, 1), capped.len);
     try std.testing.expectEqual(models.TxDirection.sent, capped[0].direction);
 }
 
-test "directionFromTxType maps grin TxLogEntryType names" {
-    try std.testing.expectEqual(models.TxDirection.received, Epic.directionFromTxType("TxReceived").?);
-    try std.testing.expectEqual(models.TxDirection.sent, Epic.directionFromTxType("TxSent").?);
+test "parseTxLog reads 4.x's paged reply: stages, slate ids, and what can be cancelled" {
+    const allocator = std.testing.allocator;
+
+    // The shape epic-wallet 4.x returned for wallet B in the spike (subset of
+    // fields): a send the receiver never answered, a send in the mempool, a
+    // confirmed send and receive, and a cancelled send that must be dropped.
+    const inner =
+        \\{"id":1,"jsonrpc":"2.0","result":{"Ok":{"pager":{"limit":20,"offset":0,"records_read":5,"sort_order":"desc","total_records":5},"refresh_from_node":true,"txs":[
+        \\{"id":4,"tx_type":"TxSentCreated","tx_slate_id":"19763226-1dd5-4b89-bf76-d03978a92cd4","creation_ts":"2026-09-23T18:23:00Z","confirmed":false,"amount_credited":"2400000","amount_debited":"4200000"},
+        \\{"id":3,"tx_type":"TxSentMempool","tx_slate_id":"aaaaaaaa-1dd5-4b89-bf76-d03978a92cd4","creation_ts":"2026-09-23T18:20:00Z","confirmed":false,"amount_credited":"0","amount_debited":"1000000"},
+        \\{"id":2,"tx_type":"TxSentCancelled","tx_slate_id":"bbbbbbbb-1dd5-4b89-bf76-d03978a92cd4","creation_ts":"2026-09-23T18:10:00Z","confirmed":false,"amount_credited":"0","amount_debited":"1000000"},
+        \\{"id":1,"tx_type":"TxSent","tx_slate_id":"45ac41a0-7812-47ca-baa6-0021c2e8db0d","creation_ts":"2026-09-23T17:50:00Z","confirmed":true,"amount_credited":"4200000","amount_debited":"10000000"},
+        \\{"id":0,"tx_type":"TxReceived","tx_slate_id":"f75efd84-31cd-429a-bb9c-756a640d8cea","creation_ts":"2026-09-23T17:19:00Z","confirmed":true,"amount_credited":"10000000","amount_debited":"0"}
+        \\]}}}
+    ;
+    const created = Epic.parseRfc3339("2026-09-23T18:23:00Z").?;
+
+    // Five minutes on: the unanswered send isn't cancellable yet — it could be
+    // one that was only just posted.
+    {
+        const txs = try Epic.parseTxLog(allocator, inner, 32, created + 5 * 60);
+        defer allocator.free(txs);
+        try std.testing.expectEqual(@as(usize, 4), txs.len);
+        try std.testing.expectEqual(models.TxStage.awaiting_counterparty, txs[0].stage);
+        try std.testing.expectEqualStrings("19763226-1dd5-4b89-bf76-d03978a92cd4", txs[0].txid());
+        try std.testing.expectApproxEqAbs(@as(f64, 0.018), txs[0].amount, 1e-9);
+        try std.testing.expect(!txs[0].cancellable);
+        try std.testing.expectEqual(models.TxStage.in_mempool, txs[1].stage);
+        try std.testing.expect(!txs[1].cancellable);
+        // Confirmed rows carry no stage, whatever their type.
+        try std.testing.expectEqual(models.TxStage.none, txs[2].stage);
+        try std.testing.expect(txs[2].confirmations > 0);
+        try std.testing.expectEqual(models.TxDirection.received, txs[3].direction);
+    }
+    // Ten minutes on it is — and it's the only one.
+    {
+        const txs = try Epic.parseTxLog(allocator, inner, 32, created + 10 * 60);
+        defer allocator.free(txs);
+        try std.testing.expect(txs[0].cancellable);
+        for (txs[1..]) |t| try std.testing.expect(!t.cancellable);
+    }
+}
+
+test "parseCancelReply and isUuid: a cancel is only ever of a real slate id" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    try std.testing.expect((try Epic.parseCancelReply(a, "{\"id\":1,\"jsonrpc\":\"2.0\",\"result\":{\"Ok\":null}}")) == .ok);
+    const refused = try Epic.parseCancelReply(a, "{\"error\":{\"code\":-32099,\"message\":\"TransactionDoesntExist\"},\"id\":1}");
+    try std.testing.expectEqualStrings("TransactionDoesntExist", refused.failed);
+
+    try std.testing.expect(Epic.isUuid("19763226-1dd5-4b89-bf76-d03978a92cd4"));
+    try std.testing.expect(!Epic.isUuid("19763226-1dd5-4b89-bf76-d03978a92cd"));
+    try std.testing.expect(!Epic.isUuid("19763226x1dd5-4b89-bf76-d03978a92cd4"));
+    try std.testing.expect(!Epic.isUuid("19763226-1dd5-4b89-bf76-d03978a92c\"}"));
+
+    var e: Epic = .{};
+    try std.testing.expect(e.coin().supportsCancelTx());
+}
+
+test "txKind maps epic-wallet's TxLogEntryType names" {
+    try std.testing.expectEqual(models.TxDirection.received, Epic.txKind("TxReceived").?.direction);
+    try std.testing.expectEqual(models.TxDirection.sent, Epic.txKind("TxSent").?.direction);
     // A coinbase the wallet mined itself.
-    try std.testing.expectEqual(models.TxDirection.stake, Epic.directionFromTxType("ConfirmedCoinbase").?);
+    try std.testing.expectEqual(models.TxDirection.stake, Epic.txKind("ConfirmedCoinbase").?.direction);
+    try std.testing.expectEqual(models.TxStage.awaiting_counterparty, Epic.txKind("TxSentCreated").?.stage);
+    try std.testing.expectEqual(models.TxStage.in_mempool, Epic.txKind("TxSentMempool").?.stage);
+    try std.testing.expectEqual(models.TxStage.in_mempool, Epic.txKind("TxReceivedMempool").?.stage);
     // Cancelled entries have no direction — dropped.
-    try std.testing.expect(Epic.directionFromTxType("TxReceivedCancelled") == null);
-    try std.testing.expect(Epic.directionFromTxType("TxSentCancelled") == null);
-    try std.testing.expect(Epic.directionFromTxType("something-unknown") == null);
+    try std.testing.expect(Epic.txKind("TxReceivedCancelled") == null);
+    try std.testing.expect(Epic.txKind("TxSentCancelled") == null);
+    try std.testing.expect(Epic.txKind("something-unknown") == null);
 }
 
 test "parseRfc3339 converts the wallet's creation_ts to unix seconds" {

@@ -50,6 +50,7 @@ struct WalletTxRow {
     settled: bool,       // past the confirmed threshold — colours the status
     txid: string,        // the daemon's own hash, shown when the row is expanded
     incoming: bool,      // colours the row
+    cancellable: bool,   // a send the receiver never answered — offers Cancel
 }
 
 // One row in the Staking list, pre-formatted by the host like WalletTxRow.
@@ -1576,6 +1577,17 @@ export component AppWindow inherits Window {
     // unreadable to a phone camera.
     in property <image> receive-qr;
     in property <[WalletTxRow]> tx-rows;
+    // Cancelling a send that never went through (Epic). The row's id and a
+    // one-line description go into the confirm; the outcome shows at the top
+    // of the Transactions tab.
+    in property <bool> has-cancel-tx: false;
+    in-out property <bool> cancel-tx-open: false;
+    in-out property <bool> cancel-tx-busy: false;
+    in-out property <string> cancel-tx-id: "";
+    in-out property <string> cancel-tx-summary: "";
+    in-out property <string> tx-action-result: "";
+    in-out property <bool> tx-action-error: false;
+    callback cancel-tx(string); // the row's id
     // The wallet's stakes, newest first (Staking tab). Empty for every coin
     // without a stake action, and while nothing has been staked.
     in property <[StakeRow]> stake-rows;
@@ -1869,7 +1881,7 @@ export component AppWindow inherits Window {
     // tab strip while a modal is up: switching coins behind a password box would
     // leave the box asking its question about a different wallet.
     out property <bool> modal-open:
-        root.browse-open || root.send-confirm-open || root.mining-stop-open
+        root.browse-open || root.send-confirm-open || root.mining-stop-open || root.cancel-tx-open
         || root.wallet-stage != 0 || root.unlock-open || root.update-open
         || root.accel-open || root.prune-open || root.node-open || root.wa-stage != 0
         || root.sc-stage != 0;
@@ -1896,6 +1908,11 @@ export component AppWindow inherits Window {
         }
         if (root.mining-stop-open) {
             root.mining-stop-open = false;
+            return true;
+        }
+        // Not once it's been asked for: the wallet is already cancelling it.
+        if (root.cancel-tx-open && !root.cancel-tx-busy) {
+            root.cancel-tx-open = false;
             return true;
         }
         if (root.accel-open) {
@@ -3275,6 +3292,12 @@ export component AppWindow inherits Window {
                             font-size: 17px;
                             font-weight: 600;
                         }
+                        if root.tx-action-result != "": Text {
+                            text: root.tx-action-result;
+                            color: root.tx-action-error ? #e05c5c : #7ec27e;
+                            font-size: 13px;
+                            wrap: word-wrap;
+                        }
                         // An empty list has three quite different causes, and saying
                         // "No transactions yet" to someone whose daemon simply isn't
                         // running reads as "your history is gone".
@@ -3379,6 +3402,20 @@ export component AppWindow inherits Window {
                                                 font-size: 12px;
                                                 vertical-alignment: center;
                                                 horizontal-stretch: 1;
+                                            }
+                                            // A send the receiver never answered
+                                            // can be taken back. `visible`, not an
+                                            // `if`, like the copy button beside it.
+                                            Button {
+                                                visible: root.has-cancel-tx && row.cancellable;
+                                                text: "Cancel send\u{2026}";
+                                                enabled: !root.cancel-tx-busy;
+                                                clicked => {
+                                                    root.cancel-tx-id = row.txid;
+                                                    root.cancel-tx-summary = row.amount + " " + root.coin-name + ", sent " + row.when;
+                                                    root.tx-action-result = "";
+                                                    root.cancel-tx-open = true;
+                                                }
                                             }
                                             CopyIconButton {
                                                 visible: row.txid != "";
@@ -4717,6 +4754,65 @@ export component AppWindow inherits Window {
                                 } else {
                                     root.send-funds(root.send-confirm-address, root.send-confirm-amount);
                                 }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // ---- cancel-send confirm ----
+        // Stays up while the wallet cancels it; main.cpp closes it with the
+        // outcome, which lands at the top of the Transactions tab.
+        if root.cancel-tx-open: Rectangle {
+            background: #000000bb;
+            TouchArea { }
+
+            Rectangle {
+                width: 380px;
+                height: cancel-body.preferred-height;
+                x: (parent.width - self.width) / 2;
+                y: (parent.height - self.height) / 2;
+                background: #202020;
+                border-radius: 10px;
+                border-width: 1px;
+                border-color: root.coin-color;
+
+                cancel-body := VerticalLayout {
+                    padding: 16px;
+                    spacing: 10px;
+                    alignment: start;
+                    Text {
+                        text: root.cancel-tx-busy ? "Cancelling the send\u{2026}" : "Cancel this send?";
+                        color: #e6e6e6;
+                        font-size: 15px;
+                        font-weight: 600;
+                    }
+                    Text {
+                        text: root.cancel-tx-summary;
+                        color: #e6e6e6;
+                        font-family: "monospace";
+                        font-size: 13px;
+                        wrap: word-wrap;
+                    }
+                    Text {
+                        text: "The receiver never answered it. Cancelling unlocks the coins it set aside; if the receiver answers later, it won't go through.";
+                        color: #9a9a9a;
+                        font-size: 12px;
+                        wrap: word-wrap;
+                    }
+                    if !root.cancel-tx-busy: HorizontalLayout {
+                        alignment: end;
+                        spacing: 8px;
+                        Button {
+                            text: "Keep waiting";
+                            clicked => { root.cancel-tx-open = false; }
+                        }
+                        Button {
+                            text: "Cancel send";
+                            clicked => {
+                                root.cancel-tx-busy = true;
+                                root.cancel-tx(root.cancel-tx-id);
                             }
                         }
                     }

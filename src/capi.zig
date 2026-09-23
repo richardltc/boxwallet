@@ -2181,7 +2181,66 @@ pub const BwWalletTx = extern struct {
     confirmations: i64,
     txid: [64]u8,
     txid_len: usize,
+    /// `models.TxStage` ordinal — where an unconfirmed transaction is.
+    stage: c_int,
+    /// 1 when `bw_wallet_cancel_tx` may be offered for this row.
+    cancellable: c_int,
 };
+
+/// What the Status column says for a `BwWalletTx.stage` — the same words the
+/// TUI uses. 0 for `none` (show the confirmation count instead).
+export fn bw_tx_stage_text(stage: c_int, buf: ?[*]u8, cap: usize) usize {
+    const b = buf orelse return 0;
+    const s = std.enums.fromInt(models.TxStage, stage) orelse return 0;
+    return copyOut(b[0..cap], s.label());
+}
+
+/// Whether the coin can cancel an unsent transaction (a row with
+/// `cancellable` set) — drives the cancel action on the Transactions tab.
+export fn bw_coin_supports_cancel_tx(idx: usize) c_int {
+    const c = coinByIndex(idx) orelse return 0;
+    return if (c.supportsCancelTx()) 1 else 0;
+}
+
+/// Cancel the transaction `txid` (a `cancellable` row's id): 0 = done (`out` =
+/// what happened), 1 = the wallet refused (`out` = its reason), -1 = transport
+/// failure (`bw_last_error` has why). Blocks — call off the UI thread.
+export fn bw_wallet_cancel_tx(ctx: ?*Ctx, idx: usize, txid: ?[*:0]const u8, out: ?[*]u8, cap: usize) c_int {
+    const c = ctx orelse return -1;
+    const id_z = txid orelse return -1;
+    const o = out orelse return -1;
+    if (idx >= coin_count) return -1;
+    const coin = coinByIndex(idx) orelse return -1;
+    if (!coin.supportsCancelTx()) return -1;
+
+    var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const io = sharedIo();
+
+    c.wallet_mtx.lockUncancelable(io);
+    defer c.wallet_mtx.unlock(io);
+
+    const auth = walletAuth(a, io, coin, c, idx) catch |err| {
+        c.setError(@errorName(err));
+        return -1;
+    };
+    const res = coin.walletCancelTx(a, auth, std.mem.span(id_z)) catch |err| {
+        c.setError(@errorName(err));
+        c.setErrorCode(@errorName(err));
+        return -1;
+    };
+    return switch (res) {
+        .ok => |msg| blk: {
+            _ = copyOut(o[0..cap], msg);
+            break :blk 0;
+        },
+        .failed => |reason| blk: {
+            _ = copyOut(o[0..cap], reason);
+            break :blk 1;
+        },
+    };
+}
 
 /// The confirmation count above which a transaction reads as settled. One line
 /// for both front-ends, so the TUI's Status column and the GUI's confirmations
@@ -2221,6 +2280,8 @@ export fn bw_wallet_transactions(ctx: ?*Ctx, idx: usize, out: ?*BwWalletTx, cap:
             .confirmations = t.confirmations,
             .txid = undefined,
             .txid_len = t.txid_len,
+            .stage = @intFromEnum(t.stage),
+            .cancellable = @intFromBool(t.cancellable),
         };
         @memcpy(d.txid[0..t.txid_len], t.txid());
     }
@@ -5281,6 +5342,7 @@ test "bw_coin_ext_wallet's flags agree with the vtable for every coin" {
         try std.testing.expectEqual(coin.walletLaunchesWithPassword(), flags & bw_ew_launch_with_pw != 0);
         try std.testing.expectEqual(coin.walletHasListener(), flags & bw_ew_has_listener != 0);
         try std.testing.expectEqual(coin.supportsSendFee(), bw_coin_supports_send_fee(i) != 0);
+        try std.testing.expectEqual(coin.supportsCancelTx(), bw_coin_supports_cancel_tx(i) != 0);
         var lb: [96]u8 = undefined;
         try std.testing.expectEqual(coin.sendOkLabel().len, bw_coin_send_ok_label(i, &lb, lb.len));
         // A listener coin names it; no other coin does.
@@ -5290,6 +5352,16 @@ test "bw_coin_ext_wallet's flags agree with the vtable for every coin" {
     // A coin with no external wallet at all reports a bare 0, and so does an
     // index that isn't a coin.
     try std.testing.expectEqual(@as(c_int, 0), bw_coin_ext_wallet(coin_count));
+}
+
+test "bw_tx_stage_text gives the TUI's words for each stage, nothing for none" {
+    var buf: [48]u8 = undefined;
+    try std.testing.expectEqual(@as(usize, 0), bw_tx_stage_text(0, &buf, buf.len));
+    var n = bw_tx_stage_text(1, &buf, buf.len);
+    try std.testing.expectEqualStrings(models.TxStage.awaiting_counterparty.label(), buf[0..n]);
+    n = bw_tx_stage_text(2, &buf, buf.len);
+    try std.testing.expectEqualStrings(models.TxStage.in_mempool.label(), buf[0..n]);
+    try std.testing.expectEqual(@as(usize, 0), bw_tx_stage_text(99, &buf, buf.len));
 }
 
 test "Nerva reports the wallet shape the GUI has to build for" {

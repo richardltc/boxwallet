@@ -1009,6 +1009,17 @@ pub const Coin = struct {
             address: []const u8,
             amount: f64,
         ) anyerror!models.FeeEstimate = null,
+        /// Optional: cancel a transaction the wallet made but the network never
+        /// saw, unlocking what it spent. `txid` is the row's `WalletTx.txid()`;
+        /// only rows marked `cancellable` are offered. Like `wallet_send`, a
+        /// refusal is an outcome (`.failed` with the wallet's reason), not an
+        /// error. `supportsCancelTx` keys off this being non-null.
+        wallet_cancel_tx: ?*const fn (
+            ptr: *anyopaque,
+            allocator: std.mem.Allocator,
+            auth: models.CoinAuth,
+            txid: []const u8,
+        ) anyerror!models.SendResult = null,
         /// What a successful send's result is introduced with, for a coin where
         /// the front-ends' "Sent. Txid:" would say something untrue — Epic's
         /// send is on its way, not done, and what comes back is a slate id, not
@@ -1668,6 +1679,24 @@ pub const Coin = struct {
     ) !models.FeeEstimate {
         const f = self.vtable.wallet_send_fee orelse return error.Unsupported;
         return f(self.ptr, allocator, auth, address, amount);
+    }
+
+    /// Whether the coin can cancel an unsent transaction (drives the
+    /// Transactions tab's cancel action). True iff it wires `wallet_cancel_tx`.
+    pub fn supportsCancelTx(self: Coin) bool {
+        return self.vtable.wallet_cancel_tx != null;
+    }
+
+    /// Cancel the transaction `txid` (a `cancellable` row's id). Errors
+    /// `error.Unsupported` if the coin can't (`supportsCancelTx` false).
+    pub fn walletCancelTx(
+        self: Coin,
+        allocator: std.mem.Allocator,
+        auth: models.CoinAuth,
+        txid: []const u8,
+    ) !models.SendResult {
+        const f = self.vtable.wallet_cancel_tx orelse return error.Unsupported;
+        return f(self.ptr, allocator, auth, txid);
     }
 
     /// The coin's own lead-in for a successful send's result, or empty to keep

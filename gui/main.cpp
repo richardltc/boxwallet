@@ -808,11 +808,17 @@ make_tx_rows(const std::vector<BwWalletTx> &txs, int decimals, bool has_stake)
         r.when = ss(relative_time(t.time));
         // Past the settled threshold the exact count stops being news — the
         // same line the TUI's Status column draws, from the same constant.
+        // A coin that says where an unconfirmed transaction is (Epic) gets the
+        // core's words for it — the TUI's — instead of "unconfirmed".
+        char stage[48];
+        size_t stage_n = bw_tx_stage_text(t.stage, stage, sizeof stage);
         r.confirmations = ss(
-            t.confirmations > bw_tx_confirmed_threshold() ? std::string("confirmed")
+            stage_n > 0                                   ? std::string(stage, stage_n)
+            : t.confirmations > bw_tx_confirmed_threshold() ? std::string("confirmed")
             : t.confirmations <= 0                        ? std::string("unconfirmed")
                                                           : group_int(t.confirmations) + " conf");
-        r.settled = t.confirmations > bw_tx_confirmed_threshold();
+        r.settled = stage_n == 0 && t.confirmations > bw_tx_confirmed_threshold();
+        r.cancellable = t.cancellable != 0;
         // Explicitly length-counted: the core doesn't NUL-terminate a txid.
         r.txid = ss(std::string(t.txid, t.txid_len));
         r.incoming = incoming;
@@ -996,6 +1002,8 @@ static void apply_coin_metadata(const AppWindow *ui, bw_ctx *ctx, int idx)
     ui->set_has_receive(bw_coin_supports_receive_address(idx) != 0);
     ui->set_has_send(bw_coin_supports_send(idx) != 0);
     ui->set_has_send_fee(bw_coin_supports_send_fee(idx) != 0);
+    ui->set_has_cancel_tx(bw_coin_supports_cancel_tx(idx) != 0);
+    ui->set_tx_action_result(ss(""));
     // Staking — an explicit, term-locking stake transaction (Salvium), shown
     // beside Send. The hint is the coin's own words for what the lock commits
     // to; it rides along here because it's metadata, and the confirm step must
@@ -3248,6 +3256,39 @@ int main(int argc, char **argv)
     // The confirm modal stays up for the whole round trip — it is what the
     // busy halo rings — so every path out of here closes it, including the ones
     // that never reach the daemon.
+    // Cancel a send the receiver never answered (a cancellable row). The confirm
+    // stays up, busy, until the wallet answers; the outcome lands at the top of
+    // the Transactions tab and the poll is woken so the row and the balance
+    // catch up at once.
+    ui->on_cancel_tx([weak, ctx, wake_poll](slint::SharedString txid) {
+        int coin = g_selected.load();
+        if (coin < 0) {
+            if (auto h = weak.lock()) {
+                (*h)->set_cancel_tx_busy(false);
+                (*h)->set_cancel_tx_open(false);
+            }
+            return;
+        }
+        std::string id{std::string_view(txid)};
+        std::thread([weak, ctx, coin, id, wake_poll]() {
+            WorkerGuard wg;
+            char out[256] = {0};
+            int rc = bw_wallet_cancel_tx(ctx, static_cast<size_t>(coin), id.c_str(), out, sizeof out);
+            std::string text = rc == 0   ? "Send cancelled. " + std::string(out)
+                               : rc == 1 ? "Couldn't cancel: " + std::string(out)
+                                         : "Couldn't cancel: " + last_error_text(ctx, rc);
+            post_to_ui([weak, rc, text]() {
+                if (auto h = weak.lock()) {
+                    (*h)->set_cancel_tx_busy(false);
+                    (*h)->set_cancel_tx_open(false);
+                    (*h)->set_tx_action_error(rc != 0);
+                    (*h)->set_tx_action_result(ss(text));
+                }
+            });
+            wake_poll();
+        }).detach();
+    });
+
     // The fee quote for the confirm step (coins with bw_coin_supports_send_fee).
     // Priced off the UI thread; the answer only lands if the same confirm is
     // still open — a quote for a send the user has since cancelled or changed
