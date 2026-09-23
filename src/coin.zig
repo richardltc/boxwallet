@@ -996,6 +996,24 @@ pub const Coin = struct {
             address: []const u8,
             amount: f64,
         ) anyerror!models.SendResult = null,
+        /// Optional: what sending `amount` to `address` would cost, worked out
+        /// without sending — so the confirm step can state the fee (and the
+        /// total leaving the wallet) before the user agrees to it. A refusal the
+        /// wallet can already see (not enough to cover amount + fee, a bad
+        /// address) comes back as `.failed`. Paired with `wallet_send`;
+        /// `supportsSendFee` keys off this being non-null.
+        wallet_send_fee: ?*const fn (
+            ptr: *anyopaque,
+            allocator: std.mem.Allocator,
+            auth: models.CoinAuth,
+            address: []const u8,
+            amount: f64,
+        ) anyerror!models.FeeEstimate = null,
+        /// What a successful send's result is introduced with, for a coin where
+        /// the front-ends' "Sent. Txid:" would say something untrue — Epic's
+        /// send is on its way, not done, and what comes back is a slate id, not
+        /// a txid. Empty (the default) keeps each front-end's own wording.
+        send_ok_label: []const u8 = "",
         /// Optional: **stake** `amount` — lock it for the coin's staking term to
         /// earn protocol yield (Salvium: a stake transaction paying the wallet's
         /// own address; principal + yield return to the wallet automatically when
@@ -1631,6 +1649,31 @@ pub const Coin = struct {
     ) !models.SendResult {
         const f = self.vtable.wallet_send orelse return error.Unsupported;
         return f(self.ptr, allocator, auth, address, amount);
+    }
+
+    /// Whether the coin can state a send's fee before it's made (drives the fee
+    /// line on the send confirm step). True iff the coin wires `wallet_send_fee`.
+    pub fn supportsSendFee(self: Coin) bool {
+        return self.vtable.wallet_send_fee != null;
+    }
+
+    /// What sending `amount` to `address` would cost. Errors
+    /// `error.Unsupported` if the coin can't say (`supportsSendFee` false).
+    pub fn walletSendFee(
+        self: Coin,
+        allocator: std.mem.Allocator,
+        auth: models.CoinAuth,
+        address: []const u8,
+        amount: f64,
+    ) !models.FeeEstimate {
+        const f = self.vtable.wallet_send_fee orelse return error.Unsupported;
+        return f(self.ptr, allocator, auth, address, amount);
+    }
+
+    /// The coin's own lead-in for a successful send's result, or empty to keep
+    /// the front-end's default ("Sent. Txid:").
+    pub fn sendOkLabel(self: Coin) []const u8 {
+        return self.vtable.send_ok_label;
     }
 
     /// Whether this coin offers an explicit stake action (drives the Send tab's

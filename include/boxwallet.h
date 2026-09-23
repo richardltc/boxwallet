@@ -219,6 +219,12 @@ int     bw_coin_supports_balance(size_t idx);
 int     bw_coin_supports_transactions(size_t idx);
 int     bw_coin_supports_receive_address(size_t idx);
 int     bw_coin_supports_send(size_t idx);
+/* Whether bw_wallet_send_fee can quote a send's fee before it's made. */
+int     bw_coin_supports_send_fee(size_t idx);
+/* The coin's own lead-in for a successful send's result ("Sent — waiting for
+ * the receiver. Slate:" for Epic, whose send is on its way rather than done and
+ * returns a slate id, not a txid). Returns its length; 0 = none, use your own. */
+size_t  bw_coin_send_ok_label(size_t idx, char *buf, size_t cap);
 /* Whether the coin has an explicit stake action (the Stake control on the Send
  * tab) — Salvium only, so far. Ask this rather than BW_WCAP_STAKE_ACTION: the
  * caps word describes an in-daemon wallet and answers 0 for a coin whose wallet
@@ -1246,6 +1252,15 @@ size_t  bw_wallet_receive_address(bw_ctx *ctx, size_t idx, int force_new, char *
 #define BW_LISTENER_RUNNING 1
 #define BW_LISTENER_STOPPED 2
 int     bw_wallet_listener_state(bw_ctx *ctx, size_t idx);
+
+/* What sending would cost, without sending anything: 0 = *fee_out set (whole
+ * coins), 1 = the wallet already refuses it (out = its reason — too little for
+ * amount + fee, a bad address), -1 = transport failure (bw_last_error has why).
+ * For a bw_coin_supports_send_fee coin: call it when the confirm step opens, so
+ * the fee is stated before the user agrees to it. Blocks — call off the UI
+ * thread. */
+int     bw_wallet_send_fee(bw_ctx *ctx, size_t idx, const char *address, double amount,
+                           double *fee_out, char *out, size_t cap);
 
 /* 0 = broadcast (out = txid), 1 = the daemon rejected it (out = its own reason,
  * verbatim), -1 = transport failure (bw_last_error has why). A rejection is an

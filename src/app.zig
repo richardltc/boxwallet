@@ -806,6 +806,9 @@ const SendModal = struct {
         address,
         /// Enter the amount to send.
         amount,
+        /// The coin is pricing the send (`walletSendFee`) so the confirm step
+        /// can state the fee. Only for coins that can (`supportsSendFee`).
+        estimating,
         /// Yes/No: send exactly this amount to this address? Shows the full,
         /// untruncated address — the one typo safety net a machine can't
         /// provide (format validation catches malformed addresses, not
@@ -854,6 +857,9 @@ const SendModal = struct {
     /// negative) — never for "exceeds balance", since the cached balance can
     /// be stale; the daemon's own live check is the real gate.
     bad_input: bool = false,
+    /// The fee the coin quoted for this send (whole coins), shown on the confirm
+    /// step with the total leaving the wallet. Null where the coin can't say.
+    fee: ?f64 = null,
     /// Whether the finished send succeeded (tints the result line).
     ok: bool = false,
     /// Outcome text shown in the `result` stage: the txid or the daemon's own
@@ -1443,6 +1449,10 @@ const Activity = struct {
     send_token_group_buf: [models.token_group_max]u8 = undefined,
     send_token_group_len: usize = 0,
     send_token_qty: i64 = 0,
+    /// True when the worker is only pricing the send (`walletSendFee`) for the
+    /// confirm step; the quote lands in `send_fee`. Nothing is sent.
+    send_is_fee: bool = false,
+    send_fee: f64 = 0,
     /// Set true (release) by the worker when the send finishes.
     send_done: std.atomic.Value(bool) = .init(false),
     /// Whether the finished send succeeded. Published by the `send_done` edge.
@@ -2412,6 +2422,33 @@ const Activity = struct {
         defer arena.deinit();
         const a = arena.allocator();
 
+        if (self.send_is_fee) {
+            const quote: models.FeeEstimate = self.coin.walletSendFee(
+                a,
+                self.sendAuth(a) catch |err| {
+                    self.send_ok = false;
+                    self.stashSendResult(@errorName(err));
+                    self.send_done.store(true, .release);
+                    return;
+                },
+                self.send_addr_buf[0..self.send_addr_len],
+                self.send_amount,
+            ) catch |err| .{ .failed = @errorName(err) };
+            switch (quote) {
+                .fee => |f| {
+                    self.send_fee = f;
+                    self.send_ok = true;
+                    self.send_result_len = 0;
+                },
+                .failed => |msg| {
+                    self.send_ok = false;
+                    self.stashSendResult(msg);
+                },
+            }
+            self.send_done.store(true, .release);
+            return;
+        }
+
         const outcome: models.SendResult = self.doSend(a) catch |err| .{ .failed = @errorName(err) };
         switch (outcome) {
             .ok => |txid| {
@@ -2424,6 +2461,24 @@ const Activity = struct {
             },
         }
         self.send_done.store(true, .release);
+    }
+
+    /// The auth a send (or its fee quote) goes over: the wallet process's own
+    /// endpoint for an external-wallet coin, the daemon's conf otherwise — the
+    /// same split `doSend` makes.
+    fn sendAuth(self: *Activity, a: std.mem.Allocator) !models.CoinAuth {
+        if (self.coin.hasExternalWallet()) return self.extWalletAuth();
+        var threaded: std.Io.Threaded = .init(a, .{});
+        defer threaded.deinit();
+        const data_dir = try self.coin.dataDir(a, self.home_dir);
+        return conf.readAuth(
+            a,
+            threaded.io(),
+            data_dir,
+            self.coin.confFile(),
+            self.coin.rpcDefaultUsername(),
+            self.coin.rpcDefaultPort(),
+        );
     }
 
     /// Resolve the coin's RPC credentials and dispatch the in-flight send.
@@ -5315,13 +5370,26 @@ pub const App = struct {
                 act.send_thread = null;
                 const ok = act.send_ok;
                 const result = act.send_result_buf[0..act.send_result_len];
-                if (self.coinAt(i)) |c| {
-                    self.logf("{s}: {s}", .{ c.coinName(), if (ok) "sent" else "send failed" });
+                if (act.send_is_fee) {
+                    // Only a quote: nothing left the wallet, so nothing to log or
+                    // re-poll. A quote the wallet refused is the answer the send
+                    // would have got — shown now, before anyone confirms.
+                    if (self.send_modal) |*m| if (m.coin_idx == i and m.stage == .estimating) {
+                        if (ok) {
+                            m.fee = act.send_fee;
+                            m.sel = 0;
+                            m.stage = .confirm;
+                        } else m.setMsg(false, result);
+                    };
+                } else {
+                    if (self.coinAt(i)) |c| {
+                        self.logf("{s}: {s}", .{ c.coinName(), if (ok) "sent" else "send failed" });
+                    }
+                    if (self.send_modal != null and self.send_modal.?.coin_idx == i) {
+                        self.send_modal.?.setMsg(ok, result);
+                    }
+                    self.last_poll_ns = 0;
                 }
-                if (self.send_modal != null and self.send_modal.?.coin_idx == i) {
-                    self.send_modal.?.setMsg(ok, result);
-                }
-                self.last_poll_ns = 0;
             }
 
             // Settle a finished mining start/stop: join the worker, log the
@@ -7068,7 +7136,8 @@ pub const App = struct {
                 else => {},
             },
             // No cancelling a send in flight — let it finish (or fail) and reap.
-            .working => {},
+            // A quote is quick and read-only; Esc still just waits for it.
+            .working, .estimating => {},
             .result => self.closeSendModal(),
         }
     }
@@ -7111,6 +7180,13 @@ pub const App = struct {
         }
         m.bad_input = false;
         m.sel = 0;
+        m.fee = null;
+        // A coin that can price the send does so first, so the confirm step
+        // states the fee rather than leaving it to be discovered afterwards.
+        if (m.mode == .send) if (self.coinAt(m.coin_idx)) |coin| if (coin.supportsSendFee()) {
+            self.startSendWorker(true);
+            return;
+        };
         m.stage = .confirm;
     }
 
@@ -7118,6 +7194,12 @@ pub const App = struct {
     /// spawn the send worker. Mirrors `submitWalletAction`/
     /// `startQuickSyncDownload`'s shape.
     fn submitSend(self: *App) void {
+        self.startSendWorker(false);
+    }
+
+    /// Spawn the send worker for the open prompt: the send itself, or with
+    /// `fee_only` just the coin's quote for it (the `estimating` stage).
+    fn startSendWorker(self: *App, fee_only: bool) void {
         if (self.send_modal == null) return;
         const m = &self.send_modal.?;
         const coin = self.coinAt(m.coin_idx) orelse return;
@@ -7157,6 +7239,7 @@ pub const App = struct {
                 (money.parseUnits(amount_text, m.token_decimals) orelse 0);
         }
 
+        act.send_is_fee = fee_only;
         act.coin = coin;
         act.home_dir = self.home_dir;
         act.send_ok = false;
@@ -7166,6 +7249,10 @@ pub const App = struct {
             m.setMsg(false, "couldn't start the send worker");
             return;
         };
+        if (fee_only) {
+            m.stage = .estimating;
+            return;
+        }
         m.stage = .working;
         self.logf("{s}: {s}…", .{ coin.coinName(), switch (m.mode) {
             .stake => "staking",
@@ -10575,6 +10662,21 @@ pub const App = struct {
                 else blk: {
                     // The full, untruncated address — deliberately not shortened.
                     const addr = self.send_addr_input.getValue();
+                    // With a quote, say what it costs and what leaves the wallet
+                    // in all — the figure the balance will actually drop by.
+                    if (m.fee) |fee| {
+                        var fbuf: [64]u8 = undefined;
+                        var tbuf: [64]u8 = undefined;
+                        break :blk try std.fmt.allocPrint(a, "Send {s} {s} to {s}? The fee is {s} {s}, so {s} {s} leaves the wallet. This cannot be undone.", .{
+                            formatAmount(&buf, amount, coin.balanceDecimals()),
+                            coin.coinNameAbbrev(),
+                            addr,
+                            formatAmount(&fbuf, fee, coin.balanceDecimals()),
+                            coin.coinNameAbbrev(),
+                            formatAmount(&tbuf, amount + fee, coin.balanceDecimals()),
+                            coin.coinNameAbbrev(),
+                        });
+                    }
                     break :blk try std.fmt.allocPrint(a, "Send {s} {s} to {s}? This cannot be undone.", .{
                         formatAmount(&buf, amount, coin.balanceDecimals()), coin.coinNameAbbrev(), addr,
                     });
@@ -10599,9 +10701,16 @@ pub const App = struct {
                 const busy = if (staking) "Staking…" else "Sending…";
                 try modalRow(&out.writer, vbar, inner_w, busy, zz.width(busy));
             },
+            .estimating => {
+                const busy = "Working out the fee…";
+                try modalRow(&out.writer, vbar, inner_w, busy, zz.width(busy));
+            },
             .result => {
+                // A coin whose "sent" isn't a finished, txid-bearing send says so
+                // in its own words (Epic: on its way, and a slate id).
+                const own = coin.sendOkLabel();
                 const lead_plain = if (m.ok)
-                    (if (staking) "Staked. Txid:" else "Sent. Txid:")
+                    (if (staking) "Staked. Txid:" else if (m.mode == .send and own.len > 0) own else "Sent. Txid:")
                 else
                     (if (staking) "Stake failed:" else "Send failed:");
                 const lead = if (m.ok)
@@ -10618,7 +10727,7 @@ pub const App = struct {
             .address => "enter: next   esc: cancel",
             .amount => "enter: next   esc: cancel",
             .confirm => "enter: select   esc: cancel",
-            .working => "please wait…",
+            .working, .estimating => "please wait…",
             .result => "press any key to close",
         };
         const hint_styled = (zz.Style{}).dim(true).render(a, hint) catch hint;
@@ -12607,6 +12716,85 @@ test "renderSendModal shows the untruncated address and formatted amount at conf
     const box = try app.renderSendModal(arena.allocator());
     try std.testing.expect(std.mem.indexOf(u8, box, addr) != null);
     try std.testing.expect(std.mem.indexOf(u8, box, "1.50000000") != null);
+}
+
+/// The activity slot Epic sits in, for the tests of its send flow.
+fn epicSlot(app: *App) !usize {
+    for (0..app.activities.len) |i| {
+        if (app.coinAt(i)) |c| if (std.mem.eql(u8, c.coinNameAbbrev(), "EPIC")) return i;
+    }
+    return error.NoEpic;
+}
+
+test "a coin that quotes its fee prices the send before the confirm step" {
+    if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
+    const allocator = std.testing.allocator;
+
+    var threaded: std.Io.Threaded = .init(allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    var env = std.process.Environ.Map.init(allocator);
+    defer env.deinit();
+    try env.put("HOME", "/home/tester");
+    var ctx = zz.Context.init(allocator, allocator, io, &env);
+
+    var app: App = undefined;
+    app.hide_balances = false;
+    _ = app.init(&ctx);
+    defer app.deinit();
+
+    const idx = try epicSlot(&app);
+    // Not an Epicbox address, so the quote is refused offline, straight away.
+    try app.send_addr_input.setValue("not-an-address");
+    try app.send_amount_input.setValue("0.1");
+    app.send_modal = .{ .coin_idx = idx, .stage = .amount };
+    app.trySendAmount();
+    try std.testing.expectEqual(SendModal.Stage.estimating, app.send_modal.?.stage);
+
+    const act = &app.activities[idx];
+    act.send_thread.?.join();
+    act.send_thread = null;
+    try std.testing.expect(act.send_is_fee);
+    try std.testing.expect(!act.send_ok);
+    try std.testing.expect(std.mem.indexOf(u8, act.send_result_buf[0..act.send_result_len], "isn't an Epicbox address") != null);
+}
+
+test "renderSendModal states the quoted fee and total, and the coin's own sent label" {
+    if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
+    const allocator = std.testing.allocator;
+
+    var threaded: std.Io.Threaded = .init(allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    var env = std.process.Environ.Map.init(allocator);
+    defer env.deinit();
+    try env.put("HOME", "/home/tester");
+    var ctx = zz.Context.init(allocator, allocator, io, &env);
+
+    var app: App = undefined;
+    app.hide_balances = false;
+    _ = app.init(&ctx);
+    defer app.deinit();
+
+    const idx = try epicSlot(&app);
+    try app.send_addr_input.setValue("esXBF4QgPnTk64M1ky2DeBTCvKXNBwKp3mfnHTbzAKU2wagigz6J@epicbox.epiccash.com");
+    try app.send_amount_input.setValue("0.1");
+    app.send_modal = .{ .coin_idx = idx, .stage = .confirm, .fee = 0.008 };
+
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var box = try app.renderSendModal(a);
+    try std.testing.expect(std.mem.indexOf(u8, box, "0.00800000") != null);
+    try std.testing.expect(std.mem.indexOf(u8, box, "0.10800000") != null);
+
+    // Success reads as on its way with a slate, not "Sent. Txid:".
+    app.send_modal.?.setMsg(true, "45ac41a0-7812-47ca-baa6-0021c2e8db0d");
+    box = try app.renderSendModal(a);
+    try std.testing.expect(std.mem.indexOf(u8, box, "waiting for the receiver") != null);
+    try std.testing.expect(std.mem.indexOf(u8, box, "Txid") == null);
 }
 
 test "the Stake prompt refuses to open for a coin without the stake action" {

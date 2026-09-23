@@ -580,6 +580,14 @@ pub const SendResult = union(enum) {
     failed: []const u8, // human-readable reason
 };
 
+/// What a send would cost, worked out before anything is sent. `failed` is the
+/// wallet already saying no (too little to cover amount + fee, a bad address) —
+/// an answer for the user, like `SendResult.failed`, not an error.
+pub const FeeEstimate = union(enum) {
+    fee: f64, // whole coins
+    failed: []const u8, // human-readable reason
+};
+
 // --- Stablecoin (DigiDollar) -----------------------------------------------
 //
 // Normalized models for a coin-issued stablecoin (DigiByte's DigiDollar — DD

@@ -3,6 +3,7 @@ const builtin = @import("builtin");
 const models = @import("../models.zig");
 const install_mod = @import("../install.zig");
 const rpc = @import("../rpc.zig");
+const money = @import("../money.zig");
 const conf = @import("../conf.zig");
 const bip39 = @import("../bip39.zig");
 const warmup = @import("../warmup.zig");
@@ -2400,10 +2401,12 @@ pub const Epic = struct {
         var threaded: std.Io.Threaded = .init(allocator, .{});
         defer threaded.deinit();
 
+        // The same confirmation count a send requires, so "available" is what a
+        // send will actually spend.
         const params = try std.fmt.allocPrint(
             allocator,
-            "{{\"token\":\"{s}\",\"refresh_from_node\":true,\"minimum_confirmations\":1}}",
-            .{token_buf[0..tn]},
+            "{{\"token\":\"{s}\",\"refresh_from_node\":true,\"minimum_confirmations\":{d}}}",
+            .{ token_buf[0..tn], min_confirmations },
         );
         defer allocator.free(params);
 
@@ -2586,13 +2589,259 @@ pub const Epic = struct {
         return out;
     }
 
+    // --- Send (Owner API `init_send_tx` over Epicbox) ----------------------
+    //
+    // A MimbleWimble send is a conversation, not a broadcast: the sender posts a
+    // slate to the receiver's Epicbox mailbox, the receiver's wallet signs it and
+    // posts it back, and the sender's wallet finalizes it and hands it to a node.
+    // `init_send_tx` with `send_args.method = "epicbox"` does the first leg itself
+    // — building the slate, posting it over a connection of its own that it closes
+    // straight after, then locking the inputs so they can't be spent twice. The
+    // rest is the Epicbox listener's job (see `listenerArgv`), which is why a
+    // "sent" here means *on its way*, and completes on its own while the wallet
+    // stays unlocked. If the receiver is offline the relay holds the slate.
+
+    /// Confirmations an output needs before it can be spent — epic-wallet's own
+    /// default, and the figure the balance read uses too, so the "available"
+    /// amount is exactly what a send will agree to spend.
+    const min_confirmations = 10;
+
+    /// Whole EPIC → the wallet's integer base units (1e8 per EPIC), or null for an
+    /// amount that isn't a positive number that fits.
+    fn baseUnitsFromAmount(amount: f64) ?u64 {
+        if (!std.math.isFinite(amount) or amount <= 0) return null;
+        const scaled = @round(amount * epic_base);
+        if (scaled < 1 or scaled >= @as(f64, @floatFromInt(std.math.maxInt(u64)))) return null;
+        return @intFromFloat(scaled);
+    }
+
+    /// Whether `addr` is an Epicbox address a send can go to: epic-wallet's own
+    /// shape — `[epicbox://]<52 base58>[@<domain>[:<port>]]` — **and** a key whose
+    /// base58check checksum and mainnet version bytes hold. The checksum is what
+    /// catches a mistyped or half-pasted address here, with a plain reason, rather
+    /// than as a library error after the wallet has already started building the
+    /// transaction.
+    fn isEpicboxAddress(addr: []const u8) bool {
+        var rest = addr;
+        if (std.mem.startsWith(u8, rest, "epicbox://")) rest = rest["epicbox://".len..];
+        const at = std.mem.indexOfScalar(u8, rest, '@') orelse rest.len;
+        if (!epicboxKeyValid(rest[0..at])) return false;
+        if (at == rest.len) return true;
+
+        const host = rest[at + 1 ..];
+        const colon = std.mem.indexOfScalar(u8, host, ':') orelse host.len;
+        const domain = host[0..colon];
+        if (domain.len == 0) return false;
+        for (domain) |ch| if (!std.ascii.isAlphanumeric(ch) and ch != '.') return false;
+        if (colon == host.len) return true;
+        const port = host[colon + 1 ..];
+        _ = std.fmt.parseInt(u16, port, 10) catch return false;
+        return true;
+    }
+
+    /// A 52-character base58check Epicbox key: version `[1, 0]` (mainnet) + a
+    /// 33-byte compressed public key + a 4-byte double-SHA256 checksum.
+    fn epicboxKeyValid(key: []const u8) bool {
+        const alphabet = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
+        if (key.len != 52) return false;
+        // Big-endian base58 → bytes. 52 base58 digits need at most 39 bytes.
+        var buf: [40]u8 = [_]u8{0} ** 40;
+        for (key) |ch| {
+            var carry: u32 = @intCast(std.mem.indexOfScalar(u8, alphabet, ch) orelse return false);
+            var i: usize = buf.len;
+            while (i > 0) {
+                i -= 1;
+                carry += @as(u32, buf[i]) * 58;
+                buf[i] = @truncate(carry);
+                carry >>= 8;
+            }
+            if (carry != 0) return false;
+        }
+        // Version (2) + key (33) + checksum (4) = 39 bytes; the leading byte of
+        // the 40-byte buffer must be empty.
+        if (buf[0] != 0) return false;
+        const decoded = buf[1..];
+        if (decoded[0] != 1 or decoded[1] != 0) return false;
+        const Sha256 = std.crypto.hash.sha2.Sha256;
+        var h1: [32]u8 = undefined;
+        Sha256.hash(decoded[0..35], &h1, .{});
+        var h2: [32]u8 = undefined;
+        Sha256.hash(&h1, &h2, .{});
+        return std.mem.eql(u8, h2[0..4], decoded[35..39]);
+    }
+
+    /// Send `amount` EPIC to the Epicbox `address` from the open wallet. A
+    /// rejection the user needs to read — a bad address, too little spendable, the
+    /// wallet's own refusal — comes back as `.failed` with a sentence; transport
+    /// failures (no wallet open, the service down) are errors, as for every other
+    /// coin's send.
+    fn epicSend(
+        allocator: std.mem.Allocator,
+        auth: models.CoinAuth,
+        address: []const u8,
+        amount: f64,
+    ) anyerror!models.SendResult {
+        const addr = std.mem.trim(u8, address, " \t\r\n");
+        if (!isEpicboxAddress(addr)) return .{ .failed = not_an_address };
+        const units = baseUnitsFromAmount(amount) orelse return .{ .failed = "invalid amount" };
+        const r = try initSendTx(allocator, auth, addr, units, .send);
+        defer {
+            @memset(r, 0);
+            allocator.free(r);
+        }
+        return parseSendReply(allocator, r);
+    }
+
+    /// What sending `amount` to `address` would cost: the same `init_send_tx`
+    /// with `estimate_only`, which selects the inputs and prices the transaction
+    /// without building or sending anything. The address is checked here too, so
+    /// a bad one is caught before the confirm step rather than after it.
+    fn epicSendFee(
+        allocator: std.mem.Allocator,
+        auth: models.CoinAuth,
+        address: []const u8,
+        amount: f64,
+    ) anyerror!models.FeeEstimate {
+        const addr = std.mem.trim(u8, address, " \t\r\n");
+        if (!isEpicboxAddress(addr)) return .{ .failed = not_an_address };
+        const units = baseUnitsFromAmount(amount) orelse return .{ .failed = "invalid amount" };
+        const r = try initSendTx(allocator, auth, addr, units, .estimate);
+        defer {
+            @memset(r, 0);
+            allocator.free(r);
+        }
+        if (try sendRefusal(allocator, r)) |why| return .{ .failed = why };
+        const fee = parseSlateFee(allocator, r) orelse
+            return .{ .failed = "The wallet didn't say what the fee would be." };
+        return .{ .fee = fee };
+    }
+
+    const not_an_address = "That isn't an Epicbox address — check it was copied in full.";
+
+    /// `init_send_tx` for real, or priced only.
+    const InitSendMode = enum { send, estimate };
+
+    /// One `init_send_tx` over the secure channel, returning the decrypted reply
+    /// (caller wipes + frees). `.estimate` sets `estimate_only` **and** sends no
+    /// `send_args`: the wallet goes on to post the slate whenever `send_args` is
+    /// present, so an estimate that carried them would be a send.
+    fn initSendTx(
+        allocator: std.mem.Allocator,
+        auth: models.CoinAuth,
+        addr: []const u8,
+        units: u64,
+        mode: InitSendMode,
+    ) ![]u8 {
+        var token_buf: [128]u8 = undefined;
+        const tn = Session.get(&token_buf) orelse return error.WalletLocked;
+
+        var threaded: std.Io.Threaded = .init(allocator, .{});
+        defer threaded.deinit();
+
+        const addr_q = try rpc.jsonQuote(allocator, addr);
+        defer allocator.free(addr_q);
+        const send_args = switch (mode) {
+            .send => try std.fmt.allocPrint(
+                allocator,
+                "{{\"method\":\"epicbox\",\"dest\":{s},\"finalize\":true,\"post_tx\":true,\"fluff\":false}}",
+                .{addr_q},
+            ),
+            .estimate => try allocator.dupe(u8, "null"),
+        };
+        defer allocator.free(send_args);
+        const params = try std.fmt.allocPrint(
+            allocator,
+            "{{\"token\":\"{s}\",\"args\":{{\"src_acct_name\":null,\"amount\":\"{d}\"," ++
+                "\"minimum_confirmations\":{d},\"max_outputs\":500,\"num_change_outputs\":1," ++
+                "\"selection_strategy_is_use_all\":false,\"message\":null,\"target_slate_version\":null," ++
+                "\"payment_proof_recipient_address\":null,\"ttl_blocks\":null," ++
+                "\"send_args\":{s},\"estimate_only\":{s}}}}}",
+            .{ token_buf[0..tn], units, min_confirmations, send_args, if (mode == .estimate) "true" else "false" },
+        );
+        defer allocator.free(params);
+
+        return secureRpc(allocator, threaded.io(), auth, "init_send_tx", params);
+    }
+
+    /// The fee (whole EPIC) from a successful `init_send_tx` reply's slate —
+    /// `"fee":"800000"` in base units — or null if it isn't there.
+    fn parseSlateFee(allocator: std.mem.Allocator, inner: []const u8) ?f64 {
+        const Env = struct { result: ?struct { Ok: ?struct { fee: []const u8 = "" } = null } = null };
+        var parsed = std.json.parseFromSlice(Env, allocator, inner, .{
+            .ignore_unknown_fields = true,
+            .allocate = .alloc_always,
+        }) catch return null;
+        defer parsed.deinit();
+        const slate = (parsed.value.result orelse return null).Ok orelse return null;
+        const units = std.fmt.parseInt(u64, slate.fee, 10) catch return null;
+        return @as(f64, @floatFromInt(units)) / epic_base;
+    }
+
+    /// Map a decrypted `init_send_tx` reply to a `SendResult`. Success carries the
+    /// slate id (the handle the transaction list shows) and what happens next; a
+    /// refusal carries `sendRefusal`'s sentence. Pure, so the mapping is testable
+    /// without a wallet. Strings are allocated with `allocator` (the caller's
+    /// arena).
+    fn parseSendReply(allocator: std.mem.Allocator, inner: []const u8) !models.SendResult {
+        if (try sendRefusal(allocator, inner)) |why| return .{ .failed = why };
+        const Env = struct { result: ?struct { Ok: ?struct { id: []const u8 = "" } = null } = null };
+        var parsed = std.json.parseFromSlice(Env, allocator, inner, .{
+            .ignore_unknown_fields = true,
+            .allocate = .alloc_always,
+        }) catch return .{ .failed = unreadable_reply };
+        defer parsed.deinit();
+        const id = (parsed.value.result orelse return .{ .failed = unreadable_reply }).Ok orelse
+            return .{ .failed = unreadable_reply };
+        if (id.id.len == 0) return .{ .failed = unreadable_reply };
+        return .{ .ok = try std.fmt.allocPrint(
+            allocator,
+            "{s}. It completes on its own once the receiver accepts it, while this wallet stays unlocked.",
+            .{id.id},
+        ) };
+    }
+
+    const unreadable_reply = "The wallet gave an answer BoxWallet couldn't read.";
+
+    /// Null when an `init_send_tx` reply is a success (`result.Ok`); otherwise
+    /// the refusal as a sentence — `NotEnoughFunds` spelled out with the wallet's
+    /// own figures, anything else the wallet's message verbatim.
+    fn sendRefusal(allocator: std.mem.Allocator, inner: []const u8) !?[]const u8 {
+        const Env = struct {
+            result: ?struct { Ok: ?std.json.Value = null } = null,
+            @"error": ?struct { message: []const u8 = "" } = null,
+        };
+        var parsed = std.json.parseFromSlice(Env, allocator, inner, .{
+            .ignore_unknown_fields = true,
+            .allocate = .alloc_always,
+        }) catch return unreadable_reply;
+        defer parsed.deinit();
+        if (parsed.value.result) |res| if (res.Ok) |ok| if (ok != .null) return null;
+
+        const msg = if (parsed.value.@"error") |e| e.message else "";
+        if (std.mem.startsWith(u8, msg, "NotEnoughFunds:")) {
+            const Funds = struct { available_disp: []const u8 = "?", needed_disp: []const u8 = "?" };
+            if (std.json.parseFromSlice(Funds, allocator, std.mem.trim(u8, msg["NotEnoughFunds:".len..], " "), .{
+                .ignore_unknown_fields = true,
+                .allocate = .alloc_always,
+            })) |funds| {
+                defer funds.deinit();
+                return try std.fmt.allocPrint(
+                    allocator,
+                    "Not enough spendable EPIC: {s} available, {s} needed including the fee. Received funds need {d} confirmations before they can be sent.",
+                    .{ money.trimTrailingZeros(funds.value.available_disp), money.trimTrailingZeros(funds.value.needed_disp), min_confirmations },
+                );
+            } else |_| {}
+        }
+        if (msg.len == 0) return "The wallet refused the send without saying why.";
+        return try allocator.dupe(u8, msg[0..@min(msg.len, 240)]);
+    }
+
     // --- Transactions (Owner API `retrieve_txs`) --------------------------
     //
     // MimbleWimble transactions are built *interactively* (a slate exchanged
-    // between sender and receiver — over a listener or an epicbox relay), so
-    // there's no fire-and-forget Send for Epic yet; that tab keeps its
-    // placeholder. The wallet's own transaction log, however, is honest data the
-    // Owner API reports directly — so the Transactions tab is live.
+    // between sender and receiver — over a listener or an epicbox relay). The
+    // wallet's own transaction log is honest data the Owner API reports
+    // directly — so the Transactions tab is live.
 
     /// One `retrieve_txs` TxLogEntry (the subset BoxWallet uses). Amounts are
     /// integer-base-unit strings; `creation_ts` is an RFC-3339 timestamp;
@@ -2787,11 +3036,16 @@ pub const Epic = struct {
         .daemon_argv = vtDaemonArgv,
         .request_stop = vtRequestStop,
         .wallet_path = vtWalletPath,
-        // Transactions, and the Epicbox address as the Receive tab's address (see
-        // the `get_public_address` section above). No Send yet: MimbleWimble
-        // transactions are interactive slate exchanges, not a fire-and-forget RPC.
+        // Transactions; the Epicbox address as the Receive tab's address; and
+        // Send over Epicbox (see the `get_public_address` / `init_send_tx`
+        // sections above) — a send the Epicbox listener then completes.
         .wallet_transactions = vtWalletTransactions,
         .wallet_receive_address = vtWalletReceiveAddress,
+        .wallet_send = vtWalletSend,
+        .wallet_send_fee = vtWalletSendFee,
+        // A send here is on its way, not done — the listener completes it — and
+        // what comes back is the slate id.
+        .send_ok_label = "Sent — waiting for the receiver. Slate:",
         .external_wallet = &external_wallet,
         // Epic's wallet reaches its node over plain HTTP and doesn't care whose
         // node it is, so the user gets the choice — ours, or one that already
@@ -2840,6 +3094,27 @@ pub const Epic = struct {
         force_new: bool,
     ) anyerror![]const u8 {
         return epicReceiveAddress(allocator, wallet_auth, force_new);
+    }
+
+    // Same wallet-process auth as the transactions hook.
+    fn vtWalletSend(
+        _: *anyopaque,
+        allocator: std.mem.Allocator,
+        wallet_auth: models.CoinAuth,
+        address: []const u8,
+        amount: f64,
+    ) anyerror!models.SendResult {
+        return epicSend(allocator, wallet_auth, address, amount);
+    }
+
+    fn vtWalletSendFee(
+        _: *anyopaque,
+        allocator: std.mem.Allocator,
+        wallet_auth: models.CoinAuth,
+        address: []const u8,
+        amount: f64,
+    ) anyerror!models.FeeEstimate {
+        return epicSendFee(allocator, wallet_auth, address, amount);
     }
 
     fn vtCoinName(_: *anyopaque) []const u8 {
@@ -3688,14 +3963,102 @@ test "parseRfc3339 converts the wallet's creation_ts to unix seconds" {
     try std.testing.expect(Epic.parseRfc3339("garbage-not-a-date!!") == null);
 }
 
-test "coin vtable exposes transactions and the Epicbox receive address, but no send" {
+test "coin vtable exposes transactions, the Epicbox receive address, and send" {
     var e: Epic = .{};
     const c = e.coin();
     try std.testing.expect(c.supportsTransactions());
     try std.testing.expect(c.supportsReceiveAddress());
-    // Slate-exchange transactions can't be a fire-and-forget RPC — the Send tab
-    // keeps its placeholder.
-    try std.testing.expect(!c.supportsSend());
+    try std.testing.expect(c.supportsSend());
+}
+
+test "baseUnitsFromAmount converts whole EPIC to 1e8 base units, refusing nonsense" {
+    try std.testing.expectEqual(@as(?u64, 10_000_000), Epic.baseUnitsFromAmount(0.1));
+    try std.testing.expectEqual(@as(?u64, 500_000_000), Epic.baseUnitsFromAmount(5));
+    try std.testing.expectEqual(@as(?u64, 1), Epic.baseUnitsFromAmount(0.00000001));
+    // Zero, negative, below one base unit, NaN/inf: not an amount.
+    try std.testing.expectEqual(@as(?u64, null), Epic.baseUnitsFromAmount(0));
+    try std.testing.expectEqual(@as(?u64, null), Epic.baseUnitsFromAmount(-1));
+    try std.testing.expectEqual(@as(?u64, null), Epic.baseUnitsFromAmount(0.000000001));
+    try std.testing.expectEqual(@as(?u64, null), Epic.baseUnitsFromAmount(std.math.nan(f64)));
+    try std.testing.expectEqual(@as(?u64, null), Epic.baseUnitsFromAmount(std.math.inf(f64)));
+}
+
+test "isEpicboxAddress accepts epic-wallet's forms and catches a mistyped key" {
+    const key = "esXBF4QgPnTk64M1ky2DeBTCvKXNBwKp3mfnHTbzAKU2wagigz6J";
+    try std.testing.expect(Epic.isEpicboxAddress(key ++ "@epicbox.epiccash.com"));
+    try std.testing.expect(Epic.isEpicboxAddress(key));
+    try std.testing.expect(Epic.isEpicboxAddress("epicbox://" ++ key ++ "@epicbox.epiccash.com:443"));
+    try std.testing.expect(Epic.isEpicboxAddress("esaA6Jg7qBKgufT4C58HucCcW9h3zVY39G5eVPNrNc38J69h9YHP@epicbox.epiccash.com"));
+
+    // One character wrong: the checksum catches it — the same address
+    // epic-wallet refused with "Invalid base58 checksum".
+    try std.testing.expect(!Epic.isEpicboxAddress("esXBF4QgPnTk64M1ky2DeBTCvKXNBwKp3mfnHTbzAKU2wagigz6X@epicbox.epiccash.com"));
+    // Cut short, not base58, an http URL, a bad domain or port.
+    try std.testing.expect(!Epic.isEpicboxAddress("esXBF4QgPnTk64M1ky2DeBTCvKXNBwKp3mfnHTbzAKU2wagig@epicbox.epiccash.com"));
+    try std.testing.expect(!Epic.isEpicboxAddress("es0BF4QgPnTk64M1ky2DeBTCvKXNBwKp3mfnHTbzAKU2wagigz6J"));
+    try std.testing.expect(!Epic.isEpicboxAddress("http://127.0.0.1:3415"));
+    try std.testing.expect(!Epic.isEpicboxAddress(key ++ "@"));
+    try std.testing.expect(!Epic.isEpicboxAddress(key ++ "@evil.example/path"));
+    try std.testing.expect(!Epic.isEpicboxAddress(key ++ "@epicbox.epiccash.com:99999"));
+    try std.testing.expect(!Epic.isEpicboxAddress(""));
+}
+
+test "the fee quote is read off the estimate's slate, and a success isn't a refusal" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    // The shape `init_send_tx` returned for `estimate_only` in the spike: the
+    // selected input as `amount`, the fee in base units.
+    const est =
+        \\{"id":1,"jsonrpc":"2.0","result":{"Ok":{"amount":"500000000","fee":"800000"}}}
+    ;
+    try std.testing.expectEqual(@as(?f64, 0.008), Epic.parseSlateFee(a, est));
+    try std.testing.expect((try Epic.sendRefusal(a, est)) == null);
+    try std.testing.expectEqual(@as(?f64, null), Epic.parseSlateFee(a, "{\"result\":{\"Ok\":{}}}"));
+    try std.testing.expect((try Epic.sendRefusal(a, "{\"result\":{\"Ok\":null}}")) != null);
+}
+
+test "Epic quotes a send's fee and names what a send returns" {
+    var e: Epic = .{};
+    const c = e.coin();
+    try std.testing.expect(c.supportsSendFee());
+    try std.testing.expect(std.mem.indexOf(u8, c.sendOkLabel(), "Slate") != null);
+}
+
+test "parseSendReply: success names the slate and what happens next" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const r = try Epic.parseSendReply(a,
+        \\{"id":1,"jsonrpc":"2.0","result":{"Ok":{"id":"f75efd84-31cd-429a-bb9c-756a640d8cea","amount":"10000000","fee":"800000"}}}
+    );
+    try std.testing.expect(r == .ok);
+    try std.testing.expect(std.mem.startsWith(u8, r.ok, "f75efd84-31cd-429a-bb9c-756a640d8cea"));
+    try std.testing.expect(std.mem.indexOf(u8, r.ok, "once the receiver accepts it") != null);
+}
+
+test "parseSendReply: refusals read as sentences, with the wallet's own figures" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    // The exact reply epic-wallet gave for a send larger than the wallet holds.
+    const funds = try Epic.parseSendReply(a,
+        \\{"error":{"code":-32099,"message":"NotEnoughFunds: {\"available\":20000000,\"available_disp\":\"0.20000000\",\"needed\":100300000,\"needed_disp\":\"1.00300000\"}"},"id":1,"jsonrpc":"2.0"}
+    );
+    try std.testing.expect(funds == .failed);
+    try std.testing.expect(std.mem.indexOf(u8, funds.failed, "0.2 available, 1.003 needed including the fee") != null);
+    try std.testing.expect(std.mem.indexOf(u8, funds.failed, "10 confirmations") != null);
+
+    // Anything else: the wallet's own words.
+    const bad = try Epic.parseSendReply(a,
+        \\{"error":{"code":-32099,"message":"LibWallet: LibWallet Error: Invalid base58 checksum"},"id":1,"jsonrpc":"2.0"}
+    );
+    try std.testing.expectEqualStrings("LibWallet: LibWallet Error: Invalid base58 checksum", bad.failed);
+
+    // Nothing usable at all still says something.
+    try std.testing.expect((try Epic.parseSendReply(a, "{}")) == .failed);
+    try std.testing.expect((try Epic.parseSendReply(a, "not json")) == .failed);
 }
 
 test "parsePublicAddress spells the Epicbox address the way a sender types it" {

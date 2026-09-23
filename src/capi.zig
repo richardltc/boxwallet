@@ -765,6 +765,22 @@ export fn bw_coin_supports_send(idx: usize) c_int {
     return if (c.supportsSend()) 1 else 0;
 }
 
+/// Whether the coin can quote a send's fee before it's made
+/// (`bw_wallet_send_fee`), for the confirm step to state it.
+export fn bw_coin_supports_send_fee(idx: usize) c_int {
+    const c = coinByIndex(idx) orelse return 0;
+    return if (c.supportsSendFee()) 1 else 0;
+}
+
+/// The coin's own lead-in for a successful send's result, where the usual
+/// "Sent." would say something untrue (Epic: on its way, and a slate id rather
+/// than a txid). 0 when the coin has none — keep the front-end's own wording.
+export fn bw_coin_send_ok_label(idx: usize, buf: ?[*]u8, cap: usize) usize {
+    const c = coinByIndex(idx) orelse return 0;
+    const b = buf orelse return 0;
+    return copyOut(b[0..cap], c.sendOkLabel());
+}
+
 /// Whether this coin has an explicit stake action (drives the Stake control on
 /// the Send tab). Salvium only, so far.
 ///
@@ -2339,6 +2355,49 @@ export fn bw_wallet_listener_state(ctx: ?*Ctx, idx: usize) c_int {
     if (!c.wallet_mtx.tryLock()) return -1;
     defer c.wallet_mtx.unlock(sharedIo());
     return @intFromEnum(extwallet.probeListener(&c.wallet[idx]));
+}
+
+/// What sending `amount` to `address` would cost, without sending: 0 with
+/// `*fee_out` set (whole coins), 1 when the wallet already refuses it (`out` =
+/// its reason — too little for amount + fee, a bad address), -1 on a transport
+/// failure (`bw_last_error` has why). Waits for any wallet op in flight, like a
+/// send does.
+export fn bw_wallet_send_fee(ctx: ?*Ctx, idx: usize, address: ?[*:0]const u8, amount: f64, fee_out: ?*f64, out: ?[*]u8, cap: usize) c_int {
+    const c = ctx orelse return -1;
+    const addr_z = address orelse return -1;
+    const fo = fee_out orelse return -1;
+    const o = out orelse return -1;
+    if (idx >= coin_count) return -1;
+    const coin = coinByIndex(idx) orelse return -1;
+    if (!coin.supportsSendFee()) return -1;
+
+    var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const io = sharedIo();
+
+    c.wallet_mtx.lockUncancelable(io);
+    defer c.wallet_mtx.unlock(io);
+
+    const auth = walletAuth(a, io, coin, c, idx) catch |err| {
+        c.setError(@errorName(err));
+        return -1;
+    };
+    const quote = coin.walletSendFee(a, auth, std.mem.span(addr_z), amount) catch |err| {
+        c.setError(@errorName(err));
+        c.setErrorCode(@errorName(err));
+        return -1;
+    };
+    return switch (quote) {
+        .fee => |f| blk: {
+            fo.* = f;
+            break :blk 0;
+        },
+        .failed => |reason| blk: {
+            _ = copyOut(o[0..cap], reason);
+            break :blk 1;
+        },
+    };
 }
 
 /// Send `amount` to `address`. Returns 0 on broadcast (`out` = the txid), 1 when
@@ -5221,6 +5280,9 @@ test "bw_coin_ext_wallet's flags agree with the vtable for every coin" {
         try std.testing.expectEqual(ew.lock != null, flags & bw_ew_explicit_lock != 0);
         try std.testing.expectEqual(coin.walletLaunchesWithPassword(), flags & bw_ew_launch_with_pw != 0);
         try std.testing.expectEqual(coin.walletHasListener(), flags & bw_ew_has_listener != 0);
+        try std.testing.expectEqual(coin.supportsSendFee(), bw_coin_supports_send_fee(i) != 0);
+        var lb: [96]u8 = undefined;
+        try std.testing.expectEqual(coin.sendOkLabel().len, bw_coin_send_ok_label(i, &lb, lb.len));
         // A listener coin names it; no other coin does.
         var nm: [64]u8 = undefined;
         try std.testing.expectEqual(coin.walletHasListener(), bw_coin_listener_name(i, &nm, nm.len) != 0);

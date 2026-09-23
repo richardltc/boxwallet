@@ -995,6 +995,7 @@ static void apply_coin_metadata(const AppWindow *ui, bw_ctx *ctx, int idx)
     ui->set_has_transactions(bw_coin_supports_transactions(idx) != 0);
     ui->set_has_receive(bw_coin_supports_receive_address(idx) != 0);
     ui->set_has_send(bw_coin_supports_send(idx) != 0);
+    ui->set_has_send_fee(bw_coin_supports_send_fee(idx) != 0);
     // Staking — an explicit, term-locking stake transaction (Salvium), shown
     // beside Send. The hint is the coin's own words for what the lock commits
     // to; it rides along here because it's metadata, and the confirm step must
@@ -3247,6 +3248,67 @@ int main(int argc, char **argv)
     // The confirm modal stays up for the whole round trip — it is what the
     // busy halo rings — so every path out of here closes it, including the ones
     // that never reach the daemon.
+    // The fee quote for the confirm step (coins with bw_coin_supports_send_fee).
+    // Priced off the UI thread; the answer only lands if the same confirm is
+    // still open — a quote for a send the user has since cancelled or changed
+    // is thrown away. A quote the wallet refuses closes the confirm with the
+    // reason, since the send would get the same answer.
+    ui->on_estimate_send([weak, ctx](slint::SharedString address, slint::SharedString amount) {
+        int coin = g_selected.load();
+        std::string addr{std::string_view(address)};
+        std::string amt_text{std::string_view(amount)};
+        double amt = 0;
+        try {
+            amt = std::stod(amt_text);
+        } catch (...) {
+            amt = -1;
+        }
+        if (coin < 0 || !(amt > 0)) {
+            if (auto h = weak.lock()) {
+                (*h)->set_send_fee_pending(false);
+                (*h)->set_send_confirm_open(false);
+                (*h)->set_send_result_error(true);
+                (*h)->set_send_result(ss("That isn't an amount."));
+            }
+            return;
+        }
+        std::thread([weak, ctx, coin, addr, amt_text, amt]() {
+            WorkerGuard wg;
+            double fee = 0;
+            char out[256] = {0};
+            int rc = bw_wallet_send_fee(ctx, static_cast<size_t>(coin), addr.c_str(), amt,
+                                        &fee, out, sizeof out);
+            std::string text;
+            if (rc == 0) {
+                const int dec = static_cast<int>(bw_coin_balance_decimals(coin));
+                char sym[16];
+                size_t sn = bw_coin_abbrev(coin, sym, sizeof sym);
+                const std::string unit = " " + std::string(sym, sn);
+                text = "Fee: " + format_amount(fee, dec) + unit + " \u2014 " +
+                       format_amount(amt + fee, dec) + unit + " leaves the wallet in all.";
+            } else {
+                text = (rc == 1) ? std::string(out) : last_error_text(ctx, rc);
+            }
+            post_to_ui([weak, rc, text, addr, amt_text]() {
+                auto h = weak.lock();
+                if (!h)
+                    return;
+                if (!(*h)->get_send_confirm_open() || (*h)->get_send_confirm_is_stake() ||
+                    std::string_view((*h)->get_send_confirm_address()) != addr ||
+                    std::string_view((*h)->get_send_confirm_amount()) != amt_text)
+                    return;
+                (*h)->set_send_fee_pending(false);
+                if (rc == 0) {
+                    (*h)->set_send_fee_text(ss(text));
+                } else {
+                    (*h)->set_send_confirm_open(false);
+                    (*h)->set_send_result_error(true);
+                    (*h)->set_send_result(ss(text));
+                }
+            });
+        }).detach();
+    });
+
     ui->on_send_funds([weak, ctx, wake_poll](slint::SharedString address, slint::SharedString amount) {
         int coin = g_selected.load();
         if (coin < 0) {
@@ -3276,7 +3338,12 @@ int main(int argc, char **argv)
                                     out, sizeof out);
             std::string reply(out);
             std::string err = (rc < 0) ? last_error_text(ctx, rc) : std::string();
-            post_to_ui([weak, rc, reply, err]() {
+            // The coin's own lead-in where "Sent." would overstate it (Epic's
+            // send is on its way, and what comes back is a slate id).
+            char lb[96];
+            size_t ln = bw_coin_send_ok_label(static_cast<size_t>(coin), lb, sizeof lb);
+            std::string lead = ln > 0 ? std::string(lb, ln) + " " : std::string("Sent. Transaction ");
+            post_to_ui([weak, rc, reply, err, lead]() {
                 if (auto h = weak.lock()) {
                     (*h)->set_send_busy(false);
                     // The answer is in: the modal has served its purpose and
@@ -3287,7 +3354,7 @@ int main(int argc, char **argv)
                     // verbatim — it's an answer the user needs to read, not a
                     // generic failure.
                     (*h)->set_send_result(ss(
-                        rc == 0   ? "Sent. Transaction " + reply
+                        rc == 0   ? lead + reply
                         : rc == 1 ? reply
                                   : err));
                 }
