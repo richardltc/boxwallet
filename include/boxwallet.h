@@ -1159,7 +1159,25 @@ typedef struct {
     int64_t confirmations;
     char    txid[64];
     size_t  txid_len;
+    int     stage;          /* BW_TX_STAGE_*: where an unconfirmed tx is */
+    int     cancellable;    /* 1: bw_wallet_cancel_tx may be offered for it */
 } BwWalletTx;
+
+/* Where an unconfirmed transaction is, for a coin whose transactions aren't
+ * finished when made (Epic). NONE for everything else — show confirmations. */
+#define BW_TX_STAGE_NONE                  0
+#define BW_TX_STAGE_AWAITING_COUNTERPARTY 1  /* made, not yet seen by the network */
+#define BW_TX_STAGE_IN_MEMPOOL            2
+/* The Status-column words for a stage (the TUI's); 0 for NONE. */
+size_t  bw_tx_stage_text(int stage, char *buf, size_t cap);
+
+/* Whether the coin can cancel an unsent transaction (a cancellable row). */
+int     bw_coin_supports_cancel_tx(size_t idx);
+/* Cancel the transaction txid (a cancellable row's id): 0 = done (out says
+ * what happened), 1 = the wallet refused (out = its reason), -1 = transport
+ * failure (bw_last_error has why). Confirm with the user first. Blocks — call
+ * off the UI thread. */
+int     bw_wallet_cancel_tx(bw_ctx *ctx, size_t idx, const char *txid, char *out, size_t cap);
 
 /* The confirmation count above which a transaction reads as settled — at or
  * below it, show the count climbing. One line for both front-ends. Cheap;

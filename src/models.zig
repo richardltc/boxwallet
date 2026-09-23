@@ -477,6 +477,31 @@ pub const TxDirection = enum { received, sent, stake, staked };
 /// column, the GUI's confirmations column) — it's a policy, not presentation.
 pub const tx_confirmed_threshold: i64 = 6;
 
+/// Where a not-yet-confirmed transaction is, for a coin whose transactions
+/// aren't finished the moment they're made (Epic: a send waits for the
+/// receiver to sign it, then for the network). `.none` for everything else —
+/// the confirmation count says it all.
+///
+/// Ordinals are the GUI's C ABI (`BwWalletTx.stage`) — append, never insert.
+pub const TxStage = enum(u8) {
+    none = 0,
+    /// Made, but not yet seen by the network: waiting for the other side (or,
+    /// for a few minutes after it's posted, for the wallet to notice it went).
+    awaiting_counterparty = 1,
+    /// Seen in the mempool, waiting to be mined.
+    in_mempool = 2,
+
+    /// What the Status column says for it — one wording for both front-ends.
+    /// Empty for `.none`.
+    pub fn label(self: TxStage) []const u8 {
+        return switch (self) {
+            .none => "",
+            .awaiting_counterparty => "waiting to complete",
+            .in_mempool => "in mempool",
+        };
+    }
+};
+
 /// One wallet transaction, normalized for display. Deliberately scalar-only
 /// (no owned strings) so a bounded, fixed-capacity cache of these can be
 /// memcpy'd across the poll-worker/UI-thread boundary the same way the daemon
@@ -494,6 +519,13 @@ pub const WalletTx = struct {
     /// empty when a coin's list RPC doesn't report one.
     txid_buf: [64]u8 = undefined,
     txid_len: usize = 0,
+    /// Where it is, while unconfirmed, for a coin that reports it (`TxStage`).
+    stage: TxStage = .none,
+    /// The wallet can cancel it — unlocking what it spent — through the coin's
+    /// `wallet_cancel_tx`, which takes `txid()`. Only ever set for a transaction
+    /// that is safe to cancel: one that has not, as far as can be told, reached
+    /// the network.
+    cancellable: bool = false,
 
     pub fn txid(self: *const WalletTx) []const u8 {
         return self.txid_buf[0..self.txid_len];

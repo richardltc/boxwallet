@@ -802,6 +802,8 @@ const QuickSyncModal = struct {
 /// worker and inputs cleanly, mirroring `QuickSyncModal`'s shape.
 const SendModal = struct {
     const Stage = enum {
+        /// `cancel` mode with more than one send to choose from: pick which.
+        pick,
         /// Type/paste the destination address.
         address,
         /// Enter the amount to send.
@@ -827,7 +829,11 @@ const SendModal = struct {
     /// `token` (Nexa's group tokens and NFTs) reuses the whole address →
     /// amount → confirm flow, but the amount is a count of the *token's* finest
     /// units, not the coin's, and the destination is a group the modal carries.
-    const Mode = enum { send, stake, token };
+    /// `cancel` (coins wiring `wallet_cancel_tx` — Epic) reuses the confirm →
+    /// working → result tail to cancel a send that never went through: the
+    /// target is one of the rows snapshotted into `cancel_rows` when the prompt
+    /// opened, not anything typed.
+    const Mode = enum { send, stake, token, cancel };
 
     mode: Mode = .send,
     stage: Stage = .address,
@@ -857,6 +863,11 @@ const SendModal = struct {
     /// negative) — never for "exceeds balance", since the cached balance can
     /// be stale; the daemon's own live check is the real gate.
     bad_input: bool = false,
+    /// `cancel` mode: the cancellable sends as they stood when the prompt
+    /// opened (so a poll can't swap the target mid-prompt), and which one.
+    cancel_rows: [max_cancel_rows]models.WalletTx = undefined,
+    cancel_count: usize = 0,
+    cancel_sel: usize = 0,
     /// The fee the coin quoted for this send (whole coins), shown on the confirm
     /// step with the total leaving the wallet. Null where the coin can't say.
     fee: ?f64 = null,
@@ -866,6 +877,13 @@ const SendModal = struct {
     /// failure reason (fixed buffer — no allocation).
     msg_buf: [256]u8 = undefined,
     msg_len: usize = 0,
+
+    const max_cancel_rows = 8;
+
+    fn cancelTarget(self: *const SendModal) ?*const models.WalletTx {
+        if (self.cancel_sel >= self.cancel_count) return null;
+        return &self.cancel_rows[self.cancel_sel];
+    }
 
     fn group(self: *const SendModal) []const u8 {
         return self.group_buf[0..self.group_len];
@@ -1453,6 +1471,9 @@ const Activity = struct {
     /// confirm step; the quote lands in `send_fee`. Nothing is sent.
     send_is_fee: bool = false,
     send_fee: f64 = 0,
+    /// True when the worker is cancelling the transaction whose id sits in
+    /// `send_addr_buf` (`walletCancelTx`) rather than sending.
+    send_is_cancel: bool = false,
     /// Set true (release) by the worker when the send finishes.
     send_done: std.atomic.Value(bool) = .init(false),
     /// Whether the finished send succeeded. Published by the `send_done` edge.
@@ -2486,6 +2507,7 @@ const Activity = struct {
     /// copied them in before spawning).
     fn doSend(self: *Activity, a: std.mem.Allocator) !models.SendResult {
         const address = self.send_addr_buf[0..self.send_addr_len];
+        if (self.send_is_cancel) return self.coin.walletCancelTx(a, try self.sendAuth(a), address);
 
         // An external-wallet coin (Monero-style) sends/stakes from its *wallet*
         // process — its endpoint + per-session creds, no daemon conf to read.
@@ -4501,6 +4523,9 @@ pub const App = struct {
                         // Capital S — lowercase 's' toggles the daemon. Opens the
                         // Stake prompt on the Send tab for coins with a stake
                         // action (openStakeModal checks the capability itself).
+                        // Cancel a send that never went through (Epic).
+                        'x' => if (on_coin and self.active_tab == .transactions)
+                            self.openCancelTxModal(),
                         'S' => if (on_coin and self.active_tab == .staking)
                             self.openStakeModal()
                         else if (on_coin and self.active_tab == .tokens)
@@ -5383,7 +5408,9 @@ pub const App = struct {
                     };
                 } else {
                     if (self.coinAt(i)) |c| {
-                        self.logf("{s}: {s}", .{ c.coinName(), if (ok) "sent" else "send failed" });
+                        self.logf("{s}: {s}", .{ c.coinName(), if (act.send_is_cancel)
+                            (if (ok) "send cancelled" else "couldn't cancel the send")
+                        else if (ok) "sent" else "send failed" });
                     }
                     if (self.send_modal != null and self.send_modal.?.coin_idx == i) {
                         self.send_modal.?.setMsg(ok, result);
@@ -7026,6 +7053,31 @@ pub const App = struct {
         self.send_amount_input.blur();
     }
 
+    /// Open the cancel prompt — the Send modal in `cancel` mode — for the
+    /// selected coin's sends that never went through (rows the coin marked
+    /// `cancellable`). Straight to the Yes/No when there's one; a pick list
+    /// when there are several. Says so in the log when there's nothing to
+    /// cancel rather than opening an empty prompt.
+    fn openCancelTxModal(self: *App) void {
+        const coin = self.selectedCoin() orelse return;
+        if (!coin.supportsCancelTx()) return;
+        const act = &self.activities[self.selected];
+        var m: SendModal = .{ .coin_idx = self.selected, .mode = .cancel, .stage = .confirm };
+        for (act.tx_buf[0..act.tx_count]) |tx| {
+            if (!tx.cancellable or m.cancel_count == SendModal.max_cancel_rows) continue;
+            m.cancel_rows[m.cancel_count] = tx;
+            m.cancel_count += 1;
+        }
+        if (m.cancel_count == 0) {
+            self.logf("{s}: no send to cancel — only one the receiver hasn't answered for 10 minutes can be", .{coin.coinName()});
+            return;
+        }
+        if (m.cancel_count > 1) m.stage = .pick;
+        self.send_modal = m;
+        self.send_addr_input.blur();
+        self.send_amount_input.blur();
+    }
+
     /// Open the Stake prompt — the Send modal in `stake` mode. A stake pays the
     /// wallet's own address (the coin supplies it), so the flow skips the
     /// address stage and starts at the amount. No-op for coins without a stake
@@ -7088,6 +7140,21 @@ pub const App = struct {
         if (self.send_modal == null) return;
         const m = &self.send_modal.?;
         switch (m.stage) {
+            .pick => switch (k.key) {
+                .escape => self.closeSendModal(),
+                .up => m.cancel_sel -|= 1,
+                .down => m.cancel_sel = @min(m.cancel_sel + 1, m.cancel_count -| 1),
+                .char => |c| switch (c) {
+                    'k' => m.cancel_sel -|= 1,
+                    'j' => m.cancel_sel = @min(m.cancel_sel + 1, m.cancel_count -| 1),
+                    else => {},
+                },
+                .enter => {
+                    m.sel = 0;
+                    m.stage = .confirm;
+                },
+                else => {},
+            },
             .address => switch (k.key) {
                 .escape => self.closeSendModal(),
                 .enter => if (self.send_addr_input.getValue().len > 0) {
@@ -7216,10 +7283,15 @@ pub const App = struct {
             act.send_thread = null;
         }
 
-        const addr = self.send_addr_input.getValue();
-        const n = @min(addr.len, act.send_addr_buf.len);
-        @memcpy(act.send_addr_buf[0..n], addr[0..n]);
+        // A cancel's target is the snapshotted row's id, not anything typed.
+        const target = if (m.mode == .cancel)
+            (if (m.cancelTarget()) |t| t.txid() else "")
+        else
+            self.send_addr_input.getValue();
+        const n = @min(target.len, act.send_addr_buf.len);
+        @memcpy(act.send_addr_buf[0..n], target[0..n]);
         act.send_addr_len = n;
+        act.send_is_cancel = m.mode == .cancel;
 
         const amount_text = std.mem.trim(u8, self.send_amount_input.getValue(), " \t");
         act.send_amount = std.fmt.parseFloat(f64, amount_text) catch 0;
@@ -7258,6 +7330,7 @@ pub const App = struct {
             .stake => "staking",
             .token => "sending token",
             .send => "sending",
+            .cancel => "cancelling a send",
         } });
     }
 
@@ -9125,7 +9198,12 @@ pub const App = struct {
             const date = try formatBlockTime(a, tx.time);
             var buf: [64]u8 = undefined;
             const amount = trimTrailingZeros(formatAmount(&buf, tx.amount, decimals));
-            const conf_text = txConfirmationText(a, tx.confirmations);
+            // A coin that says where an unconfirmed transaction is (Epic) gets
+            // those words instead of a bare "0 confirmations".
+            const conf_text = if (tx.stage != .none)
+                ((zz.Style{}).bold(true).fg(.yellow).render(a, tx.stage.label()) catch tx.stage.label())
+            else
+                txConfirmationText(a, tx.confirmations);
             const line = try std.fmt.allocPrint(a, "  {s} {s}   {s}   {s}", .{
                 glyph,
                 try padCell(a, date, date_w, false),
@@ -9134,6 +9212,11 @@ pub const App = struct {
             });
             body = try std.fmt.allocPrint(a, "{s}\n{s}", .{ body, line });
         }
+        // Only a row the coin marked cancellable raises the hint.
+        for (act.tx_buf[0..act.tx_count]) |tx| if (tx.cancellable) {
+            const hint = (zz.Style{}).dim(true).render(a, "x: cancel a send the receiver never answered") catch "";
+            return std.fmt.allocPrint(a, "Transactions\n\n{s}\n\n{s}", .{ body, hint });
+        };
         return std.fmt.allocPrint(a, "Transactions\n\n{s}", .{body});
     }
 
@@ -10566,15 +10649,32 @@ pub const App = struct {
 
         const staking = m.mode == .stake;
         const sending_token = m.mode == .token;
+        const cancelling = m.mode == .cancel;
         const title = try std.fmt.allocPrint(a, "{s} — {s}", .{ coin.coinName(), switch (m.mode) {
             .stake => "stake",
             .token => "send token",
             .send => "send",
+            .cancel => "cancel send",
         } });
         try modalRule(a, &out.writer, brand, inner_w, "┌", "┐", title);
         try modalRow(&out.writer, vbar, inner_w, "", 0);
 
         switch (m.stage) {
+            .pick => {
+                const lead = "Which send should be cancelled?";
+                try modalRow(&out.writer, vbar, inner_w, lead, zz.width(lead));
+                try modalRow(&out.writer, vbar, inner_w, "", 0);
+                for (m.cancel_rows[0..m.cancel_count], 0..) |*tx, i| {
+                    const sel = i == m.cancel_sel;
+                    const row = try cancelRowText(a, tx, coin);
+                    const plain = try std.fmt.allocPrint(a, "{s}{s}", .{ if (sel) "❯ " else "  ", row });
+                    const text = if (sel)
+                        ((zz.Style{}).bold(true).fg(brand).render(a, plain) catch plain)
+                    else
+                        plain;
+                    try modalRow(&out.writer, vbar, inner_w, text, zz.width(plain));
+                }
+            },
             .address => {
                 const field = try self.send_addr_input.view(a);
                 const text = try std.fmt.allocPrint(a, "To: {s}", .{field});
@@ -10634,7 +10734,12 @@ pub const App = struct {
                 const amount_text = std.mem.trim(u8, self.send_amount_input.getValue(), " \t");
                 const amount = std.fmt.parseFloat(f64, amount_text) catch 0;
                 var buf: [64]u8 = undefined;
-                const detail = if (sending_token) blk: {
+                const detail = if (cancelling) blk: {
+                    const tx = m.cancelTarget() orelse break :blk "";
+                    break :blk try std.fmt.allocPrint(a, "Cancel the send of {s}? The receiver never answered it. Cancelling unlocks the coins it set aside; if the receiver answers later, it won't go through.", .{
+                        try cancelRowText(a, tx, coin),
+                    });
+                } else if (sending_token) blk: {
                     // The full, untruncated address, and the token named — the
                     // one typo safety net a machine can't provide.
                     const addr = self.send_addr_input.getValue();
@@ -10685,6 +10790,8 @@ pub const App = struct {
                 try modalRow(&out.writer, vbar, inner_w, "", 0);
                 const labels = if (staking)
                     [_][]const u8{ "Yes — stake it", "No — cancel" }
+                else if (cancelling)
+                    [_][]const u8{ "Yes — cancel it", "No — keep waiting" }
                 else
                     [_][]const u8{ "Yes — send it", "No — cancel" };
                 for (labels, 0..) |lbl, i| {
@@ -10698,7 +10805,7 @@ pub const App = struct {
                 }
             },
             .working => {
-                const busy = if (staking) "Staking…" else "Sending…";
+                const busy = if (staking) "Staking…" else if (cancelling) "Cancelling…" else "Sending…";
                 try modalRow(&out.writer, vbar, inner_w, busy, zz.width(busy));
             },
             .estimating => {
@@ -10709,7 +10816,9 @@ pub const App = struct {
                 // A coin whose "sent" isn't a finished, txid-bearing send says so
                 // in its own words (Epic: on its way, and a slate id).
                 const own = coin.sendOkLabel();
-                const lead_plain = if (m.ok)
+                const lead_plain = if (cancelling)
+                    (if (m.ok) "Send cancelled." else "Couldn't cancel:")
+                else if (m.ok)
                     (if (staking) "Staked. Txid:" else if (m.mode == .send and own.len > 0) own else "Sent. Txid:")
                 else
                     (if (staking) "Stake failed:" else "Send failed:");
@@ -10724,6 +10833,7 @@ pub const App = struct {
 
         try modalRow(&out.writer, vbar, inner_w, "", 0);
         const hint = switch (m.stage) {
+            .pick => "j/k: choose   enter: next   esc: close",
             .address => "enter: next   esc: cancel",
             .amount => "enter: next   esc: cancel",
             .confirm => "enter: select   esc: cancel",
@@ -10735,6 +10845,19 @@ pub const App = struct {
         try modalRule(a, &out.writer, brand, inner_w, "└", "┘", "");
 
         return out.toOwnedSlice();
+    }
+
+    /// One cancellable send, as the cancel prompt names it: the amount that
+    /// left (fee included), when it was made (UTC), and the start of its id.
+    fn cancelRowText(a: std.mem.Allocator, tx: *const models.WalletTx, coin: Coin) ![]const u8 {
+        var buf: [64]u8 = undefined;
+        const id = tx.txid();
+        return std.fmt.allocPrint(a, "{s} {s}, made {s} UTC ({s}…)", .{
+            trimTrailingZeros(formatAmount(&buf, tx.amount, coin.balanceDecimals())),
+            coin.coinNameAbbrev(),
+            try formatBlockTime(a, tx.time),
+            id[0..@min(id.len, 8)],
+        });
     }
 
     /// Render the Mining prompt box. Mirrors `renderSendModal`'s chrome
@@ -12795,6 +12918,76 @@ test "renderSendModal states the quoted fee and total, and the coin's own sent l
     box = try app.renderSendModal(a);
     try std.testing.expect(std.mem.indexOf(u8, box, "waiting for the receiver") != null);
     try std.testing.expect(std.mem.indexOf(u8, box, "Txid") == null);
+}
+
+test "the Transactions tab says where an unfinished send is, and offers x only when it can be cancelled" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    var act: Activity = .{};
+    act.tx_buf[0] = .{ .direction = .sent, .amount = 0.018, .time = 1_790_000_000, .confirmations = 0, .stage = .awaiting_counterparty };
+    act.tx_buf[1] = .{ .direction = .sent, .amount = 0.05, .time = 1_789_990_000, .confirmations = 0, .stage = .in_mempool };
+    act.tx_count = 2;
+
+    var body = try App.renderTransactionsTab(a, &act, 8);
+    try std.testing.expect(std.mem.indexOf(u8, body, "waiting to complete") != null);
+    try std.testing.expect(std.mem.indexOf(u8, body, "in mempool") != null);
+    try std.testing.expect(std.mem.indexOf(u8, body, "0 confirmations") == null);
+    try std.testing.expect(std.mem.indexOf(u8, body, "x: cancel") == null);
+
+    act.tx_buf[0].cancellable = true;
+    body = try App.renderTransactionsTab(a, &act, 8);
+    try std.testing.expect(std.mem.indexOf(u8, body, "x: cancel") != null);
+}
+
+test "the cancel prompt opens on what can be cancelled — straight to Yes/No for one, a pick for several" {
+    if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
+    const allocator = std.testing.allocator;
+
+    var threaded: std.Io.Threaded = .init(allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    var env = std.process.Environ.Map.init(allocator);
+    defer env.deinit();
+    try env.put("HOME", "/home/tester");
+    var ctx = zz.Context.init(allocator, allocator, io, &env);
+
+    var app: App = undefined;
+    app.hide_balances = false;
+    _ = app.init(&ctx);
+    defer app.deinit();
+
+    const idx = try epicSlot(&app);
+    app.selected = idx;
+    const act = &app.activities[idx];
+
+    // Nothing cancellable: no prompt.
+    act.tx_buf[0] = .{ .direction = .sent, .amount = 0.018, .time = 1_790_000_000, .confirmations = 0, .stage = .awaiting_counterparty };
+    act.tx_count = 1;
+    app.openCancelTxModal();
+    try std.testing.expect(app.send_modal == null);
+
+    // One: straight to the Yes/No, naming it.
+    act.tx_buf[0].cancellable = true;
+    act.tx_buf[0].setTxid("19763226-1dd5-4b89-bf76-d03978a92cd4");
+    app.openCancelTxModal();
+    try std.testing.expectEqual(SendModal.Stage.confirm, app.send_modal.?.stage);
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+    const box = try app.renderSendModal(arena.allocator());
+    try std.testing.expect(std.mem.indexOf(u8, box, "Cancel the send of 0.018 EPIC") != null);
+    try std.testing.expect(std.mem.indexOf(u8, box, "19763226") != null);
+    try std.testing.expect(std.mem.indexOf(u8, box, "Yes — cancel it") != null);
+
+    // Several: pick first.
+    act.tx_buf[1] = act.tx_buf[0];
+    act.tx_buf[1].setTxid("aaaaaaaa-1dd5-4b89-bf76-d03978a92cd4");
+    act.tx_count = 2;
+    app.openCancelTxModal();
+    try std.testing.expectEqual(SendModal.Stage.pick, app.send_modal.?.stage);
+    try std.testing.expectEqual(@as(usize, 2), app.send_modal.?.cancel_count);
 }
 
 test "the Stake prompt refuses to open for a coin without the stake action" {
