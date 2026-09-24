@@ -1794,6 +1794,22 @@ export fn bw_ext_wallet_service_stop(ctx: ?*Ctx, idx: usize) void {
 /// different things.
 const WalletOp = walletmenu.SetupOp;
 
+/// The in-flight line for a managed-wallet op (0 create, 1 restore from seed,
+/// 2 import file, 3 unlock, 4 lock) — the TUI's words. 0 for an unknown op.
+export fn bw_setup_op_progress(op: c_int, buf: ?[*]u8, cap: usize) usize {
+    const b = buf orelse return 0;
+    const o = std.enums.fromInt(WalletOp, op) orelse return 0;
+    return copyOut(b[0..cap], o.progress());
+}
+
+/// The note under it for a BW_EW_LAUNCH_WITH_PW wallet (why it takes a
+/// moment). 0 when there's none.
+export fn bw_setup_op_launch_note(op: c_int, buf: ?[*]u8, cap: usize) usize {
+    const b = buf orelse return 0;
+    const o = std.enums.fromInt(WalletOp, op) orelse return 0;
+    return copyOut(b[0..cap], o.launchNote());
+}
+
 /// Upper bound on a wallet password, sizing the bounded buffer we copy the
 /// caller's secret into. Comfortably past any sane passphrase while keeping the
 /// secret in a small fixed buffer we can wipe (memory constraint). Matches the
@@ -5352,6 +5368,15 @@ test "bw_coin_ext_wallet's flags agree with the vtable for every coin" {
     // A coin with no external wallet at all reports a bare 0, and so does an
     // index that isn't a coin.
     try std.testing.expectEqual(@as(c_int, 0), bw_coin_ext_wallet(coin_count));
+}
+
+test "bw_setup_op_progress gives the TUI's in-flight words by op number" {
+    var buf: [160]u8 = undefined;
+    const n = bw_setup_op_progress(3, &buf, buf.len);
+    try std.testing.expectEqualStrings(walletmenu.SetupOp.open.progress(), buf[0..n]);
+    try std.testing.expectEqual(@as(usize, 0), bw_setup_op_progress(99, &buf, buf.len));
+    try std.testing.expect(bw_setup_op_launch_note(3, &buf, buf.len) > 0);
+    try std.testing.expectEqual(@as(usize, 0), bw_setup_op_launch_note(4, &buf, buf.len));
 }
 
 test "bw_tx_stage_text gives the TUI's words for each stage, nothing for none" {

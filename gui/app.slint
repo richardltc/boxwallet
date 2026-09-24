@@ -1523,6 +1523,16 @@ export component AppWindow inherits Window {
     // front-ends can't disagree about what "locked" means.
     in property <int> ew-flags: 0;
     in property <int> wallet-state: 0;
+    // Unlocked, but the first reads since (balance, history, address) haven't
+    // come back yet — a wallet reading a remote node can take a few seconds.
+    // The tabs say "Loading…" rather than "Unlock your wallet" or "No
+    // transactions yet", neither of which is true.
+    in-out property <bool> wallet-loading: false;
+    // The in-flight line for the op the wallet modal is running, and the note
+    // under it — the core's words (bw_setup_op_progress / _launch_note), so the
+    // two front-ends say the same thing.
+    in-out property <string> wallet-progress-text: "";
+    in-out property <string> wallet-progress-note: "";
     // BW_EW_LAUNCH_WITH_PW, decoded in C++ because Slint has no bitwise
     // operators and this one gates a whole flow rather than a single button.
     // These wallets (Zano, Epic) spawn their process per-open with the password
@@ -3306,7 +3316,9 @@ export component AppWindow inherits Window {
                                 ? "Start the daemon to see your transactions."
                                 : (root.ew-flags != 0 && root.wallet-state < 2
                                     ? "Unlock your wallet to see its transactions."
-                                    : "No transactions yet.");
+                                    : root.wallet-loading
+                                        ? "Loading your transactions\u{2026}"
+                                        : "No transactions yet.");
                             color: #8a8a8a;
                             font-size: 13px;
                             wrap: word-wrap;
@@ -3584,7 +3596,9 @@ export component AppWindow inherits Window {
                         if !root.can-send: Text {
                             text: !root.running
                                 ? "Start the daemon before sending."
-                                : "Unlock your wallet before sending.";
+                                : root.wallet-loading
+                                    ? "Loading your wallet\u{2026}"
+                                    : "Unlock your wallet before sending.";
                             color: #8a8a8a;
                             font-size: 13px;
                         }
@@ -5110,10 +5124,7 @@ export component AppWindow inherits Window {
                     if root.wallet-stage == 6: VerticalLayout {
                         spacing: 6px;
                         Text {
-                            text: root.wallet-op == 0 ? "Creating the wallet\u{2026}"
-                                : root.wallet-op == 1 ? "Restoring from your seed words\u{2026}"
-                                : root.wallet-op == 2 ? "Importing the wallet file\u{2026}"
-                                : "Opening the wallet\u{2026}";
+                            text: root.wallet-progress-text;
                             color: #9a9a9a;
                             font-size: 13px;
                             wrap: word-wrap;
@@ -5122,10 +5133,8 @@ export component AppWindow inherits Window {
                         // every op, and a restore scans the chain for the seed's
                         // outputs before it answers. That is minutes, not seconds —
                         // an unexplained spinner reads as a hang.
-                        if root.wallet-launch-with-pw: Text {
-                            text: root.wallet-op == 1
-                                ? "This scans the chain for your existing funds and can take several minutes. Leave it running."
-                                : "The wallet service is starting — this can take a moment.";
+                        if root.wallet-launch-with-pw && root.wallet-progress-note != "": Text {
+                            text: root.wallet-progress-note;
                             color: #8a8a8a;
                             font-size: 12px;
                             wrap: word-wrap;
