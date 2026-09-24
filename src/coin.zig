@@ -1063,6 +1063,22 @@ pub const Coin = struct {
             address: []const u8,
             amount: f64,
         ) anyerror!models.SendResult = null,
+        /// Optional: `wallet_send` with a note the receiver gets alongside the
+        /// payment (Epic: the slate message — signed and kept in both wallets'
+        /// transaction logs, never on the chain itself). Only called with a
+        /// non-empty note of at most `send_note_max` bytes; an empty one goes
+        /// through `wallet_send`. `supportsSendNote` keys off `send_note_max`.
+        wallet_send_note: ?*const fn (
+            ptr: *anyopaque,
+            allocator: std.mem.Allocator,
+            auth: models.CoinAuth,
+            address: []const u8,
+            amount: f64,
+            note: []const u8,
+        ) anyerror!models.SendResult = null,
+        /// The longest note `wallet_send_note` takes, in bytes — at most
+        /// `models.tx_note_max`. 0 (the default) means sends carry no note.
+        send_note_max: usize = 0,
         /// Optional: what sending `amount` to `address` would cost, worked out
         /// without sending — so the confirm step can state the fee (and the
         /// total leaving the wallet) before the user agrees to it. A refusal the
@@ -1734,6 +1750,38 @@ pub const Coin = struct {
     ) !models.SendResult {
         const f = self.vtable.wallet_send orelse return error.Unsupported;
         return f(self.ptr, allocator, auth, address, amount);
+    }
+
+    /// The longest note a send can carry (drives the note field on the send
+    /// prompt), 0 when this coin's sends carry none.
+    pub fn sendNoteMax(self: Coin) usize {
+        if (self.vtable.wallet_send_note == null) return 0;
+        return @min(self.vtable.send_note_max, models.tx_note_max);
+    }
+
+    /// Send `amount` to `address` with `note` attached, cleaned by
+    /// `models.sanitizeNote`. An empty note is a plain `walletSend`. A note on a coin that can't carry one,
+    /// or one longer than `sendNoteMax`, is refused as `.failed` rather than
+    /// quietly dropped — the user asked for it to go with the payment.
+    pub fn walletSendNote(
+        self: Coin,
+        allocator: std.mem.Allocator,
+        auth: models.CoinAuth,
+        address: []const u8,
+        amount: f64,
+        note: []const u8,
+    ) !models.SendResult {
+        // The same cleaning a received note gets, so what goes out is what the
+        // receiver's wallet (ours or not) can show safely.
+        const trimmed = std.mem.trim(u8, note, " \t\r\n");
+        if (trimmed.len == 0) return self.walletSend(allocator, auth, address, amount);
+        const max = self.sendNoteMax();
+        if (max == 0) return .{ .failed = "This coin's payments can't carry a note." };
+        if (trimmed.len > max) return .{ .failed = "The note is too long." };
+        var buf: [models.tx_note_max]u8 = undefined;
+        const clean = models.sanitizeNote(&buf, trimmed);
+        if (clean.len == 0) return .{ .failed = "The note isn't readable text." };
+        return self.vtable.wallet_send_note.?(self.ptr, allocator, auth, address, amount, clean);
     }
 
     /// Whether the coin can state a send's fee before it's made (drives the fee

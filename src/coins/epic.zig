@@ -3118,21 +3118,22 @@ pub const Epic = struct {
         return std.mem.eql(u8, h2[0..4], decoded[35..39]);
     }
 
-    /// Send `amount` EPIC to the Epicbox `address` from the open wallet. A
-    /// rejection the user needs to read — a bad address, too little spendable, the
-    /// wallet's own refusal — comes back as `.failed` with a sentence; transport
-    /// failures (no wallet open, the service down) are errors, as for every other
-    /// coin's send.
+    /// Send `amount` EPIC to the Epicbox `address` from the open wallet, with
+    /// `note` (may be empty) as the slate message. A rejection the user needs to
+    /// read — a bad address, too little spendable, the wallet's own refusal —
+    /// comes back as `.failed` with a sentence; transport failures (no wallet
+    /// open, the service down) are errors, as for every other coin's send.
     fn epicSend(
         allocator: std.mem.Allocator,
         auth: models.CoinAuth,
         address: []const u8,
         amount: f64,
+        note: []const u8,
     ) anyerror!models.SendResult {
         const addr = std.mem.trim(u8, address, " \t\r\n");
         if (!isEpicboxAddress(addr)) return .{ .failed = not_an_address };
         const units = baseUnitsFromAmount(amount) orelse return .{ .failed = "invalid amount" };
-        const r = try initSendTx(allocator, auth, addr, units, .send);
+        const r = try initSendTx(allocator, auth, addr, units, note, .send);
         defer {
             @memset(r, 0);
             allocator.free(r);
@@ -3153,7 +3154,7 @@ pub const Epic = struct {
         const addr = std.mem.trim(u8, address, " \t\r\n");
         if (!isEpicboxAddress(addr)) return .{ .failed = not_an_address };
         const units = baseUnitsFromAmount(amount) orelse return .{ .failed = "invalid amount" };
-        const r = try initSendTx(allocator, auth, addr, units, .estimate);
+        const r = try initSendTx(allocator, auth, addr, units, "", .estimate);
         defer {
             @memset(r, 0);
             allocator.free(r);
@@ -3173,11 +3174,17 @@ pub const Epic = struct {
     /// (caller wipes + frees). `.estimate` sets `estimate_only` **and** sends no
     /// `send_args`: the wallet goes on to post the slate whenever `send_args` is
     /// present, so an estimate that carried them would be a send.
+    ///
+    /// A non-empty `note` becomes the slate's `message`: the wallet signs it as
+    /// the sender's participant message, the receiver's wallet keeps it with the
+    /// transaction, and both logs report it (`TxLogEntry.messages`). It travels
+    /// with the slate over Epicbox — MimbleWimble has no on-chain memo.
     fn initSendTx(
         allocator: std.mem.Allocator,
         auth: models.CoinAuth,
         addr: []const u8,
         units: u64,
+        note: []const u8,
         mode: InitSendMode,
     ) ![]u8 {
         var token_buf: [128]u8 = undefined;
@@ -3197,14 +3204,16 @@ pub const Epic = struct {
             .estimate => try allocator.dupe(u8, "null"),
         };
         defer allocator.free(send_args);
+        const message = if (note.len > 0) try rpc.jsonQuote(allocator, note) else try allocator.dupe(u8, "null");
+        defer allocator.free(message);
         const params = try std.fmt.allocPrint(
             allocator,
             "{{\"token\":\"{s}\",\"args\":{{\"src_acct_name\":null,\"amount\":\"{d}\"," ++
                 "\"minimum_confirmations\":{d},\"max_outputs\":500,\"num_change_outputs\":1," ++
-                "\"selection_strategy_is_use_all\":false,\"message\":null,\"target_slate_version\":null," ++
+                "\"selection_strategy_is_use_all\":false,\"message\":{s},\"target_slate_version\":null," ++
                 "\"payment_proof_recipient_address\":null,\"ttl_blocks\":null," ++
                 "\"send_args\":{s},\"estimate_only\":{s}}}}}",
-            .{ token_buf[0..tn], units, min_confirmations, send_args, if (mode == .estimate) "true" else "false" },
+            .{ token_buf[0..tn], units, min_confirmations, message, send_args, if (mode == .estimate) "true" else "false" },
         );
         defer allocator.free(params);
 
@@ -3303,6 +3312,16 @@ pub const Epic = struct {
         amount_credited: []const u8 = "0",
         amount_debited: []const u8 = "0",
         tx_slate_id: ?[]const u8 = null,
+        /// The slate's participant messages — where a sender's note lives.
+        messages: ?struct { messages: []const struct { message: ?[]const u8 = null } = &.{} } = null,
+
+        /// The first non-empty participant message: the sender's note, whichever
+        /// side of the transaction this wallet was on.
+        fn note(self: TxLogEntry) []const u8 {
+            const pm = self.messages orelse return "";
+            for (pm.messages) |m| if (m.message) |text| if (text.len > 0) return text;
+            return "";
+        }
     };
 
     /// Stand-in confirmation count for a `confirmed` entry — the wallet reports
@@ -3397,6 +3416,7 @@ pub const Epic = struct {
                 .stage = if (e.confirmed) .none else kind.stage,
             };
             if (e.tx_slate_id) |id| all[n].setTxid(id);
+            all[n].setNote(e.note());
             all[n].cancellable = !e.confirmed and kind.stage == .awaiting_counterparty and
                 kind.direction == .sent and all[n].txid_len > 0 and
                 time > 0 and now - time >= cancel_min_age_s;
@@ -3603,6 +3623,8 @@ pub const Epic = struct {
         .wallet_transactions = vtWalletTransactions,
         .wallet_receive_address = vtWalletReceiveAddress,
         .wallet_send = vtWalletSend,
+        .wallet_send_note = vtWalletSendNote,
+        .send_note_max = models.tx_note_max,
         .wallet_send_fee = vtWalletSendFee,
         .wallet_cancel_tx = vtWalletCancelTx,
         // A send here is on its way, not done — the listener completes it — and
@@ -3667,7 +3689,18 @@ pub const Epic = struct {
         address: []const u8,
         amount: f64,
     ) anyerror!models.SendResult {
-        return epicSend(allocator, wallet_auth, address, amount);
+        return epicSend(allocator, wallet_auth, address, amount, "");
+    }
+
+    fn vtWalletSendNote(
+        _: *anyopaque,
+        allocator: std.mem.Allocator,
+        wallet_auth: models.CoinAuth,
+        address: []const u8,
+        amount: f64,
+        note: []const u8,
+    ) anyerror!models.SendResult {
+        return epicSend(allocator, wallet_auth, address, amount, note);
     }
 
     fn vtWalletCancelTx(
@@ -4553,6 +4586,33 @@ test "parseTxLog reads 4.x's paged reply: stages, slate ids, and what can be can
         try std.testing.expect(txs[0].cancellable);
         for (txs[1..]) |t| try std.testing.expect(!t.cancellable);
     }
+}
+
+test "parseTxLog carries the slate message as the row's note, made safe to show" {
+    const allocator = std.testing.allocator;
+    // The sender's message is participant 0's; the receiver's side is empty. A
+    // row with no messages at all (null) has no note.
+    const inner =
+        \\{"id":1,"jsonrpc":"2.0","result":{"Ok":{"pager":{},"txs":[
+        \\{"tx_type":"TxReceived","tx_slate_id":"f75efd84-31cd-429a-bb9c-756a640d8cea","creation_ts":"2026-09-23T17:19:00Z","confirmed":true,"amount_credited":"10000000","amount_debited":"0",
+        \\ "messages":{"messages":[{"id":"0","public_key":"02ab","message":"rent \u001b[2J for May","message_sig":"cd"},{"id":"1","public_key":"03ef","message":null,"message_sig":null}]}},
+        \\{"tx_type":"TxSent","tx_slate_id":"45ac41a0-7812-47ca-baa6-0021c2e8db0d","creation_ts":"2026-09-23T17:10:00Z","confirmed":true,"amount_credited":"0","amount_debited":"10000000","messages":null}
+        \\]}}}
+    ;
+    const txs = try Epic.parseTxLog(allocator, inner, 32, 0);
+    defer allocator.free(txs);
+    try std.testing.expectEqual(@as(usize, 2), txs.len);
+    try std.testing.expectEqualStrings("rent [2J for May", txs[0].note());
+    try std.testing.expectEqualStrings("", txs[1].note());
+}
+
+test "a note rides the Epic send; one too long is refused, not dropped" {
+    var e: Epic = .{};
+    const c = e.coin();
+    try std.testing.expectEqual(models.tx_note_max, c.sendNoteMax());
+    const long = "x" ** (models.tx_note_max + 1);
+    const res = try c.walletSendNote(std.testing.allocator, .{ .rpc_user = "", .rpc_password = "", .ip_address = "", .port = "" }, "addr", 1, long);
+    try std.testing.expectEqualStrings("The note is too long.", res.failed);
 }
 
 test "parseCancelReply and isUuid: a cancel is only ever of a real slate id" {

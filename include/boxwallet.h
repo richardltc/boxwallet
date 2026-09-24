@@ -226,13 +226,15 @@ size_t  bw_coin_seed_word_counts(size_t idx, uint32_t *out, size_t cap);
 /* Which wallet tabs a coin earns — about the *coin*, not about whether its
  * wallet happens to be open. Use these to hide a tab rather than render it
  * empty. Note bw_coin_supports_balance is true for a managed-wallet coin too:
- * its balance comes from the wallet-rpc rather than the daemon, but it has one.
- * Epic answers 0 for receive/send — a MimbleWimble payment is an interactive
- * slate exchange, with no address to show and nothing to fire and forget. */
+ * its balance comes from the wallet-rpc rather than the daemon, but it has one. */
 int     bw_coin_supports_balance(size_t idx);
 int     bw_coin_supports_transactions(size_t idx);
 int     bw_coin_supports_receive_address(size_t idx);
 int     bw_coin_supports_send(size_t idx);
+/* The longest note bw_wallet_send can carry, in bytes; 0 = sends carry none
+ * (show no note field). Epic's is its slate message: it travels with the
+ * payment to the receiver's wallet but is not written to the chain. */
+size_t  bw_coin_send_note_max(size_t idx);
 /* Whether bw_wallet_send_fee can quote a send's fee before it's made. */
 int     bw_coin_supports_send_fee(size_t idx);
 /* The coin's own lead-in for a successful send's result ("Sent — waiting for
@@ -1224,6 +1226,8 @@ typedef struct {
     size_t  txid_len;
     int     stage;          /* BW_TX_STAGE_*: where an unconfirmed tx is */
     int     cancellable;    /* 1: bw_wallet_cancel_tx may be offered for it */
+    char    note[128];      /* the sender's note, length-counted like txid and */
+    size_t  note_len;       /* already safe to show; note_len 0 = none         */
 } BwWalletTx;
 
 /* Where an unconfirmed transaction is, for a coin whose transactions aren't
@@ -1347,10 +1351,13 @@ int     bw_wallet_send_fee(bw_ctx *ctx, size_t idx, const char *address, double 
  * verbatim), -1 = transport failure (bw_last_error has why). A rejection is an
  * answer, not an error: "insufficient funds" is something the user must read.
  *
+ * `note` (NULL or "" for none) goes to the receiver with the payment, for a coin
+ * where bw_coin_send_note_max is non-zero; a longer note is refused (1).
+ *
  * Confirm the full, untruncated address with the user before calling. It is the
  * one typo safety net a machine cannot provide. */
 int     bw_wallet_send(bw_ctx *ctx, size_t idx, const char *address, double amount,
-                       char *out, size_t cap);
+                       const char *note, char *out, size_t cap);
 
 /* ---- mining -----------------------------------------------------------------
  * Only meaningful for a coin where bw_coin_supports_mining is 1: its daemon

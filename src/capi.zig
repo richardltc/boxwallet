@@ -763,12 +763,17 @@ export fn bw_coin_supports_receive_address(idx: usize) c_int {
     return if (c.supportsReceiveAddress()) 1 else 0;
 }
 
-/// Whether this coin can send (drives the Send tab). False for Epic: a
-/// MimbleWimble payment is an interactive slate exchange, not a fire-and-forget
-/// broadcast.
+/// Whether this coin can send (drives the Send tab).
 export fn bw_coin_supports_send(idx: usize) c_int {
     const c = coinByIndex(idx) orelse return 0;
     return if (c.supportsSend()) 1 else 0;
+}
+
+/// The longest note a send can carry, in bytes (`bw_wallet_send`'s `note`) —
+/// 0 when this coin's sends carry none, so the GUI shows no note field.
+export fn bw_coin_send_note_max(idx: usize) usize {
+    const c = coinByIndex(idx) orelse return 0;
+    return c.sendNoteMax();
 }
 
 /// Whether the coin can quote a send's fee before it's made
@@ -2261,7 +2266,16 @@ pub const BwWalletTx = extern struct {
     stage: c_int,
     /// 1 when `bw_wallet_cancel_tx` may be offered for this row.
     cancellable: c_int,
+    /// The sender's note (`models.WalletTx.note`), length-counted like `txid`
+    /// and already made safe to show. `note_len` 0: none.
+    note: [models.tx_note_max]u8,
+    note_len: usize,
 };
+
+comptime {
+    // `include/boxwallet.h` spells the note buffer out as `char note[128]`.
+    std.debug.assert(models.tx_note_max == 128);
+}
 
 /// What the Status column says for a `BwWalletTx.stage` — the same words the
 /// TUI uses. 0 for `none` (show the confirmation count instead).
@@ -2358,8 +2372,11 @@ export fn bw_wallet_transactions(ctx: ?*Ctx, idx: usize, out: ?*BwWalletTx, cap:
             .txid_len = t.txid_len,
             .stage = @intFromEnum(t.stage),
             .cancellable = @intFromBool(t.cancellable),
+            .note = undefined,
+            .note_len = t.note_len,
         };
         @memcpy(d.txid[0..t.txid_len], t.txid());
+        @memcpy(d.note[0..t.note_len], t.note());
     }
     return n;
 }
@@ -2537,13 +2554,14 @@ export fn bw_wallet_send_fee(ctx: ?*Ctx, idx: usize, address: ?[*:0]const u8, am
     };
 }
 
-/// Send `amount` to `address`. Returns 0 on broadcast (`out` = the txid), 1 when
+/// Send `amount` to `address`, with `note` (null or "" for none — see
+/// `bw_coin_send_note_max`). Returns 0 on broadcast (`out` = the txid), 1 when
 /// the daemon rejected it (`out` = its own reason, verbatim), -1 on a transport
 /// failure (`bw_last_error` has why).
 ///
 /// A rejection is an answer, not an error: "insufficient funds" is something the
 /// user needs to read, not a generic failure.
-export fn bw_wallet_send(ctx: ?*Ctx, idx: usize, address: ?[*:0]const u8, amount: f64, out: ?[*]u8, cap: usize) c_int {
+export fn bw_wallet_send(ctx: ?*Ctx, idx: usize, address: ?[*:0]const u8, amount: f64, note: ?[*:0]const u8, out: ?[*]u8, cap: usize) c_int {
     const c = ctx orelse return -1;
     const addr_z = address orelse return -1;
     const o = out orelse return -1;
@@ -2563,7 +2581,8 @@ export fn bw_wallet_send(ctx: ?*Ctx, idx: usize, address: ?[*:0]const u8, amount
         c.setError(@errorName(err));
         return -1;
     };
-    const res = coin.walletSend(a, auth, std.mem.span(addr_z), amount) catch |err| {
+    const note_s: []const u8 = if (note) |n| std.mem.span(n) else "";
+    const res = coin.walletSendNote(a, auth, std.mem.span(addr_z), amount, note_s) catch |err| {
         c.setError(@errorName(err));
         c.setErrorCode(@errorName(err));
         return -1;
@@ -5507,6 +5526,7 @@ test "bw_coin_ext_wallet's flags agree with the vtable for every coin" {
         try std.testing.expectEqual(coin.supportsCancelTx(), bw_coin_supports_cancel_tx(i) != 0);
         var lb: [96]u8 = undefined;
         try std.testing.expectEqual(coin.sendOkLabel().len, bw_coin_send_ok_label(i, &lb, lb.len));
+        try std.testing.expectEqual(coin.sendNoteMax(), bw_coin_send_note_max(i));
         // A listener coin names it; no other coin does.
         var nm: [64]u8 = undefined;
         try std.testing.expectEqual(coin.walletHasListener(), bw_coin_listener_name(i, &nm, nm.len) != 0);

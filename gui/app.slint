@@ -51,6 +51,7 @@ struct WalletTxRow {
     txid: string,        // the daemon's own hash, shown when the row is expanded
     incoming: bool,      // colours the row
     cancellable: bool,   // a send the receiver never answered — offers Cancel
+    note: string,        // the sender's note (Epic's slate message), "" for none
 }
 
 // One row in the Staking list, pre-formatted by the host like WalletTxRow.
@@ -1716,7 +1717,16 @@ export component AppWindow inherits Window {
     // claim the coin is in no position to make.
     in property <bool> has-stake-list: false;
     callback new-address();
-    callback send-funds(string, string);
+    callback send-funds(string, string, string); // address, amount, note
+    // The longest note a send can carry, in UTF-8 bytes; 0 hides the field.
+    // Epic's travels with the payment to the receiver's wallet, not on-chain.
+    in property <int> send-note-max: 0;
+    in-out property <string> send-note-text: "";
+    in-out property <string> send-confirm-note: "";
+    property <bool> send-note-too-long: root.utf8-len(root.send-note-text) > root.send-note-max;
+    // UTF-8 byte length, the unit send-note-max is in — Slint's own counts
+    // are of characters.
+    pure callback utf8-len(string) -> int;
     // A stake pays the wallet's own address — the coin works that out itself —
     // so this takes an amount and nothing else. It shares send-busy/send-result
     // with the send above: both spend from the same wallet, one at a time, and
@@ -3481,54 +3491,66 @@ export component AppWindow inherits Window {
                                     if root.tx-expanded == idx: Rectangle {
                                         background: #181818;
                                         border-radius: 6px;
-                                        HorizontalLayout {
+                                        VerticalLayout {
                                             padding: 7px;
-                                            spacing: 8px;
-                                            // A read-only TextInput rather than a
-                                            // Text, for the same reason as the
-                                            // receive address: the clipboard takes
-                                            // what the element has selected, so
-                                            // `copy()` needs something that can hold
-                                            // a selection.
-                                            txid-input := TextInput {
-                                                text: row.txid == "" ? "This coin's wallet doesn't report a transaction id." : row.txid;
-                                                read-only: true;
-                                                single-line: true;
-                                                color: row.txid == "" ? #8a8a8a : #e6e6e6;
-                                                font-family: row.txid == "" ? "" : "monospace";
+                                            spacing: 6px;
+                                            HorizontalLayout {
+                                                spacing: 8px;
+                                                // A read-only TextInput rather than a
+                                                // Text, for the same reason as the
+                                                // receive address: the clipboard takes
+                                                // what the element has selected, so
+                                                // `copy()` needs something that can hold
+                                                // a selection.
+                                                txid-input := TextInput {
+                                                    text: row.txid == "" ? "This coin's wallet doesn't report a transaction id." : row.txid;
+                                                    read-only: true;
+                                                    single-line: true;
+                                                    color: row.txid == "" ? #8a8a8a : #e6e6e6;
+                                                    font-family: row.txid == "" ? "" : "monospace";
+                                                    font-size: 12px;
+                                                    vertical-alignment: center;
+                                                    horizontal-stretch: 1;
+                                                }
+                                                // A send the receiver never answered
+                                                // can be taken back. `visible`, not an
+                                                // `if`, like the copy button beside it.
+                                                Button {
+                                                    visible: root.has-cancel-tx && row.cancellable;
+                                                    text: "Cancel send\u{2026}";
+                                                    enabled: !root.cancel-tx-busy;
+                                                    clicked => {
+                                                        root.cancel-tx-id = row.txid;
+                                                        root.cancel-tx-summary = row.amount + " " + root.coin-name + ", sent " + row.when;
+                                                        root.tx-action-result = "";
+                                                        root.cancel-tx-open = true;
+                                                    }
+                                                }
+                                                CopyIconButton {
+                                                    visible: row.txid != "";
+                                                    hint: "Copy transaction ID";
+                                                    copied: root.tx-copied;
+                                                    clicked => {
+                                                        // Select first — the clipboard
+                                                        // gets the selection — but don't
+                                                        // focus, or the arrow keys would
+                                                        // walk the id instead of the
+                                                        // coin list.
+                                                        txid-input.select-all();
+                                                        txid-input.copy();
+                                                        txid-input.clear-selection();
+                                                        root.tx-copied = true;
+                                                    }
+                                                }
+                                            }
+                                            // The sender's note, where the coin carries one
+                                            // (Epic's slate message). The core already made
+                                            // it safe to show — it's someone else's text.
+                                            if row.note != "": Text {
+                                                text: "Note: " + row.note;
+                                                color: #c8c8c8;
                                                 font-size: 12px;
-                                                vertical-alignment: center;
-                                                horizontal-stretch: 1;
-                                            }
-                                            // A send the receiver never answered
-                                            // can be taken back. `visible`, not an
-                                            // `if`, like the copy button beside it.
-                                            Button {
-                                                visible: root.has-cancel-tx && row.cancellable;
-                                                text: "Cancel send\u{2026}";
-                                                enabled: !root.cancel-tx-busy;
-                                                clicked => {
-                                                    root.cancel-tx-id = row.txid;
-                                                    root.cancel-tx-summary = row.amount + " " + root.coin-name + ", sent " + row.when;
-                                                    root.tx-action-result = "";
-                                                    root.cancel-tx-open = true;
-                                                }
-                                            }
-                                            CopyIconButton {
-                                                visible: row.txid != "";
-                                                hint: "Copy transaction ID";
-                                                copied: root.tx-copied;
-                                                clicked => {
-                                                    // Select first — the clipboard
-                                                    // gets the selection — but don't
-                                                    // focus, or the arrow keys would
-                                                    // walk the id instead of the
-                                                    // coin list.
-                                                    txid-input.select-all();
-                                                    txid-input.copy();
-                                                    txid-input.clear-selection();
-                                                    root.tx-copied = true;
-                                                }
+                                                wrap: word-wrap;
                                             }
                                         }
                                     }
@@ -3696,16 +3718,29 @@ export component AppWindow inherits Window {
                             }
                             send-addr := LineEdit { placeholder-text: "Destination address"; }
                             send-amt := LineEdit { placeholder-text: "Amount"; }
+                            if root.send-note-max > 0: LineEdit {
+                                placeholder-text: "Note to the receiver (optional)";
+                                text <=> root.send-note-text;
+                            }
+                            if root.send-note-max > 0: Text {
+                                text: root.send-note-too-long
+                                    ? "The note is too long \u{2014} shorten it."
+                                    : "Sent with the payment to the receiver's wallet. Not written to the blockchain.";
+                                color: root.send-note-too-long ? #e05c5c : #8a8a8a;
+                                font-size: 11px;
+                                wrap: word-wrap;
+                            }
                             HorizontalLayout {
                                 alignment: start;
                                 spacing: 8px;
                                 Button {
                                     text: "Review\u{2026}";
-                                    enabled: !root.send-busy;
+                                    enabled: !root.send-busy && !root.send-note-too-long;
                                     clicked => {
                                         if (send-addr.text != "" && send-amt.text != "") {
                                             root.send-confirm-address = send-addr.text;
                                             root.send-confirm-amount = send-amt.text;
+                                            root.send-confirm-note = root.send-note-max > 0 ? root.send-note-text : "";
                                             root.send-result = "";
                                             root.send-confirm-is-stake = false;
                                             root.send-fee-text = "";
@@ -4827,6 +4862,12 @@ export component AppWindow inherits Window {
                             }
                         }
                     }
+                    if !root.send-confirm-is-stake && root.send-confirm-note != "": Text {
+                        text: "Note: " + root.send-confirm-note;
+                        color: #c8c8c8;
+                        font-size: 12px;
+                        wrap: word-wrap;
+                    }
                     if !root.send-confirm-is-stake && root.has-send-fee && !root.send-busy: Text {
                         text: root.send-fee-pending ? "Working out the fee\u{2026}" : root.send-fee-text;
                         color: #9a9a9a;
@@ -4879,7 +4920,7 @@ export component AppWindow inherits Window {
                                 if (root.send-confirm-is-stake) {
                                     root.stake-funds(root.send-confirm-amount);
                                 } else {
-                                    root.send-funds(root.send-confirm-address, root.send-confirm-amount);
+                                    root.send-funds(root.send-confirm-address, root.send-confirm-amount, root.send-confirm-note);
                                 }
                             }
                         }
