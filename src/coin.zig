@@ -321,6 +321,35 @@ pub const Coin = struct {
         /// Extension for the file `backup_file` writes (".seed"), so the backup
         /// reads as what it is. Paired with `backup_file`.
         backup_file_ext: []const u8 = "",
+        /// Optional: the **payment relay** the listener collects payments from
+        /// (Epic's Epicbox server) and the user's choice of it — shown in
+        /// Settings beside the node. `relay_source` reads the one in use into
+        /// `buf` (`Coin.relay_max`): empty means the coin's standard relay
+        /// (`relay_default`). `set_relay_source` stores a choice (empty = back
+        /// to the standard one), refusing one it can't use with
+        /// `error.InvalidRelayAddress`; the wallet process reads it at start-up,
+        /// so the caller restarts it. A coin wires both or neither —
+        /// `offersRelayChoice` checks.
+        relay_source: ?*const fn (
+            allocator: std.mem.Allocator,
+            install_root: []const u8,
+            home_dir: []const u8,
+            buf: []u8,
+        ) []const u8 = null,
+        set_relay_source: ?*const fn (
+            allocator: std.mem.Allocator,
+            install_root: []const u8,
+            home_dir: []const u8,
+            value: []const u8,
+        ) anyerror!void = null,
+        /// What the relay is called on screen ("Epicbox server").
+        relay_name: []const u8 = "",
+        /// The standard relay, named when none other is chosen.
+        relay_default: []const u8 = "",
+        /// An example of what to type, shown under the field.
+        relay_example: []const u8 = "",
+        /// What choosing a different relay means, shown beside that choice.
+        relay_note: []const u8 = "",
         /// Whether `show_seed` works on a **locked** wallet too — true when it
         /// reads the words from the wallet file with the password (Epic), rather
         /// than asking the running wallet process, which exists only while it's
@@ -1405,12 +1434,19 @@ pub const Coin = struct {
         /// the conf filename. Empty (the default) means the coin suggests
         /// nothing and the field opens blank.
         node_default_remote: []const u8 = "",
+        /// What a node address looks like, shown under the address field in
+        /// both front-ends so nobody has to guess the shape (scheme? port?).
+        /// Empty for a coin without the node choice.
+        node_address_example: []const u8 = "",
     };
 
     /// Bound on a node URL, shared by every caller's buffer so the front-ends,
     /// the C ABI and the coin agree on one size. Generous for a host:port and
     /// short enough to sit on a stack frame.
     pub const node_url_max = 128;
+
+    /// Bound on a payment-relay address (`ExternalWallet.relay_source`).
+    pub const relay_max = 96;
 
     /// What using someone else's node costs, shown beside that choice in both
     /// front-ends. Held here for the same reason as `accel_trust_note`: the
@@ -2235,6 +2271,18 @@ pub const Coin = struct {
     /// A suggestion only: it never changes which node a coin actually uses.
     pub fn defaultRemoteNode(self: Coin) []const u8 {
         return self.vtable.node_default_remote;
+    }
+
+    /// What a node address looks like, for the hint under the address field.
+    pub fn nodeAddressExample(self: Coin) []const u8 {
+        return self.vtable.node_address_example;
+    }
+
+    /// Whether this coin lets the user choose its payment relay (Epic's
+    /// Epicbox server).
+    pub fn offersRelayChoice(self: Coin) bool {
+        const ew = self.externalWallet() orelse return false;
+        return ew.relay_source != null and ew.set_relay_source != null;
     }
 
     /// Persist where this coin reads its chain data from; empty `url` restores

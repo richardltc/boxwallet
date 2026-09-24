@@ -4748,6 +4748,78 @@ export fn bw_local_node_note(buf: ?[*]u8, cap: usize) usize {
     return copyOut(b[0..cap], Coin.local_node_note);
 }
 
+/// What a node address looks like, for a hint under the address field — shown
+/// always, not only after a mistake. 0 for a coin without the node choice.
+/// Cheap; UI-thread safe.
+export fn bw_coin_node_address_example(idx: usize, buf: ?[*]u8, cap: usize) usize {
+    const b = buf orelse return 0;
+    const coin = coinByIndex(idx) orelse return 0;
+    return copyOut(b[0..cap], coin.nodeAddressExample());
+}
+
+// ---- the payment relay (Epic's Epicbox server) -------------------------------
+
+/// Whether this coin lets the user choose its payment relay: 1 = show the
+/// Settings row. Cheap; UI-thread safe.
+export fn bw_coin_offers_relay_choice(idx: usize) c_int {
+    const coin = coinByIndex(idx) orelse return 0;
+    return if (coin.offersRelayChoice()) 1 else 0;
+}
+
+/// The relay's words, by `which`: 0 its name ("Epicbox server"), 1 the standard
+/// relay, 2 an example of what to type, 3 what choosing another one means. 0
+/// for a coin without the choice or an unknown `which`. Cheap; UI-thread safe.
+export fn bw_coin_relay_text(idx: usize, which: c_int, buf: ?[*]u8, cap: usize) usize {
+    const b = buf orelse return 0;
+    const coin = coinByIndex(idx) orelse return 0;
+    if (!coin.offersRelayChoice()) return 0;
+    const ew = coin.externalWallet().?;
+    const text = switch (which) {
+        0 => ew.relay_name,
+        1 => ew.relay_default,
+        2 => ew.relay_example,
+        3 => ew.relay_note,
+        else => "",
+    };
+    return copyOut(b[0..cap], text);
+}
+
+/// The relay in use, into `buf`, or NOTHING (0) for the standard one. Reads
+/// the settings file and the wallet config: worker thread.
+export fn bw_coin_relay_source(ctx: ?*Ctx, idx: usize, buf: ?[*]u8, cap: usize) usize {
+    const c = ctx orelse return 0;
+    const b = buf orelse return 0;
+    const coin = coinByIndex(idx) orelse return 0;
+    if (!coin.offersRelayChoice()) return 0;
+
+    var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+    defer arena.deinit();
+    var relay_buf: [Coin.relay_max]u8 = undefined;
+    const r = coin.externalWallet().?.relay_source.?(arena.allocator(), c.install_root, c.home_dir, &relay_buf);
+    return copyOut(b[0..cap], r);
+}
+
+/// Choose the relay. Empty or null `value` means the standard one. 0, or -1
+/// with `bw_last_error` set — code "InvalidRelayAddress" is the address itself
+/// refused, which belongs on the field. Worker thread. Afterwards re-read
+/// `bw_coin_relay_source` and stop the wallet service: its listener collects
+/// from the server it started with.
+export fn bw_coin_set_relay_source(ctx: ?*Ctx, idx: usize, value: ?[*:0]const u8) c_int {
+    const c = ctx orelse return -1;
+    const coin = coinByIndex(idx) orelse return -1;
+    if (!coin.offersRelayChoice()) return -1;
+    const text: []const u8 = if (value) |v| std.mem.span(v) else "";
+
+    var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+    defer arena.deinit();
+    coin.externalWallet().?.set_relay_source.?(arena.allocator(), c.install_root, c.home_dir, text) catch |err| {
+        c.setError(@errorName(err));
+        c.setErrorCode(@errorName(err));
+        return -1;
+    };
+    return 0;
+}
+
 /// Whether this coin's daemon can rebuild its block index: 1 yes, 0 no. Cheap;
 /// UI-thread safe.
 ///

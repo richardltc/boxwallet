@@ -952,6 +952,30 @@ int     bw_coin_set_node_source(bw_ctx *ctx, size_t idx, const char *url);
 size_t  bw_coin_default_remote_node(size_t idx, char *buf, size_t cap);
 size_t  bw_remote_node_caution(char *buf, size_t cap);
 size_t  bw_local_node_note(char *buf, size_t cap);
+/* What a node address looks like — show it UNDER THE FIELD, always, not only
+ * after a mistake. Cheap; UI-thread safe. */
+size_t  bw_coin_node_address_example(size_t idx, char *buf, size_t cap);
+
+/* ---- the payment relay: Epic's Epicbox server ---------------------------------
+ * Where the wallet's listener collects payments from. Only Epic offers the
+ * choice (bw_coin_offers_relay_choice: 1 = show the Settings row).
+ *
+ * bw_coin_relay_text, by `which`: 0 its name ("Epicbox server"), 1 the standard
+ * relay, 2 an example of what to type (show it under the field, always), 3 what
+ * choosing another relay means (show it beside that choice — the wallet's
+ * receive address changes with it). Cheap; UI-thread safe.
+ *
+ * bw_coin_relay_source writes the relay in use, or NOTHING (0) for the standard
+ * one. bw_coin_set_relay_source chooses one; empty/NULL = the standard one.
+ * Returns 0, or -1 with bw_last_error set — code "InvalidRelayAddress" means the
+ * address itself was refused, which belongs on the field. Both touch disk:
+ * worker thread. AFTER A SUCCESSFUL SET re-read the source and stop the wallet
+ * service (bw_ext_wallet_service_stop) — its listener is still on the old relay;
+ * unlocking again starts it on the new one. */
+int     bw_coin_offers_relay_choice(size_t idx);
+size_t  bw_coin_relay_text(size_t idx, int which, char *buf, size_t cap);
+size_t  bw_coin_relay_source(bw_ctx *ctx, size_t idx, char *buf, size_t cap);
+int     bw_coin_set_relay_source(bw_ctx *ctx, size_t idx, const char *value);
 
 /* Block-index rebuild — the repair for a daemon that ABORTS DURING INIT on a
  * corrupt on-disk index. It forks, gets part-way through start-up and dies on an
