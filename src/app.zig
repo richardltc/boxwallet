@@ -1162,8 +1162,13 @@ const PruneModal = struct {
 /// choice that hands nothing to a stranger.
 const NodeModal = struct {
     const Stage = enum { menu, address };
+    /// Which setting the prompt is choosing: the node the chain comes from, or
+    /// the payment relay (Epic's Epicbox server) — the same two-rows-and-a-field
+    /// shape, so one prompt serves both. Row 0 is always the standard choice.
+    const Kind = enum { node, relay };
 
     stage: Stage = .menu,
+    kind: Kind = .node,
     /// The entry the prompt acts on, so a moved left-nav selection doesn't misfire.
     coin_idx: usize = 0,
     /// Cursor over the two rows: 0 = our own node, 1 = a remote one.
@@ -1173,7 +1178,7 @@ const NodeModal = struct {
     /// What's configured right now — empty for our own daemon — so the menu can
     /// show which row is live and prefill the field with the current address
     /// rather than making the user retype it to change a port.
-    current_buf: [Coin.node_url_max]u8 = undefined,
+    current_buf: [@max(Coin.node_url_max, Coin.relay_max)]u8 = undefined,
     current_len: usize = 0,
 
     fn current(self: *const NodeModal) []const u8 {
@@ -1671,6 +1676,12 @@ const Activity = struct {
     /// covers the window *before* the first poll, where the pane would otherwise
     /// offer to start a daemon for a coin that isn't using one.
     node_read: bool = false,
+    /// The payment relay in use (`ExternalWallet.relay_source` — Epic's Epicbox
+    /// server), empty for the coin's standard one. Cached for the Settings row,
+    /// like the node: read once per selection, rewritten by the prompt.
+    relay_buf: [Coin.relay_max]u8 = undefined,
+    relay_len: usize = 0,
+    relay_read: bool = false,
 
     // --- external-wallet setup worker --------------------------------------
     // Mirrors the wallet-action worker: one create/restore/open RPC on a private
@@ -4553,6 +4564,8 @@ pub const App = struct {
                             self.selectNextToken()
                         else if (on_coin and self.active_tab == .settings)
                             self.openNodeModal(),
+                        'e' => if (on_coin and self.active_tab == .settings)
+                            self.openRelayModal(),
                         // Capital S — lowercase 's' toggles the daemon. Opens the
                         // Stake prompt on the Send tab for coins with a stake
                         // action (openStakeModal checks the capability itself).
@@ -5582,6 +5595,7 @@ pub const App = struct {
                 // Same for which node it reads from — before the first poll, so
                 // the daemon controls are right from the first frame.
                 if (i == self.selected) self.refreshNodeState(xcoin, act);
+                if (i == self.selected) self.refreshRelayState(xcoin, act);
             }
 
             if (act.sync == .syncing) {
@@ -7558,6 +7572,27 @@ pub const App = struct {
         self.node_input.setValue(prefill) catch {};
     }
 
+    /// Open the payment-relay prompt from the Settings tab (`e`) — the node
+    /// prompt's other kind. A no-op for a coin without the choice.
+    fn openRelayModal(self: *App) void {
+        const coin = self.selectedCoin() orelse return;
+        const act = &self.activities[self.selected];
+        if (!coin.offersRelayChoice()) return;
+        if (!act.installed) {
+            self.logf("{s}: not installed — press i to install", .{coin.coinName()});
+            return;
+        }
+        var m: NodeModal = .{ .coin_idx = self.selected, .kind = .relay };
+        const cur = act.relay_buf[0..act.relay_len];
+        m.current_len = @min(cur.len, m.current_buf.len);
+        @memcpy(m.current_buf[0..m.current_len], cur[0..m.current_len]);
+        m.sel = if (m.current_len == 0) 0 else 1;
+        self.node_modal = m;
+        // Prefill with the server in use; blank when it's the standard one (the
+        // example under the field shows the shape).
+        self.node_input.setValue(m.current()) catch {};
+    }
+
     /// Handle a keypress while the node prompt is open. `menu` picks between our
     /// own daemon and a remote one (enter fires; esc closes). `address` collects
     /// the remote's host (enter applies; esc returns to the menu).
@@ -7629,6 +7664,7 @@ pub const App = struct {
     /// field flagged rather than closing on a change that didn't happen.
     fn applyNodeSource(self: *App, url: []const u8) void {
         const m = &self.node_modal.?;
+        if (m.kind == .relay) return self.applyRelaySource(url);
         const idx = m.coin_idx;
         const coin = self.coinAt(idx) orelse {
             self.node_modal = null;
@@ -7666,6 +7702,44 @@ pub const App = struct {
         self.last_poll_ns = 0;
     }
 
+    /// Persist the payment-relay choice and close. Like a node change, a wallet
+    /// open for the old server is closed: its listener collects from the server
+    /// it started with, and would go on doing so while the pane named the new
+    /// one. Unlocking again brings both processes up on the new server.
+    ///
+    /// A rejected address (`error.InvalidRelayAddress`) leaves the prompt open
+    /// with the field flagged.
+    fn applyRelaySource(self: *App, value: []const u8) void {
+        const m = &self.node_modal.?;
+        const idx = m.coin_idx;
+        const coin = self.coinAt(idx) orelse {
+            self.node_modal = null;
+            return;
+        };
+        const act = &self.activities[idx];
+        const ew = coin.externalWallet().?;
+
+        ew.set_relay_source.?(self.allocator, self.install_root, self.home_dir, value) catch |err| {
+            if (err == error.InvalidRelayAddress and m.stage == .address) {
+                m.bad_input = true;
+                return;
+            }
+            self.node_modal = null;
+            self.logf("{s}: couldn't save the {s} ({s}) — left unchanged", .{ coin.coinName(), ew.relay_name, @errorName(err) });
+            return;
+        };
+        self.node_modal = null;
+
+        act.relay_len = ew.relay_source.?(self.allocator, self.install_root, self.home_dir, &act.relay_buf).len;
+        const was_open = act.ext_wallet_open.load(.monotonic) != 0;
+        self.killWalletRpc(act);
+
+        const now = if (act.relay_len == 0) ew.relay_default else act.relay_buf[0..act.relay_len];
+        self.logf("{s}: {s} is now {s}", .{ coin.coinName(), ew.relay_name, now });
+        if (was_open) self.logf("{s}: wallet locked so it reconnects — unlock it (w) to receive through the new server", .{coin.coinName()});
+        self.last_poll_ns = 0;
+    }
+
     /// Render the node-source prompt. Mirrors `renderPruneModal`'s chrome: a
     /// brand-coloured rule, the rows, then the caution — which sits under the
     /// menu rather than behind a confirm, because it should inform the choice
@@ -7680,40 +7754,71 @@ pub const App = struct {
         var out: std.Io.Writer.Allocating = .init(a);
         errdefer out.deinit();
 
-        const title = try std.fmt.allocPrint(a, "{s} — where the chain comes from", .{coin.coinName()});
+        // The relay kind names itself with the coin's own words ("Epicbox server").
+        const ew = coin.externalWallet();
+        const relay_name = if (ew) |w| w.relay_name else "";
+        const relay_default = if (ew) |w| w.relay_default else "";
+        const title = if (m.kind == .relay)
+            try std.fmt.allocPrint(a, "{s} — {s}", .{ coin.coinName(), relay_name })
+        else
+            try std.fmt.allocPrint(a, "{s} — where the chain comes from", .{coin.coinName()});
         try modalRule(a, &out.writer, brand, inner_w, "┌", "┐", title);
         try modalRow(&out.writer, vbar, inner_w, "", 0);
 
         switch (m.stage) {
             .menu => {
-                const now = if (m.current_len == 0)
+                const now = if (m.kind == .relay)
+                    try std.fmt.allocPrint(a, "Currently: {s}", .{if (m.current_len == 0) relay_default else m.current()})
+                else if (m.current_len == 0)
                     "Currently: this machine's own node."
                 else
                     try std.fmt.allocPrint(a, "Currently: {s}", .{m.current()});
                 try wrapIntoRows(a, &out.writer, vbar, inner_w, now, (zz.Style{}).dim(true));
                 try modalRow(&out.writer, vbar, inner_w, "", 0);
 
-                try pruneMenuRow(a, &out.writer, vbar, inner_w, brand, "Run my own node (downloads the chain)", m.sel == 0, true);
-                try pruneMenuRow(a, &out.writer, vbar, inner_w, brand, "Use a node someone else runs…", m.sel == 1, true);
+                if (m.kind == .relay) {
+                    const std_row = try std.fmt.allocPrint(a, "Use the standard server ({s})", .{relay_default});
+                    try pruneMenuRow(a, &out.writer, vbar, inner_w, brand, std_row, m.sel == 0, true);
+                    try pruneMenuRow(a, &out.writer, vbar, inner_w, brand, "Use a different server…", m.sel == 1, true);
+                } else {
+                    try pruneMenuRow(a, &out.writer, vbar, inner_w, brand, "Run my own node (downloads the chain)", m.sel == 0, true);
+                    try pruneMenuRow(a, &out.writer, vbar, inner_w, brand, "Use a node someone else runs…", m.sel == 1, true);
+                }
 
                 try modalRow(&out.writer, vbar, inner_w, "", 0);
-                // The coin's own words for what the remote choice costs, shown
+                // The coin's own words for what the other choice costs, shown
                 // against that row only — there's nothing to caution about a node
-                // you run yourself.
-                const note = if (m.sel == 1) Coin.remote_node_caution else Coin.local_node_note;
-                try wrapIntoRows(a, &out.writer, vbar, inner_w, note, (zz.Style{}).dim(true));
+                // you run yourself, or the server the wallet ships with.
+                const note = if (m.kind == .relay)
+                    (if (m.sel == 1) (if (ew) |w| w.relay_note else "") else "")
+                else if (m.sel == 1) Coin.remote_node_caution else Coin.local_node_note;
+                if (note.len > 0) try wrapIntoRows(a, &out.writer, vbar, inner_w, note, (zz.Style{}).dim(true));
             },
             .address => {
+                const label = if (m.kind == .relay) "Server address: " else "Node address: ";
                 const field = try self.node_input.view(a);
-                const text = try std.fmt.allocPrint(a, "Node address: {s}", .{field});
-                try modalRow(&out.writer, vbar, inner_w, text, zz.width("Node address: ") + zz.width(field));
+                const text = try std.fmt.allocPrint(a, "{s}{s}", .{ label, field });
+                try modalRow(&out.writer, vbar, inner_w, text, zz.width(label) + zz.width(field));
                 try modalRow(&out.writer, vbar, inner_w, "", 0);
+                // The example is always on screen, not only after a mistake: the
+                // shape (scheme? port?) is exactly what people otherwise guess.
+                const example = if (m.kind == .relay)
+                    (if (ew) |w| w.relay_example else "")
+                else
+                    coin.nodeAddressExample();
                 if (m.bad_input) {
-                    const warn = "Not an address this wallet can use. A host, or host:port — e.g. node.example or node.example:3413.";
+                    const warn = if (m.kind == .relay)
+                        "Not a server this wallet can use — letters, digits and dots, then an optional :port."
+                    else
+                        "Not an address this wallet can use.";
                     try wrapIntoRows(a, &out.writer, vbar, inner_w, warn, (zz.Style{}).fg(.red));
-                } else {
-                    try wrapIntoRows(a, &out.writer, vbar, inner_w, "A host, or host:port. Leave it blank to go back to your own node.", (zz.Style{}).dim(true));
                 }
+                if (example.len > 0) try wrapIntoRows(a, &out.writer, vbar, inner_w, example, (zz.Style{}).dim(true));
+                const back = if (m.kind == .relay)
+                    "Leave it blank to go back to the standard server."
+                else
+                    "Leave it blank to go back to your own node.";
+                try wrapIntoRows(a, &out.writer, vbar, inner_w, back, (zz.Style{}).dim(true));
             },
         }
 
@@ -8061,6 +8166,15 @@ pub const App = struct {
         if (act.node_read or !coin.offersNodeChoice()) return;
         act.node_url_len = coin.nodeSource(self.allocator, self.install_root, &act.node_url_buf).len;
         act.node_read = true;
+    }
+
+    /// Cache the selected coin's payment relay for the Settings row, once per
+    /// selection — the same cheap settings read as the node's.
+    fn refreshRelayState(self: *App, coin: Coin, act: *Activity) void {
+        if (act.relay_read or !coin.offersRelayChoice()) return;
+        const ew = coin.externalWallet().?;
+        act.relay_len = ew.relay_source.?(self.allocator, self.install_root, self.home_dir, &act.relay_buf).len;
+        act.relay_read = true;
     }
 
     /// `w` for an external-wallet coin (Monero-style process or Ergo-style
@@ -9142,6 +9256,23 @@ pub const App = struct {
                 dimNote(a, "n: choose where the chain comes from"),
             }) catch "";
         } else "";
+        // The payment relay the wallet receives through (Epic's Epicbox server),
+        // for the coins that let the user pick it.
+        const relay_row: []const u8 = if (coin.offersRelayChoice()) blk: {
+            const ew = coin.externalWallet().?;
+            const relay_label = statusLabel(a, brand, "Relay      ", true);
+            const cur = act.relay_buf[0..act.relay_len];
+            const shown = if (cur.len == 0)
+                std.fmt.allocPrint(a, "{s} (standard)", .{ew.relay_default}) catch ew.relay_default
+            else
+                cur;
+            const hint = std.fmt.allocPrint(a, "e: choose the {s}", .{ew.relay_name}) catch "e: choose";
+            break :blk std.fmt.allocPrint(a, "\n{s}: {s}{s}", .{
+                relay_label,
+                (zz.Style{}).dim(true).render(a, shown) catch shown,
+                dimNote(a, hint),
+            }) catch "";
+        } else "";
         // Pruning row, only for coins with the capability (Bitcoin/Litecoin/Monero):
         // the value chosen at first start, plus — where the coin allows it and the
         // chain is one BoxWallet set up — how to change it. "Pruning" is padded to
@@ -9178,8 +9309,8 @@ pub const App = struct {
             \\Settings
             \\
             \\{s}: {s}{s}
-            \\{s}: {s}{s}{s}{s}
-        , .{ wallet_label, wallet_value, keys_row, chain_label, chain_value, node_row, prune_row, index_row });
+            \\{s}: {s}{s}{s}{s}{s}
+        , .{ wallet_label, wallet_value, keys_row, chain_label, chain_value, node_row, relay_row, prune_row, index_row });
     }
 
     /// A dimmed note on its own line under a Settings row. Its own helper only so
@@ -15377,11 +15508,41 @@ test "the node prompt draws both stages, and says what each choice costs" {
     // Opened with nothing configured, the field carries the coin's suggestion —
     // so the common case is confirming an address, not knowing one.
     try std.testing.expectEqualStrings("https://node.epiccash.com:3413", app.coinAt(epic_idx).?.defaultRemoteNode());
-    app.node_modal.?.bad_input = true;
+    // The example is on screen before any mistake — the shape is what people
+    // otherwise guess at.
     {
         const box = try app.renderNodeModal(a);
         try std.testing.expect(std.mem.indexOf(u8, box, "Node address:") != null);
-        try std.testing.expect(std.mem.indexOf(u8, box, "host:port") != null);
+        try std.testing.expect(std.mem.indexOf(u8, box, "192.168.1.20") != null);
+        try std.testing.expect(std.mem.indexOf(u8, box, "Not an address") == null);
+    }
+    app.node_modal.?.bad_input = true;
+    {
+        const box = try app.renderNodeModal(a);
+        try std.testing.expect(std.mem.indexOf(u8, box, "Not an address") != null);
+        try std.testing.expect(std.mem.indexOf(u8, box, "192.168.1.20") != null);
+    }
+
+    // The same prompt choosing the Epicbox server: its own rows, the standard
+    // server named, and its example under the field.
+    app.node_modal = .{ .coin_idx = epic_idx, .kind = .relay, .sel = 0 };
+    {
+        const box = try app.renderNodeModal(a);
+        try std.testing.expect(std.mem.indexOf(u8, box, "Epicbox server") != null);
+        try std.testing.expect(std.mem.indexOf(u8, box, "epicbox.epiccash.com") != null);
+        try std.testing.expect(std.mem.indexOf(u8, box, "Run my own node") == null);
+    }
+    app.node_modal.?.sel = 1;
+    {
+        const box = try app.renderNodeModal(a);
+        // Changing it changes the address payers use — said beside the choice.
+        try std.testing.expect(std.mem.indexOf(u8, box, "give payers") != null);
+    }
+    app.node_modal.?.stage = .address;
+    {
+        const box = try app.renderNodeModal(a);
+        try std.testing.expect(std.mem.indexOf(u8, box, "Server address:") != null);
+        try std.testing.expect(std.mem.indexOf(u8, box, "relay.example.com:8443") != null);
     }
 }
 

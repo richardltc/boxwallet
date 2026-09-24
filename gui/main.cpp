@@ -1069,6 +1069,26 @@ static void apply_coin_metadata(const AppWindow *ui, bw_ctx *ctx, int idx)
     ui->set_wallet_launch_with_pw((ew_flags & BW_EW_LAUNCH_WITH_PW) != 0);
     ui->set_wallet_can_show_seed((ew_flags & BW_EW_SHOW_SEED) != 0);
     ui->set_wallet_show_seed_locked((ew_flags & BW_EW_SHOW_SEED_LOCKED) != 0);
+    // The examples and the relay's words are constants per coin — cheap, so
+    // read here with the rest of the coin's static shape. The relay in use is
+    // on disk and comes with the Settings read.
+    {
+        char eb[256];
+        size_t en = bw_coin_node_address_example(idx, eb, sizeof eb);
+        ui->set_node_example(ss(std::string(eb, en)));
+        const bool relay = bw_coin_offers_relay_choice(idx) != 0;
+        ui->set_relay_choice_supported(relay);
+        auto relay_text = [idx](int which) {
+            char b[512];
+            size_t n = bw_coin_relay_text(idx, which, b, sizeof b);
+            return ss(std::string(b, n));
+        };
+        ui->set_relay_name(relay_text(0));
+        ui->set_relay_default(relay_text(1));
+        ui->set_relay_example(relay_text(2));
+        ui->set_relay_note(relay_text(3));
+        ui->set_relay_url(ss(""));
+    }
     ui->set_wallet_can_backup_file((ew_flags & BW_EW_FILE_BACKUP) != 0);
     ui->set_wallet_state(BW_WALLET_NONE);
     uint32_t counts[4] = {25, 0, 0, 0};
@@ -1605,6 +1625,13 @@ int main(int argc, char **argv)
                 size_t nn = bw_coin_node_source(ctx, static_cast<size_t>(idx), nb, sizeof nb);
                 node_url.assign(nb, nn);
             }
+            // The payment relay in use (Epic's Epicbox server); empty = standard.
+            std::string relay_url;
+            if (bw_coin_offers_relay_choice(static_cast<size_t>(idx)) != 0) {
+                char rb[256];
+                size_t rn = bw_coin_relay_source(ctx, static_cast<size_t>(idx), rb, sizeof rb);
+                relay_url.assign(rb, rn);
+            }
 
             // The block-index rebuild. Its wording depends on this node, not just
             // this coin — a pruned one re-downloads the chain instead of rebuilding
@@ -1624,7 +1651,7 @@ int main(int argc, char **argv)
                         keys = std::string(wk, kn),
                         data_dir = std::string(dd, dn),
                         prune, prune_warning, prune_change_supported, prune_configured,
-                        node_choice, node_url,
+                        node_choice, node_url, relay_url,
                         reindex_supported, reindex_warning]() {
                 auto h = weak.lock();
                 if (!h)
@@ -1644,6 +1671,7 @@ int main(int argc, char **argv)
                 (*h)->set_prune_configured(prune_configured);
                 (*h)->set_node_choice_supported(node_choice);
                 (*h)->set_node_url(ss(node_url));
+                (*h)->set_relay_url(ss(relay_url));
                 // Drives the Start/Stop buttons, so it's set from the same read
                 // that fills the row — the two can't disagree about which node
                 // this coin is on.
@@ -2585,10 +2613,86 @@ int main(int argc, char **argv)
             size_t dn = bw_coin_default_remote_node(static_cast<size_t>(coin), db, sizeof db);
             prefill.assign(db, dn);
         }
+        (*h)->set_node_kind(0);
         (*h)->set_node_sel(cur.empty() ? 0 : 1);
         (*h)->set_node_input(ss(prefill));
         (*h)->set_node_error(ss(""));
         (*h)->set_node_open(true);
+    });
+
+    // The same dialog, choosing the payment relay (Epic's Epicbox server).
+    // Prefilled with the server in use; blank for the standard one, whose name
+    // is the placeholder and whose shape is in the example under the field.
+    ui->on_relay_open_dialog([weak]() {
+        int coin = g_selected.load();
+        if (coin < 0)
+            return;
+        auto h = weak.lock();
+        if (!h)
+            return;
+        if (bw_coin_offers_relay_choice(static_cast<size_t>(coin)) == 0)
+            return;
+
+        g_node_coin = coin;
+        const std::string cur((*h)->get_relay_url());
+        (*h)->set_node_kind(1);
+        (*h)->set_node_sel(cur.empty() ? 0 : 1);
+        (*h)->set_node_input(ss(cur));
+        (*h)->set_node_error(ss(""));
+        (*h)->set_node_open(true);
+    });
+
+    // Writes the settings file and the wallet config: a worker. As with the
+    // node, a refused address stays on the field; anything else closes.
+    ui->on_relay_apply([weak, ctx](slint::SharedString value) {
+        const int coin = g_node_coin;
+        if (coin < 0)
+            return;
+        std::thread([weak, ctx, coin, text = std::string(value)]() {
+            WorkerGuard wg;
+            const int rc =
+                bw_coin_set_relay_source(ctx, static_cast<size_t>(coin), text.c_str());
+            std::string err = rc < 0 ? last_error_text(ctx, -1) : std::string();
+            std::string code = rc < 0 ? last_error_code(ctx) : std::string();
+
+            std::string saved;
+            if (rc == 0) {
+                char rb[256];
+                size_t rn = bw_coin_relay_source(ctx, static_cast<size_t>(coin), rb, sizeof rb);
+                saved.assign(rb, rn);
+                // The listener collects from the server it started with. Drop
+                // it; unlocking again brings it up on the new one.
+                bw_ext_wallet_service_stop(ctx, static_cast<size_t>(coin));
+            }
+
+            post_to_ui([weak, coin, rc, err, code, saved]() {
+                auto h = weak.lock();
+                if (!h)
+                    return;
+                if (rc < 0) {
+                    if (code == "InvalidRelayAddress") {
+                        (*h)->set_node_error(ss("Not a server this wallet can use \u2014 "
+                                                "letters, digits and dots, then an optional :port."));
+                        return;
+                    }
+                    (*h)->set_node_open(false);
+                    g_node_coin = -1;
+                    (*h)->set_status_text(ss("Couldn't save the " + std::string((*h)->get_relay_name()) +
+                                             " (" + err + ") \u2014 left unchanged."));
+                    (*h)->set_status_is_error(true);
+                    return;
+                }
+                (*h)->set_node_open(false);
+                g_node_coin = -1;
+                if (g_selected.load() == coin)
+                    (*h)->set_relay_url(ss(saved));
+                const std::string name((*h)->get_relay_name());
+                const std::string now = saved.empty() ? std::string((*h)->get_relay_default()) : saved;
+                (*h)->set_status_text(ss(name + " is now " + now +
+                                         ". Unlock the wallet to receive through it."));
+                (*h)->set_status_is_error(false);
+            });
+        }).detach();
     });
 
     ui->on_node_cancel([]() { g_node_coin = -1; });
@@ -2635,9 +2739,8 @@ int main(int argc, char **argv)
                     // An address the coin can't use belongs on the field — it's
                     // the thing that needs fixing, and it's still on screen.
                     if (code == "InvalidNodeUrl") {
-                        (*h)->set_node_error(ss("Not an address this wallet can use. "
-                                                "A host, or host:port — e.g. node.example "
-                                                "or node.example:3413."));
+                        // The example under the field says what one looks like.
+                        (*h)->set_node_error(ss("Not an address this wallet can use."));
                         return;
                     }
                     (*h)->set_node_open(false);

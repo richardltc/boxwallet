@@ -1502,9 +1502,27 @@ export component AppWindow inherits Window {
     // what needs fixing, and it's still on screen.
     in-out property <string> node-input: "";
     in-out property <string> node-error: "";
+    // What a node address looks like (bw_coin_node_address_example), shown
+    // under the field at all times — not only once a guess has been refused.
+    in property <string> node-example: "";
+    // The dialog serves two settings of the same shape: 0 the node, 1 the
+    // payment relay (Epic's Epicbox server). Row 0 is the standard choice in both.
+    in-out property <int> node-kind: 0;
     callback node-open-dialog();
     callback node-apply(string);
     callback node-cancel();
+
+    // ---- the payment relay: Epic's Epicbox server ----
+    // `relay-url` empty = the standard relay (`relay-default`). The words are
+    // the core's (bw_coin_relay_text), so both front-ends say the same thing.
+    in property <bool> relay-choice-supported: false;
+    in property <string> relay-url: "";
+    in property <string> relay-name: "";
+    in property <string> relay-default: "";
+    in property <string> relay-example: "";
+    in property <string> relay-note: "";
+    callback relay-open-dialog();
+    callback relay-apply(string);
 
     // Block-index rebuild — the repair for a daemon that aborts part-way through
     // start-up on a corrupt index, so its RPC never answers and no setting avoids
@@ -3774,6 +3792,24 @@ export component AppWindow inherits Window {
                                 text: "Choose where the chain comes from";
                                 clicked => {
                                     root.node-open-dialog();
+                                }
+                            }
+                        }
+
+                        // The server payments are collected from (Epic's Epicbox).
+                        if root.relay-choice-supported: SettingsRow {
+                            label: "Relay";
+                            value: root.relay-url != ""
+                                ? root.relay-url
+                                : root.relay-default + "  (standard)";
+                        }
+                        if root.relay-choice-supported: HorizontalLayout {
+                            alignment: start;
+                            padding-left: 98px;
+                            Button {
+                                text: "Choose the " + root.relay-name;
+                                clicked => {
+                                    root.relay-open-dialog();
                                 }
                             }
                         }
@@ -6283,7 +6319,8 @@ export component AppWindow inherits Window {
                 // adds the address field and the caution, which is the taller of
                 // the two states; the slack lands in the spacer above the
                 // buttons, so erring high is the safe direction.
-                height: root.node-sel == 1 ? 330px : 270px;
+                // The address state adds the field, its example and the note.
+                height: root.node-sel == 1 ? 390px : 270px;
                 x: (parent.width - self.width) / 2;
                 y: (parent.height - self.height) / 2;
                 background: #202020;
@@ -6295,16 +6332,20 @@ export component AppWindow inherits Window {
                     padding: 16px;
                     spacing: 10px;
                     Text {
-                        text: "Where should " + root.coin-name + " get the blockchain?";
+                        text: root.node-kind == 1
+                            ? "Which " + root.relay-name + " should " + root.coin-name + " use?"
+                            : "Where should " + root.coin-name + " get the blockchain?";
                         color: #e6e6e6;
                         font-size: 15px;
                         font-weight: 600;
                         wrap: word-wrap;
                     }
                     Text {
-                        text: root.node-url != ""
-                            ? "Currently: " + root.node-url
-                            : "Currently: this machine's own node.";
+                        text: root.node-kind == 1
+                            ? "Currently: " + (root.relay-url != "" ? root.relay-url : root.relay-default)
+                            : (root.node-url != ""
+                                ? "Currently: " + root.node-url
+                                : "Currently: this machine's own node.");
                         color: #9a9a9a;
                         font-size: 12px;
                         wrap: word-wrap;
@@ -6330,7 +6371,9 @@ export component AppWindow inherits Window {
                                     vertical-alignment: center;
                                 }
                                 Text {
-                                    text: "Run my own node (downloads the chain)";
+                                    text: root.node-kind == 1
+                                        ? "Use the standard server (" + root.relay-default + ")"
+                                        : "Run my own node (downloads the chain)";
                                     color: root.node-sel == 0 ? #e6e6e6 : #c8c8c8;
                                     font-size: 13px;
                                     vertical-alignment: center;
@@ -6360,7 +6403,9 @@ export component AppWindow inherits Window {
                                     vertical-alignment: center;
                                 }
                                 Text {
-                                    text: "Use a node someone else runs\u{2026}";
+                                    text: root.node-kind == 1
+                                        ? "Use a different server\u{2026}"
+                                        : "Use a node someone else runs\u{2026}";
                                     color: root.node-sel == 1 ? #e6e6e6 : #c8c8c8;
                                     font-size: 13px;
                                     vertical-alignment: center;
@@ -6377,7 +6422,7 @@ export component AppWindow inherits Window {
                     }
 
                     if root.node-sel == 1: node-addr := LineEdit {
-                        placeholder-text: "node.example or node.example:3413";
+                        placeholder-text: root.node-kind == 1 ? root.relay-default : "node.example.com";
                         text: root.node-input;
                         edited => {
                             root.node-input = self.text;
@@ -6390,13 +6435,23 @@ export component AppWindow inherits Window {
                         font-size: 12px;
                         wrap: word-wrap;
                     }
+                    // Always on screen: the shape (scheme? port?) is exactly what
+                    // people otherwise guess at.
+                    if root.node-sel == 1: Text {
+                        text: root.node-kind == 1 ? root.relay-example : root.node-example;
+                        color: #8a8a8a;
+                        font-size: 12px;
+                        wrap: word-wrap;
+                    }
 
                     // The core's words for what each choice costs. Never reworded
                     // here — the TUI shows the same two strings.
                     Text {
-                        text: root.node-sel == 1
-                            ? root.node-remote-caution
-                            : root.node-local-note;
+                        text: root.node-kind == 1
+                            ? (root.node-sel == 1 ? root.relay-note : "")
+                            : (root.node-sel == 1
+                                ? root.node-remote-caution
+                                : root.node-local-note);
                         color: #9a9a9a;
                         font-size: 12px;
                         wrap: word-wrap;
@@ -6425,7 +6480,11 @@ export component AppWindow inherits Window {
                             // `node-error` with the dialog still standing, so the
                             // host closes it only once the change really landed.
                             clicked => {
-                                root.node-apply(root.node-sel == 1 ? root.node-input : "");
+                                if (root.node-kind == 1) {
+                                    root.relay-apply(root.node-sel == 1 ? root.node-input : "");
+                                } else {
+                                    root.node-apply(root.node-sel == 1 ? root.node-input : "");
+                                }
                             }
                         }
                     }

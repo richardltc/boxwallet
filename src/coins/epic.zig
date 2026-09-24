@@ -316,6 +316,11 @@ pub const Epic = struct {
     /// The default stays explicit so neither assumption has to hold for it.
     pub const default_remote_node = "https://node.epiccash.com:3413";
 
+    /// Shown under the node address field. Both halves are real shapes: a
+    /// public node over https, and one on your own network by bare IP, which
+    /// `normalizeNodeUrl` fills out to `http://…:3413`.
+    pub const node_address_example = "e.g. https://node.epiccash.com:3413, or 192.168.1.20 for a node on your own network (port 3413 is assumed)";
+
     /// The node source for this session, cached so the poll workers — which are
     /// handed a `CoinAuth` and no install root — can ask without touching disk
     /// every couple of seconds. Mirrors `OwnerSecret`'s shape.
@@ -495,6 +500,196 @@ pub const Epic = struct {
     pub fn usesLocalDaemon() bool {
         var buf: [Coin.node_url_max]u8 = undefined;
         return nodeUrl(&buf).len == 0;
+    }
+
+    // --- Epicbox server (the payment relay) --------------------------------
+    //
+    // Payments travel between wallets through an Epicbox server: the sender
+    // posts a slate to the receiver's mailbox there, the receiver's listener
+    // picks it up, signs it and posts it back. Epic's own public server is the
+    // default; anyone can run one. Which one this wallet uses lives in
+    // `epic-wallet.toml` `[epicbox]` (`epicbox_domain` / `epicbox_port`), and it
+    // is also the `@domain` half of the wallet's Epicbox address — so changing
+    // it changes the address payers must use.
+    //
+    // A chosen server is stored in `boxwallet.conf` (like the node) and written
+    // into the wallet config on every launch, because a create or restore
+    // regenerates that config from epic-wallet's defaults. With **no** choice
+    // stored, BoxWallet leaves `[epicbox]` alone: that config sits in the shared
+    // `~/.epic/main`, and a server someone set there by hand is theirs. Picking
+    // the standard server in Settings is the one time BoxWallet writes the
+    // default back — because the user just asked for exactly that.
+    //
+    // Only secure (`wss`) servers: `epicbox_protocol_unsecure` would carry
+    // payment slates in the clear, and is always written false.
+
+    /// BoxWallet's own setting key. Empty/absent = leave the wallet config's
+    /// `[epicbox]` as it is (epic-wallet's default: Epic's server).
+    pub const relay_setting_key = "epic_epicbox";
+    /// Epic's public Epicbox server — epic-wallet's own default.
+    pub const default_relay_host = "epicbox.epiccash.com";
+    const relay_default_port: u16 = 443;
+    const relay_max = Coin.relay_max;
+
+    /// Shown under the server field so nobody has to guess the shape.
+    pub const relay_example = "e.g. epicbox.epiccash.com, or relay.example.com:8443 (port 443 is assumed)";
+    /// What changing the server means, shown beside that choice.
+    pub const relay_note =
+        "Payments to you are collected from this server, so your Epicbox address " ++
+        "changes to end in its name — give payers the new one. Whoever runs it can " ++
+        "see when payments arrive for you and hold them back, but can't take them.";
+
+    /// Normalize a user-supplied Epicbox server into `host` (port 443) or
+    /// `host:port`, written into `out`. Pure.
+    ///
+    /// Accepts an optional `wss://`; refuses `ws://` and every other scheme
+    /// (see above). The host is letters, digits and dots only — the grammar
+    /// epic-wallet's own address regex allows after the `@`, so a server
+    /// outside it would hand out an address no Epic wallet can send to. The
+    /// port must be a non-zero number. Lower-cased, since DNS is.
+    pub fn normalizeRelay(raw: []const u8, out: []u8) ![]const u8 {
+        var rest = std.mem.trim(u8, raw, " \t\r\n");
+        if (std.ascii.startsWithIgnoreCase(rest, "wss://")) rest = rest["wss://".len..];
+        if (std.mem.indexOf(u8, rest, "://") != null) return error.InvalidRelayAddress;
+        if (rest.len > 0 and rest[rest.len - 1] == '/') rest = rest[0 .. rest.len - 1];
+
+        var host = rest;
+        var port: u16 = relay_default_port;
+        if (std.mem.lastIndexOfScalar(u8, rest, ':')) |i| {
+            host = rest[0..i];
+            port = std.fmt.parseInt(u16, rest[i + 1 ..], 10) catch return error.InvalidRelayAddress;
+            if (port == 0) return error.InvalidRelayAddress;
+        }
+        if (host.len == 0 or host[0] == '.' or host[host.len - 1] == '.') return error.InvalidRelayAddress;
+        for (host) |c| {
+            if (!std.ascii.isAlphanumeric(c) and c != '.') return error.InvalidRelayAddress;
+        }
+
+        var lower: [relay_max]u8 = undefined;
+        if (host.len > lower.len) return error.InvalidRelayAddress;
+        const h = std.ascii.lowerString(&lower, host);
+        return (if (port == relay_default_port)
+            std.fmt.bufPrint(out, "{s}", .{h})
+        else
+            std.fmt.bufPrint(out, "{s}:{d}", .{ h, port })) catch error.InvalidRelayAddress;
+    }
+
+    /// Split a normalized server into the `[epicbox]` values. Pure.
+    fn relayParts(norm: []const u8) struct { host: []const u8, port: u16 } {
+        if (std.mem.lastIndexOfScalar(u8, norm, ':')) |i| {
+            return .{ .host = norm[0..i], .port = std.fmt.parseInt(u16, norm[i + 1 ..], 10) catch relay_default_port };
+        }
+        return .{ .host = norm, .port = relay_default_port };
+    }
+
+    /// The server a wallet config's `[epicbox]` names, normalized into `out`,
+    /// or "" when it names none (or one we can't state exactly) — epic-wallet
+    /// then uses its default. Only live lines inside `[epicbox]` count. Pure.
+    fn relayFromToml(input: []const u8, out: []u8) []const u8 {
+        var section: []const u8 = "";
+        var domain: []const u8 = "";
+        var port: []const u8 = "";
+        var lines = std.mem.splitScalar(u8, input, '\n');
+        while (lines.next()) |line| {
+            const t = std.mem.trim(u8, line, " \t\r");
+            if (t.len >= 2 and t[0] == '[' and t[t.len - 1] == ']') {
+                section = t[1 .. t.len - 1];
+                continue;
+            }
+            if (t.len == 0 or t[0] == '#' or !std.mem.eql(u8, section, "epicbox")) continue;
+            const eq = std.mem.indexOfScalar(u8, t, '=') orelse continue;
+            const key = std.mem.trim(u8, t[0..eq], " \t");
+            const val = std.mem.trim(u8, t[eq + 1 ..], " \t\"");
+            if (std.mem.eql(u8, key, "epicbox_domain")) domain = val;
+            if (std.mem.eql(u8, key, "epicbox_port")) port = val;
+        }
+        if (domain.len == 0) return "";
+        var joined: [relay_max + 8]u8 = undefined;
+        const raw = (if (port.len > 0)
+            std.fmt.bufPrint(&joined, "{s}:{s}", .{ domain, port })
+        else
+            std.fmt.bufPrint(&joined, "{s}", .{domain})) catch return "";
+        return normalizeRelay(raw, out) catch "";
+    }
+
+    /// The server BoxWallet has been told to use, normalized into `out`, or ""
+    /// for none stored (or one that no longer normalizes — then the wallet
+    /// config is left alone rather than rewritten with a guess).
+    fn storedRelay(allocator: std.mem.Allocator, io: std.Io, install_root: []const u8, out: []u8) []const u8 {
+        const v = conf.readValue(allocator, io, install_root, conf.settings_file, relay_setting_key) catch return "";
+        const stored = v orelse return "";
+        defer allocator.free(stored);
+        if (std.mem.trim(u8, stored, " \t").len == 0) return "";
+        return normalizeRelay(stored, out) catch "";
+    }
+
+    /// The Epicbox server this wallet actually uses, for Settings — normalized
+    /// into `out`, or "" for Epic's standard one. BoxWallet's stored choice if
+    /// there is one (it's written into the wallet config at launch), else what
+    /// the wallet config itself says, so a server set there by hand is shown
+    /// rather than papered over as "standard".
+    pub fn relaySource(allocator: std.mem.Allocator, install_root: []const u8, home: []const u8, out: []u8) []const u8 {
+        var threaded: std.Io.Threaded = .init(allocator, .{});
+        defer threaded.deinit();
+        const io = threaded.io();
+
+        const stored = storedRelay(allocator, io, install_root, out);
+        const found = if (stored.len > 0) stored else blk: {
+            const top = dataDir(allocator, home) catch break :blk "";
+            defer allocator.free(top);
+            var dir = std.Io.Dir.cwd().openDir(io, top, .{}) catch break :blk "";
+            defer dir.close(io);
+            var buf: [16 * 1024]u8 = undefined;
+            const input = dir.readFile(io, wallet_conf_file, &buf) catch break :blk "";
+            break :blk relayFromToml(input, out);
+        };
+        return if (std.mem.eql(u8, found, default_relay_host)) "" else found;
+    }
+
+    /// Choose the Epicbox server. Empty `value` means Epic's standard server:
+    /// the stored choice is cleared and `[epicbox]` written back to the
+    /// default now, since that's what was asked for. Anything else must
+    /// normalize (`error.InvalidRelayAddress`) and is stored, then written into
+    /// the wallet config — and again on every launch. The wallet process reads
+    /// its config at start-up, so the caller restarts it for this to apply.
+    pub fn setRelaySource(allocator: std.mem.Allocator, install_root: []const u8, home: []const u8, value: []const u8) !void {
+        var buf: [relay_max]u8 = undefined;
+        const norm = if (std.mem.trim(u8, value, " \t\r\n").len == 0) "" else try normalizeRelay(value, &buf);
+
+        var threaded: std.Io.Threaded = .init(allocator, .{});
+        defer threaded.deinit();
+        const io = threaded.io();
+        try conf.setValue(allocator, io, install_root, conf.settings_file, relay_setting_key, norm);
+
+        // Custom: `ensureWalletConfig` reads the stored value back and writes it.
+        // Standard: this is the one write of the default.
+        const top = try dataDir(allocator, home);
+        defer allocator.free(top);
+        var dir = try std.Io.Dir.cwd().createDirPathOpen(io, top, .{});
+        defer dir.close(io);
+        if (norm.len == 0) {
+            if (dir.access(io, wallet_conf_file, .{})) |_| {
+                try patchRelayKeys(allocator, io, dir, default_relay_host);
+            } else |_| {}
+        } else {
+            try ensureWalletConfig(allocator, io, home);
+        }
+    }
+
+    /// Write `relay` (normalized) into the wallet config's `[epicbox]`,
+    /// secure-only. Rewrites the file only if something changed.
+    fn patchRelayKeys(allocator: std.mem.Allocator, io: std.Io, dir: std.Io.Dir, relay: []const u8) !void {
+        const parts = relayParts(relay);
+        const domain_val = try std.fmt.allocPrint(allocator, "\"{s}\"", .{parts.host});
+        defer allocator.free(domain_val);
+        const port_val = try std.fmt.allocPrint(allocator, "{d}", .{parts.port});
+        defer allocator.free(port_val);
+        const keys = [_]ManagedKey{
+            .{ .section = "epicbox", .key = "epicbox_domain", .value = domain_val },
+            .{ .section = "epicbox", .key = "epicbox_port", .value = port_val },
+            .{ .section = "epicbox", .key = "epicbox_protocol_unsecure", .value = "false" },
+        };
+        try patchWalletFileKeys(allocator, io, dir, &keys);
     }
 
     // --- Foreign API (a node we don't run) --------------------------------
@@ -1790,7 +1985,12 @@ pub const Epic = struct {
             .{ .section = "wallet", .key = "api_secret_path", .value = secret_path },
             .{ .section = "wallet", .key = "data_file_dir", .value = data_dir_val },
         };
+        try patchWalletFileKeys(allocator, io, dir, &keys);
+    }
 
+    /// Set `keys` in `dir`'s `epic-wallet.toml`, rewriting it only if something
+    /// changed.
+    fn patchWalletFileKeys(allocator: std.mem.Allocator, io: std.Io, dir: std.Io.Dir, keys: []const ManagedKey) !void {
         var file = try dir.openFile(io, wallet_conf_file, .{});
         const stat = try file.stat(io);
         const size: usize = @intCast(@min(stat.size, 256 * 1024));
@@ -1799,7 +1999,7 @@ pub const Epic = struct {
         const n = try file.readPositionalAll(io, input, 0);
         file.close(io);
 
-        const patched = try patchTomlAlloc(allocator, input[0..n], &keys);
+        const patched = try patchTomlAlloc(allocator, input[0..n], keys);
         defer allocator.free(patched);
         if (std.mem.eql(u8, patched, input[0..n])) return;
         try dir.writeFile(io, .{ .sub_path = wallet_conf_file, .data = patched });
@@ -1830,6 +2030,14 @@ pub const Epic = struct {
             try dir.writeFile(io, .{ .sub_path = wallet_conf_file, .data = tmpl });
         }
         try patchWalletConf(allocator, io, dir, top);
+
+        // A server chosen in Settings, re-applied every time: a create or
+        // restore regenerates this file with epic-wallet's default.
+        const install_root = try install_mod.installRoot(allocator, home);
+        defer allocator.free(install_root);
+        var relay_buf: [relay_max]u8 = undefined;
+        const relay = storedRelay(allocator, io, install_root, &relay_buf);
+        if (relay.len > 0) try patchRelayKeys(allocator, io, dir, relay);
     }
 
     /// Draw a fresh per-session Owner-API secret from the OS CSPRNG, write it to
@@ -3337,6 +3545,12 @@ pub const Epic = struct {
         .backup_file_ext = ".seed",
         // Read from wallet.seed with the password, not from the wallet process.
         .show_seed_when_locked = true,
+        .relay_source = relaySource,
+        .set_relay_source = setRelaySource,
+        .relay_name = "Epicbox server",
+        .relay_default = default_relay_host,
+        .relay_example = relay_example,
+        .relay_note = relay_note,
         .open = epicOpen,
         .lock = epicLock,
         .remove = epicRemove,
@@ -3391,6 +3605,7 @@ pub const Epic = struct {
         .node_source = vtNodeSource,
         .set_node_source = vtSetNodeSource,
         .node_default_remote = default_remote_node,
+        .node_address_example = node_address_example,
     };
 
     fn vtNodeSource(
@@ -4950,4 +5165,98 @@ test "a wallet.seed backup restores, and nothing is overwritten on either side" 
     defer a.free(seed_path);
     const back = try Epic.readSeedFile(io, seed_path, &got_buf);
     try std.testing.expectEqualStrings(test_seed_file, back);
+}
+
+test "normalizeRelay takes a host or host:port, secure only, in epic-wallet's address grammar" {
+    var buf: [Coin.relay_max]u8 = undefined;
+    try std.testing.expectEqualStrings("epicbox.epiccash.com", try Epic.normalizeRelay("epicbox.epiccash.com", &buf));
+    // Port 443 is the default, so it's dropped; any other is kept.
+    try std.testing.expectEqualStrings("epicbox.epiccash.com", try Epic.normalizeRelay("  wss://EpicBox.EpicCash.com:443/ ", &buf));
+    try std.testing.expectEqualStrings("relay.example.com:8443", try Epic.normalizeRelay("relay.example.com:8443", &buf));
+    const bad = [_][]const u8{
+        "",
+        "ws://relay.example.com", // slates in the clear
+        "https://relay.example.com",
+        "my-relay.example.com", // epic-wallet's address regex has no '-'
+        "relay.example.com:0",
+        "relay.example.com:99999",
+        "relay.example.com:port",
+        "relay.example.com/path",
+        ".relay.example.com",
+        "user@relay.example.com",
+    };
+    for (bad) |b| try std.testing.expectError(error.InvalidRelayAddress, Epic.normalizeRelay(b, &buf));
+}
+
+test "relayFromToml reads the live [epicbox] server and nothing else" {
+    var buf: [Coin.relay_max]u8 = undefined;
+    try std.testing.expectEqualStrings("relay.example.com:8443", Epic.relayFromToml(
+        "[wallet]\nepicbox_domain = \"wrong.example\"\n[epicbox]\n# epicbox_domain = \"old.example\"\nepicbox_domain = \"relay.example.com\"\nepicbox_port = 8443\n",
+        &buf,
+    ));
+    try std.testing.expectEqualStrings("epicbox.epiccash.com", Epic.relayFromToml("[epicbox]\nepicbox_domain = \"epicbox.epiccash.com\"\nepicbox_port = 443\n", &buf));
+    try std.testing.expectEqualStrings("", Epic.relayFromToml("[wallet]\n", &buf));
+}
+
+test "a chosen Epicbox server survives the config being regenerated; the standard one is written back once" {
+    if (builtin.os.tag == .windows) return error.SkipZigTest;
+    const a = std.testing.allocator;
+    var threaded: std.Io.Threaded = .init(a, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    const cwd = std.Io.Dir.cwd();
+
+    const home = "test-epic-relay-home";
+    cwd.deleteTree(io, home) catch {};
+    defer cwd.deleteTree(io, home) catch {};
+    // BoxWallet's settings live under the install root this home resolves to.
+    const root = try install_mod.installRoot(a, home);
+    defer a.free(root);
+    const top = try Epic.dataDir(a, home);
+    defer a.free(top);
+
+    var buf: [Coin.relay_max]u8 = undefined;
+    // Nothing chosen, no config: the standard server.
+    try std.testing.expectEqualStrings("", Epic.relaySource(a, root, home, &buf));
+
+    // A server set by hand in the shared config is shown as it is, and a
+    // launch with nothing chosen in BoxWallet leaves it alone.
+    try cwd.createDirPath(io, top);
+    try cwd.createDirPath(io, root);
+    try Epic.ensureWalletConfig(a, io, home);
+    {
+        var d = try cwd.openDir(io, top, .{});
+        defer d.close(io);
+        try Epic.patchRelayKeys(a, io, d, "hand.example.org:9000");
+    }
+    try Epic.ensureWalletConfig(a, io, home);
+    try std.testing.expectEqualStrings("hand.example.org:9000", Epic.relaySource(a, root, home, &buf));
+
+    // Choosing one in Settings writes it, and it comes back after the config
+    // is regenerated from scratch (as a create or restore does).
+    try Epic.setRelaySource(a, root, home, "relay.example.com:8443");
+    {
+        var d = try cwd.openDir(io, top, .{});
+        defer d.close(io);
+        try d.deleteFile(io, Epic.wallet_conf_file);
+    }
+    try Epic.ensureWalletConfig(a, io, home);
+    try std.testing.expectEqualStrings("relay.example.com:8443", Epic.relaySource(a, root, home, &buf));
+    {
+        var d = try cwd.openDir(io, top, .{});
+        defer d.close(io);
+        var tb: [16 * 1024]u8 = undefined;
+        const toml = try d.readFile(io, Epic.wallet_conf_file, &tb);
+        try std.testing.expect(std.mem.indexOf(u8, toml, "epicbox_domain = \"relay.example.com\"") != null);
+        try std.testing.expect(std.mem.indexOf(u8, toml, "epicbox_port = 8443") != null);
+        try std.testing.expect(std.mem.indexOf(u8, toml, "epicbox_protocol_unsecure = false") != null);
+    }
+
+    // A refused address changes nothing.
+    try std.testing.expectError(error.InvalidRelayAddress, Epic.setRelaySource(a, root, home, "ws://plain.example"));
+    try std.testing.expectEqualStrings("relay.example.com:8443", Epic.relaySource(a, root, home, &buf));
+
+    // Back to the standard server: written into the config, not just forgotten.
+    try Epic.setRelaySource(a, root, home, "");
+    try std.testing.expectEqualStrings("", Epic.relaySource(a, root, home, &buf));
 }
