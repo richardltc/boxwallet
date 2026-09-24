@@ -330,6 +330,18 @@ static std::string last_error_text(bw_ctx *ctx, int rc)
     return msg.empty() ? std::string("that didn't work") : msg;
 }
 
+// What to suggest if the remote node at `url` isn't answering (for a plain
+// http:// address: try https://). Empty when there's nothing to add; the UI
+// shows it only while the node is unreachable.
+static std::string remote_node_hint(const std::string &url)
+{
+    if (url.empty())
+        return {};
+    char b[256];
+    size_t n = bw_remote_node_hint(url.c_str(), b, sizeof b);
+    return std::string(b, n);
+}
+
 // The bare error name, for branching (a wrong password shouldn't throw the user
 // out of the modal — it should put them back on the password field).
 static std::string last_error_code(bw_ctx *ctx)
@@ -1088,6 +1100,7 @@ static void apply_coin_metadata(const AppWindow *ui, bw_ctx *ctx, int idx)
         ui->set_relay_example(relay_text(2));
         ui->set_relay_note(relay_text(3));
         ui->set_relay_url(ss(""));
+        ui->set_node_hint(ss(""));
     }
     ui->set_wallet_can_backup_file((ew_flags & BW_EW_FILE_BACKUP) != 0);
     ui->set_wallet_state(BW_WALLET_NONE);
@@ -1671,6 +1684,7 @@ int main(int argc, char **argv)
                 (*h)->set_prune_configured(prune_configured);
                 (*h)->set_node_choice_supported(node_choice);
                 (*h)->set_node_url(ss(node_url));
+                (*h)->set_node_hint(ss(remote_node_hint(node_url)));
                 (*h)->set_relay_url(ss(relay_url));
                 // Drives the Start/Stop buttons, so it's set from the same read
                 // that fills the row — the two can't disagree about which node
@@ -2670,6 +2684,11 @@ int main(int argc, char **argv)
                 if (!h)
                     return;
                 if (rc < 0) {
+                    if (code == "InsecureRelayAddress") {
+                        (*h)->set_node_error(ss("Only secure servers work here \u2014 enter the "
+                                                "address without http:// or ws://."));
+                        return;
+                    }
                     if (code == "InvalidRelayAddress") {
                         (*h)->set_node_error(ss("Not a server this wallet can use \u2014 "
                                                 "letters, digits and dots, then an optional :port."));
@@ -2754,6 +2773,7 @@ int main(int argc, char **argv)
                 g_node_coin = -1;
                 if (g_selected.load() == coin) {
                     (*h)->set_node_url(ss(saved));
+                    (*h)->set_node_hint(ss(remote_node_hint(saved)));
                     (*h)->set_uses_local_daemon(saved.empty());
                 }
                 if (saved.empty()) {
