@@ -809,6 +809,10 @@ const SendModal = struct {
         address,
         /// Enter the amount to send.
         amount,
+        /// An optional note for the receiver, for a coin whose sends carry one
+        /// (`Coin.sendNoteMax` — Epic's slate message). Enter on an empty field
+        /// skips it.
+        note,
         /// The coin is pricing the send (`walletSendFee`) so the confirm step
         /// can state the fee. Only for coins that can (`supportsSendFee`).
         estimating,
@@ -1466,6 +1470,9 @@ const Activity = struct {
     send_addr_buf: [128]u8 = undefined,
     send_addr_len: usize = 0,
     send_amount: f64 = 0,
+    /// The note for the in-flight send (`Coin.walletSendNote`), empty for none.
+    send_note_buf: [models.tx_note_max]u8 = undefined,
+    send_note_len: usize = 0,
     /// True when the in-flight "send" is a stake (the Stake prompt) — routes
     /// the worker to `walletStake`, which needs no destination address.
     send_is_stake: bool = false,
@@ -2540,7 +2547,7 @@ const Activity = struct {
             return if (self.send_is_stake)
                 self.coin.walletStake(a, wallet_auth, self.send_amount)
             else
-                self.coin.walletSend(a, wallet_auth, address, self.send_amount);
+                self.coin.walletSendNote(a, wallet_auth, address, self.send_amount, self.send_note_buf[0..self.send_note_len]);
         }
 
         var threaded: std.Io.Threaded = .init(a, .{});
@@ -2573,7 +2580,7 @@ const Activity = struct {
         return if (self.send_is_stake)
             self.coin.walletStake(a, auth, self.send_amount)
         else
-            self.coin.walletSend(a, auth, address, self.send_amount);
+            self.coin.walletSendNote(a, auth, address, self.send_amount, self.send_note_buf[0..self.send_note_len]);
     }
 
     /// Copy `text` (a txid or a failure reason) into the bounded
@@ -4188,6 +4195,9 @@ pub const App = struct {
     /// Visible entry for a send amount. Persistent like the others; digits
     /// and one decimal point, cleared whenever the Send modal opens.
     send_amount_input: zz.TextInput,
+    /// Visible entry for a send's optional note (coins with `sendNoteMax`).
+    /// Persistent like the others; cleared whenever the Send modal opens.
+    send_note_input: zz.TextInput,
     /// Visible entry for the Mining prompt's CPU thread count. Persistent like
     /// the others; digits only, cleared whenever the prompt opens.
     mining_input: zz.TextInput,
@@ -4314,6 +4324,7 @@ pub const App = struct {
             .node_input = zz.TextInput.init(ctx.persistent_allocator),
             .send_addr_input = zz.TextInput.init(ctx.persistent_allocator),
             .send_amount_input = zz.TextInput.init(ctx.persistent_allocator),
+            .send_note_input = zz.TextInput.init(ctx.persistent_allocator),
             .mining_input = zz.TextInput.init(ctx.persistent_allocator),
             .file_picker = zz.components.FilePicker.init(ctx.persistent_allocator),
         };
@@ -4340,6 +4351,10 @@ pub const App = struct {
         // The send-amount field is a plain decimal number — visible, narrow.
         self.send_amount_input.setWidth(20);
         self.send_amount_input.setCharLimit(20);
+        // The note field: free text, capped at the longest note any coin takes
+        // (the byte limit is checked again on Enter).
+        self.send_note_input.setWidth(modal_inner_w - 8);
+        self.send_note_input.setCharLimit(models.tx_note_max);
         // The mining thread-count field takes a small integer — visible, tiny.
         self.mining_input.setWidth(6);
         self.mining_input.setCharLimit(4);
@@ -4469,6 +4484,7 @@ pub const App = struct {
         self.node_input.deinit();
         self.send_addr_input.deinit();
         self.send_amount_input.deinit();
+        self.send_note_input.deinit();
         self.mining_input.deinit();
         self.file_picker.deinit();
         if (self.install_root_owned) self.allocator.free(self.install_root);
@@ -7138,6 +7154,8 @@ pub const App = struct {
         self.send_modal = .{ .coin_idx = self.selected };
         self.send_addr_input.setValue("") catch {};
         self.send_amount_input.setValue("") catch {};
+        self.send_note_input.setValue("") catch {};
+        self.send_note_input.blur();
         self.send_addr_input.focus();
         self.send_amount_input.blur();
     }
@@ -7277,6 +7295,14 @@ pub const App = struct {
                 // Backspace/paste/cursor moves edit the field.
                 else => self.send_amount_input.handleKey(k),
             },
+            .note => switch (k.key) {
+                .escape => self.closeSendModal(),
+                .enter => self.trySendNote(),
+                else => {
+                    m.bad_input = false;
+                    self.send_note_input.handleKey(k);
+                },
+            },
             .confirm => switch (k.key) {
                 .escape => self.closeSendModal(),
                 .up => m.sel = 0,
@@ -7335,10 +7361,38 @@ pub const App = struct {
             return;
         }
         m.bad_input = false;
+        // A coin whose sends carry a note asks for one (optional) next.
+        if (m.mode == .send) if (self.coinAt(m.coin_idx)) |coin| if (coin.sendNoteMax() > 0) {
+            self.send_amount_input.blur();
+            self.send_note_input.focus();
+            m.stage = .note;
+            return;
+        };
+        self.toSendConfirm();
+    }
+
+    /// Enter on the note stage: an empty note skips it; one over the coin's
+    /// limit (bytes, as the coin counts it) stays put with a warning.
+    fn trySendNote(self: *App) void {
+        const m = &self.send_modal.?;
+        const coin = self.coinAt(m.coin_idx) orelse return;
+        const note = std.mem.trim(u8, self.send_note_input.getValue(), " \t");
+        if (note.len > coin.sendNoteMax()) {
+            m.bad_input = true;
+            return;
+        }
+        m.bad_input = false;
+        self.send_note_input.blur();
+        self.toSendConfirm();
+    }
+
+    /// On to the confirm step — by way of the fee quote, for a coin that can
+    /// price the send, so the confirm states the fee rather than leaving it to
+    /// be discovered afterwards.
+    fn toSendConfirm(self: *App) void {
+        const m = &self.send_modal.?;
         m.sel = 0;
         m.fee = null;
-        // A coin that can price the send does so first, so the confirm step
-        // states the fee rather than leaving it to be discovered afterwards.
         if (m.mode == .send) if (self.coinAt(m.coin_idx)) |coin| if (coin.supportsSendFee()) {
             self.startSendWorker(true);
             return;
@@ -7381,6 +7435,10 @@ pub const App = struct {
         @memcpy(act.send_addr_buf[0..n], target[0..n]);
         act.send_addr_len = n;
         act.send_is_cancel = m.mode == .cancel;
+        // Only a plain send carries a note, and only on a coin that takes one.
+        const note = if (m.mode == .send and coin.sendNoteMax() > 0) self.send_note_input.getValue() else "";
+        act.send_note_len = @min(note.len, act.send_note_buf.len);
+        @memcpy(act.send_note_buf[0..act.send_note_len], note[0..act.send_note_len]);
 
         const amount_text = std.mem.trim(u8, self.send_amount_input.getValue(), " \t");
         act.send_amount = std.fmt.parseFloat(f64, amount_text) catch 0;
@@ -9413,11 +9471,18 @@ pub const App = struct {
                 ((zz.Style{}).bold(true).fg(.yellow).render(a, tx.stage.label()) catch tx.stage.label())
             else
                 txConfirmationText(a, tx.confirmations);
-            const line = try std.fmt.allocPrint(a, "  {s} {s}   {s}   {s}", .{
+            // The sender's note, dim, after the status. Already made safe to
+            // print by `WalletTx.setNote` — it's someone else's text.
+            const note = if (tx.note_len > 0) blk: {
+                const q = try std.fmt.allocPrint(a, "   “{s}”", .{tx.note()});
+                break :blk (zz.Style{}).dim(true).render(a, q) catch q;
+            } else "";
+            const line = try std.fmt.allocPrint(a, "  {s} {s}   {s}   {s}{s}", .{
                 glyph,
                 try padCell(a, date, date_w, false),
                 try padCell(a, amount, amount_w, true),
                 conf_text,
+                note,
             });
             body = try std.fmt.allocPrint(a, "{s}\n{s}", .{ body, line });
         }
@@ -10967,6 +11032,18 @@ pub const App = struct {
                     try modalRow(&out.writer, vbar, inner_w, styled, zz.width(warn));
                 }
             },
+            .note => {
+                const field = try self.send_note_input.view(a);
+                const text = try std.fmt.allocPrint(a, "Note: {s}", .{field});
+                try modalRow(&out.writer, vbar, inner_w, text, zz.width("Note: ") + zz.width(field));
+                try modalRow(&out.writer, vbar, inner_w, "", 0);
+                try wrapIntoRows(a, &out.writer, vbar, inner_w, send_note_hint, (zz.Style{}).dim(true));
+                if (m.bad_input) {
+                    const warn = "The note is too long — shorten it.";
+                    const styled = (zz.Style{}).fg(.red).render(a, warn) catch warn;
+                    try modalRow(&out.writer, vbar, inner_w, styled, zz.width(warn));
+                }
+            },
             .confirm => {
                 const amount_text = std.mem.trim(u8, self.send_amount_input.getValue(), " \t");
                 const amount = std.fmt.parseFloat(f64, amount_text) catch 0;
@@ -11024,6 +11101,15 @@ pub const App = struct {
                     });
                 };
                 try wrapIntoRows(a, &out.writer, vbar, inner_w, detail, (zz.Style{}));
+                // The note as it will go — cleaned the way the send cleans it.
+                if (m.mode == .send and coin.sendNoteMax() > 0) {
+                    var nbuf: [models.tx_note_max]u8 = undefined;
+                    const note = models.sanitizeNote(&nbuf, self.send_note_input.getValue());
+                    if (note.len > 0) {
+                        try modalRow(&out.writer, vbar, inner_w, "", 0);
+                        try wrapIntoRows(a, &out.writer, vbar, inner_w, try std.fmt.allocPrint(a, "Note: {s}", .{note}), (zz.Style{}));
+                    }
+                }
                 try modalRow(&out.writer, vbar, inner_w, "", 0);
                 const labels = if (staking)
                     [_][]const u8{ "Yes — stake it", "No — cancel" }
@@ -11073,6 +11159,7 @@ pub const App = struct {
             .pick => "j/k: choose   enter: next   esc: close",
             .address => "enter: next   esc: cancel",
             .amount => "enter: next   esc: cancel",
+            .note => "enter: next (leave empty for no note)   esc: cancel",
             .confirm => "enter: select   esc: cancel",
             .working, .estimating => "please wait…",
             .result => "press any key to close",
@@ -11083,6 +11170,11 @@ pub const App = struct {
 
         return out.toOwnedSlice();
     }
+
+    /// What the note stage says about where a note goes. Epic's is the only
+    /// kind so far: the slate message, which travels with the payment but is
+    /// never written to the chain.
+    const send_note_hint = "Optional. Sent with the payment to the receiver's wallet and kept in both wallets' history. Not written to the blockchain.";
 
     /// One cancellable send, as the cancel prompt names it: the amount that
     /// left (fee included), when it was made (UTC), and the start of its id.
@@ -13110,6 +13202,15 @@ test "a coin that quotes its fee prices the send before the confirm step" {
     try app.send_amount_input.setValue("0.1");
     app.send_modal = .{ .coin_idx = idx, .stage = .amount };
     app.trySendAmount();
+    // Epic's sends carry a note, so that's asked for first. One past the limit
+    // stays put with a warning; an acceptable one moves on to the quote.
+    try std.testing.expectEqual(SendModal.Stage.note, app.send_modal.?.stage);
+    try app.send_note_input.setValue("x" ** (models.tx_note_max + 1));
+    app.trySendNote();
+    try std.testing.expectEqual(SendModal.Stage.note, app.send_modal.?.stage);
+    try std.testing.expect(app.send_modal.?.bad_input);
+    try app.send_note_input.setValue("rent for May");
+    app.trySendNote();
     try std.testing.expectEqual(SendModal.Stage.estimating, app.send_modal.?.stage);
 
     const act = &app.activities[idx];
@@ -13149,6 +13250,11 @@ test "renderSendModal states the quoted fee and total, and the coin's own sent l
     var box = try app.renderSendModal(a);
     try std.testing.expect(std.mem.indexOf(u8, box, "0.00800000") != null);
     try std.testing.expect(std.mem.indexOf(u8, box, "0.10800000") != null);
+    try std.testing.expect(std.mem.indexOf(u8, box, "Note:") == null);
+    // A note is read back on the confirm, cleaned as it will be sent.
+    try app.send_note_input.setValue("rent\x1b[2J for May");
+    box = try app.renderSendModal(a);
+    try std.testing.expect(std.mem.indexOf(u8, box, "Note: rent [2J for May") != null);
 
     // Success reads as on its way with a slate, not "Sent. Txid:".
     app.send_modal.?.setMsg(true, "45ac41a0-7812-47ca-baa6-0021c2e8db0d");
@@ -13198,6 +13304,18 @@ test "the Transactions tab says where an unfinished send is, and offers x only w
     act.tx_buf[0].cancellable = true;
     body = try App.renderTransactionsTab(a, &act, 8);
     try std.testing.expect(std.mem.indexOf(u8, body, "x: cancel") != null);
+}
+
+test "the Transactions tab shows a sender's note beside its row" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    var act: Activity = .{};
+    act.tx_buf[0] = .{ .direction = .received, .amount = 1, .time = 1_790_000_000, .confirmations = 9999 };
+    act.tx_buf[0].setNote("rent for May");
+    act.tx_count = 1;
+    try std.testing.expect(std.mem.indexOf(u8, try App.renderTransactionsTab(a, &act, 8), "rent for May") != null);
 }
 
 test "the cancel prompt opens on what can be cancelled — straight to Yes/No for one, a pick for several" {

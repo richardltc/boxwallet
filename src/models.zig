@@ -526,6 +526,12 @@ pub const WalletTx = struct {
     /// that is safe to cancel: one that has not, as far as can be told, reached
     /// the network.
     cancellable: bool = false,
+    /// The note the sender attached, for a coin whose transactions carry one
+    /// (Epic's slate message); empty otherwise. Written by the *other* party on
+    /// a receive, so it's untrusted text — only ever set through `setNote`,
+    /// which keeps it printable.
+    note_buf: [tx_note_max]u8 = undefined,
+    note_len: usize = 0,
 
     pub fn txid(self: *const WalletTx) []const u8 {
         return self.txid_buf[0..self.txid_len];
@@ -536,7 +542,51 @@ pub const WalletTx = struct {
         @memcpy(self.txid_buf[0..n], id[0..n]);
         self.txid_len = n;
     }
+
+    pub fn note(self: *const WalletTx) []const u8 {
+        return self.note_buf[0..self.note_len];
+    }
+
+    /// Store `text` as the row's note via `sanitizeNote`.
+    pub fn setNote(self: *WalletTx, text: []const u8) void {
+        self.note_len = sanitizeNote(&self.note_buf, text).len;
+    }
 };
+
+/// The longest transaction note BoxWallet sends or shows, in bytes. A coin's
+/// own `Coin.send_note_max` is at most this, so every note it can send also
+/// fits back into `WalletTx.note_buf`.
+pub const tx_note_max: usize = 128;
+
+/// Copy `text` into `out` fit to show in a terminal or a GUI label: every
+/// control character (C0, DEL, and the C1 range, which some terminals read as
+/// escape sequences) becomes a space, whitespace runs collapse, the ends are
+/// trimmed, and it's cut to `out.len` on a character boundary. Invalid UTF-8
+/// yields "". A received note is written by someone else, so without this it
+/// could repaint the TUI.
+pub fn sanitizeNote(out: []u8, text: []const u8) []const u8 {
+    const view = std.unicode.Utf8View.init(text) catch return out[0..0];
+    var it = view.iterator();
+    var n: usize = 0;
+    var pending_space = false;
+    while (it.nextCodepointSlice()) |cs| {
+        const cp = std.unicode.utf8Decode(cs) catch return out[0..0];
+        if (cp < 0x20 or cp == 0x7f or (cp >= 0x80 and cp <= 0x9f) or cp == ' ') {
+            pending_space = n > 0;
+            continue;
+        }
+        const need = cs.len + @intFromBool(pending_space);
+        if (n + need > out.len) break;
+        if (pending_space) {
+            out[n] = ' ';
+            n += 1;
+            pending_space = false;
+        }
+        @memcpy(out[n..][0..cs.len], cs);
+        n += cs.len;
+    }
+    return out[0..n];
+}
 
 /// One stake: an amount the wallet locked for the coin's staking term, on a
 /// coin with an explicit stake *action* (Salvium). Scalar-only for the same
@@ -1434,4 +1484,19 @@ test "a described token keeps its own identity and decimals" {
     described.setName("NiftyArt");
     try std.testing.expect(described.decimalsKnown());
     try std.testing.expectEqualStrings("NiftyArt", described.displayName());
+}
+
+test "sanitizeNote keeps a note printable and in bounds" {
+    var buf: [tx_note_max]u8 = undefined;
+    try std.testing.expectEqualStrings("rent for May", sanitizeNote(&buf, "  rent \t for\nMay  "));
+    // An escape sequence can't reach the terminal: ESC and the C1 CSI are gone.
+    try std.testing.expectEqualStrings("[2J hi 31m", sanitizeNote(&buf, "\x1b[2J hi \xc2\x9b31m"));
+    try std.testing.expectEqualStrings("", sanitizeNote(&buf, "bad \xff utf8"));
+    // Cut on a character boundary, never mid-sequence.
+    var small: [4]u8 = undefined;
+    try std.testing.expectEqualStrings("a€", sanitizeNote(&small, "a€€"));
+
+    var tx: WalletTx = .{ .direction = .received, .amount = 1, .time = 0, .confirmations = 0 };
+    tx.setNote("thanks!");
+    try std.testing.expectEqualStrings("thanks!", tx.note());
 }

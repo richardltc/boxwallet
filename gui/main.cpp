@@ -833,6 +833,7 @@ make_tx_rows(const std::vector<BwWalletTx> &txs, int decimals, bool has_stake)
         r.cancellable = t.cancellable != 0;
         // Explicitly length-counted: the core doesn't NUL-terminate a txid.
         r.txid = ss(std::string(t.txid, t.txid_len));
+        r.note = ss(std::string(t.note, t.note_len));
         r.incoming = incoming;
         rows.push_back(std::move(r));
     }
@@ -1014,6 +1015,9 @@ static void apply_coin_metadata(const AppWindow *ui, bw_ctx *ctx, int idx)
     ui->set_has_receive(bw_coin_supports_receive_address(idx) != 0);
     ui->set_has_send(bw_coin_supports_send(idx) != 0);
     ui->set_has_send_fee(bw_coin_supports_send_fee(idx) != 0);
+    // A note typed for one coin mustn't ride along with another coin's send.
+    ui->set_send_note_max(static_cast<int>(bw_coin_send_note_max(idx)));
+    ui->set_send_note_text("");
     ui->set_has_cancel_tx(bw_coin_supports_cancel_tx(idx) != 0);
     ui->set_tx_action_result(ss(""));
     ui->set_wallet_loading(false);
@@ -3541,7 +3545,11 @@ int main(int argc, char **argv)
         }).detach();
     });
 
-    ui->on_send_funds([weak, ctx, wake_poll](slint::SharedString address, slint::SharedString amount) {
+    // The note limit is in bytes, which is what the core checks.
+    ui->on_utf8_len([](slint::SharedString text) { return static_cast<int>(std::string_view(text).size()); });
+
+    ui->on_send_funds([weak, ctx, wake_poll](slint::SharedString address, slint::SharedString amount,
+                                             slint::SharedString note_text) {
         int coin = g_selected.load();
         if (coin < 0) {
             if (auto h = weak.lock())
@@ -3549,6 +3557,7 @@ int main(int argc, char **argv)
             return;
         }
         std::string addr{std::string_view(address)};
+        std::string note{std::string_view(note_text)};
         double amt = 0;
         try {
             amt = std::stod(std::string(std::string_view(amount)));
@@ -3563,10 +3572,10 @@ int main(int argc, char **argv)
         if (auto h = weak.lock())
             (*h)->set_send_busy(true);
 
-        std::thread([weak, ctx, coin, addr, amt, wake_poll]() {
+        std::thread([weak, ctx, coin, addr, note, amt, wake_poll]() {
             WorkerGuard wg;
             char out[256] = {0};
-            int rc = bw_wallet_send(ctx, static_cast<size_t>(coin), addr.c_str(), amt,
+            int rc = bw_wallet_send(ctx, static_cast<size_t>(coin), addr.c_str(), amt, note.c_str(),
                                     out, sizeof out);
             std::string reply(out);
             std::string err = (rc < 0) ? last_error_text(ctx, rc) : std::string();
@@ -3582,6 +3591,9 @@ int main(int argc, char **argv)
                     // gets out of the way of the result underneath it.
                     (*h)->set_send_confirm_open(false);
                     (*h)->set_send_result_error(rc != 0);
+                    // A note belongs to the payment it went with.
+                    if (rc == 0)
+                        (*h)->set_send_note_text("");
                     // A daemon rejection (rc == 1) carries its own reason
                     // verbatim — it's an answer the user needs to read, not a
                     // generic failure.
