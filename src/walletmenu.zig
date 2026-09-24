@@ -34,7 +34,7 @@ const Coin = @import("coin.zig").Coin;
 /// there is a test that holds it to the real worst case.
 pub const max_options = 6;
 /// Most setup choices a managed wallet's menu offers at once.
-pub const max_choices = 3;
+pub const max_choices = 4;
 
 /// An operation the in-daemon wallet menu can run against the daemon.
 pub const Action = enum(u8) {
@@ -349,6 +349,11 @@ pub const SetupOp = enum(u8) {
     /// Re-lock an open wallet (in-daemon wallets that stay open while the daemon
     /// runs, e.g. Ergo; the process-backed coins lock by killing their process).
     lock = 4,
+    /// Read the wallet's recovery phrase back to write down, after asking
+    /// for its password again (`ExternalWallet.show_seed`).
+    show_seed = 5,
+    /// Copy the wallet file to a timestamped backup (`ExternalWallet.backup_file`).
+    backup_file = 6,
 
     /// What's happening while the op runs — the in-flight line, one wording for
     /// both front-ends. Says *unlocking* for `open`: that's what the user asked
@@ -360,6 +365,20 @@ pub const SetupOp = enum(u8) {
             .restore_file => "Importing the wallet file…",
             .open => "Unlocking the wallet…",
             .lock => "Locking the wallet…",
+            .show_seed => "Reading your recovery seed…",
+            .backup_file => "Backing up the wallet file…",
+        };
+    }
+
+    /// Whether a successful run leaves the wallet open — the ops that set a
+    /// wallet up or unlock it. `lock` closes it; `show_seed` and `backup_file`
+    /// act on the wallet as it is and change neither whether it exists nor
+    /// whether it's open, so the front-ends must not relaunch its process for
+    /// them or mark a locked wallet open afterwards.
+    pub fn opensWallet(self: SetupOp) bool {
+        return switch (self) {
+            .create, .restore_seed, .restore_file, .open => true,
+            .lock, .show_seed, .backup_file => false,
         };
     }
 
@@ -370,7 +389,8 @@ pub const SetupOp = enum(u8) {
     pub fn launchNote(self: SetupOp) []const u8 {
         return switch (self) {
             .restore_seed => "This scans the chain for your existing funds and can take several minutes. Leave it running.",
-            .lock => "",
+            // Neither starts anything: they use the wallet as it already is.
+            .lock, .show_seed, .backup_file => "",
             else => "The wallet service is starting — this can take a moment.",
         };
     }
@@ -382,6 +402,8 @@ pub const SetupOp = enum(u8) {
             .restore_file => "Restore from file",
             .open => "Unlock wallet",
             .lock => "Lock wallet",
+            .show_seed => "Show recovery seed",
+            .backup_file => "Back up wallet file",
         };
     }
 
@@ -400,10 +422,11 @@ pub const SetupOp = enum(u8) {
     /// restoring an existing wallet file must accept a blank password, because
     /// the wallet may have been created elsewhere with no encryption — the user
     /// then submits the empty prompt deliberately (still explicit, never
-    /// silent). Ops that *set* a new credential keep requiring a non-empty
+    /// silent). `show_seed` re-checks that same existing password, so it
+    /// follows `open`. Ops that *set* a new credential keep requiring a non-empty
     /// password, so a fresh wallet is never left unprotected by accident.
     pub fn allowsEmptyPassword(self: SetupOp) bool {
-        return self == .open or self == .restore_file;
+        return self == .open or self == .restore_file or self == .show_seed;
     }
 };
 
@@ -416,6 +439,10 @@ pub const SetupChoice = enum(u8) {
     lock = 4,
     /// Destructively remove the current wallet to create/restore a different one.
     replace = 5,
+    /// Show the wallet's recovery seed (asks for the password again).
+    show_seed = 6,
+    /// Copy the wallet file to a timestamped backup.
+    backup_file = 7,
 
     pub fn label(self: SetupChoice) []const u8 {
         return switch (self) {
@@ -425,6 +452,8 @@ pub const SetupChoice = enum(u8) {
             .unlock => "Unlock wallet",
             .lock => "Lock wallet",
             .replace => "Replace wallet…",
+            .show_seed => "Show recovery seed",
+            .backup_file => "Back up wallet file",
         };
     }
 };
@@ -446,6 +475,38 @@ pub fn choicesFor(coin: Coin, buf: *[max_choices]SetupChoice) usize {
     }
     if (ew.restore_file != null) {
         buf[n] = .restore_file;
+        n += 1;
+    }
+    return n;
+}
+
+/// Fill `buf` with the menu for a managed wallet that already **exists**, in
+/// display order, returning the count; `open` is whether it's unlocked this
+/// session. Locked: unlock, the seed (only where the coin reads it from the
+/// wallet file — `show_seed_when_locked`), a file backup (the file stays
+/// encrypted, so it needs no unlock), replace. Open: lock (only where the coin
+/// needs an explicit one), the seed, a file backup, replace. Replace stays last
+/// so the destructive row is never the one a stray Enter lands on first.
+pub fn existingChoicesFor(coin: Coin, open: bool, buf: *[max_choices]SetupChoice) usize {
+    const ew = coin.externalWallet() orelse return 0;
+    var n: usize = 0;
+    if (!open) {
+        buf[n] = .unlock;
+        n += 1;
+    } else if (ew.lock != null) {
+        buf[n] = .lock;
+        n += 1;
+    }
+    if (ew.show_seed != null and (open or ew.show_seed_when_locked)) {
+        buf[n] = .show_seed;
+        n += 1;
+    }
+    if (ew.backup_file != null) {
+        buf[n] = .backup_file;
+        n += 1;
+    }
+    if (coin.supportsWalletReplace()) {
+        buf[n] = .replace;
         n += 1;
     }
     return n;
@@ -826,4 +887,63 @@ test "a staking-only unlock is offered nothing that touches a key" {
     for (buf[0..kn]) |a| {
         try std.testing.expect(a != .backup);
     }
+}
+
+test "an existing wallet's menu: unlock only when locked, seed only when open, replace last" {
+    // Loops the registry so a coin that wires the backups later is held to the
+    // same shape. The seed needs the wallet process up (it's read from the open
+    // wallet); a file backup doesn't (the file stays encrypted). Replace sits
+    // last so it's never the row a stray Enter lands on first.
+    const registry = @import("registry.zig");
+    var inst: registry.Instances = registry.instances();
+    var i: usize = 0;
+    while (i < registry.count) : (i += 1) {
+        const c = registry.coinAt(&inst, i) orelse continue;
+        const ew = c.externalWallet() orelse continue;
+        for ([_]bool{ false, true }) |open| {
+            var buf: [max_choices]SetupChoice = undefined;
+            const n = existingChoicesFor(c, open, &buf);
+            try std.testing.expect(n <= max_choices);
+            for (buf[0..n], 0..) |ch, k| {
+                switch (ch) {
+                    .unlock => try std.testing.expect(!open),
+                    .lock => try std.testing.expect(open and ew.lock != null),
+                    .show_seed => try std.testing.expect(ew.show_seed != null and (open or ew.show_seed_when_locked)),
+                    .backup_file => try std.testing.expect(ew.backup_file != null),
+                    .replace => try std.testing.expectEqual(n - 1, k),
+                    // Those are for a coin with no wallet yet.
+                    .create, .restore_seed, .restore_file => return error.TestUnexpectedResult,
+                }
+            }
+        }
+    }
+}
+
+test "Epic offers both backups, locked or open" {
+    const epic = @import("coins/epic.zig");
+    var e: epic.Epic = .{};
+    const c = e.coin();
+    var buf: [max_choices]SetupChoice = undefined;
+
+    const open_n = existingChoicesFor(c, true, &buf);
+    try std.testing.expectEqualSlices(SetupChoice, &.{ .lock, .show_seed, .backup_file, .replace }, buf[0..open_n]);
+
+    const locked_n = existingChoicesFor(c, false, &buf);
+    try std.testing.expectEqualSlices(SetupChoice, &.{ .unlock, .show_seed, .backup_file, .replace }, buf[0..locked_n]);
+
+    // And the file comes back in through the no-wallet menu.
+    const new_n = choicesFor(c, &buf);
+    try std.testing.expect(std.mem.indexOfScalar(SetupChoice, buf[0..new_n], .restore_file) != null);
+}
+
+test "only the setup ops leave a wallet open; the backups change nothing" {
+    // A file backup of a locked wallet must not mark it open, and neither backup
+    // may relaunch (and so re-lock) the process serving an open one.
+    for ([_]SetupOp{ .create, .restore_seed, .restore_file, .open }) |o| try std.testing.expect(o.opensWallet());
+    for ([_]SetupOp{ .lock, .show_seed, .backup_file }) |o| try std.testing.expect(!o.opensWallet());
+    // Showing the seed checks an existing password, once; it never sets one.
+    try std.testing.expect(!SetupOp.show_seed.setsNewPassword());
+    try std.testing.expect(SetupOp.show_seed.allowsEmptyPassword());
+    try std.testing.expectEqual(@as(usize, 0), SetupOp.show_seed.launchNote().len);
+    try std.testing.expectEqual(@as(usize, 0), SetupOp.backup_file.launchNote().len);
 }

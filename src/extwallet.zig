@@ -565,9 +565,64 @@ pub fn setupWithPassword(
             kill(sess);
             return null;
         },
+        // Not setup ops: they use the wallet as it stands, and running them
+        // through here would relaunch — and so re-lock — the process serving it.
+        // Front-ends call `showSeed` / `backupFile` directly.
+        .show_seed, .backup_file => return error.Unsupported,
     }
     startListener(sess, coin, install_root, home_dir, password);
     return null;
+}
+
+// ---- backing up a managed wallet --------------------------------------------
+
+/// Read the wallet's recovery phrase for the user to write down, checking
+/// `password` again (see `ExternalWallet.show_seed`). Uses the wallet process
+/// already running for `sess`, or the wallet file under `home_dir`, as the coin
+/// needs — nothing is relaunched here, so this neither opens nor closes
+/// anything. The result is the secret: the caller shows it and wipes it.
+pub fn showSeed(
+    sess: *const Session,
+    coin: Coin,
+    a: std.mem.Allocator,
+    home_dir: []const u8,
+    password: []const u8,
+    detail: *Coin.WalletErrSink,
+) !models.Seed {
+    const ew = coin.externalWallet() orelse return error.NoExternalWallet;
+    const f = ew.show_seed orelse return error.Unsupported;
+    return f(a, authFor(coin, sess), home_dir, password, detail);
+}
+
+/// Longest path `backupFile` writes into its caller's buffer.
+pub const backup_path_max = 512;
+
+/// Where a wallet-file backup goes: `<install_root>/<abbrev>-wallet-backup-<unix
+/// seconds><ext>`. The same shape the in-daemon key-dump backup uses, for the
+/// same reason — a fresh name per backup, so an earlier one is never
+/// overwritten. Written into `buf`; errors `error.NoSpaceLeft` if it won't fit.
+pub fn backupPath(buf: []u8, install_root: []const u8, abbrev: []const u8, ts: i64, ext: []const u8) ![]const u8 {
+    return std.fmt.bufPrint(buf, "{s}{c}{s}-wallet-backup-{d}{s}", .{ install_root, std.fs.path.sep, abbrev, ts, ext });
+}
+
+/// Copy `coin`'s managed wallet file to a fresh timestamped path under
+/// `install_root` (see `backupPath`) and return that path, written into
+/// `out`, so the front-end can say where it went. A file copy — works on a
+/// locked wallet too, and touches nothing of the wallet's own.
+pub fn backupFile(
+    coin: Coin,
+    a: std.mem.Allocator,
+    io: std.Io,
+    install_root: []const u8,
+    home_dir: []const u8,
+    out: []u8,
+    detail: *Coin.WalletErrSink,
+) ![]const u8 {
+    const ew = coin.externalWallet() orelse return error.NoExternalWallet;
+    const f = ew.backup_file orelse return error.Unsupported;
+    const path = try backupPath(out, install_root, coin.coinNameAbbrev(), std.Io.Timestamp.now(io, .real).toSeconds(), ew.backup_file_ext);
+    try f(a, home_dir, path, detail);
+    return path;
 }
 
 // ---- tests ------------------------------------------------------------------

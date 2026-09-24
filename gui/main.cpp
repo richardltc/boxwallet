@@ -1067,6 +1067,9 @@ static void apply_coin_metadata(const AppWindow *ui, bw_ctx *ctx, int idx)
     // extwallet.setupWithPassword path for both front-ends); it only tells the
     // "working" step to explain the longer wait.
     ui->set_wallet_launch_with_pw((ew_flags & BW_EW_LAUNCH_WITH_PW) != 0);
+    ui->set_wallet_can_show_seed((ew_flags & BW_EW_SHOW_SEED) != 0);
+    ui->set_wallet_show_seed_locked((ew_flags & BW_EW_SHOW_SEED_LOCKED) != 0);
+    ui->set_wallet_can_backup_file((ew_flags & BW_EW_FILE_BACKUP) != 0);
     ui->set_wallet_state(BW_WALLET_NONE);
     uint32_t counts[4] = {25, 0, 0, 0};
     const size_t ncounts = bw_coin_seed_word_counts(idx, counts, 4);
@@ -1717,16 +1720,18 @@ int main(int argc, char **argv)
         });
     };
 
-    // Settle the wallet modal after an op finishes. Success on a *create* means
-    // there's a mnemonic waiting: take it (which wipes the core's copy), pick the
-    // three positions to quiz on, and move to the write-it-down stage. Any other
-    // success just reports itself; a wrong password puts the user back on the
-    // password field rather than closing the modal out from under them.
+    // Settle the wallet modal after an op finishes. Success on a *create* (or a
+    // show-seed, 5) means there's a mnemonic waiting: take it (which wipes the
+    // core's copy), pick the three positions to quiz on, and move to the
+    // write-it-down stage. Any other success just reports itself; a wrong
+    // password puts the user back on the password field rather than closing the
+    // modal out from under them.
     auto finish_wallet_op = [](slint::ComponentWeakHandle<AppWindow> w, bw_ctx *c, int rc,
                                int op, int coin) {
         std::string seed;
         int p1 = 1, p2 = 2, p3 = 3;
-        if (rc == 0 && op == 0) {
+        const bool shows_seed = (op == 0 || op == 5);
+        if (rc == 0 && shows_seed) {
             char sb[256] = {0};
             size_t sn = bw_ext_wallet_seed_take(c, sb, sizeof sb);
             if (sn > 0 && sn <= sizeof sb)
@@ -1773,9 +1778,12 @@ int main(int argc, char **argv)
             // status pass comes back, which for a wallet reading from a remote
             // node can be several seconds. Its balance and history are still on
             // their way: the tabs say "Loading…" until the first read lands.
-            (*h)->set_wallet_state(BW_WALLET_OPEN);
-            (*h)->set_wallet_loading(true);
-            if (op == 0 && !seed.empty()) {
+            // Showing the seed read an already-open wallet: nothing to reload.
+            if (op != 5) {
+                (*h)->set_wallet_state(BW_WALLET_OPEN);
+                (*h)->set_wallet_loading(true);
+            }
+            if ((op == 0 || op == 5) && !seed.empty()) {
                 (*h)->set_verify_pos_1(p1);
                 (*h)->set_verify_pos_2(p2);
                 (*h)->set_verify_pos_3(p3);
@@ -3173,7 +3181,8 @@ int main(int argc, char **argv)
         std::string path{std::string_view(file)};
         // What the in-flight stage says: the core's words for this op.
         if (auto h = weak.lock()) {
-            const int shown = (op >= 0 && op <= 2) ? op : 3; // the worker's default is unlock
+            // The worker's default is unlock.
+            const int shown = ((op >= 0 && op <= 2) || op == 5) ? op : 3;
             char pb[96], nb[160];
             size_t pn = bw_setup_op_progress(shown, pb, sizeof pb);
             size_t nn = bw_setup_op_launch_note(shown, nb, sizeof nb);
@@ -3193,6 +3202,7 @@ int main(int argc, char **argv)
                                                     seed_bytes.data(), seed_bytes.size()); break;
             case 2: rc = bw_ext_wallet_restore_file(ctx, c, pw_bytes.data(), pw_bytes.size(),
                                                     path.c_str()); break;
+            case 5: rc = bw_ext_wallet_show_seed(ctx, c, pw_bytes.data(), pw_bytes.size()); break;
             default: rc = bw_ext_wallet_open(ctx, c, pw_bytes.data(), pw_bytes.size()); break;
             }
             wipe_secret(pw_bytes);
@@ -3226,6 +3236,48 @@ int main(int argc, char **argv)
                 }
             });
             wake_poll();
+            g_wallet_busy.store(false);
+        }).detach();
+    });
+
+    // File backup: a copy of the still-encrypted wallet file, to a timestamped
+    // path the core picks under the install root. Say where it went, and that
+    // it needs the wallet password as it is now — never what's in it.
+    ui->on_wallet_backup_file([weak, ctx]() {
+        int coin = g_selected.load();
+        if (coin < 0)
+            return;
+        bool expected = false;
+        if (!g_wallet_busy.compare_exchange_strong(expected, true))
+            return;
+        if (auto h = weak.lock()) {
+            char pb[96];
+            size_t pn = bw_setup_op_progress(6, pb, sizeof pb);
+            (*h)->set_wallet_progress_text(ss(std::string(pb, pn)));
+            (*h)->set_wallet_progress_note(ss(""));
+        }
+        std::thread([weak, ctx, coin]() {
+            WorkerGuard wg;
+            char path[512] = {0};
+            size_t pn = bw_ext_wallet_backup_file(ctx, static_cast<size_t>(coin), path, sizeof path);
+            const bool ok = pn > 0 && pn <= sizeof path;
+            std::string msg = ok
+                ? "Backed up to " + std::string(path, pn) +
+                      ". It's encrypted with your current wallet password, which you'll need "
+                      "to restore it. Copy it somewhere off this machine."
+                : last_error_text(ctx, -1);
+            post_to_ui([weak, coin, ok, msg]() {
+                auto h = weak.lock();
+                if (!h)
+                    return;
+                if (g_selected.load() != coin) {
+                    (*h)->set_wallet_stage(0);
+                    return;
+                }
+                (*h)->set_wallet_result_error(!ok);
+                (*h)->set_wallet_result(ss(msg));
+                (*h)->set_wallet_stage(10);
+            });
             g_wallet_busy.store(false);
         }).detach();
     });

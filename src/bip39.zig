@@ -44,6 +44,26 @@ pub fn generate(io: std.Io, word_count: usize, out: []u8) ![]const u8 {
     return assemble(data[0 .. ent_bytes + 1], word_count, out);
 }
 
+/// Spell existing BIP39 `entropy` (16–32 bytes, a multiple of 4: 12–24 words)
+/// as its English mnemonic in `out` — the inverse of what a restore feeds the
+/// wallet. For a wallet that keeps its entropy rather than its words (Epic's
+/// wallet.seed), this is how the words are shown again. The result is the
+/// secret; the caller wipes `out`.
+pub fn fromEntropy(entropy: []const u8, out: []u8) ![]const u8 {
+    if (entropy.len < 16 or entropy.len > 32 or entropy.len % 4 != 0) return error.UnsupportedEntropyLength;
+    // entropy ++ one checksum byte (its top `len/4` bits, ≤ 8, are the checksum).
+    var data: [33]u8 = undefined;
+    defer @memset(&data, 0);
+    @memcpy(data[0..entropy.len], entropy);
+    var digest: [32]u8 = undefined;
+    defer @memset(&digest, 0);
+    std.crypto.hash.sha2.Sha256.hash(entropy, &digest, .{});
+    data[entropy.len] = digest[0];
+    const word_count = (entropy.len * 8 + entropy.len / 4) / 11;
+    if (out.len < word_count * 9) return error.NoSpaceLeft;
+    return assemble(data[0 .. entropy.len + 1], word_count, out);
+}
+
 /// Pack `word_count` words from `data` (entropy followed by the checksum byte) by
 /// reading 11-bit groups MSB-first and joining the corresponding words with single
 /// spaces into `out`. Split out from `generate` so a known-entropy vector can test
@@ -432,6 +452,31 @@ test "assemble: canonical all-zero 128-bit entropy vector" {
         "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about",
         m,
     );
+}
+
+test "fromEntropy: spells the canonical vectors, and validates at every length" {
+    var out: [max_mnemonic_len]u8 = undefined;
+    const zeros = [_]u8{0} ** 32;
+    try std.testing.expectEqualStrings(
+        "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon art",
+        try fromEntropy(&zeros, &out),
+    );
+    try std.testing.expectEqualStrings(
+        "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about",
+        try fromEntropy(zeros[0..16], &out),
+    );
+    // BIP39 vector: 0x7f × 16.
+    const sevens = [_]u8{0x7f} ** 16;
+    try std.testing.expectEqualStrings(
+        "legal winner thank year wave sausage worth useful legal winner thank yellow",
+        try fromEntropy(&sevens, &out),
+    );
+    for ([_]usize{ 16, 20, 24, 28, 32 }) |n| {
+        const m = try fromEntropy(zeros[0..n], &out);
+        try validate(m);
+    }
+    try std.testing.expectError(error.UnsupportedEntropyLength, fromEntropy(zeros[0..15], &out));
+    try std.testing.expectError(error.UnsupportedEntropyLength, fromEntropy(zeros[0..18], &out));
 }
 
 test "generate: 24 words, distinct from a second draw, all in the wordlist" {

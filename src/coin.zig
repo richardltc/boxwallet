@@ -288,6 +288,44 @@ pub const Coin = struct {
         /// wired yet (Zano's restore-from-seed is interactive-only upstream, deferred
         /// for now). `supportsSeedRestore` keys off this.
         supports_seed_restore: bool = true,
+        /// Optional: read the wallet's recovery phrase back for the user to write
+        /// down — "Show recovery seed", the counterpart of `restore_seed` for a
+        /// user who didn't record the words at create time. `password` is asked
+        /// for again rather than reused from an unlock: an unattended unlocked
+        /// session must not hand out the seed. The implementation must check it
+        /// (a wrong one fails as `error.WrongPassword`). It may read the open
+        /// wallet over its RPC (`wallet_auth`) or decrypt the wallet file under
+        /// `home_dir` itself — see `show_seed_when_locked`. It never opens,
+        /// closes or relaunches the wallet. The result is the secret; the caller
+        /// wipes it.
+        show_seed: ?*const fn (
+            allocator: std.mem.Allocator,
+            wallet_auth: models.CoinAuth,
+            home_dir: []const u8,
+            password: []const u8,
+            detail: *WalletErrSink,
+        ) anyerror!models.Seed = null,
+        /// Optional: copy the managed wallet file to `dest_path` — "Back up wallet
+        /// file". The copy must be one `restore_file` accepts, so a backup always
+        /// has a way back in. Must not create or modify anything in the wallet's
+        /// own directory, and must refuse to overwrite an existing `dest_path`.
+        /// Works whether or not the wallet is open (it's a file copy, and the file
+        /// stays encrypted with the wallet password). `extwallet.backupFile` picks
+        /// the timestamped destination.
+        backup_file: ?*const fn (
+            allocator: std.mem.Allocator,
+            home_dir: []const u8,
+            dest_path: []const u8,
+            detail: *WalletErrSink,
+        ) anyerror!void = null,
+        /// Extension for the file `backup_file` writes (".seed"), so the backup
+        /// reads as what it is. Paired with `backup_file`.
+        backup_file_ext: []const u8 = "",
+        /// Whether `show_seed` works on a **locked** wallet too — true when it
+        /// reads the words from the wallet file with the password (Epic), rather
+        /// than asking the running wallet process, which exists only while it's
+        /// open. Decides whether the locked wallet's menu offers it.
+        show_seed_when_locked: bool = false,
     };
 
     /// An optional **sync accelerator** — a large, opt-in download that makes a
