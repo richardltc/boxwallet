@@ -200,6 +200,12 @@ int     bw_coin_supports_tokens(size_t idx);      /* 0/1 — shows the Tokens ta
 #define BW_EW_HAS_LISTENER   (1 << 6)
 int     bw_coin_ext_wallet(size_t idx);
 
+/* While a managed-wallet op runs (0 create, 1 restore from seed, 2 import file,
+ * 3 unlock, 4 lock): what to say it's doing, and — for a BW_EW_LAUNCH_WITH_PW
+ * wallet — why it takes a moment. The TUI's words. Return lengths; 0 = none. */
+size_t  bw_setup_op_progress(int op, char *buf, size_t cap);
+size_t  bw_setup_op_launch_note(int op, char *buf, size_t cap);
+
 /* What a BW_EW_HAS_LISTENER coin calls its listener on screen ("Epicbox
  * listener"). Returns its length; 0 for a coin without one. */
 size_t  bw_coin_listener_name(size_t idx, char *buf, size_t cap);

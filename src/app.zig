@@ -1636,6 +1636,11 @@ const Activity = struct {
     /// the UI tick, never while the setup worker holds `wallet_rpc`. UI-thread
     /// only.
     listener_state: extwallet.ListenerState = .none,
+    /// Just unlocked, and no poll has read the wallet since: the tabs say
+    /// "Loading…" rather than "No transactions yet". Set when an open/create/
+    /// restore succeeds, cleared by the first poll that reads the wallet (and
+    /// by a lock). UI-thread only.
+    ext_wallet_loading: bool = false,
     /// Whether a wallet file exists on disk (`externalWallet.exists`), refreshed
     /// on the UI thread. Drives the "no wallet / locked / open" pane hint and which
     /// setup flow `w` opens. UI-thread only.
@@ -1824,6 +1829,10 @@ const Activity = struct {
     /// read by the UI after observing it (acquire).
     poll_tx_buf: [tx_cache_cap]models.WalletTx = undefined,
     poll_tx_count: usize = 0,
+    /// Whether this poll could read the wallet at all (an external wallet has
+    /// to be open). Clears `ext_wallet_loading` once a pass that could has
+    /// landed. Published by the `poll_done` edge like the buffers around it.
+    poll_wallet_read: bool = false,
     /// The coin's cached stakes (Staking tab), newest-first, and its poll-staging
     /// counterpart. Same fixed-capacity, plain-buffer pattern as the transaction
     /// cache; only ever populated for a coin whose `supportsStakeList()` is true.
@@ -2814,6 +2823,7 @@ const Activity = struct {
     /// values in place rather than zeroing them on a transient blip.
     fn applyPoll(self: *Activity) bool {
         if (!self.poll_ok) return false;
+        if (self.poll_wallet_read) self.ext_wallet_loading = false;
         self.peers = self.poll_peers.load(.monotonic);
         self.staking = self.poll_staking.load(.monotonic) != 0;
         self.wallet = @enumFromInt(self.poll_wallet.load(.monotonic));
@@ -3365,6 +3375,7 @@ const Activity = struct {
         // RPC has no wallet to answer for). Bitcoin-family coins keep the
         // daemon's own auth.
         const wallet_rpc_ready = !self.coin.hasExternalWallet() or self.ext_wallet_open.load(.monotonic) != 0;
+        self.poll_wallet_read = wallet_rpc_ready;
         const wallet_rpc_auth = if (self.coin.hasExternalWallet()) self.extWalletAuth() else auth;
         if (self.coin.supportsTransactions() and wallet_rpc_ready) {
             if (self.coin.walletTransactions(a, wallet_rpc_auth, tx_cache_cap)) |txs| {
@@ -5689,6 +5700,8 @@ pub const App = struct {
                     // Lock closes the wallet; every other op leaves it open.
                     act.ext_wallet_open.store(if (op == .lock) 0 else 1, .monotonic);
                     if (op != .lock) act.ext_wallet_exists = true;
+                    // Open now; what's in it arrives with the next poll.
+                    act.ext_wallet_loading = op != .lock;
                     self.logf("{s}: {s} succeeded", .{ act.coin.coinName(), op.verb() });
                 } else if (detail.len > 0) {
                     // The daemon told us why — log its raw message alongside the
@@ -7957,6 +7970,7 @@ pub const App = struct {
     fn killWalletRpc(self: *App, act: *Activity) void {
         _ = self;
         act.ext_wallet_open.store(0, .monotonic);
+        act.ext_wallet_loading = false;
         extwallet.kill(&act.wallet_rpc);
     }
 
@@ -9169,6 +9183,8 @@ pub const App = struct {
     /// `act` fields — no RPC/disk IO in the render path.
     fn renderTransactionsTab(a: std.mem.Allocator, act: *const Activity, decimals: u8) ![]const u8 {
         if (act.tx_count == 0) {
+            // Just unlocked: the history is on its way, not empty.
+            if (act.ext_wallet_loading) return "Transactions\n\nLoading your transactions…";
             return "Transactions\n\nNo transactions yet.";
         }
 
@@ -9563,7 +9579,8 @@ pub const App = struct {
     /// `act` fields — no RPC/disk IO in the render path (the QR encode itself
     /// is pure computation on the already-cached address string).
     fn renderReceiveTab(a: std.mem.Allocator, act: *const Activity) ![]const u8 {
-        if (act.receive_addr_len == 0) return "Receive\n\nNo address yet.";
+        if (act.receive_addr_len == 0)
+            return if (act.ext_wallet_loading) "Receive\n\nFetching your address…" else "Receive\n\nNo address yet.";
         const addr = act.receive_addr_buf[0..act.receive_addr_len];
         const hint = (zz.Style{}).dim(true).render(a, "  (c: copy   n: new address)") catch "";
         const listener = try renderListenerLine(a, act);
@@ -10394,7 +10411,18 @@ pub const App = struct {
                 }
             },
             .setup_file => unreachable, // handled by the early return above
-            .working => try modalRow(&out.writer, vbar, inner_w, "Working…", zz.width("Working…")),
+            .working => if (coin.hasExternalWallet()) {
+                // Say what it's doing — "Unlocking the wallet…", not "Working…" —
+                // and for a wallet that starts its own service, why it takes a
+                // moment.
+                const busy = m.setup_op.progress();
+                try modalRow(&out.writer, vbar, inner_w, busy, zz.width(busy));
+                const note = if (coin.walletLaunchesWithPassword()) m.setup_op.launchNote() else "";
+                if (note.len > 0) {
+                    try modalRow(&out.writer, vbar, inner_w, "", 0);
+                    try wrapIntoRows(a, &out.writer, vbar, inner_w, note, (zz.Style{}).dim(true));
+                }
+            } else try modalRow(&out.writer, vbar, inner_w, "Working…", zz.width("Working…")),
             .result => {
                 const sty = (zz.Style{}).fg(if (m.ok) .green else .red);
                 try wrapIntoRows(a, &out.writer, vbar, inner_w, m.msg_buf[0..m.msg_len], sty);
@@ -12918,6 +12946,28 @@ test "renderSendModal states the quoted fee and total, and the coin's own sent l
     box = try app.renderSendModal(a);
     try std.testing.expect(std.mem.indexOf(u8, box, "waiting for the receiver") != null);
     try std.testing.expect(std.mem.indexOf(u8, box, "Txid") == null);
+}
+
+test "just unlocked, the tabs say they're loading until a poll has read the wallet" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    var act: Activity = .{};
+    act.ext_wallet_loading = true;
+    try std.testing.expect(std.mem.indexOf(u8, try App.renderTransactionsTab(a, &act, 8), "Loading your transactions") != null);
+    try std.testing.expect(std.mem.indexOf(u8, try App.renderReceiveTab(a, &act), "Fetching your address") != null);
+
+    // A poll that couldn't read the wallet (it started before the unlock) leaves
+    // it loading; the first one that could clears it.
+    act.poll_ok = true;
+    act.poll_wallet_read = false;
+    _ = act.applyPoll();
+    try std.testing.expect(act.ext_wallet_loading);
+    act.poll_wallet_read = true;
+    _ = act.applyPoll();
+    try std.testing.expect(!act.ext_wallet_loading);
+    try std.testing.expect(std.mem.indexOf(u8, try App.renderTransactionsTab(a, &act, 8), "No transactions yet") != null);
 }
 
 test "the Transactions tab says where an unfinished send is, and offers x only when it can be cancelled" {

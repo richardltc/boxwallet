@@ -350,6 +350,31 @@ pub const SetupOp = enum(u8) {
     /// runs, e.g. Ergo; the process-backed coins lock by killing their process).
     lock = 4,
 
+    /// What's happening while the op runs — the in-flight line, one wording for
+    /// both front-ends. Says *unlocking* for `open`: that's what the user asked
+    /// for, and what the rest of the UI waits on.
+    pub fn progress(self: SetupOp) []const u8 {
+        return switch (self) {
+            .create => "Creating the wallet…",
+            .restore_seed => "Restoring from your seed words…",
+            .restore_file => "Importing the wallet file…",
+            .open => "Unlocking the wallet…",
+            .lock => "Locking the wallet…",
+        };
+    }
+
+    /// The line under `progress` for a wallet whose service is started for each
+    /// op (`Coin.walletLaunchesWithPassword` — Epic, Zano): why it isn't
+    /// instant, so a spinner doesn't read as a hang. Empty where there's nothing
+    /// to wait on.
+    pub fn launchNote(self: SetupOp) []const u8 {
+        return switch (self) {
+            .restore_seed => "This scans the chain for your existing funds and can take several minutes. Leave it running.",
+            .lock => "",
+            else => "The wallet service is starting — this can take a moment.",
+        };
+    }
+
     pub fn verb(self: SetupOp) []const u8 {
         return switch (self) {
             .create => "Create wallet",
@@ -424,6 +449,14 @@ pub fn choicesFor(coin: Coin, buf: *[max_choices]SetupChoice) usize {
         n += 1;
     }
     return n;
+}
+
+test "the in-flight line says what the op is doing, unlocking included" {
+    try std.testing.expectEqualStrings("Unlocking the wallet…", SetupOp.open.progress());
+    for (std.enums.values(SetupOp)) |o| try std.testing.expect(o.progress().len > 0);
+    // A restore warns it's minutes; a lock has nothing to wait on.
+    try std.testing.expect(std.mem.indexOf(u8, SetupOp.restore_seed.launchNote(), "several minutes") != null);
+    try std.testing.expectEqual(@as(usize, 0), SetupOp.lock.launchNote().len);
 }
 
 test "an unknown wallet state offers nothing that depends on the daemon" {

@@ -1004,6 +1004,7 @@ static void apply_coin_metadata(const AppWindow *ui, bw_ctx *ctx, int idx)
     ui->set_has_send_fee(bw_coin_supports_send_fee(idx) != 0);
     ui->set_has_cancel_tx(bw_coin_supports_cancel_tx(idx) != 0);
     ui->set_tx_action_result(ss(""));
+    ui->set_wallet_loading(false);
     // Staking — an explicit, term-locking stake transaction (Salvium), shown
     // beside Send. The hint is the coin's own words for what the lock commits
     // to; it rides along here because it's metadata, and the confirm step must
@@ -1768,6 +1769,12 @@ int main(int argc, char **argv)
                 }
                 return;
             }
+            // Unlocked as of now — say so at once rather than when the next
+            // status pass comes back, which for a wallet reading from a remote
+            // node can be several seconds. Its balance and history are still on
+            // their way: the tabs say "Loading…" until the first read lands.
+            (*h)->set_wallet_state(BW_WALLET_OPEN);
+            (*h)->set_wallet_loading(true);
             if (op == 0 && !seed.empty()) {
                 (*h)->set_verify_pos_1(p1);
                 (*h)->set_verify_pos_2(p2);
@@ -3164,6 +3171,15 @@ int main(int argc, char **argv)
         std::vector<uint8_t> pw_bytes = to_secret_bytes(pw);
         std::vector<uint8_t> seed_bytes = to_secret_bytes(seed);
         std::string path{std::string_view(file)};
+        // What the in-flight stage says: the core's words for this op.
+        if (auto h = weak.lock()) {
+            const int shown = (op >= 0 && op <= 2) ? op : 3; // the worker's default is unlock
+            char pb[96], nb[160];
+            size_t pn = bw_setup_op_progress(shown, pb, sizeof pb);
+            size_t nn = bw_setup_op_launch_note(shown, nb, sizeof nb);
+            (*h)->set_wallet_progress_text(ss(std::string(pb, pn)));
+            (*h)->set_wallet_progress_note(ss(std::string(nb, nn)));
+        }
 
         std::thread([weak, ctx, coin, op, wake_poll, finish_wallet_op,
                      pw_bytes = std::move(pw_bytes),
@@ -4126,7 +4142,7 @@ int main(int argc, char **argv)
                         sc_active, sc_status, sc_balance, sc_pending, sc_price, sc_supply,
                         sc_health, sc_countdown, sc_addr, sc_price_stale, sc_minting_blocked,
                         sc_vaults, sc_txs, sc_redeemable, sc_vault_ids, sc_vault_cents,
-                        ms, hashrate, ew_flags, wallet_state, bal, have_balance,
+                        ms, hashrate, ew_flags, wallet_state, reads_ok, ctx, bal, have_balance,
                         rp, rescanning, txs, stakes, recv_addr, listener_text, listener_ok,
                         decimals, wallet_svc_err, can_send,
                         rpc_ok, busy, stopping, remote_node, coin, tokens, tokens_locked]() {
@@ -4174,12 +4190,26 @@ int main(int argc, char **argv)
                         bw_wallet_menu(coin, wallet_sec, acts, sizeof acts)));
                 }
                 (*h)->set_ew_flags(ew_flags);
-                (*h)->set_wallet_state(wallet_state);
+                // A managed wallet can be unlocked (or locked) while this pass
+                // was out reading. Its open flag is live and cheap to ask, so ask
+                // again: a pass that started before an unlock mustn't put
+                // "Unlock your wallet" back up after the unlock said it was done,
+                // and what it read of a locked wallet — nothing — mustn't blank
+                // the tabs either.
+                const int live_state = (ew_flags != 0) ? bw_ext_wallet_state(ctx, coin) : wallet_state;
+                const bool stale = ew_flags != 0 && wallet_state < BW_WALLET_OPEN &&
+                                   live_state >= BW_WALLET_OPEN;
+                (*h)->set_wallet_state(
+                    live_state < BW_WALLET_OPEN ? live_state
+                    : wallet_state >= BW_WALLET_OPEN ? wallet_state  // keeps RESCAN
+                                                     : live_state);
+                if (live_state < BW_WALLET_OPEN || (!busy && !stale && reads_ok))
+                    (*h)->set_wallet_loading(false);
                 // Everything below came from a wallet read, so on a busy tick
                 // there is nothing new to say and the last values stand. Writing
                 // them anyway would blank the balance to "—" and empty the
                 // transaction list every time the node stalled.
-                if (!busy) {
+                if (!busy && !stale) {
                     (*h)->set_can_send(can_send);
                     (*h)->set_balance_total(ss(
                         have_balance ? format_amount(bal.total, decimals) : std::string("—")));
