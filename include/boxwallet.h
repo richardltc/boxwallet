@@ -955,6 +955,10 @@ size_t  bw_local_node_note(char *buf, size_t cap);
 /* What a node address looks like — show it UNDER THE FIELD, always, not only
  * after a mistake. Cheap; UI-thread safe. */
 size_t  bw_coin_node_address_example(size_t idx, char *buf, size_t cap);
+/* For a remote node that ISN'T ANSWERING: the fix to suggest, given its
+ * address (bw_coin_node_source) — for a plain http:// one, to try https://.
+ * 0 when there's nothing to add. Cheap; UI-thread safe. */
+size_t  bw_remote_node_hint(const char *url, char *buf, size_t cap);
 
 /* ---- the payment relay: Epic's Epicbox server ---------------------------------
  * Where the wallet's listener collects payments from. Only Epic offers the
@@ -968,7 +972,9 @@ size_t  bw_coin_node_address_example(size_t idx, char *buf, size_t cap);
  * bw_coin_relay_source writes the relay in use, or NOTHING (0) for the standard
  * one. bw_coin_set_relay_source chooses one; empty/NULL = the standard one.
  * Returns 0, or -1 with bw_last_error set — code "InvalidRelayAddress" means the
- * address itself was refused, which belongs on the field. Both touch disk:
+ * address itself was refused, and "InsecureRelayAddress" that it was a plain
+ * http:// or ws:// one (only secure servers are used); both belong on the
+ * field. https:// and wss:// are both accepted. Both touch disk:
  * worker thread. AFTER A SUCCESSFUL SET re-read the source and stop the wallet
  * service (bw_ext_wallet_service_stop) — its listener is still on the old relay;
  * unlocking again starts it on the new one. */

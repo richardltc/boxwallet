@@ -1175,6 +1175,9 @@ const NodeModal = struct {
     sel: u8 = 0,
     /// Set when the typed address didn't normalize, so the field can flag it.
     bad_input: bool = false,
+    /// With `bad_input`: the address was refused for being plain-text
+    /// (`http://`/`ws://` for a relay), which gets its own reason.
+    bad_insecure: bool = false,
     /// What's configured right now — empty for our own daemon — so the menu can
     /// show which row is live and prefill the field with the current address
     /// rather than making the user retype it to change a port.
@@ -7720,8 +7723,9 @@ pub const App = struct {
         const ew = coin.externalWallet().?;
 
         ew.set_relay_source.?(self.allocator, self.install_root, self.home_dir, value) catch |err| {
-            if (err == error.InvalidRelayAddress and m.stage == .address) {
+            if ((err == error.InvalidRelayAddress or err == error.InsecureRelayAddress) and m.stage == .address) {
                 m.bad_input = true;
+                m.bad_insecure = err == error.InsecureRelayAddress;
                 return;
             }
             self.node_modal = null;
@@ -7807,7 +7811,9 @@ pub const App = struct {
                 else
                     coin.nodeAddressExample();
                 if (m.bad_input) {
-                    const warn = if (m.kind == .relay)
+                    const warn = if (m.kind == .relay and m.bad_insecure)
+                        "Only secure servers work here — enter the address without http:// or ws://."
+                    else if (m.kind == .relay)
                         "Not a server this wallet can use — letters, digits and dots, then an optional :port."
                     else
                         "Not an address this wallet can use.";
@@ -8859,7 +8865,14 @@ pub const App = struct {
             // stops — the spinner says so, rather than a cross that reads as
             // "given up". Our own daemon only animates before the first poll;
             // after that a stopped daemon is genuinely just stopped.
-            .stopped => if (awaiting or !act.usesLocalDaemon())
+            .stopped => if (!act.usesLocalDaemon() and !awaiting) blk: {
+                // Still trying — and when the address is plain http, the likely
+                // fix, since an https-only node never answers it.
+                const spin = act.daemon_spinner.view(a) catch "…";
+                const hint = status_mod.remoteNodeHint(act.nodeUrl());
+                if (hint.len == 0) break :blk spin;
+                break :blk std.fmt.allocPrint(a, "{s} {s}", .{ spin, (zz.Style{}).fg(.yellow).render(a, hint) catch hint }) catch spin;
+            } else if (awaiting or !act.usesLocalDaemon())
                 act.daemon_spinner.view(a) catch "…"
             else
                 statusMark(a, false),
@@ -9250,9 +9263,14 @@ pub const App = struct {
                 (zz.Style{}).dim(true).render(a, "this machine's own node") catch "this machine's own node"
             else
                 (zz.Style{}).dim(true).render(a, url) catch url;
-            break :blk std.fmt.allocPrint(a, "\n{s}: {s}{s}", .{
+            const unreachable_hint = if (url.len != 0 and act.daemonState() != .running and !act.awaitingStatus())
+                status_mod.remoteNodeHint(url)
+            else
+                "";
+            break :blk std.fmt.allocPrint(a, "\n{s}: {s}{s}{s}", .{
                 node_label,
                 node_value,
+                if (unreachable_hint.len > 0) dimNote(a, unreachable_hint) else "",
                 dimNote(a, "n: choose where the chain comes from"),
             }) catch "";
         } else "";
@@ -15543,6 +15561,13 @@ test "the node prompt draws both stages, and says what each choice costs" {
         const box = try app.renderNodeModal(a);
         try std.testing.expect(std.mem.indexOf(u8, box, "Server address:") != null);
         try std.testing.expect(std.mem.indexOf(u8, box, "relay.example.com:8443") != null);
+    }
+    // A plain-text server is refused with the reason, not a generic "invalid".
+    app.node_modal.?.bad_input = true;
+    app.node_modal.?.bad_insecure = true;
+    {
+        const box = try app.renderNodeModal(a);
+        try std.testing.expect(std.mem.indexOf(u8, box, "Only secure servers") != null);
     }
 }
 

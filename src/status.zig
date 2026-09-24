@@ -128,6 +128,18 @@ pub fn inHeadersPhase(in: Input) bool {
     return in.headers_cur + header_tip_slack < in.headers_total;
 }
 
+/// The one thing worth saying when a remote node won't answer and its address
+/// is plain `http://` — which is also what an address typed without a scheme
+/// becomes. A node that only serves https (Epic's community node does) never
+/// answers plain HTTP, and nothing on screen would otherwise hint at the fix.
+/// BoxWallet doesn't quietly retry over https itself: that would be talking to
+/// the node in a way the user didn't ask for. Empty when there's nothing to add.
+/// Shared so both front-ends say it the same way.
+pub fn remoteNodeHint(url: []const u8) []const u8 {
+    if (!std.ascii.startsWithIgnoreCase(url, "http://")) return "";
+    return "If this node uses https, add https:// to the front of its address in Settings.";
+}
+
 /// Resolve a coin's current status. Priority, highest first: installing →
 /// not installed → starting/stopping → checking → warm-up phase → waiting for
 /// peers → syncing → synced; "Idle" when installed but off.
@@ -608,4 +620,10 @@ test "a remote coin still reports installing and not-installed" {
 
     const missing: Input = .{ .remote_node = true, .installed = false };
     try std.testing.expectEqualStrings("Not installed", readout(missing).text);
+}
+
+test "the https hint is for plain-http remote nodes only" {
+    try std.testing.expect(remoteNodeHint("http://node.example:3413").len > 0);
+    try std.testing.expectEqual(@as(usize, 0), remoteNodeHint("https://node.epiccash.com:3413").len);
+    try std.testing.expectEqual(@as(usize, 0), remoteNodeHint("").len);
 }

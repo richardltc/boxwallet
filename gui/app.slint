@@ -1505,6 +1505,9 @@ export component AppWindow inherits Window {
     // What a node address looks like (bw_coin_node_address_example), shown
     // under the field at all times — not only once a guess has been refused.
     in property <string> node-example: "";
+    // For a remote node that won't answer: the likely fix (bw_remote_node_hint —
+    // for a plain http:// address, try https://). Empty when there's none.
+    in property <string> node-hint: "";
     // The dialog serves two settings of the same shape: 0 the node, 1 the
     // payment relay (Epic's Epicbox server). Row 0 is the standard choice in both.
     in-out property <int> node-kind: 0;
@@ -2806,7 +2809,8 @@ export component AppWindow inherits Window {
                             // for*, so "Waiting for peers…" named the wrong thing
                             // to be waiting on for the whole load.
                             hint: root.remote-node
-                                ? (root.running ? "Reading the chain from " + root.node-url : "No chain until the node answers")
+                                ? (root.running ? "Reading the chain from " + root.node-url
+                                    : "No chain until the node answers" + (root.node-hint != "" ? ". " + root.node-hint : ""))
                                 : (!root.running ? "Not running"
                                 : root.daemon-loading ? (root.daemon-stage != "" ? root.daemon-stage : "Daemon loading…")
                                 : root.synced ? "Synced"
@@ -3784,6 +3788,16 @@ export component AppWindow inherits Window {
                             value: root.node-url != ""
                                 ? root.node-url
                                 : "this machine's own node";
+                        }
+                        // Only while it isn't answering — that's when it helps.
+                        if root.node-choice-supported && root.remote-node && !root.running && root.node-hint != "": HorizontalLayout {
+                            padding-left: 98px;
+                            Text {
+                                text: root.node-hint;
+                                color: #d9b36c;
+                                font-size: 12px;
+                                wrap: word-wrap;
+                            }
                         }
                         if root.node-choice-supported: HorizontalLayout {
                             alignment: start;

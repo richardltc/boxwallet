@@ -532,7 +532,7 @@ pub const Epic = struct {
     const relay_max = Coin.relay_max;
 
     /// Shown under the server field so nobody has to guess the shape.
-    pub const relay_example = "e.g. epicbox.epiccash.com, or relay.example.com:8443 (port 443 is assumed)";
+    pub const relay_example = "e.g. epicbox.epiccash.com, or relay.example.com:8443 (port 443 is assumed; https:// is fine)";
     /// What changing the server means, shown beside that choice.
     pub const relay_note =
         "Payments to you are collected from this server, so your Epicbox address " ++
@@ -542,14 +542,24 @@ pub const Epic = struct {
     /// Normalize a user-supplied Epicbox server into `host` (port 443) or
     /// `host:port`, written into `out`. Pure.
     ///
-    /// Accepts an optional `wss://`; refuses `ws://` and every other scheme
-    /// (see above). The host is letters, digits and dots only — the grammar
+    /// Accepts an optional `wss://` or `https://` — people paste a web link far
+    /// more often than a websocket one, and both mean the secure connection
+    /// Epicbox always uses. `ws://` and `http://` are refused with
+    /// `error.InsecureRelayAddress` (see above), so the user is told *why*;
+    /// any other scheme is `error.InvalidRelayAddress`. The host is letters,
+    /// digits and dots only — the grammar
     /// epic-wallet's own address regex allows after the `@`, so a server
     /// outside it would hand out an address no Epic wallet can send to. The
     /// port must be a non-zero number. Lower-cased, since DNS is.
     pub fn normalizeRelay(raw: []const u8, out: []u8) ![]const u8 {
         var rest = std.mem.trim(u8, raw, " \t\r\n");
-        if (std.ascii.startsWithIgnoreCase(rest, "wss://")) rest = rest["wss://".len..];
+        if (std.ascii.startsWithIgnoreCase(rest, "wss://")) {
+            rest = rest["wss://".len..];
+        } else if (std.ascii.startsWithIgnoreCase(rest, "https://")) {
+            rest = rest["https://".len..];
+        } else if (std.ascii.startsWithIgnoreCase(rest, "ws://") or std.ascii.startsWithIgnoreCase(rest, "http://")) {
+            return error.InsecureRelayAddress;
+        }
         if (std.mem.indexOf(u8, rest, "://") != null) return error.InvalidRelayAddress;
         if (rest.len > 0 and rest[rest.len - 1] == '/') rest = rest[0 .. rest.len - 1];
 
@@ -649,7 +659,8 @@ pub const Epic = struct {
     /// Choose the Epicbox server. Empty `value` means Epic's standard server:
     /// the stored choice is cleared and `[epicbox]` written back to the
     /// default now, since that's what was asked for. Anything else must
-    /// normalize (`error.InvalidRelayAddress`) and is stored, then written into
+    /// normalize (`error.InvalidRelayAddress`, or `error.InsecureRelayAddress`
+    /// for a plain-text one) and is stored, then written into
     /// the wallet config — and again on every launch. The wallet process reads
     /// its config at start-up, so the caller restarts it for this to apply.
     pub fn setRelaySource(allocator: std.mem.Allocator, install_root: []const u8, home: []const u8, value: []const u8) !void {
@@ -5173,10 +5184,15 @@ test "normalizeRelay takes a host or host:port, secure only, in epic-wallet's ad
     // Port 443 is the default, so it's dropped; any other is kept.
     try std.testing.expectEqualStrings("epicbox.epiccash.com", try Epic.normalizeRelay("  wss://EpicBox.EpicCash.com:443/ ", &buf));
     try std.testing.expectEqualStrings("relay.example.com:8443", try Epic.normalizeRelay("relay.example.com:8443", &buf));
+    // A pasted web link means the same secure server.
+    try std.testing.expectEqualStrings("epicbox.epiccash.com", try Epic.normalizeRelay("https://epicbox.epiccash.com/", &buf));
+    try std.testing.expectEqualStrings("relay.example.com:8443", try Epic.normalizeRelay("HTTPS://relay.example.com:8443", &buf));
+    // Plain-text ones get their own reason: slates would travel in the clear.
+    try std.testing.expectError(error.InsecureRelayAddress, Epic.normalizeRelay("ws://relay.example.com", &buf));
+    try std.testing.expectError(error.InsecureRelayAddress, Epic.normalizeRelay("http://relay.example.com", &buf));
     const bad = [_][]const u8{
         "",
-        "ws://relay.example.com", // slates in the clear
-        "https://relay.example.com",
+        "ftp://relay.example.com",
         "my-relay.example.com", // epic-wallet's address regex has no '-'
         "relay.example.com:0",
         "relay.example.com:99999",
@@ -5253,7 +5269,7 @@ test "a chosen Epicbox server survives the config being regenerated; the standar
     }
 
     // A refused address changes nothing.
-    try std.testing.expectError(error.InvalidRelayAddress, Epic.setRelaySource(a, root, home, "ws://plain.example"));
+    try std.testing.expectError(error.InsecureRelayAddress, Epic.setRelaySource(a, root, home, "ws://plain.example"));
     try std.testing.expectEqualStrings("relay.example.com:8443", Epic.relaySource(a, root, home, &buf));
 
     // Back to the standard server: written into the config, not just forgotten.

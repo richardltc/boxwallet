@@ -4748,6 +4748,15 @@ export fn bw_local_node_note(buf: ?[*]u8, cap: usize) usize {
     return copyOut(b[0..cap], Coin.local_node_note);
 }
 
+/// What to suggest when the remote node at `url` isn't answering: for a plain
+/// `http://` address, to try `https://`. 0 when there's nothing to add. Show
+/// it only while the node is unreachable. Cheap; UI-thread safe.
+export fn bw_remote_node_hint(url: ?[*:0]const u8, buf: ?[*]u8, cap: usize) usize {
+    const b = buf orelse return 0;
+    const u = url orelse return 0;
+    return copyOut(b[0..cap], status_mod.remoteNodeHint(std.mem.span(u)));
+}
+
 /// What a node address looks like, for a hint under the address field — shown
 /// always, not only after a mistake. 0 for a coin without the node choice.
 /// Cheap; UI-thread safe.
@@ -6849,4 +6858,12 @@ test "the suggested node crosses the ABI, and stays a suggestion" {
     // A coin with no suggestion says so rather than borrowing someone's.
     const nexa = testCoinIndex("NEXA") orelse return error.SkipZigTest;
     try std.testing.expectEqual(@as(usize, 0), bw_coin_default_remote_node(nexa, &buf, buf.len));
+}
+
+test "bw_remote_node_hint suggests https only for a plain-http node" {
+    var buf: [256]u8 = undefined;
+    const n = bw_remote_node_hint("http://node.example:3413", &buf, buf.len);
+    try std.testing.expect(std.mem.indexOf(u8, buf[0..n], "https://") != null);
+    try std.testing.expectEqual(@as(usize, 0), bw_remote_node_hint("https://node.epiccash.com:3413", &buf, buf.len));
+    try std.testing.expectEqual(@as(usize, 0), bw_remote_node_hint(null, &buf, buf.len));
 }
