@@ -1539,6 +1539,14 @@ export component AppWindow inherits Window {
     // on its command line; the core hasn't wired that lifecycle for this
     // front-end, so every op returns Unsupported and the menu says so instead.
     in property <bool> wallet-launch-with-pw: false;
+    // BW_EW_SHOW_SEED / BW_EW_FILE_BACKUP, decoded in C++ for the same reason.
+    // They're what an *open* wallet's menu has to offer, so they also decide
+    // whether the wallet button stays live once it's unlocked.
+    in property <bool> wallet-can-show-seed: false;
+    in property <bool> wallet-can-backup-file: false;
+    // BW_EW_SHOW_SEED_LOCKED: the seed comes from the wallet file, so it can be
+    // shown before unlocking too (Epic).
+    in property <bool> wallet-show-seed-locked: false;
     // What this coin has to show at all (the bw_coin_supports_* reads) — about the
     // *coin*, not about the wallet's current state, so they gate which tabs exist
     // rather than what's in them. Epic answers false to receive/send: a
@@ -1684,9 +1692,10 @@ export component AppWindow inherits Window {
     //   5 file     6 working  7 seed-show 8 seed-verify       9 replace-confirm
     //  10 result
     in-out property <int> wallet-stage: 0;
-    // 0 create, 1 restore-seed, 2 restore-file, 3 open, 4 lock.
+    // 0 create, 1 restore-seed, 2 restore-file, 3 open, 4 lock, 5 show seed,
+    // 6 back up file.
     in-out property <int> wallet-op: 0;
-    // The created wallet's mnemonic. THE ONLY property it ever lives in, and only
+    // The created (or re-shown) wallet's mnemonic. THE ONLY property it ever lives in, and only
     // while stages 7–8 are up — every exit path below clears it. See the secrets
     // contract in include/boxwallet.h for what that does and doesn't guarantee.
     in-out property <string> wallet-seed-words: "";
@@ -1705,6 +1714,8 @@ export component AppWindow inherits Window {
     callback wallet-setup(int, string, string, string);
     callback wallet-lock();
     callback wallet-replace();
+    // Copy the wallet file to a timestamped backup (bw_ext_wallet_backup_file).
+    callback wallet-backup-file();
     // Answer for the backup quiz: is `answer` the word at seed position `pos`?
     callback verify-word(int, string) -> bool;
     callback seed-discard();
@@ -3274,16 +3285,34 @@ export component AppWindow inherits Window {
                                     root.wallet-menu-open();
                                 }
                             }
-                            // A coin with a *managed* wallet (Nerva): one button into
-                            // the setup modal, which offers create / restore / unlock
-                            // / replace depending on what's actually on disk. Needs a
-                            // running daemon — the wallet service talks to it.
+                            // A coin with a *managed* wallet (Nerva, Epic): one button
+                            // into the setup modal, which offers create / restore /
+                            // unlock / back up / replace depending on what's actually
+                            // on disk. Needs a running daemon — the wallet service
+                            // talks to it.
+                            //
+                            // Always "Wallet…", like the in-daemon button above: it
+                            // opens a menu, so naming it after one row of that menu
+                            // ("Unlock wallet") asked the same question twice. The
+                            // state it used to spell out is on the padlock glyph and
+                            // the modal's first line.
                             if root.ew-flags != 0: Button {
-                                text: root.wallet-state >= 2 ? "Wallet unlocked" : (root.wallet-state == 1 ? "Unlock wallet" : "Set up wallet");
-                                enabled: root.running && root.wallet-state < 2 && root.wallet-stage == 0;
+                                // BW_EW_REPLACE, the one open-wallet row not decoded
+                                // in C++.
+                                property <bool> can-replace: Math.mod(Math.floor(root.ew-flags / 8), 2) == 1;
+                                // What stage 1 lists for an open wallet. Greyed only
+                                // when that's nothing, as the in-daemon button greys
+                                // on an empty menu.
+                                property <bool> open-has-menu: root.wallet-can-show-seed || root.wallet-can-backup-file || self.can-replace;
+                                // A locked wallet whose menu would hold Unlock alone
+                                // skips it for the password, as the TUI does.
+                                property <bool> unlock-only: root.wallet-state == 1 && !root.wallet-can-backup-file && !self.can-replace
+                                    && !(root.wallet-can-show-seed && root.wallet-show-seed-locked);
+                                text: "Wallet\u{2026}";
+                                enabled: root.running && root.wallet-stage == 0 && (root.wallet-state < 2 || self.open-has-menu);
                                 clicked => {
                                     root.wallet-op = root.wallet-state == 0 ? 0 : 3;
-                                    root.wallet-stage = 1;
+                                    root.wallet-stage = self.unlock-only ? 2 : 1;
                                 }
                             }
                         }
@@ -4942,14 +4971,32 @@ export component AppWindow inherits Window {
                         Text {
                             text: root.wallet-state == 0
                                 ? "There's no wallet for this coin yet."
-                                : "This wallet is locked.";
+                                : root.wallet-state == 1 ? "This wallet is locked."
+                                : "This wallet is unlocked.";
                             color: #9a9a9a;
                             font-size: 13px;
                             wrap: word-wrap;
                         }
-                        if root.wallet-state != 0: Button {
+                        if root.wallet-state == 1: Button {
                             text: "Unlock this wallet";
                             clicked => { root.wallet-op = 3; root.wallet-stage = 2; }
+                        }
+                        // BW_EW_SHOW_SEED — against a freshly typed password
+                        // (stage 2), never the unlock's. Open wallets only, unless
+                        // the coin reads it from the file (BW_EW_SHOW_SEED_LOCKED).
+                        if root.wallet-can-show-seed && (root.wallet-state >= 2 || (root.wallet-state == 1 && root.wallet-show-seed-locked)): Button {
+                            text: "Show recovery seed";
+                            clicked => { root.wallet-op = 5; root.wallet-stage = 2; }
+                        }
+                        // BW_EW_FILE_BACKUP — a copy of the still-encrypted file,
+                        // so it needs no password and works locked or open.
+                        if root.wallet-state != 0 && root.wallet-can-backup-file: Button {
+                            text: "Back up wallet file";
+                            clicked => {
+                                root.wallet-op = 6;
+                                root.wallet-stage = 6;
+                                root.wallet-backup-file();
+                            }
                         }
                         if root.wallet-state == 0: Button {
                             text: "Create a new wallet";
@@ -4976,9 +5023,14 @@ export component AppWindow inherits Window {
                     if root.wallet-stage == 2: VerticalLayout {
                         spacing: 8px;
                         Text {
-                            text: "Password for this wallet";
+                            // Asked again for the seed even though the wallet is
+                            // open — say why, or it reads as the unlock failing.
+                            text: root.wallet-op == 5
+                                ? "Enter the wallet password to show its recovery seed."
+                                : "Password for this wallet";
                             color: #9a9a9a;
                             font-size: 13px;
+                            wrap: word-wrap;
                         }
                         open-pw := LineEdit {
                             placeholder-text: "Password";
@@ -4991,7 +5043,7 @@ export component AppWindow inherits Window {
                             }
                         }
                         Button {
-                            text: root.wallet-op == 2 ? "Import" : "Unlock";
+                            text: root.wallet-op == 2 ? "Import" : root.wallet-op == 5 ? "Show seed" : "Unlock";
                             clicked => {
                                 root.wallet-setup(root.wallet-op, open-pw.text, "", root.picked-file);
                                 open-pw.text = "";
@@ -5167,7 +5219,9 @@ export component AppWindow inherits Window {
                             }
                         }
                         Text {
-                            text: "Anyone with these words can spend your funds. They are shown once.";
+                            text: root.wallet-op == 5
+                                ? "Anyone with these words can spend your funds. Never share them."
+                                : "Anyone with these words can spend your funds. They are shown once.";
                             color: #e05c5c;
                             font-size: 11px;
                             wrap: word-wrap;
@@ -5208,7 +5262,9 @@ export component AppWindow inherits Window {
                                         // Verified: the words go now, not later.
                                         root.wallet-seed-words = "";
                                         root.wallet-verify-step = 0;
-                                        root.wallet-result = "Backup verified \u{2014} your wallet is ready.";
+                                        root.wallet-result = root.wallet-op == 5
+                                            ? "Backup verified."
+                                            : "Backup verified \u{2014} your wallet is ready.";
                                         root.wallet-result-error = false;
                                         root.wallet-stage = 10;
                                     } else {

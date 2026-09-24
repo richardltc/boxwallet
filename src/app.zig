@@ -692,7 +692,8 @@ const Modal = struct {
     /// Whether the finished action succeeded (tints the result line).
     ok: bool = false,
     /// Outcome text shown in the `result` stage (fixed buffer — no allocation).
-    msg_buf: [200]u8 = undefined,
+    /// Sized for a backup's full path plus the sentence around it.
+    msg_buf: [400]u8 = undefined,
     msg_len: usize = 0,
 
     // --- external-wallet (setup) flow --------------------------------------
@@ -2775,6 +2776,26 @@ const Activity = struct {
         const pw = self.wallet_pw_buf[0..self.wallet_pw_len];
         const detail = &self.wallet_setup_sink;
 
+        // The backups use the wallet as it stands — whatever its shape, nothing
+        // is relaunched, so they're settled before the setup paths below (which
+        // start by treating the wallet as closed).
+        switch (self.wallet_setup_op) {
+            .show_seed => {
+                self.wallet_setup_seed = try extwallet.showSeed(&self.wallet_rpc, self.coin, a, self.home_dir, pw, detail);
+                return;
+            },
+            .backup_file => {
+                var threaded: std.Io.Threaded = .init(a, .{});
+                defer threaded.deinit();
+                // The path it went to comes back in `wallet_file_buf`, for the
+                // result line to name.
+                const path = try extwallet.backupFile(self.coin, a, threaded.io(), self.install_root, self.home_dir, &self.wallet_file_buf, detail);
+                self.wallet_file_len = path.len;
+                return;
+            },
+            else => {},
+        }
+
         // Launch-with-password wallets (Zano `simplewallet`, Epic's
         // `epic-wallet owner_api`): the RPC server serves only the wallet handed
         // to it at startup, so the whole op — materialize, launch, open — runs
@@ -2806,6 +2827,7 @@ const Activity = struct {
             .restore_file => try (ew.restore_file orelse return error.Unsupported)(a, auth, self.home_dir, self.wallet_file_buf[0..self.wallet_file_len], pw, detail),
             .open => try ew.open(a, auth, pw, detail),
             .lock => try (ew.lock orelse return error.Unsupported)(a, auth, detail),
+            .show_seed, .backup_file => unreachable, // handled above
         }
     }
 
@@ -4742,6 +4764,20 @@ pub const App = struct {
                             m.setup_op = .lock;
                             self.submitWalletSetup();
                         },
+                        // The seed is only shown against a freshly typed
+                        // password — an unlocked session left unattended must
+                        // not hand it out.
+                        .show_seed => {
+                            m.setup_op = .show_seed;
+                            m.stage = .setup_password;
+                            self.pw_input.setValue("") catch {};
+                            self.pw_input.focus();
+                        },
+                        // A copy of the still-encrypted file: no password needed.
+                        .backup_file => {
+                            m.setup_op = .backup_file;
+                            self.submitWalletSetup();
+                        },
                         .replace => {
                             m.replace_bad = false;
                             m.stage = .setup_replace_confirm;
@@ -4903,7 +4939,7 @@ pub const App = struct {
                         m.verify_bad = false;
                         if (m.verify_step + 1 >= 3) {
                             self.seed_input.blur();
-                            m.setMsg(true, "Backup verified — your wallet is ready.");
+                            m.setMsg(true, if (m.setup_op == .show_seed) "Backup verified." else "Backup verified — your wallet is ready.");
                         } else {
                             m.verify_step += 1;
                         }
@@ -5693,15 +5729,27 @@ pub const App = struct {
                 act.wallet_pw_len = 0;
                 @memset(&act.wallet_seed_buf, 0);
                 act.wallet_seed_len = 0;
+                // A file backup reports where it went through this buffer.
+                var backup_path_buf: [256]u8 = undefined;
+                const backup_path: []const u8 = if (op == .backup_file) blk: {
+                    const n = @min(act.wallet_file_len, backup_path_buf.len);
+                    @memcpy(backup_path_buf[0..n], act.wallet_file_buf[0..n]);
+                    break :blk backup_path_buf[0..n];
+                } else "";
                 act.wallet_file_len = 0;
 
                 const detail = act.wallet_setup_sink.slice();
                 if (ok) {
-                    // Lock closes the wallet; every other op leaves it open.
-                    act.ext_wallet_open.store(if (op == .lock) 0 else 1, .monotonic);
-                    if (op != .lock) act.ext_wallet_exists = true;
-                    // Open now; what's in it arrives with the next poll.
-                    act.ext_wallet_loading = op != .lock;
+                    // Lock closes the wallet; the setup ops leave it open; the
+                    // backups leave it exactly as it was.
+                    if (op == .lock) {
+                        act.ext_wallet_open.store(0, .monotonic);
+                    } else if (op.opensWallet()) {
+                        act.ext_wallet_open.store(1, .monotonic);
+                        act.ext_wallet_exists = true;
+                        // Open now; what's in it arrives with the next poll.
+                        act.ext_wallet_loading = true;
+                    }
                     self.logf("{s}: {s} succeeded", .{ act.coin.coinName(), op.verb() });
                 } else if (detail.len > 0) {
                     // The daemon told us why — log its raw message alongside the
@@ -5715,26 +5763,37 @@ pub const App = struct {
 
                 if (self.modal) |*m| {
                     if (m.coin_idx == i and m.stage == .working) {
-                        if (ok and op == .create) {
+                        if (ok and (op == .create or op == .show_seed)) {
                             // Hand the modal its own copy of the seed to display,
                             // then clear the worker's copy.
                             m.seed = act.wallet_setup_seed;
+                            m.seed_is_hex = false;
+                            m.seed_extra = .{};
                             m.stage = .setup_seed_show;
+                        } else if (ok and op == .backup_file) {
+                            // Say where it went — never what's in it. It's the
+                            // wallet's seed under its password, so both halves
+                            // of that matter to someone restoring from it.
+                            var buf: [400]u8 = undefined;
+                            const text = std.fmt.bufPrint(&buf, "Backed up to {s}. It's encrypted with your current wallet password, which you'll need to restore it. Copy it somewhere off this machine.", .{backup_path}) catch "Wallet file backed up — keep it safe, with its password.";
+                            m.setMsg(true, text);
                         } else if (ok) {
                             m.setMsg(true, switch (op) {
                                 .restore_seed => "Wallet restored — your balance will appear after it rescans.",
                                 .restore_file => "Wallet imported — your balance will appear shortly.",
                                 .open => "Wallet unlocked.",
                                 .lock => "Wallet locked.",
-                                .create => unreachable,
+                                .create, .show_seed, .backup_file => unreachable,
                             });
                         } else {
                             m.setMsg(false, extwallet.friendlyWalletError(act.wallet_setup_err, detail));
                         }
                     }
                 }
-                // Clear the worker's seed copy now the modal holds its own.
-                act.wallet_setup_seed = .{};
+                // Clear the worker's seed copy now the modal holds its own —
+                // wiped, not just reset: `.{}` leaves the buffer's bytes behind.
+                @memset(&act.wallet_setup_seed.buf, 0);
+                act.wallet_setup_seed.len = 0;
             }
 
             // Start the next poll for an installed, idle coin when the cadence is
@@ -8032,44 +8091,29 @@ pub const App = struct {
                 self.logf("{s}: wallet service still starting — try again in a moment", .{coin.coinName()});
             return;
         }
-        const ew = coin.externalWallet().?;
         var m: Modal = .{ .coin_idx = self.selected };
         if (!act.ext_wallet_exists) {
             m.stage = .setup_menu;
             m.setup_sel = 0;
             m.setup_option_count = menuChoicesFor(coin, &m.setup_options);
-        } else if (act.ext_wallet_open.load(.monotonic) == 0) {
-            // A wallet exists but isn't open this session. With no replace option
-            // it's a straight unlock (quickest path); with one, show a menu so the
-            // user can choose unlock vs. replacing it with a different seed.
-            if (!coin.supportsWalletReplace()) {
+        } else {
+            // A wallet exists: the core decides what its menu holds (unlock or
+            // lock, seed and file backup, replace). A locked wallet whose only
+            // choice is unlock goes straight to the password — the quickest path.
+            const open = act.ext_wallet_open.load(.monotonic) != 0;
+            const n = walletmenu.existingChoicesFor(coin, open, &m.setup_options);
+            if (n == 0) {
+                self.logf("{s}: wallet already unlocked", .{coin.coinName()});
+                return;
+            }
+            if (n == 1 and m.setup_options[0] == .unlock) {
                 m.stage = .setup_password;
                 m.setup_op = .open;
             } else {
                 m.stage = .setup_menu;
                 m.setup_sel = 0;
-                m.setup_options[0] = .unlock;
-                m.setup_options[1] = .replace;
-                m.setup_option_count = 2;
+                m.setup_option_count = n;
             }
-        } else {
-            // Already open: offer lock and/or replace; nothing to do if neither.
-            var n: usize = 0;
-            if (ew.lock != null) {
-                m.setup_options[n] = .lock;
-                n += 1;
-            }
-            if (coin.supportsWalletReplace()) {
-                m.setup_options[n] = .replace;
-                n += 1;
-            }
-            if (n == 0) {
-                self.logf("{s}: wallet already unlocked", .{coin.coinName()});
-                return;
-            }
-            m.stage = .setup_menu;
-            m.setup_sel = 0;
-            m.setup_option_count = n;
         }
         self.pw_input.setValue("") catch {};
         self.seed_input.setValue("") catch {};
@@ -10144,7 +10188,12 @@ pub const App = struct {
         if (m.stage == .setup_file) {
             var fout: std.Io.Writer.Allocating = .init(a);
             errdefer fout.deinit();
-            const heading_txt = if (m.action == .restore_file_offline) "Select your backup wallet.dat to restore" else "Select the key-dump file to import";
+            const heading_txt = if (m.action == .restore_file_offline)
+                "Select your backup wallet.dat to restore"
+            else if (m.action == .restore)
+                "Select the key-dump file to import"
+            else
+                "Select the wallet file to import";
             const heading = (zz.Style{}).bold(true).fg(brand).render(a, heading_txt) catch heading_txt;
             try fout.writer.print("{s}\n\n", .{heading});
             const picker = try self.file_picker.view(a);
@@ -10196,7 +10245,13 @@ pub const App = struct {
             },
             // External-wallet password entry (masked). The prompt names the action.
             .setup_password => {
-                const prompt = if (m.setup_op == .open or m.setup_op == .restore_file) "Password: " else "New password: ";
+                // Asked again even though the wallet is open — say why, or it
+                // reads as the unlock having failed.
+                if (m.setup_op == .show_seed) {
+                    try wrapIntoRows(a, &out.writer, vbar, inner_w, "Enter the wallet password to show its recovery seed.", (zz.Style{}));
+                    try modalRow(&out.writer, vbar, inner_w, "", 0);
+                }
+                const prompt = if (m.setup_op.setsNewPassword()) "New password: " else "Password: ";
                 const masked = try self.pw_input.view(a);
                 const text = try std.fmt.allocPrint(a, "{s}{s}", .{ prompt, masked });
                 try modalRow(&out.writer, vbar, inner_w, text, zz.width(prompt) + zz.width(masked));

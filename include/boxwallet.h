@@ -198,10 +198,18 @@ int     bw_coin_supports_tokens(size_t idx);      /* 0/1 — shows the Tokens ta
  * wallet. Show its state beside the receive address — see
  * bw_wallet_listener_state. */
 #define BW_EW_HAS_LISTENER   (1 << 6)
+/* An OPEN wallet can show its recovery seed again (bw_ext_wallet_show_seed). */
+#define BW_EW_SHOW_SEED      (1 << 7)
+/* The wallet file can be backed up, locked or open (bw_ext_wallet_backup_file);
+ * BW_EW_FILE_RESTORE takes that file back. */
+#define BW_EW_FILE_BACKUP    (1 << 8)
+/* With BW_EW_SHOW_SEED: the seed can be shown while LOCKED too (it's read from
+ * the wallet file with the password, not from the running wallet). */
+#define BW_EW_SHOW_SEED_LOCKED (1 << 9)
 int     bw_coin_ext_wallet(size_t idx);
 
 /* While a managed-wallet op runs (0 create, 1 restore from seed, 2 import file,
- * 3 unlock, 4 lock): what to say it's doing, and — for a BW_EW_LAUNCH_WITH_PW
+ * 3 unlock, 4 lock, 5 show seed, 6 back up file): what to say it's doing, and — for a BW_EW_LAUNCH_WITH_PW
  * wallet — why it takes a moment. The TUI's words. Return lengths; 0 = none. */
 size_t  bw_setup_op_progress(int op, char *buf, size_t cap);
 size_t  bw_setup_op_launch_note(int op, char *buf, size_t cap);
@@ -1127,6 +1135,24 @@ int     bw_ext_wallet_restore_file(bw_ctx *ctx, size_t idx, const uint8_t *pw, s
 int     bw_ext_wallet_open(bw_ctx *ctx, size_t idx, const uint8_t *pw, size_t pw_len);
 int     bw_ext_wallet_lock(bw_ctx *ctx, size_t idx);   /* BW_EW_EXPLICIT_LOCK coins only */
 
+/* Backups (BW_EW_SHOW_SEED / BW_EW_FILE_BACKUP). Neither opens, closes or
+ * relaunches anything — they use the wallet as it stands.
+ *
+ * bw_ext_wallet_show_seed needs the wallet OPEN (or BW_EW_SHOW_SEED_LOCKED) and
+ * takes its password AGAIN,
+ * freshly typed — never reuse the unlock's: an unattended unlocked session must
+ * not hand out the seed. On success the words are pending exactly as after a
+ * create: take them with bw_ext_wallet_seed_take, show them, run the backup
+ * quiz. A wrong password fails with code "WrongPassword"; ask again.
+ *
+ * bw_ext_wallet_backup_file copies the wallet file to a fresh timestamped file
+ * under the install root (no save dialog, never overwrites) and writes that path
+ * into buf, returning its length, or 0 on failure. The file is still encrypted
+ * with the wallet password as it is NOW — say so, and say where it went: the
+ * backup is useless without that password. */
+int     bw_ext_wallet_show_seed(bw_ctx *ctx, size_t idx, const uint8_t *pw, size_t pw_len);
+size_t  bw_ext_wallet_backup_file(bw_ctx *ctx, size_t idx, char *buf, size_t cap);
+
 /* DESTRUCTIVE: deletes the managed wallet's files so a different one can take
  * its place. Gate it behind an explicit typed confirmation. It kills the wallet
  * service first (releasing the file locks) and leaves the daemon running — the
@@ -1135,7 +1161,8 @@ int     bw_ext_wallet_lock(bw_ctx *ctx, size_t idx);   /* BW_EW_EXPLICIT_LOCK co
  * the caller must stop the daemon, remove, then start it again. */
 int     bw_ext_wallet_remove(bw_ctx *ctx, size_t idx);
 
-/* A created wallet's mnemonic. Take it ONCE, render it, then let it go.
+/* A created (or bw_ext_wallet_show_seed) wallet's mnemonic. Take it ONCE,
+ * render it, then let it go.
  *
  * Returns the byte count written and wipes the core's copy. Returns 0 when
  * nothing is pending, so the words can never be re-shown. If cap is smaller than

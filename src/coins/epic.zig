@@ -2390,6 +2390,235 @@ pub const Epic = struct {
         try std.Io.Dir.cwd().deleteTree(threaded.io(), dir);
     }
 
+    // --- Wallet backup: the seed words and the wallet.seed file ------------
+    //
+    // An Epic wallet's portable file is `wallet_data/wallet.seed`: the wallet's
+    // BIP39 entropy encrypted under the wallet password — PBKDF2-HMAC-SHA512
+    // (100 rounds, 32-byte key) into ChaCha20-Poly1305, stored as hex JSON
+    // (`encrypted_seed` = ciphertext‖tag, `salt`, `nonce`). Grin's scheme,
+    // checked against epic-wallet 4.0.0's own output (the fixture in the tests).
+    // It restores exactly what the seed words do: the outputs come back from a
+    // chain scan; the local transaction log and labels do not. A password
+    // change (`change_password`) re-encrypts it, so a backup keeps the password
+    // it was taken under.
+
+    /// Upper bound on a wallet.seed we'll read — a real one is ~200 bytes, so
+    /// anything bigger isn't one.
+    const seed_file_max = 1024;
+    const seed_file_name = "wallet.seed";
+    const seed_kdf_rounds = 100;
+    const SeedAead = std.crypto.aead.chacha_poly.ChaCha20Poly1305;
+
+    /// Owner-only on POSIX: the file is encrypted, but its only protection is
+    /// then the password's strength, so it shouldn't be readable by other
+    /// users. Windows has no mode bits; the profile directory's ACL covers it.
+    const private_file_perms: std.Io.File.Permissions =
+        if (builtin.os.tag == .windows) .default_file else @enumFromInt(0o600);
+
+    /// Check `bytes` is a wallet.seed and, when `password` is given, that it
+    /// decrypts under it — so a file import refuses a wrong file or password
+    /// *before* anything is written, rather than leaving an unopenable wallet
+    /// behind. `error.NotAWalletSeedFile` / `error.WrongPassword`. Pure.
+    fn checkSeedFile(allocator: std.mem.Allocator, bytes: []const u8, password: ?[]const u8) !void {
+        var plain: [seed_entropy_max]u8 = undefined;
+        defer @memset(&plain, 0);
+        _ = try decryptSeedFile(allocator, bytes, password, &plain);
+    }
+
+    /// Largest entropy a wallet.seed holds (24 words).
+    const seed_entropy_max = 32;
+
+    /// Parse wallet.seed `bytes` and, when `password` is given, decrypt its
+    /// entropy into `out` and return it (empty when `password` is null — a shape
+    /// check only). The entropy is the wallet's secret: the caller wipes `out`.
+    /// `error.NotAWalletSeedFile` / `error.WrongPassword`. Pure.
+    fn decryptSeedFile(allocator: std.mem.Allocator, bytes: []const u8, password: ?[]const u8, out: *[seed_entropy_max]u8) ![]const u8 {
+        const Raw = struct { encrypted_seed: []const u8 = "", salt: []const u8 = "", nonce: []const u8 = "" };
+        const parsed = std.json.parseFromSlice(Raw, allocator, bytes, .{ .ignore_unknown_fields = true }) catch
+            return error.NotAWalletSeedFile;
+        defer parsed.deinit();
+
+        var salt_buf: [64]u8 = undefined;
+        var nonce_buf: [SeedAead.nonce_length]u8 = undefined;
+        var ct_buf: [seed_entropy_max + SeedAead.tag_length]u8 = undefined;
+        const salt = std.fmt.hexToBytes(&salt_buf, parsed.value.salt) catch return error.NotAWalletSeedFile;
+        const nonce = std.fmt.hexToBytes(&nonce_buf, parsed.value.nonce) catch return error.NotAWalletSeedFile;
+        const ct = std.fmt.hexToBytes(&ct_buf, parsed.value.encrypted_seed) catch return error.NotAWalletSeedFile;
+        // 16 bytes is the smallest BIP39 entropy (12 words).
+        if (salt.len == 0 or nonce.len != nonce_buf.len or ct.len < 16 + SeedAead.tag_length)
+            return error.NotAWalletSeedFile;
+
+        const pw = password orelse return out[0..0];
+        var key: [SeedAead.key_length]u8 = undefined;
+        defer @memset(&key, 0);
+        std.crypto.pwhash.pbkdf2(&key, pw, salt, seed_kdf_rounds, std.crypto.auth.hmac.sha2.HmacSha512) catch
+            return error.NotAWalletSeedFile;
+        const body = ct[0 .. ct.len - SeedAead.tag_length];
+        const tag = ct[body.len..][0..SeedAead.tag_length].*;
+        SeedAead.decrypt(out[0..body.len], body, tag, "", nonce_buf, key) catch {
+            @memset(out, 0);
+            return error.WrongPassword;
+        };
+        return out[0..body.len];
+    }
+
+    /// Read a wallet.seed-sized file at `path` into `buf`. Anything larger
+    /// than `buf` isn't a wallet.seed.
+    fn readSeedFile(io: std.Io, path: []const u8, buf: []u8) ![]u8 {
+        var f = std.Io.Dir.cwd().openFile(io, path, .{}) catch return error.WalletFileNotFound;
+        defer f.close(io);
+        const len = f.length(io) catch return error.WalletFileNotFound;
+        if (len > buf.len) return error.NotAWalletSeedFile;
+        const n = try f.readPositionalAll(io, buf[0..@intCast(len)], 0);
+        return buf[0..n];
+    }
+
+    /// Show the wallet's recovery phrase again, for "Show recovery seed":
+    /// decrypt wallet.seed with the password just typed and spell its entropy
+    /// as BIP39 words — what epic-wallet's own `get_mnemonic` does, but without
+    /// needing its process, so it works on a locked wallet as well as an open
+    /// one. A wrong password fails the decryption: `error.WrongPassword`, with
+    /// nothing shown.
+    fn epicShowSeed(
+        allocator: std.mem.Allocator,
+        _: models.CoinAuth,
+        home: []const u8,
+        password: []const u8,
+        detail: *Coin.WalletErrSink,
+    ) anyerror!models.Seed {
+        var threaded: std.Io.Threaded = .init(allocator, .{});
+        defer threaded.deinit();
+        const io = threaded.io();
+
+        const dir = try walletDataDir(allocator, home);
+        defer allocator.free(dir);
+        const path = try std.fs.path.join(allocator, &.{ dir, seed_file_name });
+        defer allocator.free(path);
+
+        var buf: [seed_file_max]u8 = undefined;
+        defer @memset(&buf, 0);
+        const bytes = readSeedFile(io, path, &buf) catch |err| {
+            if (err == error.WalletFileNotFound) detail.set("There's no Epic wallet here yet.");
+            return err;
+        };
+        var entropy: [seed_entropy_max]u8 = undefined;
+        defer @memset(&entropy, 0);
+        const ent = decryptSeedFile(allocator, bytes, password, &entropy) catch |err| {
+            if (err == error.NotAWalletSeedFile) detail.set("This wallet's wallet.seed isn't in a format BoxWallet can read.");
+            return err;
+        };
+        var words: [bip39.max_mnemonic_len]u8 = undefined;
+        defer @memset(&words, 0);
+        return models.Seed.from(try bip39.fromEntropy(ent, &words));
+    }
+
+    /// Copy the managed wallet.seed to `dest_path` (a fresh timestamped name
+    /// under the install root — see `extwallet.backupFile`). Read-only on the
+    /// wallet dir; the backup is created owner-only and never overwrites an
+    /// existing file. A copy that `epicRestoreFile` wouldn't accept isn't a
+    /// backup, so a wallet.seed in a format we don't recognize is refused
+    /// rather than copied.
+    fn epicBackupFile(
+        allocator: std.mem.Allocator,
+        home: []const u8,
+        dest_path: []const u8,
+        detail: *Coin.WalletErrSink,
+    ) anyerror!void {
+        var threaded: std.Io.Threaded = .init(allocator, .{});
+        defer threaded.deinit();
+        const io = threaded.io();
+
+        const dir = try walletDataDir(allocator, home);
+        defer allocator.free(dir);
+        const src = try std.fs.path.join(allocator, &.{ dir, seed_file_name });
+        defer allocator.free(src);
+
+        var buf: [seed_file_max]u8 = undefined;
+        defer @memset(&buf, 0);
+        const bytes = readSeedFile(io, src, &buf) catch |err| {
+            if (err == error.WalletFileNotFound) detail.set("There's no Epic wallet to back up yet.");
+            return err;
+        };
+        checkSeedFile(allocator, bytes, null) catch |err| {
+            detail.set("This wallet's wallet.seed isn't in a format BoxWallet can restore, so it wasn't copied.");
+            return err;
+        };
+
+        var f = try std.Io.Dir.cwd().createFile(io, dest_path, .{ .exclusive = true, .permissions = private_file_perms });
+        f.writeStreamingAll(io, bytes) catch |err| {
+            // Don't leave a truncated backup that looks like a good one.
+            f.close(io);
+            std.Io.Dir.cwd().deleteFile(io, dest_path) catch {};
+            return err;
+        };
+        f.close(io);
+    }
+
+    /// Import a wallet.seed backup (`src_path`) as the managed wallet. The
+    /// password is checked against the file first (`checkSeedFile`), so a wrong
+    /// file or password is refused with nothing written. Never adopts over what
+    /// is already there: a wallet.seed is someone's wallet, and a wallet
+    /// database without one holds another wallet's records. `setupWithPassword`
+    /// then launches the wallet on it and opens it; the best-effort scan below
+    /// front-loads finding its funds, exactly as the seed restore does.
+    fn epicRestoreFile(
+        allocator: std.mem.Allocator,
+        _: models.CoinAuth,
+        home: []const u8,
+        src_path: []const u8,
+        password: []const u8,
+        detail: *Coin.WalletErrSink,
+    ) anyerror!void {
+        var threaded: std.Io.Threaded = .init(allocator, .{});
+        defer threaded.deinit();
+        const io = threaded.io();
+
+        var buf: [seed_file_max]u8 = undefined;
+        defer @memset(&buf, 0);
+        const bytes = readSeedFile(io, src_path, &buf) catch |err| {
+            detail.set(if (err == error.NotAWalletSeedFile)
+                "That isn't an Epic wallet file. Choose a wallet.seed, or a BoxWallet .seed backup."
+            else
+                "Couldn't read that file.");
+            return err;
+        };
+        checkSeedFile(allocator, bytes, password) catch |err| {
+            if (err == error.NotAWalletSeedFile)
+                detail.set("That isn't an Epic wallet file. Choose a wallet.seed, or a BoxWallet .seed backup.");
+            return err;
+        };
+
+        const dir_path = try walletDataDir(allocator, home);
+        defer allocator.free(dir_path);
+        if (install_mod.fileExists(allocator, dir_path, seed_file_name)) return error.WalletAlreadyExists;
+        if (install_mod.fileExists(allocator, dir_path, "db")) {
+            detail.set("Epic's wallet_data folder already holds a wallet database. Move it aside first, so its records aren't mixed into this wallet.");
+            return error.WalletDataInUse;
+        }
+
+        var dir = try std.Io.Dir.cwd().createDirPathOpen(io, dir_path, .{});
+        defer dir.close(io);
+        var f = dir.createFile(io, seed_file_name, .{ .exclusive = true, .permissions = private_file_perms }) catch |err| switch (err) {
+            error.PathAlreadyExists => return error.WalletAlreadyExists,
+            else => return err,
+        };
+        f.writeStreamingAll(io, bytes) catch |err| {
+            // Ours, and unusable half-written — remove it so the menu doesn't
+            // then offer to unlock a wallet that can't open.
+            f.close(io);
+            dir.deleteFile(io, seed_file_name) catch {};
+            return err;
+        };
+        f.close(io);
+
+        // Best-effort, as in `epicRestore`: a node still syncing refuses the
+        // scan, and the balance refresh recovers the outputs once it catches up.
+        const install_root = try install_mod.installRoot(allocator, home);
+        defer allocator.free(install_root);
+        ensureWalletConfig(allocator, io, home) catch {};
+        runScan(allocator, io, install_root, home, password, detail) catch detail.set("");
+    }
+
     /// The open wallet's balances, from `retrieve_summary_info` (needs the cached
     /// token). Amounts are integer base units (1e8 per EPIC) as strings; `available`
     /// is the spendable figure, `total` the grand total (so it leads while funds
@@ -3089,7 +3318,10 @@ pub const Epic = struct {
     /// is (re)launched per-open via `launch_server_argv`, and a wallet is first
     /// materialized on disk by a CLI `init -r` — `cli_create` for create (a generated
     /// BIP39 phrase) and `restore_seed` for restore (the user's). Open/lock/balance
-    /// then run over the encrypted Owner API.
+    /// then run over the encrypted Owner API. Backups come both ways, locked or
+    /// open: the seed words again (`show_seed`, decrypted from wallet.seed with
+    /// the password), and the encrypted wallet.seed as a file (`backup_file`),
+    /// which `restore_file` takes back after checking the password against it.
     pub const external_wallet: Coin.ExternalWallet = .{
         .rpc_port = walletRpcPort,
         .launch_server_argv = launchServerArgv,
@@ -3099,6 +3331,12 @@ pub const Epic = struct {
         .exists = walletExists,
         .create = epicCreate,
         .restore_seed = epicRestore,
+        .restore_file = epicRestoreFile,
+        .show_seed = epicShowSeed,
+        .backup_file = epicBackupFile,
+        .backup_file_ext = ".seed",
+        // Read from wallet.seed with the password, not from the wallet process.
+        .show_seed_when_locked = true,
         .open = epicOpen,
         .lock = epicLock,
         .remove = epicRemove,
@@ -4564,4 +4802,152 @@ test "splitHostPort takes a normalized URL apart for the reachability probe" {
     try std.testing.expectError(error.InvalidNodeUrl, Epic.splitHostPort("node.epiccash.com"));
     try std.testing.expectError(error.InvalidNodeUrl, Epic.splitHostPort("https://:3413"));
     try std.testing.expectError(error.InvalidNodeUrl, Epic.splitHostPort(""));
+}
+
+// A wallet.seed written by epic-wallet 4.0.0 itself (`init -r`) for the public
+// BIP39 test vector "abandon ×23 art" under the password "testpass" — no real
+// wallet. Pins the encryption scheme `checkSeedFile` assumes to what the binary
+// actually writes (its entropy decrypts to 32 zero bytes).
+const test_seed_file =
+    \\{
+    \\  "encrypted_seed": "421998131e531650e69503716af0529d117330ef595b1c98357c130440d10d020b9356c4ceae4de6e51962d026129209",
+    \\  "salt": "deef49a32fcb689a",
+    \\  "nonce": "205f8b8a63b0a49ccca60d77"
+    \\}
+;
+
+test "checkSeedFile opens epic-wallet's own wallet.seed with its password, and only that" {
+    const a = std.testing.allocator;
+    try Epic.checkSeedFile(a, test_seed_file, "testpass");
+    try Epic.checkSeedFile(a, test_seed_file, null); // shape only
+    try std.testing.expectError(error.WrongPassword, Epic.checkSeedFile(a, test_seed_file, "testpas"));
+    try std.testing.expectError(error.WrongPassword, Epic.checkSeedFile(a, test_seed_file, ""));
+}
+
+test "checkSeedFile refuses anything that isn't a wallet.seed" {
+    const a = std.testing.allocator;
+    const bad = [_][]const u8{
+        "",
+        "not json",
+        "{}",
+        // A key dump, a Monero wallet — any JSON without the three fields.
+        "{\"seed\":\"abandon abandon\"}",
+        // Tag only: no entropy under it.
+        "{\"encrypted_seed\":\"0b9356c4ceae4de6e51962d026129209\",\"salt\":\"deef49a32fcb689a\",\"nonce\":\"205f8b8a63b0a49ccca60d77\"}",
+        // Nonce the wrong length for ChaCha20-Poly1305.
+        "{\"encrypted_seed\":\"421998131e531650e69503716af0529d117330ef595b1c98357c130440d10d020b9356c4ceae4de6e51962d026129209\",\"salt\":\"deef49a32fcb689a\",\"nonce\":\"205f8b8a\"}",
+        // Not hex.
+        "{\"encrypted_seed\":\"zz\",\"salt\":\"deef49a32fcb689a\",\"nonce\":\"205f8b8a63b0a49ccca60d77\"}",
+    };
+    for (bad) |b| try std.testing.expectError(error.NotAWalletSeedFile, Epic.checkSeedFile(a, b, "testpass"));
+}
+
+test "the seed shown again is the words the wallet was made from" {
+    // The fixture's wallet came from the BIP39 vector "abandon ×23 art", so
+    // that is exactly what reading it back must give — and nothing for a wrong
+    // password.
+    if (builtin.os.tag == .windows) return error.SkipZigTest;
+    const a = std.testing.allocator;
+    var threaded: std.Io.Threaded = .init(a, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    const cwd = std.Io.Dir.cwd();
+
+    const home = "test-epic-wallet-showseed-home";
+    cwd.deleteTree(io, home) catch {};
+    defer cwd.deleteTree(io, home) catch {};
+    const no_auth: models.CoinAuth = .{ .rpc_user = "", .rpc_password = "", .ip_address = "127.0.0.1", .port = Epic.wallet_rpc_port };
+    var sink: Coin.WalletErrSink = .{};
+
+    // No wallet yet: an honest "nothing here", not a password complaint.
+    try std.testing.expectError(error.WalletFileNotFound, Epic.epicShowSeed(a, no_auth, home, "testpass", &sink));
+
+    const wd = try Epic.walletDataDir(a, home);
+    defer a.free(wd);
+    {
+        var d = try cwd.createDirPathOpen(io, wd, .{});
+        defer d.close(io);
+        try d.writeFile(io, .{ .sub_path = Epic.seed_file_name, .data = test_seed_file });
+    }
+
+    var seed = try Epic.epicShowSeed(a, no_auth, home, "testpass", &sink);
+    defer @memset(&seed.buf, 0);
+    try std.testing.expectEqualStrings(
+        "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon art",
+        seed.slice(),
+    );
+    try std.testing.expectError(error.WrongPassword, Epic.epicShowSeed(a, no_auth, home, "testpas", &sink));
+}
+
+test "a wallet.seed backup restores, and nothing is overwritten on either side" {
+    if (builtin.os.tag == .windows) return error.SkipZigTest;
+    const a = std.testing.allocator;
+    var threaded: std.Io.Threaded = .init(a, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    const cwd = std.Io.Dir.cwd();
+
+    // The file import is a disk op; it never talks to the wallet.
+    const no_auth: models.CoinAuth = .{ .rpc_user = "", .rpc_password = "", .ip_address = "127.0.0.1", .port = Epic.wallet_rpc_port };
+    const home = "test-epic-wallet-backup-home";
+    const other = "test-epic-wallet-backup-other";
+    cwd.deleteTree(io, home) catch {};
+    cwd.deleteTree(io, other) catch {};
+    defer cwd.deleteTree(io, home) catch {};
+    defer cwd.deleteTree(io, other) catch {};
+
+    // A wallet on disk, as `init -r` leaves it.
+    const wd = try Epic.walletDataDir(a, home);
+    defer a.free(wd);
+    {
+        var d = try cwd.createDirPathOpen(io, wd, .{});
+        defer d.close(io);
+        try d.writeFile(io, .{ .sub_path = Epic.seed_file_name, .data = test_seed_file });
+    }
+
+    // Back it up.
+    var sink: Coin.WalletErrSink = .{};
+    try cwd.createDirPath(io, other);
+    const dest = other ++ "/epic-wallet-backup-1.seed";
+    try Epic.epicBackupFile(a, home, dest, &sink);
+    var got_buf: [Epic.seed_file_max]u8 = undefined;
+    const got = try Epic.readSeedFile(io, dest, &got_buf);
+    try std.testing.expectEqualStrings(test_seed_file, got);
+    // Owner-only: the file's protection is the password alone.
+    var bf = try cwd.openFile(io, dest, .{});
+    const st = try bf.stat(io);
+    bf.close(io);
+    try std.testing.expectEqual(@as(std.posix.mode_t, 0o600), st.permissions.toMode() & 0o777);
+    // A second backup to the same name refuses rather than overwrites.
+    try std.testing.expectError(error.PathAlreadyExists, Epic.epicBackupFile(a, home, dest, &sink));
+
+    // Restoring over the wallet that's there is refused, whatever the password.
+    try std.testing.expectError(error.WalletAlreadyExists, Epic.epicRestoreFile(a, no_auth, home, dest, "testpass", &sink));
+
+    // With the wallet gone: a wrong password or a wrong file writes nothing.
+    try cwd.deleteTree(io, wd);
+    try std.testing.expectError(error.WrongPassword, Epic.epicRestoreFile(a, no_auth, home, dest, "nope", &sink));
+    try std.testing.expect(!Epic.walletExists(a, home));
+    const junk = other ++ "/notes.txt";
+    try cwd.writeFile(io, .{ .sub_path = junk, .data = "hello" });
+    try std.testing.expectError(error.NotAWalletSeedFile, Epic.epicRestoreFile(a, no_auth, home, junk, "testpass", &sink));
+    try std.testing.expect(!Epic.walletExists(a, home));
+
+    // A wallet database left without its seed belongs to some other wallet.
+    {
+        var d = try cwd.createDirPathOpen(io, wd, .{});
+        defer d.close(io);
+        try d.createDirPath(io, "db");
+    }
+    try std.testing.expectError(error.WalletDataInUse, Epic.epicRestoreFile(a, no_auth, home, dest, "testpass", &sink));
+    try cwd.deleteTree(io, wd);
+
+    // The right password puts the identical file back. (The follow-up scan
+    // finds no epic-wallet under this home and is skipped, as it's best-effort.)
+    try Epic.epicRestoreFile(a, no_auth, home, dest, "testpass", &sink);
+    try std.testing.expect(Epic.walletExists(a, home));
+    const seed_path = try std.fs.path.join(a, &.{ wd, Epic.seed_file_name });
+    defer a.free(seed_path);
+    const back = try Epic.readSeedFile(io, seed_path, &got_buf);
+    try std.testing.expectEqualStrings(test_seed_file, back);
 }

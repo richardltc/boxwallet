@@ -690,6 +690,9 @@ pub const bw_ew_replace: c_int = 1 << 3; // in-app "replace wallet" (destructive
 pub const bw_ew_explicit_lock: c_int = 1 << 4; // an in-daemon wallet needing a Lock action
 pub const bw_ew_launch_with_pw: c_int = 1 << 5; // wallet process is launched per-open, with the password
 pub const bw_ew_has_listener: c_int = 1 << 6; // runs a payment listener while unlocked
+pub const bw_ew_show_seed: c_int = 1 << 7; // an open wallet can show its recovery seed again
+pub const bw_ew_file_backup: c_int = 1 << 8; // the wallet file can be backed up
+pub const bw_ew_show_seed_locked: c_int = 1 << 9; // ...and the seed can be shown while locked too
 
 /// 0 for a coin with no external wallet at all; otherwise the `bw_ew_*` bits.
 export fn bw_coin_ext_wallet(idx: usize) c_int {
@@ -703,6 +706,9 @@ export fn bw_coin_ext_wallet(idx: usize) c_int {
     if (ew.lock != null) flags |= bw_ew_explicit_lock;
     if (coin.walletLaunchesWithPassword()) flags |= bw_ew_launch_with_pw;
     if (coin.walletHasListener()) flags |= bw_ew_has_listener;
+    if (ew.show_seed != null) flags |= bw_ew_show_seed;
+    if (ew.backup_file != null) flags |= bw_ew_file_backup;
+    if (ew.show_seed != null and ew.show_seed_when_locked) flags |= bw_ew_show_seed_locked;
     return flags;
 }
 
@@ -1795,7 +1801,8 @@ export fn bw_ext_wallet_service_stop(ctx: ?*Ctx, idx: usize) void {
 const WalletOp = walletmenu.SetupOp;
 
 /// The in-flight line for a managed-wallet op (0 create, 1 restore from seed,
-/// 2 import file, 3 unlock, 4 lock) — the TUI's words. 0 for an unknown op.
+/// 2 import file, 3 unlock, 4 lock, 5 show seed, 6 back up file) — the TUI's
+/// words. 0 for an unknown op.
 export fn bw_setup_op_progress(op: c_int, buf: ?[*]u8, cap: usize) usize {
     const b = buf orelse return 0;
     const o = std.enums.fromInt(WalletOp, op) orelse return 0;
@@ -1844,6 +1851,20 @@ fn walletOp(
     var detail: Coin.WalletErrSink = .{};
     errdefer if (detail.len > 0) ctx.setError(detail.slice());
 
+    // The backups use the wallet as it stands, so they're settled before the
+    // setup paths below, which start by treating the wallet as closed. The file
+    // backup has its own export (it returns a path); only the seed runs here.
+    switch (op) {
+        .show_seed => {
+            // Parked for the one take, exactly like a created wallet's seed.
+            ctx.seed = try extwallet.showSeed(&ctx.wallet[idx], coin, a, ctx.home_dir, password, &detail);
+            ctx.seed_coin = @intCast(idx);
+            return;
+        },
+        .backup_file => return error.Unsupported, // bw_ext_wallet_backup_file
+        else => {},
+    }
+
     // Launch-with-password wallets (Epic, Zano): their RPC server only ever
     // serves the wallet it was handed at startup, so the whole op — materialize,
     // launch the server, confirm the password opens it — runs through the shared
@@ -1888,6 +1909,7 @@ fn walletOp(
         .restore_file => try (ew.restore_file orelse return error.Unsupported)(a, auth, ctx.home_dir, src_path, password, &detail),
         .open => try ew.open(a, auth, password, &detail),
         .lock => try (ew.lock orelse return error.Unsupported)(a, auth, &detail),
+        .show_seed, .backup_file => unreachable, // settled above
     }
     ctx.wallet_open[idx].store(if (op == .lock) 0 else 1, .monotonic);
 }
@@ -1970,6 +1992,44 @@ export fn bw_ext_wallet_restore_file(
     src_path: ?[*:0]const u8,
 ) c_int {
     return walletOpCall(ctx, idx, .restore_file, pw, pw_len, null, 0, src_path);
+}
+
+/// Show a wallet's recovery seed again, checking `pw` first (it is asked for
+/// again, not reused from an unlock). Needs the wallet open unless the coin sets
+/// BW_EW_SHOW_SEED_LOCKED. On success the words are pending,
+/// exactly as after a create — take them with `bw_ext_wallet_seed_take`. A wrong
+/// password fails with code "WrongPassword". BW_EW_SHOW_SEED coins only.
+export fn bw_ext_wallet_show_seed(ctx: ?*Ctx, idx: usize, pw: ?[*]const u8, pw_len: usize) c_int {
+    return walletOpCall(ctx, idx, .show_seed, pw, pw_len, null, 0, null);
+}
+
+/// Copy the managed wallet file to a fresh timestamped file under the install
+/// root and write that path into `buf`, returning its length, or 0 on failure
+/// (`bw_last_error`). Works locked or open. BW_EW_FILE_BACKUP coins only.
+export fn bw_ext_wallet_backup_file(ctx: ?*Ctx, idx: usize, buf: ?[*]u8, cap: usize) usize {
+    const c = ctx orelse return 0;
+    const b = buf orelse return 0;
+    const coin = coinByIndex(idx) orelse return 0;
+    c.clearError();
+
+    var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const io = sharedIo();
+
+    // Serialised with the other wallet ops, so a backup can't read the file
+    // while a replace or import is rewriting it.
+    c.wallet_mtx.lockUncancelable(io);
+    defer c.wallet_mtx.unlock(io);
+
+    var detail: Coin.WalletErrSink = .{};
+    var path_buf: [extwallet.backup_path_max]u8 = undefined;
+    const path = extwallet.backupFile(coin, a, io, c.install_root, c.home_dir, &path_buf, &detail) catch |err| {
+        c.setErrorCode(@errorName(err));
+        c.setError(extwallet.friendlyWalletError(@errorName(err), detail.slice()));
+        return 0;
+    };
+    return copyOut(b[0..cap], path);
 }
 
 /// Open the existing managed wallet with `pw`.
@@ -5357,6 +5417,11 @@ test "bw_coin_ext_wallet's flags agree with the vtable for every coin" {
         try std.testing.expectEqual(ew.lock != null, flags & bw_ew_explicit_lock != 0);
         try std.testing.expectEqual(coin.walletLaunchesWithPassword(), flags & bw_ew_launch_with_pw != 0);
         try std.testing.expectEqual(coin.walletHasListener(), flags & bw_ew_has_listener != 0);
+        try std.testing.expectEqual(ew.show_seed != null, flags & bw_ew_show_seed != 0);
+        try std.testing.expectEqual(ew.backup_file != null, flags & bw_ew_file_backup != 0);
+        try std.testing.expectEqual(ew.show_seed != null and ew.show_seed_when_locked, flags & bw_ew_show_seed_locked != 0);
+        // A backup with no way back in isn't one.
+        if (ew.backup_file != null) try std.testing.expect(ew.restore_file != null);
         try std.testing.expectEqual(coin.supportsSendFee(), bw_coin_supports_send_fee(i) != 0);
         try std.testing.expectEqual(coin.supportsCancelTx(), bw_coin_supports_cancel_tx(i) != 0);
         var lb: [96]u8 = undefined;
