@@ -10236,7 +10236,12 @@ pub const App = struct {
                 while (i < m.setup_option_count) : (i += 1) {
                     const sel = i == m.setup_sel;
                     const plain = try std.fmt.allocPrint(a, "{s}{s}", .{ if (sel) "❯ " else "  ", m.setup_options[i].label() });
-                    const text = if (sel)
+                    // Replace destroys the wallet, so it's red whether or not the
+                    // cursor is on it — never mistaken for the rows around it.
+                    const danger = m.setup_options[i] == .replace;
+                    const text = if (danger)
+                        ((zz.Style{}).bold(sel).fg(.red).render(a, plain) catch plain)
+                    else if (sel)
                         ((zz.Style{}).bold(true).fg(brand).render(a, plain) catch plain)
                     else
                         plain;

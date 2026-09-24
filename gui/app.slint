@@ -243,6 +243,40 @@ component CopyIconButton inherits Rectangle {
     }
 }
 
+// A button for an action that destroys something (Replace this wallet). Red,
+// and drawn unlike the standard buttons beside it, so it can't be mistaken for
+// one of them — std-widgets' Button takes no colour. Sized to sit in the same
+// column as those buttons. The action itself still sits behind its own
+// confirmation; this only makes it look like what it is.
+component DangerButton inherits Rectangle {
+    in property <string> text;
+    callback clicked;
+
+    min-height: 32px;
+    border-radius: 4px;
+    border-width: 1px;
+    border-color: #e05c5c;
+    background: ta.pressed ? #4a1f1f : (ta.has-hover ? #3a1a1a : #2a1616);
+
+    HorizontalLayout {
+        padding-left: 12px;
+        padding-right: 12px;
+        alignment: center;
+        Text {
+            text: root.text;
+            color: #ff7b7b;
+            font-size: 13px;
+            vertical-alignment: center;
+        }
+    }
+    ta := TouchArea {
+        mouse-cursor: pointer;
+        clicked => {
+            root.clicked();
+        }
+    }
+}
+
 // One tab in the detail strip: a monochrome SVG icon (tinted to the accent via
 // `colorize`) beside its label, with an accent underline when selected.
 component TabButton inherits Rectangle {
@@ -5012,8 +5046,9 @@ export component AppWindow inherits Window {
                             text: "Restore from a wallet file";
                             clicked => { root.wallet-op = 2; root.wallet-stage = 5; root.browse-open = true; }
                         }
-                        // BW_EW_REPLACE — destructive, so it's behind a typed confirm.
-                        if root.wallet-state != 0 && Math.mod(Math.floor(root.ew-flags / 8), 2) == 1: Button {
+                        // BW_EW_REPLACE — destructive, so it's red and behind a
+                        // typed confirm.
+                        if root.wallet-state != 0 && Math.mod(Math.floor(root.ew-flags / 8), 2) == 1: DangerButton {
                             text: "Replace this wallet\u{2026}";
                             clicked => { root.wallet-replace-bad = false; root.wallet-stage = 9; }
                         }
