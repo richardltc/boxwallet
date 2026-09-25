@@ -1986,6 +1986,8 @@ export component AppWindow inherits Window {
     in property <string> browse-path: "";
     in property <[BrowseEntry]> browse-entries;
     in-out property <string> picked-file: "";
+    // Set when the listing is filtered (picking the reply to a send), saying so.
+    in property <string> browse-note: "";
     // List whatever directory the browser is currently pointed at, without
     // moving. Raised when the overlay opens: nothing else lists the *starting*
     // directory, so before this the first screen came up blank — an empty list
@@ -5088,7 +5090,7 @@ export component AppWindow inherits Window {
                     }
                     if !root.send-busy: Text {
                         text: root.send-confirm-is-slate
-                            ? "The coins are set aside until you open the receiver's .response file here, or cancel the send."
+                            ? "The coins are set aside until you finish it with their reply file, or cancel the send."
                             : root.send-confirm-is-stake
                             ? "A stake cannot be cancelled before its term ends."
                             : "A sent transaction cannot be reversed.";
@@ -5246,8 +5248,8 @@ export component AppWindow inherits Window {
                     if root.slate-stage == 0: Text {
                         text: root.picked-file == ""
                             ? (root.slate-purpose == 1
-                                ? "Pick the reply file the receiver sent back (it ends in .tx.response)."
-                                : "Pick the slate file you were sent (it ends in .tx).")
+                                ? "Pick the reply file they sent back \u{2014} usually named \u{2026}.tx.response (from BoxWallet or the Epic command-line wallet), or finalize_\u{2026}.tx (from the Epic GUI wallet). Only reply files are shown."
+                                : "Pick the slate file you were sent. Only payment files (.tx) are shown.")
                             : "Selected: " + root.picked-file;
                         color: #9a9a9a;
                         font-size: 12px;
@@ -7205,6 +7207,13 @@ export component AppWindow inherits Window {
                                 root.browse-open = false;
                             }
                         }
+                    }
+                    // Why some files are missing, when the listing is filtered.
+                    if root.browse-note != "": Text {
+                        text: root.browse-note;
+                        color: #8a8a8a;
+                        font-size: 12px;
+                        wrap: word-wrap;
                     }
 
                     ListView {

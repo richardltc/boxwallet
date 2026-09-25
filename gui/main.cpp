@@ -1291,6 +1291,14 @@ static void browse_refresh(const AppWindow *ui)
     static char buf[65536];
     size_t n = bw_list_dir(g_browse_path.c_str(), buf, sizeof buf);
 
+    // Picking a slate file: show only the kind the dialog is for — payment files
+    // to receive, reply files to finish a send (folders still, to get around).
+    // The core owns what counts as each; this only filters what's shown — it
+    // still reads what the picked file actually is.
+    const int coin = g_selected.load();
+    const bool slate_pick = ui->get_slate_open() && coin >= 0;
+    const bool replies = ui->get_slate_purpose() == 1;
+
     g_entries.clear();
     size_t i = 0;
     while (i < n) {
@@ -1299,13 +1307,24 @@ static void browse_refresh(const AppWindow *ui)
         size_t j = start;
         while (j < n && buf[j] != '\n')
             j++;
+        std::string name(buf + start, j - start);
+        i = j + 1;
+        if (slate_pick && t != 'd') {
+            const size_t c = static_cast<size_t>(coin);
+            const int wanted = replies ? bw_slate_is_reply_name(c, name.c_str())
+                                       : bw_slate_is_payment_name(c, name.c_str());
+            if (wanted == 0)
+                continue;
+        }
         BrowseEntry e{}; // value-initialised — see the note on NavCoin
-        e.name = ss(std::string_view(buf + start, j - start));
+        e.name = ss(name);
         e.is_dir = (t == 'd');
         g_entries.push_back(e);
-        i = j + 1;
     }
 
+    ui->set_browse_note(ss(!slate_pick ? ""
+                           : replies  ? "Showing reply files only."
+                                      : "Showing payment files (.tx) only."));
     ui->set_browse_entries(std::make_shared<slint::VectorModel<BrowseEntry>>(g_entries));
     ui->set_browse_path(ss(g_browse_path));
 }
@@ -3758,8 +3777,9 @@ int main(int argc, char **argv)
                 (*h)->set_slate_note(ss(std::string(info.note, info.note_len)));
                 (*h)->set_slate_summary(ss(
                     receiving
-                        ? "Someone is paying you " + amt + ". Your wallet signs it and saves a .response "
-                          "file next to it \u2014 send that back to them. The payment completes when they open it."
+                        ? "Someone is paying you " + amt + ". Your wallet signs it and saves a reply file "
+                          "(\u2026.response) next to it \u2014 send that back to them. The payment completes when "
+                          "they open it."
                         : "This is the reply to your send of " + amt + ". The fee is " +
                               format_amount(info.fee, dec) + unit + ", so " +
                               format_amount(info.amount + info.fee, dec) + unit + " leaves the wallet."));

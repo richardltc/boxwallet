@@ -1370,13 +1370,19 @@ int     bw_wallet_send(bw_ctx *ctx, size_t idx, const char *address, double amou
 /* ---- slate files --------------------------------------------------------------
  * Payments by hand-carried file, for a coin where bw_coin_supports_slate_files
  * is 1 (Epic). The sender saves a slate (bw_wallet_slate_send), the receiver
- * opens it and saves a response, the sender opens that to finish. Opening is
- * one action: bw_wallet_slate_inspect says what a file is for *this* wallet, the
- * user confirms, bw_wallet_slate_process does it. Names follow the coin CLI's
- * (x.tx -> x.tx.response), so files work with any wallet for the coin.
+ * opens it and saves a reply, the sender opens that to finish. Opening is one
+ * action: bw_wallet_slate_inspect says what a file is for *this* wallet (from
+ * its contents, never its name), the user confirms, bw_wallet_slate_process
+ * does it. Names follow the epic-wallet CLI (x.tx -> x.tx.response).
  *
  * All block on the wallet — worker thread only. Tri-state like bw_wallet_send:
  * 0 done, 1 the wallet refused (out = why), -1 transport (bw_last_error). */
+/* Whether a file name looks like a reply (*.response, or finalize_*.tx as Epic's
+ * GUI wallet suggests): for filtering the browser when finishing a send. Cheap. */
+int     bw_slate_is_reply_name(size_t idx, const char *name);
+/* Whether a file name looks like a payment to receive (*.tx, not a reply): for
+ * filtering the browser when receiving one. Cheap. */
+int     bw_slate_is_payment_name(size_t idx, const char *name);
 #define BW_SLATE_UNUSABLE 0 /* reason says why; nothing to do */
 #define BW_SLATE_RECEIVE  1 /* someone is paying you: sign, write a response */
 #define BW_SLATE_FINALIZE 2 /* the reply to your send: finalize, broadcast */
