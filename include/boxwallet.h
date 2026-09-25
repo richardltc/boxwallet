@@ -1246,6 +1246,13 @@ typedef struct {
 /* The Status-column words for a stage (the TUI's), for the row's direction
  * (BwWalletTx.direction); 0 for NONE. */
 size_t  bw_tx_stage_text(int stage, int direction, char *buf, size_t cap);
+/* How many confirmations make received funds spendable for this coin (Epic:
+ * 10); 0 = not declared — show the plain count. When set, show
+ * bw_tx_confirmation_text: "3/10 confirmations", then "Confirmed" (*settled 1)
+ * only once spendable. Returns the length written. */
+unsigned bw_coin_spendable_confirmations(size_t idx);
+size_t  bw_tx_confirmation_text(int64_t confirmations, unsigned needed, int *settled,
+                                char *buf, size_t cap);
 
 /* Whether the coin can cancel an unsent transaction (a cancellable row). */
 int     bw_coin_supports_cancel_tx(size_t idx);

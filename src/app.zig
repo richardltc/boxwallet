@@ -9544,7 +9544,7 @@ pub const App = struct {
             }),
             .settings => try renderSettingsTab(a, coin, brand, self.home_dir, act),
             .transactions => if (coin.supportsTransactions())
-                try renderTransactionsTab(a, act, coin.balanceDecimals())
+                try renderTransactionsTab(a, act, coin.balanceDecimals(), coin.spendableConfirmations())
             else
                 try renderPlaceholderTab(a, self.active_tab),
             .receive => if (coin.supportsReceiveAddress())
@@ -9773,7 +9773,7 @@ pub const App = struct {
     /// `supportsTransactions()` is true; every other coin's `.transactions` case
     /// still falls through to `renderPlaceholderTab`. Reads only the cached
     /// `act` fields — no RPC/disk IO in the render path.
-    fn renderTransactionsTab(a: std.mem.Allocator, act: *const Activity, decimals: u8) ![]const u8 {
+    fn renderTransactionsTab(a: std.mem.Allocator, act: *const Activity, decimals: u8, needed: u32) ![]const u8 {
         if (act.tx_count == 0) {
             // Just unlocked: the history is on its way, not empty.
             if (act.ext_wallet_loading) return "Transactions\n\nLoading your transactions…";
@@ -9811,7 +9811,7 @@ pub const App = struct {
             const conf_text = if (tx.stage != .none)
                 ((zz.Style{}).bold(true).fg(.yellow).render(a, tx.stage.label(tx.direction)) catch tx.stage.label(tx.direction))
             else
-                txConfirmationText(a, tx.confirmations);
+                txConfirmationText(a, tx.confirmations, needed);
             // Who it went to / came from (shortened — the tab doesn't scroll, so
             // it stays one line a row; the GUI shows it whole) and the sender's
             // note, dim, after the status. Both were made safe to print by
@@ -10176,7 +10176,15 @@ pub const App = struct {
     /// "Confirmed" once `confirmations` exceeds `tx_confirmed_threshold`,
     /// otherwise a bold yellow "N confirmation(s)" (still settling — the same
     /// yellow the pending/Available balance figure uses elsewhere).
-    fn txConfirmationText(a: std.mem.Allocator, confirmations: i64) []const u8 {
+    /// `needed` is the coin's `spendableConfirmations`: when set, the count runs
+    /// up to it ("3/10 confirmations") and Confirmed means spendable.
+    fn txConfirmationText(a: std.mem.Allocator, confirmations: i64, needed: u32) []const u8 {
+        if (needed > 0) {
+            var buf: [48]u8 = undefined;
+            const st = models.confirmationStatus(&buf, confirmations, needed);
+            const text = a.dupe(u8, st.text) catch "?";
+            return (zz.Style{}).bold(true).fg(if (st.settled) .green else .yellow).render(a, text) catch text;
+        }
         if (confirmations > tx_confirmed_threshold) {
             return (zz.Style{}).bold(true).fg(.green).render(a, "Confirmed") catch "Confirmed";
         }
@@ -10472,7 +10480,7 @@ pub const App = struct {
                 const date = try formatBlockTime(a, tx.time);
                 var abuf: [32]u8 = undefined;
                 const amount = try padCell(a, formatCents(&abuf, tx.amount_cents), 12, true);
-                const conf_text = txConfirmationText(a, tx.confirmations);
+                const conf_text = txConfirmationText(a, tx.confirmations, 0);
                 try out.writer.print("  {s} {s} {s}   {s}   {s}\n", .{ glyph, word, date, amount, conf_text });
             }
         }
@@ -13048,21 +13056,27 @@ test "txConfirmationText shows the raw count at/below the threshold, 'Confirmed'
     const a = arena.allocator();
 
     // Right at the threshold (6): not yet "Confirmed".
-    const at_threshold = App.txConfirmationText(a, 6);
+    const at_threshold = App.txConfirmationText(a, 6, 0);
     try std.testing.expect(std.mem.indexOf(u8, at_threshold, "6 confirmations") != null);
     try std.testing.expect(std.mem.indexOf(u8, at_threshold, "Confirmed") == null);
 
     // One past the threshold: "Confirmed".
-    const past_threshold = App.txConfirmationText(a, 7);
+    const past_threshold = App.txConfirmationText(a, 7, 0);
     try std.testing.expect(std.mem.indexOf(u8, past_threshold, "Confirmed") != null);
 
     // Singular vs plural wording.
-    const one = App.txConfirmationText(a, 1);
+    const one = App.txConfirmationText(a, 1, 0);
     try std.testing.expect(std.mem.indexOf(u8, one, "1 confirmation") != null);
     try std.testing.expect(std.mem.indexOf(u8, one, "1 confirmations") == null);
 
-    const zero = App.txConfirmationText(a, 0);
+    const zero = App.txConfirmationText(a, 0, 0);
     try std.testing.expect(std.mem.indexOf(u8, zero, "0 confirmations") != null);
+
+    // A coin that declares when funds are spendable counts up to it, and only
+    // then says Confirmed.
+    try std.testing.expect(std.mem.indexOf(u8, App.txConfirmationText(a, 3, 10), "3/10 confirmations") != null);
+    try std.testing.expect(std.mem.indexOf(u8, App.txConfirmationText(a, 7, 10), "Confirmed") == null);
+    try std.testing.expect(std.mem.indexOf(u8, App.txConfirmationText(a, 10, 10), "Confirmed") != null);
 }
 
 test "renderTransactionsTab lists cached transactions newest-first with date and amount" {
@@ -13073,7 +13087,7 @@ test "renderTransactionsTab lists cached transactions newest-first with date and
     // Empty cache: an explicit empty state rather than a bare blank list.
     var act: Activity = .{};
     {
-        const empty = try App.renderTransactionsTab(a, &act, 8);
+        const empty = try App.renderTransactionsTab(a, &act, 8, 0);
         try std.testing.expect(std.mem.indexOf(u8, empty, "No transactions yet.") != null);
     }
 
@@ -13085,7 +13099,7 @@ test "renderTransactionsTab lists cached transactions newest-first with date and
     act.tx_buf[2] = .{ .direction = .stake, .amount = 5.0, .time = 1893456120, .confirmations = 6 };
     act.tx_count = 3;
 
-    const body = try App.renderTransactionsTab(a, &act, 8);
+    const body = try App.renderTransactionsTab(a, &act, 8, 0);
     try std.testing.expect(std.mem.indexOf(u8, body, "Transactions") != null);
     // A column header sits above the rows.
     try std.testing.expect(std.mem.indexOf(u8, body, "Date") != null);
@@ -13795,7 +13809,7 @@ test "just unlocked, the tabs say they're loading until a poll has read the wall
 
     var act: Activity = .{};
     act.ext_wallet_loading = true;
-    try std.testing.expect(std.mem.indexOf(u8, try App.renderTransactionsTab(a, &act, 8), "Loading your transactions") != null);
+    try std.testing.expect(std.mem.indexOf(u8, try App.renderTransactionsTab(a, &act, 8, 0), "Loading your transactions") != null);
     try std.testing.expect(std.mem.indexOf(u8, try App.renderReceiveTab(a, &act, ""), "Fetching your address") != null);
 
     // A poll that couldn't read the wallet (it started before the unlock) leaves
@@ -13807,7 +13821,7 @@ test "just unlocked, the tabs say they're loading until a poll has read the wall
     act.poll_wallet_read = true;
     _ = act.applyPoll();
     try std.testing.expect(!act.ext_wallet_loading);
-    try std.testing.expect(std.mem.indexOf(u8, try App.renderTransactionsTab(a, &act, 8), "No transactions yet") != null);
+    try std.testing.expect(std.mem.indexOf(u8, try App.renderTransactionsTab(a, &act, 8, 0), "No transactions yet") != null);
 }
 
 test "the Transactions tab says where an unfinished send is, and offers x only when it can be cancelled" {
@@ -13820,14 +13834,14 @@ test "the Transactions tab says where an unfinished send is, and offers x only w
     act.tx_buf[1] = .{ .direction = .sent, .amount = 0.05, .time = 1_789_990_000, .confirmations = 0, .stage = .in_mempool };
     act.tx_count = 2;
 
-    var body = try App.renderTransactionsTab(a, &act, 8);
+    var body = try App.renderTransactionsTab(a, &act, 8, 0);
     try std.testing.expect(std.mem.indexOf(u8, body, "waiting for the receiver") != null);
     try std.testing.expect(std.mem.indexOf(u8, body, "sent — waiting for confirmations") != null);
     try std.testing.expect(std.mem.indexOf(u8, body, "0 confirmations") == null);
     try std.testing.expect(std.mem.indexOf(u8, body, "x: cancel") == null);
 
     act.tx_buf[0].cancellable = true;
-    body = try App.renderTransactionsTab(a, &act, 8);
+    body = try App.renderTransactionsTab(a, &act, 8, 0);
     try std.testing.expect(std.mem.indexOf(u8, body, "x: cancel") != null);
 }
 
@@ -13842,7 +13856,7 @@ test "the Transactions tab shows who a transaction was with, and its note" {
     act.tx_buf[1] = .{ .direction = .sent, .amount = 1, .time = 1_789_000_000, .confirmations = 9999 };
     act.tx_buf[1].setAddress("esXBF4QgPnTk64M1ky2DeBTCvKXNBwKp3mfnHTbzAKU2wagigz6J@epicbox.epiccash.com");
     act.tx_count = 2;
-    const body = try App.renderTransactionsTab(a, &act, 8);
+    const body = try App.renderTransactionsTab(a, &act, 8, 0);
     try std.testing.expect(std.mem.indexOf(u8, body, "rent for May") != null);
     try std.testing.expect(std.mem.indexOf(u8, body, "to esXBF4…gigz6J") != null);
 }
@@ -16531,12 +16545,12 @@ test "the Transactions tab offers to finish a send that's waiting for its reply 
     var act: Activity = .{};
     act.tx_buf[0] = .{ .direction = .sent, .amount = 0.018, .time = 1_790_000_000, .confirmations = 0, .stage = .awaiting_reply_file };
     act.tx_count = 1;
-    const body = try App.renderTransactionsTab(a, &act, 8);
+    const body = try App.renderTransactionsTab(a, &act, 8, 0);
     try std.testing.expect(std.mem.indexOf(u8, body, "waiting for their reply file") != null);
     try std.testing.expect(std.mem.indexOf(u8, body, "f: finish a file send") != null);
 
     act.tx_buf[0].stage = .awaiting_counterparty;
-    try std.testing.expect(std.mem.indexOf(u8, try App.renderTransactionsTab(a, &act, 8), "f: finish") == null);
+    try std.testing.expect(std.mem.indexOf(u8, try App.renderTransactionsTab(a, &act, 8, 0), "f: finish") == null);
 }
 
 test "a coin with one fixed address offers no new one, and says why" {

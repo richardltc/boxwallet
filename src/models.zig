@@ -477,6 +477,30 @@ pub const TxDirection = enum { received, sent, stake, staked };
 /// column, the GUI's confirmations column) — it's a policy, not presentation.
 pub const tx_confirmed_threshold: i64 = 6;
 
+/// A row's Status words for a coin that declares how many confirmations make
+/// received funds spendable (`Coin.spendable_confirmations`): "3/10
+/// confirmations" until then, "Confirmed" (`settled`) once it's spendable — so
+/// the row never says Confirmed while the money isn't yet Available. One
+/// wording for both front-ends. `buf` holds the text.
+pub const ConfirmationStatus = struct { text: []const u8, settled: bool };
+
+pub fn confirmationStatus(buf: []u8, confirmations: i64, needed: u32) ConfirmationStatus {
+    if (confirmations >= needed) return .{ .text = "Confirmed", .settled = true };
+    if (confirmations <= 0) return .{ .text = "unconfirmed", .settled = false };
+    const text = std.fmt.bufPrint(buf, "{d}/{d} confirmations", .{ confirmations, needed }) catch "unconfirmed";
+    return .{ .text = text, .settled = false };
+}
+
+test "confirmationStatus counts up to spendable, then says Confirmed" {
+    var buf: [48]u8 = undefined;
+    try std.testing.expectEqualStrings("3/10 confirmations", confirmationStatus(&buf, 3, 10).text);
+    try std.testing.expect(!confirmationStatus(&buf, 9, 10).settled);
+    const done = confirmationStatus(&buf, 10, 10);
+    try std.testing.expect(done.settled);
+    try std.testing.expectEqualStrings("Confirmed", done.text);
+    try std.testing.expectEqualStrings("unconfirmed", confirmationStatus(&buf, 0, 10).text);
+}
+
 /// Where a not-yet-confirmed transaction is, for a coin whose transactions
 /// aren't finished the moment they're made (Epic: a send waits for the
 /// receiver to sign it, then for the network). `.none` for everything else —
