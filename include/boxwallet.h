@@ -1237,6 +1237,7 @@ typedef struct {
 #define BW_TX_STAGE_NONE                  0
 #define BW_TX_STAGE_AWAITING_COUNTERPARTY 1  /* made, not yet seen by the network */
 #define BW_TX_STAGE_IN_MEMPOOL            2
+#define BW_TX_STAGE_AWAITING_REPLY_FILE   3  /* a slate-file send: offer to finish it */
 /* The Status-column words for a stage (the TUI's); 0 for NONE. */
 size_t  bw_tx_stage_text(int stage, char *buf, size_t cap);
 

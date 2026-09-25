@@ -835,6 +835,7 @@ make_tx_rows(const std::vector<BwWalletTx> &txs, int decimals, bool has_stake)
         r.txid = ss(std::string(t.txid, t.txid_len));
         r.note = ss(std::string(t.note, t.note_len));
         r.address = ss(std::string(t.address, t.address_len));
+        r.awaiting_file = t.stage == BW_TX_STAGE_AWAITING_REPLY_FILE;
         r.incoming = incoming;
         rows.push_back(std::move(r));
     }
@@ -1019,6 +1020,10 @@ static void apply_coin_metadata(const AppWindow *ui, bw_ctx *ctx, int idx)
     // A note typed for one coin mustn't ride along with another coin's send.
     ui->set_send_note_max(static_cast<int>(bw_coin_send_note_max(idx)));
     ui->set_has_slate_files(bw_coin_supports_slate_files(idx) != 0);
+    // Each coin starts on the ordinary method, with nothing typed for another.
+    ui->set_send_method(0);
+    ui->set_send_addr_text("");
+    ui->set_send_result_path("");
     ui->set_send_note_text("");
     ui->set_has_cancel_tx(bw_coin_supports_cancel_tx(idx) != 0);
     ui->set_tx_action_result(ss(""));
@@ -3698,9 +3703,11 @@ int main(int argc, char **argv)
                     (*h)->set_send_result_error(rc != 0);
                     if (rc == 0)
                         (*h)->set_send_note_text("");
+                    // The path goes under the message, with its copy button.
+                    (*h)->set_send_result_path(ss(rc == 0 ? reply : std::string()));
                     (*h)->set_send_result(ss(
-                        rc == 0   ? "Saved " + reply + " \u2014 give it to the person you're paying, then open "
-                                    "their .response file here (Open slate file\u2026) to finish."
+                        rc == 0   ? std::string("Saved. Send this file to the person you're paying. When they send one "
+                                                "back, finish it from the Transactions tab.")
                         : rc == 1 ? reply
                                   : err));
                 }
