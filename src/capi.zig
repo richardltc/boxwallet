@@ -2705,6 +2705,24 @@ export fn bw_slate_default_dir(ctx: ?*Ctx, buf: ?[*]u8, cap: usize) usize {
     return copyOut(b[0..cap], dir);
 }
 
+/// Where to save a slate file: the folder chosen last, if it still exists,
+/// else Downloads (or home) — `conf.slateSaveDir`. Returns the length written.
+export fn bw_slate_save_dir(ctx: ?*Ctx, buf: ?[*]u8, cap: usize) usize {
+    const c = ctx orelse return 0;
+    const b = buf orelse return 0;
+    const dir = conf.slateSaveDir(std.heap.page_allocator, c.install_root, c.home_dir) catch return 0;
+    defer std.heap.page_allocator.free(dir);
+    return copyOut(b[0..cap], dir);
+}
+
+/// Remember `dir` as where slate files go. 0 = saved, -1 = couldn't be.
+export fn bw_slate_set_save_dir(ctx: ?*Ctx, dir: ?[*:0]const u8) c_int {
+    const c = ctx orelse return -1;
+    const d = dir orelse return -1;
+    conf.setSlateSaveDir(std.heap.page_allocator, c.install_root, std.mem.span(d)) catch return -1;
+    return 0;
+}
+
 /// What a file send of `amount` would cost: 0 = *fee_out set, 1 = the wallet
 /// refuses it already (`out` = why), -1 = transport failure.
 export fn bw_wallet_slate_fee(ctx: ?*Ctx, idx: usize, amount: f64, fee_out: ?*f64, out: ?[*]u8, cap: usize) c_int {

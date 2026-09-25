@@ -486,8 +486,10 @@ pub const ConfirmationStatus = struct { text: []const u8, settled: bool };
 
 pub fn confirmationStatus(buf: []u8, confirmations: i64, needed: u32) ConfirmationStatus {
     if (confirmations >= needed) return .{ .text = "Confirmed", .settled = true };
-    if (confirmations <= 0) return .{ .text = "unconfirmed", .settled = false };
-    const text = std.fmt.bufPrint(buf, "{d}/{d} confirmations", .{ confirmations, needed }) catch "unconfirmed";
+    // Not "unconfirmed": that reads as something wrong, when it's only waiting
+    // for a block — the same words the sender's side uses.
+    if (confirmations <= 0) return .{ .text = "waiting for confirmations", .settled = false };
+    const text = std.fmt.bufPrint(buf, "{d}/{d} confirmations", .{ confirmations, needed }) catch "waiting for confirmations";
     return .{ .text = text, .settled = false };
 }
 
@@ -498,7 +500,7 @@ test "confirmationStatus counts up to spendable, then says Confirmed" {
     const done = confirmationStatus(&buf, 10, 10);
     try std.testing.expect(done.settled);
     try std.testing.expectEqualStrings("Confirmed", done.text);
-    try std.testing.expectEqualStrings("unconfirmed", confirmationStatus(&buf, 0, 10).text);
+    try std.testing.expectEqualStrings("waiting for confirmations", confirmationStatus(&buf, 0, 10).text);
 }
 
 /// Where a not-yet-confirmed transaction is, for a coin whose transactions

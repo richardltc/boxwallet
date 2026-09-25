@@ -1407,6 +1407,11 @@ typedef struct {
 int     bw_coin_supports_slate_files(size_t idx);
 /* Where to save a slate by default: Downloads if the user has one, else home. */
 size_t  bw_slate_default_dir(bw_ctx *ctx, char *buf, size_t cap);
+/* Where to save a slate: the folder the user chose last (if it still exists),
+ * else the default above. bw_slate_set_save_dir remembers a new choice (in
+ * boxwallet.conf): 0 = saved, -1 = couldn't be. */
+size_t  bw_slate_save_dir(bw_ctx *ctx, char *buf, size_t cap);
+int     bw_slate_set_save_dir(bw_ctx *ctx, const char *dir);
 int     bw_wallet_slate_fee(bw_ctx *ctx, size_t idx, double amount, double *fee_out,
                             char *out, size_t cap);
 /* 0: saved, out = the file's path. The coins stay locked until the response is

@@ -213,6 +213,69 @@ pub fn userFilesDir(allocator: std.mem.Allocator, home_dir: []const u8) ![]const
     return allocator.dupe(u8, home_dir);
 }
 
+/// BoxWallet's own setting for where a slate file is saved (`settings_file`).
+pub const slate_dir_key = "slate_dir";
+
+/// Where to save a slate file: the folder the user chose last time
+/// (`slate_dir_key`), if it still exists, else `userFilesDir`. Caller owns the
+/// returned slice.
+pub fn slateSaveDir(allocator: std.mem.Allocator, install_root: []const u8, home_dir: []const u8) ![]const u8 {
+    var threaded: std.Io.Threaded = .init(allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    if (readValue(allocator, io, install_root, settings_file, slate_dir_key) catch null) |stored| {
+        if (std.Io.Dir.cwd().openDir(io, stored, .{})) |d| {
+            var dir = d;
+            dir.close(io);
+            return stored;
+        } else |_| allocator.free(stored);
+    }
+    return userFilesDir(allocator, home_dir);
+}
+
+/// Remember `dir` as where slate files go (`slateSaveDir`).
+pub fn setSlateSaveDir(allocator: std.mem.Allocator, install_root: []const u8, dir: []const u8) !void {
+    var threaded: std.Io.Threaded = .init(allocator, .{});
+    defer threaded.deinit();
+    try setValue(allocator, threaded.io(), install_root, settings_file, slate_dir_key, dir);
+}
+
+test "slateSaveDir remembers the chosen folder while it exists" {
+    const a = std.testing.allocator;
+    var threaded: std.Io.Threaded = .init(a, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const base = try tmp.dir.realPathFileAlloc(io, ".", a);
+    defer a.free(base);
+    try tmp.dir.createDirPath(io, "root");
+    try tmp.dir.createDirPath(io, "home");
+    try tmp.dir.createDirPath(io, "pay");
+    const root = try std.fs.path.join(a, &.{ base, "root" });
+    defer a.free(root);
+    const home = try std.fs.path.join(a, &.{ base, "home" });
+    defer a.free(home);
+    const pay = try std.fs.path.join(a, &.{ base, "pay" });
+    defer a.free(pay);
+
+    // Nothing chosen yet: the default.
+    const first = try slateSaveDir(a, root, home);
+    defer a.free(first);
+    try std.testing.expectEqualStrings(home, first);
+
+    try setSlateSaveDir(a, root, pay);
+    const chosen = try slateSaveDir(a, root, home);
+    defer a.free(chosen);
+    try std.testing.expectEqualStrings(pay, chosen);
+
+    // Gone since: back to the default rather than a folder that isn't there.
+    try tmp.dir.deleteTree(io, "pay");
+    const after = try slateSaveDir(a, root, home);
+    defer a.free(after);
+    try std.testing.expectEqualStrings(home, after);
+}
+
 test "userFilesDir prefers Downloads, else home" {
     const a = std.testing.allocator;
     var threaded: std.Io.Threaded = .init(a, .{});

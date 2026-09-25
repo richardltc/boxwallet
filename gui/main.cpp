@@ -1028,6 +1028,11 @@ static void apply_coin_metadata(const AppWindow *ui, bw_ctx *ctx, int idx)
     // A note typed for one coin mustn't ride along with another coin's send.
     ui->set_send_note_max(static_cast<int>(bw_coin_send_note_max(idx)));
     ui->set_has_slate_files(bw_coin_supports_slate_files(idx) != 0);
+    if (bw_coin_supports_slate_files(idx) != 0) {
+        char sd[4096];
+        size_t sn = bw_slate_save_dir(ctx, sd, sizeof sd);
+        ui->set_slate_save_dir(ss(std::string(sd, sn)));
+    }
     // An interactive-transaction coin (Epic) says which step a transaction is
     // at, in words too long for the usual Status column.
     ui->set_tx_status_wide(bw_coin_supports_slate_files(idx) != 0 || bw_coin_supports_cancel_tx(idx) != 0);
@@ -1308,7 +1313,9 @@ static void browse_refresh(const AppWindow *ui)
     // The core owns what counts as each; this only filters what's shown — it
     // still reads what the picked file actually is.
     const int coin = g_selected.load();
-    const bool slate_pick = ui->get_slate_open() && coin >= 0;
+    // Choosing a folder (where to save a slate): folders only.
+    const bool folders_only = ui->get_browse_folder_mode();
+    const bool slate_pick = !folders_only && ui->get_slate_open() && coin >= 0;
     const bool replies = ui->get_slate_purpose() == 1;
 
     g_entries.clear();
@@ -1321,6 +1328,8 @@ static void browse_refresh(const AppWindow *ui)
             j++;
         std::string name(buf + start, j - start);
         i = j + 1;
+        if (folders_only && t != 'd')
+            continue;
         if (slate_pick && t != 'd') {
             const size_t c = static_cast<size_t>(coin);
             const int wanted = replies ? bw_slate_is_reply_name(c, name.c_str())
@@ -1334,9 +1343,10 @@ static void browse_refresh(const AppWindow *ui)
         g_entries.push_back(e);
     }
 
-    ui->set_browse_note(ss(!slate_pick ? ""
-                           : replies  ? "Showing reply files only."
-                                      : "Showing payment files (.tx) only."));
+    ui->set_browse_note(ss(folders_only ? "Where should the slate file be saved? Open the folder, then choose \u201cSave here\u201d."
+                           : !slate_pick ? ""
+                           : replies     ? "Showing reply files only."
+                                         : "Showing payment files (.tx) only."));
     ui->set_browse_entries(std::make_shared<slint::VectorModel<BrowseEntry>>(g_entries));
     ui->set_browse_path(ss(g_browse_path));
 }
@@ -3727,15 +3737,16 @@ int main(int argc, char **argv)
             amt = -1;
         }
         std::string note{std::string_view(note_text)};
-        if (auto h = weak.lock())
+        // The folder shown on the Send tab (and in the confirm) is where it goes.
+        std::string dir;
+        if (auto h = weak.lock()) {
             (*h)->set_send_busy(true);
-        std::thread([weak, ctx, coin, amt, note, wake_poll]() {
+            dir = std::string(std::string_view((*h)->get_slate_save_dir()));
+        }
+        std::thread([weak, ctx, coin, amt, note, dir, wake_poll]() {
             WorkerGuard wg;
-            char dir[4096];
-            size_t dn = bw_slate_default_dir(ctx, dir, sizeof dir - 1);
-            dir[dn] = '\0';
             char out[1024] = {0};
-            int rc = bw_wallet_slate_send(ctx, static_cast<size_t>(coin), amt, note.c_str(), dir, out, sizeof out);
+            int rc = bw_wallet_slate_send(ctx, static_cast<size_t>(coin), amt, note.c_str(), dir.c_str(), out, sizeof out);
             std::string reply(out);
             std::string err = (rc < 0) ? last_error_text(ctx, rc) : std::string();
             post_to_ui([weak, rc, reply, err]() {
@@ -3946,6 +3957,12 @@ int main(int argc, char **argv)
         auto h = weak.lock();
         if (!h)
             return;
+        // Asking where to save a slate: start in the folder used for the last one.
+        if ((*h)->get_browse_folder_mode()) {
+            std::string sd{std::string_view((*h)->get_slate_save_dir())};
+            if (!sd.empty())
+                g_browse_path = sd;
+        }
         // Belt and braces: the start-up seeding leaves this empty if the home dir
         // couldn't be resolved, and listing "" would land the user right back on
         // the blank screen this callback exists to prevent.
@@ -3957,6 +3974,18 @@ int main(int argc, char **argv)
                 g_browse_path = "/";
         }
         browse_refresh(&**h);
+    });
+    // Folder mode: the folder the browser is showing is where slates go now,
+    // and next time (remembered by the core in boxwallet.conf).
+    ui->on_browse_choose_folder([weak, ctx]() {
+        auto h = weak.lock();
+        if (!h)
+            return;
+        if (bw_slate_set_save_dir(ctx, g_browse_path.c_str()) != 0)
+            std::fprintf(stderr, "BoxWallet: couldn't remember the slate folder\n");
+        (*h)->set_slate_save_dir(ss(g_browse_path));
+        (*h)->set_browse_folder_mode(false);
+        (*h)->set_browse_open(false);
     });
     ui->on_browse_up([weak]() {
         if (auto h = weak.lock()) {
