@@ -1240,11 +1240,12 @@ typedef struct {
 /* Where an unconfirmed transaction is, for a coin whose transactions aren't
  * finished when made (Epic). NONE for everything else — show confirmations. */
 #define BW_TX_STAGE_NONE                  0
-#define BW_TX_STAGE_AWAITING_COUNTERPARTY 1  /* made, not yet seen by the network */
-#define BW_TX_STAGE_IN_MEMPOOL            2
+#define BW_TX_STAGE_AWAITING_COUNTERPARTY 1  /* with the other side (the relay) */
+#define BW_TX_STAGE_IN_MEMPOOL            2  /* on the network, waiting for confirmations */
 #define BW_TX_STAGE_AWAITING_REPLY_FILE   3  /* a slate-file send: offer to finish it */
-/* The Status-column words for a stage (the TUI's); 0 for NONE. */
-size_t  bw_tx_stage_text(int stage, char *buf, size_t cap);
+/* The Status-column words for a stage (the TUI's), for the row's direction
+ * (BwWalletTx.direction); 0 for NONE. */
+size_t  bw_tx_stage_text(int stage, int direction, char *buf, size_t cap);
 
 /* Whether the coin can cancel an unsent transaction (a cancellable row). */
 int     bw_coin_supports_cancel_tx(size_t idx);

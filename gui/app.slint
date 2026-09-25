@@ -1758,6 +1758,9 @@ export component AppWindow inherits Window {
     // opening one — someone's payment, or the reply to yours — is its own
     // dialog below, driven by main.cpp through the core's inspect/process.
     in property <bool> has-slate-files: false;
+    // The coin's transactions go through named steps (Epic), whose words need a
+    // wider Status column than a confirmation count.
+    in property <bool> tx-status-wide: false;
     // False for a coin whose receive address is fixed for the wallet's life
     // (Epic, Zano): no "New address", and `receive-address-note` says why.
     in property <bool> can-new-address: true;
@@ -3519,13 +3522,18 @@ export component AppWindow inherits Window {
                                             // Still settling reads as a live figure
                                             // (amber, and it climbs); settled goes
                                             // quiet — same split as the TUI's Status.
+                                            // Wider for a coin whose transactions
+                                            // go through named steps (Epic: "sent —
+                                            // waiting for confirmations"); a plain
+                                            // count needs little room.
                                             Text {
                                                 text: row.confirmations;
                                                 color: row.settled ? #6a6a6a : #c9a227;
                                                 font-size: 12px;
                                                 vertical-alignment: center;
-                                                width: 90px;
+                                                width: root.tx-status-wide ? 240px : 90px;
                                                 horizontal-alignment: right;
+                                                overflow: elide;
                                             }
                                         }
                                         hdr := TouchArea {

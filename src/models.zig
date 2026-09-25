@@ -495,13 +495,18 @@ pub const TxStage = enum(u8) {
     /// front-ends offer to finish it from this row.
     awaiting_reply_file = 3,
 
-    /// What the Status column says for it — one wording for both front-ends.
-    /// Empty for `.none`.
-    pub fn label(self: TxStage) []const u8 {
+    /// What the Status column says for it — one wording for both front-ends,
+    /// naming the step the transaction is actually at: with the other side
+    /// (the relay, or a file), or on the network waiting to be mined. The
+    /// network step reads for the row's `direction`. Empty for `.none`.
+    pub fn label(self: TxStage, direction: TxDirection) []const u8 {
         return switch (self) {
             .none => "",
-            .awaiting_counterparty => "waiting to complete",
-            .in_mempool => "in mempool",
+            .awaiting_counterparty => "waiting for the receiver",
+            .in_mempool => switch (direction) {
+                .received, .stake => "received — waiting for confirmations",
+                .sent, .staked => "sent — waiting for confirmations",
+            },
             .awaiting_reply_file => "waiting for their reply file",
         };
     }

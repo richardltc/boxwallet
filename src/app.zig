@@ -9809,7 +9809,7 @@ pub const App = struct {
             // A coin that says where an unconfirmed transaction is (Epic) gets
             // those words instead of a bare "0 confirmations".
             const conf_text = if (tx.stage != .none)
-                ((zz.Style{}).bold(true).fg(.yellow).render(a, tx.stage.label()) catch tx.stage.label())
+                ((zz.Style{}).bold(true).fg(.yellow).render(a, tx.stage.label(tx.direction)) catch tx.stage.label(tx.direction))
             else
                 txConfirmationText(a, tx.confirmations);
             // Who it went to / came from (shortened — the tab doesn't scroll, so
@@ -13821,8 +13821,8 @@ test "the Transactions tab says where an unfinished send is, and offers x only w
     act.tx_count = 2;
 
     var body = try App.renderTransactionsTab(a, &act, 8);
-    try std.testing.expect(std.mem.indexOf(u8, body, "waiting to complete") != null);
-    try std.testing.expect(std.mem.indexOf(u8, body, "in mempool") != null);
+    try std.testing.expect(std.mem.indexOf(u8, body, "waiting for the receiver") != null);
+    try std.testing.expect(std.mem.indexOf(u8, body, "sent — waiting for confirmations") != null);
     try std.testing.expect(std.mem.indexOf(u8, body, "0 confirmations") == null);
     try std.testing.expect(std.mem.indexOf(u8, body, "x: cancel") == null);
 
