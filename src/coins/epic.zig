@@ -3413,7 +3413,7 @@ pub const Epic = struct {
         /// Rows for sends finalized this session: in the mempool, not cancellable.
         fn apply(rows: []models.WalletTx) void {
             for (rows) |*r| {
-                if (r.direction != .sent or r.stage != .awaiting_counterparty) continue;
+                if (r.direction != .sent or !r.stage.waitingForCounterparty()) continue;
                 if (!has(r.txid())) continue;
                 r.stage = .in_mempool;
                 r.cancellable = false;
@@ -3954,6 +3954,10 @@ pub const Epic = struct {
             if (e.tx_slate_id) |id| all[n].setTxid(id);
             all[n].setNote(e.note());
             all[n].setAddress(e.address());
+            // An Epicbox send always records who it went to; one with no
+            // address went as a slate file, and its reply comes back by hand.
+            if (all[n].stage == .awaiting_counterparty and kind.direction == .sent and all[n].address_len == 0)
+                all[n].stage = .awaiting_reply_file;
             all[n].cancellable = !e.confirmed and kind.stage == .awaiting_counterparty and
                 kind.direction == .sent and all[n].txid_len > 0 and
                 time > 0 and now - time >= cancel_min_age_s;
@@ -5102,7 +5106,7 @@ test "parseTxLog reads 4.x's paged reply: stages, slate ids, and what can be can
     // confirmed send and receive, and a cancelled send that must be dropped.
     const inner =
         \\{"id":1,"jsonrpc":"2.0","result":{"Ok":{"pager":{"limit":20,"offset":0,"records_read":5,"sort_order":"desc","total_records":5},"refresh_from_node":true,"txs":[
-        \\{"id":4,"tx_type":"TxSentCreated","tx_slate_id":"19763226-1dd5-4b89-bf76-d03978a92cd4","creation_ts":"2026-09-23T18:23:00Z","confirmed":false,"amount_credited":"2400000","amount_debited":"4200000"},
+        \\{"id":4,"tx_type":"TxSentCreated","tx_slate_id":"19763226-1dd5-4b89-bf76-d03978a92cd4","creation_ts":"2026-09-23T18:23:00Z","confirmed":false,"amount_credited":"2400000","amount_debited":"4200000","public_addr":"esXh3H6asayjCMuyGDepZuhX6pQ7B7w6wyGnXLDcK3cBNMC93B5k@epicbox.epiccash.com"},
         \\{"id":3,"tx_type":"TxSentMempool","tx_slate_id":"aaaaaaaa-1dd5-4b89-bf76-d03978a92cd4","creation_ts":"2026-09-23T18:20:00Z","confirmed":false,"amount_credited":"0","amount_debited":"1000000"},
         \\{"id":2,"tx_type":"TxSentCancelled","tx_slate_id":"bbbbbbbb-1dd5-4b89-bf76-d03978a92cd4","creation_ts":"2026-09-23T18:10:00Z","confirmed":false,"amount_credited":"0","amount_debited":"1000000"},
         \\{"id":1,"tx_type":"TxSent","tx_slate_id":"45ac41a0-7812-47ca-baa6-0021c2e8db0d","creation_ts":"2026-09-23T17:50:00Z","confirmed":true,"amount_credited":"4200000","amount_debited":"10000000"},
@@ -5134,6 +5138,17 @@ test "parseTxLog reads 4.x's paged reply: stages, slate ids, and what can be can
         defer allocator.free(txs);
         try std.testing.expect(txs[0].cancellable);
         for (txs[1..]) |t| try std.testing.expect(!t.cancellable);
+    }
+    // A send with no counterparty address went as a slate file: it says it's
+    // waiting for the reply *file*, and is cancellable on the same terms.
+    {
+        const file_send =
+            \\{"result":{"Ok":{"txs":[{"tx_type":"TxSentCreated","tx_slate_id":"65a93004-bb00-42f4-b51a-727da3783ed7","creation_ts":"2026-09-23T18:23:00Z","confirmed":false,"amount_credited":"0","amount_debited":"1","public_addr":null}]}}}
+        ;
+        const txs = try Epic.parseTxLog(allocator, file_send, 32, created + 10 * 60);
+        defer allocator.free(txs);
+        try std.testing.expectEqual(models.TxStage.awaiting_reply_file, txs[0].stage);
+        try std.testing.expect(txs[0].cancellable);
     }
 
 }

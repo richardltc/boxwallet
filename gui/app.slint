@@ -53,6 +53,7 @@ struct WalletTxRow {
     cancellable: bool,   // a send the receiver never answered — offers Cancel
     note: string,        // the sender's note (Epic's slate message), "" for none
     address: string,     // the other side — sent to / received from — "" if unknown
+    awaiting-file: bool, // a slate-file send waiting for its reply — offers Finish
 }
 
 // One row in the Staking list, pre-formatted by the host like WalletTxRow.
@@ -1758,6 +1759,15 @@ export component AppWindow inherits Window {
     // dialog below, driven by main.cpp through the core's inspect/process.
     in property <bool> has-slate-files: false;
     in-out property <bool> send-confirm-is-slate: false;
+    // 0 to an Epicbox address, 1 as a slate file. main.cpp resets it (and the
+    // address) when the coin changes.
+    in-out property <int> send-method: 0;
+    in-out property <string> send-addr-text: "";
+    // Where the last slate was saved, shown under the result with a copy button.
+    in-out property <string> send-result-path: "";
+    // Why the slate dialog was opened — only its wording differs: the core
+    // decides what the picked file is. 0 receive a payment, 1 finish a send.
+    in-out property <int> slate-purpose: 0;
     callback estimate-slate(string);          // amount as typed
     callback slate-send(string, string);      // amount, note
     in-out property <bool> slate-open: false;
@@ -2114,6 +2124,7 @@ export component AppWindow inherits Window {
     property <bool> receive-copied: false;
     property <bool> tx-copied: false;
     property <bool> tx-addr-copied: false;
+    property <bool> path-copied: false;
 
     // Which Transactions row is showing its transaction id, by index; -1 for
     // none. An accordion rather than a per-row flag: the rows come from the core
@@ -2178,12 +2189,13 @@ export component AppWindow inherits Window {
     // one tab is on screen at a time, so only one can be lit.
     copied-reset := Timer {
         interval: 2s;
-        running: root.tip-copied || root.receive-copied || root.tx-copied || root.tx-addr-copied;
+        running: root.tip-copied || root.receive-copied || root.tx-copied || root.tx-addr-copied || root.path-copied;
         triggered => {
             root.tip-copied = false;
             root.receive-copied = false;
             root.tx-copied = false;
             root.tx-addr-copied = false;
+            root.path-copied = false;
         }
     }
 
@@ -3615,6 +3627,30 @@ export component AppWindow inherits Window {
                                                 font-size: 12px;
                                                 wrap: word-wrap;
                                             }
+                                            // Sent as a slate file: finished here,
+                                            // with the reply file the receiver sends
+                                            // back — where the waiting send is.
+                                            if row.awaiting-file && root.has-slate-files: HorizontalLayout {
+                                                spacing: 8px;
+                                                Text {
+                                                    text: "Sent as a slate file \u{2014} waiting for the receiver's reply file.";
+                                                    color: #9a9a9a;
+                                                    font-size: 12px;
+                                                    wrap: word-wrap;
+                                                    vertical-alignment: center;
+                                                    horizontal-stretch: 1;
+                                                }
+                                                Button {
+                                                    text: "Finish with their reply file\u{2026}";
+                                                    primary: true;
+                                                    clicked => {
+                                                        root.picked-file = "";
+                                                        root.slate-purpose = 1;
+                                                        root.slate-stage = 0;
+                                                        root.slate-open = true;
+                                                    }
+                                                }
+                                            }
                                         }
                                     }
                                 }
@@ -3746,9 +3782,10 @@ export component AppWindow inherits Window {
                             }
                             // Paid by file instead of to this address.
                             if root.has-slate-files: Button {
-                                text: "Open slate file\u{2026}";
+                                text: "Receive a payment file\u{2026}";
                                 clicked => {
                                     root.picked-file = "";
+                                    root.slate-purpose = 0;
                                     root.slate-stage = 0;
                                     root.slate-open = true;
                                 }
@@ -3788,7 +3825,39 @@ export component AppWindow inherits Window {
                                 color: #9a9a9a;
                                 font-size: 13px;
                             }
-                            send-addr := LineEdit { placeholder-text: "Destination address"; }
+                            // How to send, for a coin that can also pay by file —
+                            // asked first, so paying by file is a choice you can
+                            // see rather than a button beside the usual one.
+                            if root.has-slate-files: HorizontalLayout {
+                                alignment: start;
+                                spacing: 6px;
+                                Text {
+                                    text: "Send with:";
+                                    color: #9a9a9a;
+                                    font-size: 13px;
+                                    vertical-alignment: center;
+                                }
+                                Button {
+                                    text: "Epicbox address";
+                                    primary: root.send-method == 0;
+                                    clicked => { root.send-method = 0; }
+                                }
+                                Button {
+                                    text: "Slate file";
+                                    primary: root.send-method == 1;
+                                    clicked => { root.send-method = 1; }
+                                }
+                            }
+                            if root.send-method == 1: Text {
+                                text: "For someone without an Epicbox address: you give them a file, they send one back. Finish it from Transactions when their reply arrives.";
+                                color: #8a8a8a;
+                                font-size: 12px;
+                                wrap: word-wrap;
+                            }
+                            if root.send-method == 0: LineEdit {
+                                placeholder-text: "Destination address";
+                                text <=> root.send-addr-text;
+                            }
                             send-amt := LineEdit { placeholder-text: "Amount"; }
                             if root.send-note-max > 0: LineEdit {
                                 placeholder-text: "Note to the receiver (optional)";
@@ -3805,36 +3874,39 @@ export component AppWindow inherits Window {
                             HorizontalLayout {
                                 alignment: start;
                                 spacing: 8px;
-                                Button {
-                                    text: "Review\u{2026}";
+                                if root.send-method == 0: Button {
+                                    text: "Send\u{2026}";
                                     enabled: !root.send-busy && !root.send-note-too-long;
                                     clicked => {
-                                        if (send-addr.text != "" && send-amt.text != "") {
-                                            root.send-confirm-address = send-addr.text;
+                                        if (root.send-addr-text != "" && send-amt.text != "") {
+                                            root.send-confirm-address = root.send-addr-text;
                                             root.send-confirm-amount = send-amt.text;
                                             root.send-confirm-note = root.send-note-max > 0 ? root.send-note-text : "";
                                             root.send-result = "";
+                                            root.send-result-path = "";
                                             root.send-confirm-is-stake = false;
                                             root.send-confirm-is-slate = false;
                                             root.send-fee-text = "";
                                             root.send-fee-pending = root.has-send-fee;
                                             root.send-confirm-open = true;
                                             if (root.has-send-fee) {
-                                                root.estimate-send(send-addr.text, send-amt.text);
+                                                root.estimate-send(root.send-addr-text, send-amt.text);
                                             }
                                         }
                                     }
                                 }
-                                // No address needed: the slate goes to whoever the
-                                // user hands the file to.
-                                if root.has-slate-files: Button {
-                                    text: "Save as slate file\u{2026}";
+                                // No address: the slate goes to whoever the user
+                                // hands the file to.
+                                if root.send-method == 1: Button {
+                                    text: "Create slate file\u{2026}";
+                                    primary: true;
                                     enabled: !root.send-busy && !root.send-note-too-long && send-amt.text != "";
                                     clicked => {
                                         root.send-confirm-amount = send-amt.text;
                                         root.send-confirm-note = root.send-note-max > 0 ? root.send-note-text : "";
                                         root.send-confirm-address = "";
                                         root.send-result = "";
+                                        root.send-result-path = "";
                                         root.send-confirm-is-stake = false;
                                         root.send-confirm-is-slate = true;
                                         root.send-fee-text = "";
@@ -3843,21 +3915,38 @@ export component AppWindow inherits Window {
                                         root.estimate-slate(send-amt.text);
                                     }
                                 }
-                                if root.has-slate-files: Button {
-                                    text: "Open slate file\u{2026}";
-                                    enabled: !root.send-busy;
-                                    clicked => {
-                                        root.picked-file = "";
-                                        root.slate-stage = 0;
-                                        root.slate-open = true;
-                                    }
-                                }
                             }
                             if root.send-result != "": Text {
                                 text: root.send-result;
                                 color: root.send-result-error ? #e05c5c : #7ec27e;
                                 font-size: 12px;
                                 wrap: word-wrap;
+                            }
+                            // A saved slate's path, copyable to attach it somewhere.
+                            // A read-only TextInput for the same reason as the
+                            // receive address: `copy()` needs a selection.
+                            if root.send-result-path != "": HorizontalLayout {
+                                spacing: 8px;
+                                path-input := TextInput {
+                                    text: root.send-result-path;
+                                    read-only: true;
+                                    single-line: true;
+                                    color: #e6e6e6;
+                                    font-family: "monospace";
+                                    font-size: 12px;
+                                    vertical-alignment: center;
+                                    horizontal-stretch: 1;
+                                }
+                                CopyIconButton {
+                                    hint: "Copy path";
+                                    copied: root.path-copied;
+                                    clicked => {
+                                        path-input.select-all();
+                                        path-input.copy();
+                                        path-input.clear-selection();
+                                        root.path-copied = true;
+                                    }
+                                }
                             }
                         }
                     }
@@ -5133,7 +5222,7 @@ export component AppWindow inherits Window {
                     spacing: 10px;
                     alignment: start;
                     Text {
-                        text: root.slate-stage == 0 ? "Open a slate file"
+                        text: root.slate-stage == 0 ? (root.slate-purpose == 1 ? "Finish a file send" : "Receive a payment file")
                             : root.slate-stage == 1 ? "Reading the slate\u{2026}"
                             : root.slate-stage == 3 ? (root.slate-receiving ? "Signing\u{2026}" : "Sending\u{2026}")
                             : root.slate-stage == 4 ? (root.slate-ok ? (root.slate-receiving ? "Signed" : "Done") : "It didn't go through")
@@ -5144,7 +5233,9 @@ export component AppWindow inherits Window {
                     }
                     if root.slate-stage == 0: Text {
                         text: root.picked-file == ""
-                            ? "Someone's payment to you (.tx), or the reply to one of your sends (.tx.response)."
+                            ? (root.slate-purpose == 1
+                                ? "Pick the reply file the receiver sent back (it ends in .tx.response)."
+                                : "Pick the slate file you were sent (it ends in .tx).")
                             : "Selected: " + root.picked-file;
                         color: #9a9a9a;
                         font-size: 12px;
@@ -5935,7 +6026,7 @@ export component AppWindow inherits Window {
                                 clicked => { root.sc-stage = 0; root.sc-cancel(); }
                             }
                             Button {
-                                text: "Review\u{2026}";
+                                text: "Mint\u{2026}";
                                 primary: true;
                                 clicked => { root.sc-stage = 6; }
                             }
@@ -5958,7 +6049,7 @@ export component AppWindow inherits Window {
                                 clicked => { root.sc-stage = 0; root.sc-cancel(); }
                             }
                             Button {
-                                text: "Review\u{2026}";
+                                text: "Send\u{2026}";
                                 primary: true;
                                 clicked => {
                                     root.sc-dest = sc-dst.text;
@@ -5998,7 +6089,7 @@ export component AppWindow inherits Window {
                                 clicked => { root.sc-stage = 0; root.sc-cancel(); }
                             }
                             Button {
-                                text: "Review\u{2026}";
+                                text: "Redeem\u{2026}";
                                 primary: true;
                                 clicked => { root.sc-stage = 6; }
                             }

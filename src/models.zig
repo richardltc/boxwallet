@@ -490,6 +490,10 @@ pub const TxStage = enum(u8) {
     awaiting_counterparty = 1,
     /// Seen in the mempool, waiting to be mined.
     in_mempool = 2,
+    /// A send made as a slate file (`Coin.SlateFiles`), waiting for the
+    /// receiver's reply file — which the user has to bring back and open. The
+    /// front-ends offer to finish it from this row.
+    awaiting_reply_file = 3,
 
     /// What the Status column says for it — one wording for both front-ends.
     /// Empty for `.none`.
@@ -498,7 +502,14 @@ pub const TxStage = enum(u8) {
             .none => "",
             .awaiting_counterparty => "waiting to complete",
             .in_mempool => "in mempool",
+            .awaiting_reply_file => "waiting for their reply file",
         };
+    }
+
+    /// Made, but the other side hasn't answered yet — however the answer is
+    /// coming back.
+    pub fn waitingForCounterparty(self: TxStage) bool {
+        return self == .awaiting_counterparty or self == .awaiting_reply_file;
     }
 };
 
