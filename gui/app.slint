@@ -1767,6 +1767,9 @@ export component AppWindow inherits Window {
     // address) when the coin changes.
     in-out property <int> send-method: 0;
     in-out property <string> send-addr-text: "";
+    // The amount, a property rather than the field's own text so main.cpp can
+    // clear it (with the address and note) once a send has gone through.
+    in-out property <string> send-amt-text: "";
     // Where the last slate was saved, shown under the result with a copy button.
     in-out property <string> send-result-path: "";
     // Why the slate dialog was opened — only its wording differs: the core
@@ -3872,7 +3875,10 @@ export component AppWindow inherits Window {
                                 placeholder-text: "Destination address";
                                 text <=> root.send-addr-text;
                             }
-                            send-amt := LineEdit { placeholder-text: "Amount"; }
+                            LineEdit {
+                                placeholder-text: "Amount";
+                                text <=> root.send-amt-text;
+                            }
                             if root.send-note-max > 0: LineEdit {
                                 placeholder-text: "Note to the receiver (optional)";
                                 text <=> root.send-note-text;
@@ -3892,9 +3898,9 @@ export component AppWindow inherits Window {
                                     text: "Send\u{2026}";
                                     enabled: !root.send-busy && !root.send-note-too-long;
                                     clicked => {
-                                        if (root.send-addr-text != "" && send-amt.text != "") {
+                                        if (root.send-addr-text != "" && root.send-amt-text != "") {
                                             root.send-confirm-address = root.send-addr-text;
-                                            root.send-confirm-amount = send-amt.text;
+                                            root.send-confirm-amount = root.send-amt-text;
                                             root.send-confirm-note = root.send-note-max > 0 ? root.send-note-text : "";
                                             root.send-result = "";
                                             root.send-result-path = "";
@@ -3904,7 +3910,7 @@ export component AppWindow inherits Window {
                                             root.send-fee-pending = root.has-send-fee;
                                             root.send-confirm-open = true;
                                             if (root.has-send-fee) {
-                                                root.estimate-send(root.send-addr-text, send-amt.text);
+                                                root.estimate-send(root.send-addr-text, root.send-amt-text);
                                             }
                                         }
                                     }
@@ -3914,9 +3920,9 @@ export component AppWindow inherits Window {
                                 if root.send-method == 1: Button {
                                     text: "Create slate file\u{2026}";
                                     primary: true;
-                                    enabled: !root.send-busy && !root.send-note-too-long && send-amt.text != "";
+                                    enabled: !root.send-busy && !root.send-note-too-long && root.send-amt-text != "";
                                     clicked => {
-                                        root.send-confirm-amount = send-amt.text;
+                                        root.send-confirm-amount = root.send-amt-text;
                                         root.send-confirm-note = root.send-note-max > 0 ? root.send-note-text : "";
                                         root.send-confirm-address = "";
                                         root.send-result = "";
@@ -3926,7 +3932,7 @@ export component AppWindow inherits Window {
                                         root.send-fee-text = "";
                                         root.send-fee-pending = true;
                                         root.send-confirm-open = true;
-                                        root.estimate-slate(send-amt.text);
+                                        root.estimate-slate(root.send-amt-text);
                                     }
                                 }
                             }

@@ -1029,6 +1029,7 @@ static void apply_coin_metadata(const AppWindow *ui, bw_ctx *ctx, int idx)
     // Each coin starts on the ordinary method, with nothing typed for another.
     ui->set_send_method(0);
     ui->set_send_addr_text("");
+    ui->set_send_amt_text("");
     ui->set_send_result_path("");
     ui->set_send_note_text("");
     ui->set_has_cancel_tx(bw_coin_supports_cancel_tx(idx) != 0);
@@ -3623,9 +3624,14 @@ int main(int argc, char **argv)
                     // gets out of the way of the result underneath it.
                     (*h)->set_send_confirm_open(false);
                     (*h)->set_send_result_error(rc != 0);
-                    // A note belongs to the payment it went with.
-                    if (rc == 0)
+                    // Sent: clear the form, so the next send starts empty and a
+                    // second press can't repeat this one. A refusal keeps it, to
+                    // fix and try again.
+                    if (rc == 0) {
+                        (*h)->set_send_addr_text("");
+                        (*h)->set_send_amt_text("");
                         (*h)->set_send_note_text("");
+                    }
                     // A daemon rejection (rc == 1) carries its own reason
                     // verbatim — it's an answer the user needs to read, not a
                     // generic failure.
@@ -3726,8 +3732,11 @@ int main(int argc, char **argv)
                     (*h)->set_send_busy(false);
                     (*h)->set_send_confirm_open(false);
                     (*h)->set_send_result_error(rc != 0);
-                    if (rc == 0)
+                    // Saved: clear the form, as after a send.
+                    if (rc == 0) {
+                        (*h)->set_send_amt_text("");
                         (*h)->set_send_note_text("");
+                    }
                     // The path goes under the message, with its copy button.
                     (*h)->set_send_result_path(ss(rc == 0 ? reply : std::string()));
                     (*h)->set_send_result(ss(
