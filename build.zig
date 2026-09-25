@@ -137,6 +137,19 @@ pub fn build(b: *std.Build) void {
     const test_step = b.step("test", "Run unit tests");
     test_step.dependOn(&run_tests.step);
 
+    // `ttypass` again, linked with libc: the GUI links libc and the TUI doesn't,
+    // and it takes a different path for each (a libc `ioctl` whose request is a
+    // `c_int` crashed the GUI's unlock while every TUI-shaped test passed).
+    const ttypass_libc = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/ttypass.zig"),
+            .target = target,
+            .optimize = optimize,
+            .link_libc = true,
+        }),
+    });
+    test_step.dependOn(&b.addRunArtifact(ttypass_libc).step);
+
     const release_step = addReleaseStep(b);
     addGuiStep(b, target, optimize);
 

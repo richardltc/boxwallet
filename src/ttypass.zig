@@ -185,7 +185,7 @@ fn childExec(
     const opened = sys.open(slave, .{ .ACCMODE = .RDWR }, @as(posix.mode_t, 0));
     if (posix.errno(opened) != .SUCCESS) childExit();
     const tfd: posix.fd_t = @intCast(opened);
-    if (posix.errno(ioctlInt(tfd, tiocsctty, 0)) != .SUCCESS) childExit();
+    if (ioctlErr(tfd, tiocsctty, 0) != .SUCCESS) childExit();
 
     if (posix.errno(sys.dup2(in_fd, 0)) != .SUCCESS) childExit();
     if (posix.errno(sys.dup2(out_fd, 1)) != .SUCCESS) childExit();
@@ -299,9 +299,14 @@ fn sleepMs(ms: u32) void {
 /// Darwin, where it is `_IO('t', 97)`.
 const tiocsctty = if (builtin.os.tag == .linux) posix.T.IOCSCTTY else 0x20007461;
 
-fn ioctlInt(fd: posix.fd_t, request: anytype, arg: usize) usize {
-    if (builtin.os.tag == .linux and !builtin.link_libc) return std.os.linux.ioctl(fd, request, arg);
-    return @bitCast(@as(isize, std.c.ioctl(fd, @intCast(request), arg)));
+/// `ioctl(fd, request, arg)`, as the error it set. Two paths, because the GUI
+/// links libc and the TUI doesn't. libc declares `request` as a `c_int`, but
+/// requests are 32-bit *patterns* — Linux's `TIOCGPTN` is 0x80045430, past
+/// `c_int`'s range — so it is reinterpreted, not range-checked (the kernel takes
+/// the command as an unsigned 32-bit value either way).
+fn ioctlErr(fd: posix.fd_t, request: u32, arg: usize) posix.E {
+    if (builtin.os.tag == .linux and !builtin.link_libc) return posix.errno(std.os.linux.ioctl(fd, request, arg));
+    return posix.errno(std.c.ioctl(fd, @as(c_int, @bitCast(request)), arg));
 }
 
 /// Open a pty master (close-on-exec, so no other child inherits it) and write the
@@ -313,9 +318,9 @@ fn openMaster(path_out: *[128]u8) Error!posix.fd_t {
         const fd: posix.fd_t = @intCast(rc);
         errdefer _ = sys.close(fd);
         var unlock: c_int = 0;
-        if (posix.errno(ioctlInt(fd, posix.T.IOCSPTLCK, @intFromPtr(&unlock))) != .SUCCESS) return error.PtyUnavailable;
+        if (ioctlErr(fd, posix.T.IOCSPTLCK, @intFromPtr(&unlock)) != .SUCCESS) return error.PtyUnavailable;
         var n: c_uint = 0;
-        if (posix.errno(ioctlInt(fd, posix.T.IOCGPTN, @intFromPtr(&n))) != .SUCCESS) return error.PtyUnavailable;
+        if (ioctlErr(fd, posix.T.IOCGPTN, @intFromPtr(&n)) != .SUCCESS) return error.PtyUnavailable;
         _ = std.fmt.bufPrintZ(path_out, "/dev/pts/{d}", .{n}) catch return error.PtyUnavailable;
         return fd;
     }
