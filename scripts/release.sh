@@ -62,8 +62,26 @@ printf 'Releasing %s as %s on GitHub\n' "$TAG" "$REPO"
 export ZIG_GLOBAL_CACHE_DIR=zig-pkg
 echo "==> zig build test"
 zig build test
+# Cap what the build may use at the memory actually free now, less 1 GiB for
+# the desktop, rather than Zig's default of all of RAM. build.zig declares each
+# heavy compile's peak (`max_rss`: ~4 GiB for a GUI target), so within this
+# budget the build runner queues them instead of running every target at once
+# and having the kernel kill clang part-way ("clang terminated with signal
+# KILL"). Never below one GUI compile, or the build refuses to start at all.
+MAXRSS_ARGS=()
+if [ -r /proc/meminfo ]; then
+  AVAIL_KIB="$(awk '/^MemAvailable:/ {print $2}' /proc/meminfo)"
+  if [ -n "$AVAIL_KIB" ]; then
+    BUDGET=$(( AVAIL_KIB * 1024 - (1 << 30) ))
+    FLOOR=$(( 5 << 30 ))
+    [ "$BUDGET" -ge "$FLOOR" ] || BUDGET="$FLOOR"
+    MAXRSS_ARGS=(--maxrss "$BUDGET")
+    printf '    memory budget: %d MiB\n' "$(( BUDGET >> 20 ))"
+  fi
+fi
+
 echo "==> zig build release-all"
-zig build release-all
+zig build release-all ${MAXRSS_ARGS[@]+"${MAXRSS_ARGS[@]}"}
 
 DIST_DIR="zig-out/dist"
 [ -d "$DIST_DIR" ] || die "$DIST_DIR not found after build"
