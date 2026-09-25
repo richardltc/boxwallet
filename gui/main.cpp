@@ -822,8 +822,8 @@ make_tx_rows(const std::vector<BwWalletTx> &txs, int decimals, bool has_stake)
         // same line the TUI's Status column draws, from the same constant.
         // A coin that says where an unconfirmed transaction is (Epic) gets the
         // core's words for it — the TUI's — instead of "unconfirmed".
-        char stage[48];
-        size_t stage_n = bw_tx_stage_text(t.stage, stage, sizeof stage);
+        char stage[64];
+        size_t stage_n = bw_tx_stage_text(t.stage, t.direction, stage, sizeof stage);
         r.confirmations = ss(
             stage_n > 0                                   ? std::string(stage, stage_n)
             : t.confirmations > bw_tx_confirmed_threshold() ? std::string("confirmed")
@@ -1020,6 +1020,9 @@ static void apply_coin_metadata(const AppWindow *ui, bw_ctx *ctx, int idx)
     // A note typed for one coin mustn't ride along with another coin's send.
     ui->set_send_note_max(static_cast<int>(bw_coin_send_note_max(idx)));
     ui->set_has_slate_files(bw_coin_supports_slate_files(idx) != 0);
+    // An interactive-transaction coin (Epic) says which step a transaction is
+    // at, in words too long for the usual Status column.
+    ui->set_tx_status_wide(bw_coin_supports_slate_files(idx) != 0 || bw_coin_supports_cancel_tx(idx) != 0);
     ui->set_can_new_address(bw_coin_can_new_receive_address(idx) != 0);
     {
         char note[160];

@@ -2299,11 +2299,13 @@ comptime {
 }
 
 /// What the Status column says for a `BwWalletTx.stage` — the same words the
-/// TUI uses. 0 for `none` (show the confirmation count instead).
-export fn bw_tx_stage_text(stage: c_int, buf: ?[*]u8, cap: usize) usize {
+/// TUI uses, for the row's `direction` (`BwWalletTx.direction`). 0 for `none`
+/// (show the confirmation count instead).
+export fn bw_tx_stage_text(stage: c_int, direction: c_int, buf: ?[*]u8, cap: usize) usize {
     const b = buf orelse return 0;
     const s = std.enums.fromInt(models.TxStage, stage) orelse return 0;
-    return copyOut(b[0..cap], s.label());
+    const d = std.enums.fromInt(models.TxDirection, direction) orelse .sent;
+    return copyOut(b[0..cap], s.label(d));
 }
 
 /// Whether the coin can cancel an unsent transaction (a row with
@@ -5786,13 +5788,16 @@ test "bw_setup_op_progress gives the TUI's in-flight words by op number" {
 }
 
 test "bw_tx_stage_text gives the TUI's words for each stage, nothing for none" {
-    var buf: [48]u8 = undefined;
-    try std.testing.expectEqual(@as(usize, 0), bw_tx_stage_text(0, &buf, buf.len));
-    var n = bw_tx_stage_text(1, &buf, buf.len);
-    try std.testing.expectEqualStrings(models.TxStage.awaiting_counterparty.label(), buf[0..n]);
-    n = bw_tx_stage_text(2, &buf, buf.len);
-    try std.testing.expectEqualStrings(models.TxStage.in_mempool.label(), buf[0..n]);
-    try std.testing.expectEqual(@as(usize, 0), bw_tx_stage_text(99, &buf, buf.len));
+    var buf: [64]u8 = undefined;
+    try std.testing.expectEqual(@as(usize, 0), bw_tx_stage_text(0, 1, &buf, buf.len));
+    var n = bw_tx_stage_text(1, 1, &buf, buf.len);
+    try std.testing.expectEqualStrings(models.TxStage.awaiting_counterparty.label(.sent), buf[0..n]);
+    // On the network, the words follow the row: sent or received.
+    n = bw_tx_stage_text(2, @intFromEnum(models.TxDirection.sent), &buf, buf.len);
+    try std.testing.expectEqualStrings("sent — waiting for confirmations", buf[0..n]);
+    n = bw_tx_stage_text(2, @intFromEnum(models.TxDirection.received), &buf, buf.len);
+    try std.testing.expectEqualStrings("received — waiting for confirmations", buf[0..n]);
+    try std.testing.expectEqual(@as(usize, 0), bw_tx_stage_text(99, 1, &buf, buf.len));
 }
 
 test "Nerva reports the wallet shape the GUI has to build for" {
