@@ -3475,9 +3475,18 @@ export component AppWindow inherits Window {
                             for row[idx] in root.tx-rows: Rectangle {
                                 // Fixed heights, not measured from the content: a
                                 // row sized by a child that is sized by the row is
-                                // a binding loop, and the detail below is one line
-                                // beside a copy button either way.
-                                height: root.tx-expanded == idx ? 78px : 34px;
+                                // a binding loop. So the expanded height is added
+                                // up from the lines the detail below has — and
+                                // every line there must be counted here: a line
+                                // past the row's height still draws, but no click
+                                // reaches it (that's how "Finish…" once did
+                                // nothing). The header, padding and id line, then
+                                // the address, the note and the finish line.
+                                height: root.tx-expanded != idx ? 34px
+                                    : 34px + 14px + 30px
+                                        + (row.address != "" ? 36px : 0px)
+                                        + (row.note != "" ? 24px : 0px)
+                                        + (row.awaiting-file && root.has-slate-files ? 40px : 0px);
                                 VerticalLayout {
                                     spacing: 0;
                                     Rectangle {
@@ -3605,6 +3614,7 @@ export component AppWindow inherits Window {
                                             // one place it isn't shortened.
                                             if row.address != "": HorizontalLayout {
                                                 spacing: 8px;
+                                                height: 30px;
                                                 Text {
                                                     text: row.incoming ? "From" : "To";
                                                     color: #8a8a8a;
@@ -3638,22 +3648,28 @@ export component AppWindow inherits Window {
                                             // The sender's note, where the coin carries one
                                             // (Epic's slate message). The core already made
                                             // it safe to show — it's someone else's text.
+                                            // One line, so the row's height above
+                                            // can count it; the full note is in
+                                            // the TUI and the wallet's own log.
                                             if row.note != "": Text {
                                                 text: "Note: " + row.note;
                                                 color: #c8c8c8;
                                                 font-size: 12px;
-                                                wrap: word-wrap;
+                                                height: 18px;
+                                                vertical-alignment: center;
+                                                overflow: elide;
                                             }
                                             // Sent as a slate file: finished here,
                                             // with the reply file the receiver sends
                                             // back — where the waiting send is.
                                             if row.awaiting-file && root.has-slate-files: HorizontalLayout {
                                                 spacing: 8px;
+                                                height: 34px;
                                                 Text {
                                                     text: "Sent as a slate file \u{2014} waiting for the receiver's reply file.";
                                                     color: #9a9a9a;
                                                     font-size: 12px;
-                                                    wrap: word-wrap;
+                                                    overflow: elide;
                                                     vertical-alignment: center;
                                                     horizontal-stretch: 1;
                                                 }
