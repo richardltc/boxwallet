@@ -214,11 +214,15 @@ pub fn build(b: *std.Build) void {
 /// having the kernel kill clang ("clang terminated with signal KILL").
 ///
 /// Measured with `--summary all`, ReleaseSafe on x86_64 Linux (2026-09-25):
-/// the GUI exe (main.cpp against Slint's headers) ~2 GB, the TUI ~1 GB, the core
-/// library ~0.7 GB. The summary rounds, and a step that goes *over* its figure
+/// the TUI ~1 GB, the core library ~0.7 GB. The GUI exe (main.cpp against
+/// Slint's headers, with the release build's UBSan checks) varies by target:
+/// ~3.4 GB for x86_64 Linux, 5.3 GB for aarch64 Linux, 5.7 GB for macOS arm64 —
+/// the figure has to cover the worst of them. A step that goes *over* its figure
 /// is reported as failed, so each has room to spare; declaring too much only
 /// costs parallelism. Re-measure if one of these starts failing that check.
-const gui_max_rss: usize = 4 << 30;
+/// `scripts/release.sh`'s memory floor must stay at least `gui_max_rss`, or the
+/// build runner refuses to start the GUI steps at all.
+const gui_max_rss: usize = 6 << 30;
 const tui_max_rss: usize = 2 << 30;
 const core_max_rss: usize = 1536 << 20;
 

@@ -44,24 +44,35 @@ pub fn expectEqual(expected: []const u8, actual: []const u8) !void {
 
 /// Assert `actual` ends with `suffix`, both compared as if they used `/`.
 pub fn expectEndsWith(actual: []const u8, suffix: []const u8) !void {
-    var abuf: [max_path]u8 = undefined;
-    var sbuf: [max_path]u8 = undefined;
-    const a = try normalize(&abuf, actual);
-    const s = try normalize(&sbuf, suffix);
-    if (std.mem.endsWith(u8, a, s)) return;
-    std.debug.print("expected a path ending in '{s}', found '{s}'\n", .{ s, a });
-    return error.TestExpectedEndsWith;
+    return endsWith(actual, suffix, true);
 }
 
 /// Assert `needle` appears in `haystack`, both compared as if they used `/`.
 /// `haystack` may be a whole joined command line, not just one path.
 pub fn expectContains(haystack: []const u8, needle: []const u8) !void {
+    return contains(haystack, needle, true);
+}
+
+// `report` is off only for this file's own negative tests: a mismatch there is
+// the expected outcome, and printing it puts a failure-looking message in every
+// `zig build test` run that passed.
+fn endsWith(actual: []const u8, suffix: []const u8, report: bool) !void {
+    var abuf: [max_path]u8 = undefined;
+    var sbuf: [max_path]u8 = undefined;
+    const a = try normalize(&abuf, actual);
+    const s = try normalize(&sbuf, suffix);
+    if (std.mem.endsWith(u8, a, s)) return;
+    if (report) std.debug.print("expected a path ending in '{s}', found '{s}'\n", .{ s, a });
+    return error.TestExpectedEndsWith;
+}
+
+fn contains(haystack: []const u8, needle: []const u8, report: bool) !void {
     var hbuf: [max_path]u8 = undefined;
     var nbuf: [max_path]u8 = undefined;
     const h = try normalize(&hbuf, haystack);
     const n = try normalize(&nbuf, needle);
     if (std.mem.indexOf(u8, h, n) != null) return;
-    std.debug.print("expected '{s}' to contain '{s}'\n", .{ h, n });
+    if (report) std.debug.print("expected '{s}' to contain '{s}'\n", .{ h, n });
     return error.TestExpectedContains;
 }
 
@@ -73,8 +84,8 @@ test "comparisons ignore which separator the host produced" {
 
     // Still a real comparison: normalizing separators must not make everything
     // match everything.
-    try std.testing.expectError(error.TestExpectedEndsWith, expectEndsWith("a/b/java.exe", "bin/java.exe"));
-    try std.testing.expectError(error.TestExpectedContains, expectContains("a/b", "c/d"));
+    try std.testing.expectError(error.TestExpectedEndsWith, endsWith("a/b/java.exe", "bin/java.exe", false));
+    try std.testing.expectError(error.TestExpectedContains, contains("a/b", "c/d", false));
 }
 
 test "a path too long to normalize is an error, not a truncated comparison" {

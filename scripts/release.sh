@@ -64,17 +64,23 @@ echo "==> zig build test"
 zig build test
 # Cap what the build may use at the memory actually free now, less 1 GiB for
 # the desktop, rather than Zig's default of all of RAM. build.zig declares each
-# heavy compile's peak (`max_rss`: ~4 GiB for a GUI target), so within this
+# heavy compile's peak (`max_rss`: 6 GiB for a GUI target), so within this
 # budget the build runner queues them instead of running every target at once
 # and having the kernel kill clang part-way ("clang terminated with signal
-# KILL"). Never below one GUI compile, or the build refuses to start at all.
+# KILL"). Never below one GUI compile, or the build refuses to start at all —
+# but a floor isn't memory: if less than that is actually free, say so up front
+# rather than letting clang be killed twenty minutes in.
 MAXRSS_ARGS=()
 if [ -r /proc/meminfo ]; then
   AVAIL_KIB="$(awk '/^MemAvailable:/ {print $2}' /proc/meminfo)"
   if [ -n "$AVAIL_KIB" ]; then
     BUDGET=$(( AVAIL_KIB * 1024 - (1 << 30) ))
-    FLOOR=$(( 5 << 30 ))
-    [ "$BUDGET" -ge "$FLOOR" ] || BUDGET="$FLOOR"
+    FLOOR=$(( 6 << 30 ))
+    if [ "$BUDGET" -lt "$FLOOR" ]; then
+      printf 'warning: only %d MiB free; a GUI compile can peak near %d MiB - close other apps if clang gets killed\n' \
+        "$(( AVAIL_KIB >> 10 ))" "$(( FLOOR >> 20 ))" >&2
+      BUDGET="$FLOOR"
+    fi
     MAXRSS_ARGS=(--maxrss "$BUDGET")
     printf '    memory budget: %d MiB\n' "$(( BUDGET >> 20 ))"
   fi
