@@ -3425,6 +3425,9 @@ pub const Epic = struct {
     };
 
     pub const slate_files: Coin.SlateFiles = .{
+        // Replies named as the epic-wallet CLI names them (`x.tx.response`);
+        // Epic's GUI wallet suggests `finalize_x.tx`, which is recognised too.
+        .other_reply_prefix = "finalize_",
         .fee = epicSlateFee,
         .send = epicSlateSend,
         .inspect = epicSlateInspect,
@@ -3692,22 +3695,23 @@ pub const Epic = struct {
     fn slateRefusal(participants: usize, log: SlateLog) []const u8 {
         if (participants == 1) {
             if (log.sent_open or log.sent_done or log.sent_cancelled)
-                return "This is your own send. Give this file to the person you're paying; open the .response file they send back.";
-            if (log.received) return "You've already received this payment. Send the sender the .response file you made then.";
+                return "This is your own send. Give this file to the person you're paying, and open the reply file they send back.";
+            if (log.received) return "You've already received this payment. Send the sender the reply file you made then.";
             return "You cancelled this payment when it was received, so it can't be taken again.";
         }
         if (participants == 2) {
             if (log.sent_done) return "This payment has already been completed.";
             if (log.sent_cancelled) return "You cancelled this send, so it can't be completed.";
             if (log.received or log.received_cancelled)
-                return "This is the response you made to someone else's payment. Send it back to them to finish it.";
+                return "This is the reply you made to someone else's payment. Send it back to them to finish it.";
             return "This isn't the reply to a send from this wallet.";
         }
         return "That slate isn't one this wallet can use.";
     }
 
-    /// Sign an incoming payment and write the response next to the file. The
-    /// response file is created, never overwritten.
+    /// Sign an incoming payment and write the reply next to the file, named as
+    /// epic-wallet's `receive` names it (`<name>.response`). Created, never
+    /// overwritten.
     fn receiveSlate(allocator: std.mem.Allocator, auth: models.CoinAuth, text: []const u8, path: []const u8) !models.SendResult {
         var arena = std.heap.ArenaAllocator.init(allocator);
         defer arena.deinit();
@@ -3716,7 +3720,7 @@ pub const Epic = struct {
         defer threaded.deinit();
         const io = threaded.io();
 
-        const out_path = try std.fmt.allocPrint(allocator, "{s}.response", .{path});
+        const out_path = try replyPath(allocator, path);
         errdefer allocator.free(out_path);
         if (std.Io.Dir.cwd().access(io, out_path, .{})) |_| {
             return .{ .failed = try std.fmt.allocPrint(allocator, "{s} already exists. Move it out of the way first.", .{out_path}) };
@@ -3775,6 +3779,12 @@ pub const Epic = struct {
             return .{ .failed = try std.fmt.allocPrint(allocator, "The payment was finalized but the network didn't take it: {s}", .{why}) };
         }
         return .{ .ok = "Sent. It's on its way to the network." };
+    }
+
+    /// Where the reply to the slate at `path` goes: beside it, as
+    /// `<path><reply_suffix>`. Caller owns the path.
+    fn replyPath(allocator: std.mem.Allocator, path: []const u8) ![]u8 {
+        return std.fmt.allocPrint(allocator, "{s}{s}", .{ path, slate_files.reply_suffix });
     }
 
     const already_finished = "This send was already finished — the payment is on its way to the network, or already in a block. Nothing was sent twice.";
@@ -5247,7 +5257,7 @@ test "a slate is received, finalized, or refused — by its signers and this wal
     try std.testing.expectStringStartsWith(Epic.slateRefusal(2, .{}), "This isn't the reply");
     // Our own response to someone else's payment isn't ours to finalize.
     try std.testing.expect(V(2, .{ .received = true }) == null);
-    try std.testing.expectStringStartsWith(Epic.slateRefusal(2, .{ .received = true }), "This is the response you made");
+    try std.testing.expectStringStartsWith(Epic.slateRefusal(2, .{ .received = true }), "This is the reply you made");
     // Anything else is no slate we know.
     try std.testing.expect(V(3, .{}) == null);
 }
@@ -5296,6 +5306,31 @@ test "a send finalized from its slate this session isn't offered for cancelling"
 test "a second finalize is reported as already finished, not as wallet internals" {
     try std.testing.expect(Epic.alreadyFinalized("NotFoundErr: Slate id: [65, a9, 30, 4, bb, 0, 42, f4, b5, 1a, 72, 7d, a3, 78, 3e, d7]"));
     try std.testing.expect(!Epic.alreadyFinalized("NotEnoughFunds: {}"));
+}
+
+test "a reply is named like epic-wallet's CLI names it, beside the payment file" {
+    const a = std.testing.allocator;
+    const p = try Epic.replyPath(a, "/home/u/Downloads/65a93004-bb00-42f4-b51a-727da3783ed7.tx");
+    defer a.free(p);
+    try std.testing.expectEqualStrings("/home/u/Downloads/65a93004-bb00-42f4-b51a-727da3783ed7.tx.response", p);
+    const bare = try Epic.replyPath(a, "pay.tx");
+    defer a.free(bare);
+    try std.testing.expectEqualStrings("pay.tx.response", bare);
+
+    // What a "pick their reply" browser shows: ours (and the CLI's), and the
+    // name Epic's GUI wallet suggests.
+    const sf = &Epic.slate_files;
+    try std.testing.expect(sf.isReplyName("finalize_65a93004-bb00-42f4-b51a-727da3783ed7.tx"));
+    try std.testing.expect(sf.isReplyName("65a93004-bb00-42f4-b51a-727da3783ed7.tx.response"));
+    try std.testing.expect(!sf.isReplyName("65a93004-bb00-42f4-b51a-727da3783ed7.tx"));
+    try std.testing.expect(!sf.isReplyName("finalize_notes.txt"));
+    try std.testing.expect(!sf.isReplyName("wallet.dat"));
+
+    // And what a "receive a payment file" browser shows: payments, not replies.
+    try std.testing.expect(sf.isPaymentName("65a93004-bb00-42f4-b51a-727da3783ed7.tx"));
+    try std.testing.expect(!sf.isPaymentName("65a93004-bb00-42f4-b51a-727da3783ed7.tx.response"));
+    try std.testing.expect(!sf.isPaymentName("finalize_65a93004-bb00-42f4-b51a-727da3783ed7.tx"));
+    try std.testing.expect(!sf.isPaymentName("holiday.jpg"));
 }
 
 test "Epic pays by slate file" {

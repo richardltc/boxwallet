@@ -749,9 +749,10 @@ pub const Coin = struct {
     /// receiver opens it and saves a response, the sender opens that to finish.
     ///
     /// Every hook takes the open wallet's auth (the wallet process, as for
-    /// `wallet_send`) and returns refusals as outcomes to show, not errors. The
-    /// file names follow the coin CLI's own (`x.tx` → `x.tx.response`), so a
-    /// file made here works in any wallet for the coin and vice versa.
+    /// `wallet_send`) and returns refusals as outcomes to show, not errors. What
+    /// a file *is* comes from its contents, never its name; the names follow the
+    /// coin's command-line wallet (`<id>.tx`, replied to as `<id>.tx.response`),
+    /// so a reply is always the file you were sent, plus a suffix.
     pub const SlateFiles = struct {
         /// What a file send of `amount` would cost (nothing is built or locked).
         fee: *const fn (
@@ -778,16 +779,44 @@ pub const Coin = struct {
             path: []const u8,
         ) anyerror!models.SlateInfo,
         /// Do what `inspect` said, provided the file still is what the user was
-        /// shown (`expect`): `.receive` signs it and writes `<path>.response`
-        /// (`.ok` is that path); `.finalize` completes and broadcasts the send.
+        /// shown (`expect`): `.receive` signs it and writes the reply beside it,
+        /// `<name><reply_suffix>` (`.ok` is that path); `.finalize` completes and
+        /// broadcasts the send.
         process: *const fn (
             allocator: std.mem.Allocator,
             auth: models.CoinAuth,
             path: []const u8,
             expect: models.SlateKind,
         ) anyerror!models.SendResult,
-        /// Extension of a slate file ("tx"); a response adds ".response".
+        /// Extension of a slate file ("tx").
         extension: []const u8 = "tx",
+        /// What the reply to `<name>` is called: `<name><reply_suffix>`, as the
+        /// coin's command-line wallet names it.
+        reply_suffix: []const u8 = ".response",
+        /// The prefix the coin's GUI wallet suggests for a reply instead
+        /// (`finalize_<name>`) — recognised, so its users' replies are found,
+        /// but never written. Empty for none.
+        other_reply_prefix: []const u8 = "",
+
+        /// Whether a file name looks like a reply to a send — for filtering what
+        /// a "pick their reply" browser shows, never for deciding what a file is.
+        pub fn isReplyName(self: *const SlateFiles, name: []const u8) bool {
+            if (std.mem.endsWith(u8, name, self.reply_suffix)) return true;
+            if (self.other_reply_prefix.len == 0 or !std.mem.startsWith(u8, name, self.other_reply_prefix)) return false;
+            return self.hasExtension(name);
+        }
+
+        /// Whether a file name looks like a payment to receive: `<name>.<ext>`
+        /// that isn't a reply. For filtering the "receive a payment file"
+        /// browser, never for deciding what a file is.
+        pub fn isPaymentName(self: *const SlateFiles, name: []const u8) bool {
+            return self.hasExtension(name) and !self.isReplyName(name);
+        }
+
+        fn hasExtension(self: *const SlateFiles, name: []const u8) bool {
+            const ext = std.fs.path.extension(name);
+            return ext.len > 1 and std.mem.eql(u8, ext[1..], self.extension);
+        }
     };
 
     pub const Stablecoin = struct {

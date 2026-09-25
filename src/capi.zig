@@ -2655,6 +2655,26 @@ export fn bw_coin_supports_slate_files(idx: usize) c_int {
     return if (c.supportsSlateFiles()) 1 else 0;
 }
 
+/// Whether `name` looks like the reply to a send (`SlateFiles.isReplyName`),
+/// for filtering the file browser when finishing one. 0 for a coin without
+/// slate files.
+export fn bw_slate_is_reply_name(idx: usize, name: ?[*:0]const u8) c_int {
+    const c = coinByIndex(idx) orelse return 0;
+    const sf = c.slateFiles() orelse return 0;
+    const n = name orelse return 0;
+    return if (sf.isReplyName(std.mem.span(n))) 1 else 0;
+}
+
+/// Whether `name` looks like a payment to receive (`SlateFiles.isPaymentName`),
+/// for filtering the file browser when receiving one. 0 for a coin without
+/// slate files.
+export fn bw_slate_is_payment_name(idx: usize, name: ?[*:0]const u8) c_int {
+    const c = coinByIndex(idx) orelse return 0;
+    const sf = c.slateFiles() orelse return 0;
+    const n = name orelse return 0;
+    return if (sf.isPaymentName(std.mem.span(n))) 1 else 0;
+}
+
 /// Where a file send saves its slate by default: the user's Downloads folder,
 /// else their home (`conf.userFilesDir`). Returns the length written.
 export fn bw_slate_default_dir(ctx: ?*Ctx, buf: ?[*]u8, cap: usize) usize {
@@ -2771,9 +2791,9 @@ export fn bw_wallet_slate_inspect(ctx: ?*Ctx, idx: usize, path: ?[*:0]const u8, 
 }
 
 /// Do what `bw_wallet_slate_inspect` said, if the file still is that (`kind`):
-/// receive → sign and write `<path>.response` (`out` = its path); finalize →
-/// broadcast (`out` = what happened). 0 = done, 1 = refused (`out` = why), -1 =
-/// transport failure.
+/// receive → sign and write the reply beside it as `<name>.response` (`out` =
+/// its path); finalize → broadcast (`out` = what happened). 0 = done, 1 =
+/// refused (`out` = why), -1 = transport failure.
 export fn bw_wallet_slate_process(ctx: ?*Ctx, idx: usize, path: ?[*:0]const u8, kind: c_int, out: ?[*]u8, cap: usize) c_int {
     const c = ctx orelse return -1;
     const p = path orelse return -1;

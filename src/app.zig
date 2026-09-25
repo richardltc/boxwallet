@@ -7666,6 +7666,35 @@ pub const App = struct {
         if (!coin.supportsSlateFiles() or self.modalOpen()) return;
         self.slate_modal = .{ .coin_idx = self.selected, .purpose = purpose };
         self.startFilePicker();
+        self.filterSlatePicker();
+    }
+
+    /// Show only the files the prompt is for (and folders, to get around):
+    /// payment files when receiving, reply files when finishing a send —
+    /// whatever else is in Downloads is noise here. The picker can only filter
+    /// by extension, and a payment and the GUI wallet's reply share `.tx`, so
+    /// this prunes the listing by the coin's own naming (`SlateFiles`). Run
+    /// after every navigation. Only a filter on what's *shown* — the coin still
+    /// reads what the picked file actually is.
+    fn filterSlatePicker(self: *App) void {
+        const m = self.slate_modal orelse return;
+        const coin = self.coinAt(m.coin_idx) orelse return;
+        const sf = coin.slateFiles() orelse return;
+        const fp = &self.file_picker;
+        var kept: usize = 0;
+        for (fp.entries.items) |e| {
+            const keep = switch (e.entry_type) {
+                .parent, .directory => true,
+                .file, .symlink => if (m.purpose == .finish) sf.isReplyName(e.name) else sf.isPaymentName(e.name),
+            };
+            if (keep) {
+                fp.entries.items[kept] = e;
+                kept += 1;
+            } else fp.allocator.free(e.name);
+        }
+        fp.entries.shrinkRetainingCapacity(kept);
+        if (fp.cursor >= kept) fp.cursor = kept -| 1;
+        if (fp.y_offset > fp.cursor) fp.y_offset = fp.cursor;
     }
 
     /// Keys on the slate prompt. The picker owns navigation until a file is
@@ -7681,7 +7710,11 @@ pub const App = struct {
                 },
                 else => {
                     const selected = self.file_picker.handleKey(self.io, self.environ_map, k) catch false;
-                    if (!selected) return;
+                    if (!selected) {
+                        // It may have moved to another folder: filter that too.
+                        self.filterSlatePicker();
+                        return;
+                    }
                     const fp = self.file_picker.getSelected() orelse return;
                     self.rememberFileDir(fp);
                     self.file_picker.blur();
@@ -11460,7 +11493,7 @@ pub const App = struct {
                     const fee = m.fee orelse 0;
                     var fbuf: [64]u8 = undefined;
                     var tbuf: [64]u8 = undefined;
-                    break :blk try std.fmt.allocPrint(a, "Save a slate file paying {s} {s}? The fee is {s} {s}, so {s} {s} leaves the wallet when it completes. The coins are set aside until you open the receiver's .response file here, or cancel the send.", .{
+                    break :blk try std.fmt.allocPrint(a, "Save a slate file paying {s} {s}? The fee is {s} {s}, so {s} {s} leaves the wallet when it completes. The coins are set aside until you finish it with their reply file, or cancel the send.", .{
                         formatAmount(&buf, amount, coin.balanceDecimals()),
                         coin.coinNameAbbrev(),
                         formatAmount(&fbuf, fee, coin.balanceDecimals()),
@@ -11586,9 +11619,9 @@ pub const App = struct {
             var fout: std.Io.Writer.Allocating = .init(a);
             errdefer fout.deinit();
             const heading_txt = if (m.purpose == .finish)
-                "Finish a file send — pick the receiver's reply file (.response)"
+                "Finish a file send — pick the reply file they sent back (only reply files are shown)"
             else
-                "Receive a payment file — pick the slate file you were sent";
+                "Receive a payment file — pick the slate file you were sent (only .tx files are shown)";
             const heading = (zz.Style{}).bold(true).fg(brand).render(a, heading_txt) catch heading_txt;
             try fout.writer.print("{s}\n\n", .{heading});
             try fout.writer.writeAll(try self.file_picker.view(a));
@@ -11613,7 +11646,7 @@ pub const App = struct {
                 var tbuf: [64]u8 = undefined;
                 const amt = formatAmount(&buf, m.info.amount, coin.balanceDecimals());
                 const detail = if (receiving)
-                    try std.fmt.allocPrint(a, "Someone is paying you {s} {s}. Sign it? Your wallet saves a .response file next to this one — send that back to them. The payment completes when they open it.", .{ amt, coin.coinNameAbbrev() })
+                    try std.fmt.allocPrint(a, "Someone is paying you {s} {s}. Sign it? Your wallet saves a reply file (….response) next to this one — send that back to them. The payment completes when they open it.", .{ amt, coin.coinNameAbbrev() })
                 else
                     try std.fmt.allocPrint(a, "This is the reply to your send of {s} {s}. Finish it? The fee is {s} {s}, so {s} {s} leaves the wallet. This broadcasts the payment and cannot be undone.", .{
                         amt,                                                       coin.coinNameAbbrev(),
@@ -16529,4 +16562,59 @@ test "a coin with one fixed address offers no new one, and says why" {
     var btc: @import("coins/bitcoin.zig").Bitcoin = .{};
     try std.testing.expect(btc.coin().canNewReceiveAddress());
     try std.testing.expect(std.mem.indexOf(u8, try App.renderReceiveTab(a, &act, ""), "n: new address") != null);
+}
+
+test "picking the reply to a send shows only reply files, and folders" {
+    if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
+    const allocator = std.testing.allocator;
+    var threaded: std.Io.Threaded = .init(allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    var env = std.process.Environ.Map.init(allocator);
+    defer env.deinit();
+    try env.put("HOME", "/home/tester");
+    var ctx = zz.Context.init(allocator, allocator, io, &env);
+    var app: App = undefined;
+    app.hide_balances = false;
+    _ = app.init(&ctx);
+    defer app.deinit();
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    for ([_][]const u8{
+        "65a93004-bb00-42f4-b51a-727da3783ed7.tx",
+        "finalize_65a93004-bb00-42f4-b51a-727da3783ed7.tx",
+        "ea03a2cf-b73d-40ed-9b0f-8a0d350f4047.tx.response",
+        "holiday.jpg",
+    }) |name| try tmp.dir.writeFile(io, .{ .sub_path = name, .data = "x" });
+    try tmp.dir.createDirPath(io, "older");
+    const dir = try tmp.dir.realPathFileAlloc(io, ".", allocator);
+    defer allocator.free(dir);
+
+    const shown = struct {
+        fn f(p: *const zz.components.FilePicker, name: []const u8) bool {
+            for (p.entries.items) |e| if (std.mem.eql(u8, e.name, name)) return true;
+            return false;
+        }
+    }.f;
+
+    app.slate_modal = .{ .coin_idx = try epicSlot(&app), .purpose = .finish };
+    try app.file_picker.navigate(io, dir);
+    app.filterSlatePicker();
+    try std.testing.expect(shown(&app.file_picker, "finalize_65a93004-bb00-42f4-b51a-727da3783ed7.tx"));
+    try std.testing.expect(shown(&app.file_picker, "ea03a2cf-b73d-40ed-9b0f-8a0d350f4047.tx.response"));
+    try std.testing.expect(shown(&app.file_picker, "older"));
+    try std.testing.expect(!shown(&app.file_picker, "65a93004-bb00-42f4-b51a-727da3783ed7.tx"));
+    try std.testing.expect(!shown(&app.file_picker, "holiday.jpg"));
+
+    // Receiving shows the payment files instead — not the replies.
+    app.slate_modal.?.purpose = .receive;
+    try app.file_picker.navigate(io, dir);
+    app.filterSlatePicker();
+    try std.testing.expect(shown(&app.file_picker, "65a93004-bb00-42f4-b51a-727da3783ed7.tx"));
+    try std.testing.expect(!shown(&app.file_picker, "finalize_65a93004-bb00-42f4-b51a-727da3783ed7.tx"));
+    try std.testing.expect(!shown(&app.file_picker, "ea03a2cf-b73d-40ed-9b0f-8a0d350f4047.tx.response"));
+    try std.testing.expect(!shown(&app.file_picker, "holiday.jpg"));
+    try std.testing.expect(shown(&app.file_picker, "older"));
+    app.slate_modal = null;
 }
