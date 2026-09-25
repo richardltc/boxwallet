@@ -7,6 +7,7 @@ const money = @import("../money.zig");
 const conf = @import("../conf.zig");
 const bip39 = @import("../bip39.zig");
 const warmup = @import("../warmup.zig");
+const ttypass = @import("../ttypass.zig");
 const Coin = @import("../coin.zig").Coin;
 
 /// Epic Cash (EPIC) backend — the node daemon plus a managed `epic-wallet`
@@ -2078,8 +2079,11 @@ pub const Epic = struct {
     /// than an eagerly-spawned one. `--offline_mode` lets it come up before the node
     /// has finished syncing (it otherwise exits on its startup sync check); `-c <top>`
     /// pins it to the managed config regardless of BoxWallet's cwd (the `owner_api`
-    /// subcommand ignores `-t`). The password rides argv only — never disk — matching
-    /// the Zano launch-with-password convention. Caller owns the returned slice.
+    /// subcommand ignores `-t`). The password is typed at the process's `Password:`
+    /// prompt on a private terminal (`pass_on_tty`, via `external_wallet
+    /// .password_prompt`), never put in argv — where any local user could read it for
+    /// the whole unlocked session — nor on disk. Only where that isn't possible
+    /// (Windows) does it ride argv as `-p`. Caller owns the returned slice.
     fn launchServerArgv(
         allocator: std.mem.Allocator,
         install_root: []const u8,
@@ -2101,18 +2105,42 @@ pub const Epic = struct {
         const top = try dataDir(allocator, home);
         errdefer allocator.free(top);
         cacheEpicboxIndex(allocator, io, top);
-        const pass = try allocator.dupe(u8, wallet_password);
-        errdefer allocator.free(pass);
+        return walletArgv(allocator, bin, top, wallet_password, &.{"owner_api"});
+    }
 
-        const argv = try allocator.alloc([]const u8, 7);
+    /// Whether epic-wallet gets its password on a private terminal (`ttypass`)
+    /// rather than as `-p <password>` in argv. Every command BoxWallet runs with a
+    /// password — `owner_api`, `listen`, `init -r`, `scan` — goes the same way.
+    const pass_on_tty = ttypass.supported;
+
+    /// What epic-wallet prints when it asks for the password on its terminal
+    /// ("Password: "; "New Password: " / "Confirm Password: " for `init`).
+    const password_prompt = "Password: ";
+
+    /// `<bin> --offline_mode [-p <pw>] -c <top> <tail…>` — the `-p` only where the
+    /// password can't go on a terminal (`pass_on_tty`). Takes ownership of `bin`
+    /// and `top`. Caller owns the returned slice and every string in it.
+    fn walletArgv(
+        allocator: std.mem.Allocator,
+        bin: []const u8,
+        top: []const u8,
+        wallet_password: []const u8,
+        tail: []const []const u8,
+    ) ![]const []const u8 {
+        const head = if (pass_on_tty) 4 else 6;
+        const argv = try allocator.alloc([]const u8, head + tail.len);
         errdefer allocator.free(argv);
         argv[0] = bin;
         argv[1] = try allocator.dupe(u8, "--offline_mode");
-        argv[2] = try allocator.dupe(u8, "-p");
-        argv[3] = pass;
-        argv[4] = try allocator.dupe(u8, "-c");
-        argv[5] = top;
-        argv[6] = try allocator.dupe(u8, "owner_api");
+        var i: usize = 2;
+        if (!pass_on_tty) {
+            argv[2] = try allocator.dupe(u8, "-p");
+            argv[3] = try allocator.dupe(u8, wallet_password);
+            i = 4;
+        }
+        argv[i] = try allocator.dupe(u8, "-c");
+        argv[i + 1] = top;
+        for (tail, 0..) |t, j| argv[head + j] = try allocator.dupe(u8, t);
         return argv;
     }
 
@@ -2125,8 +2153,8 @@ pub const Epic = struct {
     ///
     /// `--offline_mode` for the same reason as the server: without it the listener
     /// exits at once when the node is unreachable or still syncing — which is
-    /// every unlock before our own node has caught up. The password rides argv
-    /// only, as for the server. Caller owns the returned slice.
+    /// every unlock before our own node has caught up. The password reaches it the
+    /// way it reaches the server (`pass_on_tty`). Caller owns the returned slice.
     fn listenerArgv(
         allocator: std.mem.Allocator,
         install_root: []const u8,
@@ -2137,20 +2165,7 @@ pub const Epic = struct {
         errdefer allocator.free(bin);
         const top = try dataDir(allocator, home);
         errdefer allocator.free(top);
-        const pass = try allocator.dupe(u8, wallet_password);
-        errdefer allocator.free(pass);
-
-        const tail = [_][]const u8{ "listen", "-m", "epicbox" };
-        const argv = try allocator.alloc([]const u8, 6 + tail.len);
-        errdefer allocator.free(argv);
-        argv[0] = bin;
-        argv[1] = try allocator.dupe(u8, "--offline_mode");
-        argv[2] = try allocator.dupe(u8, "-p");
-        argv[3] = pass;
-        argv[4] = try allocator.dupe(u8, "-c");
-        argv[5] = top;
-        for (tail, 0..) |s, i| argv[6 + i] = try allocator.dupe(u8, s);
-        return argv;
+        return walletArgv(allocator, bin, top, wallet_password, &.{ "listen", "-m", "epicbox" });
     }
 
     /// Materialize the managed wallet on disk from a BIP39 `mnemonic` under
@@ -2168,7 +2183,8 @@ pub const Epic = struct {
     /// whereas a regular-file stdin is read deterministically by the child regardless
     /// of what the parent's io is doing. The phrase is a secret on disk, so the temp
     /// file is overwritten and deleted on every path (the documented temp-secret
-    /// pattern); the password still rides argv only (never disk).
+    /// pattern). The password is typed twice ("New Password:" / "Confirm
+    /// Password:") on a private terminal (`runCli`) — never argv, never disk.
     fn runInitRecover(
         allocator: std.mem.Allocator,
         install_root: []const u8,
@@ -2217,45 +2233,24 @@ pub const Epic = struct {
         }
 
         const stdin_file = try dir.openFile(io, recover_phrase_file, .{});
+        defer stdin_file.close(io);
 
-        const argv = [_][]const u8{ bin, "-t", top, "-p", password, "init", "-r" };
-        var child = std.process.spawn(io, .{
-            .argv = &argv,
-            .stdin = .{ .file = stdin_file },
-            .stdout = .ignore,
-            .stderr = .pipe,
-            .create_no_window = builtin.os.tag == .windows,
-        }) catch |err| {
-            stdin_file.close(io);
-            detail.set(@errorName(err));
-            return error.WalletRestoreFailed;
-        };
-        stdin_file.close(io); // the child holds its own dup of the fd
-
-        // Drain stderr — epic-wallet reports a bad phrase there ("Recovery word phrase
-        // is invalid.") — so a failed restore is surfaced honestly rather than as a
-        // generic message. Bounded read (one short line); reading to EOF also waits out
-        // the child's work before `wait`. stdout carries only the (discarded) prompt.
+        // epic-wallet reports a bad phrase on stderr ("Recovery word phrase is
+        // invalid."), so capture it to surface a failed restore honestly. stdout is
+        // discarded: `init -r` echoes the phrase back on it.
         var errbuf: [512]u8 = undefined;
-        var errlen: usize = 0;
-        if (child.stderr) |stderr| {
-            while (errlen < errbuf.len) {
-                const got = stderr.readStreaming(io, &.{errbuf[errlen..]}) catch break;
-                if (got == 0) break;
-                errlen += got;
-            }
-            stderr.close(io);
-            child.stderr = null;
-        }
-
-        const term = child.wait(io) catch |err| {
+        const tail: []const []const u8 = if (pass_on_tty) &.{ "init", "-r" } else &.{ "-p", password, "init", "-r" };
+        var argv_buf: [8][]const u8 = undefined;
+        argv_buf[0] = bin;
+        argv_buf[1] = "-t";
+        argv_buf[2] = top;
+        @memcpy(argv_buf[3..][0..tail.len], tail);
+        const run = runCli(allocator, io, dir, argv_buf[0 .. 3 + tail.len], stdin_file, .stderr, password, 2, &errbuf) catch |err| {
             detail.set(@errorName(err));
             return error.WalletRestoreFailed;
         };
-        const ok = switch (term) {
-            .exited => |code| code == 0,
-            else => false,
-        };
+        const errlen = run.captured;
+        const ok = run.ok;
         // The CLI exits 0 and writes `wallet_data/wallet.seed` on success; a bad
         // phrase, a checksum mismatch, or a pre-existing wallet leaves it absent.
         if (!ok or !walletExists(allocator, home)) {
@@ -2265,10 +2260,10 @@ pub const Epic = struct {
         }
     }
 
-    /// argv for a full repair scan: `epic-wallet -t <top> -p <pw> scan`. Pulled out
+    /// argv for a full repair scan: `epic-wallet -t <top> scan`, with `-p <pw>` only
+    /// where the password can't be typed on a terminal (`pass_on_tty`). Pulled out
     /// (like `launchServerArgv`/`daemonArgv`) so the command shape is unit-testable
-    /// without a wallet. The password rides argv only — never disk — matching the
-    /// launch-with-password convention. Caller owns the returned slice + strings.
+    /// without a wallet. Caller owns the returned slice + strings.
     fn scanArgv(
         allocator: std.mem.Allocator,
         install_root: []const u8,
@@ -2279,18 +2274,94 @@ pub const Epic = struct {
         errdefer allocator.free(bin);
         const top = try dataDir(allocator, home);
         errdefer allocator.free(top);
-        const pass = try allocator.dupe(u8, password);
-        errdefer allocator.free(pass);
 
-        const argv = try allocator.alloc([]const u8, 6);
+        const argv = try allocator.alloc([]const u8, if (pass_on_tty) 4 else 6);
         errdefer allocator.free(argv);
         argv[0] = bin;
         argv[1] = try allocator.dupe(u8, "-t");
         argv[2] = top;
-        argv[3] = try allocator.dupe(u8, "-p");
-        argv[4] = pass;
-        argv[5] = try allocator.dupe(u8, "scan");
+        if (!pass_on_tty) {
+            argv[3] = try allocator.dupe(u8, "-p");
+            argv[4] = try allocator.dupe(u8, password);
+        }
+        argv[argv.len - 1] = try allocator.dupe(u8, "scan");
         return argv;
+    }
+
+    /// Which stream `runCli` keeps: the one the command reports failure on.
+    const CliCapture = enum { stdout, stderr };
+
+    /// How a `runCli` command ended: whether it exited 0, and how many bytes of
+    /// the captured stream's tail were copied back.
+    const CliRun = struct { ok: bool, captured: usize };
+
+    /// Run one epic-wallet command to completion. The password is typed at its
+    /// `Password:` prompt(s) on a private terminal (`ttypass`) where possible — it
+    /// is then absent from `argv`; elsewhere `argv` already carries `-p`. The
+    /// `capture` stream goes to a scratch file in `dir`, the other to /dev/null,
+    /// and the tail of what was captured is copied into `tail` (the file is
+    /// deleted before returning). A command that dies before asking is reported
+    /// as not ok, with what it printed.
+    fn runCli(
+        allocator: std.mem.Allocator,
+        io: std.Io,
+        dir: std.Io.Dir,
+        argv: []const []const u8,
+        stdin: ?std.Io.File,
+        capture: CliCapture,
+        password: []const u8,
+        prompts: u8,
+        tail: []u8,
+    ) !CliRun {
+        const cap_name = ".boxwallet-cli.out";
+        var cap = try dir.createFile(io, cap_name, .{ .read = true, .truncate = true });
+        defer {
+            cap.close(io);
+            dir.deleteFile(io, cap_name) catch {};
+        }
+        const out: ?std.Io.File = if (capture == .stdout) cap else null;
+        const err: ?std.Io.File = if (capture == .stderr) cap else null;
+
+        const ok = if (pass_on_tty) blk: {
+            var sp = ttypass.spawn(allocator, .{
+                .argv = argv,
+                .stdin = stdin,
+                .stdout = out,
+                .stderr = err,
+                .secret = password,
+                .prompt = password_prompt,
+                .answers = prompts,
+                // `scan` checks the node before it asks — without
+                // `--offline_mode` that can take a while on a slow one.
+                .timeout_ms = 90_000,
+            }) catch |e| switch (e) {
+                error.ExitedBeforePrompt => break :blk false,
+                else => return e,
+            };
+            defer sp.tty.close();
+            const term = try sp.child.wait(io);
+            break :blk term == .exited and term.exited == 0;
+        } else blk: {
+            const as_io = struct {
+                fn f(file: ?std.Io.File) std.process.SpawnOptions.StdIo {
+                    return if (file) |x| .{ .file = x } else .ignore;
+                }
+            }.f;
+            var child = try std.process.spawn(io, .{
+                .argv = argv,
+                .stdin = as_io(stdin),
+                .stdout = as_io(out),
+                .stderr = as_io(err),
+                .create_no_window = builtin.os.tag == .windows,
+            });
+            const term = try child.wait(io);
+            break :blk term == .exited and term.exited == 0;
+        };
+
+        const size = (cap.stat(io) catch return .{ .ok = ok, .captured = 0 }).size;
+        const off = if (size > tail.len) size - tail.len else 0;
+        const n = cap.readPositionalAll(io, tail, off) catch 0;
+        return .{ .ok = ok, .captured = n };
     }
 
     /// Rebuild a freshly-restored wallet's output set from the live node by running
@@ -2304,9 +2375,9 @@ pub const Epic = struct {
     /// unreachable/unsynced is surfaced honestly via `detail`.
     ///
     /// epic-wallet's log4rs writes to **stdout** (not stderr), and the failing
-    /// `ERROR …` line trails a multi-line INFO banner, so we pipe stdout and keep its
-    /// **tail** (a bounded ring), then lift the last `ERROR` line out of it (see
-    /// `scanErrLine`). The password rides argv only.
+    /// `ERROR …` line trails a multi-line INFO banner, so stdout is captured and only
+    /// its **tail** read back, then the last `ERROR` line lifted out of it (see
+    /// `scanErrLine`). The password is typed on a private terminal (`runCli`).
     fn runScan(
         allocator: std.mem.Allocator,
         io: std.Io,
@@ -2320,46 +2391,20 @@ pub const Epic = struct {
             for (argv) |s| allocator.free(s);
             allocator.free(argv);
         }
+        const top = try dataDir(allocator, home);
+        defer allocator.free(top);
+        var dir = try std.Io.Dir.cwd().createDirPathOpen(io, top, .{});
+        defer dir.close(io);
 
-        var child = std.process.spawn(io, .{
-            .argv = argv,
-            .stdin = .ignore,
-            .stdout = .pipe,
-            .stderr = .ignore,
-            .create_no_window = builtin.os.tag == .windows,
-        }) catch |err| {
-            detail.set(@errorName(err));
-            return error.WalletRescanFailed;
-        };
-
-        // Drain stdout keeping only the tail: when the buffer fills, drop the older
-        // half and keep reading, so the trailing `ERROR` line survives the INFO
-        // banner ahead of it. Reading to EOF also waits out the scan before `wait`.
+        // Only the tail matters: the failing `ERROR` line comes last, after the
+        // INFO banner.
         var buf: [1024]u8 = undefined;
-        var len: usize = 0;
-        if (child.stdout) |stdout| {
-            while (true) {
-                if (len == buf.len) {
-                    const keep = buf.len / 2;
-                    std.mem.copyForwards(u8, buf[0..keep], buf[buf.len - keep ..]);
-                    len = keep;
-                }
-                const got = stdout.readStreaming(io, &.{buf[len..]}) catch break;
-                if (got == 0) break;
-                len += got;
-            }
-            stdout.close(io);
-            child.stdout = null;
-        }
-
-        const term = child.wait(io) catch |err| {
+        const run = runCli(allocator, io, dir, argv, null, .stdout, password, 1, &buf) catch |err| {
             detail.set(@errorName(err));
             return error.WalletRescanFailed;
         };
-        const ok = switch (term) {
-            .exited => |code| code == 0,
-            else => false,
-        };
+        const len = run.captured;
+        const ok = run.ok;
         if (!ok) {
             const why = scanErrLine(buf[0..len]);
             detail.set(if (why.len > 0) why else "epic-wallet could not scan the chain — make sure the Epic daemon is running and synced, then restore again");
@@ -3587,6 +3632,9 @@ pub const Epic = struct {
         .launch_server_argv = launchServerArgv,
         .listener_argv = listenerArgv,
         .listener_name = "Epicbox listener",
+        // Both processes are given their password at a terminal prompt, never in
+        // argv (see `pass_on_tty`); empty where that isn't possible.
+        .password_prompt = if (pass_on_tty) password_prompt else "",
         .cli_create = epicCliCreate,
         .exists = walletExists,
         .create = epicCreate,
@@ -4402,22 +4450,15 @@ test "launchServerArgv prepares the config + per-session secret and builds owner
         for (argv) |s| a.free(s);
         a.free(argv);
     }
-    // `epic-wallet --offline_mode -p <pw> -c <top> owner_api`: a wallet that only
-    // serves the password handed to it at launch, brought up before the node syncs,
-    // pinned to the managed config dir.
-    try std.testing.expectEqual(@as(usize, 7), argv.len);
-    try std.testing.expect(std.mem.endsWith(u8, argv[0], Epic.wallet_file));
-    try std.testing.expectEqualStrings("--offline_mode", argv[1]);
-    try std.testing.expectEqualStrings("-p", argv[2]);
-    try std.testing.expectEqualStrings("walletpw9", argv[3]);
-    try std.testing.expectEqualStrings("-c", argv[4]);
-    try std.testing.expectEqualStrings("owner_api", argv[6]);
+    // `epic-wallet --offline_mode -c <top> owner_api`: a wallet that only serves
+    // the password typed at its prompt, brought up before the node syncs, pinned to
+    // the managed config dir. The password is nowhere on its command line.
+    const top = try Epic.dataDir(a, home);
+    defer a.free(top);
+    try expectWalletArgv(argv, top, &.{"owner_api"});
 
     // A non-empty per-session secret was written verbatim (no trailing newline), and
     // the config was generated + healed to localhost.
-    const top = try Epic.dataDir(a, home);
-    defer a.free(top);
-    try std.testing.expectEqualStrings(top, argv[5]);
     var dir = try std.Io.Dir.cwd().openDir(io, top, .{});
     defer dir.close(io);
 
@@ -4436,27 +4477,38 @@ test "launchServerArgv prepares the config + per-session secret and builds owner
     try std.testing.expect(std.mem.indexOf(u8, cbuf[0..cn], "api_listen_interface = \"127.0.0.1\"") != null);
 }
 
-test "listenerArgv builds `epic-wallet --offline_mode -p <pw> -c <top> listen -m epicbox`" {
+test "listenerArgv builds `epic-wallet --offline_mode -c <top> listen -m epicbox`" {
     const a = std.testing.allocator;
     const argv = try Epic.listenerArgv(a, "/opt/bw", "/home/u", "walletpw9");
     defer {
         for (argv) |s| a.free(s);
         a.free(argv);
     }
-    try std.testing.expectEqual(@as(usize, 9), argv.len);
-    try std.testing.expect(std.mem.endsWith(u8, argv[0], Epic.wallet_file));
-    // Offline mode, or it exits the moment the node is unreachable or syncing.
-    try std.testing.expectEqualStrings("--offline_mode", argv[1]);
-    try std.testing.expectEqualStrings("-p", argv[2]);
-    try std.testing.expectEqualStrings("walletpw9", argv[3]);
-    try std.testing.expectEqualStrings("-c", argv[4]);
-    // The same managed config dir the Owner-API server is pinned to.
+    // Offline mode, or it exits the moment the node is unreachable or syncing; the
+    // same managed config dir the Owner-API server is pinned to.
     const top = try Epic.dataDir(a, "/home/u");
     defer a.free(top);
-    try std.testing.expectEqualStrings(top, argv[5]);
-    try std.testing.expectEqualStrings("listen", argv[6]);
-    try std.testing.expectEqualStrings("-m", argv[7]);
-    try std.testing.expectEqualStrings("epicbox", argv[8]);
+    try expectWalletArgv(argv, top, &.{ "listen", "-m", "epicbox" });
+}
+
+/// `<bin> --offline_mode [-p walletpw9] -c <top> <tail…>`: the `-p` pair only
+/// where the password can't be typed on a terminal — and where it can, the
+/// password appears in no argument at all.
+fn expectWalletArgv(argv: []const []const u8, top: []const u8, tail: []const []const u8) !void {
+    try std.testing.expect(std.mem.endsWith(u8, argv[0], Epic.wallet_file));
+    try std.testing.expectEqualStrings("--offline_mode", argv[1]);
+    var i: usize = 2;
+    if (!Epic.pass_on_tty) {
+        try std.testing.expectEqualStrings("-p", argv[2]);
+        try std.testing.expectEqualStrings("walletpw9", argv[3]);
+        i = 4;
+    } else {
+        for (argv) |arg| try std.testing.expect(std.mem.indexOf(u8, arg, "walletpw9") == null);
+    }
+    try std.testing.expectEqualStrings("-c", argv[i]);
+    try std.testing.expectEqualStrings(top, argv[i + 1]);
+    try std.testing.expectEqual(i + 2 + tail.len, argv.len);
+    for (tail, argv[i + 2 ..]) |want, got| try std.testing.expectEqualStrings(want, got);
 }
 
 test "Epic runs its Epicbox listener while unlocked" {
@@ -4494,25 +4546,29 @@ test "launchServerArgv caches the Epicbox index an existing config already sets"
     try std.testing.expectEqual(@as(u32, 2), Epic.epicbox_index.load(.acquire));
 }
 
-test "scanArgv builds `epic-wallet -t <top> -p <pw> scan` for the recovery scan" {
+test "scanArgv builds `epic-wallet -t <top> scan` for the recovery scan" {
     const a = std.testing.allocator;
     const argv = try Epic.scanArgv(a, "/opt/bw", "/home/alice", "walletpw9");
     defer {
         for (argv) |s| a.free(s);
         a.free(argv);
     }
-    // `epic-wallet -t <top> -p <pw> scan`: a full repair scan pinned to the managed
-    // data dir, opened with the wallet password (no `--offline_mode` — it must reach
-    // the node to restore outputs).
-    try std.testing.expectEqual(@as(usize, 6), argv.len);
+    // `epic-wallet -t <top> scan`: a full repair scan pinned to the managed data
+    // dir (no `--offline_mode` — it must reach the node to restore outputs). The
+    // password is typed at its prompt; `-p <pw>` only where it can't be.
+    try std.testing.expectEqual(@as(usize, if (Epic.pass_on_tty) 4 else 6), argv.len);
     try std.testing.expect(std.mem.endsWith(u8, argv[0], Epic.wallet_file));
     try std.testing.expectEqualStrings("-t", argv[1]);
     const top = try Epic.dataDir(a, "/home/alice");
     defer a.free(top);
     try std.testing.expectEqualStrings(top, argv[2]);
-    try std.testing.expectEqualStrings("-p", argv[3]);
-    try std.testing.expectEqualStrings("walletpw9", argv[4]);
-    try std.testing.expectEqualStrings("scan", argv[5]);
+    if (Epic.pass_on_tty) {
+        for (argv) |arg| try std.testing.expect(std.mem.indexOf(u8, arg, "walletpw9") == null);
+    } else {
+        try std.testing.expectEqualStrings("-p", argv[3]);
+        try std.testing.expectEqualStrings("walletpw9", argv[4]);
+    }
+    try std.testing.expectEqualStrings("scan", argv[argv.len - 1]);
 }
 
 test "scanErrLine lifts the last ERROR line (sans timestamp) from scan output" {

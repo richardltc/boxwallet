@@ -18,6 +18,7 @@ const coinmod = @import("coin.zig");
 const models = @import("models.zig");
 const conf = @import("conf.zig");
 const proc = @import("proc.zig");
+const ttypass = @import("ttypass.zig");
 const rpc = @import("rpc.zig");
 const walletmenu = @import("walletmenu.zig");
 
@@ -56,6 +57,12 @@ pub const Session = struct {
     /// it has one and the wallet is unlocked. Started after a successful open,
     /// killed with `child`.
     listener: ?std.process.Child = null,
+    /// The private terminals `child` and `listener` read their password from,
+    /// for a coin with `ExternalWallet.password_prompt` (see `ttypass`). Held
+    /// open for exactly as long as the process runs: closing one hangs its
+    /// process up, so each is closed only after its process is stopped or reaped.
+    child_tty: ttypass.Tty = .{},
+    listener_tty: ttypass.Tty = .{},
     /// The listener was started this unlock and has since exited (or never
     /// came up). Nothing restarts it — that would need the password, which
     /// isn't kept — so it reads as stopped until the next unlock. Cleared by
@@ -194,6 +201,7 @@ pub fn kill(sess: *Session) void {
         stopChild(child);
         sess.child = null;
     }
+    sess.child_tty.close();
 }
 
 /// Stop a wallet-side child and reap it. Uses a fresh `Io` (the `Child` holds
@@ -226,6 +234,7 @@ fn killListener(sess: *Session) void {
         stopChild(l);
         sess.listener = null;
     }
+    sess.listener_tty.close();
 }
 
 /// Launch the coin's payment listener for a wallet that `password` has just
@@ -251,24 +260,55 @@ fn startListener(
     defer threaded.deinit();
     const io = threaded.io();
 
-    // argv (password included) is copied by the spawn and freed with the arena
-    // — the password rides argv only, as it does for the wallet server.
+    // argv is copied by the spawn and freed with the arena. It carries the
+    // password only where the coin can't take it on a terminal (see
+    // `spawnWallet`).
     const argv = argv_fn(a, install_root, home_dir, password) catch {
         sess.listener_down = true;
         return;
     };
     // The listener writes to the wallet's own log file, so its console output
     // has nothing to add.
-    sess.listener = std.process.spawn(io, .{
-        .argv = argv,
-        .stdin = .ignore,
-        .stdout = .ignore,
-        .stderr = .ignore,
-        .create_no_window = builtin.os.tag == .windows,
-    }) catch {
+    sess.listener = spawnWallet(a, io, ew, argv, null, password, &sess.listener_tty) catch {
         sess.listener_down = true;
         return;
     };
+}
+
+/// Spawn a wallet-side process — the server or the listener — with its stdout and
+/// stderr to `capture` (or discarded). For a coin with `password_prompt` it
+/// starts on a private terminal and `password` is typed at the prompt (`ttypass`),
+/// so it never reaches the command line; `tty` then holds that terminal, which
+/// the caller keeps open for as long as the process runs. Otherwise it's a plain
+/// spawn and `password` is unused here (the coin put it in `argv`).
+fn spawnWallet(
+    a: std.mem.Allocator,
+    io: std.Io,
+    ew: *const Coin.ExternalWallet,
+    argv: []const []const u8,
+    capture: ?std.Io.File,
+    password: []const u8,
+    tty: *ttypass.Tty,
+) !std.process.Child {
+    if (ew.password_prompt.len > 0) {
+        const sp = try ttypass.spawn(a, .{
+            .argv = argv,
+            .stdout = capture,
+            .stderr = capture,
+            .secret = password,
+            .prompt = ew.password_prompt,
+        });
+        tty.* = sp.tty;
+        return sp.child;
+    }
+    const out: std.process.SpawnOptions.StdIo = if (capture) |f| .{ .file = f } else .ignore;
+    return std.process.spawn(io, .{
+        .argv = argv,
+        .stdin = .ignore,
+        .stdout = out,
+        .stderr = out,
+        .create_no_window = builtin.os.tag == .windows,
+    });
 }
 
 /// Check on the payment listener: reaps it if it has exited, so a dead one
@@ -281,6 +321,7 @@ pub fn probeListener(sess: *Session) ListenerState {
         defer threaded.deinit();
         if (proc.probeChild(threaded.io(), l) == null) return .running;
         sess.listener = null;
+        sess.listener_tty.close();
         sess.listener_down = true;
     }
     return if (sess.listener_down) .stopped else .none;
@@ -442,6 +483,7 @@ pub fn launchWithPassword(
         child.kill(io);
         sess.child = null;
     }
+    sess.child_tty.close();
 
     // Capture the wallet process's stdout+stderr to a scratch file so a failed
     // open surfaces the real reason (a wrong password, an unreadable / corrupt
@@ -459,18 +501,19 @@ pub fn launchWithPassword(
         f.close(io);
         std.Io.Dir.deleteFileAbsolute(io, cap_path) catch {};
     };
-    const capture: std.process.SpawnOptions.StdIo = if (cap_file) |f| .{ .file = f } else .ignore;
 
     // argv is consumed by spawn (fork/exec copies it), so the local arena can be
-    // freed right after. The wallet password rides argv only — never disk.
+    // freed right after. The password goes to the process on a private terminal
+    // where the coin supports it, else in argv — never to disk.
     const argv = try argv_fn(a, install_root, home_dir, port, wallet_password);
-    const child = std.process.spawn(io, .{
-        .argv = argv,
-        .stdin = .ignore,
-        .stdout = capture,
-        .stderr = capture,
-        .create_no_window = builtin.os.tag == .windows,
-    }) catch return error.WalletServiceFailed;
+    const child = spawnWallet(a, io, ew, argv, cap_file, wallet_password, &sess.child_tty) catch |err| {
+        // Died before it even asked for the password: what it printed says why.
+        if (err == error.ExitedBeforePrompt) {
+            if (cap_file) |*f| setErrFromCapture(detail, io, f);
+            return error.WalletOpenFailed;
+        }
+        return error.WalletServiceFailed;
+    };
     sess.child = child;
 
     // Wait for the wallet RPC to bind its port (or the process to die on a bad
@@ -490,6 +533,7 @@ pub fn launchWithPassword(
             if (sess.child) |ch| if (ch.id) |pid| {
                 if (proc.reapNoHang(pid)) {
                     sess.child = null;
+                    sess.child_tty.close();
                     if (cap_file) |*f| setErrFromCapture(detail, io, f);
                     return error.WalletOpenFailed;
                 }
@@ -847,6 +891,12 @@ test "setupWithPassword: every launch-with-password coin wires what the flow nee
             // front-ends' "replace" offers a dead end.
             try std.testing.expect(ew.remove != null);
         }
+        // A terminal-typed password only exists where `ttypass` can type it, and
+        // only for the processes `launchWithPassword`/`startListener` start.
+        if (coin.externalWallet()) |ew| if (ew.password_prompt.len > 0) {
+            try std.testing.expect(ttypass.supported);
+            try std.testing.expect(coin.walletLaunchesWithPassword());
+        };
     }
 }
 
