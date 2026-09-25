@@ -2608,6 +2608,198 @@ export fn bw_wallet_send(ctx: ?*Ctx, idx: usize, address: ?[*:0]const u8, amount
     };
 }
 
+// ---- slate files ------------------------------------------------------------
+//
+// Payments by hand-carried file (`Coin.SlateFiles` — Epic). All of these block on
+// the wallet — call off the UI thread — and wait for any wallet op in flight,
+// like a send does.
+
+/// Mirror of `models.SlateInfo`. Scalar-only, so it crosses by memcpy; the id,
+/// note and reason are length-counted like `BwWalletTx.txid`.
+pub const BwSlateInfo = extern struct {
+    /// `models.SlateKind` ordinal: 0 unusable, 1 receive, 2 finalize.
+    kind: c_int,
+    amount: f64,
+    fee: f64,
+    id: [36]u8,
+    id_len: usize,
+    note: [models.tx_note_max]u8,
+    note_len: usize,
+    reason: [models.slate_reason_max]u8,
+    reason_len: usize,
+};
+
+comptime {
+    // `include/boxwallet.h` spells these out as `char note[128]` and `char reason[160]`.
+    std.debug.assert(models.slate_reason_max == 160);
+}
+
+/// Whether the coin can pay and be paid by slate file (drives the controls).
+export fn bw_coin_supports_slate_files(idx: usize) c_int {
+    const c = coinByIndex(idx) orelse return 0;
+    return if (c.supportsSlateFiles()) 1 else 0;
+}
+
+/// Where a file send saves its slate by default: the user's Downloads folder,
+/// else their home (`conf.userFilesDir`). Returns the length written.
+export fn bw_slate_default_dir(ctx: ?*Ctx, buf: ?[*]u8, cap: usize) usize {
+    const c = ctx orelse return 0;
+    const b = buf orelse return 0;
+    const dir = conf.userFilesDir(std.heap.page_allocator, c.home_dir) catch return 0;
+    defer std.heap.page_allocator.free(dir);
+    return copyOut(b[0..cap], dir);
+}
+
+/// What a file send of `amount` would cost: 0 = *fee_out set, 1 = the wallet
+/// refuses it already (`out` = why), -1 = transport failure.
+export fn bw_wallet_slate_fee(ctx: ?*Ctx, idx: usize, amount: f64, fee_out: ?*f64, out: ?[*]u8, cap: usize) c_int {
+    const c = ctx orelse return -1;
+    const fo = fee_out orelse return -1;
+    const o = out orelse return -1;
+    const coin = coinByIndex(idx) orelse return -1;
+    const sf = coin.slateFiles() orelse return -1;
+
+    var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const io = sharedIo();
+    c.wallet_mtx.lockUncancelable(io);
+    defer c.wallet_mtx.unlock(io);
+
+    const auth = walletAuth(a, io, coin, c, idx) catch |err| return failWith(c, err);
+    const quote = sf.fee(a, auth, amount) catch |err| return failWith(c, err);
+    return switch (quote) {
+        .fee => |f| blk: {
+            fo.* = f;
+            break :blk 0;
+        },
+        .failed => |reason| blk: {
+            _ = copyOut(o[0..cap], reason);
+            break :blk 1;
+        },
+    };
+}
+
+/// Build a send of `amount` (with `note`, may be NULL), lock its coins, and save
+/// the slate in `out_dir`: 0 = saved (`out` = the file's path), 1 = the wallet
+/// refused (`out` = why), -1 = transport failure.
+export fn bw_wallet_slate_send(
+    ctx: ?*Ctx,
+    idx: usize,
+    amount: f64,
+    note: ?[*:0]const u8,
+    out_dir: ?[*:0]const u8,
+    out: ?[*]u8,
+    cap: usize,
+) c_int {
+    const c = ctx orelse return -1;
+    const dir_z = out_dir orelse return -1;
+    const o = out orelse return -1;
+    const coin = coinByIndex(idx) orelse return -1;
+    const sf = coin.slateFiles() orelse return -1;
+
+    var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const io = sharedIo();
+    c.wallet_mtx.lockUncancelable(io);
+    defer c.wallet_mtx.unlock(io);
+
+    // The same cleaning and limit a note on an Epicbox send gets.
+    var nbuf: [models.tx_note_max]u8 = undefined;
+    const raw_note: []const u8 = if (note) |n| std.mem.span(n) else "";
+    if (std.mem.trim(u8, raw_note, " \t\r\n").len > coin.sendNoteMax()) {
+        _ = copyOut(o[0..cap], "The note is too long.");
+        return 1;
+    }
+    const clean = models.sanitizeNote(&nbuf, raw_note);
+
+    const auth = walletAuth(a, io, coin, c, idx) catch |err| return failWith(c, err);
+    const res = sf.send(a, auth, amount, clean, std.mem.span(dir_z)) catch |err| return failWith(c, err);
+    return sendOutcome(res, o[0..cap]);
+}
+
+/// Read the slate file at `path` and say what it is for this wallet (`*info`):
+/// 0 = filled, -1 = transport failure. An unusable file is 0 with `kind` 0 and
+/// `reason` saying why. Changes nothing.
+export fn bw_wallet_slate_inspect(ctx: ?*Ctx, idx: usize, path: ?[*:0]const u8, info: ?*BwSlateInfo) c_int {
+    const c = ctx orelse return -1;
+    const p = path orelse return -1;
+    const dst = info orelse return -1;
+    const coin = coinByIndex(idx) orelse return -1;
+    const sf = coin.slateFiles() orelse return -1;
+
+    var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const io = sharedIo();
+    c.wallet_mtx.lockUncancelable(io);
+    defer c.wallet_mtx.unlock(io);
+
+    const auth = walletAuth(a, io, coin, c, idx) catch |err| return failWith(c, err);
+    const si = sf.inspect(a, auth, std.mem.span(p)) catch |err| return failWith(c, err);
+    dst.* = .{
+        .kind = @intFromEnum(si.kind),
+        .amount = si.amount,
+        .fee = si.fee,
+        .id = undefined,
+        .id_len = si.id_len,
+        .note = undefined,
+        .note_len = si.note_len,
+        .reason = undefined,
+        .reason_len = si.reason_len,
+    };
+    @memcpy(dst.id[0..si.id_len], si.id());
+    @memcpy(dst.note[0..si.note_len], si.note());
+    @memcpy(dst.reason[0..si.reason_len], si.reason());
+    return 0;
+}
+
+/// Do what `bw_wallet_slate_inspect` said, if the file still is that (`kind`):
+/// receive → sign and write `<path>.response` (`out` = its path); finalize →
+/// broadcast (`out` = what happened). 0 = done, 1 = refused (`out` = why), -1 =
+/// transport failure.
+export fn bw_wallet_slate_process(ctx: ?*Ctx, idx: usize, path: ?[*:0]const u8, kind: c_int, out: ?[*]u8, cap: usize) c_int {
+    const c = ctx orelse return -1;
+    const p = path orelse return -1;
+    const o = out orelse return -1;
+    const coin = coinByIndex(idx) orelse return -1;
+    const sf = coin.slateFiles() orelse return -1;
+    const expect = std.enums.fromInt(models.SlateKind, kind) orelse return -1;
+
+    var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const io = sharedIo();
+    c.wallet_mtx.lockUncancelable(io);
+    defer c.wallet_mtx.unlock(io);
+
+    const auth = walletAuth(a, io, coin, c, idx) catch |err| return failWith(c, err);
+    const res = sf.process(a, auth, std.mem.span(p), expect) catch |err| return failWith(c, err);
+    return sendOutcome(res, o[0..cap]);
+}
+
+/// Record a transport failure for `bw_last_error`, returning -1.
+fn failWith(c: *Ctx, err: anyerror) c_int {
+    c.setError(@errorName(err));
+    c.setErrorCode(@errorName(err));
+    return -1;
+}
+
+/// A `SendResult` as the send exports' tri-state: 0 ok, 1 refused; the text to `out`.
+fn sendOutcome(res: models.SendResult, out: []u8) c_int {
+    return switch (res) {
+        .ok => |text| blk: {
+            _ = copyOut(out, text);
+            break :blk 0;
+        },
+        .failed => |reason| blk: {
+            _ = copyOut(out, reason);
+            break :blk 1;
+        },
+    };
+}
+
 /// The auth a *wallet* read should use: the wallet process's own endpoint for a
 /// managed wallet, the daemon's for a coin whose wallet lives in its daemon.
 /// Mirrors the split the TUI's poll worker makes.
@@ -5536,6 +5728,7 @@ test "bw_coin_ext_wallet's flags agree with the vtable for every coin" {
         var lb: [96]u8 = undefined;
         try std.testing.expectEqual(coin.sendOkLabel().len, bw_coin_send_ok_label(i, &lb, lb.len));
         try std.testing.expectEqual(coin.sendNoteMax(), bw_coin_send_note_max(i));
+        try std.testing.expectEqual(coin.supportsSlateFiles(), bw_coin_supports_slate_files(i) != 0);
         // A listener coin names it; no other coin does.
         var nm: [64]u8 = undefined;
         try std.testing.expectEqual(coin.walletHasListener(), bw_coin_listener_name(i, &nm, nm.len) != 0);

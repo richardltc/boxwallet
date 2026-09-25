@@ -1751,6 +1751,26 @@ export component AppWindow inherits Window {
     in-out property <string> send-fee-text: "";
     callback estimate-send(string, string); // address, amount as typed
 
+    // ---- slate files (Epic) ----
+    // A payment carried by hand as a file. Saving one reuses the send confirm
+    // above (`send-confirm-is-slate`: no address, the slate's own fee quote);
+    // opening one — someone's payment, or the reply to yours — is its own
+    // dialog below, driven by main.cpp through the core's inspect/process.
+    in property <bool> has-slate-files: false;
+    in-out property <bool> send-confirm-is-slate: false;
+    callback estimate-slate(string);          // amount as typed
+    callback slate-send(string, string);      // amount, note
+    in-out property <bool> slate-open: false;
+    // 0 pick a file, 1 reading it, 2 confirm, 3 working, 4 result.
+    in-out property <int> slate-stage: 0;
+    in property <bool> slate-receiving: false; // what the confirm is for
+    in property <string> slate-summary: "";    // the confirm's question, in words
+    in property <string> slate-note: "";
+    in property <string> slate-result: "";
+    in property <bool> slate-ok: false;
+    callback slate-inspect(string);           // path
+    callback slate-process();
+
     // ---- wallet setup modal ----
     // One overlay, one stage machine — the GUI's mirror of the TUI's wallet
     // Modal.Stage, so the two front-ends ask the same questions in the same order.
@@ -1951,7 +1971,7 @@ export component AppWindow inherits Window {
     in-out property <bool> browse-open: false;
     in property <string> browse-path: "";
     in property <[BrowseEntry]> browse-entries;
-    in property <string> picked-file: "";
+    in-out property <string> picked-file: "";
     // List whatever directory the browser is currently pointed at, without
     // moving. Raised when the overlay opens: nothing else lists the *starting*
     // directory, so before this the first screen came up blank — an empty list
@@ -1971,7 +1991,7 @@ export component AppWindow inherits Window {
         root.browse-open || root.send-confirm-open || root.mining-stop-open || root.cancel-tx-open
         || root.wallet-stage != 0 || root.unlock-open || root.update-open
         || root.accel-open || root.prune-open || root.node-open || root.wa-stage != 0
-        || root.sc-stage != 0;
+        || root.sc-stage != 0 || root.slate-open;
 
     // Escape closes the topmost modal, in the same order they paint. Each arm
     // runs that modal's own Cancel path — clearing secrets included — because a
@@ -2000,6 +2020,11 @@ export component AppWindow inherits Window {
         // Not once it's been asked for: the wallet is already cancelling it.
         if (root.cancel-tx-open && !root.cancel-tx-busy) {
             root.cancel-tx-open = false;
+            return true;
+        }
+        // Not while the wallet is reading or acting on the file.
+        if (root.slate-open && root.slate-stage != 1 && root.slate-stage != 3) {
+            root.slate-open = false;
             return true;
         }
         if (root.accel-open) {
@@ -3719,6 +3744,15 @@ export component AppWindow inherits Window {
                                 text: "New address";
                                 clicked => { root.new-address(); }
                             }
+                            // Paid by file instead of to this address.
+                            if root.has-slate-files: Button {
+                                text: "Open slate file\u{2026}";
+                                clicked => {
+                                    root.picked-file = "";
+                                    root.slate-stage = 0;
+                                    root.slate-open = true;
+                                }
+                            }
                         }
                     }
 
@@ -3781,6 +3815,7 @@ export component AppWindow inherits Window {
                                             root.send-confirm-note = root.send-note-max > 0 ? root.send-note-text : "";
                                             root.send-result = "";
                                             root.send-confirm-is-stake = false;
+                                            root.send-confirm-is-slate = false;
                                             root.send-fee-text = "";
                                             root.send-fee-pending = root.has-send-fee;
                                             root.send-confirm-open = true;
@@ -3788,6 +3823,33 @@ export component AppWindow inherits Window {
                                                 root.estimate-send(send-addr.text, send-amt.text);
                                             }
                                         }
+                                    }
+                                }
+                                // No address needed: the slate goes to whoever the
+                                // user hands the file to.
+                                if root.has-slate-files: Button {
+                                    text: "Save as slate file\u{2026}";
+                                    enabled: !root.send-busy && !root.send-note-too-long && send-amt.text != "";
+                                    clicked => {
+                                        root.send-confirm-amount = send-amt.text;
+                                        root.send-confirm-note = root.send-note-max > 0 ? root.send-note-text : "";
+                                        root.send-confirm-address = "";
+                                        root.send-result = "";
+                                        root.send-confirm-is-stake = false;
+                                        root.send-confirm-is-slate = true;
+                                        root.send-fee-text = "";
+                                        root.send-fee-pending = true;
+                                        root.send-confirm-open = true;
+                                        root.estimate-slate(send-amt.text);
+                                    }
+                                }
+                                if root.has-slate-files: Button {
+                                    text: "Open slate file\u{2026}";
+                                    enabled: !root.send-busy;
+                                    clicked => {
+                                        root.picked-file = "";
+                                        root.slate-stage = 0;
+                                        root.slate-open = true;
                                     }
                                 }
                             }
@@ -4719,6 +4781,7 @@ export component AppWindow inherits Window {
                                         root.send-confirm-amount = stake-amt.text;
                                         root.send-result = "";
                                         root.send-confirm-is-stake = true;
+                                        root.send-confirm-is-slate = false;
                                         root.send-fee-pending = false;
                                         root.send-fee-text = "";
                                         root.send-confirm-open = true;
@@ -4864,7 +4927,11 @@ export component AppWindow inherits Window {
                     spacing: 10px;
                     alignment: start;
                     Text {
-                        text: root.send-busy
+                        text: root.send-confirm-is-slate
+                            ? (root.send-busy
+                                ? "Saving a slate file paying " + root.send-confirm-amount + " " + root.coin-name + "\u{2026}"
+                                : "Save a slate file paying " + root.send-confirm-amount + " " + root.coin-name + "?")
+                            : root.send-busy
                             ? (root.send-confirm-is-stake ? "Staking " : "Sending ")
                                 + root.send-confirm-amount + " " + root.coin-name + "\u{2026}"
                             : (root.send-confirm-is-stake ? "Stake " : "Send ")
@@ -4874,7 +4941,7 @@ export component AppWindow inherits Window {
                         font-weight: 600;
                         wrap: word-wrap;
                     }
-                    if !root.send-confirm-is-stake: Text {
+                    if !root.send-confirm-is-stake && !root.send-confirm-is-slate: Text {
                         // Once it's away there is nothing left to check, so the
                         // instruction goes and the address stays as a receipt.
                         text: root.send-busy
@@ -4884,7 +4951,7 @@ export component AppWindow inherits Window {
                         font-size: 12px;
                         wrap: word-wrap;
                     }
-                    if !root.send-confirm-is-stake: Rectangle {
+                    if !root.send-confirm-is-stake && !root.send-confirm-is-slate: Rectangle {
                         height: 64px;
                         background: #181818;
                         border-radius: 6px;
@@ -4906,7 +4973,7 @@ export component AppWindow inherits Window {
                         font-size: 12px;
                         wrap: word-wrap;
                     }
-                    if !root.send-confirm-is-stake && root.has-send-fee && !root.send-busy: Text {
+                    if !root.send-confirm-is-stake && (root.has-send-fee || root.send-confirm-is-slate) && !root.send-busy: Text {
                         text: root.send-fee-pending ? "Working out the fee\u{2026}" : root.send-fee-text;
                         color: #9a9a9a;
                         font-size: 12px;
@@ -4919,7 +4986,9 @@ export component AppWindow inherits Window {
                         wrap: word-wrap;
                     }
                     if !root.send-busy: Text {
-                        text: root.send-confirm-is-stake
+                        text: root.send-confirm-is-slate
+                            ? "The coins are set aside until you open the receiver's .response file here, or cancel the send."
+                            : root.send-confirm-is-stake
                             ? "A stake cannot be cancelled before its term ends."
                             : "A sent transaction cannot be reversed.";
                         color: #e05c5c;
@@ -4930,7 +4999,9 @@ export component AppWindow inherits Window {
                     // take a while to build and broadcast, and an unexplained
                     // frozen dialog is what invites a second click.
                     if root.send-busy: Text {
-                        text: root.send-confirm-is-stake
+                        text: root.send-confirm-is-slate
+                            ? "Building the slate and setting the coins aside…"
+                            : root.send-confirm-is-stake
                             ? "Waiting for the daemon to build and broadcast the stake…"
                             : "Waiting for the daemon to build and broadcast the transaction…";
                         color: #9a9a9a;
@@ -4948,14 +5019,16 @@ export component AppWindow inherits Window {
                             clicked => { root.send-confirm-open = false; }
                         }
                         Button {
-                            text: root.send-confirm-is-stake ? "Stake" : "Send";
+                            text: root.send-confirm-is-slate ? "Save file" : root.send-confirm-is-stake ? "Stake" : "Send";
                             // Not before the fee is known, for a coin that states it.
                             enabled: root.send-confirm-is-stake || !root.send-fee-pending;
                             // Deliberately does NOT close the modal: it stays up,
                             // now busy, and main.cpp closes it when the result
                             // (the txid, or the daemon's refusal) comes back.
                             clicked => {
-                                if (root.send-confirm-is-stake) {
+                                if (root.send-confirm-is-slate) {
+                                    root.slate-send(root.send-confirm-amount, root.send-confirm-note);
+                                } else if (root.send-confirm-is-stake) {
                                     root.stake-funds(root.send-confirm-amount);
                                 } else {
                                     root.send-funds(root.send-confirm-address, root.send-confirm-amount, root.send-confirm-note);
@@ -5020,6 +5093,117 @@ export component AppWindow inherits Window {
                                 root.cancel-tx-busy = true;
                                 root.cancel-tx(root.cancel-tx-id);
                             }
+                        }
+                    }
+                }
+            }
+        }
+
+        // ---- open a slate file ----
+        // Pick a file; the core says what it is for this wallet — someone paying
+        // you, or the reply to your send — and nothing happens until that has
+        // been read out and agreed to. A file that can't be used goes straight to
+        // the result with the reason. Mirrors the TUI's slate prompt.
+        if root.slate-open: Rectangle {
+            background: #000000bb;
+            TouchArea { }
+
+            if root.slate-stage == 3: BusyHalo {
+                x: slate-card.x;
+                y: slate-card.y;
+                width: slate-card.width;
+                height: slate-card.height;
+                accent: root.coin-color;
+                running: true;
+                clockwise: !root.slate-receiving;
+            }
+
+            slate-card := Rectangle {
+                width: 420px;
+                height: slate-body.preferred-height;
+                x: (parent.width - self.width) / 2;
+                y: (parent.height - self.height) / 2;
+                background: #202020;
+                border-radius: 10px;
+                border-width: 1px;
+                border-color: root.coin-color;
+
+                slate-body := VerticalLayout {
+                    padding: 16px;
+                    spacing: 10px;
+                    alignment: start;
+                    Text {
+                        text: root.slate-stage == 0 ? "Open a slate file"
+                            : root.slate-stage == 1 ? "Reading the slate\u{2026}"
+                            : root.slate-stage == 3 ? (root.slate-receiving ? "Signing\u{2026}" : "Sending\u{2026}")
+                            : root.slate-stage == 4 ? (root.slate-ok ? (root.slate-receiving ? "Signed" : "Done") : "It didn't go through")
+                            : (root.slate-receiving ? "Receive this payment?" : "Finish this send?");
+                        color: #e6e6e6;
+                        font-size: 15px;
+                        font-weight: 600;
+                    }
+                    if root.slate-stage == 0: Text {
+                        text: root.picked-file == ""
+                            ? "Someone's payment to you (.tx), or the reply to one of your sends (.tx.response)."
+                            : "Selected: " + root.picked-file;
+                        color: #9a9a9a;
+                        font-size: 12px;
+                        wrap: word-wrap;
+                    }
+                    if root.slate-stage == 2: Text {
+                        text: root.slate-summary;
+                        color: #e6e6e6;
+                        font-size: 13px;
+                        wrap: word-wrap;
+                    }
+                    if root.slate-stage == 2 && root.slate-note != "": Text {
+                        text: "Note: " + root.slate-note;
+                        color: #c8c8c8;
+                        font-size: 12px;
+                        wrap: word-wrap;
+                    }
+                    if root.slate-stage == 2 && !root.slate-receiving: Text {
+                        text: "This broadcasts the payment and cannot be undone.";
+                        color: #e05c5c;
+                        font-size: 11px;
+                        wrap: word-wrap;
+                    }
+                    if root.slate-stage == 4: Text {
+                        text: root.slate-result;
+                        color: root.slate-ok ? #7ec27e : #e05c5c;
+                        font-size: 12px;
+                        wrap: word-wrap;
+                    }
+                    if root.slate-stage == 0 || root.slate-stage == 2 || root.slate-stage == 4: HorizontalLayout {
+                        alignment: end;
+                        spacing: 8px;
+                        if root.slate-stage != 4: Button {
+                            text: "Cancel";
+                            clicked => { root.slate-open = false; }
+                        }
+                        if root.slate-stage == 0: Button {
+                            text: root.picked-file == "" ? "Browse\u{2026}" : "Continue";
+                            primary: root.picked-file != "";
+                            clicked => {
+                                if (root.picked-file == "") {
+                                    root.browse-open = true;
+                                } else {
+                                    root.slate-stage = 1;
+                                    root.slate-inspect(root.picked-file);
+                                }
+                            }
+                        }
+                        if root.slate-stage == 2: Button {
+                            text: root.slate-receiving ? "Sign it" : "Send it";
+                            primary: true;
+                            clicked => {
+                                root.slate-stage = 3;
+                                root.slate-process();
+                            }
+                        }
+                        if root.slate-stage == 4: Button {
+                            text: "Close";
+                            clicked => { root.slate-open = false; }
                         }
                     }
                 }

@@ -693,6 +693,73 @@ pub const FeeEstimate = union(enum) {
     failed: []const u8, // human-readable reason
 };
 
+// --- Slate files -------------------------------------------------------------
+//
+// A MimbleWimble payment made by hand-carried files rather than a relay: the
+// sender saves a slate, the receiver signs it and saves a response, the sender
+// finalizes that. `SlateInfo` is what a slate file turns out to be for *this*
+// wallet, read before anything is done with it.
+
+/// What opening a slate file would do in this wallet. Ordinals are the GUI's C
+/// ABI (`BwSlateInfo.kind`) — append, never insert.
+pub const SlateKind = enum(u8) {
+    /// Nothing: the file can't be used here (`SlateInfo.reason` says why).
+    unusable = 0,
+    /// Someone is paying this wallet: sign it and write a response file for
+    /// them.
+    receive = 1,
+    /// The receiver's reply to one of this wallet's sends: finalize it and
+    /// broadcast the payment.
+    finalize = 2,
+};
+
+/// Longest reason `SlateInfo` carries.
+pub const slate_reason_max: usize = 160;
+
+/// What a slate file is, and what opening it would do. Scalar-only, like
+/// `WalletTx`, so it crosses the C ABI by memcpy. The note is the other side's
+/// text and goes through `sanitizeNote`, like a transaction's.
+pub const SlateInfo = struct {
+    kind: SlateKind = .unusable,
+    /// Whole coins moving, and the fee the sender pays.
+    amount: f64 = 0,
+    fee: f64 = 0,
+    id_buf: [36]u8 = undefined,
+    id_len: usize = 0,
+    note_buf: [tx_note_max]u8 = undefined,
+    note_len: usize = 0,
+    reason_buf: [slate_reason_max]u8 = undefined,
+    reason_len: usize = 0,
+
+    pub fn id(self: *const SlateInfo) []const u8 {
+        return self.id_buf[0..self.id_len];
+    }
+
+    pub fn note(self: *const SlateInfo) []const u8 {
+        return self.note_buf[0..self.note_len];
+    }
+
+    pub fn reason(self: *const SlateInfo) []const u8 {
+        return self.reason_buf[0..self.reason_len];
+    }
+
+    pub fn setId(self: *SlateInfo, text: []const u8) void {
+        self.id_len = @min(text.len, self.id_buf.len);
+        @memcpy(self.id_buf[0..self.id_len], text[0..self.id_len]);
+    }
+
+    pub fn setNote(self: *SlateInfo, text: []const u8) void {
+        self.note_len = sanitizeNote(&self.note_buf, text).len;
+    }
+
+    /// Mark it unusable, saying why.
+    pub fn refuse(self: *SlateInfo, why: []const u8) void {
+        self.kind = .unusable;
+        self.reason_len = @min(why.len, self.reason_buf.len);
+        @memcpy(self.reason_buf[0..self.reason_len], why[0..self.reason_len]);
+    }
+};
+
 // --- Stablecoin (DigiDollar) -----------------------------------------------
 //
 // Normalized models for a coin-issued stablecoin (DigiByte's DigiDollar — DD

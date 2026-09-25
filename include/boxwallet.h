@@ -1361,6 +1361,44 @@ int     bw_wallet_send_fee(bw_ctx *ctx, size_t idx, const char *address, double 
 int     bw_wallet_send(bw_ctx *ctx, size_t idx, const char *address, double amount,
                        const char *note, char *out, size_t cap);
 
+/* ---- slate files --------------------------------------------------------------
+ * Payments by hand-carried file, for a coin where bw_coin_supports_slate_files
+ * is 1 (Epic). The sender saves a slate (bw_wallet_slate_send), the receiver
+ * opens it and saves a response, the sender opens that to finish. Opening is
+ * one action: bw_wallet_slate_inspect says what a file is for *this* wallet, the
+ * user confirms, bw_wallet_slate_process does it. Names follow the coin CLI's
+ * (x.tx -> x.tx.response), so files work with any wallet for the coin.
+ *
+ * All block on the wallet — worker thread only. Tri-state like bw_wallet_send:
+ * 0 done, 1 the wallet refused (out = why), -1 transport (bw_last_error). */
+#define BW_SLATE_UNUSABLE 0 /* reason says why; nothing to do */
+#define BW_SLATE_RECEIVE  1 /* someone is paying you: sign, write a response */
+#define BW_SLATE_FINALIZE 2 /* the reply to your send: finalize, broadcast */
+typedef struct {
+    int     kind;         /* BW_SLATE_* */
+    double  amount, fee;  /* whole coins */
+    char    id[36];       /* length-counted, like BwWalletTx.txid */
+    size_t  id_len;
+    char    note[128];    /* the sender's note, already safe to show */
+    size_t  note_len;
+    char    reason[160];  /* why it's unusable */
+    size_t  reason_len;
+} BwSlateInfo;
+int     bw_coin_supports_slate_files(size_t idx);
+/* Where to save a slate by default: Downloads if the user has one, else home. */
+size_t  bw_slate_default_dir(bw_ctx *ctx, char *buf, size_t cap);
+int     bw_wallet_slate_fee(bw_ctx *ctx, size_t idx, double amount, double *fee_out,
+                            char *out, size_t cap);
+/* 0: saved, out = the file's path. The coins stay locked until the response is
+ * finalized, or the send is cancelled like an unanswered one. */
+int     bw_wallet_slate_send(bw_ctx *ctx, size_t idx, double amount, const char *note,
+                             const char *out_dir, char *out, size_t cap);
+/* 0: *info filled (kind 0 = unusable, with reason); -1: transport. */
+int     bw_wallet_slate_inspect(bw_ctx *ctx, size_t idx, const char *path, BwSlateInfo *info);
+/* Pass the kind inspect returned: a file that no longer matches is refused. */
+int     bw_wallet_slate_process(bw_ctx *ctx, size_t idx, const char *path, int kind,
+                                char *out, size_t cap);
+
 /* ---- mining -----------------------------------------------------------------
  * Only meaningful for a coin where bw_coin_supports_mining is 1: its daemon
  * mines in-process (the CryptoNote CPU coins — Nerva), so the miner is driven

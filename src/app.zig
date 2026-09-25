@@ -838,7 +838,10 @@ const SendModal = struct {
     /// working → result tail to cancel a send that never went through: the
     /// target is one of the rows snapshotted into `cancel_rows` when the prompt
     /// opened, not anything typed.
-    const Mode = enum { send, stake, token, cancel };
+    /// `slate` (coins wiring `Coin.SlateFiles` — Epic) is a send with no
+    /// destination: it starts at `amount`, and instead of paying an address the
+    /// worker saves a slate file for the user to hand over.
+    const Mode = enum { send, stake, token, cancel, slate };
 
     mode: Mode = .send,
     stage: Stage = .address,
@@ -880,7 +883,7 @@ const SendModal = struct {
     ok: bool = false,
     /// Outcome text shown in the `result` stage: the txid or the daemon's own
     /// failure reason (fixed buffer — no allocation).
-    msg_buf: [256]u8 = undefined,
+    msg_buf: [512]u8 = undefined,
     msg_len: usize = 0,
 
     const max_cancel_rows = 8;
@@ -899,6 +902,38 @@ const SendModal = struct {
     }
 
     fn setMsg(self: *SendModal, ok: bool, text: []const u8) void {
+        self.ok = ok;
+        const n = @min(text.len, self.msg_buf.len);
+        @memcpy(self.msg_buf[0..n], text[0..n]);
+        self.msg_len = n;
+        self.stage = .result;
+    }
+};
+
+/// Which slate-file step the send worker runs (`Activity.slate_op`).
+const SlateOp = enum { none, inspect, process };
+
+/// The "open a slate file" prompt (`o` on the Send or Receive tab, for a coin
+/// wiring `Coin.SlateFiles` — Epic). One action for both ends of a file payment:
+/// pick the file, and the coin says what it is for this wallet — someone paying
+/// you (sign it, save a response) or the reply to your send (finalize it) — and
+/// the user confirms that before anything happens. A file that can't be used
+/// goes straight to the result with the reason.
+const SlateModal = struct {
+    const Stage = enum { pick, inspecting, confirm, working, result };
+
+    stage: Stage = .pick,
+    coin_idx: usize = 0,
+    /// Confirm-menu cursor (0 = Yes, 1 = No).
+    sel: u8 = 0,
+    /// What the coin said the picked file is, once inspected.
+    info: models.SlateInfo = .{},
+    /// Whether the finished step succeeded (tints the result).
+    ok: bool = false,
+    msg_buf: [512]u8 = undefined,
+    msg_len: usize = 0,
+
+    fn setMsg(self: *SlateModal, ok: bool, text: []const u8) void {
         self.ok = ok;
         const n = @min(text.len, self.msg_buf.len);
         @memcpy(self.msg_buf[0..n], text[0..n]);
@@ -1490,13 +1525,25 @@ const Activity = struct {
     /// True when the worker is cancelling the transaction whose id sits in
     /// `send_addr_buf` (`walletCancelTx`) rather than sending.
     send_is_cancel: bool = false,
+    /// True when the send (or its fee quote) is a slate file (`Coin.SlateFiles`)
+    /// rather than a payment to an address: saved to `conf.userFilesDir`.
+    send_is_slate: bool = false,
+    /// A slate-file step for the "open a slate file" prompt, run on this same
+    /// worker: `inspect` fills `slate_info`, `process` does what it said.
+    slate_op: SlateOp = .none,
+    slate_path_buf: [1024]u8 = undefined,
+    slate_path_len: usize = 0,
+    /// `process`: what the user confirmed the file is.
+    slate_expect: models.SlateKind = .unusable,
+    /// `inspect`'s answer. Published by the `send_done` edge.
+    slate_info: models.SlateInfo = .{},
     /// Set true (release) by the worker when the send finishes.
     send_done: std.atomic.Value(bool) = .init(false),
     /// Whether the finished send succeeded. Published by the `send_done` edge.
     send_ok: bool = false,
     /// The txid (success) or the daemon's own failure reason (rejection) —
     /// never a generic "it failed." Published by the `send_done` edge.
-    send_result_buf: [256]u8 = undefined,
+    send_result_buf: [512]u8 = undefined,
     send_result_len: usize = 0,
 
     // --- mining worker (the Mining tab) --------------------------------------
@@ -2474,18 +2521,31 @@ const Activity = struct {
         defer arena.deinit();
         const a = arena.allocator();
 
+        if (self.slate_op != .none) {
+            self.runSlateOp(a);
+            self.send_done.store(true, .release);
+            return;
+        }
+
         if (self.send_is_fee) {
-            const quote: models.FeeEstimate = self.coin.walletSendFee(
-                a,
-                self.sendAuth(a) catch |err| {
-                    self.send_ok = false;
-                    self.stashSendResult(@errorName(err));
-                    self.send_done.store(true, .release);
-                    return;
-                },
-                self.send_addr_buf[0..self.send_addr_len],
-                self.send_amount,
-            ) catch |err| .{ .failed = @errorName(err) };
+            const auth = self.sendAuth(a) catch |err| {
+                self.send_ok = false;
+                self.stashSendResult(@errorName(err));
+                self.send_done.store(true, .release);
+                return;
+            };
+            const quote: models.FeeEstimate = if (self.send_is_slate)
+                (if (self.coin.slateFiles()) |sf|
+                    sf.fee(a, auth, self.send_amount) catch |err| .{ .failed = @errorName(err) }
+                else
+                    .{ .failed = "Unsupported" })
+            else
+                self.coin.walletSendFee(
+                    a,
+                    auth,
+                    self.send_addr_buf[0..self.send_addr_len],
+                    self.send_amount,
+                ) catch |err| .{ .failed = @errorName(err) };
             switch (quote) {
                 .fee => |f| {
                     self.send_fee = f;
@@ -2539,6 +2599,11 @@ const Activity = struct {
     fn doSend(self: *Activity, a: std.mem.Allocator) !models.SendResult {
         const address = self.send_addr_buf[0..self.send_addr_len];
         if (self.send_is_cancel) return self.coin.walletCancelTx(a, try self.sendAuth(a), address);
+        if (self.send_is_slate) {
+            const sf = self.coin.slateFiles() orelse return error.Unsupported;
+            const dir = try conf.userFilesDir(a, self.home_dir);
+            return sf.send(a, try self.sendAuth(a), self.send_amount, self.send_note_buf[0..self.send_note_len], dir);
+        }
 
         // An external-wallet coin (Monero-style) sends/stakes from its *wallet*
         // process — its endpoint + per-session creds, no daemon conf to read.
@@ -2581,6 +2646,50 @@ const Activity = struct {
             self.coin.walletStake(a, auth, self.send_amount)
         else
             self.coin.walletSendNote(a, auth, address, self.send_amount, self.send_note_buf[0..self.send_note_len]);
+    }
+
+    /// Run the pending `slate_op`: read what a file is (`slate_info`), or do what
+    /// the user confirmed it is. Outcome in `send_ok`/`send_result_buf`, like a
+    /// send.
+    fn runSlateOp(self: *Activity, a: std.mem.Allocator) void {
+        const path = self.slate_path_buf[0..self.slate_path_len];
+        const sf = self.coin.slateFiles() orelse {
+            self.send_ok = false;
+            self.stashSendResult("Unsupported");
+            return;
+        };
+        const auth = self.sendAuth(a) catch |err| {
+            self.send_ok = false;
+            self.stashSendResult(@errorName(err));
+            return;
+        };
+        switch (self.slate_op) {
+            .none => {},
+            .inspect => {
+                if (sf.inspect(a, auth, path)) |info| {
+                    self.slate_info = info;
+                    self.send_ok = true;
+                    self.send_result_len = 0;
+                } else |err| {
+                    self.send_ok = false;
+                    self.stashSendResult(@errorName(err));
+                }
+            },
+            .process => {
+                const res: models.SendResult = sf.process(a, auth, path, self.slate_expect) catch |err|
+                    .{ .failed = @errorName(err) };
+                switch (res) {
+                    .ok => |t| {
+                        self.send_ok = true;
+                        self.stashSendResult(t);
+                    },
+                    .failed => |t| {
+                        self.send_ok = false;
+                        self.stashSendResult(t);
+                    },
+                }
+            },
+        }
     }
 
     /// Copy `text` (a txid or a failure reason) into the bounded
@@ -4172,6 +4281,8 @@ pub const App = struct {
     /// with the other modals; while set it owns keyboard input and is
     /// composited over the dashboard, same as the others.
     sc_modal: ?StablecoinModal = null,
+    /// The "open a slate file" prompt (`SlateModal`), for the coin it was opened on.
+    slate_modal: ?SlateModal = null,
     /// A "New address" request from the stablecoin tab's `n` key, waiting to
     /// be staged onto the selected coin's `Activity` at the next poll spawn —
     /// the stablecoin twin of `pending_new_receive_address`.
@@ -4535,6 +4646,10 @@ pub const App = struct {
                     self.scModalKey(k);
                     return .none;
                 }
+                if (self.slate_modal != null) {
+                    self.slateModalKey(k);
+                    return .none;
+                }
                 // Detail-pane tabs only exist for a selected coin, not the Home
                 // screen — so left/right and the numbered jumps are live only
                 // then. The capability tabs (Mining, DigiDollar, Staking) exist
@@ -4591,6 +4706,12 @@ pub const App = struct {
                         // Cancel a send that never went through (Epic).
                         'x' => if (on_coin and self.active_tab == .transactions)
                             self.openCancelTxModal(),
+                        // Payments by slate file (Epic): save one, or open one —
+                        // someone's payment, or the reply to yours.
+                        'f' => if (on_coin and self.active_tab == .send)
+                            self.openSlateSendModal(),
+                        'o' => if (on_coin and (self.active_tab == .send or self.active_tab == .receive))
+                            self.openSlateOpenModal(),
                         'S' => if (on_coin and self.active_tab == .staking)
                             self.openStakeModal()
                         else if (on_coin and self.active_tab == .tokens)
@@ -4637,7 +4758,8 @@ pub const App = struct {
     fn modalOpen(self: *const App) bool {
         return self.update_modal != null or self.qs_modal != null or self.prune_modal != null or
             self.modal != null or self.send_modal != null or self.mining_modal != null or
-            self.sc_modal != null or self.reindex_modal != null or self.node_modal != null;
+            self.sc_modal != null or self.reindex_modal != null or self.node_modal != null or
+            self.slate_modal != null;
     }
 
     /// Handle a mouse event: click a left-nav row to select that coin, or wheel
@@ -5474,7 +5596,9 @@ pub const App = struct {
                 act.send_thread = null;
                 const ok = act.send_ok;
                 const result = act.send_result_buf[0..act.send_result_len];
-                if (act.send_is_fee) {
+                if (act.slate_op != .none) {
+                    self.settleSlateOp(i, ok, result);
+                } else if (act.send_is_fee) {
                     // Only a quote: nothing left the wallet, so nothing to log or
                     // re-poll. A quote the wallet refused is the answer the send
                     // would have got — shown now, before anyone confirms.
@@ -5489,6 +5613,8 @@ pub const App = struct {
                     if (self.coinAt(i)) |c| {
                         self.logf("{s}: {s}", .{ c.coinName(), if (act.send_is_cancel)
                             (if (ok) "send cancelled" else "couldn't cancel the send")
+                        else if (act.send_is_slate)
+                            (if (ok) "slate file saved" else "couldn't save a slate file")
                         else if (ok) "sent" else "send failed" });
                     }
                     if (self.send_modal != null and self.send_modal.?.coin_idx == i) {
@@ -6318,7 +6444,7 @@ pub const App = struct {
         const act = &self.activities[self.selected];
         if (act.busy()) return;
         if (act.update_await_stop or act.update_restart) return; // already updating
-        if (self.modal != null or self.qs_modal != null or self.update_modal != null or self.send_modal != null or self.mining_modal != null or self.sc_modal != null) return;
+        if (self.modal != null or self.qs_modal != null or self.update_modal != null or self.send_modal != null or self.mining_modal != null or self.sc_modal != null or self.slate_modal != null) return;
         // from_len stays 0: the prompt reads "reinstall the bundled version"
         // rather than "X → Y", since this isn't tied to a newer release.
         self.update_modal = .{ .coin_idx = self.selected, .reinstall = true };
@@ -6369,7 +6495,7 @@ pub const App = struct {
         const act = &self.activities[self.selected];
         if (!act.update_available or act.busy()) return;
         if (act.update_await_stop or act.update_restart) return; // already updating
-        if (self.modal != null or self.qs_modal != null or self.update_modal != null or self.send_modal != null or self.mining_modal != null or self.sc_modal != null) return;
+        if (self.modal != null or self.qs_modal != null or self.update_modal != null or self.send_modal != null or self.mining_modal != null or self.sc_modal != null or self.slate_modal != null) return;
 
         var m: UpdateModal = .{ .coin_idx = self.selected };
         const iv = act.installedVersion();
@@ -7361,8 +7487,9 @@ pub const App = struct {
             return;
         }
         m.bad_input = false;
-        // A coin whose sends carry a note asks for one (optional) next.
-        if (m.mode == .send) if (self.coinAt(m.coin_idx)) |coin| if (coin.sendNoteMax() > 0) {
+        // A coin whose sends carry a note asks for one (optional) next — a slate
+        // file carries it the same way.
+        if (m.mode == .send or m.mode == .slate) if (self.coinAt(m.coin_idx)) |coin| if (coin.sendNoteMax() > 0) {
             self.send_amount_input.blur();
             self.send_note_input.focus();
             m.stage = .note;
@@ -7393,6 +7520,11 @@ pub const App = struct {
         const m = &self.send_modal.?;
         m.sel = 0;
         m.fee = null;
+        // A slate file is always priced first (the capability's own quote).
+        if (m.mode == .slate) {
+            self.startSendWorker(true);
+            return;
+        }
         if (m.mode == .send) if (self.coinAt(m.coin_idx)) |coin| if (coin.supportsSendFee()) {
             self.startSendWorker(true);
             return;
@@ -7435,8 +7567,10 @@ pub const App = struct {
         @memcpy(act.send_addr_buf[0..n], target[0..n]);
         act.send_addr_len = n;
         act.send_is_cancel = m.mode == .cancel;
-        // Only a plain send carries a note, and only on a coin that takes one.
-        const note = if (m.mode == .send and coin.sendNoteMax() > 0) self.send_note_input.getValue() else "";
+        // Only a plain send (or a slate file) carries a note, and only on a coin
+        // that takes one.
+        const carries_note = (m.mode == .send or m.mode == .slate) and coin.sendNoteMax() > 0;
+        const note = if (carries_note) self.send_note_input.getValue() else "";
         act.send_note_len = @min(note.len, act.send_note_buf.len);
         @memcpy(act.send_note_buf[0..act.send_note_len], note[0..act.send_note_len]);
 
@@ -7459,6 +7593,8 @@ pub const App = struct {
         }
 
         act.send_is_fee = fee_only;
+        act.send_is_slate = m.mode == .slate;
+        act.slate_op = .none;
         act.coin = coin;
         act.home_dir = self.home_dir;
         act.send_ok = false;
@@ -7478,7 +7614,147 @@ pub const App = struct {
             .token => "sending token",
             .send => "sending",
             .cancel => "cancelling a send",
+            .slate => "saving a slate file",
         } });
+    }
+
+    /// Open the Send prompt in `slate` mode — a payment saved as a file for the
+    /// user to hand over, instead of sent to an address. Starts at the amount.
+    fn openSlateSendModal(self: *App) void {
+        const coin = self.selectedCoin() orelse return;
+        if (!coin.supportsSlateFiles() or self.modalOpen()) return;
+        self.send_modal = .{ .coin_idx = self.selected, .mode = .slate, .stage = .amount };
+        self.send_addr_input.setValue("") catch {};
+        self.send_amount_input.setValue("") catch {};
+        self.send_note_input.setValue("") catch {};
+        self.send_addr_input.blur();
+        self.send_note_input.blur();
+        self.send_amount_input.focus();
+    }
+
+    /// Open the "open a slate file" prompt at its file picker.
+    fn openSlateOpenModal(self: *App) void {
+        const coin = self.selectedCoin() orelse return;
+        if (!coin.supportsSlateFiles() or self.modalOpen()) return;
+        self.slate_modal = .{ .coin_idx = self.selected };
+        self.startFilePicker();
+    }
+
+    /// Keys on the slate prompt. The picker owns navigation until a file is
+    /// chosen; inspecting and working can't be interrupted (the wallet is mid-
+    /// call); the confirm is the usual Yes/No; the result closes on any key.
+    fn slateModalKey(self: *App, k: zz.KeyEvent) void {
+        const m = &self.slate_modal.?;
+        switch (m.stage) {
+            .pick => switch (k.key) {
+                .escape => {
+                    self.file_picker.blur();
+                    self.slate_modal = null;
+                },
+                else => {
+                    const selected = self.file_picker.handleKey(self.io, self.environ_map, k) catch false;
+                    if (!selected) return;
+                    const fp = self.file_picker.getSelected() orelse return;
+                    self.rememberFileDir(fp);
+                    self.file_picker.blur();
+                    self.startSlateWorker(.inspect, fp, .unusable);
+                },
+            },
+            .inspecting, .working => {},
+            .confirm => switch (k.key) {
+                .escape => self.slate_modal = null,
+                .up => m.sel = 0,
+                .down => m.sel = 1,
+                .char => |c| switch (c) {
+                    'k' => m.sel = 0,
+                    'j' => m.sel = 1,
+                    'y' => self.confirmSlate(),
+                    'n' => self.slate_modal = null,
+                    else => {},
+                },
+                .enter => if (m.sel == 0) self.confirmSlate() else {
+                    self.slate_modal = null;
+                },
+                else => {},
+            },
+            .result => self.slate_modal = null,
+        }
+    }
+
+    /// The user agreed: do what the file was said to be, on the path it was
+    /// read from (the coin checks again that it still is).
+    fn confirmSlate(self: *App) void {
+        const m = &self.slate_modal.?;
+        const act = &self.activities[m.coin_idx];
+        const path = act.slate_path_buf[0..act.slate_path_len];
+        self.startSlateWorker(.process, path, m.info.kind);
+    }
+
+    /// Run a slate step on the coin's send worker.
+    fn startSlateWorker(self: *App, op: SlateOp, path: []const u8, expect: models.SlateKind) void {
+        const m = &self.slate_modal.?;
+        const coin = self.coinAt(m.coin_idx) orelse return;
+        const act = &self.activities[m.coin_idx];
+        if (act.poll_thread) |t| {
+            t.join();
+            act.poll_thread = null;
+        }
+        if (act.send_thread) |t| {
+            t.join();
+            act.send_thread = null;
+        }
+        if (path.len > act.slate_path_buf.len) {
+            m.setMsg(false, "That path is too long.");
+            return;
+        }
+        // `path` may already be the buffer itself (the confirm step).
+        if (path.ptr != &act.slate_path_buf) @memcpy(act.slate_path_buf[0..path.len], path);
+        act.slate_path_len = path.len;
+        act.slate_op = op;
+        act.slate_expect = expect;
+        act.send_is_fee = false;
+        act.send_is_cancel = false;
+        act.send_is_stake = false;
+        act.send_is_token = false;
+        act.send_is_slate = false;
+        act.coin = coin;
+        act.home_dir = self.home_dir;
+        act.send_ok = false;
+        act.send_done.store(false, .monotonic);
+        act.send_thread = std.Thread.spawn(.{}, Activity.runSend, .{act}) catch {
+            act.slate_op = .none;
+            m.setMsg(false, "couldn't start the worker");
+            return;
+        };
+        m.stage = if (op == .inspect) .inspecting else .working;
+        if (op == .process) self.logf("{s}: {s}…", .{
+            coin.coinName(),
+            if (expect == .receive) "signing a slate file" else "finishing a send from its slate",
+        });
+    }
+
+    /// A slate step finished (reaped from the send worker).
+    fn settleSlateOp(self: *App, i: usize, ok: bool, result: []const u8) void {
+        const act = &self.activities[i];
+        const op = act.slate_op;
+        act.slate_op = .none;
+        const coin = self.coinAt(i);
+        if (op == .process) {
+            if (coin) |c| self.logf("{s}: {s}", .{ c.coinName(), if (!ok)
+                "slate file not processed"
+            else if (act.slate_expect == .receive) "slate signed — response saved" else "sent" });
+            self.last_poll_ns = 0;
+        }
+        const m = if (self.slate_modal) |*sm| (if (sm.coin_idx == i) sm else return) else return;
+        if (op == .inspect) {
+            if (!ok) return m.setMsg(false, result);
+            m.info = act.slate_info;
+            if (m.info.kind == .unusable) return m.setMsg(false, m.info.reason());
+            m.sel = 0;
+            m.stage = .confirm;
+            return;
+        }
+        m.setMsg(ok, result);
     }
 
     /// Open the Mining prompt for the selected coin — thread-count entry when
@@ -8675,6 +8951,10 @@ pub const App = struct {
                 const box = self.renderStablecoinModal(a) catch break :blk screen;
                 break :blk overlayBox(a, screen, box, ctx.width, ctx.height) catch screen;
             }
+            if (self.slate_modal != null) {
+                const box = self.renderSlateModal(a) catch break :blk screen;
+                break :blk overlayBox(a, screen, box, ctx.width, ctx.height) catch screen;
+            }
             if (self.modal == null) break :blk screen;
             break :blk self.renderModalOver(a, screen, ctx.width, ctx.height) catch screen;
         };
@@ -9207,11 +9487,11 @@ pub const App = struct {
             else
                 try renderPlaceholderTab(a, self.active_tab),
             .receive => if (coin.supportsReceiveAddress())
-                try renderReceiveTab(a, act)
+                try withSlateHint(a, coin, .receive, try renderReceiveTab(a, act))
             else
                 try renderPlaceholderTab(a, self.active_tab),
             .send => if (coin.supportsSend())
-                try renderSendTab(a, coin, act, self.hide_balances, self.quoteAt(self.selected))
+                try withSlateHint(a, coin, .send, try renderSendTab(a, coin, act, self.hide_balances, self.quoteAt(self.selected)))
             else
                 try renderPlaceholderTab(a, self.active_tab),
             .mining => if (coin.supportsMining())
@@ -9916,6 +10196,19 @@ pub const App = struct {
         const hint_text = "(press Enter to send)";
         const hint = (zz.Style{}).dim(true).render(a, hint_text) catch hint_text;
         return std.fmt.allocPrint(a, "Send\n\nAvailable: {s}\n\n{s}", .{ balance, hint });
+    }
+
+    /// `body` plus, for a coin that pays by slate file, the keys for it: on the
+    /// Send tab saving one and opening the reply; on the Receive tab opening a
+    /// payment someone sent as a file.
+    fn withSlateHint(a: std.mem.Allocator, coin: Coin, tab: DetailTab, body: []const u8) ![]const u8 {
+        if (!coin.supportsSlateFiles()) return body;
+        const text = if (tab == .send)
+            "By file:  f: save a slate   o: open the receiver's .response"
+        else
+            "Paid by file? o: open the slate file you were sent";
+        const hint = (zz.Style{}).dim(true).render(a, text) catch text;
+        return std.fmt.allocPrint(a, "{s}\n\n{s}", .{ body, hint });
     }
 
     /// The Mining tab body: the daemon's live CPU-miner state (active/idle,
@@ -10975,6 +11268,7 @@ pub const App = struct {
             .token => "send token",
             .send => "send",
             .cancel => "cancel send",
+            .slate => "send by slate file",
         } });
         try modalRule(a, &out.writer, brand, inner_w, "┌", "┐", title);
         try modalRow(&out.writer, vbar, inner_w, "", 0);
@@ -11092,6 +11386,21 @@ pub const App = struct {
                     break :blk try std.fmt.allocPrint(a, "Send {s} {s} to {s}? This cannot be undone.", .{
                         money.formatUnits(&qbuf, units, m.token_decimals), m.tokenLabel(), addr,
                     });
+                } else if (m.mode == .slate) blk: {
+                    // No address to check — the file goes to whoever the user
+                    // gives it to. What they're agreeing to is the amount, the
+                    // fee, and the coins being set aside meanwhile.
+                    const fee = m.fee orelse 0;
+                    var fbuf: [64]u8 = undefined;
+                    var tbuf: [64]u8 = undefined;
+                    break :blk try std.fmt.allocPrint(a, "Save a slate file paying {s} {s}? The fee is {s} {s}, so {s} {s} leaves the wallet when it completes. The coins are set aside until you open the receiver's .response file here, or cancel the send.", .{
+                        formatAmount(&buf, amount, coin.balanceDecimals()),
+                        coin.coinNameAbbrev(),
+                        formatAmount(&fbuf, fee, coin.balanceDecimals()),
+                        coin.coinNameAbbrev(),
+                        formatAmount(&tbuf, amount + fee, coin.balanceDecimals()),
+                        coin.coinNameAbbrev(),
+                    });
                 } else if (staking)
                     try std.fmt.allocPrint(a, "Stake {s} {s}? {s}", .{
                         formatAmount(&buf, amount, coin.balanceDecimals()), coin.coinNameAbbrev(), coin.stakeHint(),
@@ -11120,7 +11429,7 @@ pub const App = struct {
                 };
                 try wrapIntoRows(a, &out.writer, vbar, inner_w, detail, (zz.Style{}));
                 // The note as it will go — cleaned the way the send cleans it.
-                if (m.mode == .send and coin.sendNoteMax() > 0) {
+                if ((m.mode == .send or m.mode == .slate) and coin.sendNoteMax() > 0) {
                     var nbuf: [models.tx_note_max]u8 = undefined;
                     const note = models.sanitizeNote(&nbuf, self.send_note_input.getValue());
                     if (note.len > 0) {
@@ -11131,6 +11440,8 @@ pub const App = struct {
                 try modalRow(&out.writer, vbar, inner_w, "", 0);
                 const labels = if (staking)
                     [_][]const u8{ "Yes — stake it", "No — cancel" }
+                else if (m.mode == .slate)
+                    [_][]const u8{ "Yes — save the file", "No — cancel" }
                 else if (cancelling)
                     [_][]const u8{ "Yes — cancel it", "No — keep waiting" }
                 else
@@ -11146,7 +11457,7 @@ pub const App = struct {
                 }
             },
             .working => {
-                const busy = if (staking) "Staking…" else if (cancelling) "Cancelling…" else "Sending…";
+                const busy = if (staking) "Staking…" else if (cancelling) "Cancelling…" else if (m.mode == .slate) "Saving the slate…" else "Sending…";
                 try modalRow(&out.writer, vbar, inner_w, busy, zz.width(busy));
             },
             .estimating => {
@@ -11157,7 +11468,9 @@ pub const App = struct {
                 // A coin whose "sent" isn't a finished, txid-bearing send says so
                 // in its own words (Epic: on its way, and a slate id).
                 const own = coin.sendOkLabel();
-                const lead_plain = if (cancelling)
+                const lead_plain = if (m.mode == .slate)
+                    (if (m.ok) "Saved. Give this file to the receiver:" else "Couldn't save the slate:")
+                else if (cancelling)
                     (if (m.ok) "Send cancelled." else "Couldn't cancel:")
                 else if (m.ok)
                     (if (staking) "Staked. Txid:" else if (m.mode == .send and own.len > 0) own else "Sent. Txid:")
@@ -11169,6 +11482,10 @@ pub const App = struct {
                     ((zz.Style{}).fg(.red).render(a, lead_plain) catch lead_plain);
                 try modalRow(&out.writer, vbar, inner_w, lead, zz.width(lead_plain));
                 try wrapIntoRows(a, &out.writer, vbar, inner_w, m.msg_buf[0..m.msg_len], (zz.Style{}).dim(true));
+                if (m.mode == .slate and m.ok) {
+                    try modalRow(&out.writer, vbar, inner_w, "", 0);
+                    try wrapIntoRows(a, &out.writer, vbar, inner_w, "When they send back the .response file, open it here (o on the Send tab) to finish the payment.", (zz.Style{}));
+                }
             },
         }
 
@@ -11186,6 +11503,93 @@ pub const App = struct {
         try modalRow(&out.writer, vbar, inner_w, hint_styled, zz.width(hint));
         try modalRule(a, &out.writer, brand, inner_w, "└", "┘", "");
 
+        return out.toOwnedSlice();
+    }
+
+    /// Render the "open a slate file" prompt: the file picker, then a box with
+    /// what the file is and the choice — or the outcome.
+    fn renderSlateModal(self: *const App, a: std.mem.Allocator) ![]const u8 {
+        const m = self.slate_modal.?;
+        const coin = self.coinAt(m.coin_idx) orelse return error.NoCoin;
+        const brand = zz.Color.hex(coin.coinColor());
+        const inner_w = modal_inner_w;
+        const vbar = (zz.Style{}).fg(brand).render(a, "│") catch "│";
+
+        if (m.stage == .pick) {
+            var fout: std.Io.Writer.Allocating = .init(a);
+            errdefer fout.deinit();
+            const heading_txt = "Open a slate file — a payment to you, or the reply to yours";
+            const heading = (zz.Style{}).bold(true).fg(brand).render(a, heading_txt) catch heading_txt;
+            try fout.writer.print("{s}\n\n", .{heading});
+            try fout.writer.writeAll(try self.file_picker.view(a));
+            const fhint = (zz.Style{}).dim(true).render(a, "enter: open/select   backspace: up   ~: home   esc: cancel") catch "";
+            try fout.writer.print("\n{s}", .{fhint});
+            return fout.toOwnedSlice();
+        }
+
+        var out: std.Io.Writer.Allocating = .init(a);
+        errdefer out.deinit();
+        const title = try std.fmt.allocPrint(a, "{s} — slate file", .{coin.coinName()});
+        try modalRule(a, &out.writer, brand, inner_w, "┌", "┐", title);
+        try modalRow(&out.writer, vbar, inner_w, "", 0);
+
+        const receiving = m.info.kind == .receive;
+        switch (m.stage) {
+            .pick => unreachable,
+            .inspecting => try modalRow(&out.writer, vbar, inner_w, "Reading the slate…", zz.width("Reading the slate…")),
+            .confirm => {
+                var buf: [64]u8 = undefined;
+                var fbuf: [64]u8 = undefined;
+                var tbuf: [64]u8 = undefined;
+                const amt = formatAmount(&buf, m.info.amount, coin.balanceDecimals());
+                const detail = if (receiving)
+                    try std.fmt.allocPrint(a, "Someone is paying you {s} {s}. Sign it? Your wallet saves a .response file next to this one — send that back to them. The payment completes when they open it.", .{ amt, coin.coinNameAbbrev() })
+                else
+                    try std.fmt.allocPrint(a, "This is the reply to your send of {s} {s}. Finish it? The fee is {s} {s}, so {s} {s} leaves the wallet. This broadcasts the payment and cannot be undone.", .{
+                        amt,                                                       coin.coinNameAbbrev(),
+                        formatAmount(&fbuf, m.info.fee, coin.balanceDecimals()),   coin.coinNameAbbrev(),
+                        formatAmount(&tbuf, m.info.amount + m.info.fee, coin.balanceDecimals()), coin.coinNameAbbrev(),
+                    });
+                try wrapIntoRows(a, &out.writer, vbar, inner_w, detail, (zz.Style{}));
+                if (m.info.note_len > 0) {
+                    try modalRow(&out.writer, vbar, inner_w, "", 0);
+                    try wrapIntoRows(a, &out.writer, vbar, inner_w, try std.fmt.allocPrint(a, "Note: {s}", .{m.info.note()}), (zz.Style{}));
+                }
+                try modalRow(&out.writer, vbar, inner_w, "", 0);
+                const labels = if (receiving)
+                    [_][]const u8{ "Yes — sign it", "No — cancel" }
+                else
+                    [_][]const u8{ "Yes — send it", "No — cancel" };
+                for (labels, 0..) |lbl, i| {
+                    const sel = i == m.sel;
+                    const plain = try std.fmt.allocPrint(a, "{s}{s}", .{ if (sel) "❯ " else "  ", lbl });
+                    const text = if (sel) ((zz.Style{}).bold(true).fg(brand).render(a, plain) catch plain) else plain;
+                    try modalRow(&out.writer, vbar, inner_w, text, zz.width(plain));
+                }
+            },
+            .working => {
+                const busy = if (receiving) "Signing…" else "Sending…";
+                try modalRow(&out.writer, vbar, inner_w, busy, zz.width(busy));
+            },
+            .result => {
+                const lead_plain = if (!m.ok)
+                    (if (m.info.kind == .unusable) "This file can't be used here:" else "It didn't go through:")
+                else if (receiving) "Signed. Send this file back to the sender:" else "Done.";
+                try wrapIntoRows(a, &out.writer, vbar, inner_w, lead_plain, (zz.Style{}).fg(if (m.ok) .green else .red));
+                try wrapIntoRows(a, &out.writer, vbar, inner_w, m.msg_buf[0..m.msg_len], (zz.Style{}).dim(true));
+            },
+        }
+
+        try modalRow(&out.writer, vbar, inner_w, "", 0);
+        const hint = switch (m.stage) {
+            .pick => unreachable,
+            .inspecting, .working => "please wait…",
+            .confirm => "enter: select   esc: cancel",
+            .result => "press any key to close",
+        };
+        const hint_styled = (zz.Style{}).dim(true).render(a, hint) catch hint;
+        try modalRow(&out.writer, vbar, inner_w, hint_styled, zz.width(hint));
+        try modalRule(a, &out.writer, brand, inner_w, "└", "┘", "");
         return out.toOwnedSlice();
     }
 
@@ -15840,4 +16244,137 @@ fn stripAnsiAlloc(allocator: std.mem.Allocator, in: []const u8) ![]u8 {
         i += 1;
     }
     return out.toOwnedSlice();
+}
+
+test "a slate-file send asks amount, then note, then prices it — no address" {
+    if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
+    const allocator = std.testing.allocator;
+    var threaded: std.Io.Threaded = .init(allocator, .{});
+    defer threaded.deinit();
+    var env = std.process.Environ.Map.init(allocator);
+    defer env.deinit();
+    try env.put("HOME", "/home/tester");
+    var ctx = zz.Context.init(allocator, allocator, threaded.io(), &env);
+    var app: App = undefined;
+    app.hide_balances = false;
+    _ = app.init(&ctx);
+    defer app.deinit();
+
+    const idx = try epicSlot(&app);
+    app.selected = idx;
+    app.active_tab = .send;
+    app.openSlateSendModal();
+    try std.testing.expectEqual(SendModal.Mode.slate, app.send_modal.?.mode);
+    try std.testing.expectEqual(SendModal.Stage.amount, app.send_modal.?.stage);
+
+    try app.send_amount_input.setValue("0.01");
+    app.trySendAmount();
+    try std.testing.expectEqual(SendModal.Stage.note, app.send_modal.?.stage);
+    try app.send_note_input.setValue("rent");
+    app.trySendNote();
+    // Priced through the slate capability — with no wallet open that's refused,
+    // but it's the slate quote that was asked for.
+    try std.testing.expectEqual(SendModal.Stage.estimating, app.send_modal.?.stage);
+    const act = &app.activities[idx];
+    act.send_thread.?.join();
+    act.send_thread = null;
+    try std.testing.expect(act.send_is_fee and act.send_is_slate);
+    try std.testing.expectEqualStrings("rent", act.send_note_buf[0..act.send_note_len]);
+}
+
+test "renderSendModal words a slate-file send as a file, not a payment to an address" {
+    if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
+    const allocator = std.testing.allocator;
+    var threaded: std.Io.Threaded = .init(allocator, .{});
+    defer threaded.deinit();
+    var env = std.process.Environ.Map.init(allocator);
+    defer env.deinit();
+    try env.put("HOME", "/home/tester");
+    var ctx = zz.Context.init(allocator, allocator, threaded.io(), &env);
+    var app: App = undefined;
+    app.hide_balances = false;
+    _ = app.init(&ctx);
+    defer app.deinit();
+
+    const idx = try epicSlot(&app);
+    try app.send_amount_input.setValue("0.01");
+    app.send_modal = .{ .coin_idx = idx, .mode = .slate, .stage = .confirm, .fee = 0.008 };
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var box = try app.renderSendModal(a);
+    try std.testing.expect(std.mem.indexOf(u8, box, "Save a slate file") != null);
+    try std.testing.expect(std.mem.indexOf(u8, box, "0.01800000") != null);
+    try std.testing.expect(std.mem.indexOf(u8, box, "set aside") != null);
+
+    app.send_modal.?.setMsg(true, "/home/tester/Downloads/ea03a2cf-b73d-40ed-9b0f-8a0d350f4047.tx");
+    box = try app.renderSendModal(a);
+    try std.testing.expect(std.mem.indexOf(u8, box, "Give this file to the receiver") != null);
+    try std.testing.expect(std.mem.indexOf(u8, box, ".response") != null);
+}
+
+test "an opened slate goes to its confirm, or straight to why it can't be used" {
+    if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
+    const allocator = std.testing.allocator;
+    var threaded: std.Io.Threaded = .init(allocator, .{});
+    defer threaded.deinit();
+    var env = std.process.Environ.Map.init(allocator);
+    defer env.deinit();
+    try env.put("HOME", "/home/tester");
+    var ctx = zz.Context.init(allocator, allocator, threaded.io(), &env);
+    var app: App = undefined;
+    app.hide_balances = false;
+    _ = app.init(&ctx);
+    defer app.deinit();
+
+    const idx = try epicSlot(&app);
+    const act = &app.activities[idx];
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    // Someone paying us: confirm, with the amount and their note.
+    app.slate_modal = .{ .coin_idx = idx, .stage = .inspecting };
+    act.slate_op = .inspect;
+    act.slate_info = .{ .kind = .receive, .amount = 0.01, .fee = 0.008 };
+    act.slate_info.setNote("rent for May");
+    app.settleSlateOp(idx, true, "");
+    try std.testing.expectEqual(SlateModal.Stage.confirm, app.slate_modal.?.stage);
+    var box = try app.renderSlateModal(a);
+    try std.testing.expect(std.mem.indexOf(u8, box, "paying you") != null);
+    try std.testing.expect(std.mem.indexOf(u8, box, "rent for May") != null);
+    try std.testing.expect(std.mem.indexOf(u8, box, "Yes — sign it") != null);
+
+    // The reply to our send: states the total and that it can't be undone.
+    app.slate_modal = .{ .coin_idx = idx, .stage = .inspecting };
+    act.slate_op = .inspect;
+    act.slate_info = .{ .kind = .finalize, .amount = 0.01, .fee = 0.008 };
+    app.settleSlateOp(idx, true, "");
+    box = try app.renderSlateModal(a);
+    try std.testing.expect(std.mem.indexOf(u8, box, "0.01800000") != null);
+    try std.testing.expect(std.mem.indexOf(u8, box, "cannot be undone") != null);
+
+    // A file that can't be used: no confirm, just the reason.
+    app.slate_modal = .{ .coin_idx = idx, .stage = .inspecting };
+    act.slate_op = .inspect;
+    act.slate_info = .{};
+    act.slate_info.refuse("This is your own send.");
+    app.settleSlateOp(idx, true, "");
+    try std.testing.expectEqual(SlateModal.Stage.result, app.slate_modal.?.stage);
+    box = try app.renderSlateModal(a);
+    try std.testing.expect(std.mem.indexOf(u8, box, "can't be used here") != null);
+    try std.testing.expect(std.mem.indexOf(u8, box, "This is your own send.") != null);
+    try std.testing.expectEqual(SlateOp.none, act.slate_op);
+}
+
+test "only a coin that pays by file shows the slate keys" {
+    if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var epic: @import("coins/epic.zig").Epic = .{};
+    try std.testing.expect(std.mem.indexOf(u8, try App.withSlateHint(a, epic.coin(), .send, "Send"), "f: save a slate") != null);
+    try std.testing.expect(std.mem.indexOf(u8, try App.withSlateHint(a, epic.coin(), .receive, "Receive"), "o: open the slate file") != null);
+    var btc: @import("coins/bitcoin.zig").Bitcoin = .{};
+    try std.testing.expectEqualStrings("Send", try App.withSlateHint(a, btc.coin(), .send, "Send"));
 }

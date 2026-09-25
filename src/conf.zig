@@ -195,6 +195,44 @@ pub fn managedWalletDir(
     return current;
 }
 
+/// Where to save a file the user has to find and hand to someone (a payment
+/// slate): their `Downloads` folder when they have one — `~/Downloads`, and
+/// `%USERPROFILE%\Downloads` on Windows — else their home dir. Not the install
+/// root: that's hidden (`~/.boxwallet`), and BoxWallet's own. Caller owns the
+/// returned slice.
+pub fn userFilesDir(allocator: std.mem.Allocator, home_dir: []const u8) ![]const u8 {
+    const downloads = try std.fs.path.join(allocator, &.{ home_dir, "Downloads" });
+    var threaded: std.Io.Threaded = .init(allocator, .{});
+    defer threaded.deinit();
+    if (std.Io.Dir.cwd().openDir(threaded.io(), downloads, .{})) |d| {
+        var dir = d;
+        dir.close(threaded.io());
+        return downloads;
+    } else |_| {}
+    allocator.free(downloads);
+    return allocator.dupe(u8, home_dir);
+}
+
+test "userFilesDir prefers Downloads, else home" {
+    const a = std.testing.allocator;
+    var threaded: std.Io.Threaded = .init(a, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const home = try tmp.dir.realPathFileAlloc(io, ".", a);
+    defer a.free(home);
+
+    const bare = try userFilesDir(a, home);
+    defer a.free(bare);
+    try std.testing.expectEqualStrings(home, bare);
+
+    try tmp.dir.createDirPath(io, "Downloads");
+    const dl = try userFilesDir(a, home);
+    defer a.free(dl);
+    try @import("pathtest.zig").expectEndsWith(dl, "Downloads");
+}
+
 /// The `CoinAuth` a coin gets before any conf is read: the caller's defaults on
 /// localhost, with the data dir carried through. Every field is owned by
 /// `allocator`, so the result is released with `freeAuth` exactly like a

@@ -743,6 +743,53 @@ pub const Coin = struct {
     /// process. Hooks return `SendResult`-style outcomes where a daemon-side
     /// rejection (locked wallet, timelock not expired, price stale) is a normal
     /// outcome to show verbatim, not an exceptional error.
+    /// Capability: **payments by slate file**, for a MimbleWimble coin (Epic)
+    /// whose transaction is built by the two sides in turn. Instead of a relay
+    /// carrying the slate, the user carries it: the sender saves a file, the
+    /// receiver opens it and saves a response, the sender opens that to finish.
+    ///
+    /// Every hook takes the open wallet's auth (the wallet process, as for
+    /// `wallet_send`) and returns refusals as outcomes to show, not errors. The
+    /// file names follow the coin CLI's own (`x.tx` → `x.tx.response`), so a
+    /// file made here works in any wallet for the coin and vice versa.
+    pub const SlateFiles = struct {
+        /// What a file send of `amount` would cost (nothing is built or locked).
+        fee: *const fn (
+            allocator: std.mem.Allocator,
+            auth: models.CoinAuth,
+            amount: f64,
+        ) anyerror!models.FeeEstimate,
+        /// Build a send of `amount` (with `note`, may be empty), lock the coins it
+        /// spends, and write the slate into `out_dir`. `.ok` is the file's path.
+        /// The send then waits — like an unanswered Epicbox send, and cancellable
+        /// the same way — until the receiver's response is opened with `process`.
+        send: *const fn (
+            allocator: std.mem.Allocator,
+            auth: models.CoinAuth,
+            amount: f64,
+            note: []const u8,
+            out_dir: []const u8,
+        ) anyerror!models.SendResult,
+        /// Read the slate file at `path` and say what it is for this wallet, and
+        /// so what `process` would do with it. Changes nothing.
+        inspect: *const fn (
+            allocator: std.mem.Allocator,
+            auth: models.CoinAuth,
+            path: []const u8,
+        ) anyerror!models.SlateInfo,
+        /// Do what `inspect` said, provided the file still is what the user was
+        /// shown (`expect`): `.receive` signs it and writes `<path>.response`
+        /// (`.ok` is that path); `.finalize` completes and broadcasts the send.
+        process: *const fn (
+            allocator: std.mem.Allocator,
+            auth: models.CoinAuth,
+            path: []const u8,
+            expect: models.SlateKind,
+        ) anyerror!models.SendResult,
+        /// Extension of a slate file ("tx"); a response adds ".response".
+        extension: []const u8 = "tx",
+    };
+
     pub const Stablecoin = struct {
         /// Display name — the tab label ("DigiDollar").
         name: []const u8,
@@ -1401,6 +1448,9 @@ pub const Coin = struct {
         /// coins with no chain-issued stablecoin. `stablecoin`/`supportsStablecoin`
         /// key off this; non-null lights up the coin's stablecoin tab.
         stablecoin: ?*const Stablecoin = null,
+        /// Optional: payments by slate file (Epic). `slateFiles`/
+        /// `supportsSlateFiles` key off this.
+        slate_files: ?*const SlateFiles = null,
         /// Optional: the group-token capability (Nexa's tokens and NFTs). Null
         /// for coins with no chain-issued tokens. `tokens`/`supportsTokens` key
         /// off this; non-null lights up the coin's Tokens tab.
@@ -2365,6 +2415,17 @@ pub const Coin = struct {
     /// (`supportsStablecoin` false). Callers use the fn pointers directly.
     pub fn stablecoin(self: Coin) ?*const Stablecoin {
         return self.vtable.stablecoin;
+    }
+
+    /// Whether this coin can pay and be paid by slate file. True iff the coin
+    /// wires `slate_files`.
+    pub fn supportsSlateFiles(self: Coin) bool {
+        return self.vtable.slate_files != null;
+    }
+
+    /// The slate-file capability, or null (`supportsSlateFiles` false).
+    pub fn slateFiles(self: Coin) ?*const SlateFiles {
+        return self.vtable.slate_files;
     }
 
     /// Whether this coin issues chain-native group tokens and NFTs (drives the

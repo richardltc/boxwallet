@@ -1559,10 +1559,17 @@ pub const Epic = struct {
     /// (caller frees). Basic-auths with the per-session `.owner_api_secret` cached in
     /// `OwnerSecret` at launch; a 401 surfaces as `error.AuthFailed`.
     fn walletPost(allocator: std.mem.Allocator, io: std.Io, auth: models.CoinAuth, body: []const u8) ![]u8 {
+        return apiPost(allocator, io, auth, "/v3/owner", body);
+    }
+
+    /// POST at `path` on the wallet process's API port — the Owner API, or the
+    /// Foreign API it also serves (`--run_foreign`, see `launchServerArgv`), which
+    /// takes the same basic auth. Caller frees the response body.
+    fn apiPost(allocator: std.mem.Allocator, io: std.Io, auth: models.CoinAuth, path: []const u8, body: []const u8) ![]u8 {
         var client: std.http.Client = .{ .allocator = allocator, .io = io };
         defer client.deinit();
 
-        const url = try std.fmt.allocPrint(allocator, "http://{s}:{s}/v3/owner", .{ auth.ip_address, auth.port });
+        const url = try std.fmt.allocPrint(allocator, "http://{s}:{s}{s}", .{ auth.ip_address, auth.port, path });
         defer allocator.free(url);
 
         // The Owner-API basic-auth secret is the per-session one written to
@@ -2105,7 +2112,11 @@ pub const Epic = struct {
         const top = try dataDir(allocator, home);
         errdefer allocator.free(top);
         cacheEpicboxIndex(allocator, io, top);
-        return walletArgv(allocator, bin, top, wallet_password, &.{"owner_api"});
+        // `--run_foreign` also serves the Foreign API on the same localhost port,
+        // behind the same secret: it's how a slate file is signed (`receive_tx`).
+        // The flag rather than `owner_api_include_foreign` in the shared config,
+        // which another app using `~/.epic/main` would pick up too.
+        return walletArgv(allocator, bin, top, wallet_password, &.{ "owner_api", "--run_foreign" });
     }
 
     /// Whether epic-wallet gets its password on a private terminal (`ttypass`)
@@ -3204,6 +3215,11 @@ pub const Epic = struct {
             @memset(r, 0);
             allocator.free(r);
         }
+        return feeFromEstimate(allocator, r);
+    }
+
+    /// A decrypted `estimate_only` reply as a `FeeEstimate`.
+    fn feeFromEstimate(allocator: std.mem.Allocator, r: []const u8) !models.FeeEstimate {
         if (try sendRefusal(allocator, r)) |why| return .{ .failed = why };
         const fee = parseSlateFee(allocator, r) orelse
             return .{ .failed = "The wallet didn't say what the fee would be." };
@@ -3212,8 +3228,10 @@ pub const Epic = struct {
 
     const not_an_address = "That isn't an Epicbox address — check it was copied in full.";
 
-    /// `init_send_tx` for real, or priced only.
-    const InitSendMode = enum { send, estimate };
+    /// `init_send_tx` for real over Epicbox, priced only, or built for a slate
+    /// file (no `send_args`: nothing is posted, and nothing is locked until
+    /// `tx_lock_outputs`).
+    const InitSendMode = enum { send, estimate, file };
 
     /// One `init_send_tx` over the secure channel, returning the decrypted reply
     /// (caller wipes + frees). `.estimate` sets `estimate_only` **and** sends no
@@ -3246,7 +3264,7 @@ pub const Epic = struct {
                 "{{\"method\":\"epicbox\",\"dest\":{s},\"finalize\":true,\"post_tx\":true,\"fluff\":false}}",
                 .{addr_q},
             ),
-            .estimate => try allocator.dupe(u8, "null"),
+            .estimate, .file => try allocator.dupe(u8, "null"),
         };
         defer allocator.free(send_args);
         const message = if (note.len > 0) try rpc.jsonQuote(allocator, note) else try allocator.dupe(u8, "null");
@@ -3336,6 +3354,457 @@ pub const Epic = struct {
         }
         if (msg.len == 0) return "The wallet refused the send without saying why.";
         return try allocator.dupe(u8, msg[0..@min(msg.len, 240)]);
+    }
+
+    // --- Slate files (`Coin.SlateFiles`) ---------------------------------
+    //
+    // The same three legs as an Epicbox payment, carried by hand. The sender
+    // builds the slate (`init_send_tx` with no `send_args`) and locks the coins
+    // it spends (`tx_lock_outputs`); the receiver signs it (`receive_tx`, on the
+    // Foreign API `owner_api --run_foreign` serves) and returns the response;
+    // the sender finalizes that (`finalize_tx`) and broadcasts it (`post_tx`).
+    // A slate holds nothing secret — commitments, public nonces and signatures;
+    // each side's private half stays in its own wallet database.
+    //
+    // What a file *is* is never taken on trust from the front-end: `process`
+    // re-reads and re-classifies the file itself, against this wallet's own
+    // transaction log, and refuses if that no longer matches what the user was
+    // shown.
+
+    /// Largest slate file read. A slate is a few KB; one spending the most
+    /// inputs `init_send_tx` allows is still well under this.
+    const slate_max_bytes = 1024 * 1024;
+
+    /// Slates this session has finalized and broadcast. The wallet's log can't
+    /// tell those apart from sends still waiting for their reply: both read
+    /// `TxSentCreated`, with the kernel excess and stored tx already set at lock
+    /// time (seen live), until the network is seen to have it. A file send can
+    /// wait hours for its reply, so it's past `cancel_min_age_s` the moment it's
+    /// finalized — and cancelling what's been broadcast leaves the balance wrong
+    /// until a rescan. So remember it here: such a row reads as in the mempool,
+    /// isn't offered for cancelling, and its response isn't offered for
+    /// finalizing again. In memory only — by the time an app restart forgets it,
+    /// it has normally confirmed (and the wallet, having dropped the send's
+    /// private context at finalize, refuses a second finalize anyway).
+    const Finalized = struct {
+        const cap = 16;
+        var ids: [cap][36]u8 = undefined;
+        var len: usize = 0;
+        var next: usize = 0;
+        var lock: std.atomic.Mutex = .unlocked;
+
+        fn add(id: []const u8) void {
+            if (id.len != 36) return;
+            while (!lock.tryLock()) std.atomic.spinLoopHint();
+            defer lock.unlock();
+            ids[next] = id[0..36].*;
+            next = (next + 1) % cap;
+            if (len < cap) len += 1;
+        }
+
+        fn has(id: []const u8) bool {
+            if (id.len != 36) return false;
+            while (!lock.tryLock()) std.atomic.spinLoopHint();
+            defer lock.unlock();
+            for (ids[0..len]) |*known| if (std.mem.eql(u8, known, id)) return true;
+            return false;
+        }
+
+        /// Rows for sends finalized this session: in the mempool, not cancellable.
+        fn apply(rows: []models.WalletTx) void {
+            for (rows) |*r| {
+                if (r.direction != .sent or r.stage != .awaiting_counterparty) continue;
+                if (!has(r.txid())) continue;
+                r.stage = .in_mempool;
+                r.cancellable = false;
+            }
+        }
+    };
+
+    pub const slate_files: Coin.SlateFiles = .{
+        .fee = epicSlateFee,
+        .send = epicSlateSend,
+        .inspect = epicSlateInspect,
+        .process = epicSlateProcess,
+    };
+
+    fn epicSlateFee(allocator: std.mem.Allocator, auth: models.CoinAuth, amount: f64) anyerror!models.FeeEstimate {
+        const units = baseUnitsFromAmount(amount) orelse return .{ .failed = "invalid amount" };
+        const r = try initSendTx(allocator, auth, "", units, "", .estimate);
+        defer {
+            @memset(r, 0);
+            allocator.free(r);
+        }
+        return feeFromEstimate(allocator, r);
+    }
+
+    /// Build the send, write `<out_dir>/<slate id>.tx`, lock the coins. The file
+    /// is written *before* the lock (as `.part`, renamed after), so a send whose
+    /// file couldn't be saved never ties up any coins; a lock that fails takes
+    /// the file away again.
+    fn epicSlateSend(
+        allocator: std.mem.Allocator,
+        auth: models.CoinAuth,
+        amount: f64,
+        note: []const u8,
+        out_dir: []const u8,
+    ) anyerror!models.SendResult {
+        const units = baseUnitsFromAmount(amount) orelse return .{ .failed = "invalid amount" };
+        var token_buf: [128]u8 = undefined;
+        const tn = Session.get(&token_buf) orelse return error.WalletLocked;
+
+        const r = try initSendTx(allocator, auth, "", units, note, .file);
+        defer {
+            @memset(r, 0);
+            allocator.free(r);
+        }
+        if (try sendRefusal(allocator, r)) |why| return .{ .failed = why };
+
+        var arena = std.heap.ArenaAllocator.init(allocator);
+        defer arena.deinit();
+        const a = arena.allocator();
+        const slate = okSlate(a, r) orelse return .{ .failed = unreadable_reply };
+        const id = slateId(slate) orelse return .{ .failed = unreadable_reply };
+        const text = try jsonText(a, slate);
+
+        var threaded: std.Io.Threaded = .init(allocator, .{});
+        defer threaded.deinit();
+        const io = threaded.io();
+
+        var dir = std.Io.Dir.cwd().openDir(io, out_dir, .{}) catch
+            return .{ .failed = try std.fmt.allocPrint(allocator, "Couldn't open {s} to save the slate in.", .{out_dir}) };
+        defer dir.close(io);
+        const name = try std.fmt.allocPrint(a, "{s}.{s}", .{ id, slate_files.extension });
+        const part = try std.fmt.allocPrint(a, "{s}.part", .{name});
+        dir.writeFile(io, .{ .sub_path = part, .data = text }) catch
+            return .{ .failed = try std.fmt.allocPrint(allocator, "Couldn't save the slate in {s}.", .{out_dir}) };
+
+        const params = try std.fmt.allocPrint(
+            a,
+            "{{\"token\":\"{s}\",\"slate\":{s},\"participant_id\":0,\"addr_to\":null}}",
+            .{ token_buf[0..tn], text },
+        );
+        const lr = secureRpc(allocator, io, auth, "tx_lock_outputs", params) catch |err| {
+            dir.deleteFile(io, part) catch {};
+            return err;
+        };
+        defer {
+            @memset(lr, 0);
+            allocator.free(lr);
+        }
+        if (!innerSucceeded(lr)) {
+            dir.deleteFile(io, part) catch {};
+            return .{ .failed = (try sendRefusal(allocator, lr)) orelse "The wallet couldn't set the coins aside for this send." };
+        }
+        dir.rename(part, dir, name, io) catch {
+            // Locked but not where the user will look. It's still cancellable like
+            // any unanswered send, so say where it is and how to undo it.
+            return .{ .failed = try std.fmt.allocPrint(
+                allocator,
+                "The coins are set aside, but the slate is still named {s} in {s}. Rename it to {s}, or cancel the send from Transactions.",
+                .{ part, out_dir, name },
+            ) };
+        };
+        return .{ .ok = try std.fs.path.join(allocator, &.{ out_dir, name }) };
+    }
+
+    fn epicSlateInspect(allocator: std.mem.Allocator, auth: models.CoinAuth, path: []const u8) anyerror!models.SlateInfo {
+        var info: models.SlateInfo = .{};
+        const text = readSlateFile(allocator, path, &info) orelse return info;
+        defer allocator.free(text);
+        try classifySlate(allocator, auth, text, &info);
+        return info;
+    }
+
+    fn epicSlateProcess(
+        allocator: std.mem.Allocator,
+        auth: models.CoinAuth,
+        path: []const u8,
+        expect: models.SlateKind,
+    ) anyerror!models.SendResult {
+        // The very bytes acted on are the ones classified here, not whatever the
+        // front-end inspected a moment ago.
+        var info: models.SlateInfo = .{};
+        const text = readSlateFile(allocator, path, &info) orelse
+            return .{ .failed = try allocator.dupe(u8, info.reason()) };
+        defer allocator.free(text);
+        try classifySlate(allocator, auth, text, &info);
+        if (info.kind == .unusable) return .{ .failed = try allocator.dupe(u8, info.reason()) };
+        if (info.kind != expect or expect == .unusable)
+            return .{ .failed = "The file has changed since it was opened. Open it again." };
+
+        return switch (expect) {
+            .receive => receiveSlate(allocator, auth, text, path),
+            .finalize => finalizeSlate(allocator, auth, text, info.id()),
+            .unusable => unreachable,
+        };
+    }
+
+    /// Read a slate file (bounded), or null with `info` refused saying why.
+    /// Caller frees.
+    fn readSlateFile(allocator: std.mem.Allocator, path: []const u8, info: *models.SlateInfo) ?[]u8 {
+        var threaded: std.Io.Threaded = .init(allocator, .{});
+        defer threaded.deinit();
+        return std.Io.Dir.cwd().readFileAlloc(threaded.io(), path, allocator, .limited(slate_max_bytes)) catch |err| {
+            info.refuse(switch (err) {
+                error.FileNotFound => "That file doesn't exist any more.",
+                error.StreamTooLong => "That file is far too big to be a slate.",
+                error.IsDir => "That's a folder, not a slate file.",
+                else => "That file couldn't be read.",
+            });
+            return null;
+        };
+    }
+
+    /// Fill `info` from the slate `text`: its amount, fee, id and note, and what
+    /// it is for this wallet — decided by how many participants have signed it
+    /// and by what this wallet's own log says about the same slate id.
+    fn classifySlate(allocator: std.mem.Allocator, auth: models.CoinAuth, text: []const u8, info: *models.SlateInfo) !void {
+        var arena = std.heap.ArenaAllocator.init(allocator);
+        defer arena.deinit();
+        const a = arena.allocator();
+
+        const shape = parseSlateShape(a, text) orelse return info.refuse("That isn't an Epic slate file.");
+        info.amount = shape.amount;
+        info.fee = shape.fee;
+        info.setId(shape.id);
+        info.setNote(shape.note);
+
+        var log = try slateLog(a, auth, shape.id);
+        if (log.sent_open and Finalized.has(shape.id)) {
+            log.sent_open = false;
+            log.sent_done = true;
+        }
+        info.kind = slateVerdict(shape.participants, log) orelse return info.refuse(slateRefusal(shape.participants, log));
+    }
+
+    /// The parts of a slate `classifySlate` needs. Amounts in whole coins.
+    const SlateShape = struct {
+        id: []const u8,
+        amount: f64,
+        fee: f64,
+        participants: usize,
+        note: []const u8,
+    };
+
+    /// Read a V2/V3 slate's id, amount, fee, signers and first message; null if
+    /// it isn't one. Epic writes amounts as base-unit strings; numbers are
+    /// accepted too. Pure, for testing.
+    fn parseSlateShape(a: std.mem.Allocator, text: []const u8) ?SlateShape {
+        const v = std.json.parseFromSliceLeaky(std.json.Value, a, text, .{}) catch return null;
+        if (v != .object) return null;
+        const id = slateId(v) orelse return null;
+        const amount = baseUnitsValue(v.object.get("amount") orelse return null) orelse return null;
+        const fee = baseUnitsValue(v.object.get("fee") orelse return null) orelse return null;
+        const pd = v.object.get("participant_data") orelse return null;
+        if (pd != .array) return null;
+        var note: []const u8 = "";
+        for (pd.array.items) |p| {
+            if (p != .object) return null;
+            if (note.len == 0) if (p.object.get("message")) |m| if (m == .string) {
+                note = m.string;
+            };
+        }
+        return .{
+            .id = id,
+            .amount = @as(f64, @floatFromInt(amount)) / epic_base,
+            .fee = @as(f64, @floatFromInt(fee)) / epic_base,
+            .participants = pd.array.items.len,
+            .note = note,
+        };
+    }
+
+    fn baseUnitsValue(v: std.json.Value) ?u64 {
+        return switch (v) {
+            .string => |t| std.fmt.parseInt(u64, t, 10) catch null,
+            .integer => |n| if (n >= 0) @intCast(n) else null,
+            else => null,
+        };
+    }
+
+    /// What this wallet's log says about one slate id: the entry types present.
+    const SlateLog = struct {
+        sent_open: bool = false, // TxSentCreated, unconfirmed: waiting for the reply
+        sent_done: bool = false, // TxSent / TxSentMempool: already finalized
+        sent_cancelled: bool = false,
+        received: bool = false, // any TxReceived*, not cancelled
+        received_cancelled: bool = false,
+    };
+
+    fn slateLog(a: std.mem.Allocator, auth: models.CoinAuth, id: []const u8) !SlateLog {
+        var token_buf: [128]u8 = undefined;
+        const tn = Session.get(&token_buf) orelse return error.WalletLocked;
+        var threaded: std.Io.Threaded = .init(a, .{});
+        defer threaded.deinit();
+        // `isUuid` came first (`slateId`), so the id is safe to splice in.
+        const params = try std.fmt.allocPrint(
+            a,
+            "{{\"token\":\"{s}\",\"refresh_from_node\":false,\"tx_id\":null,\"tx_slate_id\":\"{s}\"," ++
+                "\"limit\":10,\"offset\":0,\"sort_order\":\"desc\"}}",
+            .{ token_buf[0..tn], id },
+        );
+        const r = try secureRpc(a, threaded.io(), auth, "retrieve_txs", params);
+        defer @memset(r, 0);
+        if (!innerSucceeded(r)) return error.WalletTransactionsFailed;
+        return parseSlateLog(a, r);
+    }
+
+    /// Fold a `retrieve_txs` reply into a `SlateLog`. Pure, for testing.
+    fn parseSlateLog(a: std.mem.Allocator, inner: []const u8) !SlateLog {
+        const Paged = struct { result: ?struct { Ok: ?struct { txs: []const TxLogEntry = &.{} } = null } = null };
+        const v = try std.json.parseFromSliceLeaky(Paged, a, inner, .{ .ignore_unknown_fields = true, .allocate = .alloc_always });
+        const txs = ((v.result orelse return error.WalletTransactionsFailed).Ok orelse return error.WalletTransactionsFailed).txs;
+        var log: SlateLog = .{};
+        for (txs) |e| {
+            const t = e.tx_type;
+            if (std.mem.eql(u8, t, "TxSentCreated")) {
+                if (e.confirmed) log.sent_done = true else log.sent_open = true;
+            } else if (std.mem.eql(u8, t, "TxSent") or std.mem.eql(u8, t, "TxSentMempool")) {
+                log.sent_done = true;
+            } else if (std.mem.eql(u8, t, "TxSentCancelled")) {
+                log.sent_cancelled = true;
+            } else if (std.mem.eql(u8, t, "TxReceivedCancelled")) {
+                log.received_cancelled = true;
+            } else if (std.mem.startsWith(u8, t, "TxReceived")) {
+                log.received = true;
+            }
+        }
+        return log;
+    }
+
+    /// What to do with a slate signed by `participants` sides, given this
+    /// wallet's log for it; null when nothing can be (see `slateRefusal`).
+    fn slateVerdict(participants: usize, log: SlateLog) ?models.SlateKind {
+        return switch (participants) {
+            // A fresh payment, from someone else, not yet taken.
+            1 => if (!log.sent_open and !log.sent_done and !log.sent_cancelled and
+                !log.received and !log.received_cancelled) .receive else null,
+            // The reply to a send of ours that's still waiting for it.
+            2 => if (log.sent_open and !log.sent_done and !log.sent_cancelled) .finalize else null,
+            else => null,
+        };
+    }
+
+    /// Why `slateVerdict` said no, in the user's terms.
+    fn slateRefusal(participants: usize, log: SlateLog) []const u8 {
+        if (participants == 1) {
+            if (log.sent_open or log.sent_done or log.sent_cancelled)
+                return "This is your own send. Give this file to the person you're paying; open the .response file they send back.";
+            if (log.received) return "You've already received this payment. Send the sender the .response file you made then.";
+            return "You cancelled this payment when it was received, so it can't be taken again.";
+        }
+        if (participants == 2) {
+            if (log.sent_done) return "This payment has already been completed.";
+            if (log.sent_cancelled) return "You cancelled this send, so it can't be completed.";
+            if (log.received or log.received_cancelled)
+                return "This is the response you made to someone else's payment. Send it back to them to finish it.";
+            return "This isn't the reply to a send from this wallet.";
+        }
+        return "That slate isn't one this wallet can use.";
+    }
+
+    /// Sign an incoming payment and write the response next to the file. The
+    /// response file is created, never overwritten.
+    fn receiveSlate(allocator: std.mem.Allocator, auth: models.CoinAuth, text: []const u8, path: []const u8) !models.SendResult {
+        var arena = std.heap.ArenaAllocator.init(allocator);
+        defer arena.deinit();
+        const a = arena.allocator();
+        var threaded: std.Io.Threaded = .init(allocator, .{});
+        defer threaded.deinit();
+        const io = threaded.io();
+
+        const out_path = try std.fmt.allocPrint(allocator, "{s}.response", .{path});
+        errdefer allocator.free(out_path);
+        if (std.Io.Dir.cwd().access(io, out_path, .{})) |_| {
+            return .{ .failed = try std.fmt.allocPrint(allocator, "{s} already exists. Move it out of the way first.", .{out_path}) };
+        } else |_| {}
+
+        // Epic's `receive_tx` takes a fourth argument Grin's doesn't (the
+        // sender's address, for Epicbox); a file has none to give.
+        const body = try std.fmt.allocPrint(a, "{{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"receive_tx\",\"params\":[{s},null,null,null]}}", .{text});
+        const raw = try apiPost(a, io, auth, "/v2/foreign", body);
+        if (try sendRefusal(a, raw)) |why| return .{ .failed = try allocator.dupe(u8, why) };
+        const slate = okSlate(a, raw) orelse return .{ .failed = unreadable_reply };
+        const signed = try jsonText(a, slate);
+
+        var f = std.Io.Dir.cwd().createFile(io, out_path, .{ .exclusive = true }) catch
+            return .{ .failed = try std.fmt.allocPrint(allocator, "The payment was signed, but {s} couldn't be written.", .{out_path}) };
+        defer f.close(io);
+        f.writeStreamingAll(io, signed) catch
+            return .{ .failed = try std.fmt.allocPrint(allocator, "The payment was signed, but {s} couldn't be written.", .{out_path}) };
+        return .{ .ok = out_path };
+    }
+
+    /// Finalize the receiver's reply and broadcast it.
+    fn finalizeSlate(allocator: std.mem.Allocator, auth: models.CoinAuth, text: []const u8, id: []const u8) !models.SendResult {
+        var token_buf: [128]u8 = undefined;
+        const tn = Session.get(&token_buf) orelse return error.WalletLocked;
+        var arena = std.heap.ArenaAllocator.init(allocator);
+        defer arena.deinit();
+        const a = arena.allocator();
+        var threaded: std.Io.Threaded = .init(allocator, .{});
+        defer threaded.deinit();
+        const io = threaded.io();
+
+        const fp = try std.fmt.allocPrint(a, "{{\"token\":\"{s}\",\"slate\":{s}}}", .{ token_buf[0..tn], text });
+        const fr = try secureRpc(a, io, auth, "finalize_tx", fp);
+        defer @memset(fr, 0);
+        if (try sendRefusal(a, fr)) |why| {
+            if (alreadyFinalized(why)) {
+                // Finalized before — by this app in an earlier session, or by
+                // another. Remember it, so the row stops reading as waiting.
+                Finalized.add(id);
+                return .{ .failed = already_finished };
+            }
+            return .{ .failed = try allocator.dupe(u8, why) };
+        }
+        const done = okSlate(a, fr) orelse return .{ .failed = unreadable_reply };
+        const tx = done.object.get("tx") orelse return .{ .failed = unreadable_reply };
+
+        const pp = try std.fmt.allocPrint(a, "{{\"token\":\"{s}\",\"tx\":{s},\"fluff\":false}}", .{ token_buf[0..tn], try jsonText(a, tx) });
+        const pr = try secureRpc(a, io, auth, "post_tx", pp);
+        defer @memset(pr, 0);
+        // Finalized: from here on it must not read as a send still waiting —
+        // whether or not the post below goes through.
+        Finalized.add(id);
+        if (!innerSucceeded(pr)) {
+            const why = (try sendRefusal(a, pr)) orelse "no reason given";
+            return .{ .failed = try std.fmt.allocPrint(allocator, "The payment was finalized but the network didn't take it: {s}", .{why}) };
+        }
+        return .{ .ok = "Sent. It's on its way to the network." };
+    }
+
+    const already_finished = "This send was already finished — the payment is on its way to the network, or already in a block. Nothing was sent twice.";
+
+    /// Whether a `finalize_tx` refusal means it was finalized before: the wallet
+    /// drops a send's private context when it finalizes it, so a second attempt
+    /// finds nothing ("NotFoundErr: Slate id: [...]", seen live).
+    fn alreadyFinalized(why: []const u8) bool {
+        return std.mem.startsWith(u8, why, "NotFoundErr");
+    }
+
+    /// `result.Ok` of a decrypted reply, when it's a slate (an object with an id).
+    fn okSlate(a: std.mem.Allocator, inner: []const u8) ?std.json.Value {
+        const v = std.json.parseFromSliceLeaky(std.json.Value, a, inner, .{}) catch return null;
+        if (v != .object) return null;
+        const res = v.object.get("result") orelse return null;
+        if (res != .object) return null;
+        const ok = res.object.get("Ok") orelse return null;
+        if (ok != .object or slateId(ok) == null) return null;
+        return ok;
+    }
+
+    /// A slate's id, if it has a well-formed one.
+    fn slateId(slate: std.json.Value) ?[]const u8 {
+        const id = slate.object.get("id") orelse return null;
+        if (id != .string or !isUuid(id.string)) return null;
+        return id.string;
+    }
+
+    fn jsonText(a: std.mem.Allocator, v: std.json.Value) ![]const u8 {
+        var w: std.Io.Writer.Allocating = .init(a);
+        try std.json.Stringify.value(v, .{}, &w.writer);
+        return w.written();
     }
 
     // --- Transactions (Owner API `retrieve_txs`) --------------------------
@@ -3437,7 +3906,9 @@ pub const Epic = struct {
             allocator.free(r);
         }
         if (!innerSucceeded(r)) return error.WalletTransactionsFailed;
-        return parseTxLog(allocator, r, limit, std.Io.Clock.real.now(io).toSeconds());
+        const rows = try parseTxLog(allocator, r, limit, std.Io.Clock.real.now(io).toSeconds());
+        Finalized.apply(rows);
+        return rows;
     }
 
     /// Map a decrypted `retrieve_txs` reply into normalized `WalletTx`es,
@@ -3696,6 +4167,7 @@ pub const Epic = struct {
         .send_note_max = models.tx_note_max,
         .wallet_send_fee = vtWalletSendFee,
         .wallet_cancel_tx = vtWalletCancelTx,
+        .slate_files = &slate_files,
         // A send here is on its way, not done — the listener completes it — and
         // what comes back is the slate id.
         .send_ok_label = "Sent — waiting for the receiver. Slate:",
@@ -4455,7 +4927,7 @@ test "launchServerArgv prepares the config + per-session secret and builds owner
     // the managed config dir. The password is nowhere on its command line.
     const top = try Epic.dataDir(a, home);
     defer a.free(top);
-    try expectWalletArgv(argv, top, &.{"owner_api"});
+    try expectWalletArgv(argv, top, &.{ "owner_api", "--run_foreign" });
 
     // A non-empty per-session secret was written verbatim (no trailing newline), and
     // the config was generated + healed to localhost.
@@ -4663,6 +5135,7 @@ test "parseTxLog reads 4.x's paged reply: stages, slate ids, and what can be can
         try std.testing.expect(txs[0].cancellable);
         for (txs[1..]) |t| try std.testing.expect(!t.cancellable);
     }
+
 }
 
 test "parseTxLog carries the slate message as the row's note, made safe to show" {
@@ -4706,6 +5179,108 @@ test "a note rides the Epic send; one too long is refused, not dropped" {
     const long = "x" ** (models.tx_note_max + 1);
     const res = try c.walletSendNote(std.testing.allocator, .{ .rpc_user = "", .rpc_password = "", .ip_address = "", .port = "" }, "addr", 1, long);
     try std.testing.expectEqualStrings("The note is too long.", res.failed);
+}
+
+test "parseSlateShape reads a V3 slate's id, amounts, signers and note" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    // The fields epic-wallet 4.0 writes (subset), as the spike's slate had them.
+    const slate =
+        \\{"version_info":{"version":3,"orig_version":3,"block_header_version":6},"num_participants":2,
+        \\ "id":"438032f8-9083-4092-942e-fa9189c8b826","tx":{},"amount":"1000000","fee":"800000","height":"3724902",
+        \\ "lock_height":"0","ttl_cutoff_height":null,"payment_proof":null,
+        \\ "participant_data":[{"id":"0","public_blind_excess":"02ab","public_nonce":"03cd","part_sig":null,"message":"slate file spike","message_sig":"ef"}]}
+    ;
+    const shape = Epic.parseSlateShape(a, slate).?;
+    try std.testing.expectEqualStrings("438032f8-9083-4092-942e-fa9189c8b826", shape.id);
+    try std.testing.expectApproxEqAbs(@as(f64, 0.01), shape.amount, 1e-12);
+    try std.testing.expectApproxEqAbs(@as(f64, 0.008), shape.fee, 1e-12);
+    try std.testing.expectEqual(@as(usize, 1), shape.participants);
+    try std.testing.expectEqualStrings("slate file spike", shape.note);
+
+    // Not a slate: no id, a bad id, no participant data, not JSON.
+    try std.testing.expect(Epic.parseSlateShape(a, "{\"amount\":\"1\",\"fee\":\"1\",\"participant_data\":[]}") == null);
+    try std.testing.expect(Epic.parseSlateShape(a, "{\"id\":\"nope\",\"amount\":\"1\",\"fee\":\"1\",\"participant_data\":[]}") == null);
+    try std.testing.expect(Epic.parseSlateShape(a, "{\"id\":\"438032f8-9083-4092-942e-fa9189c8b826\",\"amount\":\"1\",\"fee\":\"1\"}") == null);
+    try std.testing.expect(Epic.parseSlateShape(a, "wallet.dat bytes") == null);
+}
+
+test "a slate is received, finalized, or refused — by its signers and this wallet's log" {
+    const V = Epic.slateVerdict;
+    // A fresh payment from someone else: receive it.
+    try std.testing.expectEqual(models.SlateKind.receive, V(1, .{}).?);
+    // Our own outgoing slate, opened by mistake: never "receive" it.
+    try std.testing.expect(V(1, .{ .sent_open = true }) == null);
+    try std.testing.expectStringStartsWith(Epic.slateRefusal(1, .{ .sent_open = true }), "This is your own send");
+    // Already received once.
+    try std.testing.expect(V(1, .{ .received = true }) == null);
+
+    // The reply to our waiting send: finalize it.
+    try std.testing.expectEqual(models.SlateKind.finalize, V(2, .{ .sent_open = true }).?);
+    // …but not one already completed, cancelled, or never ours.
+    try std.testing.expect(V(2, .{ .sent_open = true, .sent_done = true }) == null);
+    try std.testing.expect(V(2, .{ .sent_cancelled = true }) == null);
+    try std.testing.expectStringStartsWith(Epic.slateRefusal(2, .{ .sent_cancelled = true }), "You cancelled this send");
+    try std.testing.expect(V(2, .{}) == null);
+    try std.testing.expectStringStartsWith(Epic.slateRefusal(2, .{}), "This isn't the reply");
+    // Our own response to someone else's payment isn't ours to finalize.
+    try std.testing.expect(V(2, .{ .received = true }) == null);
+    try std.testing.expectStringStartsWith(Epic.slateRefusal(2, .{ .received = true }), "This is the response you made");
+    // Anything else is no slate we know.
+    try std.testing.expect(V(3, .{}) == null);
+}
+
+test "parseSlateLog folds a slate id's log entries" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const open =
+        \\{"result":{"Ok":{"pager":{},"txs":[{"tx_type":"TxSentCreated","confirmed":false}]}}}
+    ;
+    try std.testing.expect((try Epic.parseSlateLog(a, open)).sent_open);
+    const cancelled_rx =
+        \\{"result":{"Ok":{"pager":{},"txs":[{"tx_type":"TxReceivedCancelled","confirmed":false}]}}}
+    ;
+    const l = try Epic.parseSlateLog(a, cancelled_rx);
+    try std.testing.expect(l.received_cancelled and !l.received);
+    const none =
+        \\{"result":{"Ok":{"pager":{},"txs":[]}}}
+    ;
+    try std.testing.expectEqual(Epic.SlateLog{}, try Epic.parseSlateLog(a, none));
+}
+
+test "a send finalized from its slate this session isn't offered for cancelling" {
+    const id = "65a93004-bb00-42f4-b51a-727da3783ed7";
+    var rows = [_]models.WalletTx{
+        .{ .direction = .sent, .amount = 0.018, .time = 1, .confirmations = 0, .stage = .awaiting_counterparty, .cancellable = true },
+        .{ .direction = .sent, .amount = 0.018, .time = 1, .confirmations = 0, .stage = .awaiting_counterparty, .cancellable = true },
+    };
+    rows[0].setTxid(id);
+    rows[1].setTxid("aaaaaaaa-bb00-42f4-b51a-727da3783ed7");
+    Epic.Finalized.apply(&rows);
+    // Nothing remembered yet: both still waiting.
+    try std.testing.expect(rows[0].cancellable and rows[1].cancellable);
+
+    Epic.Finalized.add(id);
+    Epic.Finalized.apply(&rows);
+    try std.testing.expectEqual(models.TxStage.in_mempool, rows[0].stage);
+    try std.testing.expect(!rows[0].cancellable);
+    // Another send is untouched.
+    try std.testing.expect(rows[1].cancellable);
+    try std.testing.expect(Epic.Finalized.has(id));
+    try std.testing.expect(!Epic.Finalized.has("not-an-id"));
+}
+
+test "a second finalize is reported as already finished, not as wallet internals" {
+    try std.testing.expect(Epic.alreadyFinalized("NotFoundErr: Slate id: [65, a9, 30, 4, bb, 0, 42, f4, b5, 1a, 72, 7d, a3, 78, 3e, d7]"));
+    try std.testing.expect(!Epic.alreadyFinalized("NotEnoughFunds: {}"));
+}
+
+test "Epic pays by slate file" {
+    var e: Epic = .{};
+    try std.testing.expect(e.coin().supportsSlateFiles());
+    try std.testing.expectEqualStrings("tx", e.coin().slateFiles().?.extension);
 }
 
 test "parseCancelReply and isUuid: a cancel is only ever of a real slate id" {
