@@ -2959,7 +2959,10 @@ pub const Epic = struct {
     // they post their slate to, for this wallet to pick up, sign and send back.
     // The key is derived from the seed at `[epicbox] epicbox_address_index`, so
     // it's fixed per wallet — there is no "new address" to mint, and `force_new`
-    // returns the same one (as with Zano's single address).
+    // returns the same one (as with Zano's single address). The front-ends don't
+    // offer one (`receive_address_fixed_note`): changing the index would move the
+    // listener off the address people already have, stranding their payments at
+    // the relay until it listens there again.
     //
     // A payment only completes while an Epicbox listener runs for this wallet.
     // Until one does, the relay holds the slate (seen delivered after minutes
@@ -4166,6 +4169,9 @@ pub const Epic = struct {
         // sections above) — a send the Epicbox listener then completes.
         .wallet_transactions = vtWalletTransactions,
         .wallet_receive_address = vtWalletReceiveAddress,
+        // One per wallet (see the Receive address section): a "new" one would
+        // be the same address.
+        .receive_address_fixed_note = "This wallet has one Epicbox address. It doesn't change, and it's fine to reuse.",
         .wallet_send = vtWalletSend,
         .wallet_send_note = vtWalletSendNote,
         .send_note_max = models.tx_note_max,

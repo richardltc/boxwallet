@@ -4706,7 +4706,7 @@ pub const App = struct {
                             self.copyReceiveAddress(ctx)
                         else if (on_coin and self.active_tab == .digidollar)
                             self.copyStablecoinAddress(ctx),
-                        'n' => if (on_coin and self.active_tab == .receive)
+                        'n' => if (on_coin and self.active_tab == .receive and self.selectedCoin().?.canNewReceiveAddress())
                             self.requestNewReceiveAddress()
                         else if (on_coin and self.active_tab == .digidollar)
                             self.requestNewStablecoinAddress()
@@ -9515,7 +9515,7 @@ pub const App = struct {
             else
                 try renderPlaceholderTab(a, self.active_tab),
             .receive => if (coin.supportsReceiveAddress())
-                try withSlateHint(a, coin, .receive, try renderReceiveTab(a, act))
+                try withSlateHint(a, coin, .receive, try renderReceiveTab(a, act, coin.receiveAddressFixedNote()))
             else
                 try renderPlaceholderTab(a, self.active_tab),
             .send => if (coin.supportsSend())
@@ -10177,11 +10177,19 @@ pub const App = struct {
     /// still falls through to `renderPlaceholderTab`. Reads only the cached
     /// `act` fields — no RPC/disk IO in the render path (the QR encode itself
     /// is pure computation on the already-cached address string).
-    fn renderReceiveTab(a: std.mem.Allocator, act: *const Activity) ![]const u8 {
+    /// `fixed_note` is the coin's `receiveAddressFixedNote`: when set, there's no
+    /// new address to offer, and the note says why in its place.
+    fn renderReceiveTab(a: std.mem.Allocator, act: *const Activity, fixed_note: []const u8) ![]const u8 {
         if (act.receive_addr_len == 0)
             return if (act.ext_wallet_loading) "Receive\n\nFetching your address…" else "Receive\n\nNo address yet.";
         const addr = act.receive_addr_buf[0..act.receive_addr_len];
-        const hint = (zz.Style{}).dim(true).render(a, "  (c: copy   n: new address)") catch "";
+        const hint = if (fixed_note.len > 0)
+            try std.fmt.allocPrint(a, "{s}\n{s}", .{
+                (zz.Style{}).dim(true).render(a, "  (c: copy)") catch "",
+                (zz.Style{}).dim(true).render(a, fixed_note) catch fixed_note,
+            })
+        else
+            (zz.Style{}).dim(true).render(a, "  (c: copy   n: new address)") catch "";
         const listener = try renderListenerLine(a, act);
         const qr = qrcode.encodeText(a, addr, .medium) catch return std.fmt.allocPrint(
             a,
@@ -13358,7 +13366,7 @@ test "renderReceiveTab shows an empty state with no cached address" {
     const a = arena.allocator();
 
     const act: Activity = .{};
-    const body = try App.renderReceiveTab(a, &act);
+    const body = try App.renderReceiveTab(a, &act, "");
     try std.testing.expect(std.mem.indexOf(u8, body, "No address yet.") != null);
 }
 
@@ -13372,7 +13380,7 @@ test "renderReceiveTab shows the cached address, the key hint, and a QR block" {
     @memcpy(act.receive_addr_buf[0..addr.len], addr);
     act.receive_addr_len = addr.len;
 
-    const body = try App.renderReceiveTab(a, &act);
+    const body = try App.renderReceiveTab(a, &act, "");
     try std.testing.expect(std.mem.indexOf(u8, body, "Receive") != null);
     try std.testing.expect(std.mem.indexOf(u8, body, addr) != null);
     try std.testing.expect(std.mem.indexOf(u8, body, "c: copy") != null);
@@ -13395,17 +13403,17 @@ test "renderReceiveTab says whether the payment listener is up, only while there
     act.receive_addr_len = addr.len;
 
     // Locked (nothing started yet): no line at all.
-    var body = try App.renderReceiveTab(a, &act);
+    var body = try App.renderReceiveTab(a, &act, "");
     try std.testing.expect(std.mem.indexOf(u8, body, "Epicbox listener") == null);
 
     act.listener_state = .running;
-    body = try App.renderReceiveTab(a, &act);
+    body = try App.renderReceiveTab(a, &act, "");
     try std.testing.expect(std.mem.indexOf(u8, body, "Epicbox listener") != null);
     try std.testing.expect(std.mem.indexOf(u8, body, "running") != null);
 
     // A dead listener says what it costs and how to get it back.
     act.listener_state = .stopped;
-    body = try App.renderReceiveTab(a, &act);
+    body = try App.renderReceiveTab(a, &act, "");
     try std.testing.expect(std.mem.indexOf(u8, body, "stopped") != null);
     try std.testing.expect(std.mem.indexOf(u8, body, "lock and unlock") != null);
 }
@@ -13755,7 +13763,7 @@ test "just unlocked, the tabs say they're loading until a poll has read the wall
     var act: Activity = .{};
     act.ext_wallet_loading = true;
     try std.testing.expect(std.mem.indexOf(u8, try App.renderTransactionsTab(a, &act, 8), "Loading your transactions") != null);
-    try std.testing.expect(std.mem.indexOf(u8, try App.renderReceiveTab(a, &act), "Fetching your address") != null);
+    try std.testing.expect(std.mem.indexOf(u8, try App.renderReceiveTab(a, &act, ""), "Fetching your address") != null);
 
     // A poll that couldn't read the wallet (it started before the unlock) leaves
     // it loading; the first one that could clears it.
@@ -16496,4 +16504,29 @@ test "the Transactions tab offers to finish a send that's waiting for its reply 
 
     act.tx_buf[0].stage = .awaiting_counterparty;
     try std.testing.expect(std.mem.indexOf(u8, try App.renderTransactionsTab(a, &act, 8), "f: finish") == null);
+}
+
+test "a coin with one fixed address offers no new one, and says why" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var act: Activity = .{};
+    const addr = "esaA6Jg7qBKgufT4C58HucCcW9h3zVY39G5eVPNrNc38J69h9YHP@epicbox.epiccash.com";
+    @memcpy(act.receive_addr_buf[0..addr.len], addr);
+    act.receive_addr_len = addr.len;
+
+    var epic: @import("coins/epic.zig").Epic = .{};
+    const ec = epic.coin();
+    try std.testing.expect(!ec.canNewReceiveAddress());
+    const body = try App.renderReceiveTab(a, &act, ec.receiveAddressFixedNote());
+    try std.testing.expect(std.mem.indexOf(u8, body, "n: new address") == null);
+    try std.testing.expect(std.mem.indexOf(u8, body, "one Epicbox address") != null);
+
+    var zano: @import("coins/zano.zig").Zano = .{};
+    try std.testing.expect(!zano.coin().canNewReceiveAddress());
+
+    // Everyone else keeps it.
+    var btc: @import("coins/bitcoin.zig").Bitcoin = .{};
+    try std.testing.expect(btc.coin().canNewReceiveAddress());
+    try std.testing.expect(std.mem.indexOf(u8, try App.renderReceiveTab(a, &act, ""), "n: new address") != null);
 }

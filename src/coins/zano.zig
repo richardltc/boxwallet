@@ -1014,6 +1014,8 @@ pub const Zano = struct {
         // by terminating the process (see the requestStop note above).
         .wallet_transactions = vtWalletTransactions,
         .wallet_receive_address = vtWalletReceiveAddress,
+        // One stealth address for the wallet's life (see `walletReceiveAddress`).
+        .receive_address_fixed_note = "This wallet has one address. It doesn't change, and it's fine to reuse: each payment to it is private.",
         .wallet_send = vtWalletSend,
         .external_wallet = &external_wallet,
     };
