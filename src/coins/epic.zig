@@ -2112,6 +2112,7 @@ pub const Epic = struct {
         const top = try dataDir(allocator, home);
         errdefer allocator.free(top);
         cacheEpicboxIndex(allocator, io, top);
+        WalletTop.set(top);
         // `--run_foreign` also serves the Foreign API on the same localhost port,
         // behind the same secret: it's how a slate file is signed (`receive_tx`).
         // The flag rather than `owner_api_include_foreign` in the shared config,
@@ -3921,6 +3922,8 @@ pub const Epic = struct {
         if (!innerSucceeded(r)) return error.WalletTransactionsFailed;
         const rows = try parseTxLog(allocator, r, limit, std.Io.Clock.real.now(io).toSeconds());
         Finalized.apply(rows);
+        // Best effort: without the node, rows keep what the wallet itself said.
+        applyMinedHeights(allocator, r, rows) catch {};
         return rows;
     }
 
@@ -3981,6 +3984,231 @@ pub const Epic = struct {
         const out = try allocator.alloc(models.WalletTx, @min(n, limit));
         @memcpy(out, all[0..out.len]);
         return out;
+    }
+
+    // --- Confirmations, from the node (`get_kernel`) ---------------------
+    //
+    // The wallet's own log says only confirmed yes/no, and its
+    // `confirmation_height` is the chain height when *it noticed* — not the block
+    // the transaction is in. Worse, epic-wallet 4.0 never confirms a
+    // `TxSentMempool` send that has no change output: its kernel check
+    // (`update_txs_via_kernel`) only looks at TxSent/TxSentCreated/TxReceived, and
+    // the Epicbox listener marks every send it broadcasts TxSentMempool. So such a
+    // send reads "in the mempool" forever.
+    //
+    // The node knows: `get_kernel(excess, min, max)` answers with the block a
+    // transaction's kernel is in. That gives both the real confirmation count
+    // ("3/10") and the stuck sends' confirmation. The height a kernel is found at
+    // never changes, so each is looked up once and remembered; a row the wallet's
+    // own (late) `confirmation_height` already puts past `min_confirmations`
+    // needs no lookup at all.
+
+    /// The wallet's top dir (`~/.epic/main`), cached at launch like
+    /// `epicbox_index`: our own node's `.foreign_api_secret` lives there.
+    const WalletTop = struct {
+        var mutex: std.atomic.Mutex = .unlocked;
+        var buf: [1024]u8 = undefined;
+        var len: usize = 0;
+
+        fn set(top: []const u8) void {
+            while (!mutex.tryLock()) std.atomic.spinLoopHint();
+            defer mutex.unlock();
+            len = if (top.len <= buf.len) top.len else 0;
+            @memcpy(buf[0..len], top[0..len]);
+        }
+
+        fn get(out: []u8) []const u8 {
+            while (!mutex.tryLock()) std.atomic.spinLoopHint();
+            defer mutex.unlock();
+            if (len > out.len) return out[0..0];
+            @memcpy(out[0..len], buf[0..len]);
+            return out[0..len];
+        }
+    };
+
+    /// Mined heights found by slate id — they never change once found.
+    const MinedHeights = struct {
+        const cap = 32;
+        var ids: [cap][36]u8 = undefined;
+        var heights: [cap]i64 = undefined;
+        var len: usize = 0;
+        var next: usize = 0;
+        var lock: std.atomic.Mutex = .unlocked;
+
+        fn get(id: []const u8) ?i64 {
+            if (id.len != 36) return null;
+            while (!lock.tryLock()) std.atomic.spinLoopHint();
+            defer lock.unlock();
+            for (ids[0..len], heights[0..len]) |*known, h| if (std.mem.eql(u8, known, id)) return h;
+            return null;
+        }
+
+        fn put(id: []const u8, height: i64) void {
+            if (id.len != 36) return;
+            while (!lock.tryLock()) std.atomic.spinLoopHint();
+            defer lock.unlock();
+            ids[next] = id[0..36].*;
+            heights[next] = height;
+            next = (next + 1) % cap;
+            if (len < cap) len += 1;
+        }
+    };
+
+    /// Most kernel lookups made in one poll: the first poll after an unlock can
+    /// find several recent rows unsettled, and each is a round trip to the node.
+    const max_kernel_lookups = 6;
+
+    /// One log entry's facts for confirmation counting.
+    const KernelRef = struct {
+        tx_slate_id: ?[]const u8 = null,
+        confirmed: bool = false,
+        kernel_excess: ?std.json.Value = null,
+        kernel_lookup_min_height: ?std.json.Value = null,
+        confirmation_height: ?std.json.Value = null,
+    };
+
+    /// Give each broadcast row its real confirmation count, and confirm the
+    /// sends the wallet itself never will (see the section note). `inner` is
+    /// the `retrieve_txs` reply the rows came from.
+    fn applyMinedHeights(allocator: std.mem.Allocator, inner: []const u8, rows: []models.WalletTx) !void {
+        var arena = std.heap.ArenaAllocator.init(allocator);
+        defer arena.deinit();
+        const a = arena.allocator();
+        const Paged = struct { result: ?struct { Ok: ?struct { txs: []const KernelRef = &.{} } = null } = null };
+        const v = try std.json.parseFromSliceLeaky(Paged, a, inner, .{ .ignore_unknown_fields = true, .allocate = .alloc_always });
+        const refs = ((v.result orelse return).Ok orelse return).txs;
+
+        const tip = try nodeTip(a);
+        var lookups: usize = 0;
+        for (rows) |*row| {
+            // Only what's been broadcast: a send still with the receiver has no
+            // kernel on chain to find.
+            if (row.stage == .awaiting_counterparty or row.stage == .awaiting_reply_file) continue;
+            const id = row.txid();
+            const ref = for (refs) |r| {
+                if (r.tx_slate_id) |sid| if (std.mem.eql(u8, sid, id)) break r;
+            } else continue;
+
+            const height: ?i64 = MinedHeights.get(id) orelse blk: {
+                // Settled even by the wallet's own late reckoning: no lookup.
+                if (ref.confirmed) if (jsonInt(ref.confirmation_height)) |ch| {
+                    if (tip - ch + 1 >= min_confirmations) {
+                        row.confirmations = settled_confirmations;
+                        row.stage = .none;
+                        continue;
+                    }
+                };
+                const excess = jsonStr(ref.kernel_excess) orelse break :blk null;
+                if (lookups == max_kernel_lookups) break :blk null;
+                lookups += 1;
+                const h = kernelHeight(a, excess, jsonInt(ref.kernel_lookup_min_height), tip) catch break :blk null;
+                if (h) |found| MinedHeights.put(id, found);
+                break :blk h;
+            };
+            if (height) |h| {
+                row.confirmations = @max(tip - h + 1, 1);
+                row.stage = .none;
+                row.cancellable = false;
+            } else if (ref.confirmed) if (jsonInt(ref.confirmation_height)) |ch| {
+                // Not found (or not looked up): the wallet's own view, which can
+                // only undercount.
+                row.confirmations = @max(tip - ch + 1, 1);
+            };
+        }
+    }
+
+    /// Confirmation count for a row known settled without knowing exactly how
+    /// far past: comfortably beyond `min_confirmations`.
+    const settled_confirmations: i64 = confirmed_sentinel;
+
+    fn jsonInt(v: ?std.json.Value) ?i64 {
+        const x = v orelse return null;
+        return switch (x) {
+            .integer => |n| n,
+            .string => |t| std.fmt.parseInt(i64, t, 10) catch null,
+            else => null,
+        };
+    }
+
+    fn jsonStr(v: ?std.json.Value) ?[]const u8 {
+        const x = v orelse return null;
+        return if (x == .string and x.string.len > 0) x.string else null;
+    }
+
+    /// The node's chain height (`get_tip`).
+    fn nodeTip(a: std.mem.Allocator) !i64 {
+        const raw = try nodeForeign(a, "get_tip", "[]");
+        return parseTipHeight(a, raw);
+    }
+
+    /// The height of the block holding the kernel `excess`, or null when the node
+    /// hasn't got it (not mined yet). `min_height` narrows the search, as the
+    /// wallet does.
+    fn kernelHeight(a: std.mem.Allocator, excess: []const u8, min_height: ?i64, tip: i64) !?i64 {
+        for (excess) |ch| if (!std.ascii.isHex(ch)) return null; // spliced below
+        const params = if (min_height) |m|
+            try std.fmt.allocPrint(a, "[\"{s}\",{d},{d}]", .{ excess, m, tip })
+        else
+            try std.fmt.allocPrint(a, "[\"{s}\",null,{d}]", .{ excess, tip });
+        return parseKernelHeight(a, try nodeForeign(a, "get_kernel", params));
+    }
+
+    /// `{"result":{"Ok":{"height":…}}}` → the height; anything else (the node's
+    /// NotFound, an error) → null. Pure, for testing.
+    fn parseKernelHeight(a: std.mem.Allocator, raw: []const u8) ?i64 {
+        const Env = struct { result: ?struct { Ok: ?struct { height: i64 = 0 } = null } = null };
+        const v = std.json.parseFromSliceLeaky(Env, a, raw, .{ .ignore_unknown_fields = true, .allocate = .alloc_always }) catch return null;
+        const ok = (v.result orelse return null).Ok orelse return null;
+        return if (ok.height > 0) ok.height else null;
+    }
+
+    /// POST a JSON-RPC call at the node's Foreign API — the node the wallet
+    /// uses: someone else's (no secret, as for `foreignTip`), or ours on
+    /// localhost with its `.foreign_api_secret`, as epic-wallet authenticates
+    /// (`epic:<secret>`). Caller owns nothing: `a` is an arena.
+    fn nodeForeign(a: std.mem.Allocator, method: []const u8, params: []const u8) ![]const u8 {
+        var url_buf: [Coin.node_url_max]u8 = undefined;
+        const remote = nodeUrl(&url_buf);
+        const base = if (remote.len != 0) remote else "http://127.0.0.1:" ++ rpc_default_port;
+        const ep = try splitHostPort(base);
+        if (!rpc.endpointReachable(a, ep.host, ep.port, node_connect_timeout_ms)) return error.NodeUnreachable;
+
+        var threaded: std.Io.Threaded = .init(a, .{});
+        defer threaded.deinit();
+        const io = threaded.io();
+
+        var auth_header: ?[]const u8 = null;
+        if (remote.len == 0) {
+            var top_buf: [1024]u8 = undefined;
+            const top = WalletTop.get(&top_buf);
+            if (top.len > 0) {
+                const path = try std.fs.path.join(a, &.{ top, node_foreign_secret_file });
+                if (std.Io.Dir.cwd().readFileAlloc(io, path, a, .limited(256))) |raw| {
+                    const secret = parseSecret(raw);
+                    if (secret.len > 0) auth_header = try basicAuthHeader(a, rpc_default_username, secret);
+                } else |_| {}
+            }
+        }
+
+        var client: std.http.Client = .{ .allocator = a, .io = io };
+        defer client.deinit();
+        const url = try std.fmt.allocPrint(a, "{s}/v2/foreign", .{base});
+        const body = try std.fmt.allocPrint(a, "{{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"{s}\",\"params\":{s}}}", .{ method, params });
+        var resp: std.Io.Writer.Allocating = .init(a);
+        var headers: [2]std.http.Header = .{
+            .{ .name = "content-type", .value = "application/json" },
+            .{ .name = "authorization", .value = auth_header orelse "" },
+        };
+        const result = try client.fetch(.{
+            .location = .{ .url = url },
+            .method = .POST,
+            .payload = body,
+            .response_writer = &resp.writer,
+            .extra_headers = headers[0..if (auth_header != null) 2 else 1],
+        });
+        if (result.status == .unauthorized) return error.AuthFailed;
+        if (result.status != .ok) return error.DaemonNotReady;
+        return resp.written();
     }
 
     /// Cancel the unfinished send whose slate id is `slate_id` via the Owner
@@ -4182,6 +4410,8 @@ pub const Epic = struct {
         // One per wallet (see the Receive address section): a "new" one would
         // be the same address.
         .receive_address_fixed_note = "This wallet has one Epicbox address. It doesn't change, and it's fine to reuse.",
+        // What the balance and a send both wait for (see `min_confirmations`).
+        .spendable_confirmations = min_confirmations,
         .wallet_send = vtWalletSend,
         .wallet_send_note = vtWalletSendNote,
         .send_note_max = models.tx_note_max,
@@ -5331,6 +5561,19 @@ test "a reply is named like epic-wallet's CLI names it, beside the payment file"
     try std.testing.expect(!sf.isPaymentName("65a93004-bb00-42f4-b51a-727da3783ed7.tx.response"));
     try std.testing.expect(!sf.isPaymentName("finalize_65a93004-bb00-42f4-b51a-727da3783ed7.tx"));
     try std.testing.expect(!sf.isPaymentName("holiday.jpg"));
+}
+
+test "parseKernelHeight reads the block a kernel is in; NotFound is none" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    try std.testing.expectEqual(@as(?i64, 3725592), Epic.parseKernelHeight(a,
+        \\{"id":1,"jsonrpc":"2.0","result":{"Ok":{"tx_kernel":{"features":"Plain"},"height":3725592,"mmr_index":123}}}
+    ));
+    try std.testing.expectEqual(@as(?i64, null), Epic.parseKernelHeight(a,
+        \\{"id":1,"jsonrpc":"2.0","result":{"Err":{"NotFound":"kernel"}}}
+    ));
+    try std.testing.expectEqual(@as(?i64, null), Epic.parseKernelHeight(a, "not json"));
 }
 
 test "Epic pays by slate file" {

@@ -1127,6 +1127,11 @@ pub const Coin = struct {
         /// (`getnewaddress`-style), for an explicit user-requested rotation.
         /// Non-null marks a coin whose Receive tab shows a live address;
         /// `supportsReceiveAddress` keys off this being non-null.
+        /// How many confirmations received funds need before the wallet counts
+        /// them as available (Epic: 10, its wallet's `minimum_confirmations`).
+        /// When set, the Transactions tab counts up to it ("3/10 confirmations")
+        /// and only says Confirmed once a row is spendable. 0: the plain count.
+        spendable_confirmations: u32 = 0,
         /// Set when the coin's receive address never changes — one per wallet —
         /// so there's no "new address" to offer (`force_new` returns the same
         /// one). The text, in the coin's own words, is shown where the option
@@ -1807,6 +1812,11 @@ pub const Coin = struct {
     /// Receive tab). True iff the coin wires `wallet_receive_address`.
     pub fn supportsReceiveAddress(self: Coin) bool {
         return self.vtable.wallet_receive_address != null;
+    }
+
+    /// See `spendable_confirmations`; 0 when the coin doesn't declare one.
+    pub fn spendableConfirmations(self: Coin) u32 {
+        return self.vtable.spendable_confirmations;
     }
 
     /// Whether the Receive tab offers "new address": the coin has a receive

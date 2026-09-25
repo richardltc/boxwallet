@@ -2355,6 +2355,24 @@ export fn bw_wallet_cancel_tx(ctx: ?*Ctx, idx: usize, txid: ?[*:0]const u8, out:
     };
 }
 
+/// How many confirmations make received funds spendable for this coin
+/// (`Coin.spendable_confirmations`), 0 when it doesn't declare one.
+export fn bw_coin_spendable_confirmations(idx: usize) u32 {
+    const c = coinByIndex(idx) orelse return 0;
+    return c.spendableConfirmations();
+}
+
+/// The Status words for `confirmations` against a coin's spendable threshold
+/// `needed` ("3/10 confirmations", or "Confirmed" once spendable) — the TUI's
+/// words. `*settled` says which. Returns the length written.
+export fn bw_tx_confirmation_text(confirmations: i64, needed: u32, settled: ?*c_int, buf: ?[*]u8, cap: usize) usize {
+    const b = buf orelse return 0;
+    var tmp: [48]u8 = undefined;
+    const st = models.confirmationStatus(&tmp, confirmations, @max(needed, 1));
+    if (settled) |s| s.* = @intFromBool(st.settled);
+    return copyOut(b[0..cap], st.text);
+}
+
 /// The confirmation count above which a transaction reads as settled. One line
 /// for both front-ends, so the TUI's Status column and the GUI's confirmations
 /// column can't drift apart. Cheap; UI-thread safe.
@@ -5766,6 +5784,7 @@ test "bw_coin_ext_wallet's flags agree with the vtable for every coin" {
         try std.testing.expectEqual(coin.sendOkLabel().len, bw_coin_send_ok_label(i, &lb, lb.len));
         try std.testing.expectEqual(coin.sendNoteMax(), bw_coin_send_note_max(i));
         try std.testing.expectEqual(coin.canNewReceiveAddress(), bw_coin_can_new_receive_address(i) != 0);
+        try std.testing.expectEqual(coin.spendableConfirmations(), bw_coin_spendable_confirmations(i));
         var rn: [160]u8 = undefined;
         try std.testing.expectEqual(coin.receiveAddressFixedNote().len, bw_coin_receive_address_note(i, &rn, rn.len));
         try std.testing.expectEqual(coin.supportsSlateFiles(), bw_coin_supports_slate_files(i) != 0);

@@ -799,7 +799,7 @@ static slint::Image qr_image(const std::string &text)
 /// matured stake returning its principal + yield, which "Mined" would hide, so
 /// it reads "Stake received". Coins that actually mine keep "Mined".
 static std::shared_ptr<slint::VectorModel<WalletTxRow>>
-make_tx_rows(const std::vector<BwWalletTx> &txs, int decimals, bool has_stake)
+make_tx_rows(const std::vector<BwWalletTx> &txs, int decimals, bool has_stake, unsigned needed)
 {
     std::vector<WalletTxRow> rows;
     rows.reserve(txs.size());
@@ -824,12 +824,20 @@ make_tx_rows(const std::vector<BwWalletTx> &txs, int decimals, bool has_stake)
         // core's words for it — the TUI's — instead of "unconfirmed".
         char stage[64];
         size_t stage_n = bw_tx_stage_text(t.stage, t.direction, stage, sizeof stage);
+        // A coin that says when received funds become spendable (Epic) counts
+        // up to that — "3/10 confirmations" — in the core's words.
+        char conf[48];
+        int conf_settled = 0;
+        size_t conf_n = needed > 0 && stage_n == 0
+            ? bw_tx_confirmation_text(t.confirmations, needed, &conf_settled, conf, sizeof conf)
+            : 0;
         r.confirmations = ss(
             stage_n > 0                                   ? std::string(stage, stage_n)
+            : conf_n > 0                                  ? std::string(conf, conf_n)
             : t.confirmations > bw_tx_confirmed_threshold() ? std::string("confirmed")
             : t.confirmations <= 0                        ? std::string("unconfirmed")
                                                           : group_int(t.confirmations) + " conf");
-        r.settled = stage_n == 0 && t.confirmations > bw_tx_confirmed_threshold();
+        r.settled = stage_n == 0 && (conf_n > 0 ? conf_settled != 0 : t.confirmations > bw_tx_confirmed_threshold());
         r.cancellable = t.cancellable != 0;
         // Explicitly length-counted: the core doesn't NUL-terminate a txid.
         r.txid = ss(std::string(t.txid, t.txid_len));
@@ -4641,7 +4649,8 @@ int main(int argc, char **argv)
                         (*h)->set_receive_qr(qr_image(recv_addr));
                     }
                     (*h)->set_tx_rows(
-                        make_tx_rows(txs, decimals, bw_coin_supports_stake(coin) != 0));
+                        make_tx_rows(txs, decimals, bw_coin_supports_stake(coin) != 0,
+                                     bw_coin_spendable_confirmations(coin)));
                     if (bw_coin_supports_tokens(coin) != 0) {
                         (*h)->set_token_rows(make_token_rows(tokens));
                         (*h)->set_tokens_locked(tokens_locked);
