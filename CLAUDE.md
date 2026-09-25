@@ -46,6 +46,12 @@ convenience, prefer the safe one unless told otherwise.
   existing wallet just fails and is retried, so it isn't confirmed.
 - **Never create or unlock a wallet silently** — only ever with an explicit,
   user-supplied password.
+- **Never put a secret on a command line.** Any local user can read another
+  process's argv (`ps`, `/proc/<pid>/cmdline`) for as long as it runs. Hand it
+  over an encrypted RPC, or where a wallet CLI only prompts on its terminal,
+  through `ttypass` (Epic does this). Zano still passes `--password=` in argv;
+  that's a known gap, not a pattern to copy. Windows falls back to argv, since
+  only the same user or an administrator can read a process's command line there.
 - **Surface failures honestly.** Don't swallow a daemon/CLI error into a generic
   "failed"; thread the real reason up (see the wallet-op error sink) so the user
   can tell a typo from a stale file from an unreachable service.
@@ -146,6 +152,7 @@ modules below, and coins call into them with their own parameters:
 | `src/rpc.zig` | JSON-RPC transport over `std.http.Client` (basic + digest auth), warm-up scanning, generic bitcoin-family wallet helpers. |
 | `src/conf.zig` | Coin conf read/write (`populate` merges, `writeConf` clobbers), RPC auth resolution, per-platform data dirs, BoxWallet's own `boxwallet.conf`. |
 | `src/proc.zig` | Daemon liveness by process name, start-failure reasons from a log tail, terminate+reap. |
+| `src/ttypass.zig` | Spawn a child on a private pseudo-terminal and type its password at the prompt, so the password never goes in argv (Linux/macOS). The caller holds the returned `Tty` for the child's lifetime: closing it hangs the child up. |
 | `src/warmup.zig` | What a daemon is doing while its RPC can't answer yet (the `-28` probe + log tail) → phase, sub-stage, percentage, and a ready-made label. |
 | `src/extwallet.zig` | The external wallet-rpc **process** lifecycle: per-coin session, credentials, `ensure`/`kill`/`authFor`, friendly error mapping. |
 | `src/version.zig` | `app_version`, brand colour, per-front-end names. **Bump the version here** — everything else reads it. |

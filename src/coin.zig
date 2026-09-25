@@ -270,6 +270,13 @@ pub const Coin = struct {
         /// What the payment listener is called on screen ("Epicbox listener").
         /// Paired with `listener_argv`.
         listener_name: []const u8 = "Payment listener",
+        /// Non-empty when the wallet server and listener read their password from
+        /// a terminal instead of argv: `extwallet` then starts them on a private
+        /// pty (`ttypass`) and types the password at each prompt containing this
+        /// text, and `launch_server_argv` / `listener_argv` must leave it out of
+        /// the command line (where any local user could read it). Set it only
+        /// where `ttypass.supported`; elsewhere the argv carries the password.
+        password_prompt: []const u8 = "",
         /// Optional: one-shot CLI that materializes the managed wallet file under
         /// `password` *before* the RPC server is launched (Zano
         /// `simplewallet --generate-new-wallet`). Paired with `launch_server_argv`:
