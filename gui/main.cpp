@@ -1018,6 +1018,7 @@ static void apply_coin_metadata(const AppWindow *ui, bw_ctx *ctx, int idx)
     ui->set_has_send_fee(bw_coin_supports_send_fee(idx) != 0);
     // A note typed for one coin mustn't ride along with another coin's send.
     ui->set_send_note_max(static_cast<int>(bw_coin_send_note_max(idx)));
+    ui->set_has_slate_files(bw_coin_supports_slate_files(idx) != 0);
     ui->set_send_note_text("");
     ui->set_has_cancel_tx(bw_coin_supports_cancel_tx(idx) != 0);
     ui->set_tx_action_result(ss(""));
@@ -3602,6 +3603,178 @@ int main(int argc, char **argv)
                         rc == 0   ? lead + reply
                         : rc == 1 ? reply
                                   : err));
+                }
+            });
+            wake_poll();
+        }).detach();
+    });
+
+    // ---- slate files (Epic) ----
+    // The quote for a file send: the same staleness rule as the send quote above
+    // (only lands on the confirm it was asked for).
+    ui->on_estimate_slate([weak, ctx](slint::SharedString amount) {
+        int coin = g_selected.load();
+        std::string amt_text{std::string_view(amount)};
+        double amt = 0;
+        try {
+            amt = std::stod(amt_text);
+        } catch (...) {
+            amt = -1;
+        }
+        if (coin < 0 || !(amt > 0)) {
+            if (auto h = weak.lock()) {
+                (*h)->set_send_fee_pending(false);
+                (*h)->set_send_confirm_open(false);
+                (*h)->set_send_result_error(true);
+                (*h)->set_send_result(ss("That isn't an amount."));
+            }
+            return;
+        }
+        std::thread([weak, ctx, coin, amt_text, amt]() {
+            WorkerGuard wg;
+            double fee = 0;
+            char out[256] = {0};
+            int rc = bw_wallet_slate_fee(ctx, static_cast<size_t>(coin), amt, &fee, out, sizeof out);
+            std::string text;
+            if (rc == 0) {
+                const int dec = static_cast<int>(bw_coin_balance_decimals(coin));
+                char sym[16];
+                size_t sn = bw_coin_abbrev(coin, sym, sizeof sym);
+                const std::string unit = " " + std::string(sym, sn);
+                text = "Fee: " + format_amount(fee, dec) + unit + " \u2014 " +
+                       format_amount(amt + fee, dec) + unit + " leaves the wallet when it completes.";
+            } else {
+                text = (rc == 1) ? std::string(out) : last_error_text(ctx, rc);
+            }
+            post_to_ui([weak, rc, text, amt_text]() {
+                auto h = weak.lock();
+                if (!h)
+                    return;
+                if (!(*h)->get_send_confirm_open() || !(*h)->get_send_confirm_is_slate() ||
+                    std::string_view((*h)->get_send_confirm_amount()) != amt_text)
+                    return;
+                (*h)->set_send_fee_pending(false);
+                if (rc == 0) {
+                    (*h)->set_send_fee_text(ss(text));
+                } else {
+                    (*h)->set_send_confirm_open(false);
+                    (*h)->set_send_result_error(true);
+                    (*h)->set_send_result(ss(text));
+                }
+            });
+        }).detach();
+    });
+
+    // Save a payment as a slate file, into the user's Downloads (or home).
+    ui->on_slate_send([weak, ctx, wake_poll](slint::SharedString amount, slint::SharedString note_text) {
+        int coin = g_selected.load();
+        if (coin < 0) {
+            if (auto h = weak.lock())
+                (*h)->set_send_confirm_open(false);
+            return;
+        }
+        double amt = 0;
+        try {
+            amt = std::stod(std::string(std::string_view(amount)));
+        } catch (...) {
+            amt = -1;
+        }
+        std::string note{std::string_view(note_text)};
+        if (auto h = weak.lock())
+            (*h)->set_send_busy(true);
+        std::thread([weak, ctx, coin, amt, note, wake_poll]() {
+            WorkerGuard wg;
+            char dir[4096];
+            size_t dn = bw_slate_default_dir(ctx, dir, sizeof dir - 1);
+            dir[dn] = '\0';
+            char out[1024] = {0};
+            int rc = bw_wallet_slate_send(ctx, static_cast<size_t>(coin), amt, note.c_str(), dir, out, sizeof out);
+            std::string reply(out);
+            std::string err = (rc < 0) ? last_error_text(ctx, rc) : std::string();
+            post_to_ui([weak, rc, reply, err]() {
+                if (auto h = weak.lock()) {
+                    (*h)->set_send_busy(false);
+                    (*h)->set_send_confirm_open(false);
+                    (*h)->set_send_result_error(rc != 0);
+                    if (rc == 0)
+                        (*h)->set_send_note_text("");
+                    (*h)->set_send_result(ss(
+                        rc == 0   ? "Saved " + reply + " \u2014 give it to the person you're paying, then open "
+                                    "their .response file here (Open slate file\u2026) to finish."
+                        : rc == 1 ? reply
+                                  : err));
+                }
+            });
+            wake_poll();
+        }).detach();
+    });
+
+    // Open a slate file: ask the core what it is for this wallet. The path and
+    // what it was said to be are kept here (UI thread only) for the confirm.
+    static std::string g_slate_path;
+    static int g_slate_kind = BW_SLATE_UNUSABLE;
+    ui->on_slate_inspect([weak, ctx](slint::SharedString path) {
+        int coin = g_selected.load();
+        g_slate_path = std::string(std::string_view(path));
+        g_slate_kind = BW_SLATE_UNUSABLE;
+        std::string p = g_slate_path;
+        std::thread([weak, ctx, coin, p]() {
+            WorkerGuard wg;
+            BwSlateInfo info{};
+            int rc = coin < 0 ? -1 : bw_wallet_slate_inspect(ctx, static_cast<size_t>(coin), p.c_str(), &info);
+            std::string err = (rc < 0) ? last_error_text(ctx, rc) : std::string();
+            const int dec = coin < 0 ? 8 : static_cast<int>(bw_coin_balance_decimals(coin));
+            char sym[16];
+            size_t sn = coin < 0 ? 0 : bw_coin_abbrev(coin, sym, sizeof sym);
+            const std::string unit = " " + std::string(sym, sn);
+            post_to_ui([weak, rc, err, info, dec, unit]() {
+                auto h = weak.lock();
+                if (!h || !(*h)->get_slate_open())
+                    return;
+                if (rc < 0 || info.kind == BW_SLATE_UNUSABLE) {
+                    (*h)->set_slate_ok(false);
+                    (*h)->set_slate_receiving(false);
+                    (*h)->set_slate_result(ss(rc < 0 ? err : std::string(info.reason, info.reason_len)));
+                    (*h)->set_slate_stage(4);
+                    return;
+                }
+                g_slate_kind = info.kind;
+                const bool receiving = info.kind == BW_SLATE_RECEIVE;
+                const std::string amt = format_amount(info.amount, dec) + unit;
+                (*h)->set_slate_receiving(receiving);
+                (*h)->set_slate_note(ss(std::string(info.note, info.note_len)));
+                (*h)->set_slate_summary(ss(
+                    receiving
+                        ? "Someone is paying you " + amt + ". Your wallet signs it and saves a .response "
+                          "file next to it \u2014 send that back to them. The payment completes when they open it."
+                        : "This is the reply to your send of " + amt + ". The fee is " +
+                              format_amount(info.fee, dec) + unit + ", so " +
+                              format_amount(info.amount + info.fee, dec) + unit + " leaves the wallet."));
+                (*h)->set_slate_stage(2);
+            });
+        }).detach();
+    });
+
+    // Do what the confirm said. The core re-reads the file and refuses if it's no
+    // longer what the user agreed to.
+    ui->on_slate_process([weak, ctx, wake_poll]() {
+        int coin = g_selected.load();
+        std::string p = g_slate_path;
+        int kind = g_slate_kind;
+        std::thread([weak, ctx, coin, p, kind, wake_poll]() {
+            WorkerGuard wg;
+            char out[1024] = {0};
+            int rc = coin < 0 ? -1 : bw_wallet_slate_process(ctx, static_cast<size_t>(coin), p.c_str(), kind, out, sizeof out);
+            std::string reply(out);
+            std::string err = (rc < 0) ? last_error_text(ctx, rc) : std::string();
+            post_to_ui([weak, rc, reply, err, kind]() {
+                if (auto h = weak.lock()) {
+                    (*h)->set_slate_ok(rc == 0);
+                    (*h)->set_slate_result(ss(
+                        rc == 0 ? (kind == BW_SLATE_RECEIVE ? "Send this file back to the sender: " + reply : reply)
+                        : rc == 1 ? reply
+                                  : err));
+                    (*h)->set_slate_stage(4);
                 }
             });
             wake_poll();

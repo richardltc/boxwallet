@@ -146,7 +146,7 @@ modules below, and coins call into them with their own parameters:
 | Module | Holds |
 |---|---|
 | `src/registry.zig` | The registered coins, in one list, in one order. **That order is the GUI's C ABI** — append, never insert. Also carries the duplicate-binary-name comptime guard. |
-| `src/coin.zig` | The polymorphic `Coin` vtable interface and its capability structs (`ExternalWallet`, `SyncAccelerator`, `Pruning`, `Stablecoin`). |
+| `src/coin.zig` | The polymorphic `Coin` vtable interface and its capability structs (`ExternalWallet`, `SyncAccelerator`, `Pruning`, `Stablecoin`, `SlateFiles`). |
 | `src/models.zig` | Shared/normalized models (`CoinAuth`, `BlockchainState`, `WalletBalance`, `Seed`, …). Per-coin raw RPC structs may live here or in the coin file. |
 | `src/install.zig` | Generic streaming download → gunzip/unzip/bunzip2 + untar (constant memory), `promoteAndTidy`, `installRoot`, version markers. |
 | `src/rpc.zig` | JSON-RPC transport over `std.http.Client` (basic + digest auth), warm-up scanning, generic bitcoin-family wallet helpers. |
