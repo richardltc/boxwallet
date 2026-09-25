@@ -3312,14 +3312,34 @@ pub const Epic = struct {
         amount_credited: []const u8 = "0",
         amount_debited: []const u8 = "0",
         tx_slate_id: ?[]const u8 = null,
-        /// The slate's participant messages — where a sender's note lives.
-        messages: ?struct { messages: []const struct { message: ?[]const u8 = null } = &.{} } = null,
+        /// The other side's Epicbox address: the recipient of a send, the
+        /// sender of a receive — the CLI's "From/To Address".
+        ///
+        /// This and `messages` are read as loose JSON values rather than typed
+        /// fields: they're extras, and a shape this code didn't expect must
+        /// cost the row its address or note, never the whole list.
+        public_addr: ?std.json.Value = null,
+        /// The slate's participant messages — where a sender's note lives:
+        /// `{"messages":[{"message":"…",…},…]}`.
+        messages: ?std.json.Value = null,
+
+        fn address(self: TxLogEntry) []const u8 {
+            const v = self.public_addr orelse return "";
+            return if (v == .string) v.string else "";
+        }
 
         /// The first non-empty participant message: the sender's note, whichever
         /// side of the transaction this wallet was on.
         fn note(self: TxLogEntry) []const u8 {
             const pm = self.messages orelse return "";
-            for (pm.messages) |m| if (m.message) |text| if (text.len > 0) return text;
+            if (pm != .object) return "";
+            const list = pm.object.get("messages") orelse return "";
+            if (list != .array) return "";
+            for (list.array.items) |m| {
+                if (m != .object) continue;
+                const text = m.object.get("message") orelse continue;
+                if (text == .string and text.string.len > 0) return text.string;
+            }
             return "";
         }
     };
@@ -3417,6 +3437,7 @@ pub const Epic = struct {
             };
             if (e.tx_slate_id) |id| all[n].setTxid(id);
             all[n].setNote(e.note());
+            all[n].setAddress(e.address());
             all[n].cancellable = !e.confirmed and kind.stage == .awaiting_counterparty and
                 kind.direction == .sent and all[n].txid_len > 0 and
                 time > 0 and now - time >= cancel_min_age_s;
@@ -4596,7 +4617,8 @@ test "parseTxLog carries the slate message as the row's note, made safe to show"
         \\{"id":1,"jsonrpc":"2.0","result":{"Ok":{"pager":{},"txs":[
         \\{"tx_type":"TxReceived","tx_slate_id":"f75efd84-31cd-429a-bb9c-756a640d8cea","creation_ts":"2026-09-23T17:19:00Z","confirmed":true,"amount_credited":"10000000","amount_debited":"0",
         \\ "messages":{"messages":[{"id":"0","public_key":"02ab","message":"rent \u001b[2J for May","message_sig":"cd"},{"id":"1","public_key":"03ef","message":null,"message_sig":null}]}},
-        \\{"tx_type":"TxSent","tx_slate_id":"45ac41a0-7812-47ca-baa6-0021c2e8db0d","creation_ts":"2026-09-23T17:10:00Z","confirmed":true,"amount_credited":"0","amount_debited":"10000000","messages":null}
+        \\{"tx_type":"TxSent","tx_slate_id":"45ac41a0-7812-47ca-baa6-0021c2e8db0d","creation_ts":"2026-09-23T17:10:00Z","confirmed":true,"amount_credited":"0","amount_debited":"10000000","messages":null,
+        \\ "public_addr":"esXBF4QgPnTk64M1ky2DeBTCvKXNBwKp3mfnHTbzAKU2wagigz6J@epicbox.epiccash.com"}
         \\]}}}
     ;
     const txs = try Epic.parseTxLog(allocator, inner, 32, 0);
@@ -4604,6 +4626,21 @@ test "parseTxLog carries the slate message as the row's note, made safe to show"
     try std.testing.expectEqual(@as(usize, 2), txs.len);
     try std.testing.expectEqualStrings("rent [2J for May", txs[0].note());
     try std.testing.expectEqualStrings("", txs[1].note());
+    // An unexpected shape costs the row its extras, not the list its rows.
+    {
+        const odd =
+            \\{"result":{"Ok":{"txs":[{"tx_type":"TxReceived","creation_ts":"2026-09-23T17:19:00Z","confirmed":true,
+            \\ "amount_credited":"1","amount_debited":"0","public_addr":{"x":1},"messages":[1,2]}]}}}
+        ;
+        const odd_txs = try Epic.parseTxLog(allocator, odd, 32, 0);
+        defer allocator.free(odd_txs);
+        try std.testing.expectEqual(@as(usize, 1), odd_txs.len);
+        try std.testing.expectEqualStrings("", odd_txs[0].address());
+        try std.testing.expectEqualStrings("", odd_txs[0].note());
+    }
+    // Who it went to — the CLI's "From/To Address"; absent, nothing.
+    try std.testing.expectEqualStrings("esXBF4QgPnTk64M1ky2DeBTCvKXNBwKp3mfnHTbzAKU2wagigz6J@epicbox.epiccash.com", txs[1].address());
+    try std.testing.expectEqualStrings("", txs[0].address());
 }
 
 test "a note rides the Epic send; one too long is refused, not dropped" {

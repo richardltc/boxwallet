@@ -1228,6 +1228,8 @@ typedef struct {
     int     cancellable;    /* 1: bw_wallet_cancel_tx may be offered for it */
     char    note[128];      /* the sender's note, length-counted like txid and */
     size_t  note_len;       /* already safe to show; note_len 0 = none         */
+    char    address[128];   /* the other side: who a send went to, who a     */
+    size_t  address_len;    /* receive came from; length-counted, 0 = unknown */
 } BwWalletTx;
 
 /* Where an unconfirmed transaction is, for a coin whose transactions aren't

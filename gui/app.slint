@@ -52,6 +52,7 @@ struct WalletTxRow {
     incoming: bool,      // colours the row
     cancellable: bool,   // a send the receiver never answered — offers Cancel
     note: string,        // the sender's note (Epic's slate message), "" for none
+    address: string,     // the other side — sent to / received from — "" if unknown
 }
 
 // One row in the Staking list, pre-formatted by the host like WalletTxRow.
@@ -2087,6 +2088,7 @@ export component AppWindow inherits Window {
     property <bool> tip-copied: false;
     property <bool> receive-copied: false;
     property <bool> tx-copied: false;
+    property <bool> tx-addr-copied: false;
 
     // Which Transactions row is showing its transaction id, by index; -1 for
     // none. An accordion rather than a per-row flag: the rows come from the core
@@ -2151,11 +2153,12 @@ export component AppWindow inherits Window {
     // one tab is on screen at a time, so only one can be lit.
     copied-reset := Timer {
         interval: 2s;
-        running: root.tip-copied || root.receive-copied || root.tx-copied;
+        running: root.tip-copied || root.receive-copied || root.tx-copied || root.tx-addr-copied;
         triggered => {
             root.tip-copied = false;
             root.receive-copied = false;
             root.tx-copied = false;
+            root.tx-addr-copied = false;
         }
     }
 
@@ -3540,6 +3543,41 @@ export component AppWindow inherits Window {
                                                         txid-input.copy();
                                                         txid-input.clear-selection();
                                                         root.tx-copied = true;
+                                                    }
+                                                }
+                                            }
+                                            // Who it went to / came from, where the wallet
+                                            // records it (Epic). Whole and copyable — the
+                                            // one place it isn't shortened.
+                                            if row.address != "": HorizontalLayout {
+                                                spacing: 8px;
+                                                Text {
+                                                    text: row.incoming ? "From" : "To";
+                                                    color: #8a8a8a;
+                                                    font-size: 12px;
+                                                    vertical-alignment: center;
+                                                    width: 36px;
+                                                }
+                                                addr-input := TextInput {
+                                                    text: row.address;
+                                                    read-only: true;
+                                                    single-line: true;
+                                                    color: #e6e6e6;
+                                                    font-family: "monospace";
+                                                    font-size: 12px;
+                                                    vertical-alignment: center;
+                                                    horizontal-stretch: 1;
+                                                }
+                                                CopyIconButton {
+                                                    hint: "Copy address";
+                                                    copied: root.tx-addr-copied;
+                                                    clicked => {
+                                                        // Same select-without-focus
+                                                        // dance as the id above.
+                                                        addr-input.select-all();
+                                                        addr-input.copy();
+                                                        addr-input.clear-selection();
+                                                        root.tx-addr-copied = true;
                                                     }
                                                 }
                                             }

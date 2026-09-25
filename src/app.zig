@@ -9471,18 +9471,26 @@ pub const App = struct {
                 ((zz.Style{}).bold(true).fg(.yellow).render(a, tx.stage.label()) catch tx.stage.label())
             else
                 txConfirmationText(a, tx.confirmations);
-            // The sender's note, dim, after the status. Already made safe to
-            // print by `WalletTx.setNote` — it's someone else's text.
-            const note = if (tx.note_len > 0) blk: {
-                const q = try std.fmt.allocPrint(a, "   “{s}”", .{tx.note()});
-                break :blk (zz.Style{}).dim(true).render(a, q) catch q;
-            } else "";
+            // Who it went to / came from (shortened — the tab doesn't scroll, so
+            // it stays one line a row; the GUI shows it whole) and the sender's
+            // note, dim, after the status. Both were made safe to print by
+            // `WalletTx.setAddress`/`setNote`: on a receive they're the other
+            // side's text.
+            var extra: []const u8 = "";
+            if (tx.address_len > 0) {
+                var sbuf: [32]u8 = undefined;
+                extra = try std.fmt.allocPrint(a, "   {s} {s}", .{
+                    if (tx.direction == .sent or tx.direction == .staked) "to" else "from",
+                    shortAddress(&sbuf, tx.address()),
+                });
+            }
+            if (tx.note_len > 0) extra = try std.fmt.allocPrint(a, "{s}   “{s}”", .{ extra, tx.note() });
             const line = try std.fmt.allocPrint(a, "  {s} {s}   {s}   {s}{s}", .{
                 glyph,
                 try padCell(a, date, date_w, false),
                 try padCell(a, amount, amount_w, true),
                 conf_text,
-                note,
+                if (extra.len > 0) ((zz.Style{}).dim(true).render(a, extra) catch extra) else "",
             });
             body = try std.fmt.allocPrint(a, "{s}\n{s}", .{ body, line });
         }
@@ -9492,6 +9500,16 @@ pub const App = struct {
             return std.fmt.allocPrint(a, "Transactions\n\n{s}\n\n{s}", .{ body, hint });
         };
         return std.fmt.allocPrint(a, "Transactions\n\n{s}", .{body});
+    }
+
+    /// An address cut down to recognise at a glance: the first and last six
+    /// characters of the part before any `@` (an Epicbox address's relay
+    /// domain is dropped). Short ones come back whole. Never something to pay
+    /// — the ellipsis makes that plain.
+    fn shortAddress(buf: *[32]u8, addr: []const u8) []const u8 {
+        const key = addr[0 .. std.mem.indexOfScalar(u8, addr, '@') orelse addr.len];
+        if (key.len <= 16) return key;
+        return std.fmt.bufPrint(buf, "{s}…{s}", .{ key[0..6], key[key.len - 6 ..] }) catch key[0..6];
     }
 
     /// The Tokens tab body: the wallet's group-token holdings, and — once the
@@ -11159,7 +11177,7 @@ pub const App = struct {
             .pick => "j/k: choose   enter: next   esc: close",
             .address => "enter: next   esc: cancel",
             .amount => "enter: next   esc: cancel",
-            .note => "enter: next (leave empty for no note)   esc: cancel",
+            .note => "enter: next (or skip)   esc: cancel",
             .confirm => "enter: select   esc: cancel",
             .working, .estimating => "please wait…",
             .result => "press any key to close",
@@ -13306,7 +13324,7 @@ test "the Transactions tab says where an unfinished send is, and offers x only w
     try std.testing.expect(std.mem.indexOf(u8, body, "x: cancel") != null);
 }
 
-test "the Transactions tab shows a sender's note beside its row" {
+test "the Transactions tab shows who a transaction was with, and its note" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const a = arena.allocator();
@@ -13314,8 +13332,12 @@ test "the Transactions tab shows a sender's note beside its row" {
     var act: Activity = .{};
     act.tx_buf[0] = .{ .direction = .received, .amount = 1, .time = 1_790_000_000, .confirmations = 9999 };
     act.tx_buf[0].setNote("rent for May");
-    act.tx_count = 1;
-    try std.testing.expect(std.mem.indexOf(u8, try App.renderTransactionsTab(a, &act, 8), "rent for May") != null);
+    act.tx_buf[1] = .{ .direction = .sent, .amount = 1, .time = 1_789_000_000, .confirmations = 9999 };
+    act.tx_buf[1].setAddress("esXBF4QgPnTk64M1ky2DeBTCvKXNBwKp3mfnHTbzAKU2wagigz6J@epicbox.epiccash.com");
+    act.tx_count = 2;
+    const body = try App.renderTransactionsTab(a, &act, 8);
+    try std.testing.expect(std.mem.indexOf(u8, body, "rent for May") != null);
+    try std.testing.expect(std.mem.indexOf(u8, body, "to esXBF4…gigz6J") != null);
 }
 
 test "the cancel prompt opens on what can be cancelled — straight to Yes/No for one, a pick for several" {

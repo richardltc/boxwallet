@@ -532,6 +532,12 @@ pub const WalletTx = struct {
     /// which keeps it printable.
     note_buf: [tx_note_max]u8 = undefined,
     note_len: usize = 0,
+    /// The other side's address — who it went to (sent) or came from
+    /// (received) — for a coin whose wallet records it (Epic's Epicbox
+    /// address); empty otherwise. Set through `setAddress`, which keeps it
+    /// printable: on a receive it's what the sender's wallet said it was.
+    address_buf: [tx_address_max]u8 = undefined,
+    address_len: usize = 0,
 
     pub fn txid(self: *const WalletTx) []const u8 {
         return self.txid_buf[0..self.txid_len];
@@ -551,12 +557,29 @@ pub const WalletTx = struct {
     pub fn setNote(self: *WalletTx, text: []const u8) void {
         self.note_len = sanitizeNote(&self.note_buf, text).len;
     }
+
+    pub fn address(self: *const WalletTx) []const u8 {
+        return self.address_buf[0..self.address_len];
+    }
+
+    /// Store `text` as the counterparty address, cleaned like a note. One too
+    /// long to hold whole is dropped rather than cut: a truncated address
+    /// reads as a real one and could be copied and paid.
+    pub fn setAddress(self: *WalletTx, text: []const u8) void {
+        self.address_len = 0;
+        if (text.len > self.address_buf.len) return;
+        self.address_len = sanitizeNote(&self.address_buf, text).len;
+    }
 };
 
 /// The longest transaction note BoxWallet sends or shows, in bytes. A coin's
 /// own `Coin.send_note_max` is at most this, so every note it can send also
 /// fits back into `WalletTx.note_buf`.
 pub const tx_note_max: usize = 128;
+
+/// Room for a transaction's counterparty address (`WalletTx.address`). An
+/// Epicbox address with its domain and port is under 100 bytes.
+pub const tx_address_max: usize = 128;
 
 /// Copy `text` into `out` fit to show in a terminal or a GUI label: every
 /// control character (C0, DEL, and the C1 range, which some terminals read as
@@ -1499,4 +1522,10 @@ test "sanitizeNote keeps a note printable and in bounds" {
     var tx: WalletTx = .{ .direction = .received, .amount = 1, .time = 0, .confirmations = 0 };
     tx.setNote("thanks!");
     try std.testing.expectEqualStrings("thanks!", tx.note());
+
+    tx.setAddress("esXBF4QgPnTk64M1ky2DeBTCvKXNBwKp3mfnHTbzAKU2wagigz6J@epicbox.epiccash.com");
+    try std.testing.expectEqualStrings("esXBF4QgPnTk64M1ky2DeBTCvKXNBwKp3mfnHTbzAKU2wagigz6J@epicbox.epiccash.com", tx.address());
+    // Too long to hold whole: dropped, never shown cut short.
+    tx.setAddress("a" ** (tx_address_max + 1));
+    try std.testing.expectEqualStrings("", tx.address());
 }
