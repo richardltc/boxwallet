@@ -1769,6 +1769,9 @@ export component AppWindow inherits Window {
     // 0 to an Epicbox address, 1 as a slate file. main.cpp resets it (and the
     // address) when the coin changes.
     in-out property <int> send-method: 0;
+    // Where a slate file is saved: the folder chosen last (main.cpp reads and
+    // remembers it through the core), changeable before each save.
+    in-out property <string> slate-save-dir: "";
     in-out property <string> send-addr-text: "";
     // The amount, a property rather than the field's own text so main.cpp can
     // clear it (with the address and note) once a send has gone through.
@@ -1992,6 +1995,13 @@ export component AppWindow inherits Window {
     in property <string> browse-path: "";
     in property <[BrowseEntry]> browse-entries;
     in-out property <string> picked-file: "";
+    // The browser picks a folder rather than a file (where to save a slate):
+    // files are hidden and "Use this folder" chooses the one it's showing.
+    in-out property <bool> browse-folder-mode: false;
+    callback browse-choose-folder();
+    // The folder is being asked for on the way to a slate send's confirm:
+    // choosing one carries on to it; closing the browser drops the send.
+    in-out property <bool> slate-folder-then-confirm: false;
     // Set when the listing is filtered (picking the reply to a send), saying so.
     in property <string> browse-note: "";
     // List whatever directory the browser is currently pointed at, without
@@ -2027,6 +2037,8 @@ export component AppWindow inherits Window {
     function dismiss-modal() -> bool {
         if (root.browse-open) {
             root.browse-open = false;
+            root.browse-folder-mode = false;
+            root.slate-folder-then-confirm = false;
             return true;
         }
         // Not once Send has been pressed: the transaction is already out at the
@@ -3945,6 +3957,10 @@ export component AppWindow inherits Window {
                                     text: "Create slate file\u{2026}";
                                     primary: true;
                                     enabled: !root.send-busy && !root.send-note-too-long && root.send-amt-text != "";
+                                    // Where it goes is asked first, like a save
+                                    // dialog: the folder browser opens at the one
+                                    // used last, and "Save here" carries on to
+                                    // the confirm. Closing the browser cancels.
                                     clicked => {
                                         root.send-confirm-amount = root.send-amt-text;
                                         root.send-confirm-note = root.send-note-max > 0 ? root.send-note-text : "";
@@ -3953,10 +3969,9 @@ export component AppWindow inherits Window {
                                         root.send-result-path = "";
                                         root.send-confirm-is-stake = false;
                                         root.send-confirm-is-slate = true;
-                                        root.send-fee-text = "";
-                                        root.send-fee-pending = true;
-                                        root.send-confirm-open = true;
-                                        root.estimate-slate(root.send-amt-text);
+                                        root.slate-folder-then-confirm = true;
+                                        root.browse-folder-mode = true;
+                                        root.browse-open = true;
                                     }
                                 }
                             }
@@ -5099,6 +5114,12 @@ export component AppWindow inherits Window {
                                 wrap: word-wrap;
                             }
                         }
+                    }
+                    if root.send-confirm-is-slate && !root.send-busy: Text {
+                        text: "Saves to: " + root.slate-save-dir;
+                        color: #9a9a9a;
+                        font-size: 12px;
+                        wrap: word-wrap;
                     }
                     if !root.send-confirm-is-stake && root.send-confirm-note != "": Text {
                         text: "Note: " + root.send-confirm-note;
@@ -7231,10 +7252,27 @@ export component AppWindow inherits Window {
                                 root.browse-up();
                             }
                         }
+                        // Picking a folder: the one being shown is the answer.
+                        if root.browse-folder-mode: Button {
+                            text: "Save here";
+                            primary: true;
+                            clicked => {
+                                root.browse-choose-folder();
+                                if (root.slate-folder-then-confirm) {
+                                    root.slate-folder-then-confirm = false;
+                                    root.send-fee-text = "";
+                                    root.send-fee-pending = true;
+                                    root.send-confirm-open = true;
+                                    root.estimate-slate(root.send-confirm-amount);
+                                }
+                            }
+                        }
                         Button {
                             text: "Close";
                             clicked => {
                                 root.browse-open = false;
+                                root.browse-folder-mode = false;
+                                root.slate-folder-then-confirm = false;
                             }
                         }
                     }

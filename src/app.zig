@@ -825,6 +825,9 @@ const SendModal = struct {
         /// provide (format validation catches malformed addresses, not
         /// wrong-but-valid ones).
         confirm,
+        /// `slate` mode: choosing the folder the slate file is saved to (the
+        /// file picker, folders only), from the confirm step.
+        folder,
         /// The send RPC is in flight (outcome read from the Activity).
         working,
         /// Success (txid) or the daemon's own failure reason.
@@ -1516,6 +1519,9 @@ const Activity = struct {
     /// The note for the in-flight send (`Coin.walletSendNote`), empty for none.
     send_note_buf: [models.tx_note_max]u8 = undefined,
     send_note_len: usize = 0,
+    /// `send_is_slate`: the folder to save it in, copied in like the address.
+    slate_dir_buf: [1024]u8 = undefined,
+    slate_dir_len: usize = 0,
     /// True when the in-flight "send" is a stake (the Stake prompt) — routes
     /// the worker to `walletStake`, which needs no destination address.
     send_is_stake: bool = false,
@@ -2609,7 +2615,10 @@ const Activity = struct {
         if (self.send_is_cancel) return self.coin.walletCancelTx(a, try self.sendAuth(a), address);
         if (self.send_is_slate) {
             const sf = self.coin.slateFiles() orelse return error.Unsupported;
-            const dir = try conf.userFilesDir(a, self.home_dir);
+            const dir = if (self.slate_dir_len > 0)
+                self.slate_dir_buf[0..self.slate_dir_len]
+            else
+                try conf.userFilesDir(a, self.home_dir);
             return sf.send(a, try self.sendAuth(a), self.send_amount, self.send_note_buf[0..self.send_note_len], dir);
         }
 
@@ -4291,6 +4300,10 @@ pub const App = struct {
     sc_modal: ?StablecoinModal = null,
     /// The "open a slate file" prompt (`SlateModal`), for the coin it was opened on.
     slate_modal: ?SlateModal = null,
+    /// Where a slate file is saved: the folder chosen last (`conf.slateSaveDir`,
+    /// remembered in boxwallet.conf), read when a slate send starts.
+    slate_dir_buf: [1024]u8 = undefined,
+    slate_dir_len: usize = 0,
     /// A "New address" request from the stablecoin tab's `n` key, waiting to
     /// be staged onto the selected coin's `Activity` at the next poll spawn —
     /// the stablecoin twin of `pending_new_receive_address`.
@@ -7410,6 +7423,7 @@ pub const App = struct {
                 } else {
                     m.mode = .slate;
                     m.stage = .amount;
+                    self.loadSlateDir();
                     self.send_amount_input.focus();
                 },
                 else => {},
@@ -7479,10 +7493,32 @@ pub const App = struct {
                     'j' => m.sel = 1,
                     'y' => self.submitSend(),
                     'n' => self.closeSendModal(),
+                    // Where the slate goes: the file picker, folders only.
+                    'd' => if (m.mode == .slate) self.startSlateFolderPicker(),
                     else => {},
                 },
                 .enter => if (m.sel == 0) self.submitSend() else self.closeSendModal(),
                 else => {},
+            },
+            .folder => switch (k.key) {
+                .escape => {
+                    self.file_picker.blur();
+                    m.stage = .confirm;
+                },
+                .char => |c| if (c == 's') {
+                    // Save here: the folder the picker is showing.
+                    self.setSlateDir(self.file_picker.current_path.items);
+                    self.file_picker.blur();
+                    m.stage = .confirm;
+                } else {
+                    _ = self.file_picker.handleKey(self.io, self.environ_map, k) catch false;
+                    self.filterFoldersOnly();
+                },
+                else => {
+                    // Enter opens a folder (there are no files to pick here).
+                    _ = self.file_picker.handleKey(self.io, self.environ_map, k) catch false;
+                    self.filterFoldersOnly();
+                },
             },
             // No cancelling a send in flight — let it finish (or fail) and reap.
             // A quote is quick and read-only; Esc still just waits for it.
@@ -7635,6 +7671,8 @@ pub const App = struct {
 
         act.send_is_fee = fee_only;
         act.send_is_slate = m.mode == .slate;
+        act.slate_dir_len = self.slate_dir_len;
+        @memcpy(act.slate_dir_buf[0..self.slate_dir_len], self.slate_dir_buf[0..self.slate_dir_len]);
         act.slate_op = .none;
         act.coin = coin;
         act.home_dir = self.home_dir;
@@ -7657,6 +7695,56 @@ pub const App = struct {
             .cancel => "cancelling a send",
             .slate => "saving a slate file",
         } });
+    }
+
+    /// Where slate files go, from boxwallet.conf (or Downloads), unless already
+    /// loaded this session.
+    fn loadSlateDir(self: *App) void {
+        if (self.slate_dir_len > 0) return;
+        const dir = conf.slateSaveDir(self.allocator, self.install_root, self.home_dir) catch return;
+        defer self.allocator.free(dir);
+        self.storeSlateDir(dir);
+    }
+
+    fn storeSlateDir(self: *App, dir: []const u8) void {
+        if (dir.len > self.slate_dir_buf.len) return;
+        @memcpy(self.slate_dir_buf[0..dir.len], dir);
+        self.slate_dir_len = dir.len;
+    }
+
+    /// Use `dir` for slate files from now on, and remember it.
+    fn setSlateDir(self: *App, dir: []const u8) void {
+        self.storeSlateDir(dir);
+        conf.setSlateSaveDir(self.allocator, self.install_root, dir) catch
+            self.logf("couldn't remember the slate folder for next time", .{});
+    }
+
+    /// The file picker, at the current slate folder, showing folders only.
+    fn startSlateFolderPicker(self: *App) void {
+        const m = &self.send_modal.?;
+        self.file_picker.focus();
+        const start = self.slate_dir_buf[0..self.slate_dir_len];
+        if (start.len == 0 or (if (self.file_picker.navigate(self.io, start)) |_| false else |_| true)) {
+            self.file_picker.navigateHome(self.io, self.environ_map) catch {};
+        }
+        self.filterFoldersOnly();
+        m.stage = .folder;
+    }
+
+    /// Prune the picker's listing to folders (and the way up): choosing where to
+    /// save, there's no file to pick.
+    fn filterFoldersOnly(self: *App) void {
+        const fp = &self.file_picker;
+        var kept: usize = 0;
+        for (fp.entries.items) |e| {
+            if (e.entry_type == .parent or e.entry_type == .directory) {
+                fp.entries.items[kept] = e;
+                kept += 1;
+            } else fp.allocator.free(e.name);
+        }
+        fp.entries.shrinkRetainingCapacity(kept);
+        if (fp.cursor >= kept) fp.cursor = kept -| 1;
+        if (fp.y_offset > fp.cursor) fp.y_offset = fp.cursor;
     }
 
     /// Open the slate prompt at its file picker: to receive a payment file
@@ -11346,6 +11434,20 @@ pub const App = struct {
         const coin = self.coinAt(m.coin_idx) orelse return error.NoCoin;
         const act = &self.activities[m.coin_idx];
         const brand = zz.Color.hex(coin.coinColor());
+
+        // Choosing the slate's folder: the picker itself, unboxed, like the
+        // other file pickers.
+        if (m.stage == .folder) {
+            var fout: std.Io.Writer.Allocating = .init(a);
+            errdefer fout.deinit();
+            const heading_txt = "Choose where to save the slate file";
+            const heading = (zz.Style{}).bold(true).fg(brand).render(a, heading_txt) catch heading_txt;
+            try fout.writer.print("{s}\n\n", .{heading});
+            try fout.writer.writeAll(try self.file_picker.view(a));
+            const fhint = (zz.Style{}).dim(true).render(a, "enter: open folder   backspace: up   s: save here   esc: back") catch "";
+            try fout.writer.print("\n{s}", .{fhint});
+            return fout.toOwnedSlice();
+        }
         const inner_w = modal_inner_w;
         const vbar = (zz.Style{}).fg(brand).render(a, "│") catch "│";
 
@@ -11536,6 +11638,11 @@ pub const App = struct {
                     });
                 };
                 try wrapIntoRows(a, &out.writer, vbar, inner_w, detail, (zz.Style{}));
+                // Where the slate goes — changeable before it's saved (d).
+                if (m.mode == .slate) {
+                    try modalRow(&out.writer, vbar, inner_w, "", 0);
+                    try wrapIntoRows(a, &out.writer, vbar, inner_w, try std.fmt.allocPrint(a, "Saves to: {s}", .{self.slate_dir_buf[0..self.slate_dir_len]}), (zz.Style{}).dim(true));
+                }
                 // The note as it will go — cleaned the way the send cleans it.
                 if ((m.mode == .send or m.mode == .slate) and coin.sendNoteMax() > 0) {
                     var nbuf: [models.tx_note_max]u8 = undefined;
@@ -11564,6 +11671,7 @@ pub const App = struct {
                     try modalRow(&out.writer, vbar, inner_w, text, zz.width(plain));
                 }
             },
+            .folder => unreachable,
             .working => {
                 const busy = if (staking) "Staking…" else if (cancelling) "Cancelling…" else if (m.mode == .slate) "Saving the slate…" else "Sending…";
                 try modalRow(&out.writer, vbar, inner_w, busy, zz.width(busy));
@@ -11603,7 +11711,8 @@ pub const App = struct {
             .address => "enter: next   esc: cancel",
             .amount => "enter: next   esc: cancel",
             .note => "enter: next (or skip)   esc: cancel",
-            .confirm => "enter: select   esc: cancel",
+            .confirm => if (m.mode == .slate) "enter: select   d: change folder   esc: cancel" else "enter: select   esc: cancel",
+            .folder => unreachable,
             .working, .estimating => "please wait…",
             .result => if (m.mode == .slate and m.ok) "c: copy the path   any other key: close" else "press any key to close",
         };
@@ -16631,4 +16740,64 @@ test "picking the reply to a send shows only reply files, and folders" {
     try std.testing.expect(!shown(&app.file_picker, "holiday.jpg"));
     try std.testing.expect(shown(&app.file_picker, "older"));
     app.slate_modal = null;
+}
+
+test "a slate send shows where it saves, and d chooses another folder (folders only, remembered)" {
+    if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
+    const allocator = std.testing.allocator;
+    var threaded: std.Io.Threaded = .init(allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    var env = std.process.Environ.Map.init(allocator);
+    defer env.deinit();
+    try env.put("HOME", "/home/tester");
+    var ctx = zz.Context.init(allocator, allocator, io, &env);
+    var app: App = undefined;
+    app.hide_balances = false;
+    _ = app.init(&ctx);
+    defer app.deinit();
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.createDirPath(io, "root");
+    try tmp.dir.createDirPath(io, "payments");
+    try tmp.dir.writeFile(io, .{ .sub_path = "payments/old.tx", .data = "x" });
+    const base = try tmp.dir.realPathFileAlloc(io, ".", allocator);
+    defer allocator.free(base);
+    const root = try std.fs.path.join(allocator, &.{ base, "root" });
+    defer allocator.free(root);
+    const payments = try std.fs.path.join(allocator, &.{ base, "payments" });
+    defer allocator.free(payments);
+    const saved_root = app.install_root;
+    app.install_root = root; // boxwallet.conf goes here, not anywhere real
+    defer app.install_root = saved_root;
+
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    app.storeSlateDir(base);
+    try app.send_amount_input.setValue("0.01");
+    app.send_modal = .{ .coin_idx = try epicSlot(&app), .mode = .slate, .stage = .confirm, .fee = 0.008 };
+    var box = try app.renderSendModal(a);
+    try std.testing.expect(std.mem.indexOf(u8, box, "Saves to:") != null);
+    try std.testing.expect(std.mem.indexOf(u8, box, "d: change folder") != null);
+
+    // d: the picker, folders only.
+    app.sendModalKey(zz.KeyEvent.char('d'));
+    try std.testing.expectEqual(SendModal.Stage.folder, app.send_modal.?.stage);
+    for (app.file_picker.entries.items) |e| try std.testing.expect(e.entry_type == .directory or e.entry_type == .parent);
+
+    // Into "payments": its file isn't listed either; s saves here and remembers.
+    try app.file_picker.navigate(io, payments);
+    app.filterFoldersOnly();
+    for (app.file_picker.entries.items) |e| try std.testing.expect(!std.mem.eql(u8, e.name, "old.tx"));
+    app.sendModalKey(zz.KeyEvent.char('s'));
+    try std.testing.expectEqual(SendModal.Stage.confirm, app.send_modal.?.stage);
+    try std.testing.expectEqualStrings(payments, app.slate_dir_buf[0..app.slate_dir_len]);
+    const remembered = try conf.slateSaveDir(allocator, root, "/nonexistent-home");
+    defer allocator.free(remembered);
+    try std.testing.expectEqualStrings(payments, remembered);
+    box = try app.renderSendModal(a);
+    try std.testing.expect(std.mem.indexOf(u8, box, "payments") != null);
 }
