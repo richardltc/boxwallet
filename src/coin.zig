@@ -1098,6 +1098,12 @@ pub const Coin = struct {
         /// (`getnewaddress`-style), for an explicit user-requested rotation.
         /// Non-null marks a coin whose Receive tab shows a live address;
         /// `supportsReceiveAddress` keys off this being non-null.
+        /// Set when the coin's receive address never changes — one per wallet —
+        /// so there's no "new address" to offer (`force_new` returns the same
+        /// one). The text, in the coin's own words, is shown where the option
+        /// would be, so its absence isn't a mystery. Empty (the default): the
+        /// Receive tab offers a new address.
+        receive_address_fixed_note: []const u8 = "",
         wallet_receive_address: ?*const fn (
             ptr: *anyopaque,
             allocator: std.mem.Allocator,
@@ -1772,6 +1778,17 @@ pub const Coin = struct {
     /// Receive tab). True iff the coin wires `wallet_receive_address`.
     pub fn supportsReceiveAddress(self: Coin) bool {
         return self.vtable.wallet_receive_address != null;
+    }
+
+    /// Whether the Receive tab offers "new address": the coin has a receive
+    /// address, and it isn't one fixed for the wallet's life.
+    pub fn canNewReceiveAddress(self: Coin) bool {
+        return self.supportsReceiveAddress() and self.vtable.receive_address_fixed_note.len == 0;
+    }
+
+    /// Why a coin offers no new address (`receive_address_fixed_note`), or empty.
+    pub fn receiveAddressFixedNote(self: Coin) []const u8 {
+        return self.vtable.receive_address_fixed_note;
     }
 
     /// Read the wallet's receive address. `force_new` true mints a brand-new

@@ -1020,6 +1020,12 @@ static void apply_coin_metadata(const AppWindow *ui, bw_ctx *ctx, int idx)
     // A note typed for one coin mustn't ride along with another coin's send.
     ui->set_send_note_max(static_cast<int>(bw_coin_send_note_max(idx)));
     ui->set_has_slate_files(bw_coin_supports_slate_files(idx) != 0);
+    ui->set_can_new_address(bw_coin_can_new_receive_address(idx) != 0);
+    {
+        char note[160];
+        size_t nn = bw_coin_receive_address_note(idx, note, sizeof note);
+        ui->set_receive_address_note(ss(std::string(note, nn)));
+    }
     // Each coin starts on the ordinary method, with nothing typed for another.
     ui->set_send_method(0);
     ui->set_send_addr_text("");

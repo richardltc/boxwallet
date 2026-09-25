@@ -231,6 +231,11 @@ int     bw_coin_supports_balance(size_t idx);
 int     bw_coin_supports_transactions(size_t idx);
 int     bw_coin_supports_receive_address(size_t idx);
 int     bw_coin_supports_send(size_t idx);
+/* Whether the Receive tab offers "new address": 0 for a coin whose address is
+ * fixed for the wallet's life (Epic, Zano). bw_coin_receive_address_note then
+ * gives the line to show in its place (returns its length; 0 = none). */
+int     bw_coin_can_new_receive_address(size_t idx);
+size_t  bw_coin_receive_address_note(size_t idx, char *buf, size_t cap);
 /* The longest note bw_wallet_send can carry, in bytes; 0 = sends carry none
  * (show no note field). Epic's is its slate message: it travels with the
  * payment to the receiver's wallet but is not written to the chain. */

@@ -1758,6 +1758,10 @@ export component AppWindow inherits Window {
     // opening one — someone's payment, or the reply to yours — is its own
     // dialog below, driven by main.cpp through the core's inspect/process.
     in property <bool> has-slate-files: false;
+    // False for a coin whose receive address is fixed for the wallet's life
+    // (Epic, Zano): no "New address", and `receive-address-note` says why.
+    in property <bool> can-new-address: true;
+    in property <string> receive-address-note: "";
     in-out property <bool> send-confirm-is-slate: false;
     // 0 to an Epicbox address, 1 as a slate file. main.cpp resets it (and the
     // address) when the coin changes.
@@ -3773,10 +3777,18 @@ export component AppWindow inherits Window {
                                 y: (parent.height - self.height) / 2;
                             }
                         }
+                        // Where "New address" would be, for a coin that has only
+                        // the one — so its absence explains itself.
+                        if root.receive-address != "" && root.receive-address-note != "": Text {
+                            text: root.receive-address-note;
+                            color: #8a8a8a;
+                            font-size: 12px;
+                            wrap: word-wrap;
+                        }
                         if root.receive-address != "": HorizontalLayout {
                             alignment: start;
                             spacing: 8px;
-                            Button {
+                            if root.can-new-address: Button {
                                 text: "New address";
                                 clicked => { root.new-address(); }
                             }

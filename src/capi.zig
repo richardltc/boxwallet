@@ -763,6 +763,21 @@ export fn bw_coin_supports_receive_address(idx: usize) c_int {
     return if (c.supportsReceiveAddress()) 1 else 0;
 }
 
+/// Whether the Receive tab offers "new address" — false for a coin whose
+/// address is fixed for the wallet's life (Epic, Zano).
+export fn bw_coin_can_new_receive_address(idx: usize) c_int {
+    const c = coinByIndex(idx) orelse return 0;
+    return if (c.canNewReceiveAddress()) 1 else 0;
+}
+
+/// Why a coin offers no new address, to show in the button's place. Returns
+/// the length written; 0 when it offers one.
+export fn bw_coin_receive_address_note(idx: usize, buf: ?[*]u8, cap: usize) usize {
+    const c = coinByIndex(idx) orelse return 0;
+    const b = buf orelse return 0;
+    return copyOut(b[0..cap], c.receiveAddressFixedNote());
+}
+
 /// Whether this coin can send (drives the Send tab).
 export fn bw_coin_supports_send(idx: usize) c_int {
     const c = coinByIndex(idx) orelse return 0;
@@ -5728,6 +5743,9 @@ test "bw_coin_ext_wallet's flags agree with the vtable for every coin" {
         var lb: [96]u8 = undefined;
         try std.testing.expectEqual(coin.sendOkLabel().len, bw_coin_send_ok_label(i, &lb, lb.len));
         try std.testing.expectEqual(coin.sendNoteMax(), bw_coin_send_note_max(i));
+        try std.testing.expectEqual(coin.canNewReceiveAddress(), bw_coin_can_new_receive_address(i) != 0);
+        var rn: [160]u8 = undefined;
+        try std.testing.expectEqual(coin.receiveAddressFixedNote().len, bw_coin_receive_address_note(i, &rn, rn.len));
         try std.testing.expectEqual(coin.supportsSlateFiles(), bw_coin_supports_slate_files(i) != 0);
         // A listener coin names it; no other coin does.
         var nm: [64]u8 = undefined;
