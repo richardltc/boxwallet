@@ -207,6 +207,21 @@ pub fn build(b: *std.Build) void {
 /// single file.
 ///
 /// Additive: this touches none of the TUI `exe`/`test`/`release` steps.
+/// Declared peak memory for the heavy compile steps (`Step.max_rss`). The build
+/// runner won't run steps together whose declared totals exceed the memory it
+/// may use (`--maxrss`, default all of it), so `release-all` — four GUI and
+/// five TUI targets at once — queues them instead of starting everything and
+/// having the kernel kill clang ("clang terminated with signal KILL").
+///
+/// Measured with `--summary all`, ReleaseSafe on x86_64 Linux (2026-09-25):
+/// the GUI exe (main.cpp against Slint's headers) ~2 GB, the TUI ~1 GB, the core
+/// library ~0.7 GB. The summary rounds, and a step that goes *over* its figure
+/// is reported as failed, so each has room to spare; declaring too much only
+/// costs parallelism. Re-measure if one of these starts failing that check.
+const gui_max_rss: usize = 4 << 30;
+const tui_max_rss: usize = 2 << 30;
+const core_max_rss: usize = 1536 << 20;
+
 fn addGuiStep(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.builtin.OptimizeMode) void {
     // `zig build gui`: dev build. The rpath points at the package's lib dir so it
     // runs in-place from the repo.
@@ -523,6 +538,7 @@ fn buildGuiExe(
     const core = b.addLibrary(.{
         .name = "boxwallet-core",
         .linkage = .static,
+        .max_rss = core_max_rss,
         .root_module = b.createModule(.{
             .root_source_file = b.path("src/capi.zig"),
             .target = target,
@@ -603,7 +619,7 @@ fn buildGuiExe(
         // to sit beside the exe, which is the first place the loader looks. What
         // that costs the self-updater — no versioned pairing, so a staged
         // `--selftest` instead — is in `src/update.zig`'s `runtime_flat`.
-        const gui = b.addExecutable(.{ .name = "boxwallet-gui", .root_module = exe_mod });
+        const gui = b.addExecutable(.{ .name = "boxwallet-gui", .root_module = exe_mod, .max_rss = gui_max_rss });
 
         // Without this the PE is marked console-subsystem and Windows opens a
         // console window behind the GUI on every launch. `main` still works as
@@ -626,7 +642,7 @@ fn buildGuiExe(
         .origin => exe_mod.addRPathSpecial(b.fmt("{s}/{s}", .{ originToken(target.result.os.tag), slint_dir })),
     }
 
-    return b.addExecutable(.{ .name = "boxwallet-gui", .root_module = exe_mod });
+    return b.addExecutable(.{ .name = "boxwallet-gui", .root_module = exe_mod, .max_rss = gui_max_rss });
 }
 
 /// `zig build gui-release`: a distributable bundle per target — the GUI exe
@@ -910,6 +926,7 @@ fn addReleaseStep(b: *std.Build) *std.Build.Step {
         const resolved = b.resolveTargetQuery(t.query);
         const exe = b.addExecutable(.{
             .name = "boxwallet-tui",
+            .max_rss = tui_max_rss,
             .root_module = b.createModule(.{
                 .root_source_file = b.path("src/main.zig"),
                 .target = resolved,
