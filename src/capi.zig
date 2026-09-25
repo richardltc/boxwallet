@@ -2270,11 +2270,17 @@ pub const BwWalletTx = extern struct {
     /// and already made safe to show. `note_len` 0: none.
     note: [models.tx_note_max]u8,
     note_len: usize,
+    /// The other side's address (`models.WalletTx.address`): who a send went
+    /// to, who a receive came from. Length-counted like `txid`; 0 = unknown.
+    address: [models.tx_address_max]u8,
+    address_len: usize,
 };
 
 comptime {
-    // `include/boxwallet.h` spells the note buffer out as `char note[128]`.
+    // `include/boxwallet.h` spells these buffers out as `char note[128]` and
+    // `char address[128]`.
     std.debug.assert(models.tx_note_max == 128);
+    std.debug.assert(models.tx_address_max == 128);
 }
 
 /// What the Status column says for a `BwWalletTx.stage` — the same words the
@@ -2374,9 +2380,12 @@ export fn bw_wallet_transactions(ctx: ?*Ctx, idx: usize, out: ?*BwWalletTx, cap:
             .cancellable = @intFromBool(t.cancellable),
             .note = undefined,
             .note_len = t.note_len,
+            .address = undefined,
+            .address_len = t.address_len,
         };
         @memcpy(d.txid[0..t.txid_len], t.txid());
         @memcpy(d.note[0..t.note_len], t.note());
+        @memcpy(d.address[0..t.address_len], t.address());
     }
     return n;
 }

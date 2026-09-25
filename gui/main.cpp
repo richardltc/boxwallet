@@ -834,6 +834,7 @@ make_tx_rows(const std::vector<BwWalletTx> &txs, int decimals, bool has_stake)
         // Explicitly length-counted: the core doesn't NUL-terminate a txid.
         r.txid = ss(std::string(t.txid, t.txid_len));
         r.note = ss(std::string(t.note, t.note_len));
+        r.address = ss(std::string(t.address, t.address_len));
         r.incoming = incoming;
         rows.push_back(std::move(r));
     }
