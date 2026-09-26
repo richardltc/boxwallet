@@ -1591,6 +1591,11 @@ export component AppWindow inherits Window {
     // two front-ends say the same thing.
     in-out property <string> wallet-progress-text: "";
     in-out property <string> wallet-progress-note: "";
+    // How far a seed restore's chain scan has got (bw_ext_wallet_restore_progress),
+    // 0..1, or < 0 while it isn't reporting one — then no bar is drawn at all.
+    // The label over it is the core's (bw_setup_op_scan_label).
+    in-out property <float> wallet-scan-frac: -1;
+    in-out property <string> wallet-scan-label: "";
     // BW_EW_LAUNCH_WITH_PW, decoded in C++ because Slint has no bitwise
     // operators and this one gates a whole flow rather than a single button.
     // These wallets (Zano, Epic) spawn their process per-open with the password
@@ -5684,6 +5689,32 @@ export component AppWindow inherits Window {
                             color: #9a9a9a;
                             font-size: 13px;
                             wrap: word-wrap;
+                        }
+                        // The restore's chain scan, once it reports a percentage.
+                        if root.wallet-scan-frac >= 0: VerticalLayout {
+                            spacing: 4px;
+                            Text {
+                                text: root.wallet-scan-label + "  " + Math.round(Math.min(1.0, root.wallet-scan-frac) * 100) + "%";
+                                color: #e6e6e6;
+                                font-size: 13px;
+                                wrap: word-wrap;
+                            }
+                            // Named rather than reached through `parent`, which
+                            // inside a conditional element is the layout.
+                            scan-track := Rectangle {
+                                height: 6px;
+                                background: #2a2a2a;
+                                border-radius: 3px;
+                                clip: true;
+                                Rectangle {
+                                    x: 0;
+                                    width: scan-track.width * Math.max(0.0, Math.min(1.0, root.wallet-scan-frac));
+                                    height: scan-track.height;
+                                    background: root.coin-color;
+                                    border-radius: 3px;
+                                    animate width { duration: 300ms; }
+                                }
+                            }
                         }
                         // A launch-with-password wallet starts its own server for
                         // every op, and a restore scans the chain for the seed's

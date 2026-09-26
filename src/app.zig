@@ -712,6 +712,10 @@ const Modal = struct {
     pw_mismatch: bool = false,
     /// The external-wallet op in flight (chosen at the setup menu, or `.open`).
     setup_op: WalletSetupOp = .create,
+    /// How far a running seed restore's chain scan has got, 0–100, for a coin
+    /// that reports it (`ExternalWallet.restore_progress`); null until it does.
+    /// Refreshed by `onTick` while the modal is `working`.
+    restore_pct: ?u8 = null,
     /// The mnemonic to display at `setup_seed_show`, copied from the worker's
     /// result when a create succeeds.
     seed: models.Seed = .{},
@@ -4186,6 +4190,9 @@ pub const App = struct {
     /// Monotonic timestamp (ns) of the last memory sample; the first sample is
     /// taken in `init`, so this paces the refreshes thereafter.
     last_mem_ns: i64 = 0,
+    /// Monotonic timestamp (ns) of the last read of a running seed restore's
+    /// scan progress (`Modal.restore_pct`), pacing it to twice a second.
+    last_restore_pct_ns: i64 = 0,
     /// The program's `std.Io` (captured from `ctx` in `init`). Used to read the
     /// wall clock for log timestamps; the backing implementation outlives the
     /// model, so holding the lightweight vtable handle is safe.
@@ -5290,6 +5297,23 @@ pub const App = struct {
         if (t.timestamp - self.last_mem_ns >= 3 * std.time.ns_per_s) {
             self.last_mem_ns = t.timestamp;
             self.refreshMemory();
+        }
+
+        // A seed restore that scans the chain (Epic) blocks for about a minute;
+        // read how far it has got so the modal shows a bar instead of a bare
+        // "please wait". A small file read with no wallet lock, so it's safe
+        // while the restore worker holds the wallet.
+        if (self.modal) |*m| {
+            if (m.stage == .working and m.setup_op == .restore_seed and
+                t.timestamp - self.last_restore_pct_ns >= 500 * std.time.ns_per_ms)
+            {
+                self.last_restore_pct_ns = t.timestamp;
+                if (self.coinAt(m.coin_idx)) |coin| {
+                    if (coin.externalWallet()) |ew| {
+                        if (ew.restore_progress) |progressFn| m.restore_pct = progressFn(self.allocator, self.io, self.home_dir);
+                    }
+                }
+            }
         }
 
         // Refresh every coin's installed/update state up front and on a slow ~5s
@@ -9042,6 +9066,7 @@ pub const App = struct {
             m.setMsg(false, "couldn't start the wallet worker");
             return;
         };
+        m.restore_pct = null;
         m.stage = .working;
         self.logf("{s}: {s}…", .{ coin.coinName(), m.setup_op.verb() });
     }
@@ -11182,6 +11207,14 @@ pub const App = struct {
                 // moment.
                 const busy = m.setup_op.progress();
                 try modalRow(&out.writer, vbar, inner_w, busy, zz.width(busy));
+                // Once the restore's chain scan reports a percentage, show it.
+                if (m.setup_op == .restore_seed) if (m.restore_pct) |pct| {
+                    try modalRow(&out.writer, vbar, inner_w, "", 0);
+                    const step = m.setup_op.scanLabel();
+                    try modalRow(&out.writer, vbar, inner_w, step, zz.width(step));
+                    const scanbar = try bar(a, pct, 100);
+                    try modalRow(&out.writer, vbar, inner_w, scanbar, zz.width(scanbar));
+                };
                 const note = if (coin.walletLaunchesWithPassword()) m.setup_op.launchNote() else "";
                 if (note.len > 0) {
                     try modalRow(&out.writer, vbar, inner_w, "", 0);

@@ -213,6 +213,9 @@ int     bw_coin_ext_wallet(size_t idx);
  * wallet — why it takes a moment. The TUI's words. Return lengths; 0 = none. */
 size_t  bw_setup_op_progress(int op, char *buf, size_t cap);
 size_t  bw_setup_op_launch_note(int op, char *buf, size_t cap);
+/* The label over the progress bar while the op's chain scan reports a
+ * percentage (bw_ext_wallet_restore_progress); 0 for ops that don't scan. */
+size_t  bw_setup_op_scan_label(int op, char *buf, size_t cap);
 
 /* What a BW_EW_HAS_LISTENER coin calls its listener on screen ("Epicbox
  * listener"). Returns its length; 0 for a coin without one. */
@@ -1170,6 +1173,10 @@ int     bw_ext_wallet_restore_seed(bw_ctx *ctx, size_t idx, const uint8_t *pw, s
 int     bw_ext_wallet_restore_file(bw_ctx *ctx, size_t idx, const uint8_t *pw, size_t pw_len,
                                    const char *src_path);
 int     bw_ext_wallet_open(bw_ctx *ctx, size_t idx, const uint8_t *pw, size_t pw_len);
+/* How far a running bw_ext_wallet_restore_seed's chain scan has got, 0-100, or
+ * -1 when nothing is scanning or the coin doesn't report it. Takes no wallet
+ * lock, so poll it from another thread while the restore call blocks. */
+int     bw_ext_wallet_restore_progress(bw_ctx *ctx, size_t idx);
 int     bw_ext_wallet_lock(bw_ctx *ctx, size_t idx);   /* BW_EW_EXPLICIT_LOCK coins only */
 
 /* Backups (BW_EW_SHOW_SEED / BW_EW_FILE_BACKUP). Neither opens, closes or
