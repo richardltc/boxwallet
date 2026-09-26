@@ -61,7 +61,7 @@ pub const ReddCoin = struct {
     pub const home_dir_mac: ?[]const u8 = "Reddcoin";
     pub const rpc_default_username = "reddcoinrpc";
     pub const rpc_default_port = "45443";
-    pub const core_version = "4.22.9.4";
+    pub const core_version = "4.22.9.5";
 
     // Binary names. Windows appends `.exe`; Linux/macOS use the bare names.
     const exe_suffix = if (builtin.os.tag == .windows) ".exe" else "";
@@ -181,7 +181,7 @@ pub const ReddCoin = struct {
 
         // `getnetworkinfo`'s numeric CLIENT_VERSION → dotted string, owned by
         // `allocator` so it outlives `net`'s deinit. 4.22.9.4 restored the standard
-        // bitcoin encoding (4_220_904 → "4.22.9.4" == core_version), but 4.22.9 and
+        // bitcoin encoding (4_220_905 → "4.22.9.5" == core_version), but 4.22.9 and
         // earlier packed the version without the major's millions place (42209 →
         // "0.4.22.9"), so a daemon still on one of those decodes with a spurious
         // leading "0.". Strip it there so the Running line and the on-disk version
@@ -903,11 +903,11 @@ test "the `staking` RPC carries no staking flag — hence getstakinginfo" {
 test "daemon CLIENT_VERSION drops ReddCoin's legacy leading-0 major" {
     const allocator = std.testing.allocator;
 
-    // 4.22.9.4 encodes CLIENT_VERSION the standard bitcoin way (4_220_904), which
-    // decodes straight to the branded, bundled version — the strip is a no-op.
-    const current = try models.clientVersionString(allocator, 4_220_904);
+    // 4.22.9.4 onward encodes CLIENT_VERSION the standard bitcoin way (4_220_905),
+    // which decodes straight to the branded, bundled version — the strip is a no-op.
+    const current = try models.clientVersionString(allocator, 4_220_905);
     defer allocator.free(current);
-    try std.testing.expectEqualStrings("4.22.9.4", current);
+    try std.testing.expectEqualStrings("4.22.9.5", current);
     try std.testing.expectEqualStrings(
         ReddCoin.core_version,
         if (std.mem.startsWith(u8, current, "0.")) current[2..] else current,
