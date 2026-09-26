@@ -150,6 +150,19 @@ pub const Coin = struct {
             seed: []const u8,
             detail: *WalletErrSink,
         ) anyerror!void,
+        /// Optional: how far an in-flight `restore_seed` has got, 0–100, for a
+        /// coin whose restore blocks on a chain scan (Epic runs `epic-wallet scan`
+        /// inside the restore, about a minute on a synced node). Null when nothing
+        /// is scanning or the percentage isn't known yet. Polled by the front-ends
+        /// *while* `restore_seed` runs — which holds the wallet — so it must take no
+        /// wallet lock and make no wallet RPC: read what the running scan reports,
+        /// with a small fixed read. Distinct from `rescan_progress`, which reports
+        /// on an already-open wallet after the restore has returned.
+        restore_progress: ?*const fn (
+            allocator: std.mem.Allocator,
+            io: std.Io,
+            home_dir: []const u8,
+        ) ?u8 = null,
         /// Import an existing wallet file (`src_path`, browsed to) into the managed
         /// wallet dir and open it with `password`. Uses `home_dir` to resolve the
         /// destination; may also need the wallet process (via `wallet_auth`) to open.

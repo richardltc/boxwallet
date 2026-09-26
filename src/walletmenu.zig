@@ -370,6 +370,16 @@ pub const SetupOp = enum(u8) {
         };
     }
 
+    /// The label over the progress bar while this op's chain scan reports how far
+    /// it has got (`ExternalWallet.restore_progress`); empty for ops that don't
+    /// scan.
+    pub fn scanLabel(self: SetupOp) []const u8 {
+        return switch (self) {
+            .restore_seed => "Scanning the chain for your funds…",
+            .create, .restore_file, .open, .lock, .show_seed, .backup_file => "",
+        };
+    }
+
     /// Whether a successful run leaves the wallet open — the ops that set a
     /// wallet up or unlock it. `lock` closes it; `show_seed` and `backup_file`
     /// act on the wallet as it is and change neither whether it exists nor

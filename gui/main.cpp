@@ -3369,6 +3369,9 @@ int main(int argc, char **argv)
             size_t nn = bw_setup_op_launch_note(shown, nb, sizeof nb);
             (*h)->set_wallet_progress_text(ss(std::string(pb, pn)));
             (*h)->set_wallet_progress_note(ss(std::string(nb, nn)));
+            size_t sn = bw_setup_op_scan_label(shown, nb, sizeof nb);
+            (*h)->set_wallet_scan_label(ss(std::string(nb, sn)));
+            (*h)->set_wallet_scan_frac(-1); // no bar until the scan reports
         }
 
         std::thread([weak, ctx, coin, op, wake_poll, finish_wallet_op,
@@ -3379,8 +3382,35 @@ int main(int argc, char **argv)
             int rc = -1;
             switch (op) {
             case 0: rc = bw_ext_wallet_create(ctx, c, pw_bytes.data(), pw_bytes.size()); break;
-            case 1: rc = bw_ext_wallet_restore_seed(ctx, c, pw_bytes.data(), pw_bytes.size(),
-                                                    seed_bytes.data(), seed_bytes.size()); break;
+            case 1: {
+                // A restore can block on a chain scan (Epic: about a minute). The
+                // core reports how far it has got without taking the wallet lock
+                // this call holds, so poll it alongside and feed the modal's bar.
+                std::mutex scan_mtx;
+                std::condition_variable scan_cv;
+                bool restored = false;
+                std::thread poller([&]() {
+                    std::unique_lock<std::mutex> lk(scan_mtx);
+                    while (!scan_cv.wait_for(lk, std::chrono::milliseconds(500), [&] { return restored; })) {
+                        int pct = bw_ext_wallet_restore_progress(ctx, c);
+                        if (pct < 0)
+                            continue;
+                        post_to_ui([weak, pct]() {
+                            if (auto h = weak.lock())
+                                (*h)->set_wallet_scan_frac(static_cast<float>(pct) / 100.0f);
+                        });
+                    }
+                });
+                rc = bw_ext_wallet_restore_seed(ctx, c, pw_bytes.data(), pw_bytes.size(),
+                                                seed_bytes.data(), seed_bytes.size());
+                {
+                    std::lock_guard<std::mutex> lk(scan_mtx);
+                    restored = true;
+                }
+                scan_cv.notify_one();
+                poller.join();
+                break;
+            }
             case 2: rc = bw_ext_wallet_restore_file(ctx, c, pw_bytes.data(), pw_bytes.size(),
                                                     path.c_str()); break;
             case 5: rc = bw_ext_wallet_show_seed(ctx, c, pw_bytes.data(), pw_bytes.size()); break;

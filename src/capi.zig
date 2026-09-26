@@ -1837,6 +1837,14 @@ export fn bw_setup_op_launch_note(op: c_int, buf: ?[*]u8, cap: usize) usize {
     return copyOut(b[0..cap], o.launchNote());
 }
 
+/// The label over the progress bar while an op's chain scan reports progress
+/// (see bw_ext_wallet_restore_progress). 0 for ops that don't scan.
+export fn bw_setup_op_scan_label(op: c_int, buf: ?[*]u8, cap: usize) usize {
+    const b = buf orelse return 0;
+    const o = std.enums.fromInt(WalletOp, op) orelse return 0;
+    return copyOut(b[0..cap], o.scanLabel());
+}
+
 /// Upper bound on a wallet password, sizing the bounded buffer we copy the
 /// caller's secret into. Comfortably past any sane passphrase while keeping the
 /// secret in a small fixed buffer we can wipe (memory constraint). Matches the
@@ -2220,6 +2228,23 @@ export fn bw_ext_wallet_balance(ctx: ?*Ctx, idx: usize, out: ?*BwWalletBalance) 
     const coin = coinByIndex(idx) orelse return -1;
     if (coin.externalWallet() == null) return -1;
     return bw_wallet_balance(ctx, idx, out);
+}
+
+/// How far a running bw_ext_wallet_restore_seed's chain scan has got, 0–100, or
+/// -1 when nothing is scanning, the percentage isn't known yet, or the coin
+/// doesn't report one. Meant to be polled from another thread *while* the
+/// restore runs, so unlike every other wallet export it takes no wallet lock:
+/// the restore holds that for the whole scan.
+export fn bw_ext_wallet_restore_progress(ctx: ?*Ctx, idx: usize) c_int {
+    const c = ctx orelse return -1;
+    if (idx >= coin_count) return -1;
+    const coin = coinByIndex(idx) orelse return -1;
+    const ew = coin.externalWallet() orelse return -1;
+    const progressFn = ew.restore_progress orelse return -1;
+    var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+    defer arena.deinit();
+    const pct = progressFn(arena.allocator(), sharedIo(), c.home_dir) orelse return -1;
+    return pct;
 }
 
 /// Whether the open wallet is still scanning the chain for its history: 1 with
@@ -5822,6 +5847,9 @@ test "bw_setup_op_progress gives the TUI's in-flight words by op number" {
     try std.testing.expectEqual(@as(usize, 0), bw_setup_op_progress(99, &buf, buf.len));
     try std.testing.expect(bw_setup_op_launch_note(3, &buf, buf.len) > 0);
     try std.testing.expectEqual(@as(usize, 0), bw_setup_op_launch_note(4, &buf, buf.len));
+    const sn = bw_setup_op_scan_label(1, &buf, buf.len);
+    try std.testing.expectEqualStrings(walletmenu.SetupOp.restore_seed.scanLabel(), buf[0..sn]);
+    try std.testing.expectEqual(@as(usize, 0), bw_setup_op_scan_label(3, &buf, buf.len));
 }
 
 test "bw_tx_stage_text gives the TUI's words for each stage, nothing for none" {

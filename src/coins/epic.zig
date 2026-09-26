@@ -229,6 +229,11 @@ pub const Epic = struct {
     // (a regular file, not a pipe — see `runInitRecover`). Holds the seed only
     // momentarily: overwritten + deleted on every path.
     const recover_phrase_file = ".boxwallet-recover.tmp";
+    // Scratch file `runCli` sends a wallet command's reporting stream to, in the
+    // top dir. Truncated at the start of each command and deleted at its end, so
+    // while a restore's `scan` runs it holds that scan's output and nothing older
+    // — which is what `restoreProgress` reads its percentage from.
+    const cli_capture_file = ".boxwallet-cli.out";
     // The node's own foreign-API secret (it generates this on first run). The wallet
     // authenticates to the node with it — `node_api_secret_path` in the wallet config.
     const node_foreign_secret_file = ".foreign_api_secret";
@@ -2325,11 +2330,10 @@ pub const Epic = struct {
         prompts: u8,
         tail: []u8,
     ) !CliRun {
-        const cap_name = ".boxwallet-cli.out";
-        var cap = try dir.createFile(io, cap_name, .{ .read = true, .truncate = true });
+        var cap = try dir.createFile(io, cli_capture_file, .{ .read = true, .truncate = true });
         defer {
             cap.close(io);
-            dir.deleteFile(io, cap_name) catch {};
+            dir.deleteFile(io, cli_capture_file) catch {};
         }
         const out: ?std.Io.File = if (capture == .stdout) cap else null;
         const err: ?std.Io.File = if (capture == .stderr) cap else null;
@@ -2422,6 +2426,48 @@ pub const Epic = struct {
             detail.set(if (why.len > 0) why else "epic-wallet could not scan the chain — make sure the Epic daemon is running and synced, then restore again");
             return error.WalletRescanFailed;
         }
+    }
+
+    /// How far a restore's `scan` has got, 0–100, or null when no scan is
+    /// running. The scan blocks the restore for about a minute on a synced node,
+    /// and it reports its own progress on stdout ("Update UTXO outputs 27%
+    /// complete. …", roughly every 0.4 s) whether the node is local or remote, so
+    /// the percentage comes from the tail of the file `runScan` captures that
+    /// stream to. Reads a fixed 1 KiB and takes no lock, so a front-end can poll
+    /// it while the restore holds the wallet.
+    fn restoreProgress(allocator: std.mem.Allocator, io: std.Io, home_dir: []const u8) ?u8 {
+        const top = dataDir(allocator, home_dir) catch return null;
+        defer allocator.free(top);
+        var dir = std.Io.Dir.cwd().openDir(io, top, .{}) catch return null;
+        defer dir.close(io);
+        var f = dir.openFile(io, cli_capture_file, .{}) catch return null;
+        defer f.close(io);
+        const size = (f.stat(io) catch return null).size;
+        // A few lines' worth: each progress line is ~120 bytes, so the latest is
+        // always in here.
+        var buf: [1024]u8 = undefined;
+        const off = if (size > buf.len) size - buf.len else 0;
+        const n = f.readPositionalAll(io, &buf, off) catch return null;
+        return scanPercent(buf[0..n]);
+    }
+
+    /// The last "Update UTXO outputs N% complete" percentage in captured `scan`
+    /// output, or null if there's none yet (the command is still connecting, or
+    /// it's `init -r`, which shares the capture file and reports no percentage).
+    /// The tail may start mid-line, so a match is only trusted with its digits
+    /// preceded by the marker text.
+    fn scanPercent(out: []const u8) ?u8 {
+        const marker = "UTXO outputs ";
+        var end = out.len;
+        while (std.mem.lastIndexOf(u8, out[0..end], "% complete")) |pct_at| : (end = pct_at) {
+            var start = pct_at;
+            while (start > 0 and std.ascii.isDigit(out[start - 1])) start -= 1;
+            if (start == pct_at or pct_at - start > 3) continue;
+            if (!std.mem.endsWith(u8, out[0..start], marker)) continue;
+            const v = std.fmt.parseInt(u8, out[start..pct_at], 10) catch continue;
+            return @min(v, 100);
+        }
+        return null;
     }
 
     /// Pull the actionable reason out of captured `epic-wallet scan` output: the last
@@ -4355,6 +4401,7 @@ pub const Epic = struct {
         .exists = walletExists,
         .create = epicCreate,
         .restore_seed = epicRestore,
+        .restore_progress = restoreProgress,
         .restore_file = epicRestoreFile,
         .show_seed = epicShowSeed,
         .backup_file = epicBackupFile,
@@ -5306,6 +5353,51 @@ test "scanErrLine lifts the last ERROR line (sans timestamp) from scan output" {
     );
     // No ERROR line → empty, so the caller falls back to a generic message.
     try std.testing.expectEqualStrings("", Epic.scanErrLine("INFO all good\nWARN minor\n"));
+}
+
+test "scanPercent reads the latest progress line from a captured scan tail" {
+    // Real lines from a restore scan against node.epiccash.com (2026-09-23).
+    const out =
+        "20260923 12:55:04.118 INFO epic_wallet_libwallet::api_impl::owner_updater - Update UTXO outputs 0% complete. Starting UTXO scan\n" ++
+        "20260923 12:55:15.918 INFO epic_wallet_libwallet::api_impl::owner_updater - Update UTXO outputs 26% complete. Checking 1000 outputs (from PMMR index 2239465 to 2444960, highest: 9336708).\n" ++
+        "20260923 12:55:16.329 INFO epic_wallet_libwallet::api_impl::owner_updater - Update UTXO outputs 27% complete. Checking 1000 outputs (from PMMR index 2444961 to 2565728, highest: 9336708).\n";
+    try std.testing.expectEqual(@as(?u8, 27), Epic.scanPercent(out));
+    try std.testing.expectEqual(@as(?u8, 0), Epic.scanPercent(out[0 .. std.mem.indexOfScalar(u8, out, '\n').? + 1]));
+    // The 1 KiB tail can cut the newest line mid-number ("…outputs 2" then
+    // nothing, or a stray "7% complete" with no marker before it): fall back to
+    // the last whole one rather than reading a fragment.
+    const cut = std.mem.lastIndexOf(u8, out, "27%").? + 1;
+    try std.testing.expectEqual(@as(?u8, 26), Epic.scanPercent(out[0..cut]));
+    try std.testing.expectEqual(@as(?u8, null), Epic.scanPercent("7% complete. Checking 1000 outputs\n"));
+    // `init -r` output, or a scan still connecting: nothing to report.
+    try std.testing.expectEqual(@as(?u8, null), Epic.scanPercent("INFO log4rs is initialized\n"));
+    try std.testing.expectEqual(@as(?u8, null), Epic.scanPercent(""));
+}
+
+test "restoreProgress reads the running scan's capture file, null without one" {
+    const a = std.testing.allocator;
+    var threaded: std.Io.Threaded = .init(a, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const home = try tmp.dir.realPathFileAlloc(io, ".", a);
+    defer a.free(home);
+    // No top dir at all (Epic never run), then an empty one: nothing scanning.
+    try std.testing.expectEqual(@as(?u8, null), Epic.restoreProgress(a, io, home));
+    const top = try Epic.dataDir(a, home);
+    defer a.free(top);
+    var dir = try std.Io.Dir.cwd().createDirPathOpen(io, top, .{});
+    defer dir.close(io);
+    try std.testing.expectEqual(@as(?u8, null), Epic.restoreProgress(a, io, home));
+
+    // A scan in flight, with more than the 1 KiB tail already written.
+    var f = try dir.createFile(io, Epic.cli_capture_file, .{});
+    defer f.close(io);
+    const line = "INFO owner_updater - Update UTXO outputs 41% complete. Checking 1000 outputs (from PMMR index 1 to 2, highest: 9).\n";
+    var i: usize = 0;
+    while (i < 12) : (i += 1) try f.writePositionalAll(io, line, i * line.len);
+    try std.testing.expectEqual(@as(?u8, 41), Epic.restoreProgress(a, io, home));
 }
 
 test "parseTxLog reads the older tuple reply newest-first, dropping cancelled entries" {
