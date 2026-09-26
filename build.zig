@@ -222,6 +222,11 @@ pub fn build(b: *std.Build) void {
 /// costs parallelism. Re-measure if one of these starts failing that check.
 /// `scripts/release.sh`'s memory floor must stay at least `gui_max_rss`, or the
 /// build runner refuses to start the GUI steps at all.
+///
+/// Zig 0.16's runner only honours this for the first wave: steps it queued are
+/// released together without claiming their memory, so `release.sh` also caps
+/// `-j` at one step per `gui_max_rss` of budget. Don't drop that cap on the
+/// strength of these figures alone.
 const gui_max_rss: usize = 6 << 30;
 const tui_max_rss: usize = 2 << 30;
 const core_max_rss: usize = 1536 << 20;
