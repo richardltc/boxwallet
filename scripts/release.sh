@@ -70,6 +70,14 @@ zig build test
 # KILL"). Never below one GUI compile, or the build refuses to start at all —
 # but a floor isn't memory: if less than that is actually free, say so up front
 # rather than letting clang be killed twenty minutes in.
+#
+# `--maxrss` alone doesn't hold in Zig 0.16: when a step finishes, the build
+# runner starts *every* queued step that fits the memory it freed without
+# subtracting their claims (build_runner.zig, the `memory_blocked_steps` loop),
+# so the queued GUI compiles all start together - three at ~4 GB each was the
+# OOM kill on a 6 GiB budget. `-j` caps how many steps run at once regardless,
+# so it's derived from the same budget: one step per GUI-sized slice, since no
+# step peaks above a GUI compile.
 MAXRSS_ARGS=()
 if [ -r /proc/meminfo ]; then
   AVAIL_KIB="$(awk '/^MemAvailable:/ {print $2}' /proc/meminfo)"
@@ -81,8 +89,9 @@ if [ -r /proc/meminfo ]; then
         "$(( AVAIL_KIB >> 10 ))" "$(( FLOOR >> 20 ))" >&2
       BUDGET="$FLOOR"
     fi
-    MAXRSS_ARGS=(--maxrss "$BUDGET")
-    printf '    memory budget: %d MiB\n' "$(( BUDGET >> 20 ))"
+    JOBS=$(( BUDGET / FLOOR ))
+    MAXRSS_ARGS=(--maxrss "$BUDGET" "-j$JOBS")
+    printf '    memory budget: %d MiB, %d step(s) at a time\n' "$(( BUDGET >> 20 ))" "$JOBS"
   fi
 fi
 
