@@ -18,8 +18,8 @@ const Coin = @import("../coin.zig").Coin;
 ///     and runs `<appimage> --appimage-extract` (no FUSE needed) to unpack
 ///     `squashfs-root/`, then promotes `zanod`/`simplewallet` out of
 ///     `squashfs-root/usr/bin/` — mirroring the Go installer. Windows ships a
-///     normal `.zip` (binaries at the archive root next to their runtime DLLs),
-///     stream-extracted whole into a `zano/` subdir.
+///     CLI-only `.zip`, stream-extracted whole and its versioned wrapper dir
+///     renamed to a `zano/` subdir.
 ///   * **RPC** — Zano's daemon has no `getblockchaininfo`/`getpeerinfo`; a single
 ///     `getinfo` carries everything. Sync is derived from `height` vs
 ///     `max_net_seen_height` (the network tip), and the peer count from the
@@ -71,7 +71,7 @@ pub const Zano = struct {
     pub const home_dir_mac: ?[]const u8 = null;
     pub const rpc_default_username = "zanorpc";
     pub const rpc_default_port = "11211";
-    pub const core_version = "2.2.1.506";
+    pub const core_version = "2.2.3.600";
 
     // Binary names. Windows appends `.exe`; Linux uses the bare names. Zano's CLI
     // is `simplewallet`, and there's no `*-tx` helper (unlike the bitcoin coins).
@@ -105,19 +105,24 @@ pub const Zano = struct {
     // the URL can't be derived from the version alone. Bumping the version means
     // looking up the new hashed filename, which the GitHub release page publishes
     // in its PGP-signed notes (GitHub hosts no assets itself) — e.g.
-    // https://github.com/hyle-team/zano/releases/tag/2.2.1.506. This is the latest
+    // https://github.com/hyle-team/zano/releases/tag/2.2.3.600. This is the latest
     // stable `release`-channel build.
     //
     // The hash must be bumped in lockstep with `core_version`: the two are spliced
     // into one filename, and a mismatched pair resolves to a 404 rather than to the
     // wrong build.
-    const appimage_build_hash = "b76fa18";
-    const appimage_url = "https://build.zano.org/builds/zano-linux-x64-release-v" ++
+    //
+    // From 2.2.3 the filenames carry a flavour (`-gui-release-` / `-cli-release-`)
+    // — check the new release's names still match these patterns when bumping.
+    const appimage_build_hash = "98bbd72";
+    const appimage_url = "https://build.zano.org/builds/zano-linux-x64-gui-release-v" ++
         core_version ++ "%5B" ++ appimage_build_hash ++ "%5D.AppImage";
-    // Windows ships an official .zip (same build hash) carrying zanod.exe /
-    // simplewallet.exe at the archive root, next to the runtime DLLs they load.
-    const win_zip_url = "https://build.zano.org/builds/zano-win-x64-release-v" ++
+    // Windows ships an official CLI-only .zip (same build hash): zanod.exe /
+    // simplewallet.exe without the ~170MB of Qt the GUI zip adds, nested under a
+    // `zano-windows-x64-cli-<ver>-<hash>/` wrapper (`win_zip_dir`).
+    const win_zip_url = "https://build.zano.org/builds/zano-win-x64-cli-release-v" ++
         core_version ++ "%5B" ++ appimage_build_hash ++ "%5D.zip";
+    const win_zip_dir = "zano-windows-x64-cli-" ++ core_version ++ "-" ++ appimage_build_hash;
 
     /// Download URL for the build target, or null where Zano ships no daemon
     /// bundle BoxWallet can install: the Linux x86_64 AppImage, or the Windows x64
@@ -343,14 +348,23 @@ pub const Zano = struct {
         const url = download_url orelse return error.UnsupportedPlatform;
 
         if (builtin.os.tag == .windows) {
-            // Windows ships a flat .zip — zanod.exe/simplewallet.exe sit at the
-            // archive root next to the DLLs they load — so stream-extract it whole
-            // into the `zano/` bundle subdir (no promote: the binaries can't be
-            // split from their DLLs). The streaming zip extractor keeps memory flat
-            // despite the ~200MB bundle.
-            const dest = try std.fs.path.join(allocator, &.{ install_root, win_subdir });
-            defer allocator.free(dest);
-            try install_mod.downloadAndExtract(allocator, url, .zip, dest, scratch_file, 0, progress);
+            // The .zip nests zanod.exe/simplewallet.exe under a versioned wrapper
+            // dir, and `std.zip` can't strip it. So extract to the install root,
+            // then swap the wrapper in as the `zano/` bundle subdir (kept whole,
+            // as the binaries sit beside whatever runtime files the zip ships).
+            // The streaming zip extractor keeps memory flat despite the bundle size.
+            try install_mod.downloadAndExtract(allocator, url, .zip, install_root, scratch_file, 0, progress);
+
+            var threaded: std.Io.Threaded = .init(allocator, .{});
+            defer threaded.deinit();
+            const io = threaded.io();
+            var dir = try std.Io.Dir.cwd().openDir(io, install_root, .{});
+            defer dir.close(io);
+            // Only now that the new build is on disk does the previous one go.
+            // `zano/` is BoxWallet's own bundle dir — no chain or wallet lives in
+            // it (those are under `%APPDATA%\ZANO`).
+            dir.deleteTree(io, win_subdir) catch {};
+            try dir.rename(win_zip_dir, dir, win_subdir, io);
             return;
         }
 
@@ -1283,7 +1297,7 @@ test "parseVersionOutput lifts the bare version out of zanod's --version banner"
     // The build hash is dropped, so a freshly-installed binary's banner yields
     // exactly the pinned `core_version` — the whole point of parsing rather than
     // storing the banner, since the marker is compared against it verbatim.
-    const banner = "Zano v" ++ Zano.core_version ++ "[b76fa18]";
+    const banner = "Zano v" ++ Zano.core_version ++ "[98bbd72]";
     const v = Zano.parseVersionOutput(banner).?;
     try std.testing.expect(std.mem.indexOfScalar(u8, v, '[') == null);
     try std.testing.expectEqualStrings(Zano.core_version, v);
