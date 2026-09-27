@@ -48,7 +48,7 @@ pub const Litecoin = struct {
     pub const home_dir_mac: ?[]const u8 = "Litecoin";
     pub const rpc_default_username = "litecoinrpc";
     pub const rpc_default_port = "9332";
-    pub const core_version = "0.21.5.5";
+    pub const core_version = "0.21.5.8";
 
     // Binary names. Windows appends `.exe`; Linux/macOS use the bare names.
     const exe_suffix = if (builtin.os.tag == .windows) ".exe" else "";
