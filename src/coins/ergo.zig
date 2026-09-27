@@ -56,7 +56,7 @@ pub const Ergo = struct {
     pub const home_dir_mac = "Ergo";
     pub const home_dir_win = "Ergo";
 
-    pub const core_version = "6.0.2";
+    pub const core_version = "6.0.6";
 
     // The node ships as `ergo-<version>.jar` inside each platform's bundle.
     pub const jar_file = "ergo-" ++ core_version ++ ".jar";
@@ -133,7 +133,7 @@ pub const Ergo = struct {
         maxPeerHeight: ?i64 = null,
         peersCount: ?i64 = null,
         network: []const u8 = "",
-        /// The node's software version (e.g. "6.0.2"), from `/info`'s `appVersion`.
+        /// The node's software version (e.g. "6.0.6"), from `/info`'s `appVersion`.
         appVersion: []const u8 = "",
     };
 
@@ -1414,7 +1414,7 @@ test "platform selection resolves a bundle for the build target" {
         else => try std.testing.expectEqual(install_mod.Format.tar_gz, dl.format),
     }
     // The URL carries the version and the platform tag.
-    try std.testing.expect(std.mem.indexOf(u8, dl.url, "ergo-node-v6.0.2-") != null);
+    try std.testing.expect(std.mem.indexOf(u8, dl.url, "ergo-node-v" ++ Ergo.core_version ++ "-") != null);
 }
 
 test "dataDir resolves the per-OS Ergo data directory" {
