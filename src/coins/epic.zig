@@ -4455,8 +4455,9 @@ pub const Epic = struct {
         .wallet_transactions = vtWalletTransactions,
         .wallet_receive_address = vtWalletReceiveAddress,
         // One per wallet (see the Receive address section): a "new" one would
-        // be the same address.
-        .receive_address_fixed_note = "This wallet has one Epicbox address. It doesn't change, and it's fine to reuse.",
+        // be the same address. Its `@domain` half is the Epicbox server, so
+        // choosing another server in Settings does change it (`relay_note`).
+        .receive_address_fixed_note = "This wallet has one Epicbox address. It will change based on the selected Epicbox server; otherwise it's fine to reuse.",
         // What the balance and a send both wait for (see `min_confirmations`).
         .spendable_confirmations = min_confirmations,
         .wallet_send = vtWalletSend,
