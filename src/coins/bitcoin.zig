@@ -47,7 +47,7 @@ pub const Bitcoin = struct {
     pub const home_dir_mac: ?[]const u8 = "Bitcoin";
     pub const rpc_default_username = "bitcoinrpc";
     pub const rpc_default_port = "8332";
-    pub const core_version = "31.0";
+    pub const core_version = "31.1";
 
     // Binary names. Windows appends `.exe`; Linux/macOS use the bare names.
     const exe_suffix = if (builtin.os.tag == .windows) ".exe" else "";
