@@ -3238,6 +3238,8 @@ pub const Epic = struct {
     ) anyerror!models.SendResult {
         const addr = std.mem.trim(u8, address, " \t\r\n");
         if (!isEpicboxAddress(addr)) return .{ .failed = not_an_address };
+        if (requiresNote(addr) and std.mem.trim(u8, note, " \t\r\n").len == 0)
+            return .{ .failed = note_required };
         const units = baseUnitsFromAmount(amount) orelse return .{ .failed = "invalid amount" };
         const r = try initSendTx(allocator, auth, addr, units, note, .send);
         defer {
@@ -3277,6 +3279,27 @@ pub const Epic = struct {
     }
 
     const not_an_address = "That isn't an Epicbox address — check it was copied in full.";
+
+    const note_required = Coin.send_note_missing_text ++ " Nothing was sent.";
+
+    /// Epicbox domains of exchanges that give every customer the same deposit
+    /// address and tell deposits apart by the slate message alone: a send there
+    /// without its note arrives, but credits no one.
+    const note_required_domains = [_][]const u8{"epicbox.nonkyc.io"};
+
+    /// Whether a send to `addr` (already `isEpicboxAddress`) must carry a note —
+    /// its `@domain`, port aside, is exactly one of `note_required_domains`, so a
+    /// lookalike such as `epicbox.nonkyc.io.evil.com` doesn't count. Pure, for
+    /// testing.
+    fn requiresNote(addr: []const u8) bool {
+        var rest = addr;
+        if (std.mem.startsWith(u8, rest, "epicbox://")) rest = rest["epicbox://".len..];
+        const at = std.mem.indexOfScalar(u8, rest, '@') orelse return false;
+        const host = rest[at + 1 ..];
+        const domain = host[0 .. std.mem.indexOfScalar(u8, host, ':') orelse host.len];
+        for (note_required_domains) |d| if (std.ascii.eqlIgnoreCase(domain, d)) return true;
+        return false;
+    }
 
     /// `init_send_tx` for real over Epicbox, priced only, or built for a slate
     /// file (no `send_args`: nothing is posted, and nothing is locked until
@@ -4463,6 +4486,7 @@ pub const Epic = struct {
         .wallet_send = vtWalletSend,
         .wallet_send_note = vtWalletSendNote,
         .send_note_max = models.tx_note_max,
+        .send_note_required = vtSendNoteRequired,
         .wallet_send_fee = vtWalletSendFee,
         .wallet_cancel_tx = vtWalletCancelTx,
         .slate_files = &slate_files,
@@ -4529,6 +4553,10 @@ pub const Epic = struct {
         amount: f64,
     ) anyerror!models.SendResult {
         return epicSend(allocator, wallet_auth, address, amount, "");
+    }
+
+    fn vtSendNoteRequired(_: *anyopaque, address: []const u8) bool {
+        return isEpicboxAddress(address) and requiresNote(address);
     }
 
     fn vtWalletSendNote(
@@ -4848,6 +4876,42 @@ test "parseSecret takes the trimmed first line of the secret file" {
     // An empty/whitespace first line yields empty, so the caller falls back.
     try std.testing.expectEqualStrings("", Epic.parseSecret("\nsomething"));
     try std.testing.expectEqualStrings("", Epic.parseSecret("   \n"));
+}
+
+test "requiresNote matches an exchange's Epicbox domain exactly" {
+    const key = "esXnCQUxaAqmVFdhNK2McAVqTrf4Urhy9n33Mhv8hnX1jGjN5Kqv";
+    try std.testing.expect(Epic.isEpicboxAddress(key ++ "@epicbox.nonkyc.io"));
+    try std.testing.expect(Epic.requiresNote(key ++ "@epicbox.nonkyc.io"));
+    try std.testing.expect(Epic.requiresNote(key ++ "@EpicBox.NonKYC.io"));
+    try std.testing.expect(Epic.requiresNote("epicbox://" ++ key ++ "@epicbox.nonkyc.io:443"));
+    // Anywhere else — no domain, the default relay, a lookalike — is optional.
+    try std.testing.expect(!Epic.requiresNote(key));
+    try std.testing.expect(!Epic.requiresNote(key ++ "@epicbox.epiccash.com"));
+    try std.testing.expect(!Epic.requiresNote(key ++ "@epicbox.nonkyc.io.evil.com"));
+    try std.testing.expect(!Epic.requiresNote(key ++ "@xepicbox.nonkyc.io"));
+}
+
+test "epicSend refuses an exchange address without its note before touching the wallet" {
+    const key = "esXnCQUxaAqmVFdhNK2McAVqTrf4Urhy9n33Mhv8hnX1jGjN5Kqv";
+    // No wallet is open: reaching `initSendTx` would error, so a `.failed`
+    // here proves the refusal came first.
+    const auth: models.CoinAuth = .{ .rpc_user = "", .rpc_password = "", .ip_address = "127.0.0.1", .port = "0" };
+    for ([_][]const u8{ "", "   " }) |note| {
+        const r = try Epic.epicSend(std.testing.allocator, auth, key ++ "@epicbox.nonkyc.io", 1.0, note);
+        try std.testing.expectEqualStrings(Epic.note_required, r.failed);
+    }
+}
+
+test "sendNoteMissing flags a blank note to an exchange address, before any send" {
+    const key = "esXnCQUxaAqmVFdhNK2McAVqTrf4Urhy9n33Mhv8hnX1jGjN5Kqv";
+    var e: Epic = .{};
+    const c = e.coin();
+    try std.testing.expect(c.sendNoteMissing(key ++ "@epicbox.nonkyc.io", ""));
+    try std.testing.expect(c.sendNoteMissing("  " ++ key ++ "@epicbox.nonkyc.io\n", " \t"));
+    try std.testing.expect(!c.sendNoteMissing(key ++ "@epicbox.nonkyc.io", "123456"));
+    try std.testing.expect(!c.sendNoteMissing(key ++ "@epicbox.epiccash.com", ""));
+    // Half-typed: not an address yet, so nothing to warn about.
+    try std.testing.expect(!c.sendNoteMissing("esXnCQ@epicbox.nonkyc.io", ""));
 }
 
 test "readSecretAt reads a daemon-generated secret from disk, errors when absent" {

@@ -791,6 +791,16 @@ export fn bw_coin_send_note_max(idx: usize) usize {
     return c.sendNoteMax();
 }
 
+/// Whether a send to `addr` with `note` would go without a note the
+/// destination needs (`Coin.sendNoteMissing`): writes the warning to show into
+/// `buf` and returns its length, 0 when there's nothing to warn about.
+export fn bw_coin_send_note_missing(idx: usize, addr: [*:0]const u8, note: [*:0]const u8, buf: ?[*]u8, cap: usize) usize {
+    const c = coinByIndex(idx) orelse return 0;
+    const b = buf orelse return 0;
+    if (!c.sendNoteMissing(std.mem.span(addr), std.mem.span(note))) return 0;
+    return copyOut(b[0..cap], Coin.send_note_missing_text);
+}
+
 /// Whether the coin can quote a send's fee before it's made
 /// (`bw_wallet_send_fee`), for the confirm step to state it.
 export fn bw_coin_supports_send_fee(idx: usize) c_int {

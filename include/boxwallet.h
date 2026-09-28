@@ -243,6 +243,12 @@ size_t  bw_coin_receive_address_note(size_t idx, char *buf, size_t cap);
  * (show no note field). Epic's is its slate message: it travels with the
  * payment to the receiver's wallet but is not written to the chain. */
 size_t  bw_coin_send_note_max(size_t idx);
+/* Whether a send to addr with note would go without a note the destination
+ * needs (an exchange deposit address shared by all its customers — Epic's
+ * NonKYC). Writes the warning into buf and returns its length (not
+ * NUL-terminated); 0 = nothing to warn about. bw_wallet_send refuses such a
+ * send itself; this lets the form say so before the confirm. */
+size_t  bw_coin_send_note_missing(size_t idx, const char *addr, const char *note, char *buf, size_t cap);
 /* Whether bw_wallet_send_fee can quote a send's fee before it's made. */
 int     bw_coin_supports_send_fee(size_t idx);
 /* The coin's own lead-in for a successful send's result ("Sent — waiting for
