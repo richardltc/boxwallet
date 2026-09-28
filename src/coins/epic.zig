@@ -66,7 +66,7 @@ pub const Epic = struct {
     /// Donation address for BoxWallet development, in Epic's own
     /// currency.
     /// TODO(richard): replace with the real EPIC tip address.
-    pub const tip_address = "TODO-EPIC-TIP-ADDRESS-NOT-SET";
+    pub const tip_address = "esWfk3Y6AyF7oa8srmWALKzeGVGZbpDeXLMLMWCNVsG9w9Sb52wy@epicbox.epiccash.com";
     /// Epic is proof-of-work (MimbleWimble) — no wallet staking.
     pub const proof_of_stake = false;
 
@@ -5553,7 +5553,6 @@ test "parseTxLog reads 4.x's paged reply: stages, slate ids, and what can be can
         try std.testing.expectEqual(models.TxStage.awaiting_reply_file, txs[0].stage);
         try std.testing.expect(txs[0].cancellable);
     }
-
 }
 
 test "parseTxLog carries the slate message as the row's note, made safe to show" {
@@ -5968,7 +5967,8 @@ test "normalizeNodeUrl refuses anything it can't state exactly" {
         "", "   ", // nothing to connect to
         "/", "://", ":3413", // no host
         "node.example/v2/foreign", // a path we'd be guessing at
-        "node.example?x=1", "node.example#f",
+        "node.example?x=1",
+        "node.example#f",
         "ftp://node.example", // not a protocol the wallet speaks
         "node.example:", "node.example:abc", "node.example:99999", // not a port
         "node example", "node.example\t3413", // whitespace inside
