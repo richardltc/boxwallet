@@ -7605,13 +7605,21 @@ pub const App = struct {
         const m = &self.send_modal.?;
         const coin = self.coinAt(m.coin_idx) orelse return;
         const note = std.mem.trim(u8, self.send_note_input.getValue(), " \t");
-        if (note.len > coin.sendNoteMax()) {
+        if (note.len > coin.sendNoteMax() or self.sendNoteMissing(m.*, coin)) {
             m.bad_input = true;
             return;
         }
         m.bad_input = false;
         self.send_note_input.blur();
         self.toSendConfirm();
+    }
+
+    /// Whether the address typed is one that needs a note (an exchange's shared
+    /// deposit address) and the note field is still blank — the note stage
+    /// can't be skipped then. A slate file has no address, so never.
+    fn sendNoteMissing(self: *const App, m: SendModal, coin: Coin) bool {
+        if (m.mode != .send) return false;
+        return coin.sendNoteMissing(self.send_addr_input.getValue(), self.send_note_input.getValue());
     }
 
     /// On to the confirm step — by way of the fee quote, for a coin that can
@@ -11592,8 +11600,12 @@ pub const App = struct {
                 const text = try std.fmt.allocPrint(a, "Note: {s}", .{field});
                 try modalRow(&out.writer, vbar, inner_w, text, zz.width("Note: ") + zz.width(field));
                 try modalRow(&out.writer, vbar, inner_w, "", 0);
-                try wrapIntoRows(a, &out.writer, vbar, inner_w, send_note_hint, (zz.Style{}).dim(true));
-                if (m.bad_input) {
+                // Said up front, not only on Enter: this note isn't optional.
+                if (self.sendNoteMissing(m, coin))
+                    try wrapIntoRows(a, &out.writer, vbar, inner_w, Coin.send_note_missing_text, (zz.Style{}).fg(.red))
+                else
+                    try wrapIntoRows(a, &out.writer, vbar, inner_w, send_note_hint, (zz.Style{}).dim(true));
+                if (m.bad_input and !self.sendNoteMissing(m, coin)) {
                     const warn = "The note is too long — shorten it.";
                     const styled = (zz.Style{}).fg(.red).render(a, warn) catch warn;
                     try modalRow(&out.writer, vbar, inner_w, styled, zz.width(warn));
@@ -11743,7 +11755,7 @@ pub const App = struct {
             .method, .pick => "j/k: choose   enter: next   esc: close",
             .address => "enter: next   esc: cancel",
             .amount => "enter: next   esc: cancel",
-            .note => "enter: next (or skip)   esc: cancel",
+            .note => if (self.sendNoteMissing(m, coin)) "enter: next   esc: cancel" else "enter: next (or skip)   esc: cancel",
             .confirm => if (m.mode == .slate) "enter: select   d: change folder   esc: cancel" else "enter: select   esc: cancel",
             .folder => unreachable,
             .working, .estimating => "please wait…",

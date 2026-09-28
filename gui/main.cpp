@@ -3632,6 +3632,18 @@ int main(int argc, char **argv)
     // The note limit is in bytes, which is what the core checks.
     ui->on_utf8_len([](slint::SharedString text) { return static_cast<int>(std::string_view(text).size()); });
 
+    // An address that needs a note (an exchange's shared deposit address) with
+    // none given: the core's warning, "" otherwise.
+    ui->on_send_note_missing([](slint::SharedString address, slint::SharedString note) {
+        int coin = g_selected.load();
+        if (coin < 0)
+            return slint::SharedString();
+        char buf[256];
+        size_t n = bw_coin_send_note_missing(static_cast<size_t>(coin), std::string(std::string_view(address)).c_str(),
+                                             std::string(std::string_view(note)).c_str(), buf, sizeof buf);
+        return ss(std::string(buf, n));
+    });
+
     ui->on_send_funds([weak, ctx, wake_poll](slint::SharedString address, slint::SharedString amount,
                                              slint::SharedString note_text) {
         int coin = g_selected.load();

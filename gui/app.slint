@@ -1734,6 +1734,12 @@ export component AppWindow inherits Window {
     // UTF-8 byte length, the unit send-note-max is in — Slint's own counts
     // are of characters.
     pure callback utf8-len(string) -> int;
+    // The core's warning (bw_coin_send_note_missing) when the address is one
+    // that needs a note — an exchange's shared deposit address — and none is
+    // given; "" otherwise. Holds the Send button until it's filled in.
+    pure callback send-note-missing(string, string) -> string; // address, note
+    property <string> send-note-warning: root.send-method == 0 && root.send-note-max > 0
+        ? root.send-note-missing(root.send-addr-text, root.send-note-text) : "";
     // A stake pays the wallet's own address — the coin works that out itself —
     // so this takes an amount and nothing else. It shares send-busy/send-result
     // with the send above: both spend from the same wallet, one at a time, and
@@ -3921,14 +3927,18 @@ export component AppWindow inherits Window {
                                 text <=> root.send-amt-text;
                             }
                             if root.send-note-max > 0: LineEdit {
-                                placeholder-text: "Note to the receiver (optional)";
+                                placeholder-text: root.send-note-warning != ""
+                                    ? "Deposit note (required by this exchange)"
+                                    : "Note to the receiver (optional)";
                                 text <=> root.send-note-text;
                             }
                             if root.send-note-max > 0: Text {
                                 text: root.send-note-too-long
                                     ? "The note is too long \u{2014} shorten it."
-                                    : "Sent with the payment to the receiver's wallet. Not written to the blockchain.";
-                                color: root.send-note-too-long ? #e05c5c : #8a8a8a;
+                                    : root.send-note-warning != ""
+                                        ? root.send-note-warning
+                                        : "Sent with the payment to the receiver's wallet. Not written to the blockchain.";
+                                color: root.send-note-too-long || root.send-note-warning != "" ? #e05c5c : #8a8a8a;
                                 font-size: 11px;
                                 wrap: word-wrap;
                             }
@@ -3937,7 +3947,7 @@ export component AppWindow inherits Window {
                                 spacing: 8px;
                                 if root.send-method == 0: Button {
                                     text: "Send\u{2026}";
-                                    enabled: !root.send-busy && !root.send-note-too-long;
+                                    enabled: !root.send-busy && !root.send-note-too-long && root.send-note-warning == "";
                                     clicked => {
                                         if (root.send-addr-text != "" && root.send-amt-text != "") {
                                             root.send-confirm-address = root.send-addr-text;

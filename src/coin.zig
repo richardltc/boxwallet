@@ -1186,6 +1186,12 @@ pub const Coin = struct {
         /// The longest note `wallet_send_note` takes, in bytes — at most
         /// `models.tx_note_max`. 0 (the default) means sends carry no note.
         send_note_max: usize = 0,
+        /// Optional: whether a send to `address` (trimmed) must carry a note —
+        /// an exchange deposit address shared by every customer, told apart by
+        /// the note alone (Epic: NonKYC's Epicbox domain). The coin's send
+        /// refuses a noteless one itself; this lets the send forms say so before
+        /// the confirm. Pure. See `sendNoteMissing`.
+        send_note_required: ?*const fn (ptr: *anyopaque, address: []const u8) bool = null,
         /// Optional: what sending `amount` to `address` would cost, worked out
         /// without sending — so the confirm step can state the fee (and the
         /// total leaving the wallet) before the user agrees to it. A refusal the
@@ -1883,6 +1889,21 @@ pub const Coin = struct {
     pub fn sendNoteMax(self: Coin) usize {
         if (self.vtable.wallet_send_note == null) return 0;
         return @min(self.vtable.send_note_max, models.tx_note_max);
+    }
+
+    /// What a send form shows (and a coin's send refuses with) when the
+    /// destination needs a note and none was given.
+    pub const send_note_missing_text = "This exchange needs its deposit note as the message — copy the note " ++
+        "shown with the deposit address, or the deposit can't be credited to your account.";
+
+    /// Whether sending to `address` with `note` would go without a note the
+    /// destination needs (`send_note_required`), so both send forms can stop
+    /// before the confirm. False for a coin without the hook, or any note that
+    /// isn't blank.
+    pub fn sendNoteMissing(self: Coin, address: []const u8, note: []const u8) bool {
+        const f = self.vtable.send_note_required orelse return false;
+        if (std.mem.trim(u8, note, " \t\r\n").len > 0) return false;
+        return f(self.ptr, std.mem.trim(u8, address, " \t\r\n"));
     }
 
     /// Send `amount` to `address` with `note` attached, cleaned by
