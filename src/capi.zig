@@ -791,14 +791,14 @@ export fn bw_coin_send_note_max(idx: usize) usize {
     return c.sendNoteMax();
 }
 
-/// Whether a send to `addr` with `note` would go without a note the
-/// destination needs (`Coin.sendNoteMissing`): writes the warning to show into
+/// Whether a send to `addr` with `note` would go without a payment note the
+/// destination needs (`Coin.sendNoteMissing`): writes the coin's warning into
 /// `buf` and returns its length, 0 when there's nothing to warn about.
 export fn bw_coin_send_note_missing(idx: usize, addr: [*:0]const u8, note: [*:0]const u8, buf: ?[*]u8, cap: usize) usize {
     const c = coinByIndex(idx) orelse return 0;
     const b = buf orelse return 0;
-    if (!c.sendNoteMissing(std.mem.span(addr), std.mem.span(note))) return 0;
-    return copyOut(b[0..cap], Coin.send_note_missing_text);
+    const warn = c.sendNoteMissing(std.mem.span(addr), std.mem.span(note)) orelse return 0;
+    return copyOut(b[0..cap], warn);
 }
 
 /// Whether the coin can quote a send's fee before it's made
@@ -3706,7 +3706,7 @@ export fn bw_prices_service(ctx: ?*Ctx) c_int {
     }
 
     // Coins the roster host prices badly fetch from their own endpoint (Divi →
-    // NonKYC). Unconditional, exactly like the roster above: the request goes
+    // nonKYC). Unconditional, exactly like the roster above: the request goes
     // out whether or not the coin is installed, so it reveals nothing about
     // what this user holds. Independently best-effort — one host being down
     // leaves the others' quotes standing.

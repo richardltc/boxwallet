@@ -6273,7 +6273,7 @@ pub const App = struct {
         }
 
         // Coins the roster host prices badly fetch from their own endpoint
-        // (Divi → NonKYC). Unconditional, exactly like the roster above: the
+        // (Divi → nonKYC). Unconditional, exactly like the roster above: the
         // request goes out whether or not the coin is installed, so it says
         // nothing about what this user holds. Independently best-effort — one
         // host being down leaves the others' quotes standing.
@@ -7605,7 +7605,7 @@ pub const App = struct {
         const m = &self.send_modal.?;
         const coin = self.coinAt(m.coin_idx) orelse return;
         const note = std.mem.trim(u8, self.send_note_input.getValue(), " \t");
-        if (note.len > coin.sendNoteMax() or self.sendNoteMissing(m.*, coin)) {
+        if (note.len > coin.sendNoteMax() or self.sendNoteMissing(m.*, coin) != null) {
             m.bad_input = true;
             return;
         }
@@ -7614,11 +7614,12 @@ pub const App = struct {
         self.toSendConfirm();
     }
 
-    /// Whether the address typed is one that needs a note (an exchange's shared
-    /// deposit address) and the note field is still blank — the note stage
-    /// can't be skipped then. A slate file has no address, so never.
-    fn sendNoteMissing(self: *const App, m: SendModal, coin: Coin) bool {
-        if (m.mode != .send) return false;
+    /// When the address typed is one that needs a payment note (an exchange's
+    /// shared deposit address) and the note field is still blank: the coin's
+    /// words for it — the note stage can't be skipped then. A slate file has no
+    /// address, so never.
+    fn sendNoteMissing(self: *const App, m: SendModal, coin: Coin) ?[]const u8 {
+        if (m.mode != .send) return null;
         return coin.sendNoteMissing(self.send_addr_input.getValue(), self.send_note_input.getValue());
     }
 
@@ -11597,15 +11598,15 @@ pub const App = struct {
             },
             .note => {
                 const field = try self.send_note_input.view(a);
-                const text = try std.fmt.allocPrint(a, "Note: {s}", .{field});
-                try modalRow(&out.writer, vbar, inner_w, text, zz.width("Note: ") + zz.width(field));
+                const text = try std.fmt.allocPrint(a, "Payment note: {s}", .{field});
+                try modalRow(&out.writer, vbar, inner_w, text, zz.width("Payment note: ") + zz.width(field));
                 try modalRow(&out.writer, vbar, inner_w, "", 0);
                 // Said up front, not only on Enter: this note isn't optional.
-                if (self.sendNoteMissing(m, coin))
-                    try wrapIntoRows(a, &out.writer, vbar, inner_w, Coin.send_note_missing_text, (zz.Style{}).fg(.red))
+                if (self.sendNoteMissing(m, coin)) |warn|
+                    try wrapIntoRows(a, &out.writer, vbar, inner_w, warn, (zz.Style{}).fg(.red))
                 else
                     try wrapIntoRows(a, &out.writer, vbar, inner_w, send_note_hint, (zz.Style{}).dim(true));
-                if (m.bad_input and !self.sendNoteMissing(m, coin)) {
+                if (m.bad_input and self.sendNoteMissing(m, coin) == null) {
                     const warn = "The note is too long — shorten it.";
                     const styled = (zz.Style{}).fg(.red).render(a, warn) catch warn;
                     try modalRow(&out.writer, vbar, inner_w, styled, zz.width(warn));
@@ -11694,7 +11695,7 @@ pub const App = struct {
                     const note = models.sanitizeNote(&nbuf, self.send_note_input.getValue());
                     if (note.len > 0) {
                         try modalRow(&out.writer, vbar, inner_w, "", 0);
-                        try wrapIntoRows(a, &out.writer, vbar, inner_w, try std.fmt.allocPrint(a, "Note: {s}", .{note}), (zz.Style{}));
+                        try wrapIntoRows(a, &out.writer, vbar, inner_w, try std.fmt.allocPrint(a, "Payment note: {s}", .{note}), (zz.Style{}));
                     }
                 }
                 try modalRow(&out.writer, vbar, inner_w, "", 0);
@@ -11755,7 +11756,7 @@ pub const App = struct {
             .method, .pick => "j/k: choose   enter: next   esc: close",
             .address => "enter: next   esc: cancel",
             .amount => "enter: next   esc: cancel",
-            .note => if (self.sendNoteMissing(m, coin)) "enter: next   esc: cancel" else "enter: next (or skip)   esc: cancel",
+            .note => if (self.sendNoteMissing(m, coin) != null) "enter: next   esc: cancel" else "enter: next (or skip)   esc: cancel",
             .confirm => if (m.mode == .slate) "enter: select   d: change folder   esc: cancel" else "enter: select   esc: cancel",
             .folder => unreachable,
             .working, .estimating => "please wait…",
@@ -13947,13 +13948,53 @@ test "renderSendModal states the quoted fee and total, and the coin's own sent l
     // A note is read back on the confirm, cleaned as it will be sent.
     try app.send_note_input.setValue("rent\x1b[2J for May");
     box = try app.renderSendModal(a);
-    try std.testing.expect(std.mem.indexOf(u8, box, "Note: rent [2J for May") != null);
+    try std.testing.expect(std.mem.indexOf(u8, box, "Payment note: rent [2J for May") != null);
 
     // Success reads as on its way with a slate, not "Sent. Txid:".
     app.send_modal.?.setMsg(true, "45ac41a0-7812-47ca-baa6-0021c2e8db0d");
     box = try app.renderSendModal(a);
     try std.testing.expect(std.mem.indexOf(u8, box, "waiting for the receiver") != null);
     try std.testing.expect(std.mem.indexOf(u8, box, "Txid") == null);
+}
+
+test "the note stage won't skip a blank payment note to an exchange that needs one" {
+    if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
+    const allocator = std.testing.allocator;
+
+    var threaded: std.Io.Threaded = .init(allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    var env = std.process.Environ.Map.init(allocator);
+    defer env.deinit();
+    try env.put("HOME", "/home/tester");
+    var ctx = zz.Context.init(allocator, allocator, io, &env);
+
+    var app: App = undefined;
+    app.hide_balances = false;
+    _ = app.init(&ctx);
+    defer app.deinit();
+
+    const idx = try epicSlot(&app);
+    try app.send_addr_input.setValue("esXnCQUxaAqmVFdhNK2McAVqTrf4Urhy9n33Mhv8hnX1jGjN5Kqv@epicbox.nonkyc.io");
+    try app.send_amount_input.setValue("1");
+    app.send_modal = .{ .coin_idx = idx, .stage = .note };
+
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    // Said before Enter, in the coin's words (wrapped, so matched by a word).
+    var box = try app.renderSendModal(a);
+    try std.testing.expect(std.mem.indexOf(u8, box, "nonKYC") != null);
+    try std.testing.expect(std.mem.indexOf(u8, box, "(or skip)") == null);
+
+    app.trySendNote();
+    try std.testing.expectEqual(SendModal.Stage.note, app.send_modal.?.stage);
+
+    // Filled in, the warning goes.
+    try app.send_note_input.setValue("123456");
+    box = try app.renderSendModal(a);
+    try std.testing.expect(std.mem.indexOf(u8, box, "nonKYC") == null);
 }
 
 test "just unlocked, the tabs say they're loading until a poll has read the wallet" {

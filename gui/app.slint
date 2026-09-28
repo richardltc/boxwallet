@@ -3928,8 +3928,8 @@ export component AppWindow inherits Window {
                             }
                             if root.send-note-max > 0: LineEdit {
                                 placeholder-text: root.send-note-warning != ""
-                                    ? "Deposit note (required by this exchange)"
-                                    : "Note to the receiver (optional)";
+                                    ? "Payment note (required by this exchange)"
+                                    : "Payment note (optional)";
                                 text <=> root.send-note-text;
                             }
                             if root.send-note-max > 0: Text {
@@ -5137,7 +5137,7 @@ export component AppWindow inherits Window {
                         wrap: word-wrap;
                     }
                     if !root.send-confirm-is-stake && root.send-confirm-note != "": Text {
-                        text: "Note: " + root.send-confirm-note;
+                        text: "Payment note: " + root.send-confirm-note;
                         color: #c8c8c8;
                         font-size: 12px;
                         wrap: word-wrap;
@@ -5328,7 +5328,7 @@ export component AppWindow inherits Window {
                         wrap: word-wrap;
                     }
                     if root.slate-stage == 2 && root.slate-note != "": Text {
-                        text: "Note: " + root.slate-note;
+                        text: "Payment note: " + root.slate-note;
                         color: #c8c8c8;
                         font-size: 12px;
                         wrap: word-wrap;
