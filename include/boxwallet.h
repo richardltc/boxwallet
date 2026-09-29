@@ -1254,12 +1254,15 @@ typedef struct {
 /* Where an unconfirmed transaction is, for a coin whose transactions aren't
  * finished when made (Epic). NONE for everything else — show confirmations. */
 #define BW_TX_STAGE_NONE                  0
-#define BW_TX_STAGE_AWAITING_COUNTERPARTY 1  /* with the other side (the relay) */
+#define BW_TX_STAGE_AWAITING_COUNTERPARTY 1  /* with the other side: receiver or sender */
 #define BW_TX_STAGE_IN_MEMPOOL            2  /* on the network, waiting for confirmations */
 #define BW_TX_STAGE_AWAITING_REPLY_FILE   3  /* a slate-file send: offer to finish it */
 /* The Status-column words for a stage (the TUI's), for the row's direction
  * (BwWalletTx.direction); 0 for NONE. */
 size_t  bw_tx_stage_text(int stage, int direction, char *buf, size_t cap);
+/* What cancelling a cancellable row does, for its stage and direction (the
+ * TUI's confirm explanation); 0 where the stage can't be cancelled. */
+size_t  bw_tx_cancel_text(int stage, int direction, char *buf, size_t cap);
 /* How many confirmations make received funds spendable for this coin (Epic:
  * 10); 0 = not declared — show the plain count. When set, show
  * bw_tx_confirmation_text: "3/10 confirmations", then "Confirmed" (*settled 1)

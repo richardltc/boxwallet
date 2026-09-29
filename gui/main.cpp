@@ -839,6 +839,11 @@ make_tx_rows(const std::vector<BwWalletTx> &txs, int decimals, bool has_stake, u
                                                           : group_int(t.confirmations) + " conf");
         r.settled = stage_n == 0 && (conf_n > 0 ? conf_settled != 0 : t.confirmations > bw_tx_confirmed_threshold());
         r.cancellable = t.cancellable != 0;
+        if (r.cancellable) {
+            char why[512];
+            size_t why_n = bw_tx_cancel_text(t.stage, t.direction, why, sizeof why);
+            r.cancel_note = ss(std::string(why, why_n));
+        }
         // Explicitly length-counted: the core doesn't NUL-terminate a txid.
         r.txid = ss(std::string(t.txid, t.txid_len));
         r.note = ss(std::string(t.note, t.note_len));
@@ -3536,7 +3541,8 @@ int main(int argc, char **argv)
     // The confirm modal stays up for the whole round trip — it is what the
     // busy halo rings — so every path out of here closes it, including the ones
     // that never reach the daemon.
-    // Cancel a send the receiver never answered (a cancellable row). The confirm
+    // Cancel a send the receiver never answered, or a receive the sender never
+    // finished (a cancellable row). The confirm
     // stays up, busy, until the wallet answers; the outcome lands at the top of
     // the Transactions tab and the poll is woken so the row and the balance
     // catch up at once.
@@ -3554,7 +3560,7 @@ int main(int argc, char **argv)
             WorkerGuard wg;
             char out[256] = {0};
             int rc = bw_wallet_cancel_tx(ctx, static_cast<size_t>(coin), id.c_str(), out, sizeof out);
-            std::string text = rc == 0   ? "Send cancelled. " + std::string(out)
+            std::string text = rc == 0   ? "Cancelled. " + std::string(out)
                                : rc == 1 ? "Couldn't cancel: " + std::string(out)
                                          : "Couldn't cancel: " + last_error_text(ctx, rc);
             post_to_ui([weak, rc, text]() {

@@ -50,7 +50,8 @@ struct WalletTxRow {
     settled: bool,       // past the confirmed threshold — colours the status
     txid: string,        // the daemon's own hash, shown when the row is expanded
     incoming: bool,      // colours the row
-    cancellable: bool,   // a send the receiver never answered — offers Cancel
+    cancellable: bool,   // a send or receive the other side never finished — offers Cancel
+    cancel-note: string, // what cancelling it does, in the core's words ("" unless cancellable)
     note: string,        // the sender's note (Epic's slate message), "" for none
     address: string,     // the other side — sent to / received from — "" if unknown
     awaiting-file: bool, // a slate-file send waiting for its reply — offers Finish
@@ -1661,14 +1662,16 @@ export component AppWindow inherits Window {
     // unreadable to a phone camera.
     in property <image> receive-qr;
     in property <[WalletTxRow]> tx-rows;
-    // Cancelling a send that never went through (Epic). The row's id and a
-    // one-line description go into the confirm; the outcome shows at the top
-    // of the Transactions tab.
+    // Cancelling a send or receive that never went through (Epic). The row's
+    // id, a one-line description and what cancelling it does go into the
+    // confirm; the outcome shows at the top of the Transactions tab.
     in property <bool> has-cancel-tx: false;
     in-out property <bool> cancel-tx-open: false;
     in-out property <bool> cancel-tx-busy: false;
     in-out property <string> cancel-tx-id: "";
     in-out property <string> cancel-tx-summary: "";
+    in-out property <string> cancel-tx-note: "";
+    in-out property <bool> cancel-tx-incoming: false;
     in-out property <string> tx-action-result: "";
     in-out property <bool> tx-action-error: false;
     callback cancel-tx(string); // the row's id
@@ -3604,16 +3607,20 @@ export component AppWindow inherits Window {
                                                     vertical-alignment: center;
                                                     horizontal-stretch: 1;
                                                 }
-                                                // A send the receiver never answered
-                                                // can be taken back. `visible`, not an
-                                                // `if`, like the copy button beside it.
+                                                // A send the receiver never answered,
+                                                // or a receive the sender never
+                                                // finished, can be taken back.
+                                                // `visible`, not an `if`, like the
+                                                // copy button beside it.
                                                 Button {
                                                     visible: root.has-cancel-tx && row.cancellable;
-                                                    text: "Cancel send\u{2026}";
+                                                    text: row.incoming ? "Cancel receive\u{2026}" : "Cancel send\u{2026}";
                                                     enabled: !root.cancel-tx-busy;
                                                     clicked => {
                                                         root.cancel-tx-id = row.txid;
-                                                        root.cancel-tx-summary = row.amount + " " + root.coin-name + ", sent " + row.when;
+                                                        root.cancel-tx-incoming = row.incoming;
+                                                        root.cancel-tx-note = row.cancel-note;
+                                                        root.cancel-tx-summary = row.amount + " " + root.coin-name + (row.incoming ? ", received " : ", sent ") + row.when;
                                                         root.tx-action-result = "";
                                                         root.cancel-tx-open = true;
                                                     }
@@ -5212,7 +5219,7 @@ export component AppWindow inherits Window {
             }
         }
 
-        // ---- cancel-send confirm ----
+        // ---- cancel-transaction confirm ----
         // Stays up while the wallet cancels it; main.cpp closes it with the
         // outcome, which lands at the top of the Transactions tab.
         if root.cancel-tx-open: Rectangle {
@@ -5234,7 +5241,9 @@ export component AppWindow inherits Window {
                     spacing: 10px;
                     alignment: start;
                     Text {
-                        text: root.cancel-tx-busy ? "Cancelling the send\u{2026}" : "Cancel this send?";
+                        text: root.cancel-tx-busy
+                            ? (root.cancel-tx-incoming ? "Cancelling the receive\u{2026}" : "Cancelling the send\u{2026}")
+                            : (root.cancel-tx-incoming ? "Cancel this receive?" : "Cancel this send?");
                         color: #e6e6e6;
                         font-size: 15px;
                         font-weight: 600;
@@ -5247,7 +5256,7 @@ export component AppWindow inherits Window {
                         wrap: word-wrap;
                     }
                     Text {
-                        text: "The receiver never answered it. Cancelling unlocks the coins it set aside; if the receiver answers later, it won't go through.";
+                        text: root.cancel-tx-note;
                         color: #9a9a9a;
                         font-size: 12px;
                         wrap: word-wrap;
@@ -5260,7 +5269,7 @@ export component AppWindow inherits Window {
                             clicked => { root.cancel-tx-open = false; }
                         }
                         Button {
-                            text: "Cancel send";
+                            text: root.cancel-tx-incoming ? "Cancel receive" : "Cancel send";
                             clicked => {
                                 root.cancel-tx-busy = true;
                                 root.cancel-tx(root.cancel-tx-id);

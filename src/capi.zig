@@ -2343,6 +2343,16 @@ export fn bw_tx_stage_text(stage: c_int, direction: c_int, buf: ?[*]u8, cap: usi
     return copyOut(b[0..cap], s.label(d));
 }
 
+/// What cancelling a `cancellable` row does, for its `BwWalletTx.stage` and
+/// `direction` — the TUI's confirm explanation, so the GUI's dialog says the
+/// same. 0 where the stage can't be cancelled.
+export fn bw_tx_cancel_text(stage: c_int, direction: c_int, buf: ?[*]u8, cap: usize) usize {
+    const b = buf orelse return 0;
+    const s = std.enums.fromInt(models.TxStage, stage) orelse return 0;
+    const d = std.enums.fromInt(models.TxDirection, direction) orelse .sent;
+    return copyOut(b[0..cap], s.cancelExplanation(d));
+}
+
 /// Whether the coin can cancel an unsent transaction (a row with
 /// `cancellable` set) — drives the cancel action on the Transactions tab.
 export fn bw_coin_supports_cancel_tx(idx: usize) c_int {
@@ -5898,6 +5908,15 @@ test "bw_tx_stage_text gives the TUI's words for each stage, nothing for none" {
     n = bw_tx_stage_text(2, @intFromEnum(models.TxDirection.received), &buf, buf.len);
     try std.testing.expectEqualStrings("received — waiting for confirmations", buf[0..n]);
     try std.testing.expectEqual(@as(usize, 0), bw_tx_stage_text(99, 1, &buf, buf.len));
+}
+
+test "bw_tx_cancel_text explains a cancel for the row's direction" {
+    var buf: [512]u8 = undefined;
+    var n = bw_tx_cancel_text(1, @intFromEnum(models.TxDirection.sent), &buf, buf.len);
+    try std.testing.expectEqualStrings(models.TxStage.awaiting_counterparty.cancelExplanation(.sent), buf[0..n]);
+    n = bw_tx_cancel_text(1, @intFromEnum(models.TxDirection.received), &buf, buf.len);
+    try std.testing.expectEqualStrings(models.TxStage.awaiting_counterparty.cancelExplanation(.received), buf[0..n]);
+    try std.testing.expectEqual(@as(usize, 0), bw_tx_cancel_text(2, 1, &buf, buf.len));
 }
 
 test "Nerva reports the wallet shape the GUI has to build for" {
