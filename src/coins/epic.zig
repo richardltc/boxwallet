@@ -234,9 +234,6 @@ pub const Epic = struct {
     // while a restore's `scan` runs it holds that scan's output and nothing older
     // — which is what `restoreProgress` reads its percentage from.
     const cli_capture_file = ".boxwallet-cli.out";
-    // The node's own foreign-API secret (it generates this on first run). The wallet
-    // authenticates to the node with it — `node_api_secret_path` in the wallet config.
-    const node_foreign_secret_file = ".foreign_api_secret";
     // The wallet's config, generated next to the node's `epic-server.toml` in the
     // shared `~/.epic/main` top dir.
     const wallet_conf_file = "epic-wallet.toml";
@@ -808,31 +805,94 @@ pub const Epic = struct {
         return tip.height;
     }
 
-    /// The remote node's chain, as much of it as the Foreign API will say.
+    /// The remote node's chain: its height, the time of its tip block, and
+    /// whether it is actually caught up.
     ///
     /// `blocks`/`headers`/`network_height` are all the one height it reports:
     /// there is no local chain being caught up, so the wallet's view of the tip
-    /// *is* the tip, and the sync bars have nothing to fill toward. `synced` is
-    /// true on that basis — it means "no download of ours is outstanding", which
-    /// is the truth — and the status line reads "Using a remote node" rather than
-    /// "Synced" so the word is never taken for a claim about the remote itself.
+    /// *is* the tip, and the sync bars have nothing to fill toward.
     ///
-    /// `tip_time`/`seconds_behind` are deliberately left at their "unavailable"
-    /// values: `get_tip` carries no timestamp, and inventing one from a block
-    /// target would put a made-up figure where the UI shows a fact.
+    /// `synced` is a claim about the remote node itself, because the Epicbox
+    /// listener makes it one: it processes nothing until that node's Owner API
+    /// `get_status` reads `no_sync`. Public nodes commonly serve that call
+    /// unauthenticated (Epic's own does), so it is asked, and a node that says
+    /// it is syncing reads as not synced. Where it won't answer, the tip's age
+    /// decides instead: a tip older than `remote_stale_secs` means the node has
+    /// stopped following the chain, whatever it says. That was `node.epiccash.com`
+    /// on 2026-09-28/29 — a day at one height, reporting `body_sync`, while
+    /// wallets pointed at it showed "Using a remote node" and received nothing.
+    ///
+    /// `tip_time` comes from the tip's own header, so while not synced both
+    /// front-ends show the block's date and how far behind it is — a fact, not an
+    /// estimate. Only the height is load-bearing: the other two are best-effort,
+    /// and a node that answers `get_tip` but not them is still usable.
     fn remoteBlockchainState(
         allocator: std.mem.Allocator,
         base_url: []const u8,
     ) !models.BlockchainState {
         const height = try foreignTip(allocator, base_url);
+
+        var arena = std.heap.ArenaAllocator.init(allocator);
+        defer arena.deinit();
+        const a = arena.allocator();
+
+        var threaded: std.Io.Threaded = .init(a, .{});
+        defer threaded.deinit();
+        const now = std.Io.Clock.real.now(threaded.io()).toSeconds();
+
+        const tip_time = remoteTipTime(a, base_url, height) catch 0;
+        const says_synced: ?bool = if (nodePostAt(a, base_url, null, "/v2/owner", "get_status", "[]")) |r|
+            (if (r.status == .ok) (if (parseStatus(a, r.body)) |st| std.mem.eql(u8, st.sync_status, "no_sync") else |_| null) else null)
+        else |_|
+            null;
+
         return .{
             .chain = try allocator.dupe(u8, "mainnet"),
             .blocks = height,
             .headers = height,
             .verification_progress = 1,
-            .synced = true,
+            .synced = remoteSynced(says_synced, tip_time, now),
             .network_height = height,
+            .tip_time = tip_time,
         };
+    }
+
+    /// How old a remote node's tip may be before the node counts as stuck. Epic
+    /// targets a block a minute, and a real gap of an hour is far outside normal
+    /// variance, so this doesn't flag a slow stretch, only a node that stopped.
+    const remote_stale_secs: i64 = 60 * 60;
+
+    /// Whether a remote node counts as caught up: its own `get_status` verdict
+    /// when it gave one (null when it wouldn't), and never with a tip older than
+    /// `remote_stale_secs`. An unknown tip time (0) can't condemn it. Pure.
+    fn remoteSynced(says_synced: ?bool, tip_time: i64, now: i64) bool {
+        if (says_synced == false) return false;
+        if (tip_time > 0 and now - tip_time > remote_stale_secs) return false;
+        return true;
+    }
+
+    /// A Foreign-API `get_header` reply; only the timestamp is read.
+    const HeaderEnvelope = struct {
+        result: ?struct { Ok: ?struct { timestamp: []const u8 = "" } = null } = null,
+    };
+
+    /// Unix time of the block at `height` on the node at `base_url`, from its
+    /// header (RFC 3339, UTC). Caller owns nothing: `a` is an arena.
+    fn remoteTipTime(a: std.mem.Allocator, base_url: []const u8, height: i64) !i64 {
+        const params = try std.fmt.allocPrint(a, "[{d},null,null]", .{height});
+        const r = try nodePostAt(a, base_url, null, "/v2/foreign", "get_header", params);
+        if (r.status != .ok) return error.DaemonNotReady;
+        return parseHeaderTime(a, r.body);
+    }
+
+    /// The timestamp out of a `get_header` body, in unix seconds. Pure.
+    fn parseHeaderTime(a: std.mem.Allocator, raw: []const u8) !i64 {
+        const parsed = try std.json.parseFromSliceLeaky(HeaderEnvelope, a, raw, .{
+            .ignore_unknown_fields = true,
+            .allocate = .alloc_always,
+        });
+        const h = (parsed.result orelse return error.DaemonNotReady).Ok orelse return error.DaemonNotReady;
+        return parseRfc3339(h.timestamp) orelse error.DaemonNotReady;
     }
 
     // --- Owner API transport ---------------------------------------------
@@ -1020,15 +1080,19 @@ pub const Epic = struct {
     fn fetchStatus(allocator: std.mem.Allocator, data_dir: []const u8) !Derived {
         const raw = try ownerCall(allocator, "get_status", data_dir);
         defer allocator.free(raw);
-        var parsed = try std.json.parseFromSlice(StatusEnvelope, allocator, raw, .{
+        var arena = std.heap.ArenaAllocator.init(allocator);
+        defer arena.deinit();
+        return derive(try parseStatus(arena.allocator(), raw));
+    }
+
+    /// Parse a `get_status` body into its `Status`. The strings in it point into
+    /// `a`'s allocations, so `a` should be an arena the caller drops afterwards.
+    fn parseStatus(a: std.mem.Allocator, raw: []const u8) !Status {
+        const parsed = try std.json.parseFromSliceLeaky(StatusEnvelope, a, raw, .{
             .ignore_unknown_fields = true,
             .allocate = .alloc_always,
         });
-        defer parsed.deinit();
-
-        const st = (parsed.value.result orelse return error.DaemonNotReady).Ok orelse
-            return error.DaemonNotReady;
-        return derive(st);
+        return (parsed.result orelse return error.DaemonNotReady).Ok orelse error.DaemonNotReady;
     }
 
     /// Live `get_status`, normalized for the frontend. Epic reports its sync phase
@@ -1890,8 +1954,8 @@ pub const Epic = struct {
     /// instead. Caller owns the slice.
     ///
     /// `node_addr`/`node_secret_path` come from `walletNodeKeys`: our own node
-    /// plus its `.foreign_api_secret` (the secret the wallet authenticates to the
-    /// node with — distinct from the wallet's own `.owner_api_secret`), or a
+    /// plus its Owner-API `.api_secret` (the secret the wallet authenticates to
+    /// the node with — distinct from the wallet's own `.owner_api_secret`), or a
     /// remote node and no secret at all.
     fn defaultWalletToml(
         allocator: std.mem.Allocator,
@@ -1940,12 +2004,21 @@ pub const Epic = struct {
     /// should authenticate with — the two `epic-wallet.toml` keys that differ
     /// between running our own node and using someone else's.
     ///
-    /// Our own node: its loopback address, and the `.foreign_api_secret` it
-    /// generates on first run. Someone else's: their base URL, and **no** secret
-    /// — we have none for a node we don't run, and a node published for other
-    /// people's wallets doesn't ask for one. The empty path is how the wallet
-    /// spells "no secret": it reads the first line of the named file and treats
-    /// one it can't open as absent, which is what an empty path always is.
+    /// Our own node: its loopback address, and its **Owner**-API `.api_secret`.
+    /// Not the foreign secret: the Epicbox listener won't read a single relay
+    /// message until the node's Owner API `get_status` says `no_sync`, and it
+    /// counts any error as "not synced" — so a wallet holding the wrong secret
+    /// gets a 401, pauses forever, and never receives or finalizes a payment,
+    /// while balances (Foreign API) look fine. epic-wallet sends one secret to
+    /// both endpoints, and the node leaves `/v2/foreign` open unless a
+    /// `.foreign_api_secret` file exists — which epic 4.0.3 doesn't create —
+    /// so the Owner secret is the one that works for both (verified live).
+    ///
+    /// Someone else's: their base URL, and **no** secret — we have none for a
+    /// node we don't run, and a node published for other people's wallets
+    /// doesn't ask for one. The empty path is how the wallet spells "no
+    /// secret": it reads the first line of the named file and treats one it
+    /// can't open as absent, which is what an empty path always is.
     ///
     /// Both strings come back already TOML-quoted, ready to be a `ManagedKey`
     /// value, and owned by `allocator` — a home directory can be arbitrarily
@@ -1977,7 +2050,7 @@ pub const Epic = struct {
         const secret_path = if (remote.len != 0)
             try allocator.dupe(u8, "\"\"")
         else
-            try std.fmt.allocPrint(allocator, "\"{s}/{s}\"", .{ top_dir, node_foreign_secret_file });
+            try std.fmt.allocPrint(allocator, "\"{s}/{s}\"", .{ top_dir, secret_file });
 
         return .{ .addr = addr, .secret_path = secret_path };
     }
@@ -4087,7 +4160,7 @@ pub const Epic = struct {
     // needs no lookup at all.
 
     /// The wallet's top dir (`~/.epic/main`), cached at launch like
-    /// `epicbox_index`: our own node's `.foreign_api_secret` lives there.
+    /// `epicbox_index`: our own node's `.api_secret` lives there.
     const WalletTop = struct {
         var mutex: std.atomic.Mutex = .unlocked;
         var buf: [1024]u8 = undefined;
@@ -4247,35 +4320,70 @@ pub const Epic = struct {
 
     /// POST a JSON-RPC call at the node's Foreign API — the node the wallet
     /// uses: someone else's (no secret, as for `foreignTip`), or ours on
-    /// localhost with its `.foreign_api_secret`, as epic-wallet authenticates
+    /// localhost with its `.api_secret`, as epic-wallet authenticates
     /// (`epic:<secret>`). Caller owns nothing: `a` is an arena.
     fn nodeForeign(a: std.mem.Allocator, method: []const u8, params: []const u8) ![]const u8 {
+        const r = try nodePost(a, "/v2/foreign", method, params);
+        if (r.status == .unauthorized) return error.AuthFailed;
+        if (r.status != .ok) return error.DaemonNotReady;
+        return r.body;
+    }
+
+    /// A node's HTTP answer, before anyone decides what its status means.
+    const NodeReply = struct {
+        status: std.http.Status,
+        body: []const u8,
+    };
+
+    /// POST a JSON-RPC call at `endpoint` on **the node the wallet uses**, with
+    /// the credential the wallet presents to it — the pair `walletNodeKeys`
+    /// writes into `epic-wallet.toml`, resolved from one read of the node
+    /// choice. Both halves matter to `listenerGate`, whose whole job is to see
+    /// what the wallet sees. `error.NodeUnreachable` when nothing accepts the
+    /// connection in time. Caller owns nothing: `a` is an arena.
+    fn nodePost(a: std.mem.Allocator, endpoint: []const u8, method: []const u8, params: []const u8) !NodeReply {
         var url_buf: [Coin.node_url_max]u8 = undefined;
         const remote = nodeUrl(&url_buf);
         const base = if (remote.len != 0) remote else "http://127.0.0.1:" ++ rpc_default_port;
-        const ep = try splitHostPort(base);
-        if (!rpc.endpointReachable(a, ep.host, ep.port, node_connect_timeout_ms)) return error.NodeUnreachable;
-
-        var threaded: std.Io.Threaded = .init(a, .{});
-        defer threaded.deinit();
-        const io = threaded.io();
 
         var auth_header: ?[]const u8 = null;
         if (remote.len == 0) {
+            var threaded: std.Io.Threaded = .init(a, .{});
+            defer threaded.deinit();
             var top_buf: [1024]u8 = undefined;
             const top = WalletTop.get(&top_buf);
             if (top.len > 0) {
-                const path = try std.fs.path.join(a, &.{ top, node_foreign_secret_file });
-                if (std.Io.Dir.cwd().readFileAlloc(io, path, a, .limited(256))) |raw| {
+                const path = try std.fs.path.join(a, &.{ top, secret_file });
+                if (std.Io.Dir.cwd().readFileAlloc(threaded.io(), path, a, .limited(256))) |raw| {
                     const secret = parseSecret(raw);
                     if (secret.len > 0) auth_header = try basicAuthHeader(a, rpc_default_username, secret);
                 } else |_| {}
             }
         }
+        return nodePostAt(a, base, auth_header, endpoint, method, params);
+    }
 
-        var client: std.http.Client = .{ .allocator = a, .io = io };
+    /// POST a JSON-RPC call at `endpoint` on the node at `base` (a normalized
+    /// `scheme://host:port`), basic-authed with `auth_header` when there is one.
+    /// The connect is bounded first (see `foreignTip` for why the fetch alone
+    /// can't be trusted to return). Caller owns nothing: `a` is an arena.
+    fn nodePostAt(
+        a: std.mem.Allocator,
+        base: []const u8,
+        auth_header: ?[]const u8,
+        endpoint: []const u8,
+        method: []const u8,
+        params: []const u8,
+    ) !NodeReply {
+        const ep = try splitHostPort(base);
+        if (!rpc.endpointReachable(a, ep.host, ep.port, node_connect_timeout_ms)) return error.NodeUnreachable;
+
+        var threaded: std.Io.Threaded = .init(a, .{});
+        defer threaded.deinit();
+
+        var client: std.http.Client = .{ .allocator = a, .io = threaded.io() };
         defer client.deinit();
-        const url = try std.fmt.allocPrint(a, "{s}/v2/foreign", .{base});
+        const url = try std.fmt.allocPrint(a, "{s}{s}", .{ base, endpoint });
         const body = try std.fmt.allocPrint(a, "{{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"{s}\",\"params\":{s}}}", .{ method, params });
         var resp: std.Io.Writer.Allocating = .init(a);
         var headers: [2]std.http.Header = .{
@@ -4289,9 +4397,45 @@ pub const Epic = struct {
             .response_writer = &resp.writer,
             .extra_headers = headers[0..if (auth_header != null) 2 else 1],
         });
-        if (result.status == .unauthorized) return error.AuthFailed;
-        if (result.status != .ok) return error.DaemonNotReady;
-        return resp.written();
+        return .{ .status = result.status, .body = resp.written() };
+    }
+
+    // --- The Epicbox listener's gate ---------------------------------------
+    //
+    // epic-wallet 4.0's `listen -m epicbox` reads **nothing** from the relay
+    // while its node isn't synced. A thread polls the node's *Owner* API
+    // `get_status` every 10 s with the wallet's node credential, and only
+    // `sync_status == "no_sync"` opens the gate — any error, a 401 included,
+    // counts as "not synced" (`wallet_args.rs`, `adapters/epicbox.rs`). The
+    // process stays alive, connected and subscribed the whole time, so a
+    // process-liveness check reads it as running while payments pile up at the
+    // relay. That hid two real outages: a local node the wallet couldn't
+    // authenticate to (every local-node user, until `walletNodeKeys` was fixed),
+    // and the public node stuck mid-sync for a day.
+    //
+    // So BoxWallet asks the same question, of the same node, with the same
+    // credential, and reports the answer as the listener's state.
+
+    /// Whether the listener's gate is open right now, asked exactly as the
+    /// listener asks it. Blocking; see `Coin.ExternalWallet.listener_gate`.
+    fn listenerGate(allocator: std.mem.Allocator) Coin.ListenerGate {
+        var arena = std.heap.ArenaAllocator.init(allocator);
+        defer arena.deinit();
+        const r = nodePost(arena.allocator(), "/v2/owner", "get_status", "[]") catch |err| return switch (err) {
+            // A path/URL we built wrong isn't the node's fault; nothing else can
+            // be told apart from "didn't answer" from here.
+            error.OutOfMemory => .node_no_status,
+            else => .node_unreachable,
+        };
+        return gateFromReply(arena.allocator(), r);
+    }
+
+    /// The listener's own rule, applied to a `get_status` reply: open only for a
+    /// 200 whose status parses and reads `no_sync`. Pure, for the tests.
+    fn gateFromReply(a: std.mem.Allocator, r: NodeReply) Coin.ListenerGate {
+        if (r.status != .ok) return .node_no_status;
+        const st = parseStatus(a, r.body) catch return .node_no_status;
+        return if (std.mem.eql(u8, st.sync_status, "no_sync")) .open else .node_syncing;
     }
 
     /// Cancel the unfinished send whose slate id is `slate_id` via the Owner
@@ -4431,6 +4575,7 @@ pub const Epic = struct {
         .launch_server_argv = launchServerArgv,
         .listener_argv = listenerArgv,
         .listener_name = "Epicbox listener",
+        .listener_gate = listenerGate,
         // Both processes are given their password at a terminal prompt, never in
         // argv (see `pass_on_tty`); empty where that isn't possible.
         .password_prompt = if (pass_on_tty) password_prompt else "",
@@ -5247,7 +5392,7 @@ test "defaultWalletToml bakes in all four sections + managed Owner-API/node valu
         a,
         "/home/alice/.epic/main",
         "http://127.0.0.1:3413",
-        "/home/alice/.epic/main/.foreign_api_secret",
+        "/home/alice/.epic/main/.api_secret",
     );
     defer a.free(toml);
     // All four config sections present, so the wallet binary deserializes it.
@@ -5259,9 +5404,9 @@ test "defaultWalletToml bakes in all four sections + managed Owner-API/node valu
     try std.testing.expect(std.mem.indexOf(u8, toml, "owner_api_listen_port = 3420") != null);
     try std.testing.expect(std.mem.indexOf(u8, toml, "api_listen_interface = \"127.0.0.1\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, toml, "check_node_api_http_addr = \"http://127.0.0.1:3413\"") != null);
-    // The wallet's own owner-API secret vs the node's foreign-API secret.
+    // The wallet's own owner-API secret vs the node's owner-API secret.
     try std.testing.expect(std.mem.indexOf(u8, toml, "api_secret_path = \"/home/alice/.epic/main/.owner_api_secret\"") != null);
-    try std.testing.expect(std.mem.indexOf(u8, toml, "node_api_secret_path = \"/home/alice/.epic/main/.foreign_api_secret\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, toml, "node_api_secret_path = \"/home/alice/.epic/main/.api_secret\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, toml, "data_file_dir = \"/home/alice/.epic/main/wallet_data\"") != null);
 }
 
@@ -6027,17 +6172,58 @@ test "parseTipHeight reads the height out of a Foreign-API get_tip" {
     try std.testing.expectError(error.DaemonNotReady, Epic.parseTipHeight(a, "{}"));
 }
 
+test "gateFromReply opens only where the listener's own rule would" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const G = Coin.ListenerGate;
+    const ok = "{\"id\":1,\"jsonrpc\":\"2.0\",\"result\":{\"Ok\":{\"connections\":8,\"sync_status\":\"no_sync\",\"tip\":{\"height\":3729785}}}}";
+    try std.testing.expectEqual(G.open, Epic.gateFromReply(a, .{ .status = .ok, .body = ok }));
+    // node.epiccash.com on 2026-09-29, a day stuck at one height.
+    const stuck = "{\"id\":1,\"jsonrpc\":\"2.0\",\"result\":{\"Ok\":{\"connections\":29,\"sync_info\":{\"current_height\":3729785,\"highest_height\":0},\"sync_status\":\"body_sync\",\"tip\":{\"height\":3729785}}}}";
+    try std.testing.expectEqual(G.node_syncing, Epic.gateFromReply(a, .{ .status = .ok, .body = stuck }));
+    // A local node the wallet presented the wrong secret to: the 401 that kept
+    // every local-node listener paused.
+    try std.testing.expectEqual(G.node_no_status, Epic.gateFromReply(a, .{ .status = .unauthorized, .body = "" }));
+    try std.testing.expectEqual(G.node_no_status, Epic.gateFromReply(a, .{ .status = .not_found, .body = "" }));
+    try std.testing.expectEqual(G.node_no_status, Epic.gateFromReply(a, .{ .status = .ok, .body = "{\"result\":{\"Err\":\"boom\"}}" }));
+}
+
+test "remoteSynced: the node's own verdict, overruled by a stale tip" {
+    const now: i64 = 1_790_655_000;
+    // Said synced, fresh tip.
+    try std.testing.expect(Epic.remoteSynced(true, now - 90, now));
+    // Said syncing: not synced, whatever the tip.
+    try std.testing.expect(!Epic.remoteSynced(false, now - 90, now));
+    // Won't say: the tip decides — fresh passes, a day old fails.
+    try std.testing.expect(Epic.remoteSynced(null, now - 90, now));
+    try std.testing.expect(!Epic.remoteSynced(null, now - 25 * 3600, now));
+    // Says synced but hasn't moved in over an hour: stopped following the chain.
+    try std.testing.expect(!Epic.remoteSynced(true, now - Epic.remote_stale_secs - 1, now));
+    // Knowing nothing condemns nothing.
+    try std.testing.expect(Epic.remoteSynced(null, 0, now));
+}
+
+test "parseHeaderTime reads a get_header timestamp" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const raw = "{\"id\":1,\"jsonrpc\":\"2.0\",\"result\":{\"Ok\":{\"height\":3729785,\"timestamp\":\"2026-09-28T03:16:38+00:00\",\"version\":7}}}";
+    try std.testing.expectEqual(Epic.parseRfc3339("2026-09-28T03:16:38Z").?, try Epic.parseHeaderTime(arena.allocator(), raw));
+    try std.testing.expectError(error.DaemonNotReady, Epic.parseHeaderTime(arena.allocator(), "{\"result\":{\"Err\":\"NotFound\"}}"));
+}
+
 test "walletNodeKeys pairs each node with its own credential, never the other's" {
     const a = std.testing.allocator;
     const top = "/home/alice/.epic/main";
     defer Epic.NodeSource.set("");
 
-    // Our own node: loopback, authenticated with the foreign secret it generates.
+    // Our own node: loopback, authenticated with its Owner-API secret — the one
+    // `/v2/owner get_status` demands, or the Epicbox listener never un-pauses.
     Epic.NodeSource.set("");
     const local = try Epic.walletNodeKeys(a, top);
     defer local.deinit(a);
     try std.testing.expectEqualStrings("\"http://127.0.0.1:3413\"", local.addr);
-    try std.testing.expectEqualStrings("\"/home/alice/.epic/main/.foreign_api_secret\"", local.secret_path);
+    try std.testing.expectEqualStrings("\"/home/alice/.epic/main/.api_secret\"", local.secret_path);
 
     // Someone else's: their URL, and no secret — we have none for a node we
     // don't run, and handing over the local one would be both useless and wrong.
@@ -6085,7 +6271,7 @@ test "the wallet config is re-pointed in both directions, secret and all" {
         const text = try read(a, io, top);
         defer a.free(text);
         try std.testing.expect(std.mem.indexOf(u8, text, "check_node_api_http_addr = \"http://127.0.0.1:3413\"") != null);
-        try std.testing.expect(std.mem.indexOf(u8, text, ".foreign_api_secret\"") != null);
+        try std.testing.expect(std.mem.indexOf(u8, text, "/.api_secret\"") != null);
     }
 
     // Switched to a remote: the address moves *and* the local secret goes, so
@@ -6097,7 +6283,7 @@ test "the wallet config is re-pointed in both directions, secret and all" {
         defer a.free(text);
         try std.testing.expect(std.mem.indexOf(u8, text, "check_node_api_http_addr = \"http://node.example:3413\"") != null);
         try std.testing.expect(std.mem.indexOf(u8, text, "node_api_secret_path = \"\"") != null);
-        try std.testing.expect(std.mem.indexOf(u8, text, ".foreign_api_secret") == null);
+        try std.testing.expect(std.mem.indexOf(u8, text, "/.api_secret") == null);
         // Everything else BoxWallet manages is untouched by the switch.
         try std.testing.expect(std.mem.indexOf(u8, text, "owner_api_listen_port = 3420") != null);
         try std.testing.expect(std.mem.indexOf(u8, text, "api_listen_interface = \"127.0.0.1\"") != null);
@@ -6111,7 +6297,7 @@ test "the wallet config is re-pointed in both directions, secret and all" {
         const text = try read(a, io, top);
         defer a.free(text);
         try std.testing.expect(std.mem.indexOf(u8, text, "check_node_api_http_addr = \"http://127.0.0.1:3413\"") != null);
-        try std.testing.expect(std.mem.indexOf(u8, text, ".foreign_api_secret\"") != null);
+        try std.testing.expect(std.mem.indexOf(u8, text, "/.api_secret\"") != null);
         try std.testing.expect(std.mem.indexOf(u8, text, "node_api_secret_path = \"\"") == null);
     }
 }

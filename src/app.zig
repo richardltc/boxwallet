@@ -3252,6 +3252,11 @@ const Activity = struct {
         // regardless of whether the daemon answered — the chain occupies disk
         // whether it's up or down.
         self.sampleStorage(a);
+        // Whether a running payment listener's node will let it work (Epic's
+        // Epicbox listener pauses while its node isn't synced). A network round
+        // trip, so here and not on the UI thread; self-throttled, and a no-op
+        // unless a listener is up. Touches only the session's atomics.
+        extwallet.refreshListenerGate(&self.wallet_rpc, self.coin);
         self.poll_done.store(true, .release);
     }
 
@@ -5775,8 +5780,13 @@ pub const App = struct {
                         if (xcoin.walletHasListener() and act.wallet_setup_thread == null) {
                             const was = act.listener_state;
                             act.listener_state = extwallet.probeListener(&act.wallet_rpc);
+                            const ln = xcoin.externalWallet().?.listener_name;
                             if (act.listener_state == .stopped and was != .stopped)
-                                self.logf("{s}: {s} stopped — payments wait until you lock and unlock the wallet (w)", .{ xcoin.coinName(), xcoin.externalWallet().?.listener_name });
+                                self.logf("{s}: {s} stopped — payments wait until you lock and unlock the wallet (w)", .{ xcoin.coinName(), ln })
+                            else if (act.listener_state == .paused and was != .paused)
+                                self.logf("{s}: {s} {s}", .{ xcoin.coinName(), ln, extwallet.gateText(extwallet.listenerGate(&act.wallet_rpc)) })
+                            else if (act.listener_state == .running and was == .paused)
+                                self.logf("{s}: {s} running again — the node is synced", .{ xcoin.coinName(), ln });
                         }
                     } else if (act.daemonState() != .running and act.ext_wallet_open.load(.monotonic) != 0) {
                         // In-daemon wallet (Ergo): no process to manage, but the
@@ -10381,6 +10391,13 @@ pub const App = struct {
                 ew.listener_name,
                 (zz.Style{}).bold(true).fg(.red).render(a, "stopped — payments wait until you lock and unlock the wallet (w)") catch "stopped",
             }),
+            .paused => blk: {
+                const why = extwallet.gateText(extwallet.listenerGate(&act.wallet_rpc));
+                break :blk std.fmt.allocPrint(a, "\n{s}: {s}", .{
+                    ew.listener_name,
+                    (zz.Style{}).bold(true).fg(.yellow).render(a, why) catch why,
+                });
+            },
         };
     }
 
@@ -16270,14 +16287,20 @@ test "the status line for a remote coin never narrates local sync figures" {
     act.node_url_len = url.len;
 
     // Answering, with every figure the local ladder would have read — no peers,
-    // mid-"sync", a warm-up phase. None of them is this node's to report.
+    // header figures, a warm-up phase. None of them is this node's to report.
     act.daemon.store(@intFromEnum(DaemonState.running), .release);
     act.peers = 0;
-    act.sync = .syncing;
+    act.sync = .synced;
     act.headers_cur = 10;
     act.headers_total = 900_000;
     act.loading_phase = .loading;
     try std.testing.expectEqualStrings("Using a remote node", statusReadout(&act).text);
+
+    // `sync` is the one figure that *is* about the remote: the coin's verdict on
+    // whether that node follows the chain. Not synced is said, as a warning.
+    act.sync = .syncing;
+    try std.testing.expectEqualStrings("Remote node isn't synced", statusReadout(&act).text);
+    act.sync = .synced;
 
     // Before the first poll comes back, nothing is known either way.
     act.daemon.store(@intFromEnum(DaemonState.stopped), .release);

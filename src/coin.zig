@@ -97,6 +97,21 @@ pub const Coin = struct {
         }
     };
 
+    /// What `ExternalWallet.listener_gate` found: whether the listener's node
+    /// will let it process payments, and if not, why not. Named for what the user
+    /// can do about each, not for the HTTP status behind it.
+    pub const ListenerGate = enum(u8) {
+        /// The node says it's synced: payments are processed.
+        open,
+        /// The node answered but is still syncing (or stuck mid-sync).
+        node_syncing,
+        /// The node is up but won't report its status to this wallet — a wrong
+        /// credential, or a node that doesn't serve the call at all.
+        node_no_status,
+        /// Nothing answered.
+        node_unreachable,
+    };
+
     pub const ExternalWallet = struct {
         /// Port BoxWallet binds the wallet-rpc process to (localhost only). Null
         /// for an in-daemon wallet (no separate process — the daemon's own port is
@@ -283,6 +298,15 @@ pub const Coin = struct {
         /// What the payment listener is called on screen ("Epicbox listener").
         /// Paired with `listener_argv`.
         listener_name: []const u8 = "Payment listener",
+        /// Optional: whether a *running* listener is actually processing
+        /// payments, answered by asking the same question it asks itself. Epic's
+        /// only reads the relay while its node's Owner API `get_status` says
+        /// `no_sync`, and treats any error as "not synced" — so a listener can be
+        /// alive, connected and subscribed while every payment sits at the relay.
+        /// Blocking (a network round trip): `extwallet.refreshListenerGate` calls
+        /// it from the front-ends' poll threads, never the UI thread. Null = a
+        /// running listener is taken at its word.
+        listener_gate: ?*const fn (allocator: std.mem.Allocator) ListenerGate = null,
         /// Non-empty when the wallet server and listener read their password from
         /// a terminal instead of argv: `extwallet` then starts them on a private
         /// pty (`ttypass`) and types the password at each prompt containing this
