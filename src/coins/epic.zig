@@ -8,6 +8,7 @@ const conf = @import("../conf.zig");
 const bip39 = @import("../bip39.zig");
 const warmup = @import("../warmup.zig");
 const ttypass = @import("../ttypass.zig");
+const proc_mod = @import("../proc.zig");
 const Coin = @import("../coin.zig").Coin;
 
 /// Epic Cash (EPIC) backend — the node daemon plus a managed `epic-wallet`
@@ -45,9 +46,9 @@ const Coin = @import("../coin.zig").Coin;
 ///     status poll. Shipping a fixed fallback is acceptable for the same reason
 ///     as Ergo's api_key: the API is bound to 127.0.0.1.
 ///   * **Consensus** — proof-of-work, so no staking.
-///   * **Stop** — the Owner API exposes no shutdown method, so the node is
-///     stopped by sending it SIGTERM (Linux-only, which is the only target Epic
-///     installs on).
+///   * **Stop** — the Owner API exposes no shutdown method, so the node process
+///     is terminated (`proc.terminateMatching`): SIGTERM on Linux/macOS, a hard
+///     stop on Windows.
 pub const Epic = struct {
     /// Whether the coin is exposed in the nav. False keeps it out of the left
     /// bar entirely (registered but hidden) until it's ready for users.
@@ -182,12 +183,18 @@ pub const Epic = struct {
 
     // --- Node distribution ----------------------------------------------
     //
-    // The node is the standalone `EpicCash/epic` 4.0.3 release: a `.tar.gz` that
-    // nests `epic` under a versioned wrapper dir (no `bin/`), so it's extracted
-    // whole and `promoteAndTidy` lifts the binary to the install root. linux/amd64
-    // only (other targets resolve no download → `UnsupportedPlatform`).
+    // The node is the standalone `EpicCash/epic` 4.0.3 release. On Linux it's a
+    // `.tar.gz` that nests `epic` under a versioned wrapper dir (no `bin/`), so
+    // it's extracted whole and `promoteAndTidy` lifts the binary to the install
+    // root. On Windows it's a `.zip` holding `epic.exe` alone at its top level,
+    // which lands in the install root as it is — there is no wrapper to promote
+    // out of, and none to delete (`node_wrapper` null: an empty wrapper name
+    // would have `promoteAndTidy` delete the install root itself).
     const release_base = "https://github.com/EpicCash/epic/releases/download/v" ++ core_version;
-    const extracted_dir = "epic-" ++ core_version ++ "-linux-amd64";
+    const node_wrapper: ?[]const u8 = switch (builtin.os.tag) {
+        .windows => null,
+        else => "epic-" ++ core_version ++ "-linux-amd64",
+    };
     const bin_subdir = "";
     const promote_files = [_][]const u8{daemon_file};
     // Temp file the node download streams to, unique to Epic so a concurrent install
@@ -195,10 +202,15 @@ pub const Epic = struct {
     pub const scratch_file = ".boxwallet-epic.part";
 
     /// The node download for the build target, or null where upstream ships no
-    /// binary (linux/amd64 only).
+    /// binary (linux/amd64 and windows/x86_64; there's a macOS arm64 build too,
+    /// but no wallet to go with it yet).
     const download: ?install_mod.Download = switch (builtin.os.tag) {
         .linux => switch (builtin.cpu.arch) {
-            .x86_64 => .{ .url = release_base ++ "/" ++ extracted_dir ++ ".tar.gz", .format = .tar_gz },
+            .x86_64 => .{ .url = release_base ++ "/" ++ node_wrapper.? ++ ".tar.gz", .format = .tar_gz },
+            else => null,
+        },
+        .windows => switch (builtin.cpu.arch) {
+            .x86_64 => .{ .url = release_base ++ "/Windows-v" ++ core_version ++ ".zip", .format = .zip },
             else => null,
         },
         else => null,
@@ -256,6 +268,16 @@ pub const Epic = struct {
     const wallet_strip: u32 = 1;
 
     /// The wallet download for the build target, or null off linux/amd64.
+    ///
+    /// **Windows is deliberately null** until EpicCash publishes a Windows build
+    /// of 4.0.1 or later (v4.0.2's release has no assets; its CI keeps none).
+    /// The only Windows `epic-wallet.exe` upstream is v4.0.0, and its
+    /// `owner_api` attaches the basic-auth secret to `/v2/foreign` instead of
+    /// `/v2/owner` + `/v3/owner` (fixed in 4.0.1's "regression fix", and done
+    /// Grin's way in 4.0.2) — so any local process could reach the Owner API
+    /// without the per-session secret. Everything else Epic needs on Windows
+    /// is in place (node download, stop, TOML paths); `install` refuses before
+    /// downloading anything while this is null.
     const wallet_download: ?install_mod.Download = switch (builtin.os.tag) {
         .linux => switch (builtin.cpu.arch) {
             .x86_64 => .{
@@ -1161,54 +1183,17 @@ pub const Epic = struct {
         };
     }
 
-    /// The Owner API has no shutdown method, so stop the node by sending it
-    /// SIGTERM. Linux-only — Epic installs only on linux/amd64 — and a no-op
-    /// elsewhere so the code stays cross-platform. The caller's probe loop then
-    /// confirms the daemon went down. `auth` is unused.
+    /// The Owner API has no shutdown method, so stop the node by terminating the
+    /// process — `epic server …` precisely, so a bystander merely named `epic`
+    /// isn't touched (`proc.terminateMatching`). SIGTERM where there are signals;
+    /// on Windows a hard stop, since there's no signal a windowless process can
+    /// be sent (see `terminateMatching`). The caller's probe loop then confirms
+    /// the daemon went down. `auth` is unused.
     pub fn requestStop(allocator: std.mem.Allocator, auth: models.CoinAuth) !void {
         _ = auth;
-        if (builtin.os.tag != .linux) return;
-
         var threaded: std.Io.Threaded = .init(allocator, .{});
         defer threaded.deinit();
-        const io = threaded.io();
-
-        var proc = std.Io.Dir.cwd().openDir(io, "/proc", .{ .iterate = true }) catch return;
-        defer proc.close(io);
-
-        var it = proc.iterate();
-        while (it.next(io) catch null) |entry| {
-            if (entry.kind != .directory or entry.name.len == 0 or !std.ascii.isDigit(entry.name[0])) continue;
-            const pid = std.fmt.parseInt(std.posix.pid_t, entry.name, 10) catch continue;
-
-            // Match our node precisely: the process command is `epic` and its
-            // cmdline carries the `server` subcommand we launched it with — so a
-            // bystander process merely named "epic" isn't signalled.
-            if (!isEpicServer(io, proc, entry.name)) continue;
-            std.posix.kill(pid, std.posix.SIG.TERM) catch {};
-        }
-    }
-
-    /// True if `/proc/<pid>` is an Epic node we launched: its `comm` is `epic`
-    /// and its `cmdline` contains the `server` subcommand. Best-effort — any IO
-    /// hiccup reads as "not a match" so we never signal the wrong process.
-    fn isEpicServer(io: std.Io, proc: std.Io.Dir, pid_name: []const u8) bool {
-        var path_buf: [40]u8 = undefined;
-
-        const comm_path = std.fmt.bufPrint(&path_buf, "{s}/comm", .{pid_name}) catch return false;
-        var cf = proc.openFile(io, comm_path, .{}) catch return false;
-        defer cf.close(io);
-        var cbuf: [64]u8 = undefined;
-        const cn = cf.readPositionalAll(io, &cbuf, 0) catch return false;
-        if (!std.mem.eql(u8, std.mem.trim(u8, cbuf[0..cn], " \t\r\n"), "epic")) return false;
-
-        const cl_path = std.fmt.bufPrint(&path_buf, "{s}/cmdline", .{pid_name}) catch return false;
-        var lf = proc.openFile(io, cl_path, .{}) catch return false;
-        defer lf.close(io);
-        // cmdline is NUL-separated argv; "server" appears as a standalone arg.
-        var lbuf: [4096]u8 = undefined;
-        const ln = lf.readPositionalAll(io, &lbuf, 0) catch return false;
-        return std.mem.indexOf(u8, lbuf[0..ln], "server") != null;
+        _ = proc_mod.terminateMatching(threaded.io(), daemon_file, "server");
     }
 
     // --- Files / paths ---------------------------------------------------
@@ -1248,11 +1233,15 @@ pub const Epic = struct {
         install_root: []const u8,
         progress: ?install_mod.Progress,
     ) !void {
+        // Both, before either download: a node without its wallet is no use, and
+        // failing after a 10 MB download would leave it installed and half-working.
         const dl = download orelse return error.UnsupportedPlatform;
-        try install_mod.downloadAndExtract(allocator, dl.url, dl.format, install_root, scratch_file, 0, progress);
-        try install_mod.promoteAndTidy(allocator, install_root, extracted_dir, bin_subdir, &promote_files);
-
         const wdl = wallet_download orelse return error.UnsupportedPlatform;
+
+        try install_mod.downloadAndExtract(allocator, dl.url, dl.format, install_root, scratch_file, 0, progress);
+        if (node_wrapper) |wrapper|
+            try install_mod.promoteAndTidy(allocator, install_root, wrapper, bin_subdir, &promote_files);
+
         try install_mod.downloadAndExtract(allocator, wdl.url, wdl.format, install_root, wallet_scratch_file, wallet_strip, progress);
         try markExecutable(allocator, install_root, wallet_file);
     }
@@ -1338,6 +1327,7 @@ pub const Epic = struct {
             .stdin = .ignore,
             .stdout = .ignore,
             .stderr = .ignore,
+            .create_no_window = builtin.os.tag == .windows,
         });
         _ = try child.wait(io);
     }
@@ -1953,16 +1943,23 @@ pub const Epic = struct {
     /// existing (possibly user-edited) config is healed by `patchWalletConf`
     /// instead. Caller owns the slice.
     ///
-    /// `node_addr`/`node_secret_path` come from `walletNodeKeys`: our own node
-    /// plus its Owner-API `.api_secret` (the secret the wallet authenticates to
-    /// the node with — distinct from the wallet's own `.owner_api_secret`), or a
-    /// remote node and no secret at all.
+    /// `node_addr`/`node_secret_path` come from `walletNodeKeys`, already TOML
+    /// strings: our own node plus its Owner-API `.api_secret` (the secret the
+    /// wallet authenticates to the node with — distinct from the wallet's own
+    /// `.owner_api_secret`), or a remote node and no secret at all. Every path
+    /// goes through `tomlPath`, so a Windows home dir survives the trip.
     fn defaultWalletToml(
         allocator: std.mem.Allocator,
         top_dir: []const u8,
         node_addr: []const u8,
         node_secret_path: []const u8,
     ) ![]u8 {
+        const secret_path = try tomlPath(allocator, top_dir, owner_secret_file);
+        defer allocator.free(secret_path);
+        const data_dir_val = try tomlPath(allocator, top_dir, "wallet_data");
+        defer allocator.free(data_dir_val);
+        const log_path = try tomlPath(allocator, top_dir, "epic-wallet.log");
+        defer allocator.free(log_path);
         return std.fmt.allocPrint(allocator,
             \\[wallet]
             \\chain_type = "Mainnet"
@@ -1970,10 +1967,10 @@ pub const Epic = struct {
             \\api_listen_port = 3415
             \\owner_api_listen_port = {s}
             \\owner_api_include_foreign = false
-            \\api_secret_path = "{s}/{s}"
-            \\node_api_secret_path = "{s}"
-            \\check_node_api_http_addr = "{s}"
-            \\data_file_dir = "{s}/wallet_data"
+            \\api_secret_path = {s}
+            \\node_api_secret_path = {s}
+            \\check_node_api_http_addr = {s}
+            \\data_file_dir = {s}
             \\no_commit_cache = false
             \\dark_background_color_scheme = true
             \\
@@ -1993,11 +1990,11 @@ pub const Epic = struct {
             \\stdout_log_level = "Info"
             \\log_to_file = true
             \\file_log_level = "Info"
-            \\log_file_path = "{s}/epic-wallet.log"
+            \\log_file_path = {s}
             \\log_file_append = true
             \\log_max_size = 16777216
             \\
-        , .{ wallet_rpc_port, top_dir, owner_secret_file, node_secret_path, node_addr, top_dir, top_dir });
+        , .{ wallet_rpc_port, secret_path, node_secret_path, node_addr, data_dir_val, log_path });
     }
 
     /// Where the wallet should look for a node, and which secret (if any) it
@@ -2024,6 +2021,35 @@ pub const Epic = struct {
     /// value, and owned by `allocator` — a home directory can be arbitrarily
     /// deep, and a fixed buffer that overflowed would fail the whole config heal
     /// over a long path.
+    /// `value` as a TOML basic string, quotes included. Backslashes and quotes
+    /// are escaped, so a Windows path (`C:\Users\…`) reads back as itself
+    /// instead of as a run of escape sequences — which is what the plain
+    /// `"{s}"` this replaced produced there: a config the wallet either refused
+    /// or read with its paths mangled. Control characters (never in a real path,
+    /// but a path is user-controlled) become `\uXXXX`. Caller owns the result.
+    fn tomlString(allocator: std.mem.Allocator, value: []const u8) ![]u8 {
+        var out: std.Io.Writer.Allocating = .init(allocator);
+        errdefer out.deinit();
+        const w = &out.writer;
+        try w.writeByte('"');
+        for (value) |c| switch (c) {
+            '\\' => try w.writeAll("\\\\"),
+            '"' => try w.writeAll("\\\""),
+            0...0x1f, 0x7f => try w.print("\\u{x:0>4}", .{c}),
+            else => try w.writeByte(c),
+        };
+        try w.writeByte('"');
+        return out.toOwnedSlice();
+    }
+
+    /// `<top_dir>/<name>` joined with the platform's separator, as a TOML string
+    /// (see `tomlString`). Caller owns the result.
+    fn tomlPath(allocator: std.mem.Allocator, top_dir: []const u8, name: []const u8) ![]u8 {
+        const joined = try std.fs.path.join(allocator, &.{ top_dir, name });
+        defer allocator.free(joined);
+        return tomlString(allocator, joined);
+    }
+
     const WalletNodeKeys = struct {
         addr: []const u8,
         secret_path: []const u8,
@@ -2042,7 +2068,7 @@ pub const Epic = struct {
         const remote = nodeUrl(&url_buf);
 
         const addr = if (remote.len != 0)
-            try std.fmt.allocPrint(allocator, "\"{s}\"", .{remote})
+            try tomlString(allocator, remote)
         else
             try std.fmt.allocPrint(allocator, "\"http://127.0.0.1:{s}\"", .{rpc_default_port});
         errdefer allocator.free(addr);
@@ -2050,7 +2076,7 @@ pub const Epic = struct {
         const secret_path = if (remote.len != 0)
             try allocator.dupe(u8, "\"\"")
         else
-            try std.fmt.allocPrint(allocator, "\"{s}/{s}\"", .{ top_dir, secret_file });
+            try tomlPath(allocator, top_dir, secret_file);
 
         return .{ .addr = addr, .secret_path = secret_path };
     }
@@ -2066,9 +2092,9 @@ pub const Epic = struct {
     /// Leaving either behind would point the wallet at one node while handing it
     /// the other's credential.
     fn patchWalletConf(allocator: std.mem.Allocator, io: std.Io, dir: std.Io.Dir, top_dir: []const u8) !void {
-        const secret_path = try std.fmt.allocPrint(allocator, "\"{s}/{s}\"", .{ top_dir, owner_secret_file });
+        const secret_path = try tomlPath(allocator, top_dir, owner_secret_file);
         defer allocator.free(secret_path);
-        const data_dir_val = try std.fmt.allocPrint(allocator, "\"{s}/wallet_data\"", .{top_dir});
+        const data_dir_val = try tomlPath(allocator, top_dir, "wallet_data");
         defer allocator.free(data_dir_val);
 
         const node = try walletNodeKeys(allocator, top_dir);
@@ -2114,15 +2140,9 @@ pub const Epic = struct {
         defer dir.close(io);
 
         if (dir.access(io, wallet_conf_file, .{})) |_| {} else |_| {
-            // Unquoted here: the template puts its own quotes around each value.
             const node = try walletNodeKeys(allocator, top);
             defer node.deinit(allocator);
-            const tmpl = try defaultWalletToml(
-                allocator,
-                top,
-                std.mem.trim(u8, node.addr, "\""),
-                std.mem.trim(u8, node.secret_path, "\""),
-            );
+            const tmpl = try defaultWalletToml(allocator, top, node.addr, node.secret_path);
             defer allocator.free(tmpl);
             try dir.writeFile(io, .{ .sub_path = wallet_conf_file, .data = tmpl });
         }
@@ -4955,6 +4975,14 @@ test "node download resolves to the 4.0.3 tar.gz only on linux/amd64" {
         const dl = Epic.download orelse return error.TestUnexpectedResult;
         try std.testing.expectEqual(install_mod.Format.tar_gz, dl.format);
         try std.testing.expect(std.mem.indexOf(u8, dl.url, "epic-4.0.3-linux-amd64.tar.gz") != null);
+        try std.testing.expectEqualStrings("epic-4.0.3-linux-amd64", Epic.node_wrapper.?);
+    } else if (builtin.os.tag == .windows and builtin.cpu.arch == .x86_64) {
+        // A flat zip: `epic.exe` at the top level, and no wrapper to promote out
+        // of (or to delete — an empty name there would take the install root).
+        const dl = Epic.download orelse return error.TestUnexpectedResult;
+        try std.testing.expectEqual(install_mod.Format.zip, dl.format);
+        try std.testing.expect(std.mem.endsWith(u8, dl.url, "/v4.0.3/Windows-v4.0.3.zip"));
+        try std.testing.expect(Epic.node_wrapper == null);
     } else {
         try std.testing.expect(Epic.download == null);
     }
@@ -5391,8 +5419,8 @@ test "defaultWalletToml bakes in all four sections + managed Owner-API/node valu
     const toml = try Epic.defaultWalletToml(
         a,
         "/home/alice/.epic/main",
-        "http://127.0.0.1:3413",
-        "/home/alice/.epic/main/.api_secret",
+        "\"http://127.0.0.1:3413\"",
+        "\"/home/alice/.epic/main/.api_secret\"",
     );
     defer a.free(toml);
     // All four config sections present, so the wallet binary deserializes it.
@@ -6210,6 +6238,22 @@ test "parseHeaderTime reads a get_header timestamp" {
     const raw = "{\"id\":1,\"jsonrpc\":\"2.0\",\"result\":{\"Ok\":{\"height\":3729785,\"timestamp\":\"2026-09-28T03:16:38+00:00\",\"version\":7}}}";
     try std.testing.expectEqual(Epic.parseRfc3339("2026-09-28T03:16:38Z").?, try Epic.parseHeaderTime(arena.allocator(), raw));
     try std.testing.expectError(error.DaemonNotReady, Epic.parseHeaderTime(arena.allocator(), "{\"result\":{\"Err\":\"NotFound\"}}"));
+}
+
+test "tomlString keeps a Windows path intact" {
+    const a = std.testing.allocator;
+    // What a Windows home dir looks like, plus the two characters TOML escapes.
+    const got = try Epic.tomlString(a, "C:\\Users\\O\"Neil\\.epic\\main");
+    defer a.free(got);
+    try std.testing.expectEqualStrings("\"C:\\\\Users\\\\O\\\"Neil\\\\.epic\\\\main\"", got);
+
+    const plain = try Epic.tomlString(a, "/home/alice/.epic/main");
+    defer a.free(plain);
+    try std.testing.expectEqualStrings("\"/home/alice/.epic/main\"", plain);
+
+    const ctl = try Epic.tomlString(a, "a\tb");
+    defer a.free(ctl);
+    try std.testing.expectEqualStrings("\"a\\u0009b\"", ctl);
 }
 
 test "walletNodeKeys pairs each node with its own credential, never the other's" {

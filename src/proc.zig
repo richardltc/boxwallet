@@ -65,6 +65,111 @@ pub fn aliveMatching(io: std.Io, name: []const u8, cmdline_needle: ?[]const u8) 
     return false;
 }
 
+/// Ask every process named `name` to terminate — restricted, when
+/// `cmdline_needle` is given, to those whose command line also contains it — and
+/// return how many were asked. For a daemon with no shutdown API (Epic's node):
+/// the caller then watches its RPC go quiet, as with any other stop.
+///
+/// The needle is what keeps a bystander safe. Epic's node is `epic server run`,
+/// so `("epic", "server")` stops that and leaves alone anything else that happens
+/// to be called `epic` — the wallet (`epic-wallet`) is a different image
+/// already, but an `epic` run for some other subcommand isn't.
+///
+/// - **Linux:** SIGTERM to each `/proc` match (`comm`, truncated to 15 bytes;
+///   the needle against the NUL-separated `cmdline`). Zombies are skipped — they
+///   have nothing left to stop.
+/// - **Windows:** the Toolhelp snapshot by image name (`epic.exe`), the command
+///   line read from each match as `aliveMatching` does, then `TerminateProcess`.
+///   There is no SIGTERM to send: a console-control event only reaches a process
+///   sharing our console, and a daemon spawned with no window doesn't. So this
+///   is a hard stop, as Zano's `taskkill /F` already is — the chain store is
+///   LMDB, which a hard stop can't corrupt, only cost its unflushed writes.
+/// - **macOS and other POSIX without `/proc`:** `pkill -TERM`, by exact name or,
+///   with a needle, by the `"<name> <needle>"` command-line pattern.
+pub fn terminateMatching(io: std.Io, name: []const u8, cmdline_needle: ?[]const u8) usize {
+    if (builtin.os.tag == .windows) return terminateWindows(name, cmdline_needle);
+
+    var proc = std.Io.Dir.cwd().openDir(io, "/proc", .{ .iterate = true }) catch
+        return terminateByPkill(io, name, cmdline_needle);
+    defer proc.close(io);
+
+    const want = if (name.len > 15) name[0..15] else name;
+    var asked: usize = 0;
+    var it = proc.iterate();
+    while (it.next(io) catch null) |entry| {
+        if (entry.kind != .directory or entry.name.len == 0 or !std.ascii.isDigit(entry.name[0])) continue;
+        var path_buf: [32]u8 = undefined;
+
+        const comm_path = std.fmt.bufPrint(&path_buf, "{s}/comm", .{entry.name}) catch continue;
+        var cf = proc.openFile(io, comm_path, .{}) catch continue;
+        var cbuf: [64]u8 = undefined;
+        const cn = cf.readPositionalAll(io, &cbuf, 0) catch 0;
+        cf.close(io);
+        if (!std.mem.eql(u8, std.mem.trim(u8, cbuf[0..cn], " \t\r\n"), want)) continue;
+
+        if (cmdline_needle) |needle| {
+            const cl_path = std.fmt.bufPrint(&path_buf, "{s}/cmdline", .{entry.name}) catch continue;
+            var lf = proc.openFile(io, cl_path, .{}) catch continue;
+            var lbuf: [4096]u8 = undefined;
+            const ln = lf.readPositionalAll(io, &lbuf, 0) catch 0;
+            lf.close(io);
+            if (std.mem.indexOf(u8, lbuf[0..ln], needle) == null) continue;
+        }
+        if (isZombie(io, proc, entry.name)) continue;
+
+        const pid = std.fmt.parseInt(std.posix.pid_t, entry.name, 10) catch continue;
+        std.posix.kill(pid, std.posix.SIG.TERM) catch continue;
+        asked += 1;
+    }
+    return asked;
+}
+
+/// `terminateMatching` without `/proc`: `pkill` exits 0 when it signalled
+/// something. It can't say how many, so a hit counts as one.
+fn terminateByPkill(io: std.Io, name: []const u8, cmdline_needle: ?[]const u8) usize {
+    var pat_buf: [256]u8 = undefined;
+    const argv: []const []const u8 = if (cmdline_needle) |needle| blk: {
+        const pat = std.fmt.bufPrint(&pat_buf, "{s} {s}", .{ name, needle }) catch return 0;
+        break :blk &.{ "pkill", "-TERM", "-f", pat };
+    } else &.{ "pkill", "-TERM", "-x", name };
+    var child = std.process.spawn(io, .{
+        .argv = argv,
+        .stdin = .ignore,
+        .stdout = .ignore,
+        .stderr = .ignore,
+    }) catch return 0;
+    return switch (child.wait(io) catch return 0) {
+        .exited => |code| @intFromBool(code == 0),
+        else => 0,
+    };
+}
+
+/// The Windows half of `terminateMatching`.
+fn terminateWindows(name: []const u8, cmdline_needle: ?[]const u8) usize {
+    const windows = std.os.windows;
+    const snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+    if (snapshot == windows.INVALID_HANDLE_VALUE) return 0;
+    defer windows.CloseHandle(snapshot);
+
+    var asked: usize = 0;
+    var entry: PROCESSENTRY32W = undefined;
+    entry.dwSize = @sizeOf(PROCESSENTRY32W);
+    if (!Process32FirstW(snapshot, &entry).toBool()) return 0;
+    while (true) {
+        const pid = entry.th32ProcessID;
+        if (pid != 0 and imageNameEquals(&entry.szExeFile, name) and
+            (cmdline_needle == null or cmdlineContains(pid, cmdline_needle.?)))
+        {
+            if (OpenProcess(PROCESS_TERMINATE, .FALSE, pid)) |h| {
+                if (TerminateProcess(h, 1).toBool()) asked += 1;
+                windows.CloseHandle(h);
+            }
+        }
+        entry.dwSize = @sizeOf(PROCESSENTRY32W);
+        if (!Process32NextW(snapshot, &entry).toBool()) return asked;
+    }
+}
+
 // --- Windows process enumeration ------------------------------------------
 //
 // There is no portable stdlib equivalent, and std declares no Toolhelp bindings,
@@ -109,6 +214,13 @@ extern "kernel32" fn Process32NextW(
 /// modern, least-privileged form and is what a same-user process is granted.
 const PROCESS_QUERY_LIMITED_INFORMATION: u32 = 0x1000;
 const PROCESS_VM_READ: u32 = 0x0010;
+/// The one right `terminateWindows` needs, and no more.
+const PROCESS_TERMINATE: u32 = 0x0001;
+
+extern "kernel32" fn TerminateProcess(
+    hProcess: std.os.windows.HANDLE,
+    uExitCode: u32,
+) callconv(.winapi) std.os.windows.BOOL;
 
 extern "kernel32" fn OpenProcess(
     dwDesiredAccess: u32,
