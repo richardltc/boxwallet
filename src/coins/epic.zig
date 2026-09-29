@@ -4126,7 +4126,8 @@ pub const Epic = struct {
     /// safely past any frontend's "settled" threshold and an unsettled one 0.
     const confirmed_sentinel: i64 = 9999;
 
-    /// How old an unfinished send must be before it's offered for cancelling.
+    /// How old an unfinished send (or receive) must be before it's offered for
+    /// cancelling.
     ///
     /// A send the wallet has *posted* still reads `TxSentCreated` until the
     /// listener sees it in the mempool — up to ~4 minutes — and cancelling one
@@ -4135,6 +4136,11 @@ pub const Epic = struct {
     /// until then. Past this age a posted send has long since been marked (or
     /// mined), so what's still `TxSentCreated` is one the receiver never
     /// answered: exactly the send there is to cancel.
+    ///
+    /// A receive the sender never finalized is held to the same age: cancelling
+    /// one drops its unconfirmed output from the balance, so it shouldn't be
+    /// offered while the sender may still be posting it. Nothing is lost even
+    /// then — the output lands on chain regardless, and a rescan finds it.
     const cancel_min_age_s: i64 = 10 * 60;
 
     /// The open wallet's most recent transactions, newest-first, via the Owner
@@ -4224,8 +4230,7 @@ pub const Epic = struct {
             if (all[n].stage == .awaiting_counterparty and kind.direction == .sent and all[n].address_len == 0)
                 all[n].stage = .awaiting_reply_file;
             all[n].cancellable = !e.confirmed and kind.stage == .awaiting_counterparty and
-                kind.direction == .sent and all[n].txid_len > 0 and
-                time > 0 and now - time >= cancel_min_age_s;
+                all[n].txid_len > 0 and time > 0 and now - time >= cancel_min_age_s;
             n += 1;
         }
         std.mem.sort(models.WalletTx, all[0..n], {}, newerFirst);
@@ -4331,8 +4336,10 @@ pub const Epic = struct {
         var lookups: usize = 0;
         for (rows) |*row| {
             // Only what's been broadcast: a send still with the receiver has no
-            // kernel on chain to find.
-            if (row.stage == .awaiting_counterparty or row.stage == .awaiting_reply_file) continue;
+            // kernel on chain to find. A receive still waiting for its sender
+            // is looked up: the sender posts it, not us, so it can be mined
+            // before the wallet notices.
+            if (row.direction == .sent and row.stage.waitingForCounterparty()) continue;
             const id = row.txid();
             const ref = for (refs) |r| {
                 if (r.tx_slate_id) |sid| if (std.mem.eql(u8, sid, id)) break r;
@@ -4531,12 +4538,14 @@ pub const Epic = struct {
         return if (std.mem.eql(u8, st.sync_status, "no_sync")) .open else .node_syncing;
     }
 
-    /// Cancel the unfinished send whose slate id is `slate_id` via the Owner
-    /// API's `cancel_tx`: the wallet drops it and unlocks the inputs it had
-    /// reserved, so they're spendable again. Only offered for rows
-    /// `parseTxLog` marked `cancellable` (see `cancel_min_age_s`). If the
-    /// receiver answers later, the reply finds nothing to finalize, so the
-    /// payment can't complete behind the user's back. A refusal comes back as
+    /// Cancel the unfinished transaction whose slate id is `slate_id` via the
+    /// Owner API's `cancel_tx`. For a send, the wallet drops it and unlocks the
+    /// inputs it had reserved, so they're spendable again; if the receiver
+    /// answers later, the reply finds nothing to finalize, so the payment can't
+    /// complete behind the user's back. For a receive the sender never
+    /// finalized, it drops the unconfirmed output, so the balance stops
+    /// counting coins that aren't coming. Only offered for rows `parseTxLog`
+    /// marked `cancellable` (see `cancel_min_age_s`). A refusal comes back as
     /// `.failed` with the wallet's reason.
     fn epicCancelTx(
         allocator: std.mem.Allocator,
@@ -4570,7 +4579,7 @@ pub const Epic = struct {
     /// anything else carries the wallet's own message. Pure, for testing.
     fn parseCancelReply(allocator: std.mem.Allocator, inner: []const u8) !models.SendResult {
         if (innerSucceeded(inner))
-            return .{ .ok = "The coins it had set aside are spendable again." };
+            return .{ .ok = "The wallet has dropped it, and the balance is back to what's really there." };
         const Env = struct { @"error": ?struct { message: []const u8 = "" } = null };
         var parsed = std.json.parseFromSlice(Env, allocator, inner, .{
             .ignore_unknown_fields = true,
@@ -4600,7 +4609,13 @@ pub const Epic = struct {
     /// (and any type this doesn't know) are null, and dropped.
     fn txKind(tx_type: []const u8) ?struct { direction: models.TxDirection, stage: models.TxStage } {
         const eql = std.mem.eql;
-        if (eql(u8, tx_type, "TxReceived")) return .{ .direction = .received, .stage = .none };
+        // Signed and handed back, but the sender hasn't finalized and posted it:
+        // not on the network yet (a posted receive reads `TxReceivedMempool`).
+        // The Epicbox listener can also answer a stale slate the relay still
+        // held for this address — typically right after a restore — which no
+        // one will ever finalize. Restored outputs are logged confirmed, so this
+        // stage only ever shows on a receive that's genuinely unfinished.
+        if (eql(u8, tx_type, "TxReceived")) return .{ .direction = .received, .stage = .awaiting_counterparty };
         if (eql(u8, tx_type, "TxSent")) return .{ .direction = .sent, .stage = .none };
         if (eql(u8, tx_type, "ConfirmedCoinbase")) return .{ .direction = .stake, .stage = .none };
         // Made, not yet seen by the network: the receiver hasn't answered, or it
@@ -5881,6 +5896,37 @@ test "parseTxLog reads 4.x's paged reply: stages, slate ids, and what can be can
         defer allocator.free(txs);
         try std.testing.expectEqual(models.TxStage.awaiting_reply_file, txs[0].stage);
         try std.testing.expect(txs[0].cancellable);
+    }
+}
+
+test "parseTxLog: a receive the sender never finalized waits for the sender, and can be cancelled" {
+    const allocator = std.testing.allocator;
+    // What a restore left behind: the Epicbox listener answered a stale slate
+    // (never finalized, so unconfirmed), and scan logged the outputs it found
+    // (confirmed, no slate id, addressed "Restore").
+    const inner =
+        \\{"result":{"Ok":{"txs":[
+        \\{"tx_type":"TxReceived","tx_slate_id":"2eb0d573-e39f-471c-b845-a02ab55ad79e","creation_ts":"2026-09-29T11:21:29Z","confirmed":false,"amount_credited":"1000000000","amount_debited":"0","public_addr":"esZKTEPoCC5s53zL6vmm4m7MMztJAVVbRt6c79rFFZ4iJCQ7Gita@epicbox.stackwallet.com"},
+        \\{"tx_type":"TxReceived","tx_slate_id":null,"creation_ts":"2026-09-29T11:21:43Z","confirmed":true,"amount_credited":"400000000","amount_debited":"0","public_addr":"Restore"}
+        \\]}}}
+    ;
+    const created = Epic.parseRfc3339("2026-09-29T11:21:29Z").?;
+    {
+        const txs = try Epic.parseTxLog(allocator, inner, 32, created + 5 * 60);
+        defer allocator.free(txs);
+        try std.testing.expectEqual(models.TxStage.awaiting_counterparty, txs[1].stage);
+        try std.testing.expectEqualStrings("waiting for the sender", txs[1].stage.label(txs[1].direction));
+        try std.testing.expect(!txs[1].cancellable); // the sender may still be posting it
+        // The restored output is settled, and has nothing to cancel.
+        try std.testing.expectEqual(models.TxStage.none, txs[0].stage);
+        try std.testing.expect(txs[0].confirmations > 0);
+        try std.testing.expect(!txs[0].cancellable);
+    }
+    {
+        const txs = try Epic.parseTxLog(allocator, inner, 32, created + 10 * 60);
+        defer allocator.free(txs);
+        try std.testing.expect(txs[1].cancellable);
+        try std.testing.expect(!txs[0].cancellable);
     }
 }
 

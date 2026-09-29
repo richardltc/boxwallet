@@ -846,7 +846,8 @@ const SendModal = struct {
     /// amount → confirm flow, but the amount is a count of the *token's* finest
     /// units, not the coin's, and the destination is a group the modal carries.
     /// `cancel` (coins wiring `wallet_cancel_tx` — Epic) reuses the confirm →
-    /// working → result tail to cancel a send that never went through: the
+    /// working → result tail to cancel a send or receive that never went
+    /// through: the
     /// target is one of the rows snapshotted into `cancel_rows` when the prompt
     /// opened, not anything typed.
     /// `slate` (coins wiring `Coin.SlateFiles` — Epic) is a send with no
@@ -5670,7 +5671,7 @@ pub const App = struct {
                 } else {
                     if (self.coinAt(i)) |c| {
                         self.logf("{s}: {s}", .{ c.coinName(), if (act.send_is_cancel)
-                            (if (ok) "send cancelled" else "couldn't cancel the send")
+                            (if (ok) "transaction cancelled" else "couldn't cancel the transaction")
                         else if (act.send_is_slate)
                             (if (ok) "slate file saved" else "couldn't save a slate file")
                         else if (ok) "sent" else "send failed" });
@@ -7370,7 +7371,7 @@ pub const App = struct {
             m.cancel_count += 1;
         }
         if (m.cancel_count == 0) {
-            self.logf("{s}: no send to cancel — only one the receiver hasn't answered for 10 minutes can be", .{coin.coinName()});
+            self.logf("{s}: nothing to cancel — only a transaction the other side hasn't finished for 10 minutes can be", .{coin.coinName()});
             return;
         }
         if (m.cancel_count > 1) m.stage = .pick;
@@ -7735,7 +7736,7 @@ pub const App = struct {
             .stake => "staking",
             .token => "sending token",
             .send => "sending",
-            .cancel => "cancelling a send",
+            .cancel => "cancelling a transaction",
             .slate => "saving a slate file",
         } });
     }
@@ -9968,14 +9969,14 @@ pub const App = struct {
             body = try std.fmt.allocPrint(a, "{s}\n{s}", .{ body, line });
         }
         // Keys only for rows they apply to: finishing a send waiting for its
-        // reply file, and cancelling one the receiver never answered.
+        // reply file, and cancelling one the other side never finished.
         var hints: []const u8 = "";
         for (act.tx_buf[0..act.tx_count]) |tx| if (tx.stage == .awaiting_reply_file) {
             hints = "f: finish a file send with the receiver's reply file";
             break;
         };
         for (act.tx_buf[0..act.tx_count]) |tx| if (tx.cancellable) {
-            const x = "x: cancel a send the receiver never answered";
+            const x = "x: cancel a transaction the other side never finished";
             hints = if (hints.len == 0) x else try std.fmt.allocPrint(a, "{s}\n{s}", .{ hints, x });
             break;
         };
@@ -11520,7 +11521,7 @@ pub const App = struct {
             .stake => "stake",
             .token => "send token",
             .send => "send",
-            .cancel => "cancel send",
+            .cancel => "cancel transaction",
             .slate => "send by slate file",
         } });
         try modalRule(a, &out.writer, brand, inner_w, "┌", "┐", title);
@@ -11544,7 +11545,7 @@ pub const App = struct {
                 }
             },
             .pick => {
-                const lead = "Which send should be cancelled?";
+                const lead = "Which transaction should be cancelled?";
                 try modalRow(&out.writer, vbar, inner_w, lead, zz.width(lead));
                 try modalRow(&out.writer, vbar, inner_w, "", 0);
                 for (m.cancel_rows[0..m.cancel_count], 0..) |*tx, i| {
@@ -11635,8 +11636,10 @@ pub const App = struct {
                 var buf: [64]u8 = undefined;
                 const detail = if (cancelling) blk: {
                     const tx = m.cancelTarget() orelse break :blk "";
-                    break :blk try std.fmt.allocPrint(a, "Cancel the send of {s}? The receiver never answered it. Cancelling unlocks the coins it set aside; if the receiver answers later, it won't go through.", .{
+                    break :blk try std.fmt.allocPrint(a, "Cancel the {s} of {s}? {s}", .{
+                        if (tx.direction == .received) "receive" else "send",
                         try cancelRowText(a, tx, coin),
+                        tx.stage.cancelExplanation(tx.direction),
                     });
                 } else if (sending_token) blk: {
                     // The full, untruncated address, and the token named — the
@@ -11750,7 +11753,7 @@ pub const App = struct {
                 const lead_plain = if (m.mode == .slate)
                     (if (m.ok) "Saved. Give this file to the receiver:" else "Couldn't save the slate:")
                 else if (cancelling)
-                    (if (m.ok) "Send cancelled." else "Couldn't cancel:")
+                    (if (m.ok) "Cancelled." else "Couldn't cancel:")
                 else if (m.ok)
                     (if (staking) "Staked. Txid:" else if (m.mode == .send and own.len > 0) own else "Sent. Txid:")
                 else
@@ -14120,6 +14123,15 @@ test "the cancel prompt opens on what can be cancelled — straight to Yes/No fo
     app.openCancelTxModal();
     try std.testing.expectEqual(SendModal.Stage.pick, app.send_modal.?.stage);
     try std.testing.expectEqual(@as(usize, 2), app.send_modal.?.cancel_count);
+
+    // A receive the sender never finished is named as one, with its own
+    // consequences — not a send's.
+    act.tx_buf[0].direction = .received;
+    act.tx_count = 1;
+    app.openCancelTxModal();
+    const rx_box = try app.renderSendModal(arena.allocator());
+    try std.testing.expect(std.mem.indexOf(u8, rx_box, "Cancel the receive of 0.018 EPIC") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rx_box, "sender never finished") != null);
 }
 
 test "the Stake prompt refuses to open for a coin without the stake action" {

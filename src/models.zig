@@ -511,8 +511,9 @@ test "confirmationStatus counts up to spendable, then says Confirmed" {
 /// Ordinals are the GUI's C ABI (`BwWalletTx.stage`) — append, never insert.
 pub const TxStage = enum(u8) {
     none = 0,
-    /// Made, but not yet seen by the network: waiting for the other side (or,
-    /// for a few minutes after it's posted, for the wallet to notice it went).
+    /// Made, but not yet seen by the network: waiting for the other side — the
+    /// receiver to sign a send, the sender to finalize a receive (or, for a few
+    /// minutes after it's posted, for the wallet to notice it went).
     awaiting_counterparty = 1,
     /// Seen in the mempool, waiting to be mined.
     in_mempool = 2,
@@ -528,12 +529,26 @@ pub const TxStage = enum(u8) {
     pub fn label(self: TxStage, direction: TxDirection) []const u8 {
         return switch (self) {
             .none => "",
-            .awaiting_counterparty => "waiting for the receiver",
+            .awaiting_counterparty => switch (direction) {
+                .received, .stake => "waiting for the sender",
+                .sent, .staked => "waiting for the receiver",
+            },
             .in_mempool => switch (direction) {
                 .received, .stake => "received — waiting for confirmations",
                 .sent, .staked => "sent — waiting for confirmations",
             },
             .awaiting_reply_file => "waiting for their reply file",
+        };
+    }
+
+    /// What cancelling a `cancellable` row in this stage does, for its
+    /// `direction` — the confirm's explanation, one wording for both
+    /// front-ends. Empty where nothing can be cancelled.
+    pub fn cancelExplanation(self: TxStage, direction: TxDirection) []const u8 {
+        if (!self.waitingForCounterparty()) return "";
+        return switch (direction) {
+            .received, .stake => "The sender never finished it, so it never reached the network. Cancelling removes it and the pending amount it shows; if the sender does finish it later, the coins still arrive, and a rescan shows them.",
+            .sent, .staked => "The receiver never answered it. Cancelling unlocks the coins it set aside; if the receiver answers later, it won't go through.",
         };
     }
 
@@ -543,6 +558,14 @@ pub const TxStage = enum(u8) {
         return self == .awaiting_counterparty or self == .awaiting_reply_file;
     }
 };
+
+test "TxStage words name the side being waited on" {
+    try std.testing.expectEqualStrings("waiting for the receiver", TxStage.awaiting_counterparty.label(.sent));
+    try std.testing.expectEqualStrings("waiting for the sender", TxStage.awaiting_counterparty.label(.received));
+    try std.testing.expect(std.mem.indexOf(u8, TxStage.awaiting_counterparty.cancelExplanation(.sent), "receiver never answered") != null);
+    try std.testing.expect(std.mem.indexOf(u8, TxStage.awaiting_counterparty.cancelExplanation(.received), "sender never finished") != null);
+    try std.testing.expectEqualStrings("", TxStage.in_mempool.cancelExplanation(.sent));
+}
 
 /// One wallet transaction, normalized for display. Deliberately scalar-only
 /// (no owned strings) so a bounded, fixed-capacity cache of these can be
