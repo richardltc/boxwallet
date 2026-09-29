@@ -862,7 +862,7 @@ pub const Epic = struct {
         defer threaded.deinit();
         const now = std.Io.Clock.real.now(threaded.io()).toSeconds();
 
-        const tip_time = remoteTipTime(a, base_url, height) catch 0;
+        const tip_time = headerTimeAt(a, base_url, height) catch 0;
         const says_synced: ?bool = if (nodePostAt(a, base_url, null, "/v2/owner", "get_status", "[]")) |r|
             (if (r.status == .ok) (if (parseStatus(a, r.body)) |st| std.mem.eql(u8, st.sync_status, "no_sync") else |_| null) else null)
         else |_|
@@ -898,9 +898,10 @@ pub const Epic = struct {
         result: ?struct { Ok: ?struct { timestamp: []const u8 = "" } = null } = null,
     };
 
-    /// Unix time of the block at `height` on the node at `base_url`, from its
-    /// header (RFC 3339, UTC). Caller owns nothing: `a` is an arena.
-    fn remoteTipTime(a: std.mem.Allocator, base_url: []const u8, height: i64) !i64 {
+    /// Unix time of the block at `height` on the node at `base_url` (ours or a
+    /// remote), from its header (RFC 3339, UTC). Caller owns nothing: `a` is an
+    /// arena.
+    fn headerTimeAt(a: std.mem.Allocator, base_url: []const u8, height: i64) !i64 {
         const params = try std.fmt.allocPrint(a, "[{d},null,null]", .{height});
         const r = try nodePostAt(a, base_url, null, "/v2/foreign", "get_header", params);
         if (r.status != .ok) return error.DaemonNotReady;
@@ -975,16 +976,31 @@ pub const Epic = struct {
     /// Map a raw `get_status` into normalized sync figures.
     ///   - `blocks`  — the accepted chain tip (`tip.height`).
     ///   - `headers` — download progress toward the network tip: `sync_info`'s
-    ///     `current_height` while syncing (header/body download), else the tip.
-    ///   - `network` — the target height: `sync_info`'s `highest_height` while
-    ///     syncing, else the tip.
+    ///     `current_height` while syncing (header/body download); the network
+    ///     height in the phases that come after header sync (see
+    ///     `pastHeaderSync`); else the tip.
+    ///   - `network` — the target height: `sync_info`'s `highest_height` when it
+    ///     reports one, else the highest of our peers' (`peer_max`, 0 when not
+    ///     asked). **Never our own tip standing in for it while not synced**:
+    ///     Epic reports no target at all in most of its sync phases (`syncing`,
+    ///     `txhashset_*`, `awaiting_peers`) and a `body_sync` with
+    ///     `highest_height: 0`, and treating the tip as the target there read a
+    ///     node three months behind as fully synced — both gauges full and a tip
+    ///     date of "now", under a sync spinner that knew better. With no target
+    ///     to be had it is 0, which both front-ends read as "tip unknown".
     ///   - `synced`  — `sync_status == "no_sync"` *and* we have peers and a tip.
     ///     The peer gate matters: a freshly-started node with no peers also reads
     ///     `no_sync` (Grin's initial state), which must not be mistaken for caught
     ///     up.
-    ///   - `seconds_behind` — the height gap × the 60s block target (0 when synced
-    ///     or the target isn't known yet).
+    ///   - `seconds_behind` — the height gap × the 60s block target: 0 when
+    ///     synced, -1 ("unavailable") when the target isn't known.
     fn derive(st: Status) Derived {
+        return deriveWithPeers(st, 0);
+    }
+
+    /// `derive`, with the highest height our connected peers report (0 when not
+    /// known) to fall back on for the target.
+    fn deriveWithPeers(st: Status, peer_max: i64) Derived {
         const tip = st.tip.height;
         var headers = tip;
         var network = tip;
@@ -993,8 +1009,11 @@ pub const Epic = struct {
             network = @max(si.highest_height, tip);
         }
         const synced = std.mem.eql(u8, st.sync_status, "no_sync") and st.connections > 0 and tip > 0;
+        if (!synced and network <= tip)
+            network = if (peer_max >= tip and tip > 0) peer_max else 0;
+        if (pastHeaderSync(st.sync_status)) headers = @max(headers, network);
         const gap = network - tip;
-        const seconds_behind: i64 = if (synced or gap <= 0) 0 else gap * block_target_secs;
+        const seconds_behind: i64 = if (synced) 0 else if (network == 0) -1 else @max(gap, 0) * block_target_secs;
 
         // Version is the token after the last space in the user agent ("MW/Epic
         // 4.0.3" → "4.0.3"); copied into the fixed buffer so it doesn't dangle into
@@ -1104,7 +1123,47 @@ pub const Epic = struct {
         defer allocator.free(raw);
         var arena = std.heap.ArenaAllocator.init(allocator);
         defer arena.deinit();
-        return derive(try parseStatus(arena.allocator(), raw));
+        const st = try parseStatus(arena.allocator(), raw);
+        // Best-effort: without it the target reads as unknown, which is true.
+        const peer_max: i64 = if (needsPeerTarget(st)) blk: {
+            const peers = ownerCall(arena.allocator(), "get_connected_peers", data_dir) catch break :blk 0;
+            break :blk parsePeerMax(arena.allocator(), peers);
+        } else 0;
+        return deriveWithPeers(st, peer_max);
+    }
+
+    /// Whether a `sync_status` names a phase that only starts once header sync
+    /// is done — the txhashset download and validation of a fast sync, and the
+    /// `syncing` Epic reports for the stages between them. Headers are at the
+    /// network tip by then, so that's where the headers gauge belongs.
+    fn pastHeaderSync(sync_status: []const u8) bool {
+        return std.mem.eql(u8, sync_status, "syncing") or std.mem.startsWith(u8, sync_status, "txhashset_");
+    }
+
+    /// Whether a status needs the peers asked for its target: not synced, and
+    /// `sync_info` gave no height beyond our own tip.
+    fn needsPeerTarget(st: Status) bool {
+        if (std.mem.eql(u8, st.sync_status, "no_sync")) return false;
+        const si = st.sync_info orelse return true;
+        return si.highest_height <= st.tip.height;
+    }
+
+    /// A `get_connected_peers` reply; only each peer's height is read.
+    const PeersEnvelope = struct {
+        result: ?struct { Ok: ?[]const struct { height: i64 = 0 } = null } = null,
+    };
+
+    /// The highest height any connected peer reports, from a
+    /// `get_connected_peers` body; 0 when none does. Pure.
+    fn parsePeerMax(a: std.mem.Allocator, raw: []const u8) i64 {
+        const parsed = std.json.parseFromSliceLeaky(PeersEnvelope, a, raw, .{
+            .ignore_unknown_fields = true,
+            .allocate = .alloc_always,
+        }) catch return 0;
+        const peers = (parsed.result orelse return 0).Ok orelse return 0;
+        var best: i64 = 0;
+        for (peers) |p| best = @max(best, p.height);
+        return best;
     }
 
     /// Parse a `get_status` body into its `Status`. The strings in it point into
@@ -1134,6 +1193,21 @@ pub const Epic = struct {
         if (remote.len != 0) return remoteBlockchainState(allocator, remote);
 
         const d = try fetchStatus(allocator, auth.data_dir);
+
+        // While catching up, the tip's own header says when it was mined — a
+        // fact, where the gap × block-target estimate is a guess (and has no
+        // answer at all when the target is unknown). The front-ends prefer
+        // `seconds_behind` when it's set, so it's cleared when this is had.
+        var tip_time: i64 = 0;
+        var seconds_behind = d.seconds_behind;
+        if (!d.synced and d.blocks > 0) {
+            var arena = std.heap.ArenaAllocator.init(allocator);
+            defer arena.deinit();
+            if (headerTimeAt(arena.allocator(), "http://127.0.0.1:" ++ rpc_default_port, d.blocks)) |t| {
+                tip_time = t;
+                seconds_behind = -1;
+            } else |_| {}
+        }
         return .{
             // BoxWallet runs mainnet only; the Owner API doesn't echo the chain.
             .chain = try allocator.dupe(u8, "mainnet"),
@@ -1145,9 +1219,8 @@ pub const Epic = struct {
                 0,
             .synced = d.synced,
             .network_height = d.network,
-            // No tip timestamp from get_status; supply the gap-derived estimate
-            // directly (the frontend prefers `seconds_behind` over `tip_time`).
-            .seconds_behind = d.seconds_behind,
+            .tip_time = tip_time,
+            .seconds_behind = seconds_behind,
         };
     }
 
@@ -4917,6 +4990,71 @@ test "derive maps a header-sync get_status to a sync target and backlog" {
     try std.testing.expectEqual(@as(i64, 371_553), d.network); // target tip
     // (371553 - 100) blocks × 60s.
     try std.testing.expectEqual(@as(i64, (371_553 - 100) * 60), d.seconds_behind);
+}
+
+test "derive never reads a node with no reported target as synced" {
+    // This machine's node on 2026-09-29: three months behind, mid-validation,
+    // reporting `syncing` and no sync_info. The tip must not stand in for the
+    // target — that drew full gauges and a tip date of "now".
+    const st: Epic.Status = .{ .connections = 12, .sync_status = "syncing", .tip = .{ .height = 3_597_825 } };
+    try std.testing.expect(Epic.needsPeerTarget(st));
+
+    // Peers asked: they give the target, and headers (done by this phase) sit at it.
+    const d = Epic.deriveWithPeers(st, 3_731_680);
+    try std.testing.expect(!d.synced);
+    try std.testing.expectEqual(@as(i64, 3_597_825), d.blocks);
+    try std.testing.expectEqual(@as(i64, 3_731_680), d.network);
+    try std.testing.expectEqual(@as(i64, 3_731_680), d.headers);
+    try std.testing.expectEqual(@as(i64, (3_731_680 - 3_597_825) * 60), d.seconds_behind);
+
+    // Peers not asked (or silent): the target is unknown, not our own tip.
+    const u = Epic.derive(st);
+    try std.testing.expectEqual(@as(i64, 0), u.network);
+    try std.testing.expectEqual(@as(i64, -1), u.seconds_behind);
+
+    // A txhashset phase carries sync_info of another shape (no heights): same rule.
+    const tx: Epic.Status = .{
+        .connections = 12,
+        .sync_status = "txhashset_kernels_validation",
+        .tip = .{ .height = 3_597_825 },
+        .sync_info = .{},
+    };
+    try std.testing.expect(Epic.needsPeerTarget(tx));
+    try std.testing.expectEqual(@as(i64, 3_731_680), Epic.deriveWithPeers(tx, 3_731_680).headers);
+}
+
+test "derive: a body_sync reporting no highest height asks the peers" {
+    // node.epiccash.com's shape while stuck: highest_height 0.
+    const st: Epic.Status = .{
+        .connections = 31,
+        .sync_status = "body_sync",
+        .tip = .{ .height = 3_729_785 },
+        .sync_info = .{ .current_height = 3_729_785, .highest_height = 0 },
+    };
+    try std.testing.expect(Epic.needsPeerTarget(st));
+    try std.testing.expectEqual(@as(i64, 3_731_680), Epic.deriveWithPeers(st, 3_731_680).network);
+    // A synced node never asks; one with a real target doesn't either.
+    try std.testing.expect(!Epic.needsPeerTarget(.{ .connections = 8, .sync_status = "no_sync", .tip = .{ .height = 5 } }));
+    try std.testing.expect(!Epic.needsPeerTarget(.{
+        .sync_status = "header_sync",
+        .tip = .{ .height = 100 },
+        .sync_info = .{ .current_height = 50, .highest_height = 371_553 },
+    }));
+}
+
+test "parsePeerMax takes the highest reported peer height" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const raw =
+        \\{"id":1,"jsonrpc":"2.0","result":{"Ok":[
+        \\{"addr":"73.97.43.138:3414","height":3731686,"user_agent":"MW/Epic 4.0.4","version":2},
+        \\{"addr":"142.93.218.213:3414","height":3727954,"user_agent":"MW/Epic 4.0.3","version":2}
+        \\]}}
+    ;
+    try std.testing.expectEqual(@as(i64, 3_731_686), Epic.parsePeerMax(a, raw));
+    try std.testing.expectEqual(@as(i64, 0), Epic.parsePeerMax(a, "{\"result\":{\"Ok\":[]}}"));
+    try std.testing.expectEqual(@as(i64, 0), Epic.parsePeerMax(a, "not json"));
 }
 
 test "fetchStatus-shaped JSON parses through the Ok envelope" {
