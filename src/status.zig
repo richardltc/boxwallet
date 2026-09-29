@@ -154,11 +154,17 @@ pub fn readout(in: Input) Readout {
 
     if (!in.installed) return .{ .text = "Not installed", .tone = .idle, .active = false };
 
-    // A node someone else runs: the only thing that can honestly be said is
-    // whether it answered. Its Foreign API reports a chain height and nothing
-    // else — no peer count, no sync phase, no "caught up" — so the rungs below
-    // are skipped rather than filled with zeros that would read as facts.
+    // A node someone else runs: whether it answered, and — where the coin can
+    // tell — whether it's following the chain. It reports no peer count and no
+    // sync progress of ours, so the rungs below are skipped rather than filled
+    // with zeros that would read as facts. `sync` is the coin's verdict on the
+    // remote itself (Epic: its own `get_status`, and the age of its tip): a
+    // node stuck mid-sync still answers every poll, and without this rung it
+    // read "Using a remote node" in green for a day while nothing it served
+    // could complete a payment.
     if (in.remote_node) {
+        if (in.daemon == .running and in.sync == .syncing)
+            return .{ .text = "Remote node isn't synced", .tone = .warning, .active = true };
         if (in.daemon == .running) return .{ .text = "Using a remote node", .tone = .ok, .active = true };
         if (in.awaiting_status) return .{ .text = "Checking…", .tone = .working, .active = true };
         return .{ .text = "Remote node unreachable", .tone = .warning, .active = false };
@@ -597,6 +603,16 @@ test "a remote node reports reachability, and claims nothing else" {
     try std.testing.expectEqualStrings("Checking…", readout(checking).text);
 }
 
+test "a remote node that says it isn't synced is flagged, not called fine" {
+    const stuck: Input = .{ .installed = true, .remote_node = true, .daemon = .running, .sync = .syncing };
+    const r = readout(stuck);
+    try std.testing.expectEqualStrings("Remote node isn't synced", r.text);
+    try std.testing.expectEqual(Tone.warning, r.tone);
+    // Unreachable still outranks it: a node that didn't answer has no verdict.
+    const gone: Input = .{ .installed = true, .remote_node = true, .daemon = .stopped, .sync = .syncing };
+    try std.testing.expectEqualStrings("Remote node unreachable", readout(gone).text);
+}
+
 test "a remote node's zero peers never reads as waiting for peers" {
     // The local ladder's next rung after `.running` is the peer check, and a
     // remote node reports no peer count at all — so the figure is 0 and must not
@@ -606,7 +622,7 @@ test "a remote node's zero peers never reads as waiting for peers" {
         .remote_node = true,
         .daemon = .running,
         .peers = 0,
-        .sync = .syncing,
+        .sync = .synced,
         .headers_cur = 10,
         .headers_total = 900_000,
     };

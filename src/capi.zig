@@ -2576,9 +2576,11 @@ export fn bw_wallet_receive_address(ctx: ?*Ctx, idx: usize, force_new: c_int, bu
 
 /// The payment listener's state for a `bw_ew_has_listener` coin: 0 none (no
 /// listener, or the wallet isn't unlocked), 1 running, 2 stopped (it exited;
-/// payments wait until the wallet is unlocked again). -1 when it can't be
-/// checked right now because a wallet op holds the session — keep showing the
-/// last answer. A cheap non-blocking probe, fine on the poll timer.
+/// payments wait until the wallet is unlocked again), 3 paused (up, but its
+/// node won't let it process payments — `bw_wallet_listener_pause_reason`
+/// says why; as fresh as the last `bw_wallet_listener_refresh`). -1 when it
+/// can't be checked right now because a wallet op holds the session — keep
+/// showing the last answer. A cheap non-blocking probe, fine on the poll timer.
 export fn bw_wallet_listener_state(ctx: ?*Ctx, idx: usize) c_int {
     const c = ctx orelse return -1;
     if (idx >= coin_count) return -1;
@@ -2588,6 +2590,29 @@ export fn bw_wallet_listener_state(ctx: ?*Ctx, idx: usize) c_int {
     if (!c.wallet_mtx.tryLock()) return -1;
     defer c.wallet_mtx.unlock(sharedIo());
     return @intFromEnum(extwallet.probeListener(&c.wallet[idx]));
+}
+
+/// Ask a running payment listener's node whether it will let the listener
+/// process payments, for `bw_wallet_listener_state` to report. **Blocking** —
+/// a network round trip of up to a few seconds — so call it from the poll
+/// thread, never the UI thread. Self-throttled (it asks at most every 10 s), so
+/// calling it on every poll is fine; a no-op while no listener is up. Takes no
+/// lock: it only touches the session's atomics.
+export fn bw_wallet_listener_refresh(ctx: ?*Ctx, idx: usize) void {
+    const c = ctx orelse return;
+    if (idx >= coin_count) return;
+    const coin = coinByIndex(idx) orelse return;
+    extwallet.refreshListenerGate(&c.wallet[idx], coin);
+}
+
+/// Why a paused listener (state 3) is paused, and what it means for a payment,
+/// written into `buf`; returns its length (0 when it isn't paused). The TUI's
+/// exact wording.
+export fn bw_wallet_listener_pause_reason(ctx: ?*Ctx, idx: usize, buf: ?[*]u8, cap: usize) usize {
+    const c = ctx orelse return 0;
+    const b = buf orelse return 0;
+    if (idx >= coin_count) return 0;
+    return copyOut(b[0..cap], extwallet.gateText(extwallet.listenerGate(&c.wallet[idx])));
 }
 
 /// What sending `amount` to `address` would cost, without sending: 0 with
@@ -7176,13 +7201,18 @@ test "the status line for a remote node crosses the ABI intact" {
     // Every figure the local ladder would have read, all zero because a remote
     // node reports none of them. None may be narrated.
     in.peers = 0;
-    in.sync = 1;
+    in.sync = 2;
     in.headers_cur = 10;
     in.headers_total = 900_000;
 
     var buf: [160]u8 = undefined;
     const n = bw_status_line(&in, &buf, buf.len);
     try std.testing.expectEqualStrings("Using a remote node", buf[0..n]);
+
+    // `sync` is the coin's verdict on the remote itself, and "not synced" is said.
+    in.sync = 1;
+    const k = bw_status_line(&in, &buf, buf.len);
+    try std.testing.expectEqualStrings("Remote node isn't synced", buf[0..k]);
 
     in.daemon = 0;
     const m = bw_status_line(&in, &buf, buf.len);

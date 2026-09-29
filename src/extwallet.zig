@@ -68,6 +68,16 @@ pub const Session = struct {
     /// isn't kept — so it reads as stopped until the next unlock. Cleared by
     /// `kill`.
     listener_down: bool = false,
+    /// Whether a listener process is up — `listener != null`, mirrored into an
+    /// atomic for the poll threads that `refreshListenerGate` runs on, which
+    /// must not touch the `Child` the UI side owns.
+    listener_live: std.atomic.Value(bool) = .init(false),
+    /// What the listener's node said last time `refreshListenerGate` asked (a
+    /// `Coin.ListenerGate`). Starts `open` so a listener isn't called paused
+    /// before anyone has checked; reset with each listener start.
+    listener_gate: std.atomic.Value(u8) = .init(@intFromEnum(Coin.ListenerGate.open)),
+    /// When that was (monotonic ms; 0 = never), for `gate_interval_ms`.
+    gate_checked_ms: std.atomic.Value(i64) = .init(0),
 
     pub fn isRunning(self: *const Session) bool {
         return self.child != null;
@@ -83,7 +93,16 @@ pub const ListenerState = enum(u8) {
     /// Started for this unlock but exited since: payments wait at the relay
     /// until the wallet is unlocked again.
     stopped = 2,
+    /// Up, but its node won't let it process anything (`Coin.ListenerGate`):
+    /// payments wait at the relay until the node is synced and reachable, then
+    /// go through on their own — no unlock needed. `listenerGate` says why.
+    paused = 3,
 };
+
+/// How often `refreshListenerGate` actually asks. Epic's listener re-checks its
+/// own gate every 10 s; matching that keeps the answer as fresh as the thing it
+/// describes without adding traffic a remote node would notice.
+const gate_interval_ms: i64 = 10_000;
 
 /// Why an `ensure` call did or didn't leave a wallet process running. The caller
 /// turns this into its own user-visible message — this module knows nothing
@@ -230,6 +249,7 @@ fn stopChild(child: *std.process.Child) void {
 /// Stop the payment listener, if one is running. Leaves `listener_down` alone:
 /// a caller replacing it or tearing the whole session down decides that.
 fn killListener(sess: *Session) void {
+    sess.listener_live.store(false, .release);
     if (sess.listener) |*l| {
         stopChild(l);
         sess.listener = null;
@@ -273,6 +293,11 @@ fn startListener(
         sess.listener_down = true;
         return;
     };
+    // A new listener gets a fresh look at its node rather than the last one's
+    // verdict, and on the very next poll rather than after the interval.
+    sess.listener_gate.store(@intFromEnum(Coin.ListenerGate.open), .release);
+    sess.gate_checked_ms.store(0, .release);
+    sess.listener_live.store(true, .release);
 }
 
 /// Spawn a wallet-side process — the server or the listener — with its stdout and
@@ -319,12 +344,61 @@ pub fn probeListener(sess: *Session) ListenerState {
     if (sess.listener) |*l| {
         var threaded: std.Io.Threaded = .init(std.heap.page_allocator, .{});
         defer threaded.deinit();
-        if (proc.probeChild(threaded.io(), l) == null) return .running;
+        if (proc.probeChild(threaded.io(), l) == null)
+            return if (listenerGate(sess) == .open) .running else .paused;
+        sess.listener_live.store(false, .release);
         sess.listener = null;
         sess.listener_tty.close();
         sess.listener_down = true;
     }
     return if (sess.listener_down) .stopped else .none;
+}
+
+/// The last gate verdict for this session's listener (see `refreshListenerGate`).
+/// Only meaningful while `probeListener` reads `.running`/`.paused`.
+pub fn listenerGate(sess: *const Session) Coin.ListenerGate {
+    return @enumFromInt(sess.listener_gate.load(.acquire));
+}
+
+/// Ask the listener's node whether it will let the listener work, and cache the
+/// answer for `probeListener`. **Blocking** — a network round trip, bounded by
+/// the coin's own connect timeout — so it belongs on a poll thread, never the UI
+/// thread. Safe alongside the UI side: it touches only the session's atomics.
+/// Throttled to `gate_interval_ms`, so calling it on every poll is fine; a no-op
+/// for a coin without `listener_gate` and while no listener is up.
+pub fn refreshListenerGate(sess: *Session, coin: Coin) void {
+    const ew = coin.externalWallet() orelse return;
+    const gate_fn = ew.listener_gate orelse return;
+    if (!sess.listener_live.load(.acquire)) return;
+
+    var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+    defer arena.deinit();
+    const now = blk: {
+        var threaded: std.Io.Threaded = .init(arena.allocator(), .{});
+        defer threaded.deinit();
+        break :blk std.Io.Clock.awake.now(threaded.io()).toMilliseconds();
+    };
+    const last = sess.gate_checked_ms.load(.acquire);
+    if (last != 0 and now - last < gate_interval_ms) return;
+    sess.gate_checked_ms.store(now, .release);
+
+    const gate = gate_fn(arena.allocator());
+    // The listener may have gone while we asked; its verdict would then be
+    // stale by the time a new one starts (which resets it anyway).
+    if (sess.listener_live.load(.acquire))
+        sess.listener_gate.store(@intFromEnum(gate), .release);
+}
+
+/// Why a `.paused` listener is paused, worded for the line under the receive
+/// address — what it means for a payment and what fixes it. Shared so both
+/// front-ends say it the same way.
+pub fn gateText(gate: Coin.ListenerGate) []const u8 {
+    return switch (gate) {
+        .open => "",
+        .node_syncing => "paused — the node isn't synced; payments wait at the relay and go through once it is",
+        .node_no_status => "paused — the node won't report its sync status to the wallet; payments wait at the relay",
+        .node_unreachable => "paused — the node isn't reachable; payments wait at the relay until it is",
+    };
 }
 
 /// The wallet *process*'s own RPC endpoint (127.0.0.1 + the capability's bound
@@ -977,6 +1051,43 @@ test "probeListener: none without one, running while up, stopped once it exits" 
     // Tearing the wallet down (lock, daemon stop) clears it.
     kill(&sess);
     try std.testing.expectEqual(ListenerState.none, probeListener(&sess));
+}
+
+test "probeListener: a live listener whose node won't let it work reads as paused" {
+    if (builtin.os.tag == .windows) return error.SkipZigTest;
+    var threaded: std.Io.Threaded = .init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    var sess: Session = .{};
+    sess.listener = try spawnStandIn(io, true);
+    sess.listener_live.store(true, .release);
+    try std.testing.expectEqual(ListenerState.running, probeListener(&sess));
+
+    sess.listener_gate.store(@intFromEnum(Coin.ListenerGate.node_syncing), .release);
+    try std.testing.expectEqual(ListenerState.paused, probeListener(&sess));
+    try std.testing.expect(gateText(listenerGate(&sess)).len > 0);
+
+    // Back to open: running again, no unlock needed.
+    sess.listener_gate.store(@intFromEnum(Coin.ListenerGate.open), .release);
+    try std.testing.expectEqual(ListenerState.running, probeListener(&sess));
+
+    // A lock ends it, and "paused" can't outlive the process it described.
+    sess.listener_gate.store(@intFromEnum(Coin.ListenerGate.node_unreachable), .release);
+    kill(&sess);
+    try std.testing.expect(!sess.listener_live.load(.acquire));
+    try std.testing.expectEqual(ListenerState.none, probeListener(&sess));
+}
+
+test "refreshListenerGate asks nothing while no listener is up" {
+    // Epic has a gate; with no listener live it must not touch the network (the
+    // verdict would describe nothing) or the stored answer.
+    var e: epic.Epic = .{};
+    var sess: Session = .{};
+    sess.listener_gate.store(@intFromEnum(Coin.ListenerGate.node_syncing), .release);
+    refreshListenerGate(&sess, e.coin());
+    try std.testing.expectEqual(@as(i64, 0), sess.gate_checked_ms.load(.acquire));
+    try std.testing.expectEqual(Coin.ListenerGate.node_syncing, listenerGate(&sess));
 }
 
 test "startListener: a coin without a listener starts nothing" {

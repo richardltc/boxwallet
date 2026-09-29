@@ -1174,6 +1174,7 @@ static void apply_coin_metadata(const AppWindow *ui, bw_ctx *ctx, int idx)
     ui->set_rescan_frac(0);
     ui->set_receive_address(ss(""));
     ui->set_listener_text(ss(""));
+    ui->set_listener_paused(false);
     ui->set_receive_qr(slint::Image());
     g_qr_addr.clear();
     ui->set_tx_rows(std::make_shared<slint::VectorModel<WalletTxRow>>(std::vector<WalletTxRow>{}));
@@ -4312,7 +4313,11 @@ int main(int argc, char **argv)
             // the address above can actually complete right now. Shown under it.
             std::string listener_text;
             bool listener_ok = false;
+            bool listener_paused = false;
             if (ew_flags & BW_EW_HAS_LISTENER) {
+                // Whether its node lets it work: a network round trip, which is
+                // why it's here on the poll thread (self-throttled to 10 s).
+                bw_wallet_listener_refresh(ctx, coin);
                 int ls = bw_wallet_listener_state(ctx, coin);
                 if (ls >= 0)
                     g_listener_state[coin] = ls;
@@ -4321,9 +4326,18 @@ int main(int argc, char **argv)
                     char nm[64];
                     size_t nn = bw_coin_listener_name(coin, nm, sizeof nm);
                     listener_ok = (ls == BW_LISTENER_RUNNING);
-                    listener_text = std::string(nm, nn) + (listener_ok
-                        ? ": running"
-                        : ": stopped \u2014 payments wait until you lock and unlock the wallet");
+                    listener_paused = (ls == BW_LISTENER_PAUSED);
+                    std::string state;
+                    if (listener_ok) {
+                        state = "running";
+                    } else if (listener_paused) {
+                        char rb[160];
+                        size_t rn = bw_wallet_listener_pause_reason(ctx, coin, rb, sizeof rb);
+                        state.assign(rb, rn);
+                    } else {
+                        state = "stopped \u2014 payments wait until you lock and unlock the wallet";
+                    }
+                    listener_text = std::string(nm, nn) + ": " + state;
                 }
             }
 
@@ -4628,7 +4642,7 @@ int main(int argc, char **argv)
                         sc_health, sc_countdown, sc_addr, sc_price_stale, sc_minting_blocked,
                         sc_vaults, sc_txs, sc_redeemable, sc_vault_ids, sc_vault_cents,
                         ms, hashrate, ew_flags, wallet_state, reads_ok, ctx, bal, have_balance,
-                        rp, rescanning, txs, stakes, recv_addr, listener_text, listener_ok,
+                        rp, rescanning, txs, stakes, recv_addr, listener_text, listener_ok, listener_paused,
                         decimals, wallet_svc_err, can_send,
                         rpc_ok, busy, stopping, remote_node, coin, tokens, tokens_locked]() {
                 auto h = weak.lock();
@@ -4713,6 +4727,7 @@ int main(int argc, char **argv)
                     (*h)->set_receive_address(ss(recv_addr));
                     (*h)->set_listener_text(ss(listener_text));
                     (*h)->set_listener_ok(listener_ok);
+                    (*h)->set_listener_paused(listener_paused);
                     // Re-encode only when the address actually changes — this
                     // runs every poll and the encoder allocates.
                     if (recv_addr != g_qr_addr) {

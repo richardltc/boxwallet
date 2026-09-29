@@ -1361,12 +1361,25 @@ size_t  bw_wallet_receive_address(bw_ctx *ctx, size_t idx, int force_new, char *
  *   1 running
  *   2 stopped — it exited; payments wait at the relay until the wallet is
  *               unlocked again (the password isn't kept to restart it)
+ *   3 paused  — it's up, but its node won't let it process payments (not
+ *               synced, unreachable, or won't report its status); they wait
+ *               at the relay and go through by themselves once that clears.
+ *               bw_wallet_listener_pause_reason says which.
  *  -1 can't check right now (a wallet op is running) — keep the last answer.
- * A cheap non-blocking probe: fine to call on the poll timer. */
+ * A cheap non-blocking probe: fine to call on the poll timer. "paused" is as
+ * fresh as the last bw_wallet_listener_refresh. */
 #define BW_LISTENER_NONE    0
 #define BW_LISTENER_RUNNING 1
 #define BW_LISTENER_STOPPED 2
+#define BW_LISTENER_PAUSED  3
 int     bw_wallet_listener_state(bw_ctx *ctx, size_t idx);
+/* Ask the listener's node whether it will let the listener work. BLOCKING (a
+ * network round trip) — call from the poll thread, never the UI thread.
+ * Self-throttled to every 10 s; a no-op while no listener runs. */
+void    bw_wallet_listener_refresh(bw_ctx *ctx, size_t idx);
+/* Why a paused listener is paused, worded for the line under the receive
+ * address. Returns the length; 0 when it isn't paused. */
+size_t  bw_wallet_listener_pause_reason(bw_ctx *ctx, size_t idx, char *buf, size_t cap);
 
 /* What sending would cost, without sending anything: 0 = *fee_out set (whole
  * coins), 1 = the wallet already refuses it (out = its reason — too little for
