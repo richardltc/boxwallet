@@ -52,7 +52,7 @@ pub const DigiByte = struct {
     // and the macOS `.zip` carries only the DigiByte-Qt GUI app (no
     // `digibyted`/cli/tx). So only Linux resolves a usable download below; Windows
     // and macOS are null (`error.UnsupportedPlatform` at install time).
-    pub const core_version = "9.26.5";
+    pub const core_version = "9.26.6";
 
     // Binary names. Windows appends `.exe`; Linux/macOS use the bare names. The
     // per-target name is what `isInstalled`, the daemon launcher, and the promote
@@ -1088,7 +1088,7 @@ test "combines getblockchaininfo + getnetworkinfo into DaemonInfo (PoW, no getin
         \\"verificationprogress":1.0},"error":null,"id":"boxwallet"}
     ;
     const net_raw =
-        \\{"result":{"version":92605,"subversion":"/DigiByte:9.26.5/",
+        \\{"result":{"version":92606,"subversion":"/DigiByte:9.26.6/",
         \\"protocolversion":70017,"connections":12,"networkactive":true,
         \\"relayfee":0.00001000,"warnings":""},"error":null,"id":"boxwallet"}
     ;
@@ -1108,18 +1108,18 @@ test "combines getblockchaininfo + getnetworkinfo into DaemonInfo (PoW, no getin
     );
     defer net.deinit();
 
-    // DigiByte's CLIENT_VERSION 92605 decodes via the generic bitcoin packing to
-    // the legacy 4-part "0.9.26.5"; daemonInfo strips the leading "0." so the
-    // Running line and the version marker match the branded "9.26.5" (==
+    // DigiByte's CLIENT_VERSION 92606 decodes via the generic bitcoin packing to
+    // the legacy 4-part "0.9.26.6"; daemonInfo strips the leading "0." so the
+    // Running line and the version marker match the branded "9.26.6" (==
     // core_version) — otherwise the same release nags as "update available".
     const full = try models.clientVersionString(allocator, net.value.result.?.version);
-    try std.testing.expectEqualStrings("0.9.26.5", full);
+    try std.testing.expectEqualStrings("0.9.26.6", full);
     const version = if (std.mem.startsWith(u8, full, "0.")) blk: {
         defer allocator.free(full);
         break :blk try allocator.dupe(u8, full[2..]);
     } else full;
     defer allocator.free(version);
-    try std.testing.expectEqualStrings("9.26.5", version);
+    try std.testing.expectEqualStrings("9.26.6", version);
     try std.testing.expectEqualStrings(DigiByte.core_version, version);
 
     const info: models.DaemonInfo = .{
