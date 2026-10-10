@@ -16,8 +16,8 @@ const Coin = @import("../coin.zig").Coin;
 /// does *and* drives the Monero-style external-wallet flow (create returns a seed,
 /// restore from seed, unlock with a password, read balance) over the wallet's
 /// encrypted Owner API v3 (see the `SecureChannel`/`external_wallet` section below).
-/// Built against the Epic 4.x line — the standalone `epic` node 4.0.3 and the
-/// `epic-wallet` CLI 4.0.1; the old Go reference targeted 3.x with a different
+/// Built against the Epic 4.x line — the standalone `epic` node 4.1.0 and the
+/// `epic-wallet` CLI 4.1.0; the old Go reference targeted 3.x with a different
 /// distribution and a (stale, bitcoin-style) RPC, so it isn't a line-by-line port.
 ///
 /// Epic is a MimbleWimble chain (a Grin fork), so it is unlike the bitcoin-core
@@ -25,9 +25,10 @@ const Coin = @import("../coin.zig").Coin;
 ///
 ///   * **Distribution** — the `epic` node ships as a `.tar.gz` (versioned wrapper
 ///     dir, no `bin/`) and the `epic-wallet` CLI as a flat `.zip` (binary at the
-///     root), both **linux/amd64 only**. Other targets resolve no download
+///     root), on linux/amd64 and windows/x86_64. Other targets resolve no download
 ///     (`UnsupportedPlatform`). The node is extracted + promoted; the wallet is
-///     extracted into the install root and marked executable (`markExecutable`).
+///     extracted into the install root (promoted out of its folder on Windows) and
+///     marked executable (`markExecutable`).
 ///   * **Launch** — `epic server run`, run in the foreground of its own process
 ///     (it doesn't fork like a bitcoin `-daemon`), so it's spawned detached and
 ///     the status poll confirms it came up.
@@ -73,9 +74,9 @@ pub const Epic = struct {
 
     // The node's bundled version. The live daemon version still comes from
     // `get_status`'s `user_agent`; this is the version the install marker/UI show.
-    pub const core_version = "4.0.3";
+    pub const core_version = "4.1.0";
 
-    // `.exe` on Windows (a future target); Epic ships only linux/amd64 today.
+    // `.exe` on Windows.
     const exe_suffix = if (builtin.os.tag == .windows) ".exe" else "";
     pub const daemon_file = "epic" ++ exe_suffix;
 
@@ -183,16 +184,13 @@ pub const Epic = struct {
 
     // --- Node distribution ----------------------------------------------
     //
-    // The node is the standalone `EpicCash/epic` 4.0.3 release. On Linux it's a
-    // `.tar.gz` that nests `epic` under a versioned wrapper dir (no `bin/`), so
-    // it's extracted whole and `promoteAndTidy` lifts the binary to the install
-    // root. On Windows it's a `.zip` holding `epic.exe` alone at its top level,
-    // which lands in the install root as it is — there is no wrapper to promote
-    // out of, and none to delete (`node_wrapper` null: an empty wrapper name
-    // would have `promoteAndTidy` delete the install root itself).
+    // The node is the standalone `EpicCash/epic` 4.1.0 release. Both the Linux
+    // `.tar.gz` and the Windows `.zip` nest `epic` under a versioned wrapper dir
+    // (no `bin/`), so each is extracted whole and `promoteAndTidy` lifts the
+    // binary to the install root and discards the wrapper.
     const release_base = "https://github.com/EpicCash/epic/releases/download/v" ++ core_version;
-    const node_wrapper: ?[]const u8 = switch (builtin.os.tag) {
-        .windows => null,
+    const node_wrapper: []const u8 = switch (builtin.os.tag) {
+        .windows => "Windows-v" ++ core_version,
         else => "epic-" ++ core_version ++ "-linux-amd64",
     };
     const bin_subdir = "";
@@ -206,11 +204,11 @@ pub const Epic = struct {
     /// but no wallet to go with it yet).
     const download: ?install_mod.Download = switch (builtin.os.tag) {
         .linux => switch (builtin.cpu.arch) {
-            .x86_64 => .{ .url = release_base ++ "/" ++ node_wrapper.? ++ ".tar.gz", .format = .tar_gz },
+            .x86_64 => .{ .url = release_base ++ "/" ++ node_wrapper ++ ".tar.gz", .format = .tar_gz },
             else => null,
         },
         .windows => switch (builtin.cpu.arch) {
-            .x86_64 => .{ .url = release_base ++ "/Windows-v" ++ core_version ++ ".zip", .format = .zip },
+            .x86_64 => .{ .url = release_base ++ "/" ++ node_wrapper ++ ".zip", .format = .zip },
             else => null,
         },
         else => null,
@@ -219,7 +217,7 @@ pub const Epic = struct {
     // --- Wallet (separate `epic-wallet` binary + Owner API) --------------
     //
     // Epic's wallet is its own process, not part of the node — the `epic-wallet`
-    // CLI from the standalone `EpicCash/epic-wallet` **v4.0.1** release (matching the
+    // CLI from the standalone `EpicCash/epic-wallet` **v4.1.0** release (matching the
     // node's 4.x line). BoxWallet installs it next to the node, runs
     // `epic-wallet owner_api` bound to localhost:3420, and drives
     // create/restore/open/balance over the **encrypted** Owner API v3 (see
@@ -253,36 +251,43 @@ pub const Epic = struct {
     // reports balances as integer base units, so divide by this for whole EPIC.
     const epic_base: f64 = 100_000_000;
 
-    // epic-wallet's own release (versioned independently of the node). The v4.0.1
+    // epic-wallet's own release (versioned independently of the node). The 4.1.0
     // Linux asset is a `.tar.gz` nesting `epic-wallet` under a single versioned
-    // wrapper dir (`./epic-wallet-v4.0.1-linux-amd64/`), so it's extracted with
+    // wrapper dir (`./epic-wallet-4.1.0-linux-amd64/`), so it's extracted with
     // `strip_components = 1` — the binary lands straight in the install root with
-    // no wrapper left behind to promote away. (v4.0.0 was a flat `.zip`; the shape
-    // changed with the release, hence the strip.) It's marked executable after
+    // no wrapper left behind to promote away. It's marked executable after
     // extraction regardless, so a bundle without the exec bit still runs.
-    const wallet_version = "4.0.1";
+    const wallet_version = "4.1.0";
     const wallet_tag = "v" ++ wallet_version;
     const wallet_release_base = "https://github.com/EpicCash/epic-wallet/releases/download/" ++ wallet_tag;
     pub const wallet_scratch_file = ".boxwallet-epic-wallet.part";
     // Levels of the wallet archive's wrapper dir to drop while untarring.
     const wallet_strip: u32 = 1;
 
-    /// The wallet download for the build target, or null off linux/amd64.
-    ///
-    /// **Windows is deliberately null** until EpicCash publishes a Windows build
-    /// of 4.0.1 or later (v4.0.2's release has no assets; its CI keeps none).
-    /// The only Windows `epic-wallet.exe` upstream is v4.0.0, and its
-    /// `owner_api` attaches the basic-auth secret to `/v2/foreign` instead of
-    /// `/v2/owner` + `/v3/owner` (fixed in 4.0.1's "regression fix", and done
-    /// Grin's way in 4.0.2) — so any local process could reach the Owner API
-    /// without the per-session secret. Everything else Epic needs on Windows
-    /// is in place (node download, stop, TOML paths); `install` refuses before
-    /// downloading anything while this is null.
+    /// The Windows zip nests `epic-wallet.exe` under `Windows_v4.1.0/`. The zip
+    /// path can't strip that, so `install` promotes it out, as it does the node.
+    const wallet_wrapper: ?[]const u8 = switch (builtin.os.tag) {
+        .windows => "Windows_" ++ wallet_tag,
+        else => null,
+    };
+
+    /// The wallet download for the build target, or null off linux/amd64 and
+    /// windows/x86_64. On Windows the owner API's auth (the 4.0.0 regression sent
+    /// the secret to `/v2/foreign` instead of `/v2/owner`) was checked on 4.1.0's
+    /// Linux build, which has the same source: `/v2/owner` and `/v3/owner` reject a
+    /// missing or wrong secret.
     const wallet_download: ?install_mod.Download = switch (builtin.os.tag) {
         .linux => switch (builtin.cpu.arch) {
             .x86_64 => .{
-                .url = wallet_release_base ++ "/epic-wallet-" ++ wallet_tag ++ "-linux-amd64-ubuntu24.04.tar.gz",
+                .url = wallet_release_base ++ "/epic-wallet-" ++ wallet_version ++ "-linux-amd64.tar.gz",
                 .format = .tar_gz,
+            },
+            else => null,
+        },
+        .windows => switch (builtin.cpu.arch) {
+            .x86_64 => .{
+                .url = wallet_release_base ++ "/Windows_" ++ wallet_tag ++ ".zip",
+                .format = .zip,
             },
             else => null,
         },
@@ -1296,11 +1301,12 @@ pub const Epic = struct {
         try f.setPermissions(io, .executable_file);
     }
 
-    /// Install the Epic node + wallet. The node (`epic` 4.0.3) is a `.tar.gz` nested
+    /// Install the Epic node + wallet. The node (`epic` 4.1.0) is an archive nested
     /// in a versioned wrapper dir, extracted then promoted to the install root. The
-    /// wallet (`epic-wallet` 4.0.1) is a `.tar.gz` whose own wrapper dir is stripped
-    /// during extraction, so the binary lands in the install root directly and is
-    /// then marked executable. Both stream to disk — flat memory.
+    /// wallet (`epic-wallet` 4.1.0) is a `.tar.gz` whose wrapper dir is stripped
+    /// during extraction, or a Windows `.zip` promoted out of its wrapper; either
+    /// way the binary ends up in the install root and is marked executable. Both
+    /// stream to disk — flat memory.
     pub fn install(
         allocator: std.mem.Allocator,
         install_root: []const u8,
@@ -1312,10 +1318,11 @@ pub const Epic = struct {
         const wdl = wallet_download orelse return error.UnsupportedPlatform;
 
         try install_mod.downloadAndExtract(allocator, dl.url, dl.format, install_root, scratch_file, 0, progress);
-        if (node_wrapper) |wrapper|
-            try install_mod.promoteAndTidy(allocator, install_root, wrapper, bin_subdir, &promote_files);
+        try install_mod.promoteAndTidy(allocator, install_root, node_wrapper, bin_subdir, &promote_files);
 
         try install_mod.downloadAndExtract(allocator, wdl.url, wdl.format, install_root, wallet_scratch_file, wallet_strip, progress);
+        if (wallet_wrapper) |wrapper|
+            try install_mod.promoteAndTidy(allocator, install_root, wrapper, "", &.{wallet_file});
         try markExecutable(allocator, install_root, wallet_file);
     }
 
@@ -5123,19 +5130,17 @@ test "an Err / empty Owner result yields no usable status" {
     try std.testing.expect(parsed.value.result.?.Ok == null);
 }
 
-test "node download resolves to the 4.0.3 tar.gz only on linux/amd64" {
+test "node download resolves to the 4.1.0 archive only on linux/amd64 and windows/x86_64" {
     if (builtin.os.tag == .linux and builtin.cpu.arch == .x86_64) {
         const dl = Epic.download orelse return error.TestUnexpectedResult;
         try std.testing.expectEqual(install_mod.Format.tar_gz, dl.format);
-        try std.testing.expect(std.mem.indexOf(u8, dl.url, "epic-4.0.3-linux-amd64.tar.gz") != null);
-        try std.testing.expectEqualStrings("epic-4.0.3-linux-amd64", Epic.node_wrapper.?);
+        try std.testing.expect(std.mem.endsWith(u8, dl.url, "/v4.1.0/epic-4.1.0-linux-amd64.tar.gz"));
+        try std.testing.expectEqualStrings("epic-4.1.0-linux-amd64", Epic.node_wrapper);
     } else if (builtin.os.tag == .windows and builtin.cpu.arch == .x86_64) {
-        // A flat zip: `epic.exe` at the top level, and no wrapper to promote out
-        // of (or to delete — an empty name there would take the install root).
         const dl = Epic.download orelse return error.TestUnexpectedResult;
         try std.testing.expectEqual(install_mod.Format.zip, dl.format);
-        try std.testing.expect(std.mem.endsWith(u8, dl.url, "/v4.0.3/Windows-v4.0.3.zip"));
-        try std.testing.expect(Epic.node_wrapper == null);
+        try std.testing.expect(std.mem.endsWith(u8, dl.url, "/v4.1.0/Windows-v4.1.0.zip"));
+        try std.testing.expectEqualStrings("Windows-v4.1.0", Epic.node_wrapper);
     } else {
         try std.testing.expect(Epic.download == null);
     }
@@ -5425,7 +5430,7 @@ test "coin vtable dispatches to Epic metadata and the external wallet" {
     try std.testing.expectEqualStrings("Epic Cash", c.coinName());
     try std.testing.expectEqualStrings("EPIC", c.coinNameAbbrev());
     try std.testing.expectEqualStrings("#deac55", c.coinColor());
-    try std.testing.expectEqualStrings("4.0.3", c.coreVersion());
+    try std.testing.expectEqualStrings("4.1.0", c.coreVersion());
     try std.testing.expect(!c.isProofOfStake());
     try std.testing.expectEqualStrings("3413", c.rpcDefaultPort());
     try std.testing.expectEqual(Coin.LaunchMode.foreground, c.launchMode());
@@ -5550,18 +5555,29 @@ test "wordCount counts whitespace-separated seed words" {
     try std.testing.expectEqual(@as(usize, 24), Epic.wordCount("a b c d e f g h i j k l m n o p q r s t u v w x"));
 }
 
-test "wallet download resolves to the 4.0.1 tarball only on linux/amd64" {
+test "wallet download resolves to the 4.1.0 archive only on linux/amd64 and windows/x86_64" {
     if (builtin.os.tag == .linux and builtin.cpu.arch == .x86_64) {
         const dl = Epic.wallet_download orelse return error.TestUnexpectedResult;
         try std.testing.expectEqual(install_mod.Format.tar_gz, dl.format);
-        try std.testing.expect(std.mem.indexOf(
+        try std.testing.expect(std.mem.endsWith(
             u8,
             dl.url,
-            "/" ++ Epic.wallet_tag ++ "/epic-wallet-v4.0.1-linux-amd64-ubuntu24.04.tar.gz",
-        ) != null);
+            "/" ++ Epic.wallet_tag ++ "/epic-wallet-4.1.0-linux-amd64.tar.gz",
+        ));
         // The wrapper dir is dropped while untarring, so `epic-wallet` lands in the
         // install root — nothing to promote afterwards.
         try std.testing.expectEqual(@as(u32, 1), Epic.wallet_strip);
+        try std.testing.expect(Epic.wallet_wrapper == null);
+    } else if (builtin.os.tag == .windows and builtin.cpu.arch == .x86_64) {
+        const dl = Epic.wallet_download orelse return error.TestUnexpectedResult;
+        try std.testing.expectEqual(install_mod.Format.zip, dl.format);
+        try std.testing.expect(std.mem.endsWith(
+            u8,
+            dl.url,
+            "/" ++ Epic.wallet_tag ++ "/Windows_" ++ Epic.wallet_tag ++ ".zip",
+        ));
+        // The zip nests `epic-wallet.exe` under its wrapper; promote it out.
+        try std.testing.expectEqualStrings("Windows_" ++ Epic.wallet_tag, Epic.wallet_wrapper.?);
     } else {
         try std.testing.expect(Epic.wallet_download == null);
     }
