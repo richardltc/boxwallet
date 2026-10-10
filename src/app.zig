@@ -12816,7 +12816,7 @@ test "logTagColor matches the leading coin/BoxWallet tag, nothing else" {
 test "refreshUpdateState flags an update when the marker trails the bundled version" {
     const allocator = std.testing.allocator;
     var epic: Epic = .{};
-    const c = epic.coin(); // bundled core_version is "4.0.3"
+    const c = epic.coin(); // bundled core_version is "4.1.0"
     const root = "test-update-detect-root";
 
     var threaded: std.Io.Threaded = .init(allocator, .{});
@@ -12838,20 +12838,20 @@ test "refreshUpdateState flags an update when the marker trails the bundled vers
     try std.testing.expect(!act.update_available);
     try std.testing.expectEqualStrings("", act.installedVersion());
 
-    // Marker older than the bundled 4.0.3 → update available, version surfaced.
+    // Marker older than the bundled 4.1.0 → update available, version surfaced.
     try install_mod.writeVersionMarker(allocator, root, c.daemonFile(), "4.0.2");
     act.refreshUpdateState(allocator, c, root);
     try std.testing.expect(act.update_available);
     try std.testing.expectEqualStrings("4.0.2", act.installedVersion());
 
     // Marker equal to the bundled version → up to date.
-    try install_mod.writeVersionMarker(allocator, root, c.daemonFile(), "4.0.3");
+    try install_mod.writeVersionMarker(allocator, root, c.daemonFile(), "4.1.0");
     act.refreshUpdateState(allocator, c, root);
     try std.testing.expect(!act.update_available);
 
     // Marker newer than the bundle (e.g. after a downgrade of BoxWallet) → not an
     // update; we never offer to install an older version.
-    try install_mod.writeVersionMarker(allocator, root, c.daemonFile(), "4.1.0");
+    try install_mod.writeVersionMarker(allocator, root, c.daemonFile(), "4.2.0");
     act.refreshUpdateState(allocator, c, root);
     try std.testing.expect(!act.update_available);
 }
@@ -16493,7 +16493,7 @@ test "a connected remote node reads as settled, not perpetually starting" {
     // A version marker for the unused local binary — the trap the Running line
     // has to avoid, since nothing of ours is running to have that version.
     act.version_len = 5;
-    @memcpy(act.version_buf[0..5], "4.0.3");
+    @memcpy(act.version_buf[0..5], "4.1.0");
 
     const pane = try app.renderCoin(a, coin, &act);
 
@@ -16503,7 +16503,7 @@ test "a connected remote node reads as settled, not perpetually starting" {
     // Exactly once — in the header, where the *installed binary's* version
     // belongs. A second occurrence would be the Running line claiming it as the
     // version of a process that isn't running.
-    try std.testing.expectEqual(@as(usize, 1), std.mem.count(u8, pane, "4.0.3"));
+    try std.testing.expectEqual(@as(usize, 1), std.mem.count(u8, pane, "4.1.0"));
     // Peers: an em-dash, never the spinner — that would animate a search for a
     // figure the node is never going to report.
     try std.testing.expect(std.mem.indexOf(u8, pane, "—") != null);
