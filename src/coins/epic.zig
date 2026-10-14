@@ -2478,7 +2478,7 @@ pub const Epic = struct {
     }
 
     /// Which stream `runCli` keeps: the one the command reports failure on.
-    const CliCapture = enum { stdout, stderr };
+    const CliCapture = enum { stdout, stderr, both };
 
     /// How a `runCli` command ended: whether it exited 0, and how many bytes of
     /// the captured stream's tail were copied back.
@@ -2507,8 +2507,8 @@ pub const Epic = struct {
             cap.close(io);
             dir.deleteFile(io, cli_capture_file) catch {};
         }
-        const out: ?std.Io.File = if (capture == .stdout) cap else null;
-        const err: ?std.Io.File = if (capture == .stderr) cap else null;
+        const out: ?std.Io.File = if (capture != .stderr) cap else null;
+        const err: ?std.Io.File = if (capture != .stdout) cap else null;
 
         const ok = if (pass_on_tty) blk: {
             var sp = ttypass.spawn(allocator, .{
@@ -2587,13 +2587,21 @@ pub const Epic = struct {
         // Only the tail matters: the failing `ERROR` line comes last, after the
         // INFO banner.
         var buf: [1024]u8 = undefined;
-        const run = runCli(allocator, io, dir, argv, null, .stdout, password, 1, &buf) catch |err| {
+        // stderr too: a Rust panic prints what actually went wrong there, while
+        // the log line on stdout only says "API thread panicked".
+        const run = runCli(allocator, io, dir, argv, null, .both, password, 1, &buf) catch |err| {
             detail.set(@errorName(err));
             return error.WalletRescanFailed;
         };
         const len = run.captured;
         const ok = run.ok;
         if (!ok) {
+            if (std.mem.lastIndexOf(u8, buf[0..len], "panicked at")) |i| {
+                var msg = std.mem.trim(u8, buf[i..len], " \t\r\n");
+                if (msg.len > 240) msg = msg[0..240];
+                detail.set(msg);
+                return error.WalletRescanFailed;
+            }
             const why = scanErrLine(buf[0..len]);
             detail.set(if (why.len > 0) why else "epic-wallet could not scan the chain — make sure the Epic daemon is running and synced, then restore again");
             return error.WalletRescanFailed;
