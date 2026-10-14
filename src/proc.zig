@@ -14,6 +14,14 @@
 const std = @import("std");
 const builtin = @import("builtin");
 
+/// The environment a spawned child should inherit, for `Threaded.init`'s
+/// `.environ`. A `Threaded` left at its default hands every child an *empty*
+/// environment, which on Windows means no `%SystemRoot%` — Winsock then can't
+/// find its providers and a wallet binding its RPC port panics with error 10106.
+/// Windows only; elsewhere this stays empty so no other platform changes.
+pub const inherit_environ: std.process.Environ =
+    if (builtin.os.tag == .windows) .{ .block = .global } else .empty;
+
 /// True while a process named `name` exists. `/proc` on Linux, the Toolhelp
 /// process snapshot on Windows, `pgrep` elsewhere; where none of those can
 /// answer it conservatively reports alive, so a live daemon is never declared
