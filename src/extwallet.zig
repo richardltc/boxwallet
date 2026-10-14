@@ -276,7 +276,7 @@ fn startListener(
     var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
     defer arena.deinit();
     const a = arena.allocator();
-    var threaded: std.Io.Threaded = .init(a, .{});
+    var threaded: std.Io.Threaded = .init(a, .{ .environ = proc.inherit_environ });
     defer threaded.deinit();
     const io = threaded.io();
 
@@ -545,7 +545,7 @@ pub fn launchWithPassword(
     var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
     defer arena.deinit();
     const a = arena.allocator();
-    var threaded: std.Io.Threaded = .init(a, .{});
+    var threaded: std.Io.Threaded = .init(a, .{ .environ = proc.inherit_environ });
     defer threaded.deinit();
     const io = threaded.io();
 

@@ -2382,7 +2382,7 @@ pub const Epic = struct {
         mnemonic: []const u8,
         detail: *Coin.WalletErrSink,
     ) !void {
-        var threaded: std.Io.Threaded = .init(allocator, .{});
+        var threaded: std.Io.Threaded = .init(allocator, .{ .environ = proc_mod.inherit_environ });
         defer threaded.deinit();
         const io = threaded.io();
 
@@ -2835,7 +2835,7 @@ pub const Epic = struct {
         // restored the wallet, and the refresh path above recovers the funds once the
         // node catches up. So swallow any scan error; the user sees the node's sync
         // progress in the daemon panel. See `runScan`.
-        var threaded: std.Io.Threaded = .init(allocator, .{});
+        var threaded: std.Io.Threaded = .init(allocator, .{ .environ = proc_mod.inherit_environ });
         defer threaded.deinit();
         const io = threaded.io();
         ensureWalletConfig(allocator, io, home) catch {};
