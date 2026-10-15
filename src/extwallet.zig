@@ -612,6 +612,14 @@ pub fn launchWithPassword(
                     return error.WalletOpenFailed;
                 }
             };
+        } else if (sess.child) |*ch| {
+            // Windows too: a wrong password makes the wallet exit at once, so
+            // don't sit out the whole timeout waiting for a port that never binds.
+            if (proc.probeChild(io, ch) != null) {
+                sess.child = null;
+                if (cap_file) |*f| setErrFromCapture(detail, io, f);
+                return error.WalletOpenFailed;
+            }
         }
         io.sleep(.fromMilliseconds(step), .awake) catch {};
     }
