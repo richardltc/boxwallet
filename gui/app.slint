@@ -5464,6 +5464,10 @@ export component AppWindow inherits Window {
                 height: ws-card.height;
                 accent: root.coin-color;
                 running: true;
+                // Forward round the card while the op is scanning the chain (a
+                // seed restore or a rescan), as a send does; the rest keep the
+                // wallet actions' anti-clockwise.
+                clockwise: root.wallet-scan-label != "";
             }
 
             ws-card := Rectangle {
