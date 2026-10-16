@@ -680,6 +680,15 @@ pub fn setupWithPassword(
             try launchWithPassword(sess, coin, install_root, home_dir, password, detail);
             try ew.open(a, authFor(coin, sess), password, detail);
         },
+        .rescan => {
+            // The scan is a CLI run against the wallet on disk, which the running
+            // server holds open — so end it (and the listener) first, scan, then
+            // bring the wallet back up the way an unlock does.
+            kill(sess);
+            try (ew.rescan orelse return error.Unsupported)(a, install_root, home_dir, password, detail);
+            try launchWithPassword(sess, coin, install_root, home_dir, password, detail);
+            try ew.open(a, authFor(coin, sess), password, detail);
+        },
         // Locking this shape means ending the processes that hold the wallet
         // open: the server was launched with the password and keeps the wallet
         // open for as long as it runs, and the listener likewise. Ask the server

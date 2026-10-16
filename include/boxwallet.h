@@ -206,10 +206,13 @@ int     bw_coin_supports_tokens(size_t idx);      /* 0/1 — shows the Tokens ta
 /* With BW_EW_SHOW_SEED: the seed can be shown while LOCKED too (it's read from
  * the wallet file with the password, not from the running wallet). */
 #define BW_EW_SHOW_SEED_LOCKED (1 << 9)
+/* The wallet can be re-scanned against the chain to rebuild its transaction
+ * list (bw_ext_wallet_rescan_chain), locked or open. */
+#define BW_EW_RESCAN         (1 << 10)
 int     bw_coin_ext_wallet(size_t idx);
 
 /* While a managed-wallet op runs (0 create, 1 restore from seed, 2 import file,
- * 3 unlock, 4 lock, 5 show seed, 6 back up file): what to say it's doing, and — for a BW_EW_LAUNCH_WITH_PW
+ * 3 unlock, 4 lock, 5 show seed, 6 back up file, 7 rescan): what to say it's doing, and — for a BW_EW_LAUNCH_WITH_PW
  * wallet — why it takes a moment. The TUI's words. Return lengths; 0 = none. */
 size_t  bw_setup_op_progress(int op, char *buf, size_t cap);
 size_t  bw_setup_op_launch_note(int op, char *buf, size_t cap);
@@ -1202,6 +1205,11 @@ int     bw_ext_wallet_lock(bw_ctx *ctx, size_t idx);   /* BW_EW_EXPLICIT_LOCK co
  * with the wallet password as it is NOW — say so, and say where it went: the
  * backup is useless without that password. */
 int     bw_ext_wallet_show_seed(bw_ctx *ctx, size_t idx, const uint8_t *pw, size_t pw_len);
+/* BW_EW_RESCAN coins: re-scan the chain for the wallet's funds and transactions
+ * under pw (asked for again; wrong = failure), then bring it back up open.
+ * Blocks for minutes — poll bw_ext_wallet_restore_progress from another thread
+ * for the bar, as for a seed restore. On failure the wallet is left locked. */
+int     bw_ext_wallet_rescan_chain(bw_ctx *ctx, size_t idx, const uint8_t *pw, size_t pw_len);
 size_t  bw_ext_wallet_backup_file(bw_ctx *ctx, size_t idx, char *buf, size_t cap);
 
 /* DESTRUCTIVE: deletes the managed wallet's files so a different one can take

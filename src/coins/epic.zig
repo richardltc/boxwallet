@@ -2846,6 +2846,24 @@ pub const Epic = struct {
         };
     }
 
+    /// "Rescan wallet": run `scan` against the existing wallet so its transaction
+    /// list is rebuilt from the chain. Unlike the best-effort scan inside a
+    /// restore, a failure here is the outcome — the user asked for exactly this —
+    /// so `runScan`'s reason is left in `detail` for them to read.
+    fn epicRescan(
+        allocator: std.mem.Allocator,
+        install_root: []const u8,
+        home: []const u8,
+        password: []const u8,
+        detail: *Coin.WalletErrSink,
+    ) anyerror!void {
+        var threaded: std.Io.Threaded = .init(allocator, .{ .environ = proc_mod.inherit_environ });
+        defer threaded.deinit();
+        const io = threaded.io();
+        ensureWalletConfig(allocator, io, home) catch {};
+        try runScan(allocator, io, install_root, home, password, detail);
+    }
+
     /// Open the existing wallet with `password` (caching its token), so its balance
     /// can be read.
     fn epicOpen(
@@ -4706,6 +4724,7 @@ pub const Epic = struct {
         .create = epicCreate,
         .restore_seed = epicRestore,
         .restore_progress = restoreProgress,
+        .rescan = epicRescan,
         .restore_file = epicRestoreFile,
         .show_seed = epicShowSeed,
         .backup_file = epicBackupFile,

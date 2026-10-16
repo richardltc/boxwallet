@@ -1142,6 +1142,7 @@ static void apply_coin_metadata(const AppWindow *ui, bw_ctx *ctx, int idx)
         ui->set_node_hint(ss(""));
     }
     ui->set_wallet_can_backup_file((ew_flags & BW_EW_FILE_BACKUP) != 0);
+    ui->set_wallet_can_rescan((ew_flags & BW_EW_RESCAN) != 0);
     ui->set_wallet_state(BW_WALLET_NONE);
     uint32_t counts[4] = {25, 0, 0, 0};
     const size_t ncounts = bw_coin_seed_word_counts(idx, counts, 4);
@@ -1902,6 +1903,7 @@ int main(int argc, char **argv)
             (*h)->set_wallet_result_error(false);
             (*h)->set_wallet_result(ss(
                 op == 1 ? "Wallet restored. It will scan the chain for your funds."
+                : op == 7 ? "Rescan complete \u2014 the transaction list is rebuilt from the chain."
                 : op == 2 ? "Wallet imported and unlocked."
                           : "Wallet unlocked."));
             (*h)->set_wallet_stage(10);
@@ -3369,7 +3371,7 @@ int main(int argc, char **argv)
         // What the in-flight stage says: the core's words for this op.
         if (auto h = weak.lock()) {
             // The worker's default is unlock.
-            const int shown = ((op >= 0 && op <= 2) || op == 5) ? op : 3;
+            const int shown = ((op >= 0 && op <= 2) || op == 5 || op == 7) ? op : 3;
             char pb[96], nb[160];
             size_t pn = bw_setup_op_progress(shown, pb, sizeof pb);
             size_t nn = bw_setup_op_launch_note(shown, nb, sizeof nb);
@@ -3388,8 +3390,9 @@ int main(int argc, char **argv)
             int rc = -1;
             switch (op) {
             case 0: rc = bw_ext_wallet_create(ctx, c, pw_bytes.data(), pw_bytes.size()); break;
-            case 1: {
-                // A restore can block on a chain scan (Epic: about a minute). The
+            case 1:
+            case 7: {
+                // A restore (or a rescan) can block on a chain scan (Epic: about a minute). The
                 // core reports how far it has got without taking the wallet lock
                 // this call holds, so poll it alongside and feed the modal's bar.
                 std::mutex scan_mtx;
@@ -3407,8 +3410,10 @@ int main(int argc, char **argv)
                         });
                     }
                 });
-                rc = bw_ext_wallet_restore_seed(ctx, c, pw_bytes.data(), pw_bytes.size(),
-                                                seed_bytes.data(), seed_bytes.size());
+                rc = op == 7
+                    ? bw_ext_wallet_rescan_chain(ctx, c, pw_bytes.data(), pw_bytes.size())
+                    : bw_ext_wallet_restore_seed(ctx, c, pw_bytes.data(), pw_bytes.size(),
+                                                 seed_bytes.data(), seed_bytes.size());
                 {
                     std::lock_guard<std::mutex> lk(scan_mtx);
                     restored = true;
