@@ -693,6 +693,7 @@ pub const bw_ew_has_listener: c_int = 1 << 6; // runs a payment listener while u
 pub const bw_ew_show_seed: c_int = 1 << 7; // an open wallet can show its recovery seed again
 pub const bw_ew_file_backup: c_int = 1 << 8; // the wallet file can be backed up
 pub const bw_ew_show_seed_locked: c_int = 1 << 9; // ...and the seed can be shown while locked too
+pub const bw_ew_rescan: c_int = 1 << 10; // the wallet can be re-scanned (bw_ext_wallet_rescan_chain)
 
 /// 0 for a coin with no external wallet at all; otherwise the `bw_ew_*` bits.
 export fn bw_coin_ext_wallet(idx: usize) c_int {
@@ -709,6 +710,7 @@ export fn bw_coin_ext_wallet(idx: usize) c_int {
     if (ew.show_seed != null) flags |= bw_ew_show_seed;
     if (ew.backup_file != null) flags |= bw_ew_file_backup;
     if (ew.show_seed != null and ew.show_seed_when_locked) flags |= bw_ew_show_seed_locked;
+    if (ew.rescan != null) flags |= bw_ew_rescan;
     return flags;
 }
 
@@ -1948,6 +1950,7 @@ fn walletOp(
         .open => try ew.open(a, auth, password, &detail),
         .lock => try (ew.lock orelse return error.Unsupported)(a, auth, &detail),
         .show_seed, .backup_file => unreachable, // settled above
+        .rescan => return error.Unsupported, // launch-with-password coins only (above)
     }
     ctx.wallet_open[idx].store(if (op == .lock) 0 else 1, .monotonic);
 }
@@ -2039,6 +2042,16 @@ export fn bw_ext_wallet_restore_file(
 /// password fails with code "WrongPassword". BW_EW_SHOW_SEED coins only.
 export fn bw_ext_wallet_show_seed(ctx: ?*Ctx, idx: usize, pw: ?[*]const u8, pw_len: usize) c_int {
     return walletOpCall(ctx, idx, .show_seed, pw, pw_len, null, 0, null);
+}
+
+/// Re-scan the chain for the wallet's funds and transactions under `pw`, then
+/// bring the wallet back up open (BW_EW_RESCAN coins — Epic). For a wallet whose
+/// restore scan failed or was cut short and so shows a balance but a partial
+/// transaction list. Blocks for minutes: poll `bw_ext_wallet_restore_progress`
+/// from another thread for the bar. The password is asked for again; a wrong one
+/// fails. The wallet ends open on success, locked (its process ended) on failure.
+export fn bw_ext_wallet_rescan_chain(ctx: ?*Ctx, idx: usize, pw: ?[*]const u8, pw_len: usize) c_int {
+    return walletOpCall(ctx, idx, .rescan, pw, pw_len, null, 0, null);
 }
 
 /// Copy the managed wallet file to a fresh timestamped file under the install

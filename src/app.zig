@@ -2980,6 +2980,7 @@ const Activity = struct {
             .open => try ew.open(a, auth, pw, detail),
             .lock => try (ew.lock orelse return error.Unsupported)(a, auth, detail),
             .show_seed, .backup_file => unreachable, // handled above
+            .rescan => return error.Unsupported, // launch-with-password coins only (above)
         }
     }
 
@@ -4974,6 +4975,14 @@ pub const App = struct {
                             m.setup_op = .backup_file;
                             self.submitWalletSetup();
                         },
+                        // Asked for again: the scan runs against the wallet on
+                        // disk with the password, then the wallet is relaunched.
+                        .rescan => {
+                            m.setup_op = .rescan;
+                            m.stage = .setup_password;
+                            self.pw_input.setValue("") catch {};
+                            self.pw_input.focus();
+                        },
                         .replace => {
                             m.replace_bad = false;
                             m.stage = .setup_replace_confirm;
@@ -5310,7 +5319,7 @@ pub const App = struct {
         // "please wait". A small file read with no wallet lock, so it's safe
         // while the restore worker holds the wallet.
         if (self.modal) |*m| {
-            if (m.stage == .working and m.setup_op == .restore_seed and
+            if (m.stage == .working and (m.setup_op == .restore_seed or m.setup_op == .rescan) and
                 t.timestamp - self.last_restore_pct_ns >= 500 * std.time.ns_per_ms)
             {
                 self.last_restore_pct_ns = t.timestamp;
@@ -6006,6 +6015,7 @@ pub const App = struct {
                                 .restore_file => "Wallet imported — your balance will appear shortly.",
                                 .open => "Wallet unlocked.",
                                 .lock => "Wallet locked.",
+                                .rescan => "Rescan complete — the transaction list is rebuilt from the chain.",
                                 .create, .show_seed, .backup_file => unreachable,
                             });
                         } else {
@@ -11013,6 +11023,10 @@ pub const App = struct {
                     try wrapIntoRows(a, &out.writer, vbar, inner_w, "Enter the wallet password to show its recovery seed.", (zz.Style{}));
                     try modalRow(&out.writer, vbar, inner_w, "", 0);
                 }
+                if (m.setup_op == .rescan) {
+                    try wrapIntoRows(a, &out.writer, vbar, inner_w, "Enter the wallet password to rescan the chain for this wallet's transactions.", (zz.Style{}));
+                    try modalRow(&out.writer, vbar, inner_w, "", 0);
+                }
                 const prompt = if (m.setup_op.setsNewPassword()) "New password: " else "Password: ";
                 const masked = try self.pw_input.view(a);
                 const text = try std.fmt.allocPrint(a, "{s}{s}", .{ prompt, masked });
@@ -11235,7 +11249,7 @@ pub const App = struct {
                 const busy = m.setup_op.progress();
                 try modalRow(&out.writer, vbar, inner_w, busy, zz.width(busy));
                 // Once the restore's chain scan reports a percentage, show it.
-                if (m.setup_op == .restore_seed) if (m.restore_pct) |pct| {
+                if (m.setup_op == .restore_seed or m.setup_op == .rescan) if (m.restore_pct) |pct| {
                     try modalRow(&out.writer, vbar, inner_w, "", 0);
                     const step = m.setup_op.scanLabel();
                     try modalRow(&out.writer, vbar, inner_w, step, zz.width(step));

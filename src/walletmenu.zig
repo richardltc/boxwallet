@@ -34,7 +34,7 @@ const Coin = @import("coin.zig").Coin;
 /// there is a test that holds it to the real worst case.
 pub const max_options = 6;
 /// Most setup choices a managed wallet's menu offers at once.
-pub const max_choices = 4;
+pub const max_choices = 5;
 
 /// An operation the in-daemon wallet menu can run against the daemon.
 pub const Action = enum(u8) {
@@ -354,6 +354,10 @@ pub const SetupOp = enum(u8) {
     show_seed = 5,
     /// Copy the wallet file to a timestamped backup (`ExternalWallet.backup_file`).
     backup_file = 6,
+    /// Re-scan the chain for this wallet's outputs and transactions
+    /// (`ExternalWallet.rescan`), after asking for its password again. Relaunches
+    /// the wallet afterwards, so it ends open.
+    rescan = 7,
 
     /// What's happening while the op runs — the in-flight line, one wording for
     /// both front-ends. Says *unlocking* for `open`: that's what the user asked
@@ -367,6 +371,7 @@ pub const SetupOp = enum(u8) {
             .lock => "Locking the wallet…",
             .show_seed => "Reading your recovery seed…",
             .backup_file => "Backing up the wallet file…",
+            .rescan => "Rescanning the chain for this wallet…",
         };
     }
 
@@ -376,6 +381,7 @@ pub const SetupOp = enum(u8) {
     pub fn scanLabel(self: SetupOp) []const u8 {
         return switch (self) {
             .restore_seed => "Scanning the chain for your funds…",
+            .rescan => "Scanning the chain for your transactions…",
             .create, .restore_file, .open, .lock, .show_seed, .backup_file => "",
         };
     }
@@ -387,7 +393,7 @@ pub const SetupOp = enum(u8) {
     /// them or mark a locked wallet open afterwards.
     pub fn opensWallet(self: SetupOp) bool {
         return switch (self) {
-            .create, .restore_seed, .restore_file, .open => true,
+            .create, .restore_seed, .restore_file, .open, .rescan => true,
             .lock, .show_seed, .backup_file => false,
         };
     }
@@ -399,6 +405,7 @@ pub const SetupOp = enum(u8) {
     pub fn launchNote(self: SetupOp) []const u8 {
         return switch (self) {
             .restore_seed => "This scans the chain for your existing funds and can take several minutes. Leave it running.",
+            .rescan => "This re-reads the chain for this wallet's funds and transactions and can take several minutes. Leave it running.",
             // Neither starts anything: they use the wallet as it already is.
             .lock, .show_seed, .backup_file => "",
             else => "The wallet service is starting — this can take a moment.",
@@ -414,6 +421,7 @@ pub const SetupOp = enum(u8) {
             .lock => "Lock wallet",
             .show_seed => "Show recovery seed",
             .backup_file => "Back up wallet file",
+            .rescan => "Rescan wallet",
         };
     }
 
@@ -453,6 +461,9 @@ pub const SetupChoice = enum(u8) {
     show_seed = 6,
     /// Copy the wallet file to a timestamped backup.
     backup_file = 7,
+    /// Re-scan the chain to rebuild the wallet's transaction list (asks for the
+    /// password again).
+    rescan = 8,
 
     pub fn label(self: SetupChoice) []const u8 {
         return switch (self) {
@@ -464,6 +475,7 @@ pub const SetupChoice = enum(u8) {
             .replace => "Replace wallet…",
             .show_seed => "Show recovery seed",
             .backup_file => "Back up wallet file",
+            .rescan => "Rescan wallet",
         };
     }
 };
@@ -513,6 +525,11 @@ pub fn existingChoicesFor(coin: Coin, open: bool, buf: *[max_choices]SetupChoice
     }
     if (ew.backup_file != null) {
         buf[n] = .backup_file;
+        n += 1;
+    }
+    // Needs the password, and relaunches the wallet, so it's offered locked or open.
+    if (ew.rescan != null) {
+        buf[n] = .rescan;
         n += 1;
     }
     if (coin.supportsWalletReplace()) {
@@ -920,6 +937,7 @@ test "an existing wallet's menu: unlock only when locked, seed only when open, r
                     .lock => try std.testing.expect(open and ew.lock != null),
                     .show_seed => try std.testing.expect(ew.show_seed != null and (open or ew.show_seed_when_locked)),
                     .backup_file => try std.testing.expect(ew.backup_file != null),
+                    .rescan => try std.testing.expect(ew.rescan != null),
                     .replace => try std.testing.expectEqual(n - 1, k),
                     // Those are for a coin with no wallet yet.
                     .create, .restore_seed, .restore_file => return error.TestUnexpectedResult,
@@ -936,10 +954,10 @@ test "Epic offers both backups, locked or open" {
     var buf: [max_choices]SetupChoice = undefined;
 
     const open_n = existingChoicesFor(c, true, &buf);
-    try std.testing.expectEqualSlices(SetupChoice, &.{ .lock, .show_seed, .backup_file, .replace }, buf[0..open_n]);
+    try std.testing.expectEqualSlices(SetupChoice, &.{ .lock, .show_seed, .backup_file, .rescan, .replace }, buf[0..open_n]);
 
     const locked_n = existingChoicesFor(c, false, &buf);
-    try std.testing.expectEqualSlices(SetupChoice, &.{ .unlock, .show_seed, .backup_file, .replace }, buf[0..locked_n]);
+    try std.testing.expectEqualSlices(SetupChoice, &.{ .unlock, .show_seed, .backup_file, .rescan, .replace }, buf[0..locked_n]);
 
     // And the file comes back in through the no-wallet menu.
     const new_n = choicesFor(c, &buf);
@@ -956,4 +974,26 @@ test "only the setup ops leave a wallet open; the backups change nothing" {
     try std.testing.expect(SetupOp.show_seed.allowsEmptyPassword());
     try std.testing.expectEqual(@as(usize, 0), SetupOp.show_seed.launchNote().len);
     try std.testing.expectEqual(@as(usize, 0), SetupOp.backup_file.launchNote().len);
+}
+
+test "Epic offers a rescan, locked or open, and only Epic does" {
+    var found_epic = false;
+    const registry = @import("registry.zig");
+    var inst: registry.Instances = registry.instances();
+    var i: usize = 0;
+    while (i < registry.count) : (i += 1) {
+        const c = registry.coinAt(&inst, i) orelse continue;
+        const ew = c.externalWallet() orelse continue;
+        for ([_]bool{ false, true }) |open| {
+            var buf: [max_choices]SetupChoice = undefined;
+            const n = existingChoicesFor(c, open, &buf);
+            var has = false;
+            for (buf[0..n]) |ch| {
+                if (ch == .rescan) has = true;
+            }
+            try std.testing.expectEqual(ew.rescan != null, has);
+            if (has) found_epic = true;
+        }
+    }
+    try std.testing.expect(found_epic);
 }

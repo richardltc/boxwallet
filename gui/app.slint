@@ -1608,6 +1608,8 @@ export component AppWindow inherits Window {
     // whether the wallet button stays live once it's unlocked.
     in property <bool> wallet-can-show-seed: false;
     in property <bool> wallet-can-backup-file: false;
+    // BW_EW_RESCAN: re-scan the chain to rebuild the transaction list (Epic).
+    in property <bool> wallet-can-rescan: false;
     // BW_EW_SHOW_SEED_LOCKED: the seed comes from the wallet file, so it can be
     // shown before unlocking too (Epic).
     in property <bool> wallet-show-seed-locked: false;
@@ -3450,10 +3452,10 @@ export component AppWindow inherits Window {
                                 // What stage 1 lists for an open wallet. Greyed only
                                 // when that's nothing, as the in-daemon button greys
                                 // on an empty menu.
-                                property <bool> open-has-menu: root.wallet-can-show-seed || root.wallet-can-backup-file || self.can-replace;
+                                property <bool> open-has-menu: root.wallet-can-show-seed || root.wallet-can-backup-file || root.wallet-can-rescan || self.can-replace;
                                 // A locked wallet whose menu would hold Unlock alone
                                 // skips it for the password, as the TUI does.
-                                property <bool> unlock-only: root.wallet-state == 1 && !root.wallet-can-backup-file && !self.can-replace
+                                property <bool> unlock-only: root.wallet-state == 1 && !root.wallet-can-backup-file && !root.wallet-can-rescan && !self.can-replace
                                     && !(root.wallet-can-show-seed && root.wallet-show-seed-locked);
                                 text: "Wallet\u{2026}";
                                 enabled: root.running && root.wallet-stage == 0 && (root.wallet-state < 2 || self.open-has-menu);
@@ -5528,6 +5530,12 @@ export component AppWindow inherits Window {
                                 root.wallet-backup-file();
                             }
                         }
+                        // BW_EW_RESCAN — against a freshly typed password; the
+                        // chain scan runs on the wallet on disk, then it's reopened.
+                        if root.wallet-state != 0 && root.wallet-can-rescan: Button {
+                            text: "Rescan wallet";
+                            clicked => { root.wallet-op = 7; root.wallet-stage = 2; }
+                        }
                         if root.wallet-state == 0: Button {
                             text: "Create a new wallet";
                             clicked => { root.wallet-op = 0; root.wallet-stage = 3; }
@@ -5558,6 +5566,8 @@ export component AppWindow inherits Window {
                             // open — say why, or it reads as the unlock failing.
                             text: root.wallet-op == 5
                                 ? "Enter the wallet password to show its recovery seed."
+                                : root.wallet-op == 7
+                                ? "Enter the wallet password to rescan the chain for this wallet's transactions."
                                 : "Password for this wallet";
                             color: #9a9a9a;
                             font-size: 13px;
@@ -5574,7 +5584,7 @@ export component AppWindow inherits Window {
                             }
                         }
                         Button {
-                            text: root.wallet-op == 2 ? "Import" : root.wallet-op == 5 ? "Show seed" : "Unlock";
+                            text: root.wallet-op == 2 ? "Import" : root.wallet-op == 5 ? "Show seed" : root.wallet-op == 7 ? "Rescan" : "Unlock";
                             clicked => {
                                 root.wallet-setup(root.wallet-op, open-pw.text, "", root.picked-file);
                                 open-pw.text = "";

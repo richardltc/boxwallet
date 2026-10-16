@@ -362,6 +362,21 @@ pub const Coin = struct {
             dest_path: []const u8,
             detail: *WalletErrSink,
         ) anyerror!void = null,
+        /// Optional: re-scan the chain for the existing managed wallet's outputs and
+        /// transactions with `password` (Epic's `epic-wallet scan`), for a wallet
+        /// whose restore scan failed or was cut short and so shows a balance but
+        /// an incomplete transaction list. Runs a one-shot CLI against the wallet
+        /// on disk, so the caller has stopped the wallet process first and
+        /// relaunches it after. Only adds what the chain shows; it deletes
+        /// nothing. Progress is read through `restore_progress`. Launch-with-password
+        /// wallets only (`extwallet.setupWithPassword` drives it).
+        rescan: ?*const fn (
+            allocator: std.mem.Allocator,
+            install_root: []const u8,
+            home_dir: []const u8,
+            password: []const u8,
+            detail: *WalletErrSink,
+        ) anyerror!void = null,
         /// Extension for the file `backup_file` writes (".seed"), so the backup
         /// reads as what it is. Paired with `backup_file`.
         backup_file_ext: []const u8 = "",
