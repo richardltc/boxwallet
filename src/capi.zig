@@ -7180,10 +7180,11 @@ test "the node choice round-trips over the C ABI, normalized" {
     var ctx = testCtx(root);
     var buf: [256]u8 = undefined;
 
-    // Nothing set: our own daemon, and there is one to start.
+    // Nothing set, nothing installed (first use): the community node, so no
+    // local daemon to start.
     try std.testing.expectEqual(@as(c_int, 1), bw_coin_offers_node_choice(idx));
-    try std.testing.expectEqual(@as(usize, 0), bw_coin_node_source(&ctx, idx, &buf, buf.len));
-    try std.testing.expectEqual(@as(c_int, 1), bw_coin_uses_local_daemon(&ctx, idx));
+    try std.testing.expect(bw_coin_node_source(&ctx, idx, &buf, buf.len) != 0);
+    try std.testing.expectEqual(@as(c_int, 0), bw_coin_uses_local_daemon(&ctx, idx));
 
     // Set: stored normalized, and the daemon lifecycle goes away with it.
     try std.testing.expectEqual(@as(c_int, 0), bw_coin_set_node_source(&ctx, idx, "node.example"));
