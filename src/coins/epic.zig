@@ -327,11 +327,10 @@ pub const Epic = struct {
     const node_default_port = rpc_default_port;
 
     /// The node suggested when someone picks "a node someone else runs" without
-    /// one in mind: Epic's own community node. It **prefills the field** and
-    /// nothing more — Epic still starts out on its own daemon, and the user
-    /// confirms this address (or replaces it) before a single query leaves the
-    /// machine. Making it the out-of-the-box destination instead would be
-    /// choosing, on the user's behalf, who gets to watch their wallet.
+    /// one in mind: Epic's own community node. It prefills the field, and is also
+    /// where a first-time user (nothing chosen, no local node installed) starts —
+    /// see `refreshNodeSource`. The Settings tab shows the caution beside the
+    /// choice and one selection returns to a local node.
     ///
     /// Spelled out in full rather than as a bare host, because **both** halves
     /// are load-bearing and neither is what `normalizeNodeUrl` would assume:
@@ -478,6 +477,18 @@ pub const Epic = struct {
             node_setting_key,
         ) catch null;
         defer if (stored) |v| allocator.free(v);
+
+        // Never chosen, and no node of ours on disk: a first-time user. They start
+        // on the community node rather than being sent off to download and verify
+        // a whole chain before the wallet does anything. Choosing "my own node" in
+        // Settings stores an *empty* value (not an absent one), which ends this
+        // default for good. An installed node binary means they have run a local
+        // node already, so an absent key there stays local.
+        if (stored == null and !isInstalled(allocator, install_root)) {
+            const first = normalizeNodeUrl(default_remote_node, out) catch "";
+            NodeSource.set(first);
+            return first;
+        }
 
         const url = if (stored) |v| normalizeNodeUrl(v, out) catch "" else "";
         NodeSource.set(url);
@@ -5195,6 +5206,13 @@ test "prepareConf seeds the api secret once, preserving an existing one" {
     std.Io.Dir.cwd().deleteTree(io, home) catch {};
     defer std.Io.Dir.cwd().deleteTree(io, home) catch {};
 
+    // This test is about the local daemon's conf, and prepareConf re-reads the
+    // node source from the install root: choose our own node explicitly, since
+    // an unset one now means the community node.
+    defer std.Io.Dir.cwd().deleteTree(io, install_root) catch {};
+    try conf.setValue(allocator, io, install_root, conf.settings_file, Epic.node_setting_key, "");
+    defer Epic.NodeSource.set("");
+
     // First pass writes the fixed secret.
     try Epic.prepareConf(allocator, io, install_root, home);
 
@@ -6589,9 +6607,9 @@ test "the node choice round-trips through boxwallet.conf, normalized" {
     }
 
     var buf: [Coin.node_url_max]u8 = undefined;
-    // Nothing stored yet: our own daemon.
-    try std.testing.expectEqualStrings("", Epic.refreshNodeSource(a, root, &buf));
-    try std.testing.expect(Epic.usesLocalDaemon());
+    // Nothing stored and no node installed (first use): the community node.
+    try std.testing.expectEqualStrings(Epic.default_remote_node, Epic.refreshNodeSource(a, root, &buf));
+    try std.testing.expect(!Epic.usesLocalDaemon());
 
     // What's stored is the *normalized* form, so the Settings tab reads back
     // exactly what the wallet was pointed at.
@@ -6649,7 +6667,7 @@ test "the suggested node normalizes to a usable address" {
     try std.testing.expect(std.mem.indexOf(u8, Epic.default_remote_node, "node.epiccash.com") != null);
 }
 
-test "the suggested node is not the configured one" {
+test "first use defaults to the community node; an installed local node stays local" {
     if (builtin.os.tag == .windows) return error.SkipZigTest;
     const a = std.testing.allocator;
     var threaded: std.Io.Threaded = .init(a, .{});
@@ -6663,11 +6681,23 @@ test "the suggested node is not the configured one" {
         Epic.NodeSource.set("");
     }
 
-    // The whole point of it being a prefill: a fresh install is on its own
-    // daemon, and nothing reaches the suggested node until someone picks it. If
-    // this ever fails, BoxWallet has started shipping wallet queries to a third
-    // party that nobody chose.
+    // Nothing chosen, no node of ours on disk: the community node.
     var buf: [Coin.node_url_max]u8 = undefined;
+    try std.testing.expectEqualStrings(Epic.default_remote_node, Epic.refreshNodeSource(a, root, &buf));
+
+    // Choosing our own node is stored (empty, not absent) and sticks.
+    try Epic.setNodeSource(a, root, "test-epic-node-default-home", "");
+    defer std.Io.Dir.cwd().deleteTree(io, "test-epic-node-default-home") catch {};
+    try std.testing.expectEqualStrings("", Epic.refreshNodeSource(a, root, &buf));
+
+    // Someone who already runs BoxWallet's node and never touched the setting
+    // (key absent, binary present) must not be moved off it.
+    try conf.setValue(a, io, root, conf.settings_file, "unrelated", "x");
+    std.Io.Dir.cwd().deleteTree(io, root) catch {};
+    var dir = try std.Io.Dir.cwd().createDirPathOpen(io, root, .{});
+    defer dir.close(io);
+    var f = try dir.createFile(io, Epic.daemon_file, .{});
+    f.close(io);
     try std.testing.expectEqualStrings("", Epic.refreshNodeSource(a, root, &buf));
     try std.testing.expect(Epic.usesLocalDaemon());
 }
