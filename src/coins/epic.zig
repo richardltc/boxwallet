@@ -25,7 +25,7 @@ const Coin = @import("../coin.zig").Coin;
 ///
 ///   * **Distribution** — the `epic` node ships as a `.tar.gz` (versioned wrapper
 ///     dir, no `bin/`) and the `epic-wallet` CLI as a flat `.zip` (binary at the
-///     root), on linux/amd64 and windows/x86_64. Other targets resolve no download
+///     root), on linux/amd64, windows/x86_64 and macOS arm64 (zips there). Other targets resolve no download
 ///     (`UnsupportedPlatform`). The node is extracted + promoted; the wallet is
 ///     extracted into the install root (promoted out of its folder on Windows) and
 ///     marked executable (`markExecutable`).
@@ -191,6 +191,7 @@ pub const Epic = struct {
     const release_base = "https://github.com/EpicCash/epic/releases/download/v" ++ core_version;
     const node_wrapper: []const u8 = switch (builtin.os.tag) {
         .windows => "Windows-v" ++ core_version,
+        .macos => "MacOS-aarch64-v" ++ core_version,
         else => "epic-" ++ core_version ++ "-linux-amd64",
     };
     const bin_subdir = "";
@@ -200,8 +201,7 @@ pub const Epic = struct {
     pub const scratch_file = ".boxwallet-epic.part";
 
     /// The node download for the build target, or null where upstream ships no
-    /// binary (linux/amd64 and windows/x86_64; there's a macOS arm64 build too,
-    /// but no wallet to go with it yet).
+    /// binary (linux/amd64, windows/x86_64 and macOS arm64).
     const download: ?install_mod.Download = switch (builtin.os.tag) {
         .linux => switch (builtin.cpu.arch) {
             .x86_64 => .{ .url = release_base ++ "/" ++ node_wrapper ++ ".tar.gz", .format = .tar_gz },
@@ -209,6 +209,10 @@ pub const Epic = struct {
         },
         .windows => switch (builtin.cpu.arch) {
             .x86_64 => .{ .url = release_base ++ "/" ++ node_wrapper ++ ".zip", .format = .zip },
+            else => null,
+        },
+        .macos => switch (builtin.cpu.arch) {
+            .aarch64 => .{ .url = release_base ++ "/" ++ node_wrapper ++ ".zip", .format = .zip },
             else => null,
         },
         else => null,
@@ -269,11 +273,12 @@ pub const Epic = struct {
     /// `install` promotes it out of, as it does the node.
     const wallet_wrapper: []const u8 = switch (builtin.os.tag) {
         .windows => "Windows_" ++ wallet_tag,
+        .macos => "MacOS-aarch64_" ++ wallet_tag,
         else => "epic-wallet-" ++ wallet_version ++ "-linux-amd64",
     };
 
-    /// The wallet download for the build target, or null off linux/amd64 and
-    /// windows/x86_64. On Windows the owner API's auth (the 4.0.0 regression sent
+    /// The wallet download for the build target, or null off linux/amd64,
+    /// windows/x86_64 and macOS arm64. On Windows the owner API's auth (the 4.0.0 regression sent
     /// the secret to `/v2/foreign` instead of `/v2/owner`) was checked on 4.1.0's
     /// Linux build, which has the same source: `/v2/owner` and `/v3/owner` reject a
     /// missing or wrong secret.
@@ -288,6 +293,13 @@ pub const Epic = struct {
         .windows => switch (builtin.cpu.arch) {
             .x86_64 => .{
                 .url = wallet_release_base ++ "/Windows_" ++ wallet_tag ++ ".zip",
+                .format = .zip,
+            },
+            else => null,
+        },
+        .macos => switch (builtin.cpu.arch) {
+            .aarch64 => .{
+                .url = wallet_release_base ++ "/" ++ wallet_wrapper ++ ".zip",
                 .format = .zip,
             },
             else => null,
@@ -1313,6 +1325,16 @@ pub const Epic = struct {
         try f.setPermissions(io, .executable_file);
     }
 
+    /// Remove the `__MACOSX` folder a Finder-made zip carries beside its payload.
+    fn tidyMacJunk(allocator: std.mem.Allocator, install_root: []const u8) void {
+        var threaded: std.Io.Threaded = .init(allocator, .{});
+        defer threaded.deinit();
+        const io = threaded.io();
+        var dir = std.Io.Dir.cwd().openDir(io, install_root, .{}) catch return;
+        defer dir.close(io);
+        dir.deleteTree(io, "__MACOSX") catch {};
+    }
+
     /// Install the Epic node + wallet. The node (`epic` 4.1.0) is an archive nested
     /// in a versioned wrapper dir, extracted then promoted to the install root. The
     /// wallet (`epic-wallet` 4.1.0) likewise, so a re-install replaces the old
@@ -1330,10 +1352,17 @@ pub const Epic = struct {
 
         try install_mod.downloadAndExtract(allocator, dl.url, dl.format, install_root, scratch_file, 0, progress);
         try install_mod.promoteAndTidy(allocator, install_root, node_wrapper, bin_subdir, &promote_files);
+        if (builtin.os.tag == .macos) {
+            // A zip may not carry the exec bit, and the macOS node zip also ships a
+            // `__MACOSX` resource-fork folder beside its wrapper that we created.
+            try markExecutable(allocator, install_root, daemon_file);
+            tidyMacJunk(allocator, install_root);
+        }
 
         try install_mod.downloadAndExtract(allocator, wdl.url, wdl.format, install_root, wallet_scratch_file, 0, progress);
         try install_mod.promoteAndTidy(allocator, install_root, wallet_wrapper, "", &.{wallet_file});
         try markExecutable(allocator, install_root, wallet_file);
+        if (builtin.os.tag == .macos) tidyMacJunk(allocator, install_root);
     }
 
     /// Prepare Epic's config before launch. Idempotent; creates the data dir if
@@ -5178,6 +5207,11 @@ test "node download resolves to the 4.1.0 archive only on linux/amd64 and window
         try std.testing.expectEqual(install_mod.Format.zip, dl.format);
         try std.testing.expect(std.mem.endsWith(u8, dl.url, "/v4.1.0/Windows-v4.1.0.zip"));
         try std.testing.expectEqualStrings("Windows-v4.1.0", Epic.node_wrapper);
+    } else if (builtin.os.tag == .macos and builtin.cpu.arch == .aarch64) {
+        const dl = Epic.download orelse return error.TestUnexpectedResult;
+        try std.testing.expectEqual(install_mod.Format.zip, dl.format);
+        try std.testing.expect(std.mem.endsWith(u8, dl.url, "/v4.1.0/MacOS-aarch64-v4.1.0.zip"));
+        try std.testing.expectEqualStrings("MacOS-aarch64-v4.1.0", Epic.node_wrapper);
     } else {
         try std.testing.expect(Epic.download == null);
     }
@@ -5621,6 +5655,11 @@ test "wallet download resolves to the 4.1.0 archive only on linux/amd64 and wind
         ));
         // The zip nests `epic-wallet.exe` under its wrapper; promote it out.
         try std.testing.expectEqualStrings("Windows_" ++ Epic.wallet_tag, Epic.wallet_wrapper);
+    } else if (builtin.os.tag == .macos and builtin.cpu.arch == .aarch64) {
+        const dl = Epic.wallet_download orelse return error.TestUnexpectedResult;
+        try std.testing.expectEqual(install_mod.Format.zip, dl.format);
+        try std.testing.expect(std.mem.endsWith(u8, dl.url, "/v4.1.0/MacOS-aarch64_v4.1.0.zip"));
+        try std.testing.expectEqualStrings("MacOS-aarch64_v4.1.0", Epic.wallet_wrapper);
     } else {
         try std.testing.expect(Epic.wallet_download == null);
     }
