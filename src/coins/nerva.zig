@@ -448,7 +448,26 @@ pub const Nerva = struct {
         const dl = download orelse return error.UnsupportedPlatform;
         try install_mod.downloadAndExtract(allocator, dl.url, dl.format, install_root, scratch_file, 0, progress);
         try install_mod.promoteAndTidy(allocator, install_root, extracted_dir, bin_subdir, &promote_files);
+        makeExecutable(allocator, install_root);
         cleanupAppleDouble(allocator, install_root);
+    }
+
+    /// Set the executable bit on the promoted binaries (no-op on Windows). Nerva's
+    /// archive stores `nerva-wallet-rpc`/`nerva-wallet-cli` without it (only
+    /// `nervad` has it), so the wallet service failed to spawn with "Permission
+    /// denied" and every wallet op read as "still starting". Best-effort.
+    fn makeExecutable(allocator: std.mem.Allocator, install_root: []const u8) void {
+        if (!std.Io.File.Permissions.has_executable_bit) return;
+        var threaded: std.Io.Threaded = .init(allocator, .{});
+        defer threaded.deinit();
+        const io = threaded.io();
+        var dir = std.Io.Dir.cwd().openDir(io, install_root, .{}) catch return;
+        defer dir.close(io);
+        for (promote_files) |name| {
+            var f = dir.openFile(io, name, .{}) catch continue;
+            defer f.close(io);
+            f.setPermissions(io, std.Io.File.Permissions.fromMode(0o755)) catch {};
+        }
     }
 
     /// Download `quicksync.raw` into `install_root` so the next daemon start can
@@ -698,6 +717,8 @@ pub const Nerva = struct {
         rpc_user: []const u8,
         rpc_password: []const u8,
     ) anyerror![]const []const u8 {
+        // Heal installs made before `install` set the bit on the wallet service.
+        makeExecutable(allocator, install_root);
         const path = try std.fs.path.join(allocator, &.{ install_root, wallet_rpc_file });
         errdefer allocator.free(path);
         const dir = try walletDir(allocator, home);
