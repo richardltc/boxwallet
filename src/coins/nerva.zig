@@ -1063,7 +1063,19 @@ pub const Nerva = struct {
         defer allocator.free(params);
         var parsed = try walletCall(EmptyResult, allocator, wallet_auth, "open_wallet", params);
         defer parsed.deinit();
-        if (parsed.value.result == null) return failWallet(detail, parsed.value.@"error", error.WalletOpenFailed);
+        if (parsed.value.result == null) {
+            const err = failWallet(detail, parsed.value.@"error", error.WalletOpenFailed);
+            // Nerva's wallet-rpc reports a wrong password as a bare "Failed to open
+            // wallet" (the real `invalid_password` only reaches its log). This runs
+            // only when the wallet file is known to exist, so that is the cause to
+            // name; the wallet-rpc's own text is still recorded in `detail`.
+            if (err == error.WalletOpenFailed) {
+                if (parsed.value.@"error") |e| {
+                    if (containsIgnoreCase(e.message, "failed to open wallet")) return error.WrongPassword;
+                }
+            }
+            return err;
+        }
     }
 
     /// Read the open wallet's balance. `balance` is the total (includes locked and
