@@ -1030,6 +1030,8 @@ static void apply_coin_metadata(const AppWindow *ui, bw_ctx *ctx, int idx)
     ui->set_has_receive(bw_coin_supports_receive_address(idx) != 0);
     ui->set_has_send(bw_coin_supports_send(idx) != 0);
     ui->set_has_send_fee(bw_coin_supports_send_fee(idx) != 0);
+    ui->set_has_send_newest_first(bw_coin_supports_send_newest_first(idx) != 0);
+    ui->set_send_newest_first(false);
     // A note typed for one coin mustn't ride along with another coin's send.
     ui->set_send_note_max(static_cast<int>(bw_coin_send_note_max(idx)));
     ui->set_has_slate_files(bw_coin_supports_slate_files(idx) != 0);
@@ -3666,6 +3668,9 @@ int main(int argc, char **argv)
         }
         std::string addr{std::string_view(address)};
         std::string note{std::string_view(note_text)};
+        bool newest_first = false;
+        if (auto h = weak.lock())
+            newest_first = (*h)->get_has_send_newest_first() && (*h)->get_send_newest_first() && note.empty();
         double amt = 0;
         try {
             amt = std::stod(std::string(std::string_view(amount)));
@@ -3680,11 +3685,13 @@ int main(int argc, char **argv)
         if (auto h = weak.lock())
             (*h)->set_send_busy(true);
 
-        std::thread([weak, ctx, coin, addr, note, amt, wake_poll]() {
+        std::thread([weak, ctx, coin, addr, note, amt, wake_poll, newest_first]() {
             WorkerGuard wg;
             char out[256] = {0};
-            int rc = bw_wallet_send(ctx, static_cast<size_t>(coin), addr.c_str(), amt, note.c_str(),
-                                    out, sizeof out);
+            int rc = newest_first
+                ? bw_wallet_send_newest_first(ctx, static_cast<size_t>(coin), addr.c_str(), amt, out, sizeof out)
+                : bw_wallet_send(ctx, static_cast<size_t>(coin), addr.c_str(), amt, note.c_str(),
+                                 out, sizeof out);
             std::string reply(out);
             std::string err = (rc < 0) ? last_error_text(ctx, rc) : std::string();
             // The coin's own lead-in where "Sent." would overstate it (Epic's

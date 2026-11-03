@@ -1767,6 +1767,9 @@ export component AppWindow inherits Window {
     // waits for the quote; a quote the wallet refuses closes the confirm with
     // the reason, the same way a refused send would.
     in property <bool> has-send-fee: false;
+    // Divi: offer "spend newest coins first" on the send confirm. Off per send.
+    in property <bool> has-send-newest-first: false;
+    in-out property <bool> send-newest-first: false;
     in-out property <bool> send-fee-pending: false;
     in-out property <string> send-fee-text: "";
     callback estimate-send(string, string); // address, amount as typed
@@ -3969,6 +3972,7 @@ export component AppWindow inherits Window {
                                             root.send-result-path = "";
                                             root.send-confirm-is-stake = false;
                                             root.send-confirm-is-slate = false;
+                                            root.send-newest-first = false;
                                             root.send-fee-text = "";
                                             root.send-fee-pending = root.has-send-fee;
                                             root.send-confirm-open = true;
@@ -5153,6 +5157,10 @@ export component AppWindow inherits Window {
                         color: #c8c8c8;
                         font-size: 12px;
                         wrap: word-wrap;
+                    }
+                    if root.has-send-newest-first && !root.send-confirm-is-stake && !root.send-confirm-is-slate && !root.send-busy && root.send-confirm-note == "": CheckBox {
+                        text: "Spend newest coins first (keeps your older coins staking)";
+                        checked <=> root.send-newest-first;
                     }
                     if !root.send-confirm-is-stake && (root.has-send-fee || root.send-confirm-is-slate) && !root.send-busy: Text {
                         text: root.send-fee-pending ? "Working out the fee\u{2026}" : root.send-fee-text;

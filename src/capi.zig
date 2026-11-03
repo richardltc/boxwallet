@@ -786,6 +786,13 @@ export fn bw_coin_supports_send(idx: usize) c_int {
     return if (c.supportsSend()) 1 else 0;
 }
 
+/// Whether a send can be told to spend the newest coins first
+/// (`bw_wallet_send_newest_first`) — Divi, so older coins keep staking.
+export fn bw_coin_supports_send_newest_first(idx: usize) c_int {
+    const c = coinByIndex(idx) orelse return 0;
+    return if (c.supportsSendNewestFirst()) 1 else 0;
+}
+
 /// The longest note a send can carry, in bytes (`bw_wallet_send`'s `note`) —
 /// 0 when this coin's sends carry none, so the GUI shows no note field.
 export fn bw_coin_send_note_max(idx: usize) usize {
@@ -2724,6 +2731,28 @@ export fn bw_wallet_send(ctx: ?*Ctx, idx: usize, address: ?[*:0]const u8, amount
             break :blk 1;
         },
     };
+}
+
+/// `bw_wallet_send` spending the newest coins first (no note). Same tri-state:
+/// 0 broadcast (`out` = the txid), 1 refused (`out` = why), -1 transport failure.
+export fn bw_wallet_send_newest_first(ctx: ?*Ctx, idx: usize, address: ?[*:0]const u8, amount: f64, out: ?[*]u8, cap: usize) c_int {
+    const c = ctx orelse return -1;
+    const addr_z = address orelse return -1;
+    const o = out orelse return -1;
+    if (idx >= coin_count) return -1;
+    const coin = coinByIndex(idx) orelse return -1;
+    if (!coin.supportsSendNewestFirst()) return -1;
+
+    var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const io = sharedIo();
+    c.wallet_mtx.lockUncancelable(io);
+    defer c.wallet_mtx.unlock(io);
+
+    const auth = walletAuth(a, io, coin, c, idx) catch |err| return failWith(c, err);
+    const res = coin.walletSendNewestFirst(a, auth, std.mem.span(addr_z), amount) catch |err| return failWith(c, err);
+    return sendOutcome(res, o[0..cap]);
 }
 
 // ---- slate files ------------------------------------------------------------

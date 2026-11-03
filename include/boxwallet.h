@@ -1413,6 +1413,14 @@ int     bw_wallet_send_fee(bw_ctx *ctx, size_t idx, const char *address, double 
 int     bw_wallet_send(bw_ctx *ctx, size_t idx, const char *address, double amount,
                        const char *note, char *out, size_t cap);
 
+/* 1 when a send can spend the newest coins first (Divi: keeps older coins
+ * staking). Opt-in per send; default off. */
+int     bw_coin_supports_send_newest_first(size_t idx);
+
+/* bw_wallet_send, spending the newest coins first; no note. Same tri-state. */
+int     bw_wallet_send_newest_first(bw_ctx *ctx, size_t idx, const char *address, double amount,
+                                    char *out, size_t cap);
+
 /* ---- slate files --------------------------------------------------------------
  * Payments by hand-carried file, for a coin where bw_coin_supports_slate_files
  * is 1 (Epic). The sender saves a slate (bw_wallet_slate_send), the receiver

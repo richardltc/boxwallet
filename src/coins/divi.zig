@@ -625,6 +625,12 @@ pub const Divi = struct {
         return rpc.sendToAddress(allocator, auth, address, amount, 8);
     }
 
+    /// `sendToAddress` spending the newest coins first, so the older ones that
+    /// are staking keep staking.
+    pub fn sendToAddressNewestFirst(allocator: std.mem.Allocator, auth: models.CoinAuth, address: []const u8, amount: f64) !models.SendResult {
+        return rpc.sendToAddressNewestFirst(allocator, auth, address, amount, 8);
+    }
+
     /// Encrypt the wallet with `passphrase`. divid stops itself afterwards (the
     /// caller restarts it). The passphrase is JSON-escaped before splicing.
     pub fn walletEncrypt(allocator: std.mem.Allocator, auth: models.CoinAuth, passphrase: []const u8) !void {
@@ -1248,6 +1254,7 @@ pub const Divi = struct {
         .wallet_transactions = vtWalletTransactions,
         .wallet_receive_address = vtWalletReceiveAddress,
         .wallet_send = vtWalletSend,
+        .wallet_send_newest_first = vtWalletSendNewestFirst,
         .wallet_encrypt = vtWalletEncrypt,
         .wallet_unlock = vtWalletUnlock,
         .wallet_lock = vtWalletLock,
@@ -1411,6 +1418,15 @@ pub const Divi = struct {
         amount: f64,
     ) anyerror!models.SendResult {
         return sendToAddress(allocator, auth, address, amount);
+    }
+    fn vtWalletSendNewestFirst(
+        _: *anyopaque,
+        allocator: std.mem.Allocator,
+        auth: models.CoinAuth,
+        address: []const u8,
+        amount: f64,
+    ) anyerror!models.SendResult {
+        return sendToAddressNewestFirst(allocator, auth, address, amount);
     }
     fn vtWalletEncrypt(
         _: *anyopaque,

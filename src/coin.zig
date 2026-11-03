@@ -1209,6 +1209,16 @@ pub const Coin = struct {
             address: []const u8,
             amount: f64,
         ) anyerror!models.SendResult = null,
+        /// Optional: `wallet_send`, but spending the wallet's newest coins first so
+        /// the older, staking-mature ones stay put (Divi). An opt-in the user
+        /// chooses per send; `supportsSendNewestFirst` keys off this.
+        wallet_send_newest_first: ?*const fn (
+            ptr: *anyopaque,
+            allocator: std.mem.Allocator,
+            auth: models.CoinAuth,
+            address: []const u8,
+            amount: f64,
+        ) anyerror!models.SendResult = null,
         /// Optional: `wallet_send` with a note the receiver gets alongside the
         /// payment (Epic: the slate message — signed and kept in both wallets'
         /// transaction logs, never on the chain itself). Only called with a
@@ -1922,6 +1932,24 @@ pub const Coin = struct {
         amount: f64,
     ) !models.SendResult {
         const f = self.vtable.wallet_send orelse return error.Unsupported;
+        return f(self.ptr, allocator, auth, address, amount);
+    }
+
+    /// Whether sends can be told to spend the newest coins first (drives the
+    /// option on the send confirm step).
+    pub fn supportsSendNewestFirst(self: Coin) bool {
+        return self.vtable.wallet_send_newest_first != null;
+    }
+
+    /// `walletSend`, spending the newest coins first. See `wallet_send_newest_first`.
+    pub fn walletSendNewestFirst(
+        self: Coin,
+        allocator: std.mem.Allocator,
+        auth: models.CoinAuth,
+        address: []const u8,
+        amount: f64,
+    ) !models.SendResult {
+        const f = self.vtable.wallet_send_newest_first orelse return error.Unsupported;
         return f(self.ptr, allocator, auth, address, amount);
     }
 
