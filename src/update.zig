@@ -357,7 +357,7 @@ pub const CheckStatus = enum {
 /// A version string in a fixed inline buffer, so a worker thread can hand its
 /// result back by value without a heap allocation outliving its arena.
 pub const VersionBuf = struct {
-    buf: [32]u8 = [_]u8{0} ** 32,
+    buf: [32]u8 = @as([32]u8, @splat(0)),
     len: usize = 0,
 
     pub fn slice(self: *const VersionBuf) []const u8 {
@@ -1650,7 +1650,7 @@ test "parseRuntime fails closed on anything it doesn't fully understand" {
     // A directory name too long for the fixed buffer is refused, not truncated —
     // truncation would silently name a *different* directory.
     var long: [200]u8 = undefined;
-    const overlong = try std.fmt.bufPrint(&long, "{s}  slint-{s}  {s}", .{ asset, "9" ** 80, good_sha });
+    const overlong = try std.fmt.bufPrint(&long, "{s}  slint-{s}  {s}", .{ asset, &@as([80]u8, @splat('9')), good_sha });
     try std.testing.expect(parseRuntime(overlong, asset) == null);
 }
 

@@ -2454,7 +2454,7 @@ pub const Epic = struct {
         }
         defer {
             if (dir.createFile(io, recover_phrase_file, .{ .truncate = true })) |zf| {
-                var zeros: [320]u8 = [_]u8{0} ** 320;
+                var zeros: [320]u8 = @as([320]u8, @splat(0));
                 zf.writeStreamingAll(io, zeros[0..@min(zeros.len, mnemonic.len + 1)]) catch {};
                 zf.close(io);
             } else |_| {}
@@ -3437,7 +3437,7 @@ pub const Epic = struct {
         const alphabet = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
         if (key.len != 52) return false;
         // Big-endian base58 → bytes. 52 base58 digits need at most 39 bytes.
-        var buf: [40]u8 = [_]u8{0} ** 40;
+        var buf: [40]u8 = @as([40]u8, @splat(0));
         for (key) |ch| {
             var carry: u32 = @intCast(std.mem.indexOfScalar(u8, alphabet, ch) orelse return false);
             var i: usize = buf.len;
@@ -6066,7 +6066,7 @@ test "a note rides the Epic send; one too long is refused, not dropped" {
     var e: Epic = .{};
     const c = e.coin();
     try std.testing.expectEqual(models.tx_note_max, c.sendNoteMax());
-    const long = "x" ** (models.tx_note_max + 1);
+    const long = &@as([(models.tx_note_max + 1)]u8, @splat('x'));
     const res = try c.walletSendNote(std.testing.allocator, .{ .rpc_user = "", .rpc_password = "", .ip_address = "", .port = "" }, "addr", 1, long);
     try std.testing.expectEqualStrings("The note is too long.", res.failed);
 }
@@ -6393,7 +6393,7 @@ test "parsePublicAddress refuses anything a sender's wallet wouldn't parse" {
         \\{"result":{"Ok":{"domain":"","port":443,"public_key":"esXBF4QgPnTk64M1ky2DeBTCvKXNBwKp3mfnHTbzAKU2wagigz6J"}}}
     ));
     // Longer than a front-end can hold without truncating it.
-    const long_domain = "a" ** 80;
+    const long_domain = &@as([80]u8, @splat('a'));
     try std.testing.expectError(error.BadEpicboxAddress, Epic.parsePublicAddress(a, "{\"result\":{\"Ok\":{\"domain\":\"" ++ long_domain ++
         "\",\"port\":443,\"public_key\":\"esXBF4QgPnTk64M1ky2DeBTCvKXNBwKp3mfnHTbzAKU2wagigz6J\"}}}"));
 }

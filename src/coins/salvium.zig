@@ -2499,8 +2499,8 @@ test "stakeTypeRequest asks the daemon to decode exactly the given txids" {
     // ordinary send shape. `prune` keeps the reply small (the ring signatures
     // are the bulk of a transaction and nothing reads them) while still
     // decoding the header, which is where `type` lives.
-    const a_id = "a" ** 64;
-    const b_id = "b" ** 64;
+    const a_id = &@as([64]u8, @splat('a'));
+    const b_id = &@as([64]u8, @splat('b'));
     const body = try Salvium.stakeTypeRequest(allocator, &.{ a_id, b_id });
     defer allocator.free(body);
 
@@ -2517,17 +2517,17 @@ test "isTxidHex accepts a real txid and rejects anything that could break the re
     try std.testing.expect(Salvium.isTxidHex("ab974635d485c30dcc02a633e0d71f94763e31ed05310db7d235ef8c22b42b20"));
     try std.testing.expect(!Salvium.isTxidHex("")); // no hash reported
     try std.testing.expect(!Salvium.isTxidHex("ab97")); // truncated
-    try std.testing.expect(!Salvium.isTxidHex("a" ** 65)); // too long
+    try std.testing.expect(!Salvium.isTxidHex(&@as([65]u8, @splat('a')))); // too long
     // 64 characters, but a quote would close the JSON string and a brace would
     // open an object — rejected on the character class, not the length.
-    try std.testing.expect(!Salvium.isTxidHex("\"}," ++ ("a" ** 61)));
-    try std.testing.expect(!Salvium.isTxidHex("z" ** 64));
+    try std.testing.expect(!Salvium.isTxidHex("\"}," ++ (&@as([61]u8, @splat('a')))));
+    try std.testing.expect(!Salvium.isTxidHex(&@as([64]u8, @splat('z'))));
 }
 
 test "stake memo answers only for txids it has been told about" {
     // Memoised because a confirmed transaction's type never changes: without it
     // every two-second poll would re-ask the daemon about the same rows.
-    const id = "c" ** 64;
+    const id = &@as([64]u8, @splat('c'));
     try std.testing.expect(Salvium.stakeMemoGet(id) == null);
 
     // The principal rides along with the verdict: it comes from the same decoded
@@ -2538,7 +2538,7 @@ test "stake memo answers only for txids it has been told about" {
     try std.testing.expectEqual(@as(u64, 100_000_000_000), got.burnt);
 
     // A plain send is remembered as such, so it isn't re-queried either.
-    const other = "d" ** 64;
+    const other = &@as([64]u8, @splat('d'));
     Salvium.stakeMemoPut(other, .{});
     const plain = Salvium.stakeMemoGet(other) orelse return error.Unexpected;
     try std.testing.expect(!plain.is_stake);
@@ -2553,7 +2553,7 @@ test "stakeFromEntry reads the principal from the daemon, and the term from conf
     // verdict identifies it — and `amount_burnt` gives the principal exactly,
     // where the entry's own `amount` would include nothing of the yield.
     const matured = Salvium.stakeFromEntry(.{
-        .txid = "a" ** 64,
+        .txid = &@as([64]u8, @splat('a')),
         .amount = 100_000_000_000,
         .fee = 1_143_360,
         .timestamp = 1783463334,
@@ -2568,7 +2568,7 @@ test "stakeFromEntry reads the principal from the daemon, and the term from conf
     // Still locked: 9 blocks in, so the term has 21,592 to run and the ETA is
     // that many block targets away.
     const locked = Salvium.stakeFromEntry(.{
-        .txid = "b" ** 64,
+        .txid = &@as([64]u8, @splat('b')),
         .amount = 0,
         .fee = 100_001_107_630,
         .timestamp = 1786963395,
@@ -2584,7 +2584,7 @@ test "stakeFromEntry reads the principal from the daemon, and the term from conf
 
     // A plain send the daemon has spoken for is not a stake.
     try std.testing.expect(Salvium.stakeFromEntry(.{
-        .txid = "c" ** 64,
+        .txid = &@as([64]u8, @splat('c')),
         .amount = 2_500_000_000,
         .fee = 1_022_110,
         .height = 190_625,
@@ -2594,7 +2594,7 @@ test "stakeFromEntry reads the principal from the daemon, and the term from conf
     // Daemon unreachable (empty verdict): an in-term stake is still recognised
     // from its shape, falling back to `fee` for the principal.
     const fallback = Salvium.stakeFromEntry(.{
-        .txid = "d" ** 64,
+        .txid = &@as([64]u8, @splat('d')),
         .amount = 0,
         .fee = 100_001_107_630,
         .height = 555_042,
@@ -2604,7 +2604,7 @@ test "stakeFromEntry reads the principal from the daemon, and the term from conf
 
     // Unconfirmed: no height yet, so the full term is still to run.
     const pending = Salvium.stakeFromEntry(.{
-        .txid = "e" ** 64,
+        .txid = &@as([64]u8, @splat('e')),
         .amount = 0,
         .fee = 50_000_000,
         .height = 0,
@@ -2665,25 +2665,25 @@ test "pairStakeReturns leaves a locked stake, and a matured one with no credit, 
 
 test "collectStakeCandidates takes out+pending newest-first, primary asset only" {
     const out = [_]Salvium.TransferEntry{
-        .{ .txid = "a" ** 64, .asset_type = "SAL1", .timestamp = 100 },
-        .{ .txid = "b" ** 64, .asset_type = "SALUSD", .timestamp = 400 }, // other asset
-        .{ .txid = "c" ** 64, .asset_type = "SAL1", .timestamp = 300 },
+        .{ .txid = &@as([64]u8, @splat('a')), .asset_type = "SAL1", .timestamp = 100 },
+        .{ .txid = &@as([64]u8, @splat('b')), .asset_type = "SALUSD", .timestamp = 400 }, // other asset
+        .{ .txid = &@as([64]u8, @splat('c')), .asset_type = "SAL1", .timestamp = 300 },
     };
     const pending = [_]Salvium.TransferEntry{
-        .{ .txid = "d" ** 64, .asset_type = "SAL1", .timestamp = 500 },
+        .{ .txid = &@as([64]u8, @splat('d')), .asset_type = "SAL1", .timestamp = 500 },
     };
     var buf: [8]Salvium.TransferEntry = undefined;
     const n = Salvium.collectStakeCandidates(.{ .out = @constCast(&out), .pending = @constCast(&pending) }, &buf);
 
     try std.testing.expectEqual(@as(usize, 3), n);
-    try std.testing.expectEqualStrings("d" ** 64, buf[0].txid);
-    try std.testing.expectEqualStrings("c" ** 64, buf[1].txid);
-    try std.testing.expectEqualStrings("a" ** 64, buf[2].txid);
+    try std.testing.expectEqualStrings(&@as([64]u8, @splat('d')), buf[0].txid);
+    try std.testing.expectEqualStrings(&@as([64]u8, @splat('c')), buf[1].txid);
+    try std.testing.expectEqualStrings(&@as([64]u8, @splat('a')), buf[2].txid);
 }
 
 test "collectStakeCandidates stops at the scan window" {
     var many: [4]Salvium.TransferEntry = undefined;
-    for (&many, 0..) |*e, i| e.* = .{ .txid = "a" ** 64, .asset_type = "SAL1", .timestamp = @intCast(i) };
+    for (&many, 0..) |*e, i| e.* = .{ .txid = &@as([64]u8, @splat('a')), .asset_type = "SAL1", .timestamp = @intCast(i) };
     var buf: [2]Salvium.TransferEntry = undefined;
     try std.testing.expectEqual(@as(usize, 2), Salvium.collectStakeCandidates(.{ .out = &many }, &buf));
 }

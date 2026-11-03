@@ -1196,7 +1196,7 @@ fn copyBounded(buf: []u8, s: []const u8) usize {
 
 test "TokenHolding setters truncate at the buffer instead of overflowing" {
     var h: TokenHolding = .{};
-    h.setTicker("A" ** 40);
+    h.setTicker(&@as([40]u8, @splat('A')));
     try std.testing.expectEqual(@as(usize, 16), h.ticker().len);
     h.setName("NiftyArt");
     try std.testing.expectEqualStrings("NiftyArt", h.name());
@@ -1658,6 +1658,6 @@ test "sanitizeNote keeps a note printable and in bounds" {
     tx.setAddress("esXBF4QgPnTk64M1ky2DeBTCvKXNBwKp3mfnHTbzAKU2wagigz6J@epicbox.epiccash.com");
     try std.testing.expectEqualStrings("esXBF4QgPnTk64M1ky2DeBTCvKXNBwKp3mfnHTbzAKU2wagigz6J@epicbox.epiccash.com", tx.address());
     // Too long to hold whole: dropped, never shown cut short.
-    tx.setAddress("a" ** (tx_address_max + 1));
+    tx.setAddress(&@as([(tx_address_max + 1)]u8, @splat('a')));
     try std.testing.expectEqualStrings("", tx.address());
 }

@@ -2089,7 +2089,7 @@ test "readOrigin rejects a validator too long to be trusted to a bounded buffer"
 
     // Overlong: declined rather than truncated, since a truncated validator would
     // never match and could in principle match the wrong thing.
-    const long = "x" ** (max_validator_len + 10);
+    const long = &@as([(max_validator_len + 10)]u8, @splat('x'));
     try dir.writeFile(io, .{ .sub_path = "o", .data = long });
     try std.testing.expect(readOrigin(io, dir, "o", &buf) == null);
 }

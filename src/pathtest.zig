@@ -89,6 +89,6 @@ test "comparisons ignore which separator the host produced" {
 }
 
 test "a path too long to normalize is an error, not a truncated comparison" {
-    const long = "/" ** (max_path + 1);
+    const long = &@as([(max_path + 1)]u8, @splat('/'));
     try std.testing.expectError(error.PathTooLongForTest, expectEqual("/", long));
 }

@@ -101,7 +101,7 @@ fn typeList() [count]type {
 /// One instance per registered coin, as a tuple indexed the same way everything
 /// else here is. Every coin backend is a zero-field struct, so a default-init
 /// costs nothing and holds no state.
-pub const Instances = std.meta.Tuple(&typeList());
+pub const Instances = @Tuple(&typeList());
 
 /// A fresh set of coin instances. The caller owns them; `coinAt` borrows.
 pub fn instances() Instances {

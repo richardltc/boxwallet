@@ -4249,7 +4249,7 @@ pub const BwStatusInput = extern struct {
 fn statusInputFrom(in: *const BwStatusInput) status_mod.Input {
     const clamp = struct {
         fn e(comptime T: type, v: c_int) T {
-            const max = @typeInfo(T).@"enum".fields.len - 1;
+            const max = @typeInfo(T).@"enum".field_names.len - 1;
             if (v < 0 or v > max) return @enumFromInt(0);
             return @enumFromInt(@as(u8, @intCast(v)));
         }
@@ -4378,8 +4378,8 @@ export fn bw_wallet_menu(idx: usize, wallet_sec: c_int, out: ?*u8, cap: usize) u
 /// checks silently rejecting it (which is exactly what a `> restore_file_offline`
 /// comparison did when the seed restore was added).
 fn actionFromOrdinal(action: u8) ?walletmenu.Action {
-    inline for (@typeInfo(walletmenu.Action).@"enum".fields) |f| {
-        if (action == f.value) return @enumFromInt(f.value);
+    inline for (@typeInfo(walletmenu.Action).@"enum".field_values) |v| {
+        if (action == v) return @enumFromInt(v);
     }
     return null;
 }
@@ -6197,7 +6197,7 @@ test "a position id survives a full 64-character txid" {
     // The id is the handle a redeem is keyed on. NUL-terminating it would drop
     // the last character of a bitcoin-family txid and the redeem would miss.
     var p: BwScPosition = undefined;
-    const txid = "f" ** 64;
+    const txid = &@as([64]u8, @splat('f'));
     @memcpy(p.id[0..64], txid);
     p.id_len = 64;
     try std.testing.expectEqual(@as(usize, 64), p.id_len);
@@ -6569,7 +6569,7 @@ test "every action a menu can return is labelled and answerable" {
     // A row the caller can't label or route is a row it can't render.
     var buf: [64]u8 = undefined;
     var out: [walletmenu.max_options]u8 = undefined;
-    var seen = [_]bool{false} ** @typeInfo(walletmenu.Action).@"enum".fields.len;
+    var seen = @as([@typeInfo(walletmenu.Action).@"enum".field_names.len]bool, @splat(false));
 
     var i: usize = 0;
     while (i < coin_count) : (i += 1) {
@@ -7053,7 +7053,7 @@ test "clearing an error forgets both the message and the code" {
 
 test "an over-long error message is truncated, not overrun" {
     var ctx: Ctx = .{ .allocator = std.testing.allocator, .home_dir = "", .install_root = "" };
-    const long = "x" ** 400;
+    const long = &@as([400]u8, @splat('x'));
     ctx.setError(long);
     try std.testing.expectEqual(@as(usize, 256), ctx.errorText().len);
     ctx.setErrorCode(long);

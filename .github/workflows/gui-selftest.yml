@@ -30,8 +30,8 @@ permissions:
 env:
   # Pinned, and fetched with its published checksum rather than through a
   # third-party setup action - the same standard the Slint packages are held to.
-  ZIG_VERSION: '0.16.0'
-  ZIG_SHA256: '70e49664a74374b48b51e6f3fdfbf437f6395d42509050588bd49abe52ba3d00'
+  ZIG_VERSION: '0.17.0'
+  ZIG_SHA256: '1cbe9df9f27e6b78d14ccbca43b6703a404ef79ef1c463de901d7f088d4e2026'
 
 jobs:
   build:

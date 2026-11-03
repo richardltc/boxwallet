@@ -28,7 +28,8 @@ pub fn main(init: std.process.Init) !void {
     // Mouse tracking on: the left nav is clickable (and wheel-scrollable). It
     // costs the terminal's own select-to-copy, so `m` turns it back off — see
     // `App.mouse_on`. Defaults must otherwise match ZigZag's.
-    var program = try zz.Program(App).initWithOptions(init.gpa, init.io, init.environ_map, .{
+    app.process_environ = init.environ_map;
+    var program = zz.Program(App).initWithOptions(init.gpa, init.io, init.environ_map, .{
         .mouse = true,
     });
     defer program.deinit();
