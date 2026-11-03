@@ -891,6 +891,9 @@ const SendModal = struct {
     /// The fee the coin quoted for this send (whole coins), shown on the confirm
     /// step with the total leaving the wallet. Null where the coin can't say.
     fee: ?f64 = null,
+    /// Spend the newest coins first (`Coin.supportsSendNewestFirst`), so older,
+    /// staking ones stay put. Toggled on the confirm step; off unless chosen.
+    newest_first: bool = false,
     /// Whether the finished send succeeded (tints the result line).
     ok: bool = false,
     /// Outcome text shown in the `result` stage: the txid or the daemon's own
@@ -1530,6 +1533,8 @@ const Activity = struct {
     /// True when the in-flight "send" is a stake (the Stake prompt) — routes
     /// the worker to `walletStake`, which needs no destination address.
     send_is_stake: bool = false,
+    /// The in-flight send spends the newest coins first (`SendModal.newest_first`).
+    send_newest_first: bool = false,
     /// Routes the send worker to the coin's token capability instead of its own
     /// currency. The group and the quantity (in the token's finest unit) are
     /// copied in beside it, like the address.
@@ -2663,6 +2668,9 @@ const Activity = struct {
                 self.send_token_qty,
             );
         }
+
+        if (self.send_newest_first and self.send_note_len == 0)
+            return self.coin.walletSendNewestFirst(a, auth, address, self.send_amount);
 
         return if (self.send_is_stake)
             self.coin.walletStake(a, auth, self.send_amount)
@@ -7538,6 +7546,10 @@ pub const App = struct {
                     'j' => m.sel = 1,
                     'y' => self.submitSend(),
                     'n' => self.closeSendModal(),
+                    // Spend the newest coins first, where the coin offers it.
+                    'c' => if (m.mode == .send) if (self.coinAt(m.coin_idx)) |coin| if (coin.supportsSendNewestFirst()) {
+                        m.newest_first = !m.newest_first;
+                    },
                     // Where the slate goes: the file picker, folders only.
                     'd' => if (m.mode == .slate) self.startSlateFolderPicker(),
                     else => {},
@@ -7710,6 +7722,7 @@ pub const App = struct {
         // Stake mode: no destination was collected (the coin pays the wallet's
         // own address itself) — the flag routes the worker to `walletStake`.
         act.send_is_stake = m.mode == .stake;
+        act.send_newest_first = m.newest_first and m.mode == .send and coin.supportsSendNewestFirst();
         act.send_is_token = m.mode == .token;
         if (act.send_is_token) {
             const g = m.group();
@@ -11731,6 +11744,11 @@ pub const App = struct {
                         try modalRow(&out.writer, vbar, inner_w, "", 0);
                         try wrapIntoRows(a, &out.writer, vbar, inner_w, try std.fmt.allocPrint(a, "Payment note: {s}", .{note}), (zz.Style{}));
                     }
+                }
+                if (m.mode == .send and coin.supportsSendNewestFirst()) {
+                    try modalRow(&out.writer, vbar, inner_w, "", 0);
+                    const opt = try std.fmt.allocPrint(a, "[{s}] Spend newest coins first (c) — keeps your older coins staking", .{if (m.newest_first) "x" else " "});
+                    try wrapIntoRows(a, &out.writer, vbar, inner_w, opt, (zz.Style{}));
                 }
                 try modalRow(&out.writer, vbar, inner_w, "", 0);
                 const labels = if (staking)

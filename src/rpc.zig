@@ -525,6 +525,113 @@ pub fn sendToAddress(
     return .{ .failed = "no response from daemon" };
 }
 
+/// One `listunspent` entry (the subset coin selection needs).
+const Unspent = struct {
+    txid: []const u8 = "",
+    vout: u32 = 0,
+    amount: f64 = 0,
+    confirmations: i64 = 0,
+    spendable: bool = true,
+};
+
+/// Fee headroom `selectNewestFirst` keeps on top of the amount: a flat part plus
+/// a part per input, so a send built from many small coins isn't chosen short.
+const newest_first_fee_base: f64 = 0.01;
+const newest_first_fee_per_input: f64 = 0.001;
+
+/// Pick the fewest-confirmation (newest) coins that cover `amount` plus fee
+/// headroom, sorting `utxos` newest-first in place. Returns how many of the
+/// leading entries to spend, or null when the whole wallet doesn't cover it
+/// (nothing to hold back — the daemon's own answer, "insufficient funds", is the
+/// right one). Pure, so it's testable without a daemon.
+fn selectNewestFirst(utxos: []Unspent, amount: f64) ?usize {
+    std.mem.sort(Unspent, utxos, {}, struct {
+        fn lt(_: void, a: Unspent, b: Unspent) bool {
+            return a.confirmations < b.confirmations;
+        }
+    }.lt);
+    var sum: f64 = 0;
+    for (utxos, 0..) |u, i| {
+        sum += u.amount;
+        const need = amount + newest_first_fee_base + newest_first_fee_per_input * @as(f64, @floatFromInt(i + 1));
+        if (sum >= need) return i + 1;
+    }
+    return null;
+}
+
+/// `lockunspent` `lock` over `utxos` in bounded chunks, so a wallet with
+/// thousands of coins never builds one huge request. Best effort per chunk: the
+/// first failure is returned, the caller still unlocks what it locked.
+fn lockUnspent(allocator: std.mem.Allocator, auth: models.CoinAuth, lock: bool, utxos: []const Unspent) !void {
+    var i: usize = 0;
+    while (i < utxos.len) {
+        const end = @min(i + 200, utxos.len);
+        var out: std.Io.Writer.Allocating = .init(allocator);
+        defer out.deinit();
+        try out.writer.print("[{s},[", .{if (lock) "false" else "true"});
+        for (utxos[i..end], 0..) |u, k| {
+            if (k > 0) try out.writer.writeAll(",");
+            try out.writer.print("{{\"txid\":\"{s}\",\"vout\":{d}}}", .{ u.txid, u.vout });
+        }
+        try out.writer.writeAll("]]");
+        try callExpectOk(allocator, auth, "lockunspent", out.written());
+        i = end;
+    }
+}
+
+/// `sendToAddress`, but spending the wallet's newest coins first so the older,
+/// staking-mature ones stay put. The coins it doesn't want are `lockunspent`-ed
+/// for the duration of the send (the daemon then selects only from the rest)
+/// and unlocked again on every path. If the wallet can't cover `amount` the
+/// send goes through untouched, so the daemon says why.
+pub fn sendToAddressNewestFirst(
+    allocator: std.mem.Allocator,
+    auth: models.CoinAuth,
+    address: []const u8,
+    amount: f64,
+    decimals: u8,
+) !models.SendResult {
+    var parsed = try callParsedParams([]Unspent, allocator, auth, "listunspent", "[]");
+    defer parsed.deinit();
+    var list: std.ArrayList(Unspent) = .empty;
+    defer list.deinit(allocator);
+    for (parsed.value.result orelse &.{}) |u| {
+        if (u.spendable) try list.append(allocator, u);
+    }
+
+    const keep = selectNewestFirst(list.items, amount) orelse
+        return sendToAddress(allocator, auth, address, amount, decimals);
+    const held = list.items[keep..];
+    if (held.len == 0) return sendToAddress(allocator, auth, address, amount, decimals);
+
+    // Unlock whatever got locked, even on a partial failure.
+    var locked: usize = 0;
+    defer lockUnspent(allocator, auth, false, held[0..locked]) catch {};
+    var i: usize = 0;
+    while (i < held.len) {
+        const end = @min(i + 200, held.len);
+        locked = end;
+        try lockUnspent(allocator, auth, true, held[i..end]);
+        i = end;
+    }
+    return sendToAddress(allocator, auth, address, amount, decimals);
+}
+
+test "selectNewestFirst spends the newest coins and holds the old back" {
+    var coins = [_]Unspent{
+        .{ .txid = "old", .amount = 100, .confirmations = 5000 },
+        .{ .txid = "new", .amount = 30, .confirmations = 2 },
+        .{ .txid = "mid", .amount = 20, .confirmations = 40 },
+    };
+    try std.testing.expectEqual(@as(?usize, 1), selectNewestFirst(&coins, 25));
+    try std.testing.expectEqualStrings("new", coins[0].txid);
+    // Needs more than the newest holds: spills to the next-newest, not the oldest.
+    try std.testing.expectEqual(@as(?usize, 2), selectNewestFirst(&coins, 45));
+    try std.testing.expectEqualStrings("mid", coins[1].txid);
+    // The fee headroom counts: exactly the balance isn't enough.
+    try std.testing.expectEqual(@as(?usize, null), selectNewestFirst(&coins, 150));
+}
+
 /// Format `amount` as a fixed `decimals`-place decimal string (never scientific
 /// notation) for splicing into an RPC params array — split out as a pure helper
 /// so the formatting is unit-testable without a live daemon. Returns a slice
