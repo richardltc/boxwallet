@@ -120,7 +120,12 @@ pub fn build(b: *std.Build) void {
     // `zig build run -- ...` runs the TUI binary.
     const run_cmd = b.addRunArtifact(exe);
     run_cmd.step.dependOn(b.getInstallStep());
-    if (b.args) |args| run_cmd.addArgs(args);
+    // Zig 0.17 replaced `b.args` with `Run.addPassthruArgs`.
+    if (@hasDecl(std.Build.Step.Run, "addPassthruArgs")) {
+        run_cmd.addPassthruArgs();
+    } else if (b.args) |args| {
+        run_cmd.addArgs(args);
+    }
     const run_step = b.step("run", "Run the app");
     run_step.dependOn(&run_cmd.step);
 
@@ -246,7 +251,12 @@ fn addGuiStep(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.bui
     // TUI). The package-dir rpath lets it find libslint_cpp.so wherever it runs.
     const run_cmd = b.addRunArtifact(exe);
     run_cmd.step.dependOn(&install_exe.step);
-    if (b.args) |args| run_cmd.addArgs(args);
+    // Zig 0.17 replaced `b.args` with `Run.addPassthruArgs`.
+    if (@hasDecl(std.Build.Step.Run, "addPassthruArgs")) {
+        run_cmd.addPassthruArgs();
+    } else if (b.args) |args| {
+        run_cmd.addArgs(args);
+    }
     const gui_run_step = b.step("gui-run", "Build and run the Slint GUI");
     gui_run_step.dependOn(&run_cmd.step);
 
@@ -271,10 +281,8 @@ fn addGuiStep(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.bui
     const stage_entry = b.addInstallFile(b.path("gui/boxwallet.desktop"), "bin/boxwallet.desktop");
     const stage_icon = b.addInstallFile(b.path("gui/icons/boxwallet.png"), "bin/icons/boxwallet.png");
     const stage_script = b.addInstallFile(b.path("gui/install-desktop.sh"), "bin/install-desktop.sh");
-    const install_desktop = b.addSystemCommand(&.{
-        "sh",
-        b.getInstallPath(.bin, "install-desktop.sh"),
-    });
+    const install_desktop = b.addSystemCommand(&.{"sh"});
+    install_desktop.addFileArg(b.graph.path(.install_bin, "install-desktop.sh"));
     install_desktop.step.dependOn(&install_exe.step);
     install_desktop.step.dependOn(&stage_entry.step);
     install_desktop.step.dependOn(&stage_icon.step);
@@ -543,7 +551,7 @@ fn buildGuiExe(
     // Linux-clone path that needs TLS initialized by that Zig startup, and the
     // first RPC worker (`std.Io.Threaded`) would crash on uninitialized TLS.
     // With libc, `std.Thread` uses `pthread_create` and libc owns TLS setup.
-    const strip = optimize != .Debug;
+    const strip = optimize != .debug;
     const core = b.addLibrary(.{
         .name = "boxwallet-core",
         .linkage = .static,
@@ -564,7 +572,7 @@ fn buildGuiExe(
         .root_module = b.createModule(.{
             .root_source_file = b.path("tools/bin2c.zig"),
             .target = b.graph.host,
-            .optimize = .ReleaseSafe,
+            .optimize = .safe,
         }),
     });
     const gen_font = b.addRunArtifact(bin2c);
@@ -695,7 +703,7 @@ fn addGuiReleaseStep(
         .root_module = b.createModule(.{
             .root_source_file = b.path("tools/fixneeded.zig"),
             .target = b.graph.host,
-            .optimize = .ReleaseSafe,
+            .optimize = .safe,
         }),
     });
 
@@ -711,7 +719,7 @@ fn addGuiReleaseStep(
         const resolved = b.resolveTargetQuery(t.query);
         // Skipped rather than failed while a lazy package is still being fetched
         // (and on a host with no slint-compiler), so the step re-runs complete.
-        if (buildGuiExe(b, resolved, .ReleaseSafe, .origin)) |exe| {
+        if (buildGuiExe(b, resolved, .safe, .origin)) |exe| {
             // Non-null for the same reason the exe is: `buildGuiExe` returns null
             // unless the package is already on disk.
             const dep = slintPackage(b, resolved.result).?;
@@ -744,7 +752,7 @@ fn addGuiReleaseStep(
                 break :blk &inst_exe.step;
             } else blk: {
                 const fix = b.addRunArtifact(fixer);
-                fix.addArg(b.getInstallPath(.prefix, stage ++ "/" ++ bundle_exe));
+                fix.addFileArg(b.graph.path(.install_prefix, stage ++ "/" ++ bundle_exe));
                 fix.step.dependOn(&inst_exe.step);
                 break :blk &fix.step;
             };
@@ -850,8 +858,8 @@ fn addGuiReleaseStep(
                     },
                 ),
                 "pack-gui",
-                b.getInstallPath(.prefix, opts.out_dir),
             });
+            pack.addDirectoryArg(b.graph.path(.install_prefix, opts.out_dir));
             pack.step.dependOn(ready);
             pack.step.dependOn(&inst_so.step);
             pack.step.dependOn(&inst_lic.step);
@@ -901,8 +909,8 @@ fn addGuiReleaseStep(
             "sh", "-c",
             b.fmt("cd \"$1\" && rm -f SHA256SUMS RUNTIME{s} && sha256sum{s} RUNTIME > SHA256SUMS", .{ sum_cmds, hash_names }),
             "sums-gui",
-            b.getInstallPath(.prefix, opts.out_dir),
         });
+        sums.addDirectoryArg(b.graph.path(.install_prefix, opts.out_dir));
         for (packs) |p| if (p) |ps| sums.step.dependOn(ps);
         step.dependOn(&sums.step);
     }
@@ -929,7 +937,8 @@ fn addReleaseStep(b: *std.Build) *std.Build.Step {
     var names: []const u8 = "";
     inline for (release_targets) |t| names = b.fmt("{s} {s}", .{ names, t.name });
     const script = b.fmt("cd \"$1\" && sha256sum{s} > SHA256SUMS", .{names});
-    const sums = b.addSystemCommand(&.{ "sh", "-c", script, "release-sums", b.getInstallPath(.prefix, "release") });
+    const sums = b.addSystemCommand(&.{ "sh", "-c", script, "release-sums" });
+    sums.addDirectoryArg(b.graph.path(.install_prefix, "release"));
 
     inline for (release_targets) |t| {
         const resolved = b.resolveTargetQuery(t.query);
@@ -939,7 +948,7 @@ fn addReleaseStep(b: *std.Build) *std.Build.Step {
             .root_module = b.createModule(.{
                 .root_source_file = b.path("src/main.zig"),
                 .target = resolved,
-                .optimize = .ReleaseSafe,
+                .optimize = .safe,
                 // Strip debug info — these are distributables, so keep the
                 // download small (matters on low-spec/slow-link machines).
                 .strip = true,
@@ -947,7 +956,7 @@ fn addReleaseStep(b: *std.Build) *std.Build.Step {
         });
         exe.root_module.addImport("zigzag", b.dependency("zigzag", .{
             .target = resolved,
-            .optimize = .ReleaseSafe,
+            .optimize = .safe,
         }).module("zigzag"));
 
         // Install the emitted binary under its release asset name.
@@ -1009,8 +1018,9 @@ fn addReleaseAllStep(b: *std.Build, release_step: *std.Build.Step, gui_step: *st
     , .{expected});
 
     const assemble = b.addSystemCommand(&.{
-        "sh", "-c", script, "release-all", b.getInstallPath(.prefix, ""),
+        "sh", "-c", script, "release-all",
     });
+    assemble.addDirectoryArg(b.graph.path(.install_prefix, ""));
     assemble.step.dependOn(release_step);
     assemble.step.dependOn(gui_step);
     step.dependOn(&assemble.step);

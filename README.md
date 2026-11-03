@@ -221,7 +221,7 @@ regular user), the swap can't happen; the Home pane explains why.
 
 ## Build from source
 
-Requires [Zig 0.16](https://ziglang.org/download/).
+Requires [Zig 0.17](https://ziglang.org/download/).
 
 ```sh
 git clone https://github.com/richardltc/boxwallet.git

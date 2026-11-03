@@ -542,7 +542,7 @@ pub const DigiByte = struct {
                 // A daemon without the DD RPCs (pre-9.26) answers "Method not
                 // found" — report that as a distinct status so the tab can say
                 // "needs a newer core" instead of spinning on "checking…".
-                if (std.ascii.indexOfIgnoreCase(e.message, "not found") != null) {
+                if (std.ascii.findIgnoreCase(e.message, "not found") != null) {
                     out.setStatus("unsupported");
                     return out;
                 }

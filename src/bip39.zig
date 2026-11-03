@@ -427,7 +427,7 @@ pub const wordlist = [2048][]const u8{
 };
 
 test "assemble: canonical all-zero 256-bit entropy vector" {
-    var data: [33]u8 = [_]u8{0} ** 33;
+    var data: [33]u8 = @as([33]u8, @splat(0));
     var digest: [32]u8 = undefined;
     std.crypto.hash.sha2.Sha256.hash(data[0..32], &digest, .{});
     data[32] = digest[0];
@@ -442,7 +442,7 @@ test "assemble: canonical all-zero 256-bit entropy vector" {
 }
 
 test "assemble: canonical all-zero 128-bit entropy vector" {
-    var data: [17]u8 = [_]u8{0} ** 17;
+    var data: [17]u8 = @as([17]u8, @splat(0));
     var digest: [32]u8 = undefined;
     std.crypto.hash.sha2.Sha256.hash(data[0..16], &digest, .{});
     data[16] = digest[0];
@@ -456,7 +456,7 @@ test "assemble: canonical all-zero 128-bit entropy vector" {
 
 test "fromEntropy: spells the canonical vectors, and validates at every length" {
     var out: [max_mnemonic_len]u8 = undefined;
-    const zeros = [_]u8{0} ** 32;
+    const zeros = @as([32]u8, @splat(0));
     try std.testing.expectEqualStrings(
         "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon art",
         try fromEntropy(&zeros, &out),
@@ -466,7 +466,7 @@ test "fromEntropy: spells the canonical vectors, and validates at every length" 
         try fromEntropy(zeros[0..16], &out),
     );
     // BIP39 vector: 0x7f × 16.
-    const sevens = [_]u8{0x7f} ** 16;
+    const sevens = @as([16]u8, @splat(0x7f));
     try std.testing.expectEqualStrings(
         "legal winner thank year wave sausage worth useful legal winner thank yellow",
         try fromEntropy(&sevens, &out),
@@ -585,7 +585,7 @@ test "looksLikeHexSeed separates a raw seed from a mnemonic" {
         "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about",
     ));
     // Right length, but not hex ('z').
-    try std.testing.expect(!looksLikeHexSeed("z" ** hex_seed_len));
+    try std.testing.expect(!looksLikeHexSeed(&@as([hex_seed_len]u8, @splat('z'))));
     // Hex, but the wrong length — a truncated paste must not read as a seed.
     try std.testing.expect(!looksLikeHexSeed(hex[0 .. hex_seed_len - 1]));
     try std.testing.expect(!looksLikeHexSeed(""));

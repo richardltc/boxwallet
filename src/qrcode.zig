@@ -562,7 +562,7 @@ fn getPenaltyScore(qrcode: []const u8) i64 {
     while (y < qrsize) : (y += 1) {
         var run_color = false;
         var run_x: i32 = 0;
-        var run_history = [_]i32{0} ** 7;
+        var run_history = @as([7]i32, @splat(0));
         var x: i32 = 0;
         while (x < qrsize) : (x += 1) {
             if (getModuleBounded(qrcode, x, y) == run_color) {
@@ -582,7 +582,7 @@ fn getPenaltyScore(qrcode: []const u8) i64 {
     while (x2 < qrsize) : (x2 += 1) {
         var run_color = false;
         var run_y: i32 = 0;
-        var run_history = [_]i32{0} ** 7;
+        var run_history = @as([7]i32, @splat(0));
         var y2: i32 = 0;
         while (y2 < qrsize) : (y2 += 1) {
             if (getModuleBounded(qrcode, x2, y2) == run_color) {

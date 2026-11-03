@@ -557,7 +557,7 @@ pub const BitcoinZ = struct {
             defer f.close(io);
             var wbuf: [4096]u8 = undefined;
             var fw = f.writer(io, &wbuf);
-            const zeros = [_]u8{0} ** 4096;
+            const zeros = @as([4096]u8, @splat(0));
             var left = size;
             while (left > 0) {
                 const n: usize = @intCast(@min(left, zeros.len));

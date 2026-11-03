@@ -227,7 +227,7 @@ const Decoder = struct {
 
     fn readMappingTable(self: *Decoder) !void {
         const in_use16 = try self.bits(16);
-        var in_use: [256]bool = [_]bool{false} ** 256;
+        var in_use: [256]bool = @as([256]bool, @splat(false));
         var i: usize = 0;
         while (i < 16) : (i += 1) {
             if (in_use16 & (@as(u32, 0x8000) >> @intCast(i)) != 0) {
@@ -308,11 +308,11 @@ const Decoder = struct {
             }
         }
 
-        var base: [24]u32 = [_]u32{0} ** 24;
+        var base: [24]u32 = @as([24]u32, @splat(0));
         for (0..alpha_size) |s| base[len[s] + 1] += 1;
         for (1..24) |k| base[k] += base[k - 1];
 
-        var limit: [24]u32 = [_]u32{0} ** 24;
+        var limit: [24]u32 = @as([24]u32, @splat(0));
         var vec: u32 = 0;
         i = min_len;
         while (i <= max_len) : (i += 1) {

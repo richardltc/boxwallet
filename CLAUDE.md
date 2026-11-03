@@ -2,7 +2,7 @@
 
 ## What this project is
 
-BoxWallet is a multi-coin cryptocurrency wallet manager written in **Zig 0.16**,
+BoxWallet is a multi-coin cryptocurrency wallet manager written in **Zig 0.17**,
 using [ZigZag](https://github.com/meszmate/zigzag) for its TUI — there is **no
 web frontend**.
 
@@ -226,8 +226,12 @@ ZIG_GLOBAL_CACHE_DIR=zig-pkg zig build gui-release-unverified # bundles awaiting
 
 ## Conventions
 
-- Toolchain is **Zig 0.16**. See `README.md` → "Zig 0.16 API notes" for the
+- Toolchain is **Zig 0.17**. See `README.md` → "Zig 0.16 API notes" for the
   stdlib gotchas hit so far (new `std.Io`, `std.process.Init`, `flate`, etc.).
+  0.17 additionally removed `**` (use `@splat`), `std.meta.Tuple` (`@Tuple`),
+  `b.args` (`Run.addPassthruArgs`), `Build.getInstallPath` (a
+  `b.graph.path(.install_prefix, …)` lazy path), and `Type.Enum.fields`
+  (`field_names`/`field_values`).
   The stdlib is still churning; verify APIs against the installed std rather than
   assuming older signatures.
 - Install destination: per-platform `~/.boxwallet` (Windows

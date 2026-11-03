@@ -117,7 +117,7 @@ pub fn spawn(a: std.mem.Allocator, opts: Options) Error!Spawned {
 
     // Everything the child needs is built before fork (no allocating after it).
     const argv_buf = try arena.allocSentinel(?[*:0]const u8, opts.argv.len, null);
-    for (opts.argv, 0..) |arg, i| argv_buf[i] = (try arena.dupeZ(u8, arg)).ptr;
+    for (opts.argv, 0..) |arg, i| argv_buf[i] = (try arena.dupeSentinel(u8, arg, 0)).ptr;
     // The same (empty) environment `std.process.spawn` gives a child under a fresh
     // `std.Io.Threaded`, which is how every other wallet process is started.
     const envp = try arena.allocSentinel(?[*:0]const u8, 0, null);
@@ -275,7 +275,7 @@ fn writeAll(fd: posix.fd_t, bytes: []const u8) Error!void {
 
 /// True once `pid` has exited (and is reaped).
 fn reaped(pid: posix.pid_t) bool {
-    var status: if (builtin.link_libc) c_int else u32 = undefined;
+    var status: i32 = undefined;
     const rc = sys.wait4(pid, &status, posix.W.NOHANG, null);
     return switch (posix.errno(rc)) {
         .SUCCESS => rc != 0,
@@ -286,7 +286,7 @@ fn reaped(pid: posix.pid_t) bool {
 
 fn killAndReap(pid: posix.pid_t) void {
     posix.kill(pid, posix.SIG.KILL) catch return;
-    var status: if (builtin.link_libc) c_int else u32 = undefined;
+    var status: i32 = undefined;
     while (posix.errno(sys.wait4(pid, &status, 0, null)) == .INTR) {}
 }
 
@@ -321,7 +321,7 @@ fn openMaster(path_out: *[128]u8) Error!posix.fd_t {
         if (ioctlErr(fd, posix.T.IOCSPTLCK, @intFromPtr(&unlock)) != .SUCCESS) return error.PtyUnavailable;
         var n: c_uint = 0;
         if (ioctlErr(fd, posix.T.IOCGPTN, @intFromPtr(&n)) != .SUCCESS) return error.PtyUnavailable;
-        _ = std.fmt.bufPrintZ(path_out, "/dev/pts/{d}", .{n}) catch return error.PtyUnavailable;
+        _ = std.mem.printSentinel(path_out, "/dev/pts/{d}", .{n}, 0) catch return error.PtyUnavailable;
         return fd;
     }
     // macOS: the libc calls, then TIOCPTYGNAME for the name (`ptsname` isn't

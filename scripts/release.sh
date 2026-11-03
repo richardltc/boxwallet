@@ -11,7 +11,7 @@
 # Both front-ends' in-app updater downloads from exactly this release, so
 # what's published here is what users auto-update to.
 #
-# Requirements: bash, git, a Zig 0.16 toolchain, and the GitHub CLI (gh)
+# Requirements: bash, git, a Zig 0.17 toolchain, and the GitHub CLI (gh)
 # authenticated with a token that can create releases on the target repo
 # (`gh auth login`).
 #

@@ -425,11 +425,11 @@ fn visibleTabAt(idx: usize, caps: TabCaps) ?DetailTab {
 /// +1 (right) or -1 (left). Tabs the coin doesn't have (`tabVisible` false) are
 /// skipped straight over, so the cycle only ever lands on the visible strip.
 fn cycleTab(t: DetailTab, delta: i2, caps: TabCaps) DetailTab {
-    const n: i32 = @typeInfo(DetailTab).@"enum".fields.len;
+    const n: i32 = @typeInfo(DetailTab).@"enum".field_names.len;
     var next: DetailTab = t;
     // At most enum-length steps: enough to skip past every hidden tab even if
     // they sit adjacent at the wrap point.
-    for (0..@typeInfo(DetailTab).@"enum".fields.len) |_| {
+    for (0..@typeInfo(DetailTab).@"enum".field_names.len) |_| {
         next = @enumFromInt(@mod(@as(i32, @intFromEnum(next)) + delta, n));
         if (tabVisible(next, caps)) break;
     }
@@ -805,6 +805,19 @@ const QuickSyncModal = struct {
 /// `WalletAction`, which is tightly coupled to the password/wallet-menu flow
 /// and has no room for an address+amount payload) so it can own its own
 /// worker and inputs cleanly, mirroring `QuickSyncModal`'s shape.
+/// The process environment, set by `main` before the program starts (ZigZag's
+/// `Context` carries only the home dir now). Children we spawn inherit it.
+pub var process_environ: ?*const std.process.Environ.Map = null;
+var no_environ: std.process.Environ.Map = .init(std.heap.page_allocator);
+
+/// A ZigZag `Context` over `env` for tests; also what a running app reads as
+/// its process environment.
+fn testContext(allocator: std.mem.Allocator, io: std.Io, env: *const std.process.Environ.Map) zz.Context {
+    process_environ = env;
+    const environment: zz.Environment = .fromEnvMap(env);
+    return zz.Context.init(allocator, allocator, io, &environment);
+}
+
 const SendModal = struct {
     const Stage = enum {
         /// For a coin that can also pay by slate file: how to send — to an
@@ -2438,7 +2451,7 @@ const Activity = struct {
         _ = signalProcessesByName(io, name, std.posix.SIG.KILL);
         if (self.daemon_child) |child| if (child.id) |pid| {
             const posix = std.posix;
-            var status: if (@import("builtin").link_libc) c_int else u32 = undefined;
+            var status: i32 = undefined;
             while (posix.errno(posix.system.wait4(pid, &status, 0, null)) == .INTR) {}
         };
     }
@@ -4244,7 +4257,7 @@ pub const App = struct {
     /// activity is `activities[selected]`.
     activities: [entries.len]Activity,
     /// Ring buffer of recent action messages, painted in the bottom log pane.
-    log_lines: [log_capacity]LogLine = [_]LogLine{.{}} ** log_capacity,
+    log_lines: [log_capacity]LogLine = @splat(.{}),
     /// Total messages ever logged; the live slot is `log_count % log_capacity`.
     log_count: usize = 0,
     /// Whether the bottom log pane is shown; `l` toggles it.
@@ -4268,7 +4281,7 @@ pub const App = struct {
     show_prices: bool = true,
     /// Latest quote per `entries` slot (index 0 / Home unused), parallel to
     /// `activities`. `have` false = no price to show for that coin.
-    prices: [entries.len]price.Quote = [_]price.Quote{.{}} ** entries.len,
+    prices: [entries.len]price.Quote = @splat(.{}),
     /// Wall-clock (unix seconds) of the last *successful* fetch, 0 if none yet.
     /// Quotes older than `price.max_age_s` stop being displayed rather than
     /// misrepresenting what a balance is worth.
@@ -4287,7 +4300,7 @@ pub const App = struct {
     price_done: std.atomic.Value(bool) = .init(false),
     /// Worker output, read by the UI only after the `price_done` edge — so these
     /// plain fields need no atomics.
-    price_result: [entries.len]price.Quote = [_]price.Quote{.{}} ** entries.len,
+    price_result: [entries.len]price.Quote = @splat(.{}),
     price_ok: bool = false,
 
     /// The open `w` wallet modal, or null when no modal is up. While set, the
@@ -4421,8 +4434,7 @@ pub const App = struct {
         // allocator so it outlives the per-frame arena (and is freed in
         // `deinit`); on the unlikely allocation failure, fall back to a relative
         // dir that we don't own.
-        const home_key = if (@import("builtin").os.tag == .windows) "USERPROFILE" else "HOME";
-        const home_dir = ctx.environ_map.get(home_key) orelse "";
+        const home_dir = ctx.home_dir;
 
         var install_root: []const u8 = fallback_install_root;
         var install_root_owned = false;
@@ -4448,7 +4460,7 @@ pub const App = struct {
             .install_root_owned = install_root_owned,
             .home_dir = home_owned,
             .home_dir_owned = home_owned_flag,
-            .environ_map = ctx.environ_map,
+            .environ_map = process_environ orelse &no_environ,
             .io = ctx.io,
             .tz_offset_s = localOffsetSeconds(
                 ctx.persistent_allocator,
@@ -5096,7 +5108,7 @@ pub const App = struct {
             .setup_file => switch (k.key) {
                 .escape => self.closeWalletModal(),
                 else => {
-                    const selected = self.file_picker.handleKey(self.io, self.environ_map, k) catch false;
+                    const selected = self.file_picker.handleKey(self.io, k) catch false;
                     if (selected) {
                         // Remember where they browsed so the next restore starts here.
                         if (self.file_picker.getSelected()) |fp| self.rememberFileDir(fp);
@@ -7568,12 +7580,12 @@ pub const App = struct {
                     self.file_picker.blur();
                     m.stage = .confirm;
                 } else {
-                    _ = self.file_picker.handleKey(self.io, self.environ_map, k) catch false;
+                    _ = self.file_picker.handleKey(self.io, k) catch false;
                     self.filterFoldersOnly();
                 },
                 else => {
                     // Enter opens a folder (there are no files to pick here).
-                    _ = self.file_picker.handleKey(self.io, self.environ_map, k) catch false;
+                    _ = self.file_picker.handleKey(self.io, k) catch false;
                     self.filterFoldersOnly();
                 },
             },
@@ -7792,7 +7804,7 @@ pub const App = struct {
         self.file_picker.focus();
         const start = self.slate_dir_buf[0..self.slate_dir_len];
         if (start.len == 0 or (if (self.file_picker.navigate(self.io, start)) |_| false else |_| true)) {
-            self.file_picker.navigateHome(self.io, self.environ_map) catch {};
+            self.file_picker.navigateHome(self.io) catch {};
         }
         self.filterFoldersOnly();
         m.stage = .folder;
@@ -7864,7 +7876,7 @@ pub const App = struct {
                     self.slate_modal = null;
                 },
                 else => {
-                    const selected = self.file_picker.handleKey(self.io, self.environ_map, k) catch false;
+                    const selected = self.file_picker.handleKey(self.io, k) catch false;
                     if (!selected) {
                         // It may have moved to another folder: filter that too.
                         self.filterSlatePicker();
@@ -8900,7 +8912,7 @@ pub const App = struct {
                 self.last_file_dir_len = 0;
             }
         }
-        self.file_picker.navigateHome(self.io, self.environ_map) catch {
+        self.file_picker.navigateHome(self.io) catch {
             self.file_picker.navigate(self.io, ".") catch {};
         };
     }
@@ -12785,7 +12797,7 @@ test "action log renders in the bottom pane, sized to log_visible_lines" {
     var env = std.process.Environ.Map.init(allocator);
     defer env.deinit();
     try env.put("HOME", "/home/tester");
-    var ctx = zz.Context.init(allocator, allocator, io, &env);
+    var ctx = testContext(allocator, io, &env);
 
     var app: App = undefined;
     app.hide_balances = false;
@@ -12969,7 +12981,7 @@ test "setDaemonErr keeps the first non-empty stderr line, trimmed and bounded" {
 
     // An over-long line is truncated to the buffer, never overruns it.
     var long: Activity = .{};
-    const huge = "x" ** (long.daemon_err_buf.len + 50);
+    const huge = &@as([(long.daemon_err_buf.len + 50)]u8, @splat('x'));
     long.setDaemonErr(huge);
     try std.testing.expectEqual(long.daemon_err_buf.len, long.daemon_err.len);
 }
@@ -13767,7 +13779,7 @@ test "requestNewReceiveAddress stages a pending request and forces an immediate 
     var env = std.process.Environ.Map.init(allocator);
     defer env.deinit();
     try env.put("HOME", "/home/tester");
-    var ctx = zz.Context.init(allocator, allocator, io, &env);
+    var ctx = testContext(allocator, io, &env);
 
     var app: App = undefined;
     app.hide_balances = false;
@@ -13803,7 +13815,7 @@ test "copyReceiveAddress no-ops without a cached address, logs otherwise" {
     var env = std.process.Environ.Map.init(allocator);
     defer env.deinit();
     try env.put("HOME", "/home/tester");
-    var ctx = zz.Context.init(allocator, allocator, io, &env);
+    var ctx = testContext(allocator, io, &env);
 
     var app: App = undefined;
     app.hide_balances = false;
@@ -13841,7 +13853,7 @@ test "trySendAmount rejects non-numeric/zero/negative, accepts a valid positive 
     var env = std.process.Environ.Map.init(allocator);
     defer env.deinit();
     try env.put("HOME", "/home/tester");
-    var ctx = zz.Context.init(allocator, allocator, io, &env);
+    var ctx = testContext(allocator, io, &env);
 
     var app: App = undefined;
     app.hide_balances = false;
@@ -13884,7 +13896,7 @@ test "renderSendModal shows the untruncated address and formatted amount at conf
     var env = std.process.Environ.Map.init(allocator);
     defer env.deinit();
     try env.put("HOME", "/home/tester");
-    var ctx = zz.Context.init(allocator, allocator, io, &env);
+    var ctx = testContext(allocator, io, &env);
 
     var app: App = undefined;
     app.hide_balances = false;
@@ -13935,7 +13947,7 @@ test "a coin that quotes its fee prices the send before the confirm step" {
     var env = std.process.Environ.Map.init(allocator);
     defer env.deinit();
     try env.put("HOME", "/home/tester");
-    var ctx = zz.Context.init(allocator, allocator, io, &env);
+    var ctx = testContext(allocator, io, &env);
 
     var app: App = undefined;
     app.hide_balances = false;
@@ -13951,7 +13963,7 @@ test "a coin that quotes its fee prices the send before the confirm step" {
     // Epic's sends carry a note, so that's asked for first. One past the limit
     // stays put with a warning; an acceptable one moves on to the quote.
     try std.testing.expectEqual(SendModal.Stage.note, app.send_modal.?.stage);
-    try app.send_note_input.setValue("x" ** (models.tx_note_max + 1));
+    try app.send_note_input.setValue(&@as([(models.tx_note_max + 1)]u8, @splat('x')));
     app.trySendNote();
     try std.testing.expectEqual(SendModal.Stage.note, app.send_modal.?.stage);
     try std.testing.expect(app.send_modal.?.bad_input);
@@ -13978,7 +13990,7 @@ test "renderSendModal states the quoted fee and total, and the coin's own sent l
     var env = std.process.Environ.Map.init(allocator);
     defer env.deinit();
     try env.put("HOME", "/home/tester");
-    var ctx = zz.Context.init(allocator, allocator, io, &env);
+    var ctx = testContext(allocator, io, &env);
 
     var app: App = undefined;
     app.hide_balances = false;
@@ -14020,7 +14032,7 @@ test "the note stage won't skip a blank payment note to an exchange that needs o
     var env = std.process.Environ.Map.init(allocator);
     defer env.deinit();
     try env.put("HOME", "/home/tester");
-    var ctx = zz.Context.init(allocator, allocator, io, &env);
+    var ctx = testContext(allocator, io, &env);
 
     var app: App = undefined;
     app.hide_balances = false;
@@ -14119,7 +14131,7 @@ test "the cancel prompt opens on what can be cancelled — straight to Yes/No fo
     var env = std.process.Environ.Map.init(allocator);
     defer env.deinit();
     try env.put("HOME", "/home/tester");
-    var ctx = zz.Context.init(allocator, allocator, io, &env);
+    var ctx = testContext(allocator, io, &env);
 
     var app: App = undefined;
     app.hide_balances = false;
@@ -14177,7 +14189,7 @@ test "the Stake prompt refuses to open for a coin without the stake action" {
     var env = std.process.Environ.Map.init(allocator);
     defer env.deinit();
     try env.put("HOME", "/home/tester");
-    var ctx = zz.Context.init(allocator, allocator, io, &env);
+    var ctx = testContext(allocator, io, &env);
 
     var app: App = undefined;
     app.hide_balances = false;
@@ -14213,7 +14225,7 @@ test "renderSendModal in stake mode shows stake wording, no destination" {
     var env = std.process.Environ.Map.init(allocator);
     defer env.deinit();
     try env.put("HOME", "/home/tester");
-    var ctx = zz.Context.init(allocator, allocator, io, &env);
+    var ctx = testContext(allocator, io, &env);
 
     var app: App = undefined;
     app.hide_balances = false;
@@ -14427,7 +14439,7 @@ test "the Mining prompt only opens on a mining coin with a running daemon" {
     var env = std.process.Environ.Map.init(allocator);
     defer env.deinit();
     try env.put("HOME", "/home/tester");
-    var ctx = zz.Context.init(allocator, allocator, io, &env);
+    var ctx = testContext(allocator, io, &env);
 
     var app: App = undefined;
     app.hide_balances = false;
@@ -14549,7 +14561,7 @@ test "openStablecoinModal gates on capability, daemon state, and on-chain activa
     var env = std.process.Environ.Map.init(allocator);
     defer env.deinit();
     try env.put("HOME", "/home/tester");
-    var ctx = zz.Context.init(allocator, allocator, io, &env);
+    var ctx = testContext(allocator, io, &env);
 
     var app: App = undefined;
     app.hide_balances = false;
@@ -14620,7 +14632,7 @@ test "renderMiningModal shows the thread prompt, stop confirm, and a failure" {
     var env = std.process.Environ.Map.init(allocator);
     defer env.deinit();
     try env.put("HOME", "/home/tester");
-    var ctx = zz.Context.init(allocator, allocator, io, &env);
+    var ctx = testContext(allocator, io, &env);
 
     var app: App = undefined;
     app.hide_balances = false;
@@ -14999,7 +15011,7 @@ test "start is a no-op until the coin is installed" {
     var env = std.process.Environ.Map.init(allocator);
     defer env.deinit();
     try env.put("HOME", "/home/tester");
-    var ctx = zz.Context.init(allocator, allocator, io, &env);
+    var ctx = testContext(allocator, io, &env);
 
     var app: App = undefined;
     app.hide_balances = false;
@@ -15027,7 +15039,7 @@ test "stop is a no-op unless the daemon is running" {
     var env = std.process.Environ.Map.init(allocator);
     defer env.deinit();
     try env.put("HOME", "/home/tester");
-    var ctx = zz.Context.init(allocator, allocator, io, &env);
+    var ctx = testContext(allocator, io, &env);
 
     var app: App = undefined;
     app.hide_balances = false;
@@ -15057,7 +15069,7 @@ test "stop defers the worker while a status poll is in flight" {
     var env = std.process.Environ.Map.init(allocator);
     defer env.deinit();
     try env.put("HOME", "/home/tester");
-    var ctx = zz.Context.init(allocator, allocator, io, &env);
+    var ctx = testContext(allocator, io, &env);
 
     var app: App = undefined;
     app.hide_balances = false;
@@ -15131,7 +15143,7 @@ test "an explicit start clears the stopped-by-us latch" {
     var env = std.process.Environ.Map.init(allocator);
     defer env.deinit();
     try env.put("HOME", "/home/tester");
-    var ctx = zz.Context.init(allocator, allocator, io, &env);
+    var ctx = testContext(allocator, io, &env);
 
     var app: App = undefined;
     app.hide_balances = false;
@@ -15168,7 +15180,7 @@ test "App.init resolves install_root from home dir and deinit frees it" {
     var env = std.process.Environ.Map.init(allocator);
     defer env.deinit();
     try env.put("HOME", "/home/tester");
-    var ctx = zz.Context.init(allocator, allocator, io, &env);
+    var ctx = testContext(allocator, io, &env);
 
     var app: App = undefined;
     app.hide_balances = false;
@@ -15190,7 +15202,7 @@ test "renderDetail renders the selected coin generically through the Coin interf
     var env = std.process.Environ.Map.init(allocator);
     defer env.deinit();
     try env.put("HOME", "/home/tester");
-    var ctx = zz.Context.init(allocator, allocator, io, &env);
+    var ctx = testContext(allocator, io, &env);
 
     var app: App = undefined;
     app.hide_balances = false;
@@ -15219,7 +15231,7 @@ test "coin pane renders a Disk bar from the app's disk-usage figure" {
     var env = std.process.Environ.Map.init(allocator);
     defer env.deinit();
     try env.put("HOME", "/home/tester");
-    var ctx = zz.Context.init(allocator, allocator, io, &env);
+    var ctx = testContext(allocator, io, &env);
 
     var app: App = undefined;
     app.hide_balances = false;
@@ -15251,7 +15263,7 @@ test "coin pane renders a Memory line with the current used figure" {
     var env = std.process.Environ.Map.init(allocator);
     defer env.deinit();
     try env.put("HOME", "/home/tester");
-    var ctx = zz.Context.init(allocator, allocator, io, &env);
+    var ctx = testContext(allocator, io, &env);
 
     var app: App = undefined;
     app.hide_balances = false;
@@ -15283,7 +15295,7 @@ test "coin pane renders a Storage line with the coin's on-disk size" {
     var env = std.process.Environ.Map.init(allocator);
     defer env.deinit();
     try env.put("HOME", "/home/tester");
-    var ctx = zz.Context.init(allocator, allocator, io, &env);
+    var ctx = testContext(allocator, io, &env);
 
     var app: App = undefined;
     app.hide_balances = false;
@@ -15318,12 +15330,12 @@ test "dirSizeBytes sums apparent file sizes recursively; null for a missing dir"
 
     var d = try std.Io.Dir.cwd().createDirPathOpen(io, dir, .{});
     defer d.close(io);
-    try d.writeFile(io, .{ .sub_path = "a.dat", .data = "x" ** 100 });
-    try d.writeFile(io, .{ .sub_path = "b.dat", .data = "y" ** 250 });
+    try d.writeFile(io, .{ .sub_path = "a.dat", .data = &@as([100]u8, @splat('x')) });
+    try d.writeFile(io, .{ .sub_path = "b.dat", .data = &@as([250]u8, @splat('y')) });
     // A nested file, to prove the walk recurses into subdirectories.
     var sub = try d.createDirPathOpen(io, "blocks", .{});
     sub.close(io);
-    try d.writeFile(io, .{ .sub_path = "blocks/c.dat", .data = "z" ** 400 });
+    try d.writeFile(io, .{ .sub_path = "blocks/c.dat", .data = &@as([400]u8, @splat('z')) });
 
     const total = dirSizeBytes(io, allocator, dir) orelse return error.TestUnexpectedResult;
     try std.testing.expectEqual(@as(u64, 750), total);
@@ -15344,7 +15356,7 @@ test "the Status line reflects the daemon's live activity" {
     var env = std.process.Environ.Map.init(allocator);
     defer env.deinit();
     try env.put("HOME", "/home/tester");
-    var ctx = zz.Context.init(allocator, allocator, io, &env);
+    var ctx = testContext(allocator, io, &env);
 
     var app: App = undefined;
     app.hide_balances = false;
@@ -15400,7 +15412,7 @@ test "the Wallet line advertises the w key once the wallet is manageable" {
     var env = std.process.Environ.Map.init(allocator);
     defer env.deinit();
     try env.put("HOME", "/home/tester");
-    var ctx = zz.Context.init(allocator, allocator, io, &env);
+    var ctx = testContext(allocator, io, &env);
 
     var app: App = undefined;
     app.hide_balances = false;
@@ -15436,7 +15448,7 @@ test "the wallet modal renders its menu centered over the dashboard" {
     var env = std.process.Environ.Map.init(allocator);
     defer env.deinit();
     try env.put("HOME", "/home/tester");
-    var ctx = zz.Context.init(allocator, allocator, io, &env);
+    var ctx = testContext(allocator, io, &env);
 
     var app: App = undefined;
     app.hide_balances = false;
@@ -15477,7 +15489,7 @@ test "Ergo's wallet menu offers unlock+replace when locked and lock+replace when
     var env = std.process.Environ.Map.init(allocator);
     defer env.deinit();
     try env.put("HOME", "/home/tester");
-    var ctx = zz.Context.init(allocator, allocator, io, &env);
+    var ctx = testContext(allocator, io, &env);
 
     var app: App = undefined;
     app.hide_balances = false;
@@ -15528,7 +15540,7 @@ test "the external-wallet setup menu renders its create/restore choices" {
     var env = std.process.Environ.Map.init(allocator);
     defer env.deinit();
     try env.put("HOME", "/home/tester");
-    var ctx = zz.Context.init(allocator, allocator, io, &env);
+    var ctx = testContext(allocator, io, &env);
 
     var app: App = undefined;
     app.hide_balances = false;
@@ -15676,7 +15688,7 @@ test "left-nav shows an update arrow only for non-selected coins with a pending 
     const nexa_idx = std.mem.indexOfScalar(Entry, &entries, .nexa).?;
     const home_idx = std.mem.indexOfScalar(Entry, &entries, .home).?;
 
-    var updates = [_]bool{false} ** entries.len;
+    var updates = @as([entries.len]bool, @splat(false));
     updates[nexa_idx] = true;
 
     // Home selected → Nexa is non-selected → it carries the ⬆ marker.
@@ -15684,7 +15696,7 @@ test "left-nav shows an update arrow only for non-selected coins with a pending 
     try std.testing.expect(std.mem.indexOf(u8, screen, "⬆") != null);
 
     // No pending updates → no arrow anywhere.
-    const none = [_]bool{false} ** entries.len;
+    const none = @as([entries.len]bool, @splat(false));
     const screen2 = try App.renderTwoPane(a, home_idx, &none, "", 0);
     try std.testing.expect(std.mem.indexOf(u8, screen2, "⬆") == null);
 
@@ -15830,7 +15842,7 @@ test "Home summary lists coins with a pending update" {
     var env = std.process.Environ.Map.init(allocator);
     defer env.deinit();
     try env.put("HOME", "/home/tester");
-    var ctx = zz.Context.init(allocator, allocator, io, &env);
+    var ctx = testContext(allocator, io, &env);
 
     var app: App = undefined;
     app.hide_balances = false;
@@ -15874,7 +15886,7 @@ test "per-coin activity is independent and stays inside the right pane" {
     var env = std.process.Environ.Map.init(allocator);
     defer env.deinit();
     try env.put("HOME", "/home/tester");
-    var ctx = zz.Context.init(allocator, allocator, io, &env);
+    var ctx = testContext(allocator, io, &env);
 
     var app: App = undefined;
     app.hide_balances = false;
@@ -16184,7 +16196,7 @@ test "price display is gated on the toggle, listing, and staleness" {
     var env = std.process.Environ.Map.init(allocator);
     defer env.deinit();
     try env.put("HOME", "/home/tester");
-    var ctx = zz.Context.init(allocator, allocator, io, &env);
+    var ctx = testContext(allocator, io, &env);
 
     var app: App = undefined;
     _ = app.init(&ctx);
@@ -16259,7 +16271,7 @@ test "the price roster covers every listed coin and omits unlisted ones" {
     var env = std.process.Environ.Map.init(allocator);
     defer env.deinit();
     try env.put("HOME", "/home/tester");
-    var ctx = zz.Context.init(allocator, allocator, io, &env);
+    var ctx = testContext(allocator, io, &env);
 
     var app: App = undefined;
     _ = app.init(&ctx);
@@ -16633,7 +16645,7 @@ test "a slate-file send asks amount, then note, then prices it — no address" {
     var env = std.process.Environ.Map.init(allocator);
     defer env.deinit();
     try env.put("HOME", "/home/tester");
-    var ctx = zz.Context.init(allocator, allocator, threaded.io(), &env);
+    var ctx = testContext(allocator, threaded.io(), &env);
     var app: App = undefined;
     app.hide_balances = false;
     _ = app.init(&ctx);
@@ -16673,7 +16685,7 @@ test "renderSendModal words a slate-file send as a file, not a payment to an add
     var env = std.process.Environ.Map.init(allocator);
     defer env.deinit();
     try env.put("HOME", "/home/tester");
-    var ctx = zz.Context.init(allocator, allocator, threaded.io(), &env);
+    var ctx = testContext(allocator, threaded.io(), &env);
     var app: App = undefined;
     app.hide_balances = false;
     _ = app.init(&ctx);
@@ -16706,7 +16718,7 @@ test "an opened slate goes to its confirm, or straight to why it can't be used" 
     var env = std.process.Environ.Map.init(allocator);
     defer env.deinit();
     try env.put("HOME", "/home/tester");
-    var ctx = zz.Context.init(allocator, allocator, threaded.io(), &env);
+    var ctx = testContext(allocator, threaded.io(), &env);
     var app: App = undefined;
     app.hide_balances = false;
     _ = app.init(&ctx);
@@ -16772,7 +16784,7 @@ test "a coin that pays by file asks how to send first; others go straight to the
     var env = std.process.Environ.Map.init(allocator);
     defer env.deinit();
     try env.put("HOME", "/home/tester");
-    var ctx = zz.Context.init(allocator, allocator, threaded.io(), &env);
+    var ctx = testContext(allocator, threaded.io(), &env);
     var app: App = undefined;
     app.hide_balances = false;
     _ = app.init(&ctx);
@@ -16849,7 +16861,7 @@ test "picking the reply to a send shows only reply files, and folders" {
     var env = std.process.Environ.Map.init(allocator);
     defer env.deinit();
     try env.put("HOME", "/home/tester");
-    var ctx = zz.Context.init(allocator, allocator, io, &env);
+    var ctx = testContext(allocator, io, &env);
     var app: App = undefined;
     app.hide_balances = false;
     _ = app.init(&ctx);
@@ -16904,7 +16916,7 @@ test "a slate send shows where it saves, and d chooses another folder (folders o
     var env = std.process.Environ.Map.init(allocator);
     defer env.deinit();
     try env.put("HOME", "/home/tester");
-    var ctx = zz.Context.init(allocator, allocator, io, &env);
+    var ctx = testContext(allocator, io, &env);
     var app: App = undefined;
     app.hide_balances = false;
     _ = app.init(&ctx);

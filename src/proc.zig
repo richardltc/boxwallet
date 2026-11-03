@@ -654,7 +654,7 @@ pub fn probeChild(io: std.Io, child: *std.process.Child) ?std.process.Child.Term
     }
     const posix = std.posix;
     const pid = child.id orelse return .{ .unknown = 0 };
-    var status: if (builtin.link_libc) c_int else u32 = undefined;
+    var status: i32 = undefined;
     const rc = posix.system.wait4(pid, &status, posix.W.NOHANG, null);
     return switch (posix.errno(rc)) {
         .SUCCESS => if (rc == 0) null else blk: {
@@ -689,7 +689,7 @@ pub fn terminateAndReap(io: std.Io, pid: std.posix.pid_t, grace_ms: u32) void {
     }
     posix.kill(pid, posix.SIG.KILL) catch {};
     // Blocking reap so the killed child doesn't linger as a zombie.
-    var status: if (builtin.link_libc) c_int else u32 = undefined;
+    var status: i32 = undefined;
     while (posix.errno(posix.system.wait4(pid, &status, 0, null)) == .INTR) {}
 }
 
@@ -697,7 +697,7 @@ pub fn terminateAndReap(io: std.Io, pid: std.posix.pid_t, grace_ms: u32) void {
 /// won't linger as a zombie), or if there's nothing left to wait on.
 pub fn reapNoHang(pid: std.posix.pid_t) bool {
     const posix = std.posix;
-    var status: if (builtin.link_libc) c_int else u32 = undefined;
+    var status: i32 = undefined;
     const rc = posix.system.wait4(pid, &status, posix.W.NOHANG, null);
     return switch (posix.errno(rc)) {
         .SUCCESS => rc != 0, // 0 = still running; nonzero (the pid) = exited & reaped
