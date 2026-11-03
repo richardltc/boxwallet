@@ -16,7 +16,7 @@ const Coin = @import("../coin.zig").Coin;
 /// does *and* drives the Monero-style external-wallet flow (create returns a seed,
 /// restore from seed, unlock with a password, read balance) over the wallet's
 /// encrypted Owner API v3 (see the `SecureChannel`/`external_wallet` section below).
-/// Built against the Epic 4.x line — the standalone `epic` node 4.1.0 and the
+/// Built against the Epic 4.x line — the standalone `epic` node 4.1.2 and the
 /// `epic-wallet` CLI 4.1.0; the old Go reference targeted 3.x with a different
 /// distribution and a (stale, bitcoin-style) RPC, so it isn't a line-by-line port.
 ///
@@ -74,7 +74,7 @@ pub const Epic = struct {
 
     // The node's bundled version. The live daemon version still comes from
     // `get_status`'s `user_agent`; this is the version the install marker/UI show.
-    pub const core_version = "4.1.0";
+    pub const core_version = "4.1.2";
 
     // `.exe` on Windows.
     const exe_suffix = if (builtin.os.tag == .windows) ".exe" else "";
@@ -184,7 +184,7 @@ pub const Epic = struct {
 
     // --- Node distribution ----------------------------------------------
     //
-    // The node is the standalone `EpicCash/epic` 4.1.0 release. Both the Linux
+    // The node is the standalone `EpicCash/epic` 4.1.2 release. Both the Linux
     // `.tar.gz` and the Windows `.zip` nest `epic` under a versioned wrapper dir
     // (no `bin/`), so each is extracted whole and `promoteAndTidy` lifts the
     // binary to the install root and discards the wrapper.
@@ -192,7 +192,7 @@ pub const Epic = struct {
     const node_wrapper: []const u8 = switch (builtin.os.tag) {
         .windows => "Windows-v" ++ core_version,
         .macos => "MacOS-aarch64-v" ++ core_version,
-        else => "epic-" ++ core_version ++ "-linux-amd64",
+        else => "epic-v" ++ core_version ++ "-linux-amd64",
     };
     const bin_subdir = "";
     const promote_files = [_][]const u8{daemon_file};
@@ -1335,7 +1335,7 @@ pub const Epic = struct {
         dir.deleteTree(io, "__MACOSX") catch {};
     }
 
-    /// Install the Epic node + wallet. The node (`epic` 4.1.0) is an archive nested
+    /// Install the Epic node + wallet. The node (`epic` 4.1.2) is an archive nested
     /// in a versioned wrapper dir, extracted then promoted to the install root. The
     /// wallet (`epic-wallet` 4.1.0) likewise, so a re-install replaces the old
     /// binary; either way the binary ends up in the install root and is marked
@@ -5196,22 +5196,22 @@ test "an Err / empty Owner result yields no usable status" {
     try std.testing.expect(parsed.value.result.?.Ok == null);
 }
 
-test "node download resolves to the 4.1.0 archive only on linux/amd64 and windows/x86_64" {
+test "node download resolves to the 4.1.2 archive only on linux/amd64 and windows/x86_64" {
     if (builtin.os.tag == .linux and builtin.cpu.arch == .x86_64) {
         const dl = Epic.download orelse return error.TestUnexpectedResult;
         try std.testing.expectEqual(install_mod.Format.tar_gz, dl.format);
-        try std.testing.expect(std.mem.endsWith(u8, dl.url, "/v4.1.0/epic-4.1.0-linux-amd64.tar.gz"));
-        try std.testing.expectEqualStrings("epic-4.1.0-linux-amd64", Epic.node_wrapper);
+        try std.testing.expect(std.mem.endsWith(u8, dl.url, "/v4.1.2/epic-v4.1.2-linux-amd64.tar.gz"));
+        try std.testing.expectEqualStrings("epic-v4.1.2-linux-amd64", Epic.node_wrapper);
     } else if (builtin.os.tag == .windows and builtin.cpu.arch == .x86_64) {
         const dl = Epic.download orelse return error.TestUnexpectedResult;
         try std.testing.expectEqual(install_mod.Format.zip, dl.format);
-        try std.testing.expect(std.mem.endsWith(u8, dl.url, "/v4.1.0/Windows-v4.1.0.zip"));
-        try std.testing.expectEqualStrings("Windows-v4.1.0", Epic.node_wrapper);
+        try std.testing.expect(std.mem.endsWith(u8, dl.url, "/v4.1.2/Windows-v4.1.2.zip"));
+        try std.testing.expectEqualStrings("Windows-v4.1.2", Epic.node_wrapper);
     } else if (builtin.os.tag == .macos and builtin.cpu.arch == .aarch64) {
         const dl = Epic.download orelse return error.TestUnexpectedResult;
         try std.testing.expectEqual(install_mod.Format.zip, dl.format);
-        try std.testing.expect(std.mem.endsWith(u8, dl.url, "/v4.1.0/MacOS-aarch64-v4.1.0.zip"));
-        try std.testing.expectEqualStrings("MacOS-aarch64-v4.1.0", Epic.node_wrapper);
+        try std.testing.expect(std.mem.endsWith(u8, dl.url, "/v4.1.2/MacOS-aarch64-v4.1.2.zip"));
+        try std.testing.expectEqualStrings("MacOS-aarch64-v4.1.2", Epic.node_wrapper);
     } else {
         try std.testing.expect(Epic.download == null);
     }
@@ -5508,7 +5508,7 @@ test "coin vtable dispatches to Epic metadata and the external wallet" {
     try std.testing.expectEqualStrings("Epic Cash", c.coinName());
     try std.testing.expectEqualStrings("EPIC", c.coinNameAbbrev());
     try std.testing.expectEqualStrings("#deac55", c.coinColor());
-    try std.testing.expectEqualStrings("4.1.0", c.coreVersion());
+    try std.testing.expectEqualStrings("4.1.2", c.coreVersion());
     try std.testing.expect(!c.isProofOfStake());
     try std.testing.expectEqualStrings("3413", c.rpcDefaultPort());
     try std.testing.expectEqual(Coin.LaunchMode.foreground, c.launchMode());
