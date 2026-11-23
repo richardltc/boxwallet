@@ -5,7 +5,7 @@
 //! overwritten in place (Windows locks it; POSIX would keep the old inode):
 //!
 //!  1. **Check + stage** (`checkAndStage`), run on a background worker while the
-//!     current build keeps running. It asks Codeberg for the latest release, and
+//!     current build keeps running. It asks GitHub for the latest release, and
 //!     if that's newer than the running version, streams the matching native
 //!     binary to `~/.boxwallet/updates/`, verifies its SHA-256 against the
 //!     release's `SHA256SUMS`, and drops a version marker beside it. Nothing the
@@ -345,7 +345,7 @@ pub const CheckStatus = enum {
     staged,
     /// No binary is published for this OS/arch — the updater is a no-op here.
     unsupported,
-    /// Couldn't reach Codeberg / parse its reply. Best-effort: try again next run.
+    /// Couldn't reach GitHub / parse its reply. Best-effort: try again next run.
     network_error,
     /// The download didn't match the published checksum — refused.
     verify_failed,
@@ -393,7 +393,7 @@ pub const Notify = struct {
     on_download_start: *const fn (ctx: *anyopaque, version: []const u8) void,
 };
 
-/// Check Codeberg for a newer release and, if found, download + verify + stage it
+/// Check GitHub for a newer release and, if found, download + verify + stage it
 /// for application on next launch. Runs synchronously on its own blocking io
 /// (the caller drives it from a worker thread). Never errors — every failure
 /// maps to a `CheckStatus`, since a missed update check must not disturb the
@@ -1317,7 +1317,7 @@ fn numericPrefix(s: []const u8) u64 {
     return v;
 }
 
-/// Extract the `tag_name` string value from a Codeberg release JSON document.
+/// Extract the `tag_name` string value from a GitHub release JSON document.
 /// A deliberately minimal scan (rather than a full JSON parse) — we only need
 /// this one field, and it returns a slice into `json`.
 fn parseTagName(json: []const u8) ?[]const u8 {
