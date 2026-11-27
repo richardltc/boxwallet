@@ -71,7 +71,7 @@ pub const Zano = struct {
     pub const home_dir_mac: ?[]const u8 = null;
     pub const rpc_default_username = "zanorpc";
     pub const rpc_default_port = "11211";
-    pub const core_version = "2.2.3.600";
+    pub const core_version = "2.2.3.609";
 
     // Binary names. Windows appends `.exe`; Linux uses the bare names. Zano's CLI
     // is `simplewallet`, and there's no `*-tx` helper (unlike the bitcoin coins).
@@ -114,7 +114,7 @@ pub const Zano = struct {
     //
     // From 2.2.3 the filenames carry a flavour (`-gui-release-` / `-cli-release-`)
     // — check the new release's names still match these patterns when bumping.
-    const appimage_build_hash = "98bbd72";
+    const appimage_build_hash = "2ae520c";
     const appimage_url = "https://build.zano.org/builds/zano-linux-x64-gui-release-v" ++
         core_version ++ "%5B" ++ appimage_build_hash ++ "%5D.AppImage";
     // Windows ships an official CLI-only .zip (same build hash): zanod.exe /
@@ -1297,7 +1297,7 @@ test "parseVersionOutput lifts the bare version out of zanod's --version banner"
     // The build hash is dropped, so a freshly-installed binary's banner yields
     // exactly the pinned `core_version` — the whole point of parsing rather than
     // storing the banner, since the marker is compared against it verbatim.
-    const banner = "Zano v" ++ Zano.core_version ++ "[98bbd72]";
+    const banner = "Zano v" ++ Zano.core_version ++ "[2ae520c]";
     const v = Zano.parseVersionOutput(banner).?;
     try std.testing.expect(std.mem.indexOfScalar(u8, v, '[') == null);
     try std.testing.expectEqualStrings(Zano.core_version, v);

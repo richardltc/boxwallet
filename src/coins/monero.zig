@@ -83,7 +83,7 @@ pub const Monero = struct {
     pub const rpc_default_username = "monerorpc";
     /// `RPC_DEFAULT_PORT` from `cryptonote_config.h`.
     pub const rpc_default_port = "18081";
-    pub const core_version = "0.18.5.1";
+    pub const core_version = "0.18.5.4";
 
     // Binary names. Windows appends `.exe`. The wallet CLI is `monero-wallet-cli`;
     // `monero-wallet-rpc` drives the (external) wallet — BoxWallet launches it
@@ -1513,7 +1513,7 @@ test "parses get_info into a synced BlockchainState" {
         \\{"id":"0","jsonrpc":"2.0","result":{"status":"OK","height":3400000,
         \\"target_height":0,"synchronized":true,"outgoing_connections_count":12,
         \\"incoming_connections_count":8,"mainnet":true,"testnet":false,
-        \\"version":"0.18.5.1-release"}}
+        \\"version":"0.18.5.4-release"}}
     ;
 
     var parsed = try std.json.parseFromSlice(

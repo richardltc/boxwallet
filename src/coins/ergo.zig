@@ -56,7 +56,7 @@ pub const Ergo = struct {
     pub const home_dir_mac = "Ergo";
     pub const home_dir_win = "Ergo";
 
-    pub const core_version = "6.0.6";
+    pub const core_version = "6.0.8";
 
     // The node ships as `ergo-<version>.jar` inside each platform's bundle.
     pub const jar_file = "ergo-" ++ core_version ++ ".jar";

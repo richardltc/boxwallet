@@ -609,6 +609,12 @@ export fn bw_coin_count() usize {
     return coinCount();
 }
 
+/// 1 if the coin should appear in the coin list, 0 if it's registered but hidden.
+export fn bw_coin_live(idx: usize) c_int {
+    if (idx >= coin_count) return 0;
+    return @intFromBool(registry.isLive(idx));
+}
+
 export fn bw_coin_name(idx: usize, buf: ?[*]u8, cap: usize) usize {
     const c = coinByIndex(idx) orelse return 0;
     const b = buf orelse return 0;

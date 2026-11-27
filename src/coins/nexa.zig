@@ -44,7 +44,7 @@ pub const Nexa = struct {
     pub const home_dir_mac: ?[]const u8 = "nexa";
     pub const rpc_default_username = "nexarpc";
     pub const rpc_default_port = "7227";
-    pub const core_version = "2.2.0.0";
+    pub const core_version = "2.2.0.1";
 
     // Binary names. Windows appends `.exe`; Linux/macOS use the bare names. The
     // per-target name is what `isInstalled`, the daemon launcher, and the promote
@@ -67,8 +67,8 @@ pub const Nexa = struct {
     const download: ?install_mod.Download = switch (builtin.os.tag) {
         .windows => .{ .url = download_base ++ "nexa-" ++ core_version ++ "-win64.zip", .format = .zip },
         .macos => switch (builtin.cpu.arch) {
-            .aarch64 => .{ .url = download_base ++ "nexa-" ++ core_version ++ "-macos-arm64.tar.gz", .format = .tar_gz },
-            .x86_64 => .{ .url = download_base ++ "nexa-" ++ core_version ++ "-macos-x86.tar.gz", .format = .tar_gz },
+            .aarch64 => .{ .url = download_base ++ "nexa-" ++ core_version ++ "-macos-arm64-unsigned.tar.gz", .format = .tar_gz },
+            .x86_64 => .{ .url = download_base ++ "nexa-" ++ core_version ++ "-macos-x86-unsigned.tar.gz", .format = .tar_gz },
             else => null,
         },
         .linux => switch (builtin.cpu.arch) {

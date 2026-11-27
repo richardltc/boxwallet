@@ -149,6 +149,9 @@ size_t  bw_brand_color(char *buf, size_t cap);   /* "#RRGGBB" */
  * metadata calls copy up to cap bytes into buf and return the length written
  * (not NUL-terminated — use the returned length). */
 size_t  bw_coin_count(void);
+/* 1 if the coin belongs in the coin list; 0 if it is registered but hidden
+ * (its index stays valid, it just isn't offered). */
+int     bw_coin_live(size_t idx);
 size_t  bw_coin_name(size_t idx, char *buf, size_t cap);
 size_t  bw_coin_abbrev(size_t idx, char *buf, size_t cap);
 size_t  bw_coin_color(size_t idx, char *buf, size_t cap); /* "#RRGGBB" */

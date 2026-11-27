@@ -1541,6 +1541,7 @@ int main(int argc, char **argv)
     g_recv_addr.assign(count, std::string()); // one address cache slot per coin
     g_listener_state.assign(count, BW_LISTENER_NONE);
     for (size_t i = 0; i < count; ++i) {
+        if (!bw_coin_live(i)) continue; // registered but hidden (e.g. SpiderByte)
         char nm[64];
         size_t nn = bw_coin_name(i, nm, sizeof nm);
         char col[16];

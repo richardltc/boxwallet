@@ -156,3 +156,13 @@ test "coin names are unique" {
         }
     }
 }
+
+/// Whether the coin at registry index `idx` is shown in a front-end's coin list.
+/// A coin with `live = false` stays registered (so every index keeps its C-ABI
+/// meaning) but is hidden until it's ready for users.
+pub fn isLive(idx: usize) bool {
+    inline for (coin_types, 0..) |T, i| {
+        if (idx == i) return T.live;
+    }
+    return false;
+}

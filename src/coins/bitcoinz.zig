@@ -67,7 +67,7 @@ pub const BitcoinZ = struct {
     pub const rpc_default_username = "bitcoinzrpc";
     /// Mainnet RPC port (upstream `chainparamsbase.cpp`).
     pub const rpc_default_port = "1979";
-    pub const core_version = "2.2.0";
+    pub const core_version = "2.3.1";
 
     // Binary names. Windows appends `.exe`; Linux/macOS use the bare names.
     const exe_suffix = if (builtin.os.tag == .windows) ".exe" else "";
@@ -75,41 +75,42 @@ pub const BitcoinZ = struct {
     pub const cli_file = "bitcoinz-cli" ++ exe_suffix;
     pub const tx_file = "bitcoinz-tx" ++ exe_suffix;
 
-    // Download host. The 2.2.0 assets are keyed by a build commit hash rather
-    // than the version, identically across platforms — every bundle wraps its
-    // executables in `bitcoinz-<hash>/bin/`.
-    const build_tag = "e90047d4ae65";
-    const download_base = "https://github.com/btcz/bitcoinz/releases/download/" ++ core_version ++ "/bitcoinz-" ++ build_tag ++ "-";
+    // Download host. Assets are `bitcoinz-<ver>-<platform>.{tar.gz,zip}`; each
+    // bundle wraps its executables directly in `bitcoinz-<ver>-<platform>/` (no
+    // `bin/`). The Linux x86_64 bundle ships no `bitcoinz-tx`; promote skips a
+    // missing file, and BoxWallet doesn't need it.
+    const download_base = "https://github.com/btcz/bitcoinz/releases/download/" ++ core_version ++ "/bitcoinz-" ++ core_version ++ "-";
 
-    /// The download URL + archive format for the build target, or null where
-    /// BitcoinZ publishes no matching daemon bundle. Selected at comptime from
-    /// the OS/arch. 2.2.0 covers every desktop target, including a native
-    /// Apple-Silicon build:
-    ///   - Linux x86_64/aarch64: `.tar.gz`.
-    ///   - Windows x86_64: `win64.zip` (extracted from the seekable scratch file).
-    ///   - macOS x86_64/arm64: their respective `apple-darwin.tar.gz`.
-    const download: ?install_mod.Download = switch (builtin.os.tag) {
+    /// The bundle's platform tag, or null where BitcoinZ publishes no matching
+    /// daemon bundle. Selected at comptime from the OS/arch (every desktop
+    /// target, including a native Apple-Silicon build).
+    const platform: ?[]const u8 = switch (builtin.os.tag) {
         .windows => switch (builtin.cpu.arch) {
-            .x86_64 => .{ .url = download_base ++ "win64.zip", .format = .zip },
+            .x86_64 => "win64",
             else => null,
         },
         .macos => switch (builtin.cpu.arch) {
-            .x86_64 => .{ .url = download_base ++ "x86_64-apple-darwin.tar.gz", .format = .tar_gz },
-            .aarch64 => .{ .url = download_base ++ "arm64-apple-darwin.tar.gz", .format = .tar_gz },
+            .x86_64 => "macos-x86_64",
+            .aarch64 => "macos-arm64",
             else => null,
         },
         .linux => switch (builtin.cpu.arch) {
-            .x86_64 => .{ .url = download_base ++ "x86_64-linux-gnu.tar.gz", .format = .tar_gz },
-            .aarch64 => .{ .url = download_base ++ "aarch64-linux-gnu.tar.gz", .format = .tar_gz },
+            .x86_64 => "linux-x86_64",
+            .aarch64 => "linux-aarch64",
             else => null,
         },
         else => null,
     };
 
-    // Layout inside the archive: keep only the daemon/cli/tx binaries (from
-    // `bin/`) at the install root; the whole `bitcoinz-<hash>/` tree is discarded.
-    const extracted_dir = "bitcoinz-" ++ build_tag;
-    const bin_subdir = "bin";
+    const download: ?install_mod.Download = if (platform) |p|
+        .{ .url = download_base ++ p ++ (if (builtin.os.tag == .windows) ".zip" else ".tar.gz"), .format = if (builtin.os.tag == .windows) .zip else .tar_gz }
+    else
+        null;
+
+    // Layout inside the archive: keep only the daemon/cli/tx binaries (sitting
+    // directly in the wrapper) at the install root; the rest is discarded.
+    const extracted_dir = "bitcoinz-" ++ core_version ++ "-" ++ (platform orelse "unsupported");
+    const bin_subdir = "";
     const promote_files = [_][]const u8{ daemon_file, cli_file, tx_file };
 
     // Temp file the download streams to. Keyed off the daemon name so a concurrent
@@ -1118,11 +1119,11 @@ test "shredFile overwrites and removes a key dump" {
 
 test "versionFromClient reads a build-50 CLIENT_VERSION as the plain release" {
     const a = std.testing.allocator;
-    // 2.2.0's wire version: build 50 == the official release → "2.2.0", which
+    // 2.3.1's wire version: build 50 == the official release → "2.3.1", which
     // must compare equal to the pinned core_version (no mismatch warning).
-    const rel = try BitcoinZ.versionFromClient(a, 2_020_050);
+    const rel = try BitcoinZ.versionFromClient(a, 2_030_150);
     defer a.free(rel);
-    try std.testing.expectEqualStrings("2.2.0", rel);
+    try std.testing.expectEqualStrings("2.3.1", rel);
     try std.testing.expectEqualStrings(BitcoinZ.core_version, rel);
 
     // An rc build (25–49) keeps the four-part decode, so it *does* differ from
