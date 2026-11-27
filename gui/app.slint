@@ -26,6 +26,7 @@ struct NavCoin {
     color: color,
     index: int, // registry index for bw_* calls (also indexes the embedded logos)
     update: bool, // a newer bundled core than the installed one
+    installed: bool, // the coin's daemon binary is on disk (Home's coin list)
     // Two-tone wordmark, pre-split by the host (bw_coin_wordmark). Empty `tail`
     // means this coin has no wordmark and its name is drawn in one colour.
     head: string,
@@ -1188,8 +1189,6 @@ component SettingsRow inherits HorizontalLayout {
 component FeatureCard inherits Rectangle {
     in property <string> title;
     in property <string> body;
-    in property <image> icon;
-    in property <color> accent;
 
     background: #242424;
     border-radius: 8px;
@@ -1206,31 +1205,90 @@ component FeatureCard inherits Rectangle {
         padding: 12px;
         spacing: 5px;
         alignment: start;
-        HorizontalLayout {
-            spacing: 8px;
-            alignment: start;
-            Image {
-                source: root.icon;
-                colorize: root.accent;
-                width: 15px;
-                height: 15px;
-                vertical-alignment: center;
-            }
-            Text {
-                text: root.title;
-                color: #e6e6e6;
-                font-size: 13px;
-                font-weight: 700;
-                vertical-alignment: center;
-                wrap: word-wrap;
-                horizontal-stretch: 1;
-            }
+        Text {
+            text: root.title;
+            color: #e6e6e6;
+            font-size: 13px;
+            font-weight: 700;
+            wrap: word-wrap;
         }
         Text {
             text: root.body;
             color: #a0a0a0;
             font-size: 12px;
             wrap: word-wrap;
+        }
+    }
+}
+
+// One coin on the Home page: its logo, its name, and one word of state. The whole
+// row is the button — Home's job is to get the user into a coin, so a row says
+// where it goes rather than describing it.
+component CoinRow inherits Rectangle {
+    in property <string> label;
+    in property <image> logo;
+    in property <bool> show-logo: false;
+    in property <string> head: "";
+    in property <string> tail: "";
+    in property <color> head-color: #ffffff;
+    in property <color> tail-color: #ffffff;
+    // Right-hand word: "Update", "Open" or "Install". `emphasis` paints it amber.
+    in property <string> action;
+    in property <bool> emphasis: false;
+    // Rows of the wrong group stay in the model (Slint can't nest `if` in a
+    // `for`), so they collapse to nothing instead. The 6px gap between rows is
+    // part of each row's own height for the same reason: a layout's `spacing`
+    // would be paid once per hidden row too.
+    in property <bool> shown: true;
+    callback clicked;
+
+    height: root.shown ? 50px : 0px;
+    visible: root.shown;
+
+    card := Rectangle {
+        y: 0;
+        height: 44px;
+        border-radius: 8px;
+        background: ta.has-hover ? #2c2c2c : #242424;
+        animate background { duration: 120ms; easing: ease-out; }
+
+        if root.show-logo: Image {
+            source: root.logo;
+            image-fit: contain;
+            width: 24px;
+            height: 24px;
+            x: 12px;
+            y: (parent.height - self.height) / 2;
+        }
+        HorizontalLayout {
+            padding-left: root.show-logo ? 48px : 14px;
+            padding-right: 14px;
+            spacing: 0;
+            Text {
+                text: root.tail != "" ? root.head : root.label;
+                vertical-alignment: center;
+                font-size: 14px;
+                font-weight: 600;
+                color: root.tail != "" ? root.head-color : #e6e6e6;
+            }
+            Text {
+                text: root.tail;
+                vertical-alignment: center;
+                font-size: 14px;
+                font-weight: 600;
+                color: root.tail-color;
+            }
+            Rectangle { horizontal-stretch: 1; }
+            Text {
+                text: root.action;
+                vertical-alignment: center;
+                font-size: 12px;
+                font-weight: root.emphasis ? 700 : 400;
+                color: root.emphasis ? #e0a03a : #a8a8a8;
+            }
+        }
+        ta := TouchArea {
+            clicked => { root.clicked(); }
         }
     }
 }
@@ -1296,6 +1354,11 @@ export component AppWindow inherits Window {
 
     // Navigation. -1 = Home, otherwise the selected coin's registry index.
     in property <[NavCoin]> nav-coins;
+    // How many of those are installed. Home is a pitch until this is above zero,
+    // then a list of the user's coins.
+    in property <int> installed-count: 0;
+    // The reasons-to-trust tiles, folded away once there is a coin to look at.
+    in-out property <bool> why-open: false;
     // Per-coin logos, embedded into the binary at build time and indexed by the
     // coin's registry index (NavCoin.index) — the order MUST match the coin order
     // in src/registry.zig. Swap a file in gui/coin-logos/ and rebuild to change
@@ -2399,29 +2462,31 @@ export component AppWindow inherits Window {
                                     + (root.nav-coins.length > 0
                                         ? "   ·   \{root.nav-coins.length} coins"
                                         : "");
-                                color: #808080;
+                                color: #9a9a9a;
                                 font-size: 14px;
                             }
                         }
                     }
                     Text {
-                        text: "Run your own coin daemons, and keep your own keys.";
+                        text: "Run your own coin nodes, and keep your own keys.";
                         color: #e6e6e6;
                         font-size: 16px;
                         font-weight: 600;
                         wrap: word-wrap;
                     }
                     Text {
-                        text: "BoxWallet installs, starts and watches real nodes on this machine — "
-                            + "no browser, no cloud, nobody else holding your funds. "
-                            + "Pick a coin on the left to see its status.";
+                        text: root.installed-count == 0
+                            ? "BoxWallet installs, starts and watches real nodes on this machine — "
+                                + "no browser, no cloud, nobody else holding your funds."
+                            : "Your coins run on this machine. Nobody else holds your funds.";
                         color: #a8a8a8;
                         font-size: 13px;
                         wrap: word-wrap;
                     }
 
                     // Which coins have a newer core waiting, so it's visible
-                    // without clicking through all fourteen.
+                    // without clicking through all of them. The rows below carry
+                    // the same flag and are the way in.
                     if root.updates-summary != "": Rectangle {
                         background: #2b2418;
                         border-radius: 8px;
@@ -2435,8 +2500,8 @@ export component AppWindow inherits Window {
                                 wrap: word-wrap;
                             }
                             Text {
-                                text: "Select the coin on the left and press Update.";
-                                color: #9a9a9a;
+                                text: "Open the coin and press Update.";
+                                color: #b0b0b0;
                                 font-size: 12px;
                                 wrap: word-wrap;
                             }
@@ -2459,90 +2524,146 @@ export component AppWindow inherits Window {
                         }
                     }
 
-                    // ---- why BoxWallet ----
-                    Rectangle { height: 2px; }
-                    Text {
-                        text: "WHY BOXWALLET";
-                        color: #6f6f6f;
-                        font-size: 11px;
+                    // ---- your coins ----
+                    if root.installed-count > 0: Text {
+                        text: "Your coins";
+                        color: #e6e6e6;
+                        font-size: 15px;
                         font-weight: 700;
                     }
-                    // Two tiles a row rather than a GridLayout: each row stretches
-                    // its pair to the same width and height, and the pane is never
-                    // wide enough for a third column.
-                    HorizontalLayout {
-                        spacing: 10px;
-                        FeatureCard {
-                            icon: @image-url("icons/lock.svg");
-                            accent: root.brand-color;
-                            title: "Your keys, your coins";
-                            body: "Full self-custody. Seeds and passwords are held only as long as they're needed, then wiped — never logged, never sent anywhere.";
-                        }
-                        FeatureCard {
-                            icon: @image-url("icons/home.svg");
-                            accent: root.brand-color;
-                            title: "One app for every coin";
-                            body: "Install, start, stop and monitor every supported coin from a single window, instead of a separate wallet app for each.";
-                        }
-                    }
-                    HorizontalLayout {
-                        spacing: 10px;
-                        FeatureCard {
-                            icon: @image-url("icons/download.svg");
-                            accent: root.brand-color;
-                            title: "Set up in seconds";
-                            body: "BoxWallet fetches and configures each coin's official core for you, then shows sync progress, block height, disk and memory at a glance.";
-                        }
-                        FeatureCard {
-                            icon: @image-url("icons/refresh-cw.svg");
-                            accent: root.brand-color;
-                            title: "Shares what you already have";
-                            body: "It uses each daemon's standard data directory, so a node you already run — and its wallet — is picked up as it is. No second copy, no re-sync.";
-                        }
-                    }
-                    HorizontalLayout {
-                        spacing: 10px;
-                        FeatureCard {
-                            icon: @image-url("icons/wifi.svg");
-                            accent: root.brand-color;
-                            title: "Private by default";
-                            body: "Balances hide behind one switch, and with price lookups off BoxWallet makes no network request beyond your own nodes.";
-                        }
-                        FeatureCard {
-                            icon: @image-url("icons/zap.svg");
-                            accent: root.brand-color;
-                            title: "Always current";
-                            body: "BoxWallet updates itself in the background and flags any coin whose core has fallen behind the version it ships.";
+                    if root.installed-count > 0: VerticalLayout {
+                        spacing: 0px;
+                        for c in root.nav-coins: CoinRow {
+                            shown: c.installed;
+                            label: c.name;
+                            logo: root.coin-logos[c.index];
+                            show-logo: root.logo-mismatch == "";
+                            head: c.head;
+                            tail: c.tail;
+                            // Home's rows are never "selected", so the wordmark
+                            // colours would be the only brand colour on the page;
+                            // the coin's own logo carries that, and the name stays
+                            // near-white.
+                            action: c.update ? "\u{2b06} Update" : "Open";
+                            emphasis: c.update;
+                            clicked => {
+                                root.selected = c.index;
+                                root.tab = 0;
+                                root.coin-selected(c.index);
+                            }
                         }
                     }
 
-                    // ---- getting started ----
-                    Rectangle { height: 2px; }
+                    // ---- add a coin ----
+                    // Step one of getting started is this list, so it leads the
+                    // page for a first-time user and follows "Your coins" after.
                     Text {
-                        text: "GETTING STARTED";
-                        color: #6f6f6f;
-                        font-size: 11px;
+                        text: root.installed-count == 0 ? "1. Pick a coin to install" : "Add a coin";
+                        color: #e6e6e6;
+                        font-size: 15px;
                         font-weight: 700;
                     }
-                    StepRow {
-                        num: "1.";
-                        accent: root.brand-color;
-                        text: "Pick a coin from the list on the left.";
+                    VerticalLayout {
+                        spacing: 0px;
+                        for c in root.nav-coins: CoinRow {
+                            shown: !c.installed;
+                            label: c.name;
+                            logo: root.coin-logos[c.index];
+                            show-logo: root.logo-mismatch == "";
+                            action: "Install";
+                            clicked => {
+                                root.selected = c.index;
+                                root.tab = 0;
+                                root.coin-selected(c.index);
+                            }
+                        }
                     }
-                    StepRow {
+
+                    // ---- what happens next ----
+                    if root.installed-count == 0: Text {
+                        text: "Then";
+                        color: #e6e6e6;
+                        font-size: 15px;
+                        font-weight: 700;
+                    }
+                    if root.installed-count == 0: StepRow {
                         num: "2.";
                         accent: root.brand-color;
-                        text: "Press Install — its core is downloaded and set up for you.";
+                        text: "Press Install. The coin's core is downloaded and set up for you. Some chains need tens or hundreds of GB of disk, so check the space first.";
                     }
-                    StepRow {
+                    if root.installed-count == 0: StepRow {
                         num: "3.";
                         accent: root.brand-color;
-                        text: "Start the daemon, then create or restore a wallet and let it sync.";
+                        text: "Start the daemon, then create or restore a wallet. The first sync can take hours to days.";
                     }
+                    if root.installed-count == 0: StepRow {
+                        num: "4.";
+                        accent: root.brand-color;
+                        text: "Write your recovery words on paper and keep them offline. They are the only way back to your funds.";
+                    }
+
+                    // ---- why BoxWallet (folded once there's a coin to look at) ----
                     Rectangle { height: 2px; }
+                    if root.installed-count > 0: Rectangle {
+                        height: 28px;
+                        Text {
+                            x: 0;
+                            text: (root.why-open ? "\u{25be} " : "\u{25b8} ") + "Why BoxWallet";
+                            color: #a8a8a8;
+                            font-size: 13px;
+                            font-weight: 600;
+                            vertical-alignment: center;
+                        }
+                        TouchArea { clicked => { root.why-open = !root.why-open; } }
+                    }
+                    if root.installed-count == 0: Text {
+                        text: "Why BoxWallet";
+                        color: #e6e6e6;
+                        font-size: 15px;
+                        font-weight: 700;
+                    }
+                    if root.installed-count == 0 || root.why-open: VerticalLayout {
+                        spacing: 10px;
+                        // Two tiles a row rather than a GridLayout: each row
+                        // stretches its pair to the same width and height, and the
+                        // pane is never wide enough for a third column.
+                        HorizontalLayout {
+                            spacing: 10px;
+                            FeatureCard {
+                                title: "Your keys, your coins";
+                                body: "Full self-custody. Seeds and passwords are held only as long as they're needed, then wiped — never logged, never sent anywhere.";
+                            }
+                            FeatureCard {
+                                title: "One app for every coin";
+                                body: "Install, start, stop and monitor every supported coin from a single window, instead of a separate wallet app for each.";
+                            }
+                        }
+                        HorizontalLayout {
+                            spacing: 10px;
+                            FeatureCard {
+                                title: "Installed for you";
+                                body: "BoxWallet fetches and configures each coin's official core, then shows sync progress, block height, disk and memory at a glance.";
+                            }
+                            FeatureCard {
+                                title: "Shares what you already have";
+                                body: "It uses each daemon's standard data directory, so a node you already run — and its wallet — is picked up as it is. No second copy, no re-sync.";
+                            }
+                        }
+                        HorizontalLayout {
+                            spacing: 10px;
+                            FeatureCard {
+                                title: "Private by default";
+                                body: "Balances hide behind one switch, and with price lookups off BoxWallet makes no network request beyond your own nodes.";
+                            }
+                            FeatureCard {
+                                title: "Always current";
+                                body: "BoxWallet updates itself in the background and flags any coin whose core has fallen behind the version it ships.";
+                            }
+                        }
+                    }
                     Text {
                         text: "Everything runs here. The daemons and their wallet RPC are bound to this machine only.";
-                        color: #6b6b6b;
+                        color: #9a9a9a;
                         font-size: 11px;
                         wrap: word-wrap;
                     }

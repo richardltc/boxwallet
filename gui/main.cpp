@@ -1588,12 +1588,20 @@ int main(int argc, char **argv)
             uint8_t idx[64];
             size_t n = bw_updates_pending(ctx, idx, sizeof idx);
             std::vector<uint8_t> pending(idx, idx + n);
-            post_to_ui([weak, pending]() {
+            // One stat per coin, off the UI thread with the rest of the scan.
+            std::vector<bool> is_installed(bw_coin_count(), false);
+            for (size_t i = 0; i < is_installed.size(); ++i)
+                is_installed[i] = bw_is_installed(ctx, i) != 0;
+            post_to_ui([weak, pending, is_installed]() {
                 auto h = weak.lock();
                 if (!h)
                     return;
                 std::string summary;
+                int installed = 0;
                 for (auto &c : coins) {
+                    c.installed = is_installed[static_cast<size_t>(c.index)];
+                    if (c.installed)
+                        ++installed;
                     c.update = std::find(pending.begin(), pending.end(),
                                          static_cast<uint8_t>(c.index)) != pending.end();
                     if (c.update) {
@@ -1604,6 +1612,7 @@ int main(int argc, char **argv)
                 }
                 (*h)->set_nav_coins(std::make_shared<slint::VectorModel<NavCoin>>(coins));
                 (*h)->set_updates_summary(ss(summary));
+                (*h)->set_installed_count(installed);
             });
         }).detach();
     };
