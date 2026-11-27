@@ -1235,6 +1235,12 @@ component CoinRow inherits Rectangle {
     in property <string> action;
     in property <color> action-color: #a8a8a8;
     in property <bool> emphasis: false;
+    // Draws the action as an outlined pill, so "Install" reads as pressable.
+    in property <bool> pill: false;
+    // A live node: a small dot at the row's leading edge.
+    in property <bool> live: false;
+    // The action's outline colour when it is a pill (orange for an update).
+    in property <color> pill-color: #4a4a4a;
     in property <string> spoken;
     callback clicked;
 
@@ -1249,6 +1255,14 @@ component CoinRow inherits Rectangle {
     accessible-label: root.spoken;
     accessible-action-default => { root.clicked(); }
 
+    if root.live: Rectangle {
+        x: 5px;
+        y: (parent.height - self.height) / 2;
+        width: 6px;
+        height: 6px;
+        border-radius: 3px;
+        background: #7ca071;
+    }
     if root.show-logo: Image {
         source: root.logo;
         image-fit: contain;
@@ -1270,12 +1284,21 @@ component CoinRow inherits Rectangle {
             overflow: elide;
         }
         Rectangle { horizontal-stretch: 1; }
-        Text {
-            text: root.action;
-            vertical-alignment: center;
-            font-size: 12px;
-            font-weight: root.emphasis ? 700 : 400;
-            color: root.action-color;
+        Rectangle {
+            width: act.preferred-width + (root.pill ? 20px : 0px);
+            height: 26px;
+            y: (root.height - self.height) / 2;
+            border-radius: 6px;
+            border-width: root.pill ? 1px : 0px;
+            border-color: (ta.has-hover || fs.has-focus) ? #7ca071 : root.pill-color;
+            act := Text {
+                text: root.action;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+                font-size: 12px;
+                font-weight: root.emphasis ? 700 : 400;
+                color: root.pill && (ta.has-hover || fs.has-focus) ? #e6e6e6 : root.action-color;
+            }
         }
     }
     ta := TouchArea {
@@ -1319,13 +1342,15 @@ component CoinGrid inherits Rectangle {
         label: c.name;
         logo: root.logos[c.index];
         show-logo: root.show-logo;
-        // A stopped coin says nothing: the rows that do speak (an update, a live
-        // node) are the signal, and a word repeated down every idle row buries it.
-        // The screen-reader label below still says "stopped".
+        // A stopped coin says so in a muted word, so an empty edge never reads as
+        // "unknown"; an update or a live node is louder.
         action: !c.installed ? "Install"
-            : (c.update ? (c.running && c.status != "" ? "\u{2b06} Update · " + c.status : "\u{2b06} Update")
-            : (c.running ? (c.status != "" ? c.status : "Running") : ""));
-        action-color: c.update ? #e0a03a : (c.running ? root.run-color : #a8a8a8);
+            : (c.update ? (c.running && c.status != "" ? "\u{2b06} Update \u{203a} · " + c.status : "\u{2b06} Update \u{203a}")
+            : (c.running ? (c.status != "" ? c.status : "Running") : "Stopped"));
+        pill: !c.installed || c.update;
+        pill-color: c.update ? #8a6a2a : #4a4a4a;
+        live: c.installed && c.running;
+        action-color: c.update ? #e0a03a : (c.running ? root.run-color : #9a9a9a);
         emphasis: c.update;
         spoken: (c.installed ? "Open " : "Install ") + c.name
             + (c.installed && c.update ? ", update available" : "")
@@ -1398,6 +1423,8 @@ export component AppWindow inherits Window {
     // How many of those are installed. Home is a pitch until this is above zero,
     // then a list of the user's coins.
     in property <int> installed-count: 0;
+    // How many installed coins have a newer core available (Home's header).
+    in property <int> updates-count: 0;
     // The reasons-to-trust tiles, folded away once there is a coin to look at.
     in-out property <bool> why-open: false;
     // Per-coin logos, embedded into the binary at build time and indexed by the
@@ -2544,10 +2571,17 @@ export component AppWindow inherits Window {
 
                     // ---- your coins ----
                     if root.installed-count > 0: Text {
-                        text: "Your coins";
+                        text: root.updates-count == 0 ? "Your coins"
+                            : "Your coins  ·  " + root.updates-count + (root.updates-count == 1 ? " update available" : " updates available");
                         color: #e6e6e6;
                         font-size: 15px;
                         font-weight: 700;
+                    }
+                    if root.updates-count > 0: Text {
+                        text: "An update runs the new core on your existing data. An older app sharing that data may not open it afterwards.";
+                        color: #a8a8a8;
+                        font-size: 12px;
+                        wrap: word-wrap;
                     }
                     if root.installed-count > 0: CoinGrid {
                         coins: root.nav-coins;
@@ -2610,15 +2644,15 @@ export component AppWindow inherits Window {
                     // ---- why BoxWallet (folded once there's a coin to look at) ----
                     Rectangle { height: 2px; }
                     if root.installed-count > 0: Rectangle {
-                        height: 28px;
+                        height: 34px;
                         accessible-role: button;
                         accessible-label: root.why-open ? "Hide why BoxWallet" : "Show why BoxWallet";
                         accessible-action-default => { root.why-open = !root.why-open; }
                         Text {
                             x: 0;
                             text: (root.why-open ? "\u{25be} " : "\u{25b8} ") + "Why BoxWallet";
-                            color: #a8a8a8;
-                            font-size: 13px;
+                            color: #c8c8c8;
+                            font-size: 14px;
                             font-weight: 600;
                             vertical-alignment: center;
                         }

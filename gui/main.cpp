@@ -1638,17 +1638,15 @@ int main(int argc, char **argv)
                         summary += std::string(std::string_view(c.name));
                     }
                 }
-                // Home's order: what needs attention first (an update, then a
-                // running node), the rest by name. The nav keeps its own order.
-                std::vector<NavCoin *> inst;
-                for (auto &c : coins)
-                    (c.installed ? inst.push_back(&c) : (void)(c.slot = absent++));
-                std::stable_sort(inst.begin(), inst.end(), [](NavCoin *a, NavCoin *b) {
-                    auto rank = [](const NavCoin *c) { return c->update ? 0 : (c->running ? 1 : 2); };
-                    return rank(a) < rank(b);
-                });
-                for (auto *c : inst)
-                    c->slot = installed++;
+                // Home keeps the nav's order within each group, so a rescan
+                // never moves a row; state shows as text on the row instead.
+                int upd = 0;
+                for (auto &c : coins) {
+                    c.slot = c.installed ? installed++ : absent++;
+                    if (c.installed && c.update)
+                        upd++;
+                }
+                (*h)->set_updates_count(upd);
                 (*h)->set_nav_coins(std::make_shared<slint::VectorModel<NavCoin>>(coins));
                 (*h)->set_updates_summary(ss(summary));
                 (*h)->set_installed_count(installed);
