@@ -249,6 +249,17 @@ pub const Nerva = struct {
         return behind_blocks * block_target_seconds;
     }
 
+    /// Whether a `get_info` reply says the chain is caught up. nervad 0.3.0.0
+    /// reported the peer tip in `target_height` (so height >= target is the test);
+    /// 0.4.0.0 zeroes it once caught up, as Monero does. A zero target on its own
+    /// is also what a just-started daemon that has heard no peer reports, so it
+    /// only reads as caught up with at least one outgoing peer connected.
+    fn infoSynced(r: NervaInfo) bool {
+        if (models.cryptonoteSyncedOptionalFlag(r.height, r.target_height, r.synchronized)) return true;
+        return r.synchronized == null and r.height > 0 and r.target_height == 0 and
+            r.outgoing_connections_count > 0;
+    }
+
     /// Live `get_info`, normalized for a frontend. Monero has no
     /// `verificationprogress`; sync is `models.cryptonoteSyncedOptionalFlag` — the
     /// `synchronized` flag *and* `height` having reached the peer-announced
@@ -265,7 +276,7 @@ pub const Nerva = struct {
         const r = parsed.value.result orelse return error.EmptyRpcResult;
         const tip = @max(r.target_height, r.height);
         const chain = if (r.testnet) "testnet" else if (r.stagenet) "stagenet" else "mainnet";
-        const synced = models.cryptonoteSyncedOptionalFlag(r.height, r.target_height, r.synchronized);
+        const synced = infoSynced(r);
         return .{
             .chain = try allocator.dupe(u8, chain),
             .blocks = r.height,
@@ -1715,6 +1726,18 @@ test "a real nervad reply — no synchronized field — still reads as synced" {
 
     // …and the same daemon 600k blocks back is honestly not synced.
     try std.testing.expect(!models.cryptonoteSyncedOptionalFlag(3_772_795, 4_372_794, null));
+}
+
+test "nervad 0.4.0.0 at the tip — target_height zeroed — reads as synced" {
+    // Live 0.4.0.0 reply: no `synchronized`, `target_height` 0, 13 outgoing peers.
+    const r: Nerva.NervaInfo = .{ .height = 4_505_159, .target_height = 0, .outgoing_connections_count = 13 };
+    try std.testing.expect(Nerva.infoSynced(r));
+    // The same zero target with no peer is a daemon that hasn't heard a tip yet.
+    const cold: Nerva.NervaInfo = .{ .height = 4_505_159, .target_height = 0 };
+    try std.testing.expect(!Nerva.infoSynced(cold));
+    // A peer tip still ahead is not synced.
+    const behind: Nerva.NervaInfo = .{ .height = 900_000, .target_height = 1_500_000, .outgoing_connections_count = 13 };
+    try std.testing.expect(!Nerva.infoSynced(behind));
 }
 
 test "a daemon still catching up reads as not synced" {
