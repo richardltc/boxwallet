@@ -42,6 +42,8 @@ static std::atomic<int> g_selected{-1};
 // instead of it waiting out its ~2s cadence — so a freshly-clicked coin shows
 // its stats right away. `g_sel_gen` bumps on every selection; the poller waits
 // until it changes (or times out) rather than sleeping blindly.
+// Set while a Home refresh scan is in flight; see the refresh timer.
+static std::atomic<bool> g_home_scanning{false};
 static std::mutex g_poll_mtx;
 static std::condition_variable g_poll_cv;
 static std::atomic<uint64_t> g_sel_gen{0};
@@ -1585,23 +1587,49 @@ int main(int argc, char **argv)
     g_scan_updates = [weak, ctx]() {
         std::thread([weak, ctx]() {
             WorkerGuard wg;
+            // Cleared however this scan ends, so the Home refresh never stacks one
+            // on another when a busy node is slow to answer.
+            struct Done { ~Done() { g_home_scanning = false; } } done;
             uint8_t idx[64];
             size_t n = bw_updates_pending(ctx, idx, sizeof idx);
             std::vector<uint8_t> pending(idx, idx + n);
             // One stat per coin, off the UI thread with the rest of the scan.
             std::vector<bool> is_installed(bw_coin_count(), false);
-            for (size_t i = 0; i < is_installed.size(); ++i)
+            std::vector<bool> is_running(bw_coin_count(), false);
+            std::vector<std::string> status(bw_coin_count());
+            for (size_t i = 0; i < is_installed.size(); ++i) {
                 is_installed[i] = bw_is_installed(ctx, i) != 0;
-            post_to_ui([weak, pending, is_installed]() {
+                is_running[i] = is_installed[i] && bw_daemon_alive(ctx, i) == 1;
+                if (!is_running[i])
+                    continue;
+                // What the running node is doing. Only running coins are asked, and
+                // the read is a loopback RPC; a node too busy to answer falls back
+                // to its start-up stage, then to a bare "Running".
+                BwBlockchainState st{};
+                if (bw_blockchain_state(ctx, i, &st) == 0) {
+                    if (st.synced)
+                        status[i] = "Synced";
+                    else if (st.verification_progress > 0.0 && st.verification_progress < 1.0)
+                        status[i] = "Syncing " + std::to_string(static_cast<int>(st.verification_progress * 100.0)) + "%";
+                    else
+                        status[i] = "Syncing";
+                } else {
+                    char stage[96];
+                    size_t n = bw_daemon_stage(ctx, i, stage, sizeof stage);
+                    if (n > 0)
+                        status[i].assign(stage, n);
+                }
+            }
+            post_to_ui([weak, pending, is_installed, is_running, status]() {
                 auto h = weak.lock();
                 if (!h)
                     return;
                 std::string summary;
-                int installed = 0;
+                int installed = 0, absent = 0;
                 for (auto &c : coins) {
                     c.installed = is_installed[static_cast<size_t>(c.index)];
-                    if (c.installed)
-                        ++installed;
+                    c.running = is_running[static_cast<size_t>(c.index)];
+                    c.status = ss(status[static_cast<size_t>(c.index)]);
                     c.update = std::find(pending.begin(), pending.end(),
                                          static_cast<uint8_t>(c.index)) != pending.end();
                     if (c.update) {
@@ -1610,6 +1638,17 @@ int main(int argc, char **argv)
                         summary += std::string(std::string_view(c.name));
                     }
                 }
+                // Home's order: what needs attention first (an update, then a
+                // running node), the rest by name. The nav keeps its own order.
+                std::vector<NavCoin *> inst;
+                for (auto &c : coins)
+                    (c.installed ? inst.push_back(&c) : (void)(c.slot = absent++));
+                std::stable_sort(inst.begin(), inst.end(), [](NavCoin *a, NavCoin *b) {
+                    auto rank = [](const NavCoin *c) { return c->update ? 0 : (c->running ? 1 : 2); };
+                    return rank(a) < rank(b);
+                });
+                for (auto *c : inst)
+                    c->slot = installed++;
                 (*h)->set_nav_coins(std::make_shared<slint::VectorModel<NavCoin>>(coins));
                 (*h)->set_updates_summary(ss(summary));
                 (*h)->set_installed_count(installed);
@@ -1617,6 +1656,19 @@ int main(int argc, char **argv)
         }).detach();
     };
     g_scan_updates();
+
+    // Home shows whether each coin's daemon is running, which changes without
+    // BoxWallet's help (a node started from a terminal, one that crashed). Rescan
+    // while Home is on screen — a /proc walk and a few stats, no RPC — and not
+    // otherwise, so a selected coin's own poll is the only thing running. Skips a
+    // tick if the last scan is still going.
+    static slint::Timer home_refresh;
+    home_refresh.start(slint::TimerMode::Repeated, std::chrono::seconds(5), [weak]() {
+        auto h = weak.lock();
+        if (!h || (*h)->get_selected() != -1 || g_home_scanning.exchange(true))
+            return;
+        g_scan_updates();
+    });
 
     // Check for a newer BoxWallet and stage it for the next launch. Network-bound,
     // so it runs detached and reports back through the event loop; a failure is

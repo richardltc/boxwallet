@@ -27,6 +27,9 @@ struct NavCoin {
     index: int, // registry index for bw_* calls (also indexes the embedded logos)
     update: bool, // a newer bundled core than the installed one
     installed: bool, // the coin's daemon binary is on disk (Home's coin list)
+    running: bool, // a process named after the daemon is alive (Home's coin list)
+    status: string, // what a running daemon is doing: "Synced", "Syncing 41%", a start-up stage
+    slot: int, // position within its Home group (installed / not installed)
     // Two-tone wordmark, pre-split by the host (bw_coin_wordmark). Empty `tail`
     // means this coin has no wordmark and its name is drawn in one colour.
     head: string,
@@ -1223,73 +1226,111 @@ component FeatureCard inherits Rectangle {
 
 // One coin on the Home page: its logo, its name, and one word of state. The whole
 // row is the button — Home's job is to get the user into a coin, so a row says
-// where it goes rather than describing it.
+// where it goes rather than describing it. Focusable, with Enter or Space to
+// activate, and announced to a screen reader as a button.
 component CoinRow inherits Rectangle {
     in property <string> label;
     in property <image> logo;
     in property <bool> show-logo: false;
-    in property <string> head: "";
-    in property <string> tail: "";
-    in property <color> head-color: #ffffff;
-    in property <color> tail-color: #ffffff;
-    // Right-hand word: "Update", "Open" or "Install". `emphasis` paints it amber.
     in property <string> action;
+    in property <color> action-color: #a8a8a8;
     in property <bool> emphasis: false;
-    // Rows of the wrong group stay in the model (Slint can't nest `if` in a
-    // `for`), so they collapse to nothing instead. The 6px gap between rows is
-    // part of each row's own height for the same reason: a layout's `spacing`
-    // would be paid once per hidden row too.
-    in property <bool> shown: true;
+    in property <string> spoken;
     callback clicked;
 
-    height: root.shown ? 50px : 0px;
-    visible: root.shown;
+    height: 44px;
+    border-radius: 8px;
+    background: ta.has-hover ? #2c2c2c : #242424;
+    border-width: fs.has-focus ? 2px : 0px;
+    border-color: #7ca071;
+    animate background { duration: 120ms; easing: ease-out; }
 
-    card := Rectangle {
-        y: 0;
-        height: 44px;
-        border-radius: 8px;
-        background: ta.has-hover ? #2c2c2c : #242424;
-        animate background { duration: 120ms; easing: ease-out; }
+    accessible-role: button;
+    accessible-label: root.spoken;
+    accessible-action-default => { root.clicked(); }
 
-        if root.show-logo: Image {
-            source: root.logo;
-            image-fit: contain;
-            width: 24px;
-            height: 24px;
-            x: 12px;
-            y: (parent.height - self.height) / 2;
+    if root.show-logo: Image {
+        source: root.logo;
+        image-fit: contain;
+        width: 24px;
+        height: 24px;
+        x: 12px;
+        y: (parent.height - self.height) / 2;
+    }
+    HorizontalLayout {
+        padding-left: root.show-logo ? 48px : 14px;
+        padding-right: 14px;
+        spacing: 8px;
+        Text {
+            text: root.label;
+            vertical-alignment: center;
+            font-size: 14px;
+            font-weight: 600;
+            color: #e6e6e6;
+            overflow: elide;
         }
-        HorizontalLayout {
-            padding-left: root.show-logo ? 48px : 14px;
-            padding-right: 14px;
-            spacing: 0;
-            Text {
-                text: root.tail != "" ? root.head : root.label;
-                vertical-alignment: center;
-                font-size: 14px;
-                font-weight: 600;
-                color: root.tail != "" ? root.head-color : #e6e6e6;
-            }
-            Text {
-                text: root.tail;
-                vertical-alignment: center;
-                font-size: 14px;
-                font-weight: 600;
-                color: root.tail-color;
-            }
-            Rectangle { horizontal-stretch: 1; }
-            Text {
-                text: root.action;
-                vertical-alignment: center;
-                font-size: 12px;
-                font-weight: root.emphasis ? 700 : 400;
-                color: root.emphasis ? #e0a03a : #a8a8a8;
-            }
+        Rectangle { horizontal-stretch: 1; }
+        Text {
+            text: root.action;
+            vertical-alignment: center;
+            font-size: 12px;
+            font-weight: root.emphasis ? 700 : 400;
+            color: root.action-color;
         }
-        ta := TouchArea {
-            clicked => { root.clicked(); }
+    }
+    ta := TouchArea {
+        clicked => { root.clicked(); }
+    }
+    fs := FocusScope {
+        key-pressed(e) => {
+            if (e.text == "\n" || e.text == " ") {
+                root.clicked();
+                return accept;
+            }
+            reject
         }
+    }
+}
+
+// Home's coins as a grid of rows: two columns when the pane is wide enough, one
+// when it isn't. Rows are placed by hand from a host-assigned `slot` because a
+// layout can't skip the coins that belong to the other group (Slint can't nest
+// an `if` in a `for`), and a hidden row in a layout still costs its spacing.
+component CoinGrid inherits Rectangle {
+    in property <[NavCoin]> coins;
+    in property <[image]> logos;
+    in property <bool> installed-group;
+    in property <int> count;
+    in property <bool> show-logo: false;
+    in property <color> run-color: #7ca071;
+    callback picked(int);
+
+    property <int> cols: root.width >= 520px ? 2 : 1;
+    property <length> gap: 6px;
+    property <length> cell-w: (root.width - root.gap * (root.cols - 1)) / root.cols;
+
+    height: ceil(root.count / root.cols) * (44px + root.gap);
+
+    for c in root.coins: CoinRow {
+        visible: c.installed == root.installed-group;
+        x: mod(c.slot, root.cols) * (root.cell-w + root.gap);
+        y: floor(c.slot / root.cols) * (44px + root.gap);
+        width: root.cell-w;
+        label: c.name;
+        logo: root.logos[c.index];
+        show-logo: root.show-logo;
+        // A stopped coin says nothing: the rows that do speak (an update, a live
+        // node) are the signal, and a word repeated down every idle row buries it.
+        // The screen-reader label below still says "stopped".
+        action: !c.installed ? "Install"
+            : (c.update ? (c.running && c.status != "" ? "\u{2b06} Update · " + c.status : "\u{2b06} Update")
+            : (c.running ? (c.status != "" ? c.status : "Running") : ""));
+        action-color: c.update ? #e0a03a : (c.running ? root.run-color : #a8a8a8);
+        emphasis: c.update;
+        spoken: (c.installed ? "Open " : "Install ") + c.name
+            + (c.installed && c.update ? ", update available" : "")
+            + (c.installed ? (c.running ? ", running, " + c.status : ", stopped") : "");
+        clicked => { root.picked(c.index); }
     }
 }
 
@@ -1411,7 +1452,7 @@ export component AppWindow inherits Window {
     // Set when that check fails: the logos are then suppressed entirely and this
     // reads as a banner, because a wrong logo on a wallet is worse than none.
     in property <string> logo-mismatch: "";
-    property <int> selected: -1;
+    in-out property <int> selected: -1;
     property <int> tab: 0; // 0 Home, 1 Tx, 2 Receive, 3 Send, 4 Settings, 5 Mining, 6 DigiDollar
     callback coin-selected(int);
 
@@ -2484,29 +2525,6 @@ export component AppWindow inherits Window {
                         wrap: word-wrap;
                     }
 
-                    // Which coins have a newer core waiting, so it's visible
-                    // without clicking through all of them. The rows below carry
-                    // the same flag and are the way in.
-                    if root.updates-summary != "": Rectangle {
-                        background: #2b2418;
-                        border-radius: 8px;
-                        VerticalLayout {
-                            padding: 10px;
-                            spacing: 2px;
-                            Text {
-                                text: "\u{2b06} Updates available: " + root.updates-summary;
-                                color: #e0a03a;
-                                font-size: 13px;
-                                wrap: word-wrap;
-                            }
-                            Text {
-                                text: "Open the coin and press Update.";
-                                color: #b0b0b0;
-                                font-size: 12px;
-                                wrap: word-wrap;
-                            }
-                        }
-                    }
                     // BoxWallet itself, not a coin. Same colour as the coin
                     // notice because it wants the same attention, but it stands
                     // alone: there's no button to press, only a restart.
@@ -2531,26 +2549,16 @@ export component AppWindow inherits Window {
                         font-size: 15px;
                         font-weight: 700;
                     }
-                    if root.installed-count > 0: VerticalLayout {
-                        spacing: 0px;
-                        for c in root.nav-coins: CoinRow {
-                            shown: c.installed;
-                            label: c.name;
-                            logo: root.coin-logos[c.index];
-                            show-logo: root.logo-mismatch == "";
-                            head: c.head;
-                            tail: c.tail;
-                            // Home's rows are never "selected", so the wordmark
-                            // colours would be the only brand colour on the page;
-                            // the coin's own logo carries that, and the name stays
-                            // near-white.
-                            action: c.update ? "\u{2b06} Update" : "Open";
-                            emphasis: c.update;
-                            clicked => {
-                                root.selected = c.index;
-                                root.tab = 0;
-                                root.coin-selected(c.index);
-                            }
+                    if root.installed-count > 0: CoinGrid {
+                        coins: root.nav-coins;
+                        logos: root.coin-logos;
+                        installed-group: true;
+                        count: root.installed-count;
+                        show-logo: root.logo-mismatch == "";
+                        picked(idx) => {
+                            root.selected = idx;
+                            root.tab = 0;
+                            root.coin-selected(idx);
                         }
                     }
 
@@ -2563,19 +2571,16 @@ export component AppWindow inherits Window {
                         font-size: 15px;
                         font-weight: 700;
                     }
-                    VerticalLayout {
-                        spacing: 0px;
-                        for c in root.nav-coins: CoinRow {
-                            shown: !c.installed;
-                            label: c.name;
-                            logo: root.coin-logos[c.index];
-                            show-logo: root.logo-mismatch == "";
-                            action: "Install";
-                            clicked => {
-                                root.selected = c.index;
-                                root.tab = 0;
-                                root.coin-selected(c.index);
-                            }
+                    CoinGrid {
+                        coins: root.nav-coins;
+                        logos: root.coin-logos;
+                        installed-group: false;
+                        count: root.nav-coins.length - root.installed-count;
+                        show-logo: root.logo-mismatch == "";
+                        picked(idx) => {
+                            root.selected = idx;
+                            root.tab = 0;
+                            root.coin-selected(idx);
                         }
                     }
 
@@ -2606,6 +2611,9 @@ export component AppWindow inherits Window {
                     Rectangle { height: 2px; }
                     if root.installed-count > 0: Rectangle {
                         height: 28px;
+                        accessible-role: button;
+                        accessible-label: root.why-open ? "Hide why BoxWallet" : "Show why BoxWallet";
+                        accessible-action-default => { root.why-open = !root.why-open; }
                         Text {
                             x: 0;
                             text: (root.why-open ? "\u{25be} " : "\u{25b8} ") + "Why BoxWallet";
@@ -2615,6 +2623,15 @@ export component AppWindow inherits Window {
                             vertical-alignment: center;
                         }
                         TouchArea { clicked => { root.why-open = !root.why-open; } }
+                        FocusScope {
+                            key-pressed(e) => {
+                                if (e.text == "\n" || e.text == " ") {
+                                    root.why-open = !root.why-open;
+                                    return accept;
+                                }
+                                reject
+                            }
+                        }
                     }
                     if root.installed-count == 0: Text {
                         text: "Why BoxWallet";
