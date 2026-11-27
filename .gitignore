@@ -8,3 +8,6 @@ zig-pkg/
 
 # Local install root produced by running the app (downloaded coin daemons).
 boxwallet-coins/
+
+# Monero shared ring database, written by running monerod
+.shared-ringdb/
